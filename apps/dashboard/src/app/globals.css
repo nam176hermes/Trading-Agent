@@ -1,0 +1,91 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  /* Bloomberg orange — primary accent */
+  --color-amber-400: #ff8c00;
+  --color-amber-500: #e07800;
+  --color-amber-300: #ffaa44;
+  --color-amber-600: #c46000;
+
+  /* Terminal green */
+  --color-emerald-400: #00d44c;
+  --color-emerald-500: #00aa3c;
+  --color-emerald-600: #008830;
+
+  /* Terminal red */
+  --color-red-400: #ff3344;
+  --color-red-500: #dd2233;
+
+  /* Deep terminal blacks */
+  --color-zinc-950: #080808;
+  --color-zinc-900: #0f0f0f;
+  --color-zinc-800: #1c1c1c;
+  --color-zinc-700: #282828;
+  --color-zinc-600: #3a3a3a;
+  --color-zinc-500: #555555;
+
+  /* Warm cream text — Bloomberg style */
+  --color-zinc-100: #d0c8b4;
+  --color-zinc-200: #b8b09c;
+  --color-zinc-300: #968e80;
+
+  /* Secondary accent */
+  --color-blue-400: #4da6ff;
+  --color-blue-500: #2288ee;
+  --color-violet-400: #9966ff;
+  --color-violet-600: #6633cc;
+}
+
+body {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, 'Courier New', monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+html, body {
+  overscroll-behavior: none;
+}
+
+/* Thin terminal scrollbar */
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: #0f0f0f; }
+::-webkit-scrollbar-thumb { background: #2a2a2a; }
+::-webkit-scrollbar-thumb:hover { background: #ff8c00; }
+
+/* ── Ticker tape ── */
+@keyframes ticker-scroll {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.ticker-animate {
+  display: flex;
+  width: max-content;
+  animation: ticker-scroll 55s linear infinite;
+  will-change: transform;
+}
+.ticker-animate:hover { animation-play-state: paused; }
+
+/* ── Price flash on update ── */
+@keyframes flash-green {
+  0%   { color: #00d44c; }
+  100% { color: inherit; }
+}
+@keyframes flash-red {
+  0%   { color: #ff3344; }
+  100% { color: inherit; }
+}
+.price-flash-up   { animation: flash-green 0.9s ease-out; }
+.price-flash-down { animation: flash-red   0.9s ease-out; }
+
+/* ── Online status pulse ── */
+@keyframes status-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 212, 76, 0.45); }
+  50%       { box-shadow: 0 0 0 4px rgba(0, 212, 76, 0); }
+}
+.status-live { animation: status-pulse 2.4s ease-in-out infinite; }
+
+/* ── Subtle card highlight on hover ── */
+.card-hover {
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.card-hover:hover { border-color: #282828; }

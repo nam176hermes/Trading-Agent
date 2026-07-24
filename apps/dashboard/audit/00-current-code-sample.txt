@@ -1,0 +1,736 @@
+## /lib/trading/types.ts
+export type AssetSymbol = string;
+
+export type AssetClass = 'crypto' | 'stock' | 'etf' | 'forex';
+
+export type SignalType = 'BUY' | 'SELL' | 'WAIT' | 'NO SIGNAL' | 'WATCH FOR ENTRY';
+
+export type ConfidenceLevel = 'low' | 'medium' | 'high';
+
+export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+
+export type RSISignal = 'oversold' | 'overbought' | 'neutral';
+
+export type MACDSignal = 'bullish_crossover' | 'bearish_crossover' | 'neutral';
+
+export interface AssetData {
+  symbol: AssetSymbol;
+  asset_class: AssetClass;
+  current_price: number;
+  price_change_24h_pct: number;
+  price_change_7d_pct: number;
+  rsi_14: number;
+  rsi_signal: RSISignal;
+  macd_signal: MACDSignal;
+  price_vs_sma200: 'above' | 'below';
+  volume_trend: string;
+  sentiment: string | null;
+  sentiment_source: string | null;
+  sentiment_score: number | null;
+  sentiment_distribution: Record<string, number> | null;
+  sentiment_summary: string | null;
+  articles_found: number | null;
+  articles_scored: number | null;
+  articles_filtered: number | null;
+  onchain_risk: string | null;
+  onchain_source: string | null;
+  funding_rate: number | null;
+  funding_rate_pct: number | null;
+  funding_rate_annualized: number | null;
+  funding_signal: string | null;
+  funding_source: string | null;
+  open_interest_usd: number | null;
+  oi_trend: string | null;
+  oi_change_pct: number | null;
+  oi_source: string | null;
+  derivatives_signal: string | null;
+  derivatives_note: string | null;
+  suggestion: SignalType;
+  confidence: ConfidenceLevel;
+  signal_conflict: boolean;
+  reasoning: string;
+  stop_loss_suggestion: number | null;
+  target_suggestion: number | null;
+  atr_14: number;
+  atr_pct: number;
+  stop_method: string;
+  stop_note: string;
+  warning: string | null;
+  alerts: string[];
+  market_regime: string | null;
+  regime_confidence: number | null;
+  regime_adx: number | null;
+  regime_note: string | null;
+  risk_assessment: RiskAssessment;
+  _memory_context: string;
+  _debate_context: string;
+  _risk_context: string;
+}
+
+export interface RiskAssessment {
+  position_size_pct: number;
+  stop_loss_pct: number;
+  risk_level: RiskLevel;
+  rationale: string;
+}
+
+export interface EquityAsset {
+  symbol: string;
+  asset_class: AssetClass;
+  current_price: number;
+  price_change_24h_pct: number;
+  volume: number;
+}
+
+export interface CryptoAsset {
+  symbol: string;
+  asset_class: 'crypto';
+  current_price: number;
+  price_change_24h_pct: number;
+  volume: number;
+  market_cap?: number;
+}
+
+export interface MarketReport {
+  timestamp: string;
+  assets: AssetData[];
+  source?: string;
+}
+
+export interface EquityReport {
+  timestamp: string;
+  source: string;
+  assets: EquityAsset[];
+}
+
+export interface CryptoReport {
+  timestamp: string;
+  source: string;
+  assets: CryptoAsset[];
+}
+
+export interface Decision {
+  ticker: AssetSymbol;
+  date: string;
+  suggestion: SignalType;
+  confidence: number;
+  price_at_decision: number;
+  signals: {
+    symbol: AssetSymbol;
+    close: number;
+    rsi_14: number;
+    macd_line: number;
+    macd_signal_line: number;
+    macd_histogram: number;
+    sma_200: number;
+    price_vs_sma200: string;
+    volume_24h: number;
+    volume_30d_avg: number;
+    volume_trend_ratio: number;
+    signal: string | null;
+    calculated_at: string;
+  };
+  report_snippet: string;
+  stored_at: string;
+  reflected: boolean;
+}
+
+export interface ScratchpadEntry {
+  type: 'init' | 'thinking' | 'tool_result' | 'decision' | 'error';
+  timestamp: string;
+  query?: string;
+  symbols?: AssetSymbol[];
+  mode?: string;
+  session_id?: string;
+  category?: string;
+  content?: string;
+  toolName?: string;
+  args?: any;
+  success?: boolean;
+  duration_ms?: number;
+  result?: any;
+  llmSummary?: string;
+}
+
+export interface MarketTicker {
+  symbol: AssetSymbol;
+  asset_class?: AssetClass;
+  price: number;
+  change24h: number;
+  volume24h: number;
+  sector?: string;
+}
+
+export interface ResearchPlan {
+  id: string;
+  query: string;
+  keywords: string[];
+  steps: PlanStep[];
+  created_at: string;
+}
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  description: string;
+  dependencies: string[];
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
+export interface DebateSummary {
+  symbol: AssetSymbol;
+  bull_case: string;
+  bear_case: string;
+  synthesis: string;
+}
+
+export interface MultiPersonaRisk {
+  symbol: AssetSymbol;
+  aggressive: string;
+  conservative: string;
+  neutral: string;
+  synthesis: string;
+}
+
+export interface RiskAssessmentEntry {
+  persona: string;
+  accept_signal: boolean;
+  position_size_pct: number;
+  rationale: string;
+}
+
+export interface TypedDecisionSignal {
+  asset: string;
+  action: string;
+  confidence: number;
+  entry_price: number | null;
+  stop_loss: number | null;
+  reasoning: string;
+}
+
+export interface TypedDecision {
+  timestamp: string;
+  asset: string;
+  initial_signal: TypedDecisionSignal;
+  bull_synthesis: string;
+  bear_synthesis: string;
+  risk_assessments: RiskAssessmentEntry[];
+  final_action: string;
+  final_position_size_pct: number;
+  executive_summary: string;
+}
+
+// --- Fundamentals Phase 2 ---
+
+export interface CompanyProfile {
+  companyName: string;
+  sector: string;
+  industry: string;
+  marketCap: number;
+  beta: number;
+}
+
+export interface ValuationMetrics {
+  peRatio: number | null;
+  pbRatio: number | null;
+  psRatio: number | null;
+  evToEbitda: number | null;
+  roe: number | null;
+  debtToEquity: number | null;
+  currentRatio: number | null;
+}
+
+export interface FinancialSnapshot {
+  revenueGrowth: number | null;
+  earningsGrowth: number | null;
+  grossMargin: number | null;
+  netMargin: number | null;
+  latestQuarterRevenue: number | null;
+  latestQuarterEarnings: number | null;
+}
+
+export interface EarningsInfo {
+  nextDate: string | null;
+  estimatedEps: number | null;
+}
+
+export interface FundamentalAsset {
+  symbol: string;
+  asset_class: string;
+  profile: CompanyProfile;
+  valuation: ValuationMetrics;
+  financials: FinancialSnapshot;
+  earnings: EarningsInfo;
+}
+
+export interface FundamentalsReport {
+  timestamp: string;
+  source: string;
+  assets: FundamentalAsset[];
+}
+
+// --- Macro & News Phase 3 ---
+
+export interface MacroIndicator {
+  value: number;
+  unit: string;
+  period: string;
+  trend: 'up' | 'down' | 'stable' | 'flat';
+}
+
+export interface MacroReport {
+  timestamp: string;
+  source: string;
+  indicators: Record<string, MacroIndicator>;
+  regime: string;
+  regime_confidence: number;
+  regime_rationale: string;
+}
+
+export interface NewsArticle {
+  symbol: string;
+  title: string;
+  url: string;
+  source: string;
+  published_at: string;
+  sentiment: string;
+  sentiment_score: number;
+  entities: string[];
+}
+
+export interface SentimentSummary {
+  [symbol: string]: {
+    positive: number;
+    negative: number;
+    neutral: number;
+    avg_score: number;
+  };
+}
+
+export interface NewsReport {
+  timestamp: string;
+  source: string;
+  articles: NewsArticle[];
+  sentiment_summary: SentimentSummary;
+}
+
+// --- Phase 4: TA Validation ---
+
+export interface TaValidationEntry {
+  symbol: string;
+  indicator: string;
+  ta_shim_value: number;
+  alpha_vantage_value: number;
+  divergence: number;
+  divergence_pct: number;
+  status: 'ok' | 'warn' | 'fail';
+}
+
+export interface TaValidationReport {
+  timestamp: string;
+  source: string;
+  validations: TaValidationEntry[];
+  summary: {
+    total_checks: number;
+    passed: number;
+    failed: number;
+    warned: number;
+    avg_divergence: number;
+  };
+}
+
+// --- Phase 4: Data Source Health ---
+
+export interface DataSourceHealth {
+  id: string;
+  name: string;
+  status: 'ok' | 'error' | 'unknown';
+  latency_ms: number | null;
+  rate_limit_remaining: number | null;
+  last_check: string | null;
+  error_message: string | null;
+}
+
+## /lib/trading/equity.ts
+export interface Order {
+  timestamp: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  shares: number;
+  fill_price: number;
+  cost?: number;
+  proceeds?: number;
+  pnl?: number;
+}
+
+export interface EquityPoint {
+  timestamp: string;
+  equity: number;
+  profit: number;
+  profit_percent: number;
+}
+
+export function computeEquityCurve(
+  orders: Order[],
+  priceMap: Record<string, number>,
+  initialCapital: number
+): { curve: EquityPoint[]; peak: number; maxDrawdown: number } {
+  const chrono = [...orders].reverse(); // oldest first
+  let cash = initialCapital;
+  const positions: Record<string, number> = {};
+  let peak = initialCapital;
+  let maxDrawdown = 0;
+  const curve: EquityPoint[] = [];
+
+  // Track last known fill price per symbol as we walk chronologically
+  const historicalPrice: Record<string, number> = {};
+
+  for (const o of chrono) {
+    if (o.side === 'BUY') {
+      cash -= o.cost ?? o.shares * o.fill_price;
+      positions[o.symbol] = (positions[o.symbol] || 0) + o.shares;
+    } else if (o.side === 'SELL') {
+      cash += o.proceeds ?? o.shares * o.fill_price;
+      positions[o.symbol] = (positions[o.symbol] || 0) - o.shares;
+      if (positions[o.symbol] <= 0) delete positions[o.symbol];
+    }
+
+    // Record fill price as best-known price for this symbol at this moment
+    historicalPrice[o.symbol] = o.fill_price;
+
+    // Mark-to-market open positions using historical prices at this point in time
+    let positionsValue = 0;
+    for (const [sym, shares] of Object.entries(positions)) {
+      const price = historicalPrice[sym] ?? priceMap[sym] ?? o.fill_price;
+      positionsValue += shares * price;
+    }
+
+    const equity = cash + positionsValue;
+    if (equity > peak) peak = equity;
+    const dd = peak > 0 ? (peak - equity) / peak : 0;
+    if (dd > maxDrawdown) maxDrawdown = dd;
+
+    curve.push({
+      timestamp: o.timestamp,
+      equity: Math.round(equity * 100) / 100,
+      profit: Math.round((equity - initialCapital) * 100) / 100,
+      profit_percent: Math.round(((equity - initialCapital) / initialCapital) * 10000) / 100,
+    });
+  }
+
+  return { curve, peak, maxDrawdown };
+}
+
+## API routes — first 5 KB of each (sample)
+### mode/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { checkAuth } from '@/lib/trading/auth';
+import fs from 'fs';
+import path from 'path';
+
+const HOME = process.env.HOME || '';
+const RESEARCH = path.join(HOME, '.hermes', 'crypto-research');
+const MODE_PATH = path.join(RESEARCH, '.mode');
+
+function getCurrentMode(): string {
+  try {
+    if (fs.existsSync(MODE_PATH)) {
+      const mode = fs.readFileSync(MODE_PATH, 'utf-8').trim().toLowerCase();
+      if (mode === 'paper' || mode === 'dryrun' || mode === 'live') return mode;
+    }
+  } catch {}
+  return 'paper';
+}
+
+function setModeFile(mode: string): void {
+  fs.mkdirSync(RESEARCH, { recursive: true });
+  const tmp = `${MODE_PATH}.tmp.${process.pid}.${Date.now()}`;
+  fs.writeFileSync(tmp, mode + '\n');
+  fs.renameSync(tmp, MODE_PATH);
+}
+
+const MODE_MESSAGES: Record<string, string> = {
+  paper: '📝 Paper trading — simulated, no exchange connection needed',
+  dryrun: '🟡 Dry Run — connects to Binance testnet, creates orders WITHOUT submitting',
+  live: '🔴 LIVE — real orders on Binance. Verify API keys have NO withdrawal permissions!',
+};
+
+export async function GET(_request: NextRequest) {
+  const mode = getCurrentMode();
+  return NextResponse.json({
+    mode,
+    message: MODE_MESSAGES[mode] || '',
+  });
+}
+
+export async function POST(request: NextRequest) {
+  const authError = checkAuth(request);
+  if (authError) return authError;
+
+  try {
+    const body = await request.json();
+    const { mode } = body as { mode: string };
+
+    if (!['paper', 'dryrun', 'live'].includes(mode)) {
+      return NextResponse.json(
+
+### kill-switch/route.ts
+import { NextResponse } from 'next/server';
+import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { requireMasterKey } from '@/lib/trading/auth';
+
+const CRYPTO_RESEARCH_DIR = process.env.CRYPTO_RESEARCH_DIR ?? path.join(os.homedir(), '.hermes', 'crypto-research');
+const KILL_SWITCH_FILE = path.join(CRYPTO_RESEARCH_DIR, 'memory', 'kill_switch.txt');
+const KILL_SWITCH_SCRIPT = path.join(CRYPTO_RESEARCH_DIR, 'kill_switch.py');
+
+function readState(): { active: boolean; reason: string | null; activated_at: string | null } {
+  if (fs.existsSync(KILL_SWITCH_FILE)) {
+    const content = fs.readFileSync(KILL_SWITCH_FILE, 'utf-8').trim();
+    // Format: "ISO_TIMESTAMP: reason"
+    const colonIdx = content.indexOf(': ');
+    if (colonIdx > 0) {
+      const activated_at = content.slice(0, colonIdx);
+      const reason = content.slice(colonIdx + 2);
+      return { active: true, reason, activated_at };
+    }
+    return { active: true, reason: content, activated_at: null };
+  }
+  return { active: false, reason: null, activated_at: null };
+}
+
+export async function GET() {
+  try {
+    const state = readState();
+    return NextResponse.json(state);
+  } catch {
+    return NextResponse.json(
+      { active: false, reason: null, activated_at: null, error: 'Failed to read kill switch state' },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(request: Request) {
+  const authError = requireMasterKey(request);
+  if (authError) return authError;
+
+  try {
+    const body = await request.json();
+    const { action, reason } = body;
+
+    if (action !== 'on' && action !== 'off') {
+      return NextResponse.json(
+        { error: 'action must be "on" or "off"' },
+        { status: 400 },
+
+### run/route.ts
+import { NextResponse } from 'next/server';
+import { spawn } from 'child_process';
+import { writeFileSync, readFileSync, renameSync } from 'fs';
+import { join } from 'path';
+import os from 'os';
+import { requireMasterKey } from '@/lib/trading/auth';
+
+const BACKEND_DIR = process.env.CRYPTO_RESEARCH_DIR ?? join(os.homedir(), '.hermes', 'crypto-research');
+const STATUS_FILE = join(BACKEND_DIR, 'run_status.json');
+
+function readStatus() {
+  try {
+    return JSON.parse(readFileSync(STATUS_FILE, 'utf-8'));
+  } catch {
+    return { status: 'idle', last_run_at: null, exit_code: null };
+  }
+}
+
+export async function GET() {
+  return NextResponse.json(readStatus());
+}
+
+export async function POST(request: Request) {
+  const authError = requireMasterKey(request);
+  if (authError) return authError;
+
+  const current = readStatus();
+  if (current.status === 'running') {
+    return NextResponse.json({ error: 'Pipeline already running' }, { status: 409 });
+  }
+
+  const startedAt = new Date().toISOString();
+  const tmp1 = `${STATUS_FILE}.tmp.${process.pid}.${Date.now()}`;
+  writeFileSync(tmp1, JSON.stringify({ status: 'running', started_at: startedAt, pid: null }));
+  renameSync(tmp1, STATUS_FILE);
+
+  const proc = spawn('.venv/bin/python', ['main.py', '--mode', 'debate'], {
+    cwd: BACKEND_DIR,
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env },
+  });
+
+  const tmp2 = `${STATUS_FILE}.tmp.${process.pid}.${Date.now() + 1}`;
+  writeFileSync(tmp2, JSON.stringify({ status: 'running', started_at: startedAt, pid: proc.pid }));
+  renameSync(tmp2, STATUS_FILE);
+
+  proc.on('exit', (code) => {
+    const tmp3 = `${STATUS_FILE}.tmp.${process.pid}.${Date.now() + 2}`;
+    writeFileSync(tmp3, JSON.stringify({
+
+### execution/route.ts
+import { NextResponse } from 'next/server';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import path from 'path';
+import os from 'os';
+
+const execAsync = promisify(exec);
+const CRYPTO_RESEARCH = process.env.CRYPTO_RESEARCH_DIR ?? path.join(os.homedir(), '.hermes', 'crypto-research');
+
+export async function GET() {
+  try {
+    // Query SQLite DB directly
+    const { stdout } = await execAsync(
+      `cd ${CRYPTO_RESEARCH} && ` +
+      `.venv/bin/python -c "
+import json, sys, logging
+logging.getLogger().setLevel(logging.ERROR)
+sys.path.insert(0, '.')
+from db import repository as db
+
+# Get all the data we need
+open_orders = db.get_open_orders()
+recent_trades = db.get_recent_trades(20)
+positions = db.get_positions()
+pnl = db.get_pnl_summary()
+alerts = db.get_unacknowledged_alerts()
+
+# Check mode
+mode = 'paper'
+try:
+    with open('.mode') as f:
+        mode = f.read().strip()
+except: pass
+
+# Check kill switch
+halted = False
+import os
+halted = os.path.exists('.kill_switch')
+
+print(json.dumps({
+    'mode': mode,
+    'halted': halted,
+    'open_orders': open_orders,
+    'recent_trades': recent_trades[:10],
+    'positions': positions,
+    'pnl': pnl,
+    'alerts': alerts[:5],
+    'slippage_history': db.get_slippage_history(20),
+    'avg_slippage': db.get_average_slippage(),
+}))
+
+### close-position/route.ts
+import { NextResponse } from 'next/server';
+import { execSync } from 'child_process';
+import path from 'path';
+import os from 'os';
+import { requireMasterKey } from '@/lib/trading/auth';
+
+const CRYPTO_RESEARCH_DIR = process.env.CRYPTO_RESEARCH_DIR ?? path.join(os.homedir(), '.hermes', 'crypto-research');
+
+export async function POST(request: Request) {
+  const authError = requireMasterKey(request);
+  if (authError) return authError;
+
+  try {
+    const body = await request.json();
+    const { symbol } = body;
+
+    if (!symbol || typeof symbol !== 'string') {
+      return NextResponse.json(
+        { error: 'symbol is required (string)' },
+        { status: 400 },
+      );
+    }
+
+    if (!/^[A-Z0-9]{2,12}$/.test(symbol)) {
+      return NextResponse.json(
+        { error: 'Invalid symbol format' },
+        { status: 400 },
+      );
+    }
+
+    const stdout = execSync(
+      `.venv/bin/python execute_paper.py --symbol "${symbol}" --action SELL --force`,
+      {
+        cwd: CRYPTO_RESEARCH_DIR,
+        timeout: 15_000,
+      },
+    );
+
+    const raw = stdout.toString().trim();
+    let result: any;
+    try {
+      result = JSON.parse(raw);
+    } catch {
+      console.error('close-position parse failed, raw:', raw.slice(0, 200));
+      return NextResponse.json({ error: 'parse_failed', raw: raw.slice(0, 200) }, { status: 500 });
+    }
+
+    if (result.status === 'filled') {
+      return NextResponse.json({ success: true, order: result });
+    }
+
+### keys/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import path from 'path';
+import os from 'os';
+import { requireMasterKey } from '@/lib/trading/auth';
+
+const execAsync = promisify(exec);
+const CRYPTO_RESEARCH = process.env.CRYPTO_RESEARCH_DIR ?? path.join(os.homedir(), '.hermes', 'crypto-research');
+const MASTER_KEY = process.env.TRADING_MASTER_KEY || '';
+
+function shellEscape(str: string): string {
+  // Single-quote escape: replace ' with '\''
+  return str.replace(/'/g, "'\\''");
+}
+
+export async function GET() {
+  try {
+    if (!MASTER_KEY) {
+      return NextResponse.json({
+        exchanges: [],
+        warning: 'TRADING_MASTER_KEY not set — cannot decrypt keys',
+      });
+    }
+
+    const { stdout } = await execAsync(
+      `cd ${CRYPTO_RESEARCH} && ` +
+      `TRADING_MASTER_KEY='${shellEscape(MASTER_KEY)}' ` +
+      `.venv/bin/python -c "
+import sys; sys.path.insert(0, '.')
+from exchange.secrets import load_keys
+import json, logging
+logging.getLogger('exchange.secrets').setLevel(logging.ERROR)
+logging.getLogger().setLevel(logging.ERROR)
+keys = load_keys()
+print(json.dumps({k: {'configured': True} for k in keys}))
+"`,
+      { timeout: 5000 },
+    );
+
+    let exchanges: any;
+    try {
+      exchanges = JSON.parse(stdout.trim());
+    } catch {
+      console.error('keys GET parse failed, raw:', stdout.trim().slice(0, 200));
+      return NextResponse.json({ error: 'parse_failed', raw: stdout.trim().slice(0, 200) }, { status: 500 });
+    }
+    return NextResponse.json({ exchanges });
+  } catch (error) {
+    console.error('Keys GET error:', error);
+
