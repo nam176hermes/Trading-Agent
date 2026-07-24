@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "ReplayIssueCode": {
+      "enum": [
+        "SEQUENCE_GAP",
+        "SEQUENCE_REGRESSION"
+      ],
+      "title": "ReplayIssueCode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "code": {
+      "$ref": "#/$defs/ReplayIssueCode"
+    },
+    "digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Digest",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "expected_sequence": {
+      "exclusiveMinimum": 0,
+      "maximum": 9223372036854775807,
+      "title": "Expected Sequence",
+      "type": "integer"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "maximum": 9223372036854775807,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "stream_id",
+    "event_id",
+    "sequence",
+    "expected_sequence",
+    "digest"
+  ],
+  "title": "ReplayIssue",
+  "type": "object"
+}

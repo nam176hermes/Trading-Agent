@@ -1,0 +1,60 @@
+{
+  "schema_version": "release-v2-candidate-evidence/v1",
+  "observed_at": "2026-07-16T15:12:29Z",
+  "decision": "NO_GO",
+  "candidate_built": false,
+  "candidate_path": null,
+  "candidate_authority_sha256": null,
+  "source": {
+    "repository_root": "/home/thenam176/projects/trading-agent",
+    "branch": "codex/canonical-monorepo",
+    "head_commit": "9641281a8508709cab212fb460308467681854ef",
+    "head_tree": "1d678b54897977877866c3bad2924a56ee56b7c2",
+    "worktree_state": "DIRTY"
+  },
+  "static_source_evidence": {
+    "state": "STATICALLY_VERIFIED",
+    "runtime_release_tests": "236 passed, 1 skipped",
+    "independent_review": "PASS",
+    "standalone_verifier_sha256": "4618114f2c3f4ac9048b956cff3a07c3cce3b605d43beb6a17563f45e266a07d",
+    "migration_0005_sha256": "7b77d9abe0b5cfe84bf69ea60e47441179c99bcb533a6776f629cab103698f4e",
+    "role_provisioning_sha256": "4b2964256a05d60caaa9e4e94b046c2f52e369a6f70acd016f2e7e295cdac691",
+    "role_split_runbook_sha256": "62027f15a5a529a4e9f98e3960582aa8e72ac2320db681d6aed74d047c16dddb"
+  },
+  "runtime_evidence": {
+    "postgresql_health": "UNAVAILABLE",
+    "postgresql_head": "NOT_VERIFIED",
+    "runtime_permission_matrix": "NOT_EXECUTED",
+    "job_api": "INACTIVE",
+    "worker": "INACTIVE",
+    "scheduler": "INACTIVE",
+    "scheduler_timer": "DISABLED",
+    "port_8401": "CLOSED",
+    "snapshot_job": "NOT_EXECUTED",
+    "release_to_unit_to_pid": "UNAVAILABLE"
+  },
+  "promotion": {
+    "state": "UNAVAILABLE",
+    "activation_api": "FAIL_CLOSED",
+    "runtime_authority_loader": "FAIL_CLOSED",
+    "runtime_application_attestation": "FAIL_CLOSED"
+  },
+  "stop_conditions": [
+    "PostgreSQL 127.0.0.1:55432 returned no response",
+    "Runtime Alembic head could not be authenticated",
+    "Canonical worktree is dirty and the immutable release audit returned E_DIRTY",
+    "No reviewed root-owned hermetic Python 3.11 runtime is available",
+    "No production-root provisioning/cutover flow is reviewed",
+    "Release Authority v2 promotion lifecycle is deliberately unavailable",
+    "Exact runtime rollout approval was not supplied"
+  ],
+  "actions_not_taken": [
+    "database recovery or start",
+    "database migration or role provisioning",
+    "release build, installation, provisioning, or activation",
+    "service or timer state change",
+    "job enqueue, cancel, claim, or execution",
+    "broker, exchange, or research-provider call",
+    "runtime rollback"
+  ]
+}

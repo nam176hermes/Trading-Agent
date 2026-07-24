@@ -1,0 +1,1706 @@
+{
+  "components": {
+    "schemas": {
+      "ActorIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "actor_type": {
+            "$ref": "#/components/schemas/ActorType"
+          }
+        },
+        "required": [
+          "actor_type",
+          "actor_id"
+        ],
+        "title": "ActorIdentity",
+        "type": "object"
+      },
+      "ActorType": {
+        "enum": [
+          "OPERATOR",
+          "SCHEDULER",
+          "WORKER",
+          "RECOVERY",
+          "SYSTEM"
+        ],
+        "title": "ActorType",
+        "type": "string"
+      },
+      "ArtifactMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "artifact_type": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+            "title": "Artifact Type",
+            "type": "string"
+          },
+          "attempt_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "minimum": 0.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "validator_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Validator Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "attempt_id",
+          "artifact_type",
+          "validator_id",
+          "sha256",
+          "size_bytes",
+          "created_at"
+        ],
+        "title": "ArtifactMetadata",
+        "type": "object"
+      },
+      "AttemptMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Artifact Count",
+            "type": "integer"
+          },
+          "attempt_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "attempt_number": {
+            "minimum": 1.0,
+            "title": "Attempt Number",
+            "type": "integer"
+          },
+          "claimed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed At"
+          },
+          "exit_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Code"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "termination_reason": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Termination Reason"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "attempt_number"
+        ],
+        "title": "AttemptMetadata",
+        "type": "object"
+      },
+      "BacktestPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "description": "Case-insensitive canonical Phase 1 asset symbol; surrounding ASCII whitespace is normalized by the service.",
+            "pattern": "^[ \\t\\r\\n\\x0c\\x0b]*(?:[aA][aA][pP][lL]|[aA][dD][aA]|[aA][mM][zZ][nN]|[aA][vV][aA][xX]|[bB][tT][cC]|[dD][oO][gG][eE]|[dD][oO][tT]|[eE][tT][hH]|[gG][oO][oO][gG][lL]|[lL][iI][nN][kK]|[mM][aA][tT][iI][cC]|[mM][eE][tT][aA]|[mM][sS][fF][tT]|[nN][vV][dD][aA]|[sS][oO][lL]|[tT][oO][nN]|[tT][sS][lL][aA])[ \\t\\r\\n\\x0c\\x0b]*$",
+            "title": "Asset",
+            "type": "string",
+            "x-canonical-values": [
+              "AAPL",
+              "ADA",
+              "AMZN",
+              "AVAX",
+              "BTC",
+              "DOGE",
+              "DOT",
+              "ETH",
+              "GOOGL",
+              "LINK",
+              "MATIC",
+              "META",
+              "MSFT",
+              "NVDA",
+              "SOL",
+              "TON",
+              "TSLA"
+            ]
+          },
+          "date_from": {
+            "title": "Date From",
+            "type": "null"
+          },
+          "date_to": {
+            "title": "Date To",
+            "type": "null"
+          },
+          "strategy_id": {
+            "const": "legacy-binary-report-v1",
+            "title": "Strategy Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset",
+          "strategy_id",
+          "date_from",
+          "date_to"
+        ],
+        "title": "BacktestPayload",
+        "type": "object"
+      },
+      "CancelJobBody": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "CancelJobBody",
+        "type": "object"
+      },
+      "DebatePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "asset": {
+            "description": "Case-insensitive canonical Phase 1 asset symbol; surrounding ASCII whitespace is normalized by the service.",
+            "pattern": "^[ \\t\\r\\n\\x0c\\x0b]*(?:[aA][aA][pP][lL]|[aA][dD][aA]|[aA][mM][zZ][nN]|[aA][vV][aA][xX]|[bB][tT][cC]|[dD][oO][gG][eE]|[dD][oO][tT]|[eE][tT][hH]|[gG][oO][oO][gG][lL]|[lL][iI][nN][kK]|[mM][aA][tT][iI][cC]|[mM][eE][tT][aA]|[mM][sS][fF][tT]|[nN][vV][dD][aA]|[sS][oO][lL]|[tT][oO][nN]|[tT][sS][lL][aA])[ \\t\\r\\n\\x0c\\x0b]*$",
+            "title": "Asset",
+            "type": "string",
+            "x-canonical-values": [
+              "AAPL",
+              "ADA",
+              "AMZN",
+              "AVAX",
+              "BTC",
+              "DOGE",
+              "DOT",
+              "ETH",
+              "GOOGL",
+              "LINK",
+              "MATIC",
+              "META",
+              "MSFT",
+              "NVDA",
+              "SOL",
+              "TON",
+              "TSLA"
+            ]
+          },
+          "horizon": {
+            "const": "1d",
+            "title": "Horizon",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset",
+          "horizon"
+        ],
+        "title": "DebatePayload",
+        "type": "object"
+      },
+      "EnqueueJobBody": {
+        "description": "Client-controlled enqueue fields; actor identity comes from authentication.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "maxLength": 128,
+                "minLength": 1,
+                "not": {
+                  "pattern": "^schedule:"
+                },
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "title": "Idempotency Key",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "SNAPSHOT",
+                "type": "string"
+              },
+              "payload": {
+                "$ref": "#/components/schemas/SnapshotPayload"
+              },
+              "priority": {
+                "default": 0,
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "idempotency_key"
+            ],
+            "title": "SnapshotJobBody",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "maxLength": 128,
+                "minLength": 1,
+                "not": {
+                  "pattern": "^schedule:"
+                },
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "title": "Idempotency Key",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "DEBATE",
+                "type": "string"
+              },
+              "payload": {
+                "$ref": "#/components/schemas/DebatePayload"
+              },
+              "priority": {
+                "default": 0,
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "idempotency_key"
+            ],
+            "title": "DebateJobBody",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "maxLength": 128,
+                "minLength": 1,
+                "not": {
+                  "pattern": "^schedule:"
+                },
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "title": "Idempotency Key",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "REPLAY",
+                "type": "string"
+              },
+              "payload": {
+                "$ref": "#/components/schemas/ReplayPayload"
+              },
+              "priority": {
+                "default": 0,
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "idempotency_key"
+            ],
+            "title": "ReplayJobBody",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "idempotency_key": {
+                "maxLength": 128,
+                "minLength": 1,
+                "not": {
+                  "pattern": "^schedule:"
+                },
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+                "title": "Idempotency Key",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "BACKTEST",
+                "type": "string"
+              },
+              "payload": {
+                "$ref": "#/components/schemas/BacktestPayload"
+              },
+              "priority": {
+                "default": 0,
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "idempotency_key"
+            ],
+            "title": "BacktestJobBody",
+            "type": "object"
+          }
+        ],
+        "title": "EnqueueJobBody"
+      },
+      "EventMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ActorIdentity"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Event Id",
+            "type": "string"
+          },
+          "from_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason_code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "to_state": {
+            "$ref": "#/components/schemas/JobState"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "sequence",
+          "from_state",
+          "to_state",
+          "reason_code",
+          "actor",
+          "trace_id",
+          "created_at"
+        ],
+        "title": "EventMetadata",
+        "type": "object"
+      },
+      "HealthLiveData": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "const": "UP",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "HealthLiveData",
+        "type": "object"
+      },
+      "HealthLiveEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/HealthLiveData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "HealthLiveEnvelope",
+        "type": "object"
+      },
+      "HealthReadyData": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "READY",
+              "NOT_READY"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "HealthReadyData",
+        "type": "object"
+      },
+      "HealthReadyEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/HealthReadyData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "HealthReadyEnvelope",
+        "type": "object"
+      },
+      "JobApiError": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "details"
+        ],
+        "title": "JobApiError",
+        "type": "object"
+      },
+      "JobApiErrorEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/JobApiError"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "error"
+        ],
+        "title": "JobApiErrorEnvelope",
+        "type": "object"
+      },
+      "JobDeduplicatedData": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/JobMetadata"
+          },
+          "outcome": {
+            "const": "DEDUPLICATED",
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "job"
+        ],
+        "title": "JobDeduplicatedData",
+        "type": "object"
+      },
+      "JobDeduplicatedEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/JobDeduplicatedData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "JobDeduplicatedEnvelope",
+        "type": "object"
+      },
+      "JobDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "artifacts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ArtifactMetadata"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "attempts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AttemptMetadata"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "events": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EventMetadata"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "job": {
+            "$ref": "#/components/schemas/JobMetadata"
+          }
+        },
+        "required": [
+          "job"
+        ],
+        "title": "JobDetail",
+        "type": "object"
+      },
+      "JobDetailEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/JobDetail"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "JobDetailEnvelope",
+        "type": "object"
+      },
+      "JobEnqueuedData": {
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/JobMetadata"
+          },
+          "outcome": {
+            "const": "ENQUEUED",
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "job"
+        ],
+        "title": "JobEnqueuedData",
+        "type": "object"
+      },
+      "JobEnqueuedEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/JobEnqueuedData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "JobEnqueuedEnvelope",
+        "type": "object"
+      },
+      "JobEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/JobMetadata"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "JobEnvelope",
+        "type": "object"
+      },
+      "JobListData": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobMetadata"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "limit",
+          "offset"
+        ],
+        "title": "JobListData",
+        "type": "object"
+      },
+      "JobListEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/JobListData"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "1.0.0",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "trace_id",
+          "generated_at",
+          "data"
+        ],
+        "title": "JobListEnvelope",
+        "type": "object"
+      },
+      "JobMetadata": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ActorIdentity"
+          },
+          "attempt_count": {
+            "minimum": 0.0,
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "job_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "job_type": {
+            "$ref": "#/components/schemas/JobType"
+          },
+          "payload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotPayload"
+              },
+              {
+                "$ref": "#/components/schemas/DebatePayload"
+              },
+              {
+                "$ref": "#/components/schemas/ReplayPayload"
+              },
+              {
+                "$ref": "#/components/schemas/BacktestPayload"
+              }
+            ],
+            "title": "Payload"
+          },
+          "payload_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Payload Fingerprint",
+            "type": "string"
+          },
+          "priority": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "result_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Hash"
+          },
+          "state": {
+            "$ref": "#/components/schemas/JobState"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "job_type",
+          "state",
+          "payload",
+          "payload_fingerprint",
+          "actor",
+          "priority",
+          "requested_at",
+          "updated_at",
+          "attempt_count"
+        ],
+        "title": "JobMetadata",
+        "type": "object"
+      },
+      "JobState": {
+        "enum": [
+          "QUEUED",
+          "CLAIMED",
+          "RUNNING",
+          "SUCCEEDED",
+          "FAILED",
+          "BLOCKED",
+          "TIMED_OUT",
+          "CANCEL_REQUESTED",
+          "CANCELLED"
+        ],
+        "title": "JobState",
+        "type": "string"
+      },
+      "JobType": {
+        "enum": [
+          "SNAPSHOT",
+          "DEBATE",
+          "REPLAY",
+          "BACKTEST"
+        ],
+        "title": "JobType",
+        "type": "string"
+      },
+      "ReplayPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "ReplayPayload",
+        "type": "object"
+      },
+      "SnapshotPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "requested_as_of": {
+            "title": "Requested As Of",
+            "type": "null"
+          },
+          "scope": {
+            "const": "default",
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "requested_as_of"
+        ],
+        "title": "SnapshotPayload",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "ServiceBearerAuth": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Trading Agent Job Command API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/health/live": {
+      "get": {
+        "operationId": "health_live_health_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthLiveEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          }
+        },
+        "summary": "Health Live"
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "health_ready_health_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthReadyEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthReadyEnvelope"
+                }
+              }
+            },
+            "description": "Process is live but the service is not ready."
+          }
+        },
+        "summary": "Health Ready"
+      }
+    },
+    "/v1/jobs": {
+      "get": {
+        "operationId": "list_jobs_v1_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "job_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/JobType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Job Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/JobState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ActorType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "actor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Actor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "requested_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Requested From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "requested_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Requested To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobListEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service authentication is required."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request filters are invalid."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication or the durable repository is unavailable."
+          }
+        },
+        "security": [
+          {
+            "ServiceBearerAuth": []
+          }
+        ],
+        "summary": "List Jobs"
+      },
+      "post": {
+        "operationId": "create_job_v1_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnqueueJobBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDeduplicatedEnvelope"
+                }
+              }
+            },
+            "description": "An identical canonical job already exists."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobEnqueuedEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service authentication is required."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "The idempotency key conflicts with another request."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request data is invalid."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication or the durable repository is unavailable."
+          }
+        },
+        "security": [
+          {
+            "ServiceBearerAuth": []
+          }
+        ],
+        "summary": "Create Job"
+      }
+    },
+    "/v1/jobs/{job_id}": {
+      "get": {
+        "operationId": "job_detail_v1_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDetailEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service authentication is required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Job was not found."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request data is invalid."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication or the durable repository is unavailable."
+          }
+        },
+        "security": [
+          {
+            "ServiceBearerAuth": []
+          }
+        ],
+        "summary": "Job Detail"
+      }
+    },
+    "/v1/jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_job_v1_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelJobBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Service authentication is required."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Job was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Job state does not permit cancellation."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request body exceeds the bounded service limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Request data is invalid."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "An unexpected internal error occurred."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobApiErrorEnvelope"
+                }
+              }
+            },
+            "description": "Authentication or the durable repository is unavailable."
+          }
+        },
+        "security": [
+          {
+            "ServiceBearerAuth": []
+          }
+        ],
+        "summary": "Cancel Job"
+      }
+    }
+  }
+}

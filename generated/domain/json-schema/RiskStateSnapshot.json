@@ -1,0 +1,202 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "Currencies approved for canonical spot and equity assets.",
+      "enum": [
+        "USD",
+        "USDT"
+      ],
+      "title": "Currency",
+      "type": "string"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "PortfolioSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/PositionSnapshot"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "positions",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "PortfolioSnapshot",
+      "type": "object"
+    },
+    "PositionSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "mark_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "instrument",
+        "quantity",
+        "observed_at"
+      ],
+      "title": "PositionSnapshot",
+      "type": "object"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    },
+    "Quantity": {
+      "description": "An exact signed quantity with declared fractional precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "Quantity",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "kill_switch_engaged": {
+      "title": "Kill Switch Engaged",
+      "type": "boolean"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "open_order_ids": {
+      "items": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "title": "Open Order Ids",
+      "type": "array"
+    },
+    "portfolio": {
+      "$ref": "#/$defs/PortfolioSnapshot"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state_id": {
+      "format": "uuid",
+      "title": "State Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "state_id",
+    "portfolio",
+    "open_order_ids",
+    "kill_switch_engaged",
+    "observed_at",
+    "schema_version"
+  ],
+  "title": "RiskStateSnapshot",
+  "type": "object",
+  "x-temporal-invariants": [
+    "portfolio.observed_at <= observed_at",
+    "portfolio.positions[*].observed_at <= portfolio.observed_at"
+  ]
+}

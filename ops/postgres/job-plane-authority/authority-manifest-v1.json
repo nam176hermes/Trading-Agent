@@ -1,0 +1,44 @@
+{
+  "record_kind": "JOB_PLANE_AUTHORITY_MANIFEST",
+  "schema_version": 1,
+  "exact_head": "0007_job_event_chain_authority",
+  "catalog": {
+    "query_id": "job-plane-catalog-v1",
+    "pre_sha256": "b2dd91dbb12d585579e69b81394a530128fe84bc1dd2c7ef7683c9353eb1e4d1",
+    "post_sha256": "1d83e9bc3f5cffe9e2dded41c33f46ce0b6d4395df84d3081d0b5132db487a40"
+  },
+  "frozen_inputs": {
+    "migration_0006": {
+      "filename": "alembic/versions/0006_job_transition_database_authority.py",
+      "sha256": "f4cadfc5683ff49038790afc7fac2632fe207073b1b0eecbf296147fdcceb2fd"
+    },
+    "migration_0007": {
+      "filename": "alembic/versions/0007_job_event_chain_authority.py",
+      "sha256": "ff692b50f2c49fb9a2e277ab39a558ac07d16afbcf17c176eb9517d2aae036fd"
+    },
+    "query_contract": {
+      "filename": "ops/postgres/job-plane-authority/query-contract-v1.json",
+      "sha256": "e3c81648fa405456050cd86f8d47ce67bdca5cd82017c1dc88b5d40fbd70b914"
+    },
+    "acl_repair_sql": {
+      "filename": "ops/postgres/job-plane-authority/acl-repair-v1.sql",
+      "sha256": "c9c1b6e8b37cbb4b6820501e1f25848cb9f0c281d0034bcf4ffac253d112edfd"
+    },
+    "catalog_0006_snapshot": {
+      "filename": "ops/postgres/job-plane-authority/catalog-0006-v1.snapshot",
+      "sha256": "b2dd91dbb12d585579e69b81394a530128fe84bc1dd2c7ef7683c9353eb1e4d1"
+    },
+    "catalog_0007_snapshot": {
+      "filename": "ops/postgres/job-plane-authority/catalog-0007-v1.snapshot",
+      "sha256": "1d83e9bc3f5cffe9e2dded41c33f46ce0b6d4395df84d3081d0b5132db487a40"
+    },
+    "catalog_0006_manifest": {
+      "filename": "ops/postgres/job-plane-authority/catalog-0006-v1.manifest.json",
+      "sha256": "5d671642161ebc6775b73f186ab94cc46cec9c513e0f9c5c95bf4fa6ca4514e6"
+    },
+    "catalog_0007_manifest": {
+      "filename": "ops/postgres/job-plane-authority/catalog-0007-v1.manifest.json",
+      "sha256": "67fc7efe5c7852a9d4fadb162025b502e8f4d542635ea01110f92346e70ffcb4"
+    }
+  }
+}

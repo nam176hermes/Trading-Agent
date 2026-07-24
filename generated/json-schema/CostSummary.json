@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "CostEvidenceQuality": {
+      "enum": [
+        "EXACT",
+        "ESTIMATED",
+        "UNKNOWN"
+      ],
+      "title": "CostEvidenceQuality",
+      "type": "string"
+    },
+    "CostSession": {
+      "additionalProperties": false,
+      "properties": {
+        "decisions": {
+          "minimum": 0,
+          "title": "Decisions",
+          "type": "integer"
+        },
+        "estimated_cost": {
+          "minimum": 0.0,
+          "title": "Estimated Cost",
+          "type": "number"
+        },
+        "llm_calls": {
+          "minimum": 0,
+          "title": "Llm Calls",
+          "type": "integer"
+        },
+        "session": {
+          "title": "Session",
+          "type": "string"
+        },
+        "steps": {
+          "minimum": 0,
+          "title": "Steps",
+          "type": "integer"
+        },
+        "symbols": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Symbols",
+          "type": "array"
+        },
+        "tool_calls": {
+          "minimum": 0,
+          "title": "Tool Calls",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "session",
+        "symbols",
+        "steps",
+        "llm_calls",
+        "tool_calls",
+        "decisions",
+        "estimated_cost"
+      ],
+      "title": "CostSession",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "amount": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Amount"
+    },
+    "currency": {
+      "const": "USD",
+      "title": "Currency",
+      "type": "string"
+    },
+    "evidence_quality": {
+      "$ref": "#/$defs/CostEvidenceQuality"
+    },
+    "note": {
+      "title": "Note",
+      "type": "string"
+    },
+    "sessions": {
+      "items": {
+        "$ref": "#/$defs/CostSession"
+      },
+      "title": "Sessions",
+      "type": "array"
+    },
+    "total_llm_calls": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total Llm Calls"
+    },
+    "total_sessions": {
+      "minimum": 0,
+      "title": "Total Sessions",
+      "type": "integer"
+    },
+    "total_tool_calls": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total Tool Calls"
+    }
+  },
+  "required": [
+    "evidence_quality",
+    "currency",
+    "total_sessions",
+    "sessions",
+    "note"
+  ],
+  "title": "CostSummary",
+  "type": "object"
+}

@@ -1,0 +1,34 @@
+id,phase,priority,title,depends_on,exit_evidence
+SAF-001,0,P0,Freeze and prove all live execution paths disabled,,execution inventory and redacted flag evidence
+INV-001,0,P0,Inventory runtime processes repos ports schedulers and data roots,SAF-001,phase-0 runtime inventory
+BKP-001,0,P0,Design backup and restore checkpoint without creating large archive,INV-001,reviewed backup and restore commands
+ADR-001,0,P0,Select canonical repo dashboard URL and data root,INV-001,accepted architecture decision
+CAN-001,0,P0,Document canonical deployment identity contract,ADR-001,meta response specification
+DAT-001,1,P0,Implement legacy market report catalog,ADR-001,only market reports selected semantically
+DAT-002,1,P0,Add runtime report validation and typed freshness states,DAT-001,invalid reports skipped with reason
+FRS-001,1,P0,Expose liveness readiness and business freshness separately,DAT-002,stale and no-data tests
+AST-001,1,P0,Create deny-by-default canonical asset registry,ADR-001,ten crypto entries with explicit routes
+AST-002,1,P0,Add routing and unknown-asset rejection tests,AST-001,all routes pass and no fallback exists
+UI-001,1,P0,Display deployment identity and paper-mode warning,CAN-001,command center shows repo commit data root and mode
+UI-002,1,P0,Recover market signals risk and ticker states,DAT-002,API and browser smoke tests
+UI-003,1,P1,Correct counts timestamps confidence assets and signal enums,DAT-002,true totals and consistent rendering
+CAP-001,1,P1,Replace hard-coded capabilities with evidence states,INV-001,UNKNOWN or STALE without current evidence
+SAF-002,1,P0,Resolve duplicate circuit-breaker definition safely,SAF-001,call-site analysis and regression tests
+BE-001,1,P1,Pin Python and Node dependencies,INV-001,reproducible install manifests
+DEP-001,1,P0,Cut over one canonical paper dashboard,UI-001|UI-002|AST-002,documented deploy and rollback proof
+CI-001,1,P1,Add build lint type contract routing and paper test gates,BE-001,clean CI run
+API-001,2,P0,Create strict Pydantic contract package,DEP-001,JSON Schema and contract tests
+API-002,2,P0,Create read-only FastAPI Control API,API-001,read endpoints pass integration tests
+API-003,2,P0,Generate frontend types and validate responses at runtime,API-002,contract drift fails tests
+API-004,2,P0,Move dashboard filesystem access behind Control API,API-003,dashboard has no direct legacy data reads
+DB-001,3,P0,Design PostgreSQL operational schema,API-001,schema review and migration plan
+DB-002,3,P0,Build idempotent legacy importer with quarantine,DB-001,count and hash reconciliation
+JOB-001,4,P0,Implement durable audited job state,DB-001,job state and heartbeat tests
+JOB-002,4,P0,Connect snapshot debate replay and backtest commands,JOB-001,idempotent UI-to-worker execution
+RISK-001,5,P0,Extract deterministic RiskDecision service,API-001,policy and fail-closed tests
+EXEC-001,5,P0,Require valid SignedOrderPlan for execution,RISK-001,signature TTL idempotency and preflight tests
+REC-001,5,P0,Implement reconciliation and halt on mismatch,EXEC-001,reconciliation fault tests
+ML-001,6,P1,Inventory legacy models as LEGACY_UNVERIFIED,API-001,model lineage catalog
+RES-001,6,P1,Introduce ResearchPacket and LLM shadow mode,ML-001,zero-weight shadow evidence
+OBS-001,6,P1,Add trace metrics cost and freshness evidence,JOB-001,end-to-end trace and alert tests
+PAPER-001,8,P0,Collect G0 through G4 paper evidence,REC-001|RES-001|OBS-001,reviewed evidence pack

@@ -1,0 +1,368 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "Currencies approved for canonical spot and equity assets.",
+      "enum": [
+        "USD",
+        "USDT"
+      ],
+      "title": "Currency",
+      "type": "string"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "PortfolioSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/PositionSnapshot"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "positions",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "PortfolioSnapshot",
+      "type": "object"
+    },
+    "PositionSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "mark_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity"
+        }
+      },
+      "required": [
+        "instrument",
+        "quantity",
+        "observed_at"
+      ],
+      "title": "PositionSnapshot",
+      "type": "object"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    },
+    "Quantity": {
+      "description": "An exact signed quantity with declared fractional precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "Quantity",
+      "type": "object"
+    },
+    "RiskOutcome": {
+      "enum": [
+        "approved",
+        "modified",
+        "rejected"
+      ],
+      "title": "RiskOutcome",
+      "type": "string"
+    },
+    "RiskReasonCode": {
+      "description": "Closed reason taxonomy in deterministic risk-check order.",
+      "enum": [
+        "WITHIN_LIMITS",
+        "DATA_STALE",
+        "SIGNAL_EXPIRED",
+        "MODEL_NOT_APPROVED",
+        "PRICE_OUTSIDE_COLLAR",
+        "ORDER_NOTIONAL_LIMIT",
+        "GROSS_EXPOSURE_LIMIT",
+        "MARGIN_BUFFER_LIMIT",
+        "DAILY_LOSS_LIMIT",
+        "VENUE_DEGRADED",
+        "DUPLICATE_COMMAND",
+        "GLOBAL_HALT"
+      ],
+      "title": "RiskReasonCode",
+      "type": "string"
+    },
+    "RiskStateSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "kill_switch_engaged": {
+          "title": "Kill Switch Engaged",
+          "type": "boolean"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "open_order_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "title": "Open Order Ids",
+          "type": "array"
+        },
+        "portfolio": {
+          "$ref": "#/$defs/PortfolioSnapshot"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "state_id": {
+          "format": "uuid",
+          "title": "State Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state_id",
+        "portfolio",
+        "open_order_ids",
+        "kill_switch_engaged",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "RiskStateSnapshot",
+      "type": "object",
+      "x-temporal-invariants": [
+        "portfolio.observed_at <= observed_at",
+        "portfolio.positions[*].observed_at <= portfolio.observed_at"
+      ]
+    },
+    "TargetPortfolio": {
+      "additionalProperties": false,
+      "properties": {
+        "effective_at": {
+          "format": "date-time",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/TargetPosition"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_signal_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Signal Ids",
+          "type": "array"
+        },
+        "target_id": {
+          "format": "uuid",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "positions",
+        "source_signal_ids",
+        "effective_at",
+        "schema_version"
+      ],
+      "title": "TargetPortfolio",
+      "type": "object"
+    },
+    "TargetPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "target_weight": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Target Weight",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "instrument",
+        "target_weight"
+      ],
+      "title": "TargetPosition",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "approved_target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TargetPortfolio"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decided_at": {
+      "format": "date-time",
+      "title": "Decided At",
+      "type": "string"
+    },
+    "decision_id": {
+      "format": "uuid",
+      "title": "Decision Id",
+      "type": "string"
+    },
+    "original_target": {
+      "$ref": "#/$defs/TargetPortfolio"
+    },
+    "outcome": {
+      "$ref": "#/$defs/RiskOutcome"
+    },
+    "policy_version": {
+      "minLength": 1,
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "reason_codes": {
+      "items": {
+        "$ref": "#/$defs/RiskReasonCode"
+      },
+      "minItems": 1,
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state_snapshot": {
+      "$ref": "#/$defs/RiskStateSnapshot"
+    }
+  },
+  "required": [
+    "decision_id",
+    "original_target",
+    "approved_target",
+    "outcome",
+    "reason_codes",
+    "policy_version",
+    "state_snapshot",
+    "decided_at",
+    "schema_version"
+  ],
+  "title": "RiskDecision",
+  "type": "object",
+  "x-risk-invariants": [
+    "outcome == approved => approved_target == original_target",
+    "outcome == modified => approved_target has a new identity and changed positions",
+    "outcome == rejected => approved_target == null",
+    "state_snapshot.observed_at <= decided_at",
+    "original_target.effective_at <= decided_at",
+    "kill_switch_engaged => outcome == rejected and GLOBAL_HALT in reason_codes"
+  ]
+}

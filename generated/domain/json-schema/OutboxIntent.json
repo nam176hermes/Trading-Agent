@@ -1,0 +1,31 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "payload_json": {
+      "contentMediaType": "application/json",
+      "default": "{}",
+      "maxLength": 65536,
+      "minLength": 2,
+      "title": "Payload Json",
+      "type": "string",
+      "x-canonical-json": true
+    },
+    "topic": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Topic",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "topic"
+  ],
+  "title": "OutboxIntent",
+  "type": "object"
+}

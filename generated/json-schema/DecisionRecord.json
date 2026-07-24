@@ -1,0 +1,160 @@
+{
+  "$defs": {
+    "DecisionAction": {
+      "enum": [
+        "BUY",
+        "SELL",
+        "HOLD",
+        "STRONG_BUY",
+        "STRONG_SELL",
+        "WAIT",
+        "NO_SIGNAL",
+        "WATCH_FOR_ENTRY"
+      ],
+      "title": "DecisionAction",
+      "type": "string"
+    },
+    "DecisionSignals": {
+      "additionalProperties": false,
+      "properties": {
+        "calculated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Calculated At"
+        },
+        "close": {
+          "title": "Close",
+          "type": "number"
+        },
+        "macd_histogram": {
+          "title": "Macd Histogram",
+          "type": "number"
+        },
+        "macd_line": {
+          "title": "Macd Line",
+          "type": "number"
+        },
+        "macd_signal_line": {
+          "title": "Macd Signal Line",
+          "type": "number"
+        },
+        "price_vs_sma200": {
+          "title": "Price Vs Sma200",
+          "type": "string"
+        },
+        "rsi_14": {
+          "title": "Rsi 14",
+          "type": "number"
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Signal"
+        },
+        "sma_200": {
+          "title": "Sma 200",
+          "type": "number"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "volume_24h": {
+          "title": "Volume 24H",
+          "type": "number"
+        },
+        "volume_30d_avg": {
+          "title": "Volume 30D Avg",
+          "type": "number"
+        },
+        "volume_trend_ratio": {
+          "title": "Volume Trend Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "symbol",
+        "close",
+        "rsi_14",
+        "macd_line",
+        "macd_signal_line",
+        "macd_histogram",
+        "sma_200",
+        "price_vs_sma200",
+        "volume_24h",
+        "volume_30d_avg",
+        "volume_trend_ratio",
+        "signal",
+        "calculated_at"
+      ],
+      "title": "DecisionSignals",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "$ref": "#/$defs/DecisionAction"
+    },
+    "asset": {
+      "title": "Asset",
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "decision_at": {
+      "format": "date-time",
+      "title": "Decision At",
+      "type": "string"
+    },
+    "decision_id": {
+      "title": "Decision Id",
+      "type": "string"
+    },
+    "price_at_decision": {
+      "title": "Price At Decision",
+      "type": "number"
+    },
+    "reflected": {
+      "title": "Reflected",
+      "type": "boolean"
+    },
+    "report_snippet": {
+      "default": "",
+      "title": "Report Snippet",
+      "type": "string"
+    },
+    "signals": {
+      "$ref": "#/$defs/DecisionSignals"
+    }
+  },
+  "required": [
+    "decision_id",
+    "asset",
+    "action",
+    "confidence",
+    "decision_at",
+    "price_at_decision",
+    "reflected",
+    "signals"
+  ],
+  "title": "DecisionRecord",
+  "type": "object"
+}

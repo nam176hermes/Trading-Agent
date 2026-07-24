@@ -1,0 +1,79 @@
+"""Strict contracts for the Phase 4 durable research-job path."""
+
+from .asset_registry import APPROVED_ASSET_SYMBOLS
+from .api import (
+    ActorIdentity,
+    ArtifactMetadata,
+    AttemptMetadata,
+    EnqueueJobBody,
+    EnqueueJobRequest,
+    EventMetadata,
+    JobArtifactResponse,
+    JobAttemptResponse,
+    JobDetail,
+    JobDetailResponse,
+    JobEventResponse,
+    JobMetadata,
+    JobResponse,
+)
+from .enums import ActorType, JobState, JobType
+from .fingerprint import (
+    MAX_CANONICAL_PAYLOAD_BYTES,
+    PayloadTooLarge,
+    canonical_payload_json,
+    payload_fingerprint,
+)
+from .payloads import (
+    BacktestPayload,
+    DebatePayload,
+    JobPayload,
+    ReplayPayload,
+    SnapshotPayload,
+    parse_payload,
+)
+from .transitions import (
+    ORDINARY_TRANSITIONS,
+    RETRY_TRANSITIONS,
+    TERMINAL_STATES,
+    InvalidTransition,
+    TransitionDisposition,
+    cancel_target,
+    validate_transition,
+)
+
+__all__ = [
+    "APPROVED_ASSET_SYMBOLS",
+    "ActorIdentity",
+    "ActorType",
+    "ArtifactMetadata",
+    "AttemptMetadata",
+    "BacktestPayload",
+    "DebatePayload",
+    "EnqueueJobBody",
+    "EnqueueJobRequest",
+    "EventMetadata",
+    "JobArtifactResponse",
+    "JobAttemptResponse",
+    "JobDetail",
+    "JobDetailResponse",
+    "JobEventResponse",
+    "JobMetadata",
+    "JobPayload",
+    "JobResponse",
+    "JobState",
+    "JobType",
+    "InvalidTransition",
+    "MAX_CANONICAL_PAYLOAD_BYTES",
+    "PayloadTooLarge",
+    "ReplayPayload",
+    "SnapshotPayload",
+    "ORDINARY_TRANSITIONS",
+    "RETRY_TRANSITIONS",
+    "TERMINAL_STATES",
+    "TransitionDisposition",
+    "cancel_target",
+    "canonical_payload_json",
+    "parse_payload",
+    "payload_fingerprint",
+    "validate_transition",
+]

@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "phase": "D0",
+  "source_readiness": "PASS",
+  "runtime_postgres_parity": "PENDING_APPROVAL",
+  "requirements": [
+    {
+      "id": "D0-PROPERTY-TESTS",
+      "status": "PASS",
+      "implementation": [
+        "pyproject.toml",
+        "tests/domain/test_decimal_properties.py",
+        "tests/domain/test_instruments.py",
+        "tests/event_ledger/test_replay.py"
+      ],
+      "proofs": [
+        {
+          "path": "tests/domain/test_decimal_properties.py",
+          "test": "test_equal_decimals_have_identical_canonical_json_bytes"
+        },
+        {
+          "path": "tests/domain/test_instruments.py",
+          "test": "test_tick_grid_matches_exact_integer_multiples"
+        },
+        {
+          "path": "tests/event_ledger/test_replay.py",
+          "test": "test_replay_treats_input_as_canonical_immutable_event_set"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/domain/test_decimal_properties.py tests/domain/test_instruments.py tests/event_ledger/test_replay.py",
+        "make ci"
+      ]
+    },
+    {
+      "id": "D0-CONTRACT-DRIFT",
+      "status": "PASS",
+      "implementation": [
+        "scripts/generate_contracts.py",
+        "generated/domain/json-schema"
+      ],
+      "proofs": [
+        {
+          "path": "tests/domain/test_contract_generation.py",
+          "test": "test_contract_generation_is_deterministic_and_current"
+        }
+      ],
+      "commands": [
+        "make check-contracts"
+      ]
+    },
+    {
+      "id": "D0.1-INVARIANTS",
+      "status": "PASS",
+      "implementation": [
+        "packages/domain/primitives.py",
+        "packages/domain/instruments.py",
+        "packages/domain/clock.py"
+      ],
+      "proofs": [
+        {
+          "path": "tests/domain/test_primitives.py",
+          "test": "test_money_and_price_reject_non_decimal_amounts"
+        },
+        {
+          "path": "tests/domain/test_instruments.py",
+          "test": "test_constraints_accept_exact_quantity_and_notional_boundaries"
+        },
+        {
+          "path": "tests/domain/test_clock.py",
+          "test": "test_require_utc_rejects_naive_and_non_utc_datetimes"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/domain/test_primitives.py tests/domain/test_instruments.py tests/domain/test_clock.py"
+      ]
+    },
+    {
+      "id": "D0.2-INVARIANTS",
+      "status": "PASS",
+      "implementation": [
+        "packages/domain/events.py",
+        "packages/domain/signals.py",
+        "packages/domain/portfolio.py",
+        "packages/domain/risk.py",
+        "packages/domain/orders.py"
+      ],
+      "proofs": [
+        {
+          "path": "tests/domain/test_event_contracts.py",
+          "test": "test_batch_validation_rejects_duplicate_ids_and_non_increasing_per_stream_only"
+        },
+        {
+          "path": "tests/domain/test_event_contracts.py",
+          "test": "test_signal_rejects_credentials_routing_and_execution_fields"
+        },
+        {
+          "path": "tests/domain/test_event_contracts.py",
+          "test": "test_risk_decision_outcome_target_semantics_are_fail_closed"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/domain/test_event_contracts.py tests/domain/test_contract_generation.py"
+      ]
+    },
+    {
+      "id": "D0-IMMUTABLE-SET-HASH",
+      "status": "PASS",
+      "implementation": [
+        "packages/event_ledger/replay.py",
+        "packages/event_ledger/reducer.py"
+      ],
+      "proofs": [
+        {
+          "path": "tests/event_ledger/test_replay.py",
+          "test": "test_replay_treats_input_as_canonical_immutable_event_set"
+        },
+        {
+          "path": "tests/event_ledger/test_replay.py",
+          "test": "test_complete_and_degraded_replay_hashes_include_explicit_versions"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/event_ledger/test_replay.py"
+      ]
+    },
+    {
+      "id": "D0-SNAPSHOT-SEMANTICS",
+      "status": "PASS",
+      "implementation": [
+        "packages/event_ledger/models.py",
+        "packages/event_ledger/repository.py",
+        "alembic/versions/0008_trading_domain_ledger.py"
+      ],
+      "proofs": [
+        {
+          "path": "tests/event_ledger/test_snapshot_contract.py",
+          "test": "test_snapshot_golden_vectors_reject_state_count_type_stream_forgeries"
+        },
+        {
+          "path": "tests/event_ledger/test_repository.py",
+          "test": "test_snapshot_save_load_verifies_hash_is_idempotent_and_never_overwrites"
+        },
+        {
+          "path": "tests/event_ledger/test_migration.py",
+          "test": "test_snapshot_sql_source_contract_mirrors_python_invariants"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/event_ledger/test_snapshot_contract.py tests/event_ledger/test_repository.py tests/event_ledger/test_migration.py"
+      ]
+    },
+    {
+      "id": "D0-OUTBOX-SEMANTICS",
+      "status": "PASS",
+      "implementation": [
+        "packages/event_ledger/repository.py",
+        "alembic/versions/0008_trading_domain_ledger.py",
+        "docs/adr/0003-event-ledger-delivery-durability.md"
+      ],
+      "proofs": [
+        {
+          "path": "tests/event_ledger/test_repository.py",
+          "test": "test_exact_retry_survives_publication_and_pending_outbox_retention"
+        },
+        {
+          "path": "tests/event_ledger/test_migration.py",
+          "test": "test_outbox_uses_atomic_retention_delete_with_immutable_receipts"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/event_ledger/test_repository.py tests/event_ledger/test_migration.py"
+      ]
+    },
+    {
+      "id": "D0-INBOX-SEMANTICS",
+      "status": "PASS",
+      "implementation": [
+        "packages/event_ledger/repository.py",
+        "alembic/versions/0008_trading_domain_ledger.py",
+        "docs/adr/0003-event-ledger-delivery-durability.md"
+      ],
+      "proofs": [
+        {
+          "path": "tests/event_ledger/test_repository.py",
+          "test": "test_inbox_claim_never_reopens_after_publication_retention"
+        },
+        {
+          "path": "tests/event_ledger/test_migration.py",
+          "test": "test_inbox_claims_are_append_only_without_source_retention_escape"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/event_ledger/test_repository.py tests/event_ledger/test_migration.py"
+      ]
+    },
+    {
+      "id": "D0-END-TO-END-REPLAY",
+      "status": "PASS",
+      "implementation": [
+        "packages/domain",
+        "packages/event_ledger"
+      ],
+      "proofs": [
+        {
+          "path": "tests/event_ledger/test_replay.py",
+          "test": "test_end_to_end_research_signal_to_fill_replay"
+        }
+      ],
+      "commands": [
+        "uv run pytest -q tests/event_ledger/test_replay.py::test_end_to_end_research_signal_to_fill_replay"
+      ]
+    },
+    {
+      "id": "D0-FULL-GATES",
+      "status": "PASS",
+      "implementation": [
+        "Makefile",
+        ".github/workflows/foundation.yml"
+      ],
+      "proofs": [
+        {
+          "path": "Makefile"
+        },
+        {
+          "path": ".github/workflows/foundation.yml"
+        }
+      ],
+      "commands": [
+        "make audit-release",
+        "make check-contracts",
+        "make test-all",
+        "UV_CACHE_DIR=/home/thenam176/.cache/uv uv run pytest -q tests/runtime_release",
+        "make build-dashboard",
+        "make ci"
+      ]
+    },
+    {
+      "id": "D0-POSTGRES-RUNTIME-PARITY",
+      "status": "PENDING_APPROVAL",
+      "implementation": [
+        "alembic/versions/0008_trading_domain_ledger.py",
+        "tests/event_ledger/test_snapshot_postgres_runtime.py"
+      ],
+      "proofs": [
+        {
+          "path": "tests/event_ledger/test_migration.py",
+          "test": "test_snapshot_source_proof_is_explicitly_not_runtime_database_proof"
+        },
+        {
+          "path": "tests/event_ledger/test_migration.py",
+          "test": "test_snapshot_runtime_postgres_proof_is_separate_and_opt_in"
+        },
+        {
+          "path": "tests/event_ledger/test_snapshot_postgres_runtime.py"
+        }
+      ],
+      "commands": [
+        "make test-event-ledger-runtime-postgres"
+      ],
+      "command": "make test-event-ledger-runtime-postgres",
+      "approval_boundary": "Requires explicit approval for a disposable PostgreSQL fixture or operator-managed runtime; source closure does not execute migrations or mutate a database."
+    }
+  ],
+  "final_proof_commands": [
+    "make audit-release",
+    "make check-contracts",
+    "make test-all",
+    "UV_CACHE_DIR=/home/thenam176/.cache/uv uv run pytest -q tests/runtime_release",
+    "make build-dashboard",
+    "make ci"
+  ]
+}

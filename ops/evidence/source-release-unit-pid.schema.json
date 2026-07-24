@@ -1,0 +1,284 @@
+{
+  "$defs": {
+    "EvidenceState": {
+      "description": "Observed state of one identity link in the deployment chain.",
+      "enum": [
+        "VERIFIED",
+        "DRIFTED",
+        "UNAVAILABLE"
+      ],
+      "title": "EvidenceState",
+      "type": "string"
+    },
+    "ProcessIdentity": {
+      "additionalProperties": false,
+      "description": "Reuse-safe Linux process identity; a bare PID is never sufficient.",
+      "properties": {
+        "command_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Command Fingerprint",
+          "type": "string"
+        },
+        "pid": {
+          "exclusiveMinimum": 0,
+          "title": "Pid",
+          "type": "integer"
+        },
+        "start_ticks": {
+          "exclusiveMinimum": 0,
+          "title": "Start Ticks",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pid",
+        "start_ticks",
+        "command_fingerprint"
+      ],
+      "title": "ProcessIdentity",
+      "type": "object"
+    },
+    "ReleaseIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "manifest_path": {
+          "maxLength": 1024,
+          "minLength": 2,
+          "pattern": "^/[A-Za-z0-9._@+=,/-]+$",
+          "title": "Manifest Path",
+          "type": "string"
+        },
+        "manifest_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Sha256",
+          "type": "string"
+        },
+        "release_root": {
+          "maxLength": 1024,
+          "minLength": 2,
+          "pattern": "^/[A-Za-z0-9._@+=,/-]+$",
+          "title": "Release Root",
+          "type": "string"
+        },
+        "source_commit": {
+          "maxLength": 40,
+          "minLength": 40,
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Source Commit",
+          "type": "string"
+        },
+        "source_tree": {
+          "maxLength": 40,
+          "minLength": 40,
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Source Tree",
+          "type": "string"
+        }
+      },
+      "required": [
+        "release_root",
+        "manifest_path",
+        "manifest_sha256",
+        "source_commit",
+        "source_tree"
+      ],
+      "title": "ReleaseIdentity",
+      "type": "object"
+    },
+    "ServiceDeploymentEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "process": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProcessIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "release_to_unit": {
+          "$ref": "#/$defs/EvidenceState"
+        },
+        "service_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "title": "Service Id",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnitIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unit_to_process": {
+          "$ref": "#/$defs/EvidenceState"
+        }
+      },
+      "required": [
+        "service_id",
+        "release_to_unit",
+        "unit",
+        "unit_to_process",
+        "process"
+      ],
+      "title": "ServiceDeploymentEvidence",
+      "type": "object"
+    },
+    "SourceIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "maxLength": 40,
+          "minLength": 40,
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit",
+          "type": "string"
+        },
+        "repository_root": {
+          "maxLength": 1024,
+          "minLength": 2,
+          "pattern": "^/[A-Za-z0-9._@+=,/-]+$",
+          "title": "Repository Root",
+          "type": "string"
+        },
+        "tree": {
+          "maxLength": 40,
+          "minLength": 40,
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Tree",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_root",
+        "commit",
+        "tree"
+      ],
+      "title": "SourceIdentity",
+      "type": "object"
+    },
+    "UnitIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "command_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Command Fingerprint",
+          "type": "string"
+        },
+        "effective_unit_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Effective Unit Sha256",
+          "type": "string"
+        },
+        "fragment_path": {
+          "maxLength": 1024,
+          "minLength": 2,
+          "pattern": "^/[A-Za-z0-9._@+=,/-]+$",
+          "title": "Fragment Path",
+          "type": "string"
+        },
+        "release_manifest_sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Release Manifest Sha256",
+          "type": "string"
+        },
+        "unit_name": {
+          "maxLength": 255,
+          "minLength": 9,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@:-]*\\.service$",
+          "title": "Unit Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "unit_name",
+        "fragment_path",
+        "effective_unit_sha256",
+        "release_manifest_sha256",
+        "command_fingerprint"
+      ],
+      "title": "UnitIdentity",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Structural deployment-evidence schema. Schema-only validation is not authoritative; consumers must apply x-semantic-validation.",
+  "properties": {
+    "observed_at": {
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?(?:Z|\\+00:00)$",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "release": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReleaseIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "services": {
+      "items": {
+        "$ref": "#/$defs/ServiceDeploymentEvidence"
+      },
+      "title": "Services",
+      "type": "array"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceIdentity"
+    },
+    "source_to_release": {
+      "$ref": "#/$defs/EvidenceState"
+    }
+  },
+  "required": [
+    "schema_version",
+    "observed_at",
+    "source",
+    "source_to_release",
+    "release",
+    "services"
+  ],
+  "title": "DeploymentEvidence",
+  "type": "object",
+  "x-semantic-validation": {
+    "constraints": [
+      "normalized_absolute_paths",
+      "exact_rfc3339_utc",
+      "unique_service_ids",
+      "identity_link_consistency",
+      "secret_like_key_rejection"
+    ],
+    "promotion_authority": false,
+    "required": true,
+    "schema_only_authoritative": false,
+    "validator": "packages.deployment_evidence.DeploymentEvidence"
+  }
+}

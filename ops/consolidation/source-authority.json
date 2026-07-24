@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "sealed_phase4b_metadata_sha256": "f1ed595c86df4cc7ac7274272dd00798ddb497a98ca3a12a1ed9680769468d7c",
+  "components": {
+    "core": {
+      "repository": "/home/thenam176/.local/share/codex-worktrees/trading-agent-phase4",
+      "commit": "d9d46fa363f26bd78f5560300d26913494e11e4d",
+      "tree": "bfac951424d09f21359fcc11abb0bbe000456b4e",
+      "source_prefix": ".",
+      "destination_prefix": "."
+    },
+    "backend": {
+      "repository": "/home/thenam176/.local/share/trading-agent-authority-sources/backend-20260724T052732Z",
+      "commit": "59578f984b72d5d03583a2c06b15a53a224b31c8",
+      "tree": "54e688e9f144aecd2ee204ab95953f7c57069d3c",
+      "source_prefix": ".",
+      "destination_prefix": "legacy/research-backend"
+    },
+    "dashboard": {
+      "repository": "/home/thenam176/.local/share/trading-agent-authority-sources/dashboard-20260724T052708Z",
+      "commit": "84627f16e9753b1104d661697720b93897f27d27",
+      "tree": "792f572dea8f819438785e43ee05e07c5b6567bd",
+      "source_prefix": "trading-agent",
+      "destination_prefix": "apps/dashboard"
+    }
+  }
+}

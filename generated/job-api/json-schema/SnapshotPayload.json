@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "requested_as_of": {
+      "title": "Requested As Of",
+      "type": "null"
+    },
+    "scope": {
+      "const": "default",
+      "title": "Scope",
+      "type": "string"
+    }
+  },
+  "required": [
+    "scope",
+    "requested_as_of"
+  ],
+  "title": "SnapshotPayload",
+  "type": "object"
+}

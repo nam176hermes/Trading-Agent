@@ -1,0 +1,106 @@
+"""Strict client-controlled portions of durable research jobs."""
+
+from __future__ import annotations
+
+import re
+from typing import Annotated, Any, Literal, Mapping, TypeAlias
+
+from pydantic import BaseModel, ConfigDict, Field, BeforeValidator, WithJsonSchema
+
+from .asset_registry import APPROVED_ASSET_SYMBOLS
+from .enums import JobType
+from .fingerprint import validate_canonical_input_size
+
+_SAFE_SYMBOL = re.compile(r"^[A-Za-z0-9]{1,16}$", re.ASCII)
+_ASSET_WHITESPACE = " \t\r\n\f\v"
+_ASSET_JSON_WHITESPACE = rf"[{_ASSET_WHITESPACE.encode('unicode_escape').decode('ascii')}]*"
+_ASSET_JSON_ALTERNATIVES = "|".join(
+    "".join(f"[{character.lower()}{character.upper()}]" for character in symbol)
+    for symbol in sorted(APPROVED_ASSET_SYMBOLS)
+)
+_ASSET_JSON_PATTERN = (
+    rf"^{_ASSET_JSON_WHITESPACE}(?:{_ASSET_JSON_ALTERNATIVES})"
+    rf"{_ASSET_JSON_WHITESPACE}$"
+)
+
+
+def _canonical_asset(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("asset must be a string")
+    stripped = value.strip(_ASSET_WHITESPACE)
+    if not _SAFE_SYMBOL.fullmatch(stripped):
+        raise ValueError("asset contains unsafe characters")
+    canonical = stripped.upper()
+    if canonical not in APPROVED_ASSET_SYMBOLS:
+        raise ValueError("unknown asset")
+    return canonical
+
+
+AssetSymbol = Annotated[
+    str,
+    BeforeValidator(_canonical_asset),
+    WithJsonSchema(
+        {
+            "type": "string",
+            "pattern": _ASSET_JSON_PATTERN,
+            "description": (
+                "Case-insensitive canonical Phase 1 asset symbol; surrounding "
+                "ASCII whitespace is normalized by the service."
+            ),
+            "x-canonical-values": sorted(APPROVED_ASSET_SYMBOLS),
+        }
+    ),
+]
+SessionId = Annotated[
+    str,
+    Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$", min_length=1, max_length=128),
+]
+
+
+class StrictPayload(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
+
+
+class SnapshotPayload(StrictPayload):
+    scope: Literal["default"]
+    requested_as_of: None
+
+
+class DebatePayload(StrictPayload):
+    asset: AssetSymbol
+    horizon: Literal["1d"]
+
+
+class ReplayPayload(StrictPayload):
+    session_id: SessionId
+
+
+class BacktestPayload(StrictPayload):
+    asset: AssetSymbol
+    strategy_id: Literal["legacy-binary-report-v1"]
+    date_from: None
+    date_to: None
+
+
+JobPayload: TypeAlias = SnapshotPayload | DebatePayload | ReplayPayload | BacktestPayload
+
+_PAYLOAD_MODELS: dict[JobType, type[JobPayload]] = {
+    JobType.SNAPSHOT: SnapshotPayload,
+    JobType.DEBATE: DebatePayload,
+    JobType.REPLAY: ReplayPayload,
+    JobType.BACKTEST: BacktestPayload,
+}
+
+
+def parse_payload(job_type: JobType | str, value: Mapping[str, Any]) -> JobPayload:
+    """Parse a payload through the model selected by the closed job type."""
+
+    try:
+        selected_type = JobType(job_type)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"unknown job type: {job_type!r}") from exc
+    if not isinstance(value, Mapping):
+        raise ValueError("payload must be an object")
+    plain_value = dict(value)
+    validate_canonical_input_size(plain_value)
+    return _PAYLOAD_MODELS[selected_type].model_validate(plain_value)

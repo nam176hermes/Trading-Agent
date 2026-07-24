@@ -1,0 +1,23 @@
+{
+  "completed_gates": [],
+  "decision": "NO_GO",
+  "deployment_evidence": {
+    "path": null,
+    "schema_path": "ops/evidence/source-release-unit-pid.schema.json",
+    "sha256": null,
+    "state": "UNAVAILABLE"
+  },
+  "safety": {
+    "effective_mode": "paper",
+    "live_execution_enabled": false,
+    "live_trading_approved": false,
+    "requested_mode": "paper"
+  },
+  "schema_version": 2,
+  "source": {
+    "binding": "HISTORICAL_BASELINE",
+    "commit": "e304d83da260d11120ac648d67882359645c68a5",
+    "root": "/home/thenam176/projects/trading-agent",
+    "tree": "bf4d1fb20944670df8110fc7eee3dbe3bc390b55"
+  }
+}

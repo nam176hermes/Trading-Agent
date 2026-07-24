@@ -1,0 +1,291 @@
+{
+  "$defs": {
+    "ActorIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Actor Id",
+          "type": "string"
+        },
+        "actor_type": {
+          "$ref": "#/$defs/ActorType"
+        }
+      },
+      "required": [
+        "actor_type",
+        "actor_id"
+      ],
+      "title": "ActorIdentity",
+      "type": "object"
+    },
+    "ActorType": {
+      "enum": [
+        "OPERATOR",
+        "SCHEDULER",
+        "WORKER",
+        "RECOVERY",
+        "SYSTEM"
+      ],
+      "title": "ActorType",
+      "type": "string"
+    },
+    "BacktestPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "Case-insensitive canonical Phase 1 asset symbol; surrounding ASCII whitespace is normalized by the service.",
+          "pattern": "^[ \\t\\r\\n\\x0c\\x0b]*(?:[aA][aA][pP][lL]|[aA][dD][aA]|[aA][mM][zZ][nN]|[aA][vV][aA][xX]|[bB][tT][cC]|[dD][oO][gG][eE]|[dD][oO][tT]|[eE][tT][hH]|[gG][oO][oO][gG][lL]|[lL][iI][nN][kK]|[mM][aA][tT][iI][cC]|[mM][eE][tT][aA]|[mM][sS][fF][tT]|[nN][vV][dD][aA]|[sS][oO][lL]|[tT][oO][nN]|[tT][sS][lL][aA])[ \\t\\r\\n\\x0c\\x0b]*$",
+          "title": "Asset",
+          "type": "string",
+          "x-canonical-values": [
+            "AAPL",
+            "ADA",
+            "AMZN",
+            "AVAX",
+            "BTC",
+            "DOGE",
+            "DOT",
+            "ETH",
+            "GOOGL",
+            "LINK",
+            "MATIC",
+            "META",
+            "MSFT",
+            "NVDA",
+            "SOL",
+            "TON",
+            "TSLA"
+          ]
+        },
+        "date_from": {
+          "title": "Date From",
+          "type": "null"
+        },
+        "date_to": {
+          "title": "Date To",
+          "type": "null"
+        },
+        "strategy_id": {
+          "const": "legacy-binary-report-v1",
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset",
+        "strategy_id",
+        "date_from",
+        "date_to"
+      ],
+      "title": "BacktestPayload",
+      "type": "object"
+    },
+    "DebatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "Case-insensitive canonical Phase 1 asset symbol; surrounding ASCII whitespace is normalized by the service.",
+          "pattern": "^[ \\t\\r\\n\\x0c\\x0b]*(?:[aA][aA][pP][lL]|[aA][dD][aA]|[aA][mM][zZ][nN]|[aA][vV][aA][xX]|[bB][tT][cC]|[dD][oO][gG][eE]|[dD][oO][tT]|[eE][tT][hH]|[gG][oO][oO][gG][lL]|[lL][iI][nN][kK]|[mM][aA][tT][iI][cC]|[mM][eE][tT][aA]|[mM][sS][fF][tT]|[nN][vV][dD][aA]|[sS][oO][lL]|[tT][oO][nN]|[tT][sS][lL][aA])[ \\t\\r\\n\\x0c\\x0b]*$",
+          "title": "Asset",
+          "type": "string",
+          "x-canonical-values": [
+            "AAPL",
+            "ADA",
+            "AMZN",
+            "AVAX",
+            "BTC",
+            "DOGE",
+            "DOT",
+            "ETH",
+            "GOOGL",
+            "LINK",
+            "MATIC",
+            "META",
+            "MSFT",
+            "NVDA",
+            "SOL",
+            "TON",
+            "TSLA"
+          ]
+        },
+        "horizon": {
+          "const": "1d",
+          "title": "Horizon",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset",
+        "horizon"
+      ],
+      "title": "DebatePayload",
+      "type": "object"
+    },
+    "JobState": {
+      "enum": [
+        "QUEUED",
+        "CLAIMED",
+        "RUNNING",
+        "SUCCEEDED",
+        "FAILED",
+        "BLOCKED",
+        "TIMED_OUT",
+        "CANCEL_REQUESTED",
+        "CANCELLED"
+      ],
+      "title": "JobState",
+      "type": "string"
+    },
+    "JobType": {
+      "enum": [
+        "SNAPSHOT",
+        "DEBATE",
+        "REPLAY",
+        "BACKTEST"
+      ],
+      "title": "JobType",
+      "type": "string"
+    },
+    "ReplayPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ReplayPayload",
+      "type": "object"
+    },
+    "SnapshotPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "requested_as_of": {
+          "title": "Requested As Of",
+          "type": "null"
+        },
+        "scope": {
+          "const": "default",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "requested_as_of"
+      ],
+      "title": "SnapshotPayload",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "actor": {
+      "$ref": "#/$defs/ActorIdentity"
+    },
+    "attempt_count": {
+      "minimum": 0,
+      "title": "Attempt Count",
+      "type": "integer"
+    },
+    "job_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Job Id",
+      "type": "string"
+    },
+    "job_type": {
+      "$ref": "#/$defs/JobType"
+    },
+    "payload": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SnapshotPayload"
+        },
+        {
+          "$ref": "#/$defs/DebatePayload"
+        },
+        {
+          "$ref": "#/$defs/ReplayPayload"
+        },
+        {
+          "$ref": "#/$defs/BacktestPayload"
+        }
+      ],
+      "title": "Payload"
+    },
+    "payload_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Payload Fingerprint",
+      "type": "string"
+    },
+    "priority": {
+      "maximum": 100,
+      "minimum": 0,
+      "title": "Priority",
+      "type": "integer"
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason Code"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "result_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Hash"
+    },
+    "state": {
+      "$ref": "#/$defs/JobState"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id",
+    "job_type",
+    "state",
+    "payload",
+    "payload_fingerprint",
+    "actor",
+    "priority",
+    "requested_at",
+    "updated_at",
+    "attempt_count"
+  ],
+  "title": "JobMetadata",
+  "type": "object"
+}

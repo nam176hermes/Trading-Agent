@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "event_count": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Event Count",
+      "type": "integer"
+    },
+    "last_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Digest"
+    },
+    "last_sequence": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Last Sequence",
+      "type": "integer"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "stream_id",
+    "event_count",
+    "last_sequence"
+  ],
+  "title": "StreamProjection",
+  "type": "object"
+}

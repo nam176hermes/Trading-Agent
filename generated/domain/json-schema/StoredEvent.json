@@ -1,0 +1,48 @@
+{
+  "additionalProperties": false,
+  "description": "A canonical envelope plus the digest used for identity comparisons.",
+  "properties": {
+    "canonical_json": {
+      "minLength": 2,
+      "title": "Canonical Json",
+      "type": "string"
+    },
+    "digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Digest",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_type": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Event Type",
+      "type": "string"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "maximum": 9223372036854775807,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "stream_id",
+    "sequence",
+    "event_type",
+    "canonical_json",
+    "digest"
+  ],
+  "title": "StoredEvent",
+  "type": "object"
+}

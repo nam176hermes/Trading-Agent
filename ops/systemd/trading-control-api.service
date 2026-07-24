@@ -1,0 +1,43 @@
+[Unit]
+Description=Trading Agent Phase 4B localhost read-only Control API
+Wants=network.target trading-safety-state-export.timer
+Requires=trading-safety-state-export.service
+After=network.target trading-safety-state-export.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a
+EnvironmentFile=/etc/trading-agent/control-api.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a:/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a/apps/control_api
+Environment=TRADING_MODE=paper
+Environment=LIVE_EXECUTION_ENABLED=false
+Environment=LIVE_TRADING_APPROVED=false
+ExecStart=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a/.venv/bin/python3.11 -m control_api.main
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=control-group
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/etc/trading-agent/phase4-runtime-authority.json
+BindReadOnlyPaths=/run/user/1000/trading-agent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=default.target

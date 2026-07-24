@@ -1,0 +1,189 @@
+{
+  "$defs": {
+    "DataFreshness": {
+      "additionalProperties": false,
+      "properties": {
+        "age_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Age Seconds"
+        },
+        "as_of": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "As Of"
+        },
+        "stale_after_seconds": {
+          "minimum": 1,
+          "title": "Stale After Seconds",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/FreshnessStatus"
+        }
+      },
+      "required": [
+        "status",
+        "as_of",
+        "age_seconds",
+        "stale_after_seconds"
+      ],
+      "title": "DataFreshness",
+      "type": "object"
+    },
+    "ExecutionCapability": {
+      "enum": [
+        "NON_LIVE",
+        "LIVE_BLOCKED",
+        "LIVE_AVAILABLE"
+      ],
+      "title": "ExecutionCapability",
+      "type": "string"
+    },
+    "ExecutionMode": {
+      "enum": [
+        "PAPER",
+        "DRYRUN",
+        "LIVE"
+      ],
+      "title": "ExecutionMode",
+      "type": "string"
+    },
+    "FreshnessStatus": {
+      "enum": [
+        "FRESH",
+        "STALE",
+        "NO_DATA",
+        "UNKNOWN"
+      ],
+      "title": "FreshnessStatus",
+      "type": "string"
+    },
+    "KillSwitchState": {
+      "enum": [
+        "ACTIVE",
+        "INACTIVE",
+        "UNKNOWN"
+      ],
+      "title": "KillSwitchState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "api_liveness": {
+      "const": "UP",
+      "title": "Api Liveness",
+      "type": "string"
+    },
+    "api_readiness": {
+      "enum": [
+        "READY",
+        "NOT_READY"
+      ],
+      "title": "Api Readiness",
+      "type": "string"
+    },
+    "backend_service_liveness": {
+      "enum": [
+        "ALIVE",
+        "STALE",
+        "UNKNOWN"
+      ],
+      "title": "Backend Service Liveness",
+      "type": "string"
+    },
+    "database_status": {
+      "enum": [
+        "AVAILABLE",
+        "UNAVAILABLE",
+        "UNKNOWN"
+      ],
+      "title": "Database Status",
+      "type": "string"
+    },
+    "effective_mode": {
+      "$ref": "#/$defs/ExecutionMode"
+    },
+    "execution_capability": {
+      "$ref": "#/$defs/ExecutionCapability"
+    },
+    "kill_switch_state": {
+      "$ref": "#/$defs/KillSwitchState"
+    },
+    "live_price_freshness": {
+      "$ref": "#/$defs/DataFreshness"
+    },
+    "orders_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Orders Count"
+    },
+    "requested_mode": {
+      "$ref": "#/$defs/ExecutionMode"
+    },
+    "research_data_freshness": {
+      "$ref": "#/$defs/DataFreshness"
+    },
+    "research_pipeline_health": {
+      "enum": [
+        "HEALTHY",
+        "STALE",
+        "NO_DATA",
+        "UNKNOWN"
+      ],
+      "title": "Research Pipeline Health",
+      "type": "string"
+    },
+    "trades_count": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Trades Count"
+    }
+  },
+  "required": [
+    "api_liveness",
+    "api_readiness",
+    "backend_service_liveness",
+    "research_pipeline_health",
+    "research_data_freshness",
+    "live_price_freshness",
+    "database_status",
+    "requested_mode",
+    "effective_mode",
+    "execution_capability",
+    "kill_switch_state",
+    "orders_count",
+    "trades_count"
+  ],
+  "title": "SystemStatus",
+  "type": "object"
+}

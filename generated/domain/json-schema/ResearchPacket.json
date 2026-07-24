@@ -1,0 +1,146 @@
+{
+  "$defs": {
+    "EvidenceLocator": {
+      "additionalProperties": false,
+      "description": "Bounded structural reference without query, userinfo, or free-form text.",
+      "properties": {
+        "authority": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9.-]{0,126}[a-z0-9])?$",
+          "title": "Authority",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EvidenceLocatorKind"
+        },
+        "path": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._~-]{0,63})?$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Path",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "authority",
+        "path"
+      ],
+      "title": "EvidenceLocator",
+      "type": "object",
+      "x-prohibited-content": [
+        "credentials",
+        "account-routing",
+        "order-type",
+        "execution-text"
+      ]
+    },
+    "EvidenceLocatorKind": {
+      "description": "Supported locator namespaces; credentials and routing are not locators.",
+      "enum": [
+        "https",
+        "dataset",
+        "document",
+        "block"
+      ],
+      "title": "EvidenceLocatorKind",
+      "type": "string"
+    },
+    "EvidenceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "format": "uuid",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "locator": {
+          "$ref": "#/$defs/EvidenceLocator"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/EvidenceSource"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "source",
+        "locator",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "EvidenceReference",
+      "type": "object"
+    },
+    "EvidenceSource": {
+      "description": "Closed research-only source classes with no execution authority.",
+      "enum": [
+        "market_data",
+        "news",
+        "filing",
+        "on_chain",
+        "research"
+      ],
+      "title": "EvidenceSource",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "cutoff_at": {
+      "format": "date-time",
+      "title": "Cutoff At",
+      "type": "string"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/EvidenceReference"
+      },
+      "minItems": 1,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "model_version": {
+      "minLength": 1,
+      "title": "Model Version",
+      "type": "string"
+    },
+    "packet_id": {
+      "format": "uuid",
+      "title": "Packet Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "packet_id",
+    "cutoff_at",
+    "evidence",
+    "model_version",
+    "schema_version"
+  ],
+  "title": "ResearchPacket",
+  "type": "object",
+  "x-temporal-invariants": [
+    "evidence.observed_at <= cutoff_at"
+  ]
+}

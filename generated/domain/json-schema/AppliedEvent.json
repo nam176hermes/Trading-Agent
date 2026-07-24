@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Digest",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "digest"
+  ],
+  "title": "AppliedEvent",
+  "type": "object"
+}

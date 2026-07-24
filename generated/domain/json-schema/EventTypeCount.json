@@ -1,0 +1,23 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Count",
+      "type": "integer"
+    },
+    "event_type": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Event Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_type",
+    "count"
+  ],
+  "title": "EventTypeCount",
+  "type": "object"
+}

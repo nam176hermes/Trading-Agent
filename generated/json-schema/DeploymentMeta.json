@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "ExecutionCapability": {
+      "enum": [
+        "NON_LIVE",
+        "LIVE_BLOCKED",
+        "LIVE_AVAILABLE"
+      ],
+      "title": "ExecutionCapability",
+      "type": "string"
+    },
+    "ExecutionMode": {
+      "enum": [
+        "PAPER",
+        "DRYRUN",
+        "LIVE"
+      ],
+      "title": "ExecutionMode",
+      "type": "string"
+    },
+    "KillSwitchState": {
+      "enum": [
+        "ACTIVE",
+        "INACTIVE",
+        "UNKNOWN"
+      ],
+      "title": "KillSwitchState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "build_time": {
+      "title": "Build Time",
+      "type": "string"
+    },
+    "data_root_identifier": {
+      "title": "Data Root Identifier",
+      "type": "string"
+    },
+    "deployment_id": {
+      "title": "Deployment Id",
+      "type": "string"
+    },
+    "effective_mode": {
+      "$ref": "#/$defs/ExecutionMode"
+    },
+    "execution_capability": {
+      "$ref": "#/$defs/ExecutionCapability"
+    },
+    "git_commit": {
+      "title": "Git Commit",
+      "type": "string"
+    },
+    "kill_switch_state": {
+      "$ref": "#/$defs/KillSwitchState"
+    },
+    "live_execution_enabled": {
+      "title": "Live Execution Enabled",
+      "type": "boolean"
+    },
+    "live_trading_approved": {
+      "title": "Live Trading Approved",
+      "type": "boolean"
+    },
+    "repo_root_identifier": {
+      "title": "Repo Root Identifier",
+      "type": "string"
+    },
+    "requested_mode": {
+      "$ref": "#/$defs/ExecutionMode"
+    },
+    "schema_versions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Schema Versions",
+      "type": "array"
+    },
+    "service": {
+      "title": "Service",
+      "type": "string"
+    }
+  },
+  "required": [
+    "service",
+    "git_commit",
+    "build_time",
+    "deployment_id",
+    "repo_root_identifier",
+    "data_root_identifier",
+    "schema_versions",
+    "requested_mode",
+    "effective_mode",
+    "execution_capability",
+    "live_execution_enabled",
+    "live_trading_approved",
+    "kill_switch_state"
+  ],
+  "title": "DeploymentMeta",
+  "type": "object"
+}

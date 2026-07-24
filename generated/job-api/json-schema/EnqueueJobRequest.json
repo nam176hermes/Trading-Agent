@@ -1,0 +1,368 @@
+{
+  "$defs": {
+    "ActorIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "actor_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Actor Id",
+          "type": "string"
+        },
+        "actor_type": {
+          "$ref": "#/$defs/ActorType"
+        }
+      },
+      "required": [
+        "actor_type",
+        "actor_id"
+      ],
+      "title": "ActorIdentity",
+      "type": "object"
+    },
+    "ActorType": {
+      "enum": [
+        "OPERATOR",
+        "SCHEDULER",
+        "WORKER",
+        "RECOVERY",
+        "SYSTEM"
+      ],
+      "title": "ActorType",
+      "type": "string"
+    },
+    "BacktestPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "Case-insensitive canonical Phase 1 asset symbol; surrounding ASCII whitespace is normalized by the service.",
+          "pattern": "^[ \\t\\r\\n\\x0c\\x0b]*(?:[aA][aA][pP][lL]|[aA][dD][aA]|[aA][mM][zZ][nN]|[aA][vV][aA][xX]|[bB][tT][cC]|[dD][oO][gG][eE]|[dD][oO][tT]|[eE][tT][hH]|[gG][oO][oO][gG][lL]|[lL][iI][nN][kK]|[mM][aA][tT][iI][cC]|[mM][eE][tT][aA]|[mM][sS][fF][tT]|[nN][vV][dD][aA]|[sS][oO][lL]|[tT][oO][nN]|[tT][sS][lL][aA])[ \\t\\r\\n\\x0c\\x0b]*$",
+          "title": "Asset",
+          "type": "string",
+          "x-canonical-values": [
+            "AAPL",
+            "ADA",
+            "AMZN",
+            "AVAX",
+            "BTC",
+            "DOGE",
+            "DOT",
+            "ETH",
+            "GOOGL",
+            "LINK",
+            "MATIC",
+            "META",
+            "MSFT",
+            "NVDA",
+            "SOL",
+            "TON",
+            "TSLA"
+          ]
+        },
+        "date_from": {
+          "title": "Date From",
+          "type": "null"
+        },
+        "date_to": {
+          "title": "Date To",
+          "type": "null"
+        },
+        "strategy_id": {
+          "const": "legacy-binary-report-v1",
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset",
+        "strategy_id",
+        "date_from",
+        "date_to"
+      ],
+      "title": "BacktestPayload",
+      "type": "object"
+    },
+    "DebatePayload": {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "Case-insensitive canonical Phase 1 asset symbol; surrounding ASCII whitespace is normalized by the service.",
+          "pattern": "^[ \\t\\r\\n\\x0c\\x0b]*(?:[aA][aA][pP][lL]|[aA][dD][aA]|[aA][mM][zZ][nN]|[aA][vV][aA][xX]|[bB][tT][cC]|[dD][oO][gG][eE]|[dD][oO][tT]|[eE][tT][hH]|[gG][oO][oO][gG][lL]|[lL][iI][nN][kK]|[mM][aA][tT][iI][cC]|[mM][eE][tT][aA]|[mM][sS][fF][tT]|[nN][vV][dD][aA]|[sS][oO][lL]|[tT][oO][nN]|[tT][sS][lL][aA])[ \\t\\r\\n\\x0c\\x0b]*$",
+          "title": "Asset",
+          "type": "string",
+          "x-canonical-values": [
+            "AAPL",
+            "ADA",
+            "AMZN",
+            "AVAX",
+            "BTC",
+            "DOGE",
+            "DOT",
+            "ETH",
+            "GOOGL",
+            "LINK",
+            "MATIC",
+            "META",
+            "MSFT",
+            "NVDA",
+            "SOL",
+            "TON",
+            "TSLA"
+          ]
+        },
+        "horizon": {
+          "const": "1d",
+          "title": "Horizon",
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset",
+        "horizon"
+      ],
+      "title": "DebatePayload",
+      "type": "object"
+    },
+    "ReplayPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "session_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+          "title": "Session Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "title": "ReplayPayload",
+      "type": "object"
+    },
+    "SnapshotPayload": {
+      "additionalProperties": false,
+      "properties": {
+        "requested_as_of": {
+          "title": "Requested As Of",
+          "type": "null"
+        },
+        "scope": {
+          "const": "default",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope",
+        "requested_as_of"
+      ],
+      "title": "SnapshotPayload",
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "actor": {
+            "properties": {
+              "actor_type": {
+                "not": {
+                  "const": "SCHEDULER"
+                }
+              }
+            },
+            "required": [
+              "actor_type"
+            ]
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "idempotency_key": {
+            "pattern": "^schedule:"
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ]
+      },
+      "then": {
+        "properties": {
+          "actor": {
+            "properties": {
+              "actor_type": {
+                "const": "SCHEDULER"
+              }
+            },
+            "required": [
+              "actor_type"
+            ]
+          },
+          "idempotency_key": {
+            "pattern": "^schedule:snapshot:(?:(?:[0-9]{3}[1-9]|[0-9]{2}[1-9][0-9]|[0-9][1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]Z$"
+          },
+          "job_type": {
+            "const": "SNAPSHOT"
+          },
+          "priority": {
+            "const": 0
+          }
+        }
+      }
+    }
+  ],
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/ActorIdentity"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "job_type": {
+          "const": "SNAPSHOT",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/SnapshotPayload"
+        },
+        "priority": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job_type",
+        "payload",
+        "idempotency_key",
+        "actor"
+      ],
+      "title": "SnapshotJobRequest",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/ActorIdentity"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "job_type": {
+          "const": "DEBATE",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/DebatePayload"
+        },
+        "priority": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job_type",
+        "payload",
+        "idempotency_key",
+        "actor"
+      ],
+      "title": "DebateJobRequest",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/ActorIdentity"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "job_type": {
+          "const": "REPLAY",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/ReplayPayload"
+        },
+        "priority": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job_type",
+        "payload",
+        "idempotency_key",
+        "actor"
+      ],
+      "title": "ReplayJobRequest",
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/ActorIdentity"
+        },
+        "idempotency_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Idempotency Key",
+          "type": "string"
+        },
+        "job_type": {
+          "const": "BACKTEST",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/BacktestPayload"
+        },
+        "priority": {
+          "default": 0,
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job_type",
+        "payload",
+        "idempotency_key",
+        "actor"
+      ],
+      "title": "BacktestJobRequest",
+      "type": "object"
+    }
+  ],
+  "title": "EnqueueJobRequest"
+}

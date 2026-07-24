@@ -1,0 +1,105 @@
+path,git_status,classification,owner_source,phase_relevance,contains_runtime_data,contains_secret_risk,recommended_action,rationale
+.superpowers/sdd/task-4-report.md,M,GENERATED_NONDETERMINISTIC,PROMPT2_SDD_AGENT,A2_B1_SUPPORT,false,false,EXCLUDE_FROM_CANDIDATE,Internal agent report; not a named release input.
+.superpowers/sdd/task-5-report.md,M,GENERATED_NONDETERMINISTIC,PROMPT2_SDD_AGENT,A2_B1_SUPPORT,false,false,EXCLUDE_FROM_CANDIDATE,Internal agent report; not a named release input.
+alembic/versions/0005_job_plane_role_split.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 migration path.
+apps/dashboard/src/app/api/trading/run/route.ts,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 retry-stable BFF path.
+apps/dashboard/src/app/dashboard/execution/page.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/app/dashboard/layout.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/app/dashboard/page.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/app/dashboard/settings/page.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/components/trading/data-source-status.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/components/trading/exchange-status-card.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/components/trading/mode-toggle.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/components/trading/operator-state-banner.tsx,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/components/trading/operator-state-provider.tsx,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/components/trading/quick-actions.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_AND_PROMPT2,A0_A1+A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit shared Prompt1 and Prompt2 path.
+apps/dashboard/src/components/trading/run-pipeline-button.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 retry-stable operation path.
+apps/dashboard/src/components/trading/system-status-banner.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/components/trading/trading-sidebar.tsx,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/lib/trading/dashboard-report-state.ts,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/lib/trading/data-source-state.ts,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/lib/trading/job-api.ts,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 Job API client path.
+apps/dashboard/src/lib/trading/operator-state.ts,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/src/lib/trading/quick-actions-state.ts,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_AND_PROMPT2,A0_A1+A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit shared Prompt1 and Prompt2 path.
+apps/dashboard/src/lib/trading/settings-state.ts,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/tests/dashboard-safety-state.test.mjs,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_AND_PROMPT2,A0_A1+A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit shared Prompt1 and Prompt2 test.
+apps/dashboard/tests/operator-state.test.mjs,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit frozen Prompt1 prerequisite path.
+apps/dashboard/tests/trading-job-bff.test.mjs,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding Prompt2 BFF test.
+apps/job_api/app.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 Job API authority path.
+apps/job_api/config.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 Job API authority path.
+apps/job_api/main.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 Job API startup path.
+docs/production/a0-a1-source-verification-2026-07-16.md,??,DOCUMENTATION,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named evidence; exclude from release payload.
+docs/production/job-plane-source-verification-2026-07-16.md,??,DOCUMENTATION,PROMPT2_A2_B1,A2_B1,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named evidence; exclude from release payload.
+docs/production/production-readiness-baseline.md,M,DOCUMENTATION,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named baseline evidence; exclude from release payload.
+docs/production/promotion-status.json,M,DOCUMENTATION,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named fail-closed decision evidence.
+docs/production/release-authority-v2.md,??,DOCUMENTATION,PROMPT2_A2_B1,A2_B1,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named Release Authority documentation.
+docs/production/release-v2-candidate-2026-07-16.json,??,DOCUMENTATION,PROMPT2_A2_B1,A2_B1,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named NO_GO evidence record.
+docs/production/runbooks/job-plane-role-split-rollout.md,??,DOCUMENTATION,PROMPT2_A2_B1,A2_B1,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named reviewed runbook.
+docs/production/runbooks/postgresql-preserve-recover.md,??,DOCUMENTATION,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named reviewed recovery runbook.
+docs/superpowers/plans/2026-07-16-a0-a1-containment-recovery.md,??,DOCUMENTATION,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named Prompt1 implementation plan.
+docs/superpowers/plans/2026-07-16-job-plane-release-v2.md,??,DOCUMENTATION,PROMPT2_A2_B1,A2_B1,false,false,REVIEW_INCLUDE_EVIDENCE_ONLY,Named Prompt2 implementation plan.
+generated/job-api/json-schema/EnqueueJobRequest.json,M,GENERATED_REPRODUCIBLE,CONTRACT_GENERATOR,A2_CONTRACT,false,false,REGENERATE_AND_COMPARE,Generated contract; require check-contracts parity.
+generated/job-api/openapi/openapi.json,M,GENERATED_REPRODUCIBLE,CONTRACT_GENERATOR,A2_CONTRACT,false,false,REGENERATE_AND_COMPARE,Generated contract; require check-contracts parity.
+legacy/research-backend/main.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit SNAPSHOT research-only backend path.
+ops/evidence/source-release-unit-pid.schema.json,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_AND_PROMPT2,A0_A1+A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit shared provenance schema.
+ops/phase4b/verify-installed.sh,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt1 fail-closed verifier.
+ops/postgres/provision-job-roles.sql,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt2 role provisioning source.
+ops/release-v2/build-stage.sh,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Release Authority v2 builder.
+ops/release-v2/provision-root.sh,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Release Authority v2 provisioner.
+ops/release-v2/rollback.sh,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Release Authority v2 rollback source.
+ops/release-v2/verify-stage.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit standalone release verifier.
+ops/systemd/job-api.env.example,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Tracked fail-closed template; not runtime config.
+ops/systemd/job-worker.env.example,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Tracked fail-closed template; not runtime config.
+packages/deployment_evidence.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt1 provenance model.
+packages/job_contracts/api.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit idempotency and namespace contract.
+packages/runtime_release/__init__.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Release Authority integration.
+packages/runtime_release/config.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Release Authority configuration.
+packages/runtime_release/job_plane.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Job Plane authority capability.
+packages/runtime_release/semantic.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit semantic authority binding.
+packages/runtime_release/v2.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Release Authority v2 implementation.
+scripts/capture_production_baseline.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt1 observational evidence source.
+scripts/generate_contracts.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Generator change corresponding to Job API contract.
+services/job_scheduler/main.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit split scheduler-role composition.
+services/job_store/config.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit split-role configuration.
+services/job_store/repository.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit Job API repository authority path.
+services/job_store/worker_repository.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit worker repository authority path.
+services/job_worker/command_registry.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit SNAPSHOT-only command authority.
+services/job_worker/environment.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit empty-start allowlisted environment.
+services/job_worker/main.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit worker authority startup.
+services/job_worker/process_runner.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit safe child execution boundary.
+services/job_worker/results.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit sealed result validation.
+services/job_worker/safety_state.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit safety-state authority binding.
+services/job_worker/worker.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit worker lifecycle containment.
+tests/consolidation/test_audit_canonical_repo.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt1 canonical-source test.
+tests/control_api/test_alembic_schema.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding migration schema test.
+tests/control_api/test_deployment_evidence.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt1 provenance test.
+tests/jobs/_postgres.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding disposable PostgreSQL harness.
+tests/jobs/backend_contract_fixtures.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding backend contract fixture.
+tests/jobs/test_alembic_jobs_schema.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding role-split migration test.
+tests/jobs/test_child_environment.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding child environment test.
+tests/jobs/test_command_registry_v2.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding Release v2 command test.
+tests/jobs/test_command_registry.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding command authority test.
+tests/jobs/test_contracts.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding Job API contract test.
+tests/jobs/test_job_api_auth.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding authority-negative test.
+tests/jobs/test_job_api_security.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding Job API security test.
+tests/jobs/test_job_api.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding Job API behavior test.
+tests/jobs/test_job_role_permissions.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding cross-role denial test.
+tests/jobs/test_job_store_settings.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding exact-role settings test.
+tests/jobs/test_postgres_harness.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding disposable PostgreSQL harness test.
+tests/jobs/test_process_runner.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding child process boundary test.
+tests/jobs/test_repository_cancel_acl.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding cancellation ACL test.
+tests/jobs/test_repository_enqueue.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding idempotent enqueue test.
+tests/jobs/test_repository_queries.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding repository query test.
+tests/jobs/test_result_validation.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding sealed result test.
+tests/jobs/test_safety_state.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding safety-state authority test.
+tests/jobs/test_scheduler_repository.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding scheduler namespace test.
+tests/jobs/test_systemd_units.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_AND_PROMPT2,A0_A1+A2_B1,false,false,APPLY_REVIEWED_PATCH,Explicit shared template and unit test.
+tests/jobs/test_worker_lifecycle.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding worker containment test.
+tests/jobs/test_worker_recovery.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding worker recovery test.
+tests/production/test_capture_production_baseline.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt1 baseline-capture test.
+tests/runtime_release/test_provision_script.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT1_A0_A1,A0_A1_PREREQUISITE,false,false,APPLY_REVIEWED_PATCH,Explicit Prompt1 fail-closed provision test.
+tests/runtime_release/test_provisioning_generators.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding Release v2 generator test.
+tests/runtime_release/test_semantic.py,M,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding semantic authority test.
+tests/runtime_release/test_v2_provisioning.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding v2 provisioning test.
+tests/runtime_release/test_v2_runtime_config.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding v2 runtime configuration test.
+tests/runtime_release/test_v2.py,??,INTENDED_JOB_PLANE_CHANGE,PROMPT2_A2_B1,A2_B1,false,false,APPLY_REVIEWED_PATCH,Corresponding Release Authority v2 test.

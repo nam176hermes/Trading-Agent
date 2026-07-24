@@ -1,0 +1,33 @@
+{
+  "$defs": {
+    "ActorType": {
+      "enum": [
+        "OPERATOR",
+        "SCHEDULER",
+        "WORKER",
+        "RECOVERY",
+        "SYSTEM"
+      ],
+      "title": "ActorType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "actor_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Actor Id",
+      "type": "string"
+    },
+    "actor_type": {
+      "$ref": "#/$defs/ActorType"
+    }
+  },
+  "required": [
+    "actor_type",
+    "actor_id"
+  ],
+  "title": "ActorIdentity",
+  "type": "object"
+}

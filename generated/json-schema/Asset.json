@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "AssetClass": {
+      "enum": [
+        "CRYPTO",
+        "EQUITY",
+        "ETF",
+        "FUTURE",
+        "FOREX",
+        "UNKNOWN"
+      ],
+      "title": "AssetClass",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "asset_class": {
+      "$ref": "#/$defs/AssetClass"
+    },
+    "asset_id": {
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "symbol": {
+      "title": "Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset_id",
+    "symbol",
+    "asset_class"
+  ],
+  "title": "Asset",
+  "type": "object"
+}

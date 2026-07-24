@@ -1,0 +1,238 @@
+{
+  "$defs": {
+    "AggregateReplayState": {
+      "additionalProperties": false,
+      "properties": {
+        "applied_events": {
+          "items": {
+            "$ref": "#/$defs/AppliedEvent"
+          },
+          "title": "Applied Events",
+          "type": "array"
+        },
+        "event_count": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Event Count",
+          "type": "integer"
+        },
+        "streams": {
+          "items": {
+            "$ref": "#/$defs/StreamProjection"
+          },
+          "title": "Streams",
+          "type": "array"
+        },
+        "type_counts": {
+          "items": {
+            "$ref": "#/$defs/EventTypeCount"
+          },
+          "title": "Type Counts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "event_count",
+        "type_counts",
+        "streams",
+        "applied_events"
+      ],
+      "title": "AggregateReplayState",
+      "type": "object"
+    },
+    "AppliedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "digest"
+      ],
+      "title": "AppliedEvent",
+      "type": "object"
+    },
+    "EventTypeCount": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Count",
+          "type": "integer"
+        },
+        "event_type": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Event Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_type",
+        "count"
+      ],
+      "title": "EventTypeCount",
+      "type": "object"
+    },
+    "ReplayIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ReplayIssueCode"
+        },
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "expected_sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Expected Sequence",
+          "type": "integer"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "maximum": 9223372036854775807,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "stream_id": {
+          "format": "uuid",
+          "title": "Stream Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "stream_id",
+        "event_id",
+        "sequence",
+        "expected_sequence",
+        "digest"
+      ],
+      "title": "ReplayIssue",
+      "type": "object"
+    },
+    "ReplayIssueCode": {
+      "enum": [
+        "SEQUENCE_GAP",
+        "SEQUENCE_REGRESSION"
+      ],
+      "title": "ReplayIssueCode",
+      "type": "string"
+    },
+    "ReplayStatus": {
+      "enum": [
+        "COMPLETE",
+        "DEGRADED"
+      ],
+      "title": "ReplayStatus",
+      "type": "string"
+    },
+    "StreamProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "event_count": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Event Count",
+          "type": "integer"
+        },
+        "last_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Digest"
+        },
+        "last_sequence": {
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "title": "Last Sequence",
+          "type": "integer"
+        },
+        "stream_id": {
+          "format": "uuid",
+          "title": "Stream Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stream_id",
+        "event_count",
+        "last_sequence"
+      ],
+      "title": "StreamProjection",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "canonical_state_json": {
+      "minLength": 2,
+      "title": "Canonical State Json",
+      "type": "string"
+    },
+    "issues": {
+      "items": {
+        "$ref": "#/$defs/ReplayIssue"
+      },
+      "title": "Issues",
+      "type": "array"
+    },
+    "reducer_version": {
+      "const": "event-ledger-reducer-v1",
+      "title": "Reducer Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "event-ledger-replay-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/AggregateReplayState"
+    },
+    "state_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "State Hash",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ReplayStatus"
+    }
+  },
+  "required": [
+    "schema_version",
+    "reducer_version",
+    "state",
+    "status",
+    "issues",
+    "canonical_state_json",
+    "state_hash"
+  ],
+  "title": "SnapshotRecord",
+  "type": "object"
+}

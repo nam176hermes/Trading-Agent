@@ -1,0 +1,711 @@
+{
+  "$defs": {
+    "ConfidenceLevel": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "ConfidenceLevel",
+      "type": "string"
+    },
+    "DecisionAction": {
+      "enum": [
+        "BUY",
+        "SELL",
+        "HOLD",
+        "STRONG_BUY",
+        "STRONG_SELL",
+        "WAIT",
+        "NO_SIGNAL",
+        "WATCH_FOR_ENTRY"
+      ],
+      "title": "DecisionAction",
+      "type": "string"
+    },
+    "DecisionRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/DecisionAction"
+        },
+        "asset": {
+          "title": "Asset",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "decision_at": {
+          "format": "date-time",
+          "title": "Decision At",
+          "type": "string"
+        },
+        "decision_id": {
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "price_at_decision": {
+          "title": "Price At Decision",
+          "type": "number"
+        },
+        "reflected": {
+          "title": "Reflected",
+          "type": "boolean"
+        },
+        "report_snippet": {
+          "default": "",
+          "title": "Report Snippet",
+          "type": "string"
+        },
+        "signals": {
+          "$ref": "#/$defs/DecisionSignals"
+        }
+      },
+      "required": [
+        "decision_id",
+        "asset",
+        "action",
+        "confidence",
+        "decision_at",
+        "price_at_decision",
+        "reflected",
+        "signals"
+      ],
+      "title": "DecisionRecord",
+      "type": "object"
+    },
+    "DecisionSignals": {
+      "additionalProperties": false,
+      "properties": {
+        "calculated_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Calculated At"
+        },
+        "close": {
+          "title": "Close",
+          "type": "number"
+        },
+        "macd_histogram": {
+          "title": "Macd Histogram",
+          "type": "number"
+        },
+        "macd_line": {
+          "title": "Macd Line",
+          "type": "number"
+        },
+        "macd_signal_line": {
+          "title": "Macd Signal Line",
+          "type": "number"
+        },
+        "price_vs_sma200": {
+          "title": "Price Vs Sma200",
+          "type": "string"
+        },
+        "rsi_14": {
+          "title": "Rsi 14",
+          "type": "number"
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Signal"
+        },
+        "sma_200": {
+          "title": "Sma 200",
+          "type": "number"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "volume_24h": {
+          "title": "Volume 24H",
+          "type": "number"
+        },
+        "volume_30d_avg": {
+          "title": "Volume 30D Avg",
+          "type": "number"
+        },
+        "volume_trend_ratio": {
+          "title": "Volume Trend Ratio",
+          "type": "number"
+        }
+      },
+      "required": [
+        "symbol",
+        "close",
+        "rsi_14",
+        "macd_line",
+        "macd_signal_line",
+        "macd_histogram",
+        "sma_200",
+        "price_vs_sma200",
+        "volume_24h",
+        "volume_30d_avg",
+        "volume_trend_ratio",
+        "signal",
+        "calculated_at"
+      ],
+      "title": "DecisionSignals",
+      "type": "object"
+    },
+    "MarketAssetSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "alerts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Alerts",
+          "type": "array"
+        },
+        "articles_filtered": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Articles Filtered"
+        },
+        "articles_found": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Articles Found"
+        },
+        "articles_scored": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Articles Scored"
+        },
+        "atr_14": {
+          "title": "Atr 14",
+          "type": "number"
+        },
+        "atr_pct": {
+          "title": "Atr Pct",
+          "type": "number"
+        },
+        "confidence": {
+          "$ref": "#/$defs/ConfidenceLevel"
+        },
+        "current_price": {
+          "title": "Current Price",
+          "type": "number"
+        },
+        "debate_context": {
+          "title": "Debate Context",
+          "type": "string"
+        },
+        "derivatives_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Derivatives Note"
+        },
+        "derivatives_signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Derivatives Signal"
+        },
+        "funding_rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Funding Rate"
+        },
+        "funding_rate_annualized": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Funding Rate Annualized"
+        },
+        "funding_rate_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Funding Rate Pct"
+        },
+        "funding_signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Funding Signal"
+        },
+        "funding_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Funding Source"
+        },
+        "macd_signal": {
+          "enum": [
+            "bullish_crossover",
+            "bearish_crossover",
+            "neutral"
+          ],
+          "title": "Macd Signal",
+          "type": "string"
+        },
+        "market_regime": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Market Regime"
+        },
+        "memory_context": {
+          "title": "Memory Context",
+          "type": "string"
+        },
+        "oi_change_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Oi Change Pct"
+        },
+        "oi_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Oi Source"
+        },
+        "oi_trend": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Oi Trend"
+        },
+        "onchain_risk": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Onchain Risk"
+        },
+        "onchain_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Onchain Source"
+        },
+        "open_interest_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Open Interest Usd"
+        },
+        "price_change_24h_pct": {
+          "title": "Price Change 24H Pct",
+          "type": "number"
+        },
+        "price_change_7d_pct": {
+          "title": "Price Change 7D Pct",
+          "type": "number"
+        },
+        "price_vs_sma200": {
+          "enum": [
+            "above",
+            "below"
+          ],
+          "title": "Price Vs Sma200",
+          "type": "string"
+        },
+        "reasoning": {
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "regime_adx": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Regime Adx"
+        },
+        "regime_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Regime Confidence"
+        },
+        "regime_note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Regime Note"
+        },
+        "risk_assessment": {
+          "$ref": "#/$defs/RiskAssessment"
+        },
+        "risk_context": {
+          "title": "Risk Context",
+          "type": "string"
+        },
+        "rsi_14": {
+          "title": "Rsi 14",
+          "type": "number"
+        },
+        "rsi_signal": {
+          "enum": [
+            "oversold",
+            "overbought",
+            "neutral"
+          ],
+          "title": "Rsi Signal",
+          "type": "string"
+        },
+        "sentiment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sentiment"
+        },
+        "sentiment_distribution": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sentiment Distribution"
+        },
+        "sentiment_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sentiment Score"
+        },
+        "sentiment_source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sentiment Source"
+        },
+        "sentiment_summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sentiment Summary"
+        },
+        "signal_conflict": {
+          "title": "Signal Conflict",
+          "type": "boolean"
+        },
+        "stop_loss_suggestion": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Stop Loss Suggestion"
+        },
+        "stop_method": {
+          "title": "Stop Method",
+          "type": "string"
+        },
+        "stop_note": {
+          "title": "Stop Note",
+          "type": "string"
+        },
+        "suggestion": {
+          "$ref": "#/$defs/DecisionAction"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "target_suggestion": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Target Suggestion"
+        },
+        "volume_trend": {
+          "title": "Volume Trend",
+          "type": "string"
+        },
+        "warning": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Warning"
+        }
+      },
+      "required": [
+        "symbol",
+        "current_price",
+        "price_change_24h_pct",
+        "price_change_7d_pct",
+        "rsi_14",
+        "rsi_signal",
+        "macd_signal",
+        "price_vs_sma200",
+        "volume_trend",
+        "sentiment",
+        "sentiment_source",
+        "sentiment_score",
+        "sentiment_distribution",
+        "sentiment_summary",
+        "articles_found",
+        "articles_scored",
+        "articles_filtered",
+        "onchain_risk",
+        "onchain_source",
+        "funding_rate",
+        "funding_rate_pct",
+        "funding_rate_annualized",
+        "funding_signal",
+        "funding_source",
+        "open_interest_usd",
+        "oi_trend",
+        "oi_change_pct",
+        "oi_source",
+        "derivatives_signal",
+        "derivatives_note",
+        "suggestion",
+        "confidence",
+        "signal_conflict",
+        "reasoning",
+        "stop_loss_suggestion",
+        "target_suggestion",
+        "atr_14",
+        "atr_pct",
+        "stop_method",
+        "stop_note",
+        "warning",
+        "alerts",
+        "market_regime",
+        "regime_confidence",
+        "regime_adx",
+        "regime_note",
+        "risk_assessment",
+        "memory_context",
+        "debate_context",
+        "risk_context"
+      ],
+      "title": "MarketAssetSnapshot",
+      "type": "object"
+    },
+    "RiskAssessment": {
+      "additionalProperties": false,
+      "properties": {
+        "position_size_pct": {
+          "title": "Position Size Pct",
+          "type": "number"
+        },
+        "rationale": {
+          "title": "Rationale",
+          "type": "string"
+        },
+        "risk_level": {
+          "$ref": "#/$defs/RiskLevel"
+        },
+        "stop_loss_pct": {
+          "title": "Stop Loss Pct",
+          "type": "number"
+        }
+      },
+      "required": [
+        "position_size_pct",
+        "stop_loss_pct",
+        "risk_level",
+        "rationale"
+      ],
+      "title": "RiskAssessment",
+      "type": "object"
+    },
+    "RiskLevel": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH",
+        "CRITICAL"
+      ],
+      "title": "RiskLevel",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "as_of": {
+      "format": "date-time",
+      "title": "As Of",
+      "type": "string"
+    },
+    "asset": {
+      "$ref": "#/$defs/MarketAssetSnapshot"
+    },
+    "recent_decisions": {
+      "items": {
+        "$ref": "#/$defs/DecisionRecord"
+      },
+      "title": "Recent Decisions",
+      "type": "array"
+    },
+    "source_report_id": {
+      "title": "Source Report Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset",
+    "as_of",
+    "source_report_id",
+    "recent_decisions"
+  ],
+  "title": "Signal",
+  "type": "object"
+}

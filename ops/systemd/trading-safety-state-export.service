@@ -1,0 +1,37 @@
+[Unit]
+Description=Trading Agent Phase 4B minimal safety-state export
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a
+Environment=TRADING_SAFETY_EXPORTER_COMMIT=fdc085a05019d700ccbce59370941e2c97ef899a
+Environment=TRADING_MODE=paper
+Environment=LIVE_EXECUTION_ENABLED=false
+Environment=LIVE_TRADING_APPROVED=false
+ExecStart=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a/.venv/bin/python3.11 -m services.safety_state_exporter.main --once
+RuntimeDirectory=trading-agent
+RuntimeDirectory=trading-agent/safety-sources
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=/home/thenam176/.hermes/crypto-research/.mode:/run/user/1000/trading-agent/safety-sources/.mode
+BindReadOnlyPaths=-/home/thenam176/.hermes/crypto-research/.kill_switch:/run/user/1000/trading-agent/safety-sources/.kill_switch
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=

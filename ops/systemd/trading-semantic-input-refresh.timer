@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Trading Agent Phase 4B semantic inputs every ten minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Persistent=false
+Unit=trading-semantic-input-refresh.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Tick the Trading Agent durable scheduler every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+Persistent=false
+Unit=trading-job-scheduler.service
+
+[Install]
+WantedBy=timers.target

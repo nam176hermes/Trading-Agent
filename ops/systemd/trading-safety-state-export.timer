@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Trading Agent Phase 4B safety evidence every two seconds
+
+[Timer]
+OnBootSec=0
+OnUnitActiveSec=2s
+AccuracySec=100ms
+Persistent=false
+Unit=trading-safety-state-export.service
+
+[Install]
+WantedBy=timers.target

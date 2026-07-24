@@ -1,0 +1,700 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://trading-agent.invalid/schemas/postgres-recovery-approval-record.schema.json",
+  "title": "PostgreSQL recovery approval preparation record",
+  "description": "A permanently non-authorizing preparation envelope. It is never an executable APPROVAL_RECORD.",
+  "$comment": "Files use the deterministic JSON-compatible subset of YAML 1.2. Historical observations and current reviewer-required outcomes are explicit outside the exact transcript. The validator additionally enforces raw transcript member order, cross-field constraints, time windows, and local integrity bindings.",
+  "type": "object",
+  "additionalProperties": false,
+  "minProperties": 16,
+  "maxProperties": 16,
+  "required": [
+    "document_kind",
+    "format_version",
+    "record_id",
+    "authorization_state",
+    "evidence_age",
+    "safety_baseline",
+    "expected_pre_recovery",
+    "stale_pid_evidence",
+    "recovery_review",
+    "procedure_references",
+    "backup_restore_controls",
+    "target",
+    "preflight",
+    "integrity",
+    "transcript",
+    "authorization_notice"
+  ],
+  "x-runbook-source": "docs/production/runbooks/postgresql-preserve-recover.md#4-exact-dual-reviewed-execution-transcript",
+  "x-runbook-transcript-order": [
+    "DECISION",
+    "CHANGE_ID",
+    "INCIDENT_ID",
+    "CHANGE_ARTIFACT",
+    "CHANGE_ARTIFACT_SHA256",
+    "APPROVED_AT_UTC",
+    "EXPIRES_AT_UTC",
+    "OPERATOR_NAME",
+    "REVIEWER_NAME",
+    "OPERATOR_ATTESTATION",
+    "REVIEWER_ATTESTATION",
+    "RUN_ID",
+    "RUNBOOK_SHA256",
+    "SOURCE_COMMIT",
+    "SOURCE_TREE",
+    "MIGRATION_SHA256",
+    "EXPECTED_CATALOG_SHA256",
+    "EXPECTED_CATALOG_QUERY_ID",
+    "EXPECTED_CATALOG_PROVENANCE",
+    "EXPECTED_CATALOG_REVIEW_ATTESTATION",
+    "ORIG_SYSTEM_ID",
+    "ORIG_PGDATA_NLINK",
+    "ORIG_SOCKET_NLINK",
+    "ORIG_LOG_DIR_NLINK",
+    "ORIG_LOG_NLINK",
+    "EVIDENCE_PARENT",
+    "PRESERVE_PARENT",
+    "BACKUP_PARENT",
+    "SECRET_PARENT",
+    "ISO_HOST",
+    "ISO_PORT",
+    "ISO_ADMIN_DB",
+    "ISO_RESTORE_DB",
+    "ISO_PGDATA",
+    "ISO_SYSTEM_ID",
+    "ISO_SOCKET",
+    "ISO_ADMIN_ENV",
+    "ALLOW_STOP_ALL_LISTED_UNITS",
+    "ALLOW_OFFLINE_COLD_COPY",
+    "ALLOW_ONE_ORIGINAL_START",
+    "ALLOW_ONE_ORIGINAL_STOP",
+    "ALLOW_READ_ONLY_VERIFICATION",
+    "ALLOW_IMMEDIATE_LOGICAL_BACKUP",
+    "ALLOW_MIGRATE_ORIGINAL_IF_0003",
+    "ALLOW_ISOLATED_RESTORE",
+    "ACCEPT_INTERRUPTED_SHUTDOWN",
+    "ACCEPT_CHECKSUMS_DISABLED",
+    "ACKNOWLEDGE_NO_PITR",
+    "RECOVERY_LOG_POLICY_ID",
+    "ORIGINAL_START_POLICY_ID"
+  ],
+  "$defs": {
+    "placeholder": {
+      "const": "REQUIRES_REVIEWER_INPUT",
+      "type": "string"
+    },
+    "placeholderOrTimestamp": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+        }
+      ]
+    },
+    "placeholderOrSha256": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      ]
+    },
+    "placeholderOrGitObject": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      ]
+    },
+    "placeholderOrAbsolutePath": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        { "type": "string", "pattern": "^/[ -~]*$" }
+      ]
+    },
+    "placeholderOrSystemId": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        { "type": "string", "pattern": "^[0-9]{10,24}$" }
+      ]
+    },
+    "placeholderOrPositiveInteger": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      ]
+    },
+    "placeholderOrYes": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        { "const": "YES", "type": "string" }
+      ]
+    },
+    "placeholderOrBooleanString": {
+      "anyOf": [
+        { "$ref": "#/$defs/placeholder" },
+        { "enum": ["true", "false"], "type": "string" }
+      ]
+    }
+  },
+  "properties": {
+    "document_kind": {
+      "const": "POSTGRESQL_RECOVERY_APPROVAL_PREPARATION",
+      "type": "string"
+    },
+    "format_version": { "const": "1", "type": "string" },
+    "record_id": {
+      "type": "string",
+      "pattern": "^POSTGRES_RECOVERY_[A-Z0-9_-]{1,80}$"
+    },
+    "authorization_state": {
+      "const": "DRAFT_NOT_AUTHORIZED",
+      "type": "string"
+    },
+    "evidence_age": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 5,
+      "maxProperties": 5,
+      "required": [
+        "trading_safety_observed_at_utc",
+        "job_plane_observed_at_utc",
+        "database_incident_observed_date",
+        "evidence_status",
+        "current_revalidation"
+      ],
+      "properties": {
+        "trading_safety_observed_at_utc": {
+          "const": "2026-07-11T23:46:34Z",
+          "type": "string"
+        },
+        "job_plane_observed_at_utc": {
+          "const": "2026-07-16T15:12:29Z",
+          "type": "string"
+        },
+        "database_incident_observed_date": {
+          "const": "2026-07-16",
+          "type": "string"
+        },
+        "evidence_status": {
+          "enum": [
+            "HISTORICAL_READ_ONLY_NOT_CURRENT",
+            "CURRENT_REVIEW_COMPLETE"
+          ],
+          "type": "string"
+        },
+        "current_revalidation": { "$ref": "#/$defs/placeholderOrTimestamp" }
+      }
+    },
+    "safety_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 10,
+      "maxProperties": 10,
+      "required": [
+        "requested_mode",
+        "effective_mode",
+        "kill_switch",
+        "orders_count",
+        "trades_count",
+        "job_api_state",
+        "job_worker_state",
+        "job_scheduler_state",
+        "job_scheduler_timer_state",
+        "port_8401_state"
+      ],
+      "properties": {
+        "requested_mode": { "const": "paper", "type": "string" },
+        "effective_mode": { "const": "paper", "type": "string" },
+        "kill_switch": { "const": "INACTIVE", "type": "string" },
+        "orders_count": { "const": "30", "type": "string" },
+        "trades_count": { "const": "0", "type": "string" },
+        "job_api_state": { "const": "INACTIVE", "type": "string" },
+        "job_worker_state": { "const": "INACTIVE", "type": "string" },
+        "job_scheduler_state": { "const": "INACTIVE", "type": "string" },
+        "job_scheduler_timer_state": { "const": "DISABLED", "type": "string" },
+        "port_8401_state": { "const": "CLOSED", "type": "string" }
+      }
+    },
+    "expected_pre_recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 9,
+      "maxProperties": 9,
+      "required": [
+        "alembic_head",
+        "canonical_rows",
+        "quarantine_rows",
+        "jobs_count",
+        "job_attempts_count",
+        "job_events_count",
+        "scheduler_heartbeats_count",
+        "job_artifacts_count",
+        "worker_heartbeats_count"
+      ],
+      "properties": {
+        "alembic_head": {
+          "const": "0003_contract_lineage_repair_OR_0004_durable_research_jobs",
+          "type": "string"
+        },
+        "canonical_rows": { "const": "43055", "type": "string" },
+        "quarantine_rows": { "const": "222", "type": "string" },
+        "jobs_count": { "const": "0", "type": "string" },
+        "job_attempts_count": { "const": "0", "type": "string" },
+        "job_events_count": { "const": "0", "type": "string" },
+        "scheduler_heartbeats_count": { "const": "0", "type": "string" },
+        "job_artifacts_count": { "const": "0", "type": "string" },
+        "worker_heartbeats_count": { "const": "0", "type": "string" }
+      }
+    },
+    "stale_pid_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 5,
+      "maxProperties": 5,
+      "required": [
+        "classification",
+        "incident_evidence_reference",
+        "zero_write_gate_reference",
+        "pid_file_action",
+        "current_pid_revalidation"
+      ],
+      "properties": {
+        "classification": { "const": "STALE_PID", "type": "string" },
+        "incident_evidence_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#1-known-incident-state",
+          "type": "string"
+        },
+        "zero_write_gate_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#52-zero-write-canonical-path-overlap-storage-and-destination-gates",
+          "type": "string"
+        },
+        "pid_file_action": { "const": "PRESERVE_UNCHANGED", "type": "string" },
+        "current_pid_revalidation": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "STALE_PID_REVALIDATED_NO_LIVE_PROCESS", "type": "string" }
+          ]
+        }
+      }
+    },
+    "recovery_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 6,
+      "maxProperties": 6,
+      "required": [
+        "postmaster_status_outcome",
+        "process_identity_outcome",
+        "port_55432_outcome",
+        "data_directory_outcome",
+        "independent_disk_outcome",
+        "recovery_log_outcome"
+      ],
+      "properties": {
+        "postmaster_status_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "OFFLINE_CONFIRMED", "type": "string" }
+          ]
+        },
+        "process_identity_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "NO_LIVE_POSTMASTER_FOR_ORIGINAL_PGDATA", "type": "string" }
+          ]
+        },
+        "port_55432_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "CLOSED", "type": "string" }
+          ]
+        },
+        "data_directory_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "MATCHED_REVIEWED_IDENTITY", "type": "string" }
+          ]
+        },
+        "independent_disk_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "INDEPENDENT_CAPACITY_CONFIRMED", "type": "string" }
+          ]
+        },
+        "recovery_log_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "INTERRUPTED_SHUTDOWN_CLASSIFIED_WITHOUT_DENIED_PATTERNS", "type": "string" }
+          ]
+        }
+      }
+    },
+    "procedure_references": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 3,
+      "maxProperties": 3,
+      "required": [
+        "prohibited_actions_reference",
+        "exact_runbook_commands_reference",
+        "execution_status"
+      ],
+      "properties": {
+        "prohibited_actions_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#2-absolute-prohibitions-and-stop-conditions",
+          "type": "string"
+        },
+        "exact_runbook_commands_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#5-conditional-operator-procedure",
+          "type": "string"
+        },
+        "execution_status": { "const": "NOT_EXECUTED", "type": "string" }
+      }
+    },
+    "backup_restore_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 7,
+      "maxProperties": 7,
+      "required": [
+        "backup_permission_reference",
+        "backup_permission_outcome",
+        "restore_reference",
+        "restore_outcome",
+        "rollback_reference",
+        "stop_conditions_reference",
+        "stop_conditions_outcome"
+      ],
+      "properties": {
+        "backup_permission_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#4-exact-dual-reviewed-execution-transcript",
+          "type": "string"
+        },
+        "backup_permission_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "AUTHENTICATED_DUAL_REVIEW_CONFIRMED", "type": "string" }
+          ]
+        },
+        "restore_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#515-create-one-isolated-database-restore-and-compare-exact-gates",
+          "type": "string"
+        },
+        "restore_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "ISOLATED_RESTORE_ONLY_REVIEWED", "type": "string" }
+          ]
+        },
+        "rollback_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#6-non-destructive-rollback",
+          "type": "string"
+        },
+        "stop_conditions_reference": {
+          "const": "docs/production/runbooks/postgresql-preserve-recover.md#2-absolute-prohibitions-and-stop-conditions",
+          "type": "string"
+        },
+        "stop_conditions_outcome": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "STOP_CONDITIONS_REVIEWED", "type": "string" }
+          ]
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 6,
+      "maxProperties": 6,
+      "required": [
+        "postgresql_major",
+        "cluster",
+        "host",
+        "port",
+        "database",
+        "pgdata"
+      ],
+      "properties": {
+        "postgresql_major": { "const": "16", "type": "string" },
+        "cluster": { "const": "trading-agent", "type": "string" },
+        "host": { "const": "127.0.0.1", "type": "string" },
+        "port": { "const": "55432", "type": "string" },
+        "database": { "const": "trading_agent", "type": "string" },
+        "pgdata": {
+          "const": "/home/thenam176/.local/share/trading-agent/postgres/16/trading-agent",
+          "type": "string"
+        }
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 9,
+      "maxProperties": 9,
+      "required": [
+        "operation",
+        "scope",
+        "execution_mode",
+        "live_execution_approved",
+        "live_trading_approved",
+        "baseline_complete",
+        "all_listed_units_inactive",
+        "original_port_55432_listener_absent",
+        "review_completed_at_utc"
+      ],
+      "properties": {
+        "operation": {
+          "const": "POSTGRESQL16_RECOVERY_SUBGATE",
+          "type": "string"
+        },
+        "scope": {
+          "const": "DATA_001_PRESERVATION_RECOVERY_ONLY",
+          "type": "string"
+        },
+        "execution_mode": { "const": "PAPER_ONLY", "type": "string" },
+        "live_execution_approved": { "const": "false", "type": "string" },
+        "live_trading_approved": { "const": "false", "type": "string" },
+        "baseline_complete": { "$ref": "#/$defs/placeholderOrBooleanString" },
+        "all_listed_units_inactive": { "$ref": "#/$defs/placeholderOrBooleanString" },
+        "original_port_55432_listener_absent": {
+          "$ref": "#/$defs/placeholderOrBooleanString"
+        },
+        "review_completed_at_utc": { "$ref": "#/$defs/placeholderOrTimestamp" }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 7,
+      "maxProperties": 7,
+      "required": [
+        "canonical_transcript_sha256",
+        "source_repository",
+        "migration_artifact",
+        "expected_catalog_artifact",
+        "original_identity_evidence",
+        "original_identity_evidence_sha256",
+        "original_pgdata_fingerprint"
+      ],
+      "properties": {
+        "canonical_transcript_sha256": { "$ref": "#/$defs/placeholderOrSha256" },
+        "source_repository": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "migration_artifact": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "expected_catalog_artifact": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "original_identity_evidence": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "original_identity_evidence_sha256": { "$ref": "#/$defs/placeholderOrSha256" },
+        "original_pgdata_fingerprint": { "$ref": "#/$defs/placeholderOrSha256" }
+      }
+    },
+    "transcript": {
+      "type": "object",
+      "description": "The exact 50 fields from runbook Section 4. Raw member order is binding and enforced by the validator.",
+      "additionalProperties": false,
+      "minProperties": 50,
+      "maxProperties": 50,
+      "required": [
+        "DECISION",
+        "CHANGE_ID",
+        "INCIDENT_ID",
+        "CHANGE_ARTIFACT",
+        "CHANGE_ARTIFACT_SHA256",
+        "APPROVED_AT_UTC",
+        "EXPIRES_AT_UTC",
+        "OPERATOR_NAME",
+        "REVIEWER_NAME",
+        "OPERATOR_ATTESTATION",
+        "REVIEWER_ATTESTATION",
+        "RUN_ID",
+        "RUNBOOK_SHA256",
+        "SOURCE_COMMIT",
+        "SOURCE_TREE",
+        "MIGRATION_SHA256",
+        "EXPECTED_CATALOG_SHA256",
+        "EXPECTED_CATALOG_QUERY_ID",
+        "EXPECTED_CATALOG_PROVENANCE",
+        "EXPECTED_CATALOG_REVIEW_ATTESTATION",
+        "ORIG_SYSTEM_ID",
+        "ORIG_PGDATA_NLINK",
+        "ORIG_SOCKET_NLINK",
+        "ORIG_LOG_DIR_NLINK",
+        "ORIG_LOG_NLINK",
+        "EVIDENCE_PARENT",
+        "PRESERVE_PARENT",
+        "BACKUP_PARENT",
+        "SECRET_PARENT",
+        "ISO_HOST",
+        "ISO_PORT",
+        "ISO_ADMIN_DB",
+        "ISO_RESTORE_DB",
+        "ISO_PGDATA",
+        "ISO_SYSTEM_ID",
+        "ISO_SOCKET",
+        "ISO_ADMIN_ENV",
+        "ALLOW_STOP_ALL_LISTED_UNITS",
+        "ALLOW_OFFLINE_COLD_COPY",
+        "ALLOW_ONE_ORIGINAL_START",
+        "ALLOW_ONE_ORIGINAL_STOP",
+        "ALLOW_READ_ONLY_VERIFICATION",
+        "ALLOW_IMMEDIATE_LOGICAL_BACKUP",
+        "ALLOW_MIGRATE_ORIGINAL_IF_0003",
+        "ALLOW_ISOLATED_RESTORE",
+        "ACCEPT_INTERRUPTED_SHUTDOWN",
+        "ACCEPT_CHECKSUMS_DISABLED",
+        "ACKNOWLEDGE_NO_PITR",
+        "RECOVERY_LOG_POLICY_ID",
+        "ORIGINAL_START_POLICY_ID"
+      ],
+      "properties": {
+        "DECISION": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "APPROVED_POSTGRESQL16_RECOVERY_SUBGATE", "type": "string" }
+          ]
+        },
+        "CHANGE_ID": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{1,127}$" }
+          ]
+        },
+        "INCIDENT_ID": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{1,127}$" }
+          ]
+        },
+        "CHANGE_ARTIFACT": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "CHANGE_ARTIFACT_SHA256": { "$ref": "#/$defs/placeholderOrSha256" },
+        "APPROVED_AT_UTC": { "$ref": "#/$defs/placeholderOrTimestamp" },
+        "EXPIRES_AT_UTC": { "$ref": "#/$defs/placeholderOrTimestamp" },
+        "OPERATOR_NAME": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@-]{1,127}$" }
+          ]
+        },
+        "REVIEWER_NAME": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@-]{1,127}$" }
+          ]
+        },
+        "OPERATOR_ATTESTATION": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "I_APPROVE_THIS_EXACT_RECOVERY_TRANSCRIPT", "type": "string" }
+          ]
+        },
+        "REVIEWER_ATTESTATION": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "I_INDEPENDENTLY_REVIEWED_THIS_EXACT_RECOVERY_TRANSCRIPT", "type": "string" }
+          ]
+        },
+        "RUN_ID": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$" }
+          ]
+        },
+        "RUNBOOK_SHA256": { "$ref": "#/$defs/placeholderOrSha256" },
+        "SOURCE_COMMIT": { "$ref": "#/$defs/placeholderOrGitObject" },
+        "SOURCE_TREE": { "$ref": "#/$defs/placeholderOrGitObject" },
+        "MIGRATION_SHA256": { "$ref": "#/$defs/placeholderOrSha256" },
+        "EXPECTED_CATALOG_SHA256": { "$ref": "#/$defs/placeholderOrSha256" },
+        "EXPECTED_CATALOG_QUERY_ID": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "PG16_COMPLETE_RELATION_CATALOG_V2", "type": "string" }
+          ]
+        },
+        "EXPECTED_CATALOG_PROVENANCE": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            {
+              "const": "PRECOMPUTED_CLEAN_DISPOSABLE_PG16_EXACT_0001_0004_CATALOG_V2",
+              "type": "string"
+            }
+          ]
+        },
+        "EXPECTED_CATALOG_REVIEW_ATTESTATION": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            {
+              "const": "INDEPENDENTLY_REVIEWED_NOT_FROM_INCIDENT_OR_THIS_RUN_RESTORE",
+              "type": "string"
+            }
+          ]
+        },
+        "ORIG_SYSTEM_ID": { "$ref": "#/$defs/placeholderOrSystemId" },
+        "ORIG_PGDATA_NLINK": { "$ref": "#/$defs/placeholderOrPositiveInteger" },
+        "ORIG_SOCKET_NLINK": { "$ref": "#/$defs/placeholderOrPositiveInteger" },
+        "ORIG_LOG_DIR_NLINK": { "$ref": "#/$defs/placeholderOrPositiveInteger" },
+        "ORIG_LOG_NLINK": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "1", "type": "string" }
+          ]
+        },
+        "EVIDENCE_PARENT": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "PRESERVE_PARENT": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "BACKUP_PARENT": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "SECRET_PARENT": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "ISO_HOST": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "ISO_PORT": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "type": "string", "pattern": "^[1-9][0-9]{0,4}$" }
+          ]
+        },
+        "ISO_ADMIN_DB": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "postgres", "type": "string" }
+          ]
+        },
+        "ISO_RESTORE_DB": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            {
+              "type": "string",
+              "pattern": "^trading_agent_restore_[A-Za-z0-9_]{1,48}$"
+            }
+          ]
+        },
+        "ISO_PGDATA": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "ISO_SYSTEM_ID": { "$ref": "#/$defs/placeholderOrSystemId" },
+        "ISO_SOCKET": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "ISO_ADMIN_ENV": { "$ref": "#/$defs/placeholderOrAbsolutePath" },
+        "ALLOW_STOP_ALL_LISTED_UNITS": { "$ref": "#/$defs/placeholderOrYes" },
+        "ALLOW_OFFLINE_COLD_COPY": { "$ref": "#/$defs/placeholderOrYes" },
+        "ALLOW_ONE_ORIGINAL_START": { "$ref": "#/$defs/placeholderOrYes" },
+        "ALLOW_ONE_ORIGINAL_STOP": { "$ref": "#/$defs/placeholderOrYes" },
+        "ALLOW_READ_ONLY_VERIFICATION": { "$ref": "#/$defs/placeholderOrYes" },
+        "ALLOW_IMMEDIATE_LOGICAL_BACKUP": { "$ref": "#/$defs/placeholderOrYes" },
+        "ALLOW_MIGRATE_ORIGINAL_IF_0003": { "$ref": "#/$defs/placeholderOrYes" },
+        "ALLOW_ISOLATED_RESTORE": { "$ref": "#/$defs/placeholderOrYes" },
+        "ACCEPT_INTERRUPTED_SHUTDOWN": { "$ref": "#/$defs/placeholderOrYes" },
+        "ACCEPT_CHECKSUMS_DISABLED": { "$ref": "#/$defs/placeholderOrYes" },
+        "ACKNOWLEDGE_NO_PITR": { "$ref": "#/$defs/placeholderOrYes" },
+        "RECOVERY_LOG_POLICY_ID": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "PG16_INTERRUPTED_RECOVERY_V1", "type": "string" }
+          ]
+        },
+        "ORIGINAL_START_POLICY_ID": {
+          "anyOf": [
+            { "$ref": "#/$defs/placeholder" },
+            { "const": "PG16_FAIL_CLOSED_MAINTENANCE_START_V1", "type": "string" }
+          ]
+        }
+      }
+    },
+    "authorization_notice": {
+      "const": "RECOVERY APPROVAL STATUS: DRAFT — NOT AUTHORIZED",
+      "type": "string"
+    }
+  }
+}

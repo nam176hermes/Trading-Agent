@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "asset": {
+      "description": "Case-insensitive canonical Phase 1 asset symbol; surrounding ASCII whitespace is normalized by the service.",
+      "pattern": "^[ \\t\\r\\n\\x0c\\x0b]*(?:[aA][aA][pP][lL]|[aA][dD][aA]|[aA][mM][zZ][nN]|[aA][vV][aA][xX]|[bB][tT][cC]|[dD][oO][gG][eE]|[dD][oO][tT]|[eE][tT][hH]|[gG][oO][oO][gG][lL]|[lL][iI][nN][kK]|[mM][aA][tT][iI][cC]|[mM][eE][tT][aA]|[mM][sS][fF][tT]|[nN][vV][dD][aA]|[sS][oO][lL]|[tT][oO][nN]|[tT][sS][lL][aA])[ \\t\\r\\n\\x0c\\x0b]*$",
+      "title": "Asset",
+      "type": "string",
+      "x-canonical-values": [
+        "AAPL",
+        "ADA",
+        "AMZN",
+        "AVAX",
+        "BTC",
+        "DOGE",
+        "DOT",
+        "ETH",
+        "GOOGL",
+        "LINK",
+        "MATIC",
+        "META",
+        "MSFT",
+        "NVDA",
+        "SOL",
+        "TON",
+        "TSLA"
+      ]
+    },
+    "date_from": {
+      "title": "Date From",
+      "type": "null"
+    },
+    "date_to": {
+      "title": "Date To",
+      "type": "null"
+    },
+    "strategy_id": {
+      "const": "legacy-binary-report-v1",
+      "title": "Strategy Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "asset",
+    "strategy_id",
+    "date_from",
+    "date_to"
+  ],
+  "title": "BacktestPayload",
+  "type": "object"
+}

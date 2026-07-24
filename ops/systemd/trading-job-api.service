@@ -1,0 +1,42 @@
+[Unit]
+Description=Trading Agent Phase 4B localhost Job Command API
+Wants=network.target
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a
+EnvironmentFile=/etc/trading-agent/job-api.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a
+Environment=TRADING_JOB_API_HOST=127.0.0.1
+Environment=TRADING_JOB_API_PORT=8401
+Environment=TRADING_MODE=paper
+Environment=LIVE_EXECUTION_ENABLED=false
+Environment=LIVE_TRADING_APPROVED=false
+ExecStart=/opt/trading-agent-phase4/releases/app-fdc085a05019d700ccbce59370941e2c97ef899a/.venv/bin/python3.11 -m apps.job_api.main
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillMode=control-group
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+LockPersonality=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=default.target

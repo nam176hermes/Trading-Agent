@@ -1,0 +1,21 @@
+flowchart TD
+    UI[Next.js Dashboard] --> API[FastAPI Control API]
+    API --> PG[(PostgreSQL operational state and audit)]
+    API --> Q[Durable job queue]
+    Q --> DW[Data Worker]
+    Q --> RW[Research Worker]
+    Q --> BW[Backtest Worker]
+    DW --> RP[ResearchPacket and Signals]
+    RW --> RP
+    RP --> PC[Portfolio Constructor]
+    PC --> RISK[Deterministic Risk Service]
+    RISK --> PLAN[SignedOrderPlan]
+    PLAN --> EXEC[Execution Service]
+    EXEC --> PAPER[Paper Adapter]
+    EXEC --> CCXT[CCXT Adapter]
+    EXEC --> STOCK[Stock Adapter]
+    PAPER --> REC[Reconciler]
+    CCXT --> REC
+    STOCK --> REC
+    REC --> PG
+    REC --> OBS[Metrics, Traces, Alerts]
