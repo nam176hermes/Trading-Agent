@@ -1,0 +1,24 @@
+# Generated data — never commit
+__pycache__/
+*.pyc
+logs/
+reports/
+decisions/
+memory/
+backtest_results/
+.mode
+
+# Environment
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Archive (old code, not active)
+_archive/
+
+# CodeGraph
+.codegraph/
