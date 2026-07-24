@@ -5,6 +5,7 @@ from .authority import (
     ComponentAuthority,
     SourceAuthority,
     load_source_authority,
+    parse_source_authority,
 )
 from .manifest import (
     ComponentManifest,
@@ -26,6 +27,7 @@ __all__ = (
     "SourceAuthority",
     "canonical_manifest_bytes",
     "load_source_authority",
+    "parse_source_authority",
     "propose_manifest",
     "verify_manifest_source",
 )

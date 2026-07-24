@@ -1,6 +1,6 @@
 .PHONY: audit audit-release audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
-	check-d0-closure \
+	check-d0-closure check-test-skips check-critical-coverage \
 	check-secrets test test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
 	test-event-ledger-runtime-postgres \
@@ -11,6 +11,7 @@
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 RUNTIME_RELEASE_WHEELHOUSE_ROOT ?= $(HOME)/.cache/trading-agent/runtime-release-wheelhouse
 RUNTIME_RELEASE_WHEELHOUSE := $(RUNTIME_RELEASE_WHEELHOUSE_ROOT)/$(RUNTIME_RELEASE_LOCK_SHA256)
+TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
@@ -59,6 +60,14 @@ check-contracts:
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py
+
+check-test-skips:
+	uv run python scripts/check_test_governance.py \
+		--report-dir "$(TEST_EVIDENCE_DIR)/test-governance"
+
+check-critical-coverage:
+	uv run python scripts/check_critical_coverage.py \
+		--report-dir "$(TEST_EVIDENCE_DIR)/critical-coverage"
 
 check-secrets:
 	uv run python scripts/verify_secret_hygiene.py --root "$(CURDIR)"
@@ -123,4 +132,4 @@ build-dashboard:
 
 test-all: audit check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
 
-ci: test-all build-dashboard audit-python-source audit-dependencies
+ci: test-all check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies

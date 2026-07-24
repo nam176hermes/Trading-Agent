@@ -202,6 +202,55 @@ def test_heartbeat_preserves_the_callers_exact_expected_state() -> None:
     )
 
 
+def test_worker_lifecycle_calls_fail_closed_when_the_lease_fence_is_stale() -> None:
+    connection = _Connection(None, {"control": "STALE"}, None)
+    repository = _worker(connection)
+    generated = iter(("event_start", "event_finalize"))
+    repository._new_id = lambda prefix: next(generated)
+    identity = ProcessIdentity(123, 123, 456, "a" * 64)
+
+    assert not repository.start_attempt(
+        "job",
+        "attempt",
+        "worker",
+        "stale-lease-token",
+        identity,
+        "trace-start-stale",
+    )
+    assert not repository.heartbeat(
+        "job",
+        "attempt",
+        "worker",
+        "stale-lease-token",
+        30,
+        expected_state=JobState.RUNNING,
+        expected_attempt_outcome="RUNNING",
+    )
+    assert not repository.finalize(
+        "job",
+        "attempt",
+        "worker",
+        "stale-lease-token",
+        expected_state=JobState.RUNNING,
+        expected_attempt_outcome="RUNNING",
+        final_state=JobState.FAILED,
+        reason_code="LEASE_FENCE_LOST",
+        trace_id="trace-finalize-stale",
+        exit_code=1,
+    )
+
+    statements = [statement for statement, _ in connection.calls]
+    assert len(statements) == 3
+    assert "job_plane.worker_start_snapshot" in statements[0]
+    assert "job_plane.worker_control_snapshot_lease" in statements[1]
+    assert "job_plane.worker_finalize_snapshot" in statements[2]
+    assert all(
+        parameters is not None
+        and parameters[:4] == ("job", "attempt", "worker", "stale-lease-token")
+        for _, parameters in connection.calls
+    )
+
+
 def test_worker_finalize_keeps_artifact_and_transition_in_one_transaction() -> None:
     connection = _Connection({"finalized": True}, None)
     repository = _worker(connection)

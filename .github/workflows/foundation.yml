@@ -47,3 +47,12 @@ jobs:
 
       - name: Run canonical local and CI gate
         run: make ci
+
+      - name: Publish test governance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-governance-${{ github.run_id }}
+          path: /tmp/trading-agent-test-evidence
+          if-no-files-found: warn
+          retention-days: 14

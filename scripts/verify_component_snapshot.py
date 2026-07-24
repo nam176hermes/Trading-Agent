@@ -18,8 +18,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from packages.consolidation import (  # noqa: E402
     AuthorityError,
+    ComponentAuthority,
     ComponentManifest,
+    ImportPolicy,
     ManifestError,
+    SourceAuthority,
     canonical_manifest_bytes,
     load_source_authority,
     propose_manifest,
@@ -86,11 +89,13 @@ def _validated_root(path: Path) -> Path:
         raise CliError("E_DESTINATION") from None
 
 
-def _validate_source(authority_path: Path, manifest: ComponentManifest, raw: bytes) -> None:
+def _authority_component(
+    authority: SourceAuthority,
+    manifest: ComponentManifest,
+) -> tuple[ComponentAuthority, ImportPolicy]:
     try:
-        authority = load_source_authority(authority_path)
         component = authority.components[manifest.component]
-    except (AuthorityError, KeyError):
+    except KeyError:
         raise CliError("E_AUTHORITY") from None
     try:
         policy = component_policy(manifest.component)
@@ -105,6 +110,15 @@ def _validate_source(authority_path: Path, manifest: ComponentManifest, raw: byt
         or manifest.policy != policy
     ):
         raise CliError("E_TAMPER")
+    return component, policy
+
+
+def _validate_source(authority_path: Path, manifest: ComponentManifest, raw: bytes) -> None:
+    try:
+        authority = load_source_authority(authority_path)
+    except AuthorityError:
+        raise CliError("E_AUTHORITY") from None
+    component, policy = _authority_component(authority, manifest)
     try:
         expected = canonical_manifest_bytes(propose_manifest(component, policy))
     except ManifestError as error:
@@ -271,6 +285,24 @@ def verify_snapshot(
 ) -> ComponentManifest:
     loaded = _load_manifest(manifest_path)
     _validate_source(authority_path, loaded.manifest, loaded.raw)
+    root = _validated_root(root_path)
+    if revision is None:
+        _verify_working(root, loaded.manifest)
+    else:
+        _verify_revision(root, revision, loaded.manifest)
+    return loaded.manifest
+
+
+def verify_embedded_snapshot(
+    authority: SourceAuthority,
+    manifest_path: Path,
+    root_path: Path,
+    revision: str | None = None,
+) -> ComponentManifest:
+    """Verify canonical embedded evidence without resolving external Git objects."""
+
+    loaded = _load_manifest(manifest_path)
+    _authority_component(authority, loaded.manifest)
     root = _validated_root(root_path)
     if revision is None:
         _verify_working(root, loaded.manifest)

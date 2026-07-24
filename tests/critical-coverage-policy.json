@@ -1,0 +1,192 @@
+{
+  "schema_version": 1,
+  "long_term_goals": {
+    "branch_percent": 90,
+    "line_percent": 95
+  },
+  "python": {
+    "coverage_version": "7.10.6",
+    "sources": [
+      "packages/domain",
+      "packages/event_ledger",
+      "services/job_worker",
+      "packages/job_contracts",
+      "packages/job_authority",
+      "services/job_store"
+    ],
+    "pytest_paths": [
+      "tests/domain",
+      "tests/event_ledger",
+      "tests/jobs/test_state_machine.py",
+      "tests/jobs/test_worker_safety.py",
+      "tests/jobs/test_safety_state.py",
+      "tests/jobs/test_child_environment.py",
+      "tests/jobs/test_job_authority_verifier.py",
+      "tests/jobs/test_repository_transition_capabilities.py",
+      "tests/jobs/test_repository_cancel_acl.py",
+      "tests/jobs/test_repository_enqueue.py",
+      "tests/jobs/test_repository_queries.py",
+      "tests/jobs/test_repository_transactions.py",
+      "tests/jobs/test_worker_leases.py",
+      "tests/jobs/test_worker_lifecycle.py"
+    ],
+    "units": [
+      {
+        "name": "packages/domain",
+        "prefixes": ["packages/domain/"],
+        "line_minimum": {"covered": 665, "total": 699},
+        "branch_minimum": {"covered": 173, "total": 198},
+        "line_goal_percent": 95,
+        "branch_goal_percent": 90,
+        "line_next_step_percent": 95,
+        "branch_next_step_percent": 89
+      },
+      {
+        "name": "packages/event_ledger",
+        "prefixes": ["packages/event_ledger/"],
+        "line_minimum": {"covered": 422, "total": 443},
+        "branch_minimum": {"covered": 137, "total": 152},
+        "line_goal_percent": 95,
+        "branch_goal_percent": 90,
+        "line_next_step_percent": 95,
+        "branch_next_step_percent": 90
+      },
+      {
+        "name": "services/job_worker/safety.py",
+        "files": ["services/job_worker/safety.py"],
+        "line_minimum": {"covered": 119, "total": 137},
+        "branch_minimum": {"covered": 45, "total": 56},
+        "line_goal_percent": 95,
+        "branch_goal_percent": 90,
+        "line_next_step_percent": 90,
+        "branch_next_step_percent": 85
+      },
+      {
+        "name": "job state machine",
+        "files": [
+          "packages/job_contracts/enums.py",
+          "packages/job_contracts/transitions.py"
+        ],
+        "line_minimum": {"covered": 67, "total": 67},
+        "branch_minimum": {"covered": 16, "total": 16},
+        "line_goal_percent": 95,
+        "branch_goal_percent": 90,
+        "line_next_step_percent": 95,
+        "branch_next_step_percent": 90
+      },
+      {
+        "name": "transition authority",
+        "prefixes": ["packages/job_authority/"],
+        "line_minimum": {"covered": 209, "total": 242},
+        "branch_minimum": {"covered": 72, "total": 92},
+        "line_goal_percent": 95,
+        "branch_goal_percent": 90,
+        "line_next_step_percent": 90,
+        "branch_next_step_percent": 82
+      },
+      {
+        "name": "transition repositories",
+        "files": [
+          "services/job_store/repository.py",
+          "services/job_store/worker_repository.py"
+        ],
+        "line_minimum": {"covered": 251, "total": 427},
+        "branch_minimum": {"covered": 34, "total": 118},
+        "line_goal_percent": 95,
+        "branch_goal_percent": 90,
+        "line_next_step_percent": 65,
+        "branch_next_step_percent": 40
+      }
+    ]
+  },
+  "dashboard": {
+    "minimum_node_major": 22,
+    "include_files": [
+      "src/lib/trading/access-policy.ts",
+      "src/lib/trading/auth.ts",
+      "src/lib/trading/request-body.ts",
+      "src/lib/trading/session.ts",
+      "src/proxy.ts"
+    ],
+    "test_files": [
+      "tests/session-policy.test.mjs",
+      "tests/mutation-policy.test.mjs",
+      "tests/api-access-boundary.test.mjs",
+      "tests/dashboard-request-hardening.test.mjs",
+      "tests/browser-auth-source.test.mjs"
+    ],
+    "unit": {
+      "name": "dashboard auth and mutation policy",
+      "files": [
+        "src/lib/trading/access-policy.ts",
+        "src/lib/trading/auth.ts",
+        "src/lib/trading/request-body.ts",
+        "src/lib/trading/session.ts",
+        "src/proxy.ts"
+      ],
+      "line_minimum": {"covered": 430, "total": 449},
+      "branch_minimum": {"covered": 141, "total": 159},
+      "line_goal_percent": 95,
+      "branch_goal_percent": 90,
+      "line_next_step_percent": 95,
+      "branch_next_step_percent": 90
+    }
+  },
+  "required_cases": [
+    {
+      "case": "paper mode",
+      "tests": ["tests/jobs/test_worker_safety.py::test_only_complete_explicit_paper_evidence_passes"]
+    },
+    {
+      "case": "unknown mode and both live gates",
+      "tests": ["tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks"]
+    },
+    {
+      "case": "kill switch active and unknown",
+      "tests": [
+        "tests/jobs/test_worker_safety.py::test_only_complete_explicit_paper_evidence_passes",
+        "tests/jobs/test_worker_safety.py::test_worker_uses_canonical_kill_switch_format_only"
+      ]
+    },
+    {
+      "case": "invalid manifest",
+      "tests": [
+        "tests/jobs/test_job_authority_verifier.py::test_authority_manifest_rejects_placeholder_input_hash",
+        "tests/jobs/test_job_authority_verifier.py::test_authority_manifest_rejects_valid_shape_with_wrong_catalog_digest"
+      ]
+    },
+    {
+      "case": "stale safety evidence",
+      "tests": ["tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots"]
+    },
+    {
+      "case": "unsafe child environment",
+      "tests": [
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected",
+        "tests/jobs/test_child_environment.py::test_child_can_only_see_bound_semantic_tree_and_exact_output_roots"
+      ]
+    },
+    {
+      "case": "cancellation during heartbeat",
+      "tests": ["tests/jobs/test_worker_lifecycle.py::test_cancel_race_after_popen_and_before_start_finalizes_claimed_attempt"]
+    },
+    {
+      "case": "lease and fence mismatch",
+      "tests": [
+        "tests/jobs/test_repository_transition_capabilities.py::test_worker_lifecycle_calls_fail_closed_when_the_lease_fence_is_stale"
+      ]
+    },
+    {
+      "case": "transition and event atomic failure",
+      "tests": ["tests/jobs/test_repository_cancel_acl.py::test_cancel_event_failure_escapes_the_same_transaction_for_rollback"]
+    },
+    {
+      "case": "dashboard auth timeout, origin and body-size failures",
+      "tests": [
+        "apps/dashboard/tests/browser-auth-source.test.mjs::auth guard stays fail-closed on timeout and network errors",
+        "apps/dashboard/tests/api-access-boundary.test.mjs::rejects absent and cross-origin mutation origins",
+        "apps/dashboard/tests/dashboard-request-hardening.test.mjs::shared reader rejects declared, chunked, and invalid UTF-8 request bodies"
+      ]
+    }
+  ]
+}

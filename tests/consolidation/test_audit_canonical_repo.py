@@ -192,6 +192,15 @@ def _rewrite_json(path: Path, replacement: tuple[str, object]) -> None:
     )
 
 
+def _remove_authority_repositories(repository: Path, *, keep: str | None = None) -> None:
+    authority = json.loads(
+        (repository / "ops/consolidation/source-authority.json").read_text(encoding="utf-8")
+    )
+    for name, component in authority["components"].items():
+        if name != keep:
+            shutil.rmtree(Path(component["repository"]))
+
+
 def _canonical_checkpoint() -> tuple[str, str]:
     return _git(ROOT, "rev-parse", "HEAD"), _git(ROOT, "status", "--porcelain=v1")
 
@@ -547,6 +556,83 @@ def test_json_success_has_exact_one_root_status_and_component_keys(tmp_path: Pat
     assert payload["status"] == "clean"
     assert set(payload["components"]) == {"core", "backend", "dashboard"}
     assert payload["result"] == "PASS"
+
+
+def test_audit_accepts_portable_clone_when_all_external_authorities_are_absent(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+
+    result = _run(repository, "--release")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_audit_rejects_partial_external_authority_availability(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository, keep="core")
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_AUTHORITY"
+
+
+def test_portable_audit_still_rejects_component_byte_tamper(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+    target = repository / "legacy/research-backend/main.py"
+    target.write_text("print('tampered')\n", encoding="utf-8")
+    _git(repository, "add", "--", "legacy/research-backend/main.py")
+    _git(repository, "commit", "-qm", "tamper portable component")
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_TAMPER: legacy/research-backend/main.py"
+
+
+def test_portable_audit_rejects_manifest_identity_tamper(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    manifest = repository / "ops/consolidation/backend-source-manifest.json"
+    _rewrite_json(manifest, ("source_commit", "f" * 40))
+    _remove_authority_repositories(repository)
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_TAMPER"
+
+
+def test_portable_audit_rejects_manifest_aggregate_tamper(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    manifest = repository / "ops/consolidation/backend-source-manifest.json"
+    _rewrite_json(manifest, ("aggregate_sha256", "f" * 64))
+    _remove_authority_repositories(repository)
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_MANIFEST"
+
+
+def test_portable_audit_rejects_coordinated_authority_and_manifest_tamper(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    authority_path = repository / "ops/consolidation/source-authority.json"
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    authority["components"]["backend"]["commit"] = "f" * 40
+    authority_path.write_text(json.dumps(authority), encoding="utf-8")
+    manifest = repository / "ops/consolidation/backend-source-manifest.json"
+    _rewrite_json(manifest, ("source_commit", "f" * 40))
+    _remove_authority_repositories(repository)
+
+    result = _run(repository)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_AUTHORITY"
 
 
 def test_json_failure_redacts_untrusted_absolute_root_from_all_output(tmp_path: Path) -> None:

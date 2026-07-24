@@ -126,5 +126,10 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
     assert "check-d0-closure:" in makefile
     assert "uv run pytest -q tests/foundation/test_d0_closure.py" in makefile
     assert "run: make ci" in workflow
-    assert "ci: test-all build-dashboard audit-python-source audit-dependencies" in makefile
+    assert "uses: actions/upload-artifact@v4" in workflow
+    assert "path: /tmp/trading-agent-test-evidence" in workflow
+    assert (
+        "ci: test-all check-test-skips check-critical-coverage build-dashboard "
+        "audit-python-source audit-dependencies"
+    ) in makefile
     assert set(document["final_proof_commands"]) == REQUIRED_COMMANDS

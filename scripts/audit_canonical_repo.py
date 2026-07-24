@@ -16,9 +16,14 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from packages.consolidation import AuthorityError, load_source_authority  # noqa: E402
+from packages.consolidation import (  # noqa: E402
+    AuthorityError,
+    SourceAuthority,
+    load_source_authority,
+    parse_source_authority,
+)
 from import_component_snapshot import CliError, CodeArgumentParser  # noqa: E402
-from verify_component_snapshot import verify_snapshot  # noqa: E402
+from verify_component_snapshot import verify_embedded_snapshot, verify_snapshot  # noqa: E402
 
 
 _GIT = "/usr/bin/git"
@@ -314,6 +319,74 @@ def _introduction(root: Path, sentinel: str, prefix: str) -> str:
     return introduction
 
 
+def _authority_availability(authority: SourceAuthority) -> tuple[bool, ...]:
+    available: list[bool] = []
+    for component in authority.components.values():
+        try:
+            component.repository.lstat()
+        except FileNotFoundError:
+            available.append(False)
+        except OSError:
+            raise CliError("E_AUTHORITY") from None
+        else:
+            available.append(True)
+    return tuple(available)
+
+
+def _audit_authority(path: Path) -> tuple[SourceAuthority, bool]:
+    try:
+        parsed = parse_source_authority(path)
+    except AuthorityError:
+        raise CliError("E_AUTHORITY") from None
+    available = _authority_availability(parsed)
+    if all(available):
+        try:
+            return load_source_authority(path), False
+        except AuthorityError:
+            raise CliError("E_AUTHORITY") from None
+    if any(available):
+        raise CliError("E_AUTHORITY")
+    return parsed, True
+
+
+def _evidence_blob(root: Path, revision: str, relative: str, code: str) -> str:
+    try:
+        object_id = _git(
+            root,
+            ["rev-parse", "--verify", "--end-of-options", f"{revision}:{relative}"],
+            code,
+        ).decode("ascii").strip()
+    except UnicodeDecodeError:
+        raise CliError(code) from None
+    if _GIT_ID.fullmatch(object_id) is None:
+        raise CliError(code)
+    return object_id
+
+
+def _immutable_evidence(root: Path, relative: str, code: str) -> None:
+    raw = _git(root, ["log", "--diff-filter=A", "--format=%H", "--", relative], code)
+    try:
+        introductions = [line for line in raw.decode("ascii").splitlines() if line]
+    except UnicodeDecodeError:
+        raise CliError(code) from None
+    if len(introductions) != 1 or _GIT_ID.fullmatch(introductions[0]) is None:
+        raise CliError(code)
+    introduction_blob = _evidence_blob(root, introductions[0], relative, code)
+    head_blob = _evidence_blob(root, "HEAD", relative, code)
+    try:
+        working_blob = _git(
+            root, ["hash-object", "--no-filters", "--", relative], code,
+        ).decode("ascii").strip()
+    except UnicodeDecodeError:
+        raise CliError(code) from None
+    if (
+        _GIT_ID.fullmatch(working_blob) is None
+        or introduction_blob != head_blob
+        or head_blob != working_blob
+    ):
+        raise CliError(code)
+
+
 def audit(root_path: Path, release: bool) -> dict[str, object]:
     root = _root(root_path)
     _nested_git(root)
@@ -324,26 +397,9 @@ def audit(root_path: Path, release: bool) -> dict[str, object]:
     if release and status != "clean":
         raise CliError("E_DIRTY", dirty_path)
     _required(paths)
-    try:
-        authority = load_source_authority(root / "ops/consolidation/source-authority.json")
-    except AuthorityError:
-        raise CliError("E_AUTHORITY") from None
+    authority_path = root / "ops/consolidation/source-authority.json"
+    authority, portable = _audit_authority(authority_path)
     _scan_sources(root, paths)
-    components: dict[str, object] = {
-        "core": {"commit": authority.components["core"].commit, "result": "PASS"},
-    }
-    for name, (sentinel, prefix, manifest_path) in _COMPONENTS.items():
-        introduction = _introduction(root, sentinel, prefix)
-        try:
-            verify_snapshot(
-                root / "ops/consolidation/source-authority.json",
-                root / manifest_path,
-                root,
-                introduction,
-            )
-        except CliError as error:
-            raise error from None
-        components[name] = {"introduction": introduction, "result": "PASS"}
     try:
         head = _git(
             root, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"], "E_ROOT",
@@ -353,6 +409,30 @@ def audit(root_path: Path, release: bool) -> dict[str, object]:
         raise CliError("E_ROOT") from None
     if _GIT_ID.fullmatch(head) is None:
         raise CliError("E_ROOT")
+    components: dict[str, object] = {
+        "core": {"commit": authority.components["core"].commit, "result": "PASS"},
+    }
+    for name, (sentinel, prefix, manifest_path) in _COMPONENTS.items():
+        introduction = _introduction(root, sentinel, prefix)
+        revisions = (introduction, head) if portable else (introduction,)
+        try:
+            for revision in dict.fromkeys(revisions):
+                if portable:
+                    verify_embedded_snapshot(
+                        authority, root / manifest_path, root, revision,
+                    )
+                else:
+                    verify_snapshot(
+                        authority_path, root / manifest_path, root, revision,
+                    )
+        except CliError as error:
+            raise error from None
+        components[name] = {"introduction": introduction, "result": "PASS"}
+    if portable and any(_authority_availability(authority)):
+        raise CliError("E_AUTHORITY")
+    _immutable_evidence(root, "ops/consolidation/source-authority.json", "E_AUTHORITY")
+    for _, _, manifest_path in _COMPONENTS.values():
+        _immutable_evidence(root, manifest_path, "E_MANIFEST")
     return {
         "schema_version": 1,
         "root": os.fspath(root),

@@ -200,7 +200,12 @@ def verify_component_authority(component: ComponentAuthority) -> None:
         raise AuthorityError("AUTHORITY_TREE_MISMATCH")
 
 
-def _component(name: str, document: object) -> ComponentAuthority:
+def _component(
+    name: str,
+    document: object,
+    *,
+    resolve_git_objects: bool,
+) -> ComponentAuthority:
     if not isinstance(document, dict) or set(document) != _COMPONENT_KEYS:
         raise AuthorityError("AUTHORITY_SCHEMA_INVALID")
     commit = document["commit"]
@@ -225,13 +230,12 @@ def _component(name: str, document: object) -> ComponentAuthority:
         source_prefix=source,
         destination_prefix=destination,
     )
-    verify_component_authority(component)
+    if resolve_git_objects:
+        verify_component_authority(component)
     return component
 
 
-def load_source_authority(path: Path) -> SourceAuthority:
-    """Load and resolve the exact version-one consolidation authority."""
-
+def _load_source_authority(path: Path, *, resolve_git_objects: bool) -> SourceAuthority:
     try:
         document = json.loads(
             _read_document(Path(path)).decode("utf-8"),
@@ -257,7 +261,11 @@ def load_source_authority(path: Path) -> SourceAuthority:
     ):
         raise AuthorityError("AUTHORITY_COMPONENTS_INVALID")
     components = {
-        name: _component(name, components_document[name])
+        name: _component(
+            name,
+            components_document[name],
+            resolve_git_objects=resolve_git_objects,
+        )
         for name in _COMPONENT_PREFIXES
     }
     return SourceAuthority(
@@ -265,3 +273,15 @@ def load_source_authority(path: Path) -> SourceAuthority:
         sealed_phase4b_metadata_sha256=digest,
         components=MappingProxyType(components),
     )
+
+
+def parse_source_authority(path: Path) -> SourceAuthority:
+    """Parse exact authority metadata without requiring external Git repositories."""
+
+    return _load_source_authority(Path(path), resolve_git_objects=False)
+
+
+def load_source_authority(path: Path) -> SourceAuthority:
+    """Load and resolve the exact version-one consolidation authority."""
+
+    return _load_source_authority(Path(path), resolve_git_objects=True)

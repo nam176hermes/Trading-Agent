@@ -12,6 +12,7 @@ import pytest
 from packages.consolidation.authority import (
     AuthorityError,
     load_source_authority,
+    parse_source_authority,
 )
 
 
@@ -106,7 +107,7 @@ def _rewrite(path: Path, data: dict[str, object]) -> None:
 
 
 def test_loads_exact_task_1_authority_as_immutable_values() -> None:
-    authority = load_source_authority(AUTHORITY_PATH)
+    authority = parse_source_authority(AUTHORITY_PATH)
 
     assert authority.schema_version == 1
     assert authority.sealed_phase4b_metadata_sha256 == (
@@ -121,6 +122,21 @@ def test_loads_exact_task_1_authority_as_immutable_values() -> None:
         authority.components["other"] = authority.components["core"]  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         authority.schema_version = 2  # type: ignore[misc]
+
+
+def test_schema_only_parser_is_portable_but_strict_loader_requires_git_objects(
+    tmp_path: Path,
+) -> None:
+    path, data = _document(tmp_path)
+    for component in data["components"].values():  # type: ignore[union-attr]
+        shutil.rmtree(Path(component["repository"]))
+
+    authority = parse_source_authority(path)
+
+    assert tuple(authority.components) == ("core", "backend", "dashboard")
+    with pytest.raises(AuthorityError) as raised:
+        load_source_authority(path)
+    assert raised.value.reason_code == "AUTHORITY_GIT_OBJECT_INVALID"
 
 
 @pytest.mark.parametrize("scope", ["root", "component"])

@@ -37,6 +37,8 @@ MAKE_TARGETS = {
     "generate-contracts",
     "check-contracts",
     "check-d0-closure",
+    "check-test-skips",
+    "check-critical-coverage",
     "check-secrets",
     "test",
     "test-core",
@@ -383,6 +385,8 @@ def test_makefile_exposes_safe_component_orchestration() -> None:
     assert ci_gate is not None
     assert set(ci_gate.group(1).split()) == {
         "test-all",
+        "check-test-skips",
+        "check-critical-coverage",
         "build-dashboard",
         "audit-python-source",
         "audit-dependencies",
