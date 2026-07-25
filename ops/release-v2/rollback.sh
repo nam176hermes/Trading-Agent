@@ -36,7 +36,7 @@ readarray -t BINDINGS < <(
   /usr/bin/python3 -I -c '
 import json, pathlib, sys
 d=json.loads(pathlib.Path(sys.argv[1]).read_bytes())
-assert d.get("schema_version") == 2 and d.get("authority_kind") == "STATIC_RELEASE"
+assert d.get("schema_version") == 3 and d.get("authority_kind") == "STATIC_RELEASE"
 print(d["installation_root"])
 print(d["prior_release_sha256"])
 ' "$AUTHORITY"
@@ -64,7 +64,8 @@ readarray -t PRIOR_BINDINGS < <(
   /usr/bin/python3 -I -c '
 import json, pathlib, re, sys
 d=json.loads(pathlib.Path(sys.argv[1]).read_bytes())
-assert d.get("schema_version") == 2 and d.get("authority_kind") == "STATIC_RELEASE"
+schema_version=d.get("schema_version")
+assert schema_version in {2, 3} and d.get("authority_kind") == "STATIC_RELEASE"
 source=d.get("source")
 assert isinstance(source, dict)
 commit=source.get("commit")

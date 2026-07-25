@@ -12,39 +12,19 @@ from .manifest import (
 APPROVED_PHASE4_BACKEND_COMMIT = "41f055b48033714c660f44cc20498b7545366e75"
 
 
-# Static AST import closure of ``main.py`` plus package initializers and the one
-# immutable prompt/config document read by the research-only entrypoint. Runtime
-# data, credentials, tests, models, reports and deployment scripts are absent by
-# construction rather than filtered after export.
+# Canonical paper backend authority. The legacy multi-mode orchestrator and all
+# exchange, broker, credential and execution modules remain in Git for audit and
+# rollback, but the release builder cannot select them.
 PHASE4_BACKEND_AUDITED_PATHS = (
-    "SOUL.md",
-    "adanos_collector.py", "adanos_signals.py", "alert_manager.py",
-    "allocation_engine.py", "analysts.py", "assembly.py", "asset_registry.py",
-    "atr_stops.py", "backtest_engine.py", "backtest_gate.py",
-    "bayesian_weighting.py", "broker.py", "candlestick_patterns.py",
-    "collector_utils.py", "cra_tracker.py", "data_collector.py",
-    "data_vendors.py", "debate.py", "derivatives_collector.py", "dl_predictor.py",
-    "exchange/__init__.py", "exchange/ccxt_bridge.py", "exchange/secrets.py",
-    "exchange_health.py", "execute_live.py", "exit_strategies.py", "fallback.py",
-    "garch_vol.py", "incubation_tracker.py", "job_attribution.py",
-    "kalshi_collector.py", "kill_switch.py", "live_data.py",
-    "live_execution_policy.py", "macro.py", "macro_data.py", "main.py",
-    "memory.py", "memory_search.py", "ml_predictor.py", "ml_regime.py",
-    "ml_toolkit.py", "model_config.py", "monte_carlo.py", "news_collector.py",
-    "onchain_collector.py", "orderflow_collector.py", "pairs_strategy.py",
-    "pairs_trader.py", "paper_trader.py", "planner.py", "polymarket_collector.py",
-    "portfolio_manager.py", "portfolio_optimizer.py", "predscope_signals.py",
-    "prompts.py", "pyproject.toml", "reflection_engine.py", "regime_detector.py",
-    "research_semantics.py", "risk_engine.py", "risk_personas.py",
-    "risk_validation.py", "rl_agent.py", "runtime_paths.py", "schemas.py",
-    "scratchpad.py", "sentiment_collector.py", "sentiment_filter.py",
-    "signal_filters.py", "signal_parser.py", "signal_quality.py",
-    "strategy_risk_manager.py", "ta_engine.py", "ta_shim.py", "twelve_data.py",
-    "uv.lock", "yfinance_collector.py",
+    "job_attribution.py",
+    "paper_main.py",
+    "paper_runtime_manifest.json",
+    "research_semantics.py",
 )
 
 
 def phase4_backend_policy(**overrides: object) -> ReleasePolicy:
+    overrides.setdefault("install_dependencies", False)
     return phase4_backend_release_policy(
         audited_paths=PHASE4_BACKEND_AUDITED_PATHS,
         **overrides,

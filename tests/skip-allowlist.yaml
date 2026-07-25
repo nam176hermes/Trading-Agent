@@ -3370,7 +3370,7 @@
       "reason_category": "MISSING_HOST_CAPABILITY",
       "required_binary_or_service": "sealed host release wheelhouse and host capability",
       "review_by": "2026-10-31",
-      "security_critical": false,
+      "security_critical": true,
       "target_phase": "Host release proof",
       "test_node_id": "tests/runtime_release/test_build.py::test_actual_locked_app_build_is_offline_copied_symlink_free_and_runnable"
     },
@@ -3384,9 +3384,23 @@
       "reason_category": "MISSING_HOST_CAPABILITY",
       "required_binary_or_service": "sealed host release wheelhouse and host capability",
       "review_by": "2026-10-31",
-      "security_critical": false,
+      "security_critical": true,
       "target_phase": "Host release proof",
       "test_node_id": "tests/runtime_release/test_v2.py::test_extended_attributes_are_rejected_when_supported"
+    },
+    {
+      "allowed_in_ci": true,
+      "approval_record_type": "host-capability-review-v1",
+      "component": "root",
+      "outcome": "deselected",
+      "owner": "release-engineering",
+      "reason": "marker expression deselected: host_coupled",
+      "reason_category": "MISSING_HOST_CAPABILITY",
+      "required_binary_or_service": "code-owned uv executable with exact pinned identity and digest",
+      "review_by": "2026-10-31",
+      "security_critical": true,
+      "target_phase": "Host release proof",
+      "test_node_id": "tests/runtime_release/test_v2.py::test_pinned_uv_projection_identity_matches_builder_probe"
     }
   ],
   "schema_version": 1

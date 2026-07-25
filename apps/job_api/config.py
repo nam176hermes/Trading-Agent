@@ -10,6 +10,7 @@ from packages.runtime_release import (
     ValidatedJobPlaneAuthority,
     validate_job_plane_authority,
 )
+from services.job_store.config import read_systemd_credential
 
 JOB_API_PORT = 8401
 EXPECTED_REVISION = "0006_job_transition_database_authority"
@@ -88,6 +89,29 @@ class JobApiSettings:
                 "TRADING_JOB_API_EXPECTED_REVISION", EXPECTED_REVISION
             ),
         )
+
+    @classmethod
+    def from_systemd_credentials(
+        cls, env: Mapping[str, str] | None = None
+    ) -> "JobApiSettings":
+        values = os.environ if env is None else env
+        try:
+            principal = ActorIdentity.model_validate(
+                {
+                    "actor_type": read_systemd_credential(
+                        values, "job-api-principal-type"
+                    ),
+                    "actor_id": read_systemd_credential(
+                        values, "job-api-principal-id"
+                    ),
+                }
+            )
+            return cls(
+                bearer_token=read_systemd_credential(values, "job-api-token"),
+                principal=principal,
+            )
+        except Exception:
+            raise ValueError("invalid systemd job API credentials") from None
 
     def __repr__(self) -> str:
         return (

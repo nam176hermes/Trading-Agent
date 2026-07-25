@@ -1,0 +1,57 @@
+{
+  "artifact_class": "CANONICAL_PAPER_V1",
+  "command_catalog": [
+    {
+      "entrypoint": "paper_main.py",
+      "job_type": "SNAPSHOT",
+      "shell": false
+    }
+  ],
+  "dependency_policy": "PYTHON_STDLIB_ONLY",
+  "entrypoint": "paper_main.py",
+  "forbidden_capabilities": [
+    "BROKER_ADAPTER",
+    "CREDENTIAL_LOADER",
+    "EXCHANGE_ADAPTER_REGISTRY",
+    "LIVE_EXECUTION",
+    "MODE_TRANSITION",
+    "REAL_ORDER_SUBMISSION",
+    "WITHDRAWAL"
+  ],
+  "forced_environment": {
+    "LIVE_EXECUTION_ENABLED": "false",
+    "LIVE_TRADING_APPROVED": "false",
+    "LIVE_TRADING_ENABLED": "false",
+    "TRADING_MODE": "paper"
+  },
+  "python_runtime": {
+    "identity": "CPython 3.11.15",
+    "normalized_core_sha256": "39632162b32a97b4ccd3f3dd5f79d0735137f9247401835d1287b433dc83dcf7",
+    "upstream_archive": "cpython-3.11.15+20260414-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "upstream_archive_sha256": "b702a19b26cbd007abf9ccbaa45dfdff99e9dbd646d89c9f3c9bb7b501aea44f"
+  },
+  "schema_version": 1,
+  "source_allowlist": [
+    "job_attribution.py",
+    "paper_main.py",
+    "paper_runtime_manifest.json",
+    "research_semantics.py"
+  ],
+  "stdlib_import_allowlist": [
+    "__future__",
+    "dataclasses",
+    "datetime",
+    "hashlib",
+    "hmac",
+    "json",
+    "os",
+    "pathlib",
+    "re",
+    "secrets",
+    "stat",
+    "sys",
+    "types",
+    "typing",
+    "urllib"
+  ]
+}

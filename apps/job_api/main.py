@@ -5,6 +5,7 @@ from typing import Mapping
 
 import uvicorn
 
+from packages.runtime_release import validate_job_plane_authority
 from services.job_store import JobRepository, JobStoreSettings
 
 from .app import create_app
@@ -13,12 +14,23 @@ from .config import JobApiSettings
 
 def run(*, env: Mapping[str, str] | None = None) -> None:
     environment = os.environ if env is None else env
-    settings = JobApiSettings.from_env(environment)
-    authority = settings.load_authority()
-    store_settings = JobStoreSettings.from_env(
-        environment,
-        expected_user="trading_job_api",
-    )
+    authority = JobApiSettings(
+        authority_factory=validate_job_plane_authority
+    ).load_authority()
+    if "CREDENTIALS_DIRECTORY" in environment:
+        settings = JobApiSettings.from_systemd_credentials(environment)
+    else:
+        settings = JobApiSettings.from_env(environment)
+    if "CREDENTIALS_DIRECTORY" in environment:
+        store_settings = JobStoreSettings.from_systemd_credentials(
+            environment,
+            expected_user="trading_job_api",
+        )
+    else:
+        store_settings = JobStoreSettings.from_env(
+            environment,
+            expected_user="trading_job_api",
+        )
     repository = JobRepository(store_settings)
     try:
         uvicorn.run(

@@ -39,12 +39,48 @@ def _run(
     *arguments: object,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    command = [os.fspath(script), *(str(item) for item in arguments)]
+    if script == PROVISION and "--verifier" in command:
+        verifier = Path(command[command.index("--verifier") + 1])
+        harness = verifier.parent / "provision-harness"
+        harness.mkdir(mode=0o700, exist_ok=True)
+        harness_verifier = harness / "verify-stage.py"
+        if harness_verifier.exists():
+            harness_verifier.chmod(0o644)
+        shutil.copyfile(verifier, harness_verifier)
+        harness_verifier.chmod(0o555)
+        verifier_sha256 = hashlib.sha256(harness_verifier.read_bytes()).hexdigest()
+        provision_lines = PROVISION.read_text(encoding="utf-8").splitlines()
+        pin_lines = [
+            index
+            for index, line in enumerate(provision_lines)
+            if line.startswith("PINNED_VERIFIER_SHA256=")
+        ]
+        assert len(pin_lines) == 1
+        provision_lines[pin_lines[0]] = f"PINNED_VERIFIER_SHA256='{verifier_sha256}'"
+        harness_provision = harness / "provision-root.sh"
+        if harness_provision.exists():
+            harness_provision.chmod(0o644)
+        harness_provision.write_text("\n".join(provision_lines) + "\n", encoding="utf-8")
+        harness_provision.chmod(0o755)
+        command[0] = os.fspath(harness_provision)
     return subprocess.run(
-        [os.fspath(script), *(os.fspath(item) for item in arguments)],
+        command,
         capture_output=True,
         text=True,
         env=env,
     )
+
+
+def test_production_verifier_has_one_runtime_digest_and_exact_provision_pin() -> None:
+    verifier = ROOT / "ops/release-v2/verify-stage.py"
+    verifier_raw = verifier.read_bytes()
+    verifier_sha256 = hashlib.sha256(verifier_raw).hexdigest()
+    provision_source = PROVISION.read_text(encoding="utf-8")
+
+    assert f"PINNED_VERIFIER_SHA256='{verifier_sha256}'" in provision_source
+    assert "--test-fake-python-runtime" not in verifier_raw.decode("utf-8")
+    assert "--test-fake-python-runtime" not in provision_source
 
 
 def _seed_prior(fake_root: Path) -> Path:
@@ -75,6 +111,8 @@ def _seed_bound_prior(
     fake_root: Path,
     authority: Path,
     document: dict[str, object],
+    *,
+    prior_schema_version: int = 2,
 ) -> tuple[Path, str]:
     prior_commit = "0" * 40
     installation_root = f"/opt/trading-agent-v2/releases/{prior_commit}"
@@ -84,7 +122,7 @@ def _seed_bound_prior(
     prior_document = {
         "authority_kind": "STATIC_RELEASE",
         "installation_root": installation_root,
-        "schema_version": 2,
+        "schema_version": prior_schema_version,
         "source": {"commit": prior_commit},
     }
     prior_raw = canonical_json_bytes(prior_document)
@@ -199,12 +237,19 @@ def test_rejected_or_partial_stage_never_repoints_current(tmp_path: Path) -> Non
     assert not (fake_root / document["installation_root"].lstrip("/")).exists()
 
 
+@pytest.mark.parametrize("prior_schema_version", [2, 3])
 def test_rollback_repoints_only_to_bound_prior_and_preserves_both_releases(
     tmp_path: Path,
+    prior_schema_version: int,
 ) -> None:
     stage, authority, verifier, document, digest = make_release_fixture(tmp_path)
     fake_root = tmp_path / "fake-root"
-    prior, digest = _seed_bound_prior(fake_root, authority, document)
+    prior, digest = _seed_bound_prior(
+        fake_root,
+        authority,
+        document,
+        prior_schema_version=prior_schema_version,
+    )
     provisioned = _run(
         PROVISION,
         "--stage", stage,
@@ -230,6 +275,42 @@ def test_rollback_repoints_only_to_bound_prior_and_preserves_both_releases(
     assert (fake_root / "opt/trading-agent-v2/current").resolve() == prior.resolve()
     assert installed.is_dir()
     assert prior.is_dir()
+
+
+@pytest.mark.parametrize("prior_schema_version", [1, 4])
+def test_rollback_rejects_unknown_prior_authority_schema(
+    tmp_path: Path,
+    prior_schema_version: int,
+) -> None:
+    stage, authority, verifier, document, _ = make_release_fixture(tmp_path)
+    fake_root = tmp_path / "fake-root"
+    prior, digest = _seed_bound_prior(
+        fake_root,
+        authority,
+        document,
+        prior_schema_version=prior_schema_version,
+    )
+    provisioned = _run(
+        PROVISION,
+        "--stage", stage,
+        "--authority", authority,
+        "--authority-sha256", digest,
+        "--verifier", verifier,
+        "--destination-root", fake_root,
+        "--test-fake-root",
+    )
+    assert provisioned.returncode == 0, provisioned.stderr
+
+    rolled_back = _run(
+        ROLLBACK,
+        "--authority", authority,
+        "--authority-sha256", digest,
+        "--destination-root", fake_root,
+        "--test-fake-root",
+    )
+
+    assert rolled_back.returncode == 2
+    assert (fake_root / "opt/trading-agent-v2/current").resolve() == prior.resolve()
 
 
 @pytest.mark.parametrize("pointer_target", ["candidate", "outside"])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -14,6 +15,107 @@ JOB_PLANE_DATABASE_USERS = frozenset(
         "trading_job_scheduler",
     }
 )
+
+_CREDENTIAL_DIRECTORY_KEY = "CREDENTIALS_DIRECTORY"
+_MAX_CREDENTIAL_BYTES = 4096
+
+
+def _open_credential_directory(path: str) -> int:
+    if not path.startswith("/") or path.endswith("/"):
+        raise ValueError
+    components = path.split("/")[1:]
+    if not components or any(component in {"", ".", ".."} for component in components):
+        raise ValueError
+    current = os.open(
+        "/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        for index, component in enumerate(components):
+            child = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=current,
+            )
+            os.close(current)
+            current = child
+            info = os.fstat(current)
+            mode = stat.S_IMODE(info.st_mode)
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or info.st_uid not in {0, os.geteuid()}
+                or (
+                    mode & 0o022
+                    and not (info.st_uid == 0 and mode & stat.S_ISVTX)
+                )
+                or (index == len(components) - 1 and mode & 0o077)
+            ):
+                raise ValueError
+        return current
+    except Exception:
+        os.close(current)
+        raise
+
+
+def read_systemd_credential(values: Mapping[str, str], name: str) -> str:
+    """Read one fixed systemd credential without following mutable links."""
+
+    directory_fd = -1
+    credential_fd = -1
+    try:
+        if not name or any(
+            character not in "abcdefghijklmnopqrstuvwxyz0123456789-"
+            for character in name
+        ):
+            raise ValueError
+        directory = values.get(_CREDENTIAL_DIRECTORY_KEY, "")
+        directory_fd = _open_credential_directory(directory)
+        credential_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=directory_fd,
+        )
+        before = os.fstat(credential_fd)
+        mode = stat.S_IMODE(before.st_mode)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid not in {0, os.geteuid()}
+            or mode & 0o022
+            or before.st_size < 1
+            or before.st_size > _MAX_CREDENTIAL_BYTES
+        ):
+            raise ValueError
+        raw = bytearray()
+        while len(raw) <= _MAX_CREDENTIAL_BYTES:
+            chunk = os.read(credential_fd, _MAX_CREDENTIAL_BYTES + 1 - len(raw))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(credential_fd)
+        if (
+            len(raw) != before.st_size
+            or after.st_dev != before.st_dev
+            or after.st_ino != before.st_ino
+            or after.st_size != before.st_size
+        ):
+            raise ValueError
+        value = bytes(raw).decode("utf-8")
+        if (
+            not value
+            or value.strip() != value
+            or "\x00" in value
+            or "\n" in value
+            or "\r" in value
+        ):
+            raise ValueError
+        return value
+    except Exception:
+        raise ValueError("invalid systemd credential") from None
+    finally:
+        if credential_fd >= 0:
+            os.close(credential_fd)
+        if directory_fd >= 0:
+            os.close(directory_fd)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -75,6 +177,26 @@ class JobStoreSettings:
             ),
         )
         return settings.require_user(expected_user)
+
+    @classmethod
+    def from_systemd_credentials(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        expected_user: str,
+    ) -> "JobStoreSettings":
+        values = os.environ if env is None else env
+        try:
+            settings = cls(
+                host=read_systemd_credential(values, "database-host"),
+                port=int(read_systemd_credential(values, "database-port")),
+                database=read_systemd_credential(values, "database-name"),
+                user=expected_user,
+                password=read_systemd_credential(values, "database-password"),
+            )
+            return settings.require_user(expected_user)
+        except Exception:
+            raise ValueError("invalid systemd credential") from None
 
     def require_user(self, expected_user: str) -> "JobStoreSettings":
         """Require one explicit service identity before repository creation."""

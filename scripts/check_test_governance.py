@@ -32,7 +32,8 @@ OWNERS_BY_COMPONENT = {
 }
 SECURITY_PATH_PREFIXES = (
     "tests/jobs/", "tests/control_api/", "tests/event_ledger/",
-    "tests/production/", "tests/security/", "apps/dashboard/tests/",
+    "tests/production/", "tests/runtime_release/", "tests/security/",
+    "apps/dashboard/tests/",
 )
 APPROVAL_BLOCKED_CATEGORIES = frozenset(
     {"APPROVAL_REQUIRED", "DISPOSABLE_POSTGRES_REQUIRED"}

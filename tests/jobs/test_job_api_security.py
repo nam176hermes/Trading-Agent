@@ -105,10 +105,21 @@ def test_entrypoint_rejects_invalid_authority_before_repository_construction(
         authority_factory=factory,
     )
     repository_calls = []
+    settings_calls = []
     store_calls = []
     app_calls = []
     uvicorn_calls = []
-    monkeypatch.setattr(main.JobApiSettings, "from_env", lambda env=None: configured)
+    monkeypatch.setattr(
+        main,
+        "validate_job_plane_authority",
+        factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main.JobApiSettings,
+        "from_env",
+        lambda env=None: settings_calls.append(env) or configured,
+    )
     monkeypatch.setattr(
         main.JobStoreSettings,
         "from_env",
@@ -135,6 +146,7 @@ def test_entrypoint_rejects_invalid_authority_before_repository_construction(
 
     assert str(raised.value) == "protected runtime authority is unavailable"
     assert "private" not in repr(raised.value)
+    assert settings_calls == []
     assert store_calls == []
     assert repository_calls == []
     assert app_calls == []
@@ -215,6 +227,9 @@ def test_entrypoint_defaults_to_fixed_loopback_address(monkeypatch) -> None:
     configured = settings()
     captured = {}
     store_calls = []
+    monkeypatch.setattr(
+        main, "validate_job_plane_authority", configured.authority_factory
+    )
     monkeypatch.setattr(main.JobApiSettings, "from_env", lambda env=None: configured)
     monkeypatch.setattr(
         main.JobStoreSettings,
@@ -252,6 +267,9 @@ def test_entrypoint_rejects_shared_or_cross_role_before_repository_construction(
     configured = settings()
     repository_calls = []
     uvicorn_calls = []
+    monkeypatch.setattr(
+        main, "validate_job_plane_authority", configured.authority_factory
+    )
     monkeypatch.setattr(main.JobApiSettings, "from_env", lambda env=None: configured)
     monkeypatch.setattr(
         main,

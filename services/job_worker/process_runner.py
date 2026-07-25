@@ -20,7 +20,12 @@ from enum import StrEnum
 from typing import Callable
 
 from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, ArtifactWriter
-from .command_registry import CommandLineage, PreparedSpawn, consume_prepared_spawn
+from .command_registry import (
+    PAPER_COMMAND_ARGV_PREFIX,
+    CommandLineage,
+    PreparedSpawn,
+    consume_prepared_spawn,
+)
 from .environment import (
     APPROVED_SCRATCH_HOME,
     ResearchEnvironmentSettings,
@@ -357,10 +362,7 @@ class ProcessRunner:
         )
         try:
             built = consume_prepared_spawn(prepared)
-            expected_argv = (
-                str(built.executable), "-I", "-B", "main.py", "--mode",
-                "snapshot", "--research-only",
-            )
+            expected_argv = (str(built.executable), *PAPER_COMMAND_ARGV_PREFIX)
             if (
                 built.shell
                 or not isinstance(built.argv, tuple)

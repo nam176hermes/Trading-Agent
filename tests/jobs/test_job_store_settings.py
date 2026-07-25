@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from services.job_store.config import JobStoreSettings
@@ -11,6 +13,20 @@ BASE_ENV = {
     "TRADING_DATABASE_NAME": "test_only",
     "TRADING_DATABASE_PASSWORD": "fixed-test-only-password",
 }
+
+
+def _credential_directory(root: Path) -> Path:
+    root.mkdir(mode=0o700)
+    for name, value in {
+        "database-host": "127.0.0.1",
+        "database-port": "5432",
+        "database-name": "test_only",
+        "database-password": "fixed-test-only-password",
+    }.items():
+        path = root / name
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o400)
+    return root
 
 
 @pytest.mark.parametrize(
@@ -94,3 +110,116 @@ def test_role_failure_and_representation_do_not_expose_password() -> None:
         values, expected_user="trading_job_worker"
     )
     assert sensitive_value not in repr(settings)
+
+
+def test_systemd_credentials_supply_database_settings_without_environment_values(
+    tmp_path: Path,
+) -> None:
+    credential_root = _credential_directory(tmp_path / "credentials")
+
+    settings = JobStoreSettings.from_systemd_credentials(
+        {"CREDENTIALS_DIRECTORY": str(credential_root)},
+        expected_user="trading_job_worker",
+    )
+
+    assert settings.host == "127.0.0.1"
+    assert settings.port == 5432
+    assert settings.database == "test_only"
+    assert settings.user == "trading_job_worker"
+    assert settings.password == "fixed-test-only-password"
+
+
+def test_systemd_credentials_reject_symlinked_secret_without_disclosing_it(
+    tmp_path: Path,
+) -> None:
+    credential_root = _credential_directory(tmp_path / "credentials")
+    secret = credential_root / "database-password"
+    secret.unlink()
+    target = tmp_path / "outside-secret"
+    target.write_text("do-not-disclose-this-secret", encoding="utf-8")
+    target.chmod(0o400)
+    secret.symlink_to(target)
+
+    with pytest.raises(ValueError) as caught:
+        JobStoreSettings.from_systemd_credentials(
+            {"CREDENTIALS_DIRECTORY": str(credential_root)},
+            expected_user="trading_job_worker",
+        )
+
+    assert "do-not-disclose-this-secret" not in str(caught.value)
+
+
+def test_systemd_credentials_reject_symlinked_directory(tmp_path: Path) -> None:
+    credential_root = _credential_directory(tmp_path / "credentials")
+    alias = tmp_path / "credential-alias"
+    alias.symlink_to(credential_root, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="invalid systemd credential"):
+        JobStoreSettings.from_systemd_credentials(
+            {"CREDENTIALS_DIRECTORY": str(alias)},
+            expected_user="trading_job_worker",
+        )
+
+
+def test_systemd_credentials_reject_traversal_directory(tmp_path: Path) -> None:
+    credential_root = _credential_directory(tmp_path / "credentials")
+    traversing = f"{credential_root.parent}/../{tmp_path.name}/credentials"
+
+    with pytest.raises(ValueError, match="invalid systemd credential"):
+        JobStoreSettings.from_systemd_credentials(
+            {"CREDENTIALS_DIRECTORY": traversing},
+            expected_user="trading_job_worker",
+        )
+
+
+@pytest.mark.parametrize("mode", (0o420, 0o602))
+def test_systemd_credentials_reject_unsafe_secret_mode(
+    tmp_path: Path,
+    mode: int,
+) -> None:
+    credential_root = _credential_directory(tmp_path / "credentials")
+    sensitive_value = "unsafe-secret-must-not-leak"
+    secret = credential_root / "database-password"
+    secret.chmod(0o600)
+    secret.write_text(sensitive_value, encoding="utf-8")
+    secret.chmod(mode)
+
+    with pytest.raises(ValueError) as caught:
+        JobStoreSettings.from_systemd_credentials(
+            {"CREDENTIALS_DIRECTORY": str(credential_root)},
+            expected_user="trading_job_worker",
+        )
+
+    assert sensitive_value not in str(caught.value)
+
+
+def test_systemd_credentials_reject_hardlinked_secret(tmp_path: Path) -> None:
+    credential_root = _credential_directory(tmp_path / "credentials")
+    secret = credential_root / "database-password"
+    (tmp_path / "duplicate-secret").hardlink_to(secret)
+
+    with pytest.raises(ValueError, match="invalid systemd credential"):
+        JobStoreSettings.from_systemd_credentials(
+            {"CREDENTIALS_DIRECTORY": str(credential_root)},
+            expected_user="trading_job_worker",
+        )
+
+
+def test_systemd_database_validation_error_does_not_disclose_credential(
+    tmp_path: Path,
+) -> None:
+    credential_root = _credential_directory(tmp_path / "credentials")
+    sensitive_value = "private-invalid-port-must-not-leak"
+    port = credential_root / "database-port"
+    port.chmod(0o600)
+    port.write_text(sensitive_value, encoding="utf-8")
+    port.chmod(0o400)
+
+    with pytest.raises(ValueError) as caught:
+        JobStoreSettings.from_systemd_credentials(
+            {"CREDENTIALS_DIRECTORY": str(credential_root)},
+            expected_user="trading_job_worker",
+        )
+
+    assert sensitive_value not in str(caught.value)
+    assert sensitive_value not in repr(caught.value)

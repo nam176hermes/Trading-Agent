@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+import base64
 import hashlib
 import json
 import os
@@ -14,8 +15,11 @@ import pytest
 
 from packages.runtime_release.offline_wheelhouse import (
     MANIFEST_NAME,
+    build_site_packages_manifest,
     build_wheelhouse_manifest,
+    canonicalize_installed_site_packages,
     verify_offline_wheelhouse,
+    write_site_packages_manifest,
     write_wheelhouse_manifest,
 )
 
@@ -35,20 +39,29 @@ def _wheel_bytes(*, name: str = "demo-package", version: str = "1.2.3") -> bytes
 
     output = BytesIO()
     dist_info = f"{name.replace('-', '_')}-{version}.dist-info"
+    files = {
+        f"{name.replace('-', '_')}/__init__.py": b"VALUE = 1\n",
+        f"{dist_info}/METADATA": "\n".join(
+            (
+                "Metadata-Version: 2.4",
+                f"Name: {name}",
+                f"Version: {version}",
+                "License-Expression: MIT",
+                "",
+            )
+        ).encode(),
+        f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\nTag: py3-none-any\n",
+    }
+    record_path = f"{dist_info}/RECORD"
+    record = []
+    for path, raw in files.items():
+        encoded = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+        record.append(f"{path},sha256={encoded},{len(raw)}\n")
+    record.append(f"{record_path},,\n")
+    files[record_path] = "".join(record).encode()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            f"{dist_info}/METADATA",
-            "\n".join(
-                (
-                    "Metadata-Version: 2.4",
-                    f"Name: {name}",
-                    f"Version: {version}",
-                    "License-Expression: MIT",
-                    "",
-                )
-            ),
-        )
-        archive.writestr(f"{dist_info}/WHEEL", "Wheel-Version: 1.0\nTag: py3-none-any\n")
+        for path, raw in files.items():
+            archive.writestr(path, raw)
     return output.getvalue()
 
 
@@ -233,3 +246,66 @@ def test_manifest_contains_no_absolute_local_path(tmp_path: Path) -> None:
 
     content = manifest.read_text(encoding="utf-8")
     assert os.fspath(tmp_path) not in content
+
+
+def test_site_packages_manifest_canonicalizes_records_and_rejects_implant(
+    tmp_path: Path,
+) -> None:
+    wheelhouse, wheel, lock = _wheelhouse(tmp_path)
+    write_wheelhouse_manifest(
+        wheelhouse,
+        lock,
+        python_identity="CPython 3.11.15",
+        downloader="pip 25.1.1",
+    )
+    dependency_manifest = write_site_packages_manifest(
+        tmp_path / "dependency-manifest.json",
+        wheelhouse,
+        lock,
+        uv_identity="uv 0.11.7 (x86_64-unknown-linux-gnu)",
+        uv_sha256="c" * 64,
+    )
+    document = build_site_packages_manifest(
+        wheelhouse,
+        lock,
+        uv_identity="uv 0.11.7 (x86_64-unknown-linux-gnu)",
+        uv_sha256="c" * 64,
+    )
+    assert len(document["files"]) == 4
+
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    with zipfile.ZipFile(wheel) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            destination = site_packages / info.filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(archive.read(info))
+    dist_info = site_packages / "demo_package-1.2.3.dist-info"
+    (dist_info / "INSTALLER").write_bytes(b"uv")
+    (dist_info / "REQUESTED").write_bytes(b"")
+    (dist_info / "uv_cache.json").write_text("{}", encoding="utf-8")
+
+    summary = canonicalize_installed_site_packages(
+        wheelhouse,
+        lock,
+        site_packages,
+        dependency_manifest,
+    )
+    assert summary["file_count"] == 4
+    assert not (dist_info / "INSTALLER").exists()
+    assert not (dist_info / "REQUESTED").exists()
+    assert not (dist_info / "uv_cache.json").exists()
+
+    (site_packages / "demo_package/implant.py").write_text("IMPLANTED = True\n", encoding="utf-8")
+    (dist_info / "INSTALLER").write_bytes(b"uv")
+    (dist_info / "REQUESTED").write_bytes(b"")
+    (dist_info / "uv_cache.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="installed dependency manifest verification failed"):
+        canonicalize_installed_site_packages(
+            wheelhouse,
+            lock,
+            site_packages,
+            dependency_manifest,
+        )

@@ -68,6 +68,18 @@ safe_root_executable() {
   done
 }
 
+safe_input_file() {
+  local input=$1 uid mode links
+  [[ -f $input && ! -L $input && $(realpath -e -- "$input") == "$input" ]] || return 1
+  uid=$(stat -c '%u' -- "$input") || return 1
+  mode=$(stat -c '%a' -- "$input") || return 1
+  links=$(stat -c '%h' -- "$input") || return 1
+  [[ $uid == 0 || $uid == "$EUID" ]] || return 1
+  [[ $links == 1 ]] || return 1
+  (( (8#$mode & (0022 | 07000)) == 0 )) || return 1
+  safe_directory_chain "$(dirname -- "$input")" false
+}
+
 cache_manifest() {
   env -i PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -I - "$1" "$EUID" <<'PY'
 import hashlib, json, os, pathlib, stat, sys
@@ -127,12 +139,12 @@ REPO=''
 COMMIT=''
 OUTPUT=''
 PRIOR_SHA=''
-PYTHON=/usr/bin/python3.11
-NODE=/usr/bin/node
-NPM=/usr/bin/npm
+PYTHON=/usr/bin/python3
+PYTHON_RUNTIME_ARCHIVE=''
 UV=$(command -v uv || true)
-UV_CACHE=''
-NPM_CACHE=''
+WHEELHOUSE=''
+PINNED_UV_SHA256='cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4'
+PINNED_UV_IDENTITY='uv 0.11.7 (x86_64-unknown-linux-gnu)'
 
 while (($#)); do
   case "$1" in
@@ -141,11 +153,9 @@ while (($#)); do
     --output) [[ $# -ge 2 ]] || fail; OUTPUT=$2; shift 2 ;;
     --prior-release-sha256) [[ $# -ge 2 ]] || fail; PRIOR_SHA=$2; shift 2 ;;
     --python) [[ $# -ge 2 ]] || fail; PYTHON=$2; shift 2 ;;
-    --node) [[ $# -ge 2 ]] || fail; NODE=$2; shift 2 ;;
-    --npm) [[ $# -ge 2 ]] || fail; NPM=$2; shift 2 ;;
+    --python-runtime-archive) [[ $# -ge 2 ]] || fail; PYTHON_RUNTIME_ARCHIVE=$2; shift 2 ;;
     --uv) [[ $# -ge 2 ]] || fail; UV=$2; shift 2 ;;
-    --uv-cache) [[ $# -ge 2 ]] || fail; UV_CACHE=$2; shift 2 ;;
-    --npm-cache) [[ $# -ge 2 ]] || fail; NPM_CACHE=$2; shift 2 ;;
+    --wheelhouse) [[ $# -ge 2 ]] || fail; WHEELHOUSE=$2; shift 2 ;;
     *) fail ;;
   esac
 done
@@ -159,29 +169,36 @@ done
 [[ $(git -C "$REPO" rev-parse --verify "$COMMIT^{commit}") == "$COMMIT" ]] || fail
 [[ -z $(git -C "$REPO" status --porcelain=v1 --untracked-files=normal) ]] || fail
 
-# Offline means pre-populated, operator-selected caches. Never silently start
-# with an empty cache and then depend on network fallback.
-[[ $UV_CACHE == /* && $NPM_CACHE == /* ]] || fail
-for cache in "$UV_CACHE" "$NPM_CACHE"; do
-  safe_directory_chain "$cache" || fail
-  cache_manifest "$cache" >/dev/null || fail
-done
+# Offline inputs are operator-selected, sealed, and lock-bound. Never accept a
+# broad package-manager cache or permit network fallback.
+[[ $WHEELHOUSE == /* && $PYTHON_RUNTIME_ARCHIVE == /* ]] || fail
+safe_directory_chain "$WHEELHOUSE" || fail
+cache_manifest "$WHEELHOUSE" >/dev/null || fail
+safe_input_file "$PYTHON_RUNTIME_ARCHIVE" || fail
+PYTHON_RUNTIME_ARCHIVE=$(realpath -e -- "$PYTHON_RUNTIME_ARCHIVE") || fail
 
 AUTHORITY="$OUTPUT.authority.json"
 VERIFIER="$OUTPUT.verify-stage.py"
 [[ ! -e $AUTHORITY && ! -L $AUTHORITY && ! -e $VERIFIER && ! -L $VERIFIER ]] || fail
-[[ -x $PYTHON && -x $NODE && -x $NPM && -n $UV && -x $UV ]] || fail
+[[ -x $PYTHON && -n $UV && -x $UV ]] || fail
+safe_input_file "$UV" || fail
 PYTHON=$(realpath -e -- "$PYTHON") || fail
-NODE=$(realpath -e -- "$NODE") || fail
-NPM=$(realpath -e -- "$NPM") || fail
 UV=$(realpath -e -- "$UV") || fail
+[[ $(sha256sum "$UV" | cut -d' ' -f1) == "$PINNED_UV_SHA256" ]] || fail
 
 for tracked in \
   packages/runtime_release/v2.py \
+  packages/runtime_release/offline_wheelhouse.py \
   ops/release-v2/verify-stage.py \
-  alembic/versions/0005_job_plane_role_split.py \
-  alembic/versions/0006_job_transition_database_authority.py \
-  uv.lock legacy/research-backend/uv.lock apps/dashboard/package-lock.json; do
+  packages/runtime_release/paper_application/dependency-manifest.json \
+  packages/runtime_release/paper_application/uv.lock \
+  legacy/research-backend/job_attribution.py \
+  packages/runtime_release/paper_application/pyproject.toml \
+  packages/runtime_release/paper_application/command_registry.py \
+  packages/runtime_release/paper_application/runtime_release_init.py \
+  packages/runtime_release/paper_backend/paper_main.py \
+  packages/runtime_release/paper_backend/paper_runtime_manifest.json \
+  packages/runtime_release/paper_backend/research_semantics.py; do
   git -C "$REPO" cat-file -e "$COMMIT:$tracked" || fail
 done
 
@@ -189,9 +206,6 @@ OUTPUT_PARENT=$(dirname -- "$OUTPUT")
 ensure_private_directory "$OUTPUT_PARENT" || fail
 # Source-proof generation must never execute an operator-home interpreter.
 safe_root_executable "$PYTHON" || fail
-# The same absolute Node is later bound as runtime authority and must be safe
-# before npm or any committed dashboard build script can execute it.
-safe_root_executable "$NODE" || fail
 BUILD_ROOT=$(mktemp -d --tmpdir="$OUTPUT_PARENT" .release-v2-build.XXXXXXXX)
 EXPORT_ROOT="$BUILD_ROOT/export"
 STAGE="$BUILD_ROOT/stage"
@@ -199,6 +213,8 @@ BUILD_HOME="$BUILD_ROOT/home"
 TOOL="$BUILD_ROOT/v2.py"
 SOURCE_PROOF="$BUILD_ROOT/source-proof.json"
 VERIFIER_BUILD="$BUILD_ROOT/verify-stage.py"
+REQUIREMENTS="$BUILD_ROOT/application-requirements.txt"
+BUILD_UV="$BUILD_ROOT/uv"
 OUTPUT_CREATED=false
 SUCCESS=false
 
@@ -217,72 +233,93 @@ cleanup() {
 trap cleanup EXIT
 
 git -C "$REPO" show "$COMMIT:packages/runtime_release/v2.py" >"$TOOL"
+"$PYTHON" -I "$TOOL" project-pinned-uv \
+  --source "$UV" --destination "$BUILD_UV" || fail
+[[ $("$BUILD_UV" --version) == "$PINNED_UV_IDENTITY" ]] || fail
 "$PYTHON" -I "$TOOL" capture-source-proof \
   --repo "$REPO" --commit "$COMMIT" --output "$SOURCE_PROOF" || fail
 
-mkdir -p -- "$EXPORT_ROOT" "$STAGE" "$BUILD_HOME/uv-cache" "$BUILD_HOME/npm-cache"
-UV_CACHE_BEFORE=$(cache_manifest "$UV_CACHE") || fail
-NPM_CACHE_BEFORE=$(cache_manifest "$NPM_CACHE") || fail
-cp -a --reflink=never -- "$UV_CACHE/." "$BUILD_HOME/uv-cache/"
-cp -a --reflink=never -- "$NPM_CACHE/." "$BUILD_HOME/npm-cache/"
-[[ $UV_CACHE_BEFORE == "$(cache_manifest "$UV_CACHE")" ]] || fail
-[[ $NPM_CACHE_BEFORE == "$(cache_manifest "$NPM_CACHE")" ]] || fail
-[[ $UV_CACHE_BEFORE == "$(cache_manifest "$BUILD_HOME/uv-cache")" ]] || fail
-[[ $NPM_CACHE_BEFORE == "$(cache_manifest "$BUILD_HOME/npm-cache")" ]] || fail
+mkdir -p -- "$EXPORT_ROOT" "$STAGE" "$BUILD_HOME"
+WHEELHOUSE_BEFORE=$(cache_manifest "$WHEELHOUSE") || fail
 git -C "$REPO" archive --format=tar "$COMMIT" | tar -xf - -C "$EXPORT_ROOT" --no-same-owner
-[[ -d $EXPORT_ROOT/legacy/research-backend && -d $EXPORT_ROOT/apps/dashboard ]] || fail
+[[ -d $EXPORT_ROOT/legacy/research-backend \
+  && -d $EXPORT_ROOT/packages/runtime_release/paper_application \
+  && -d $EXPORT_ROOT/packages/runtime_release/paper_backend ]] || fail
 if find "$EXPORT_ROOT" \( -type l -o ! -type d ! -type f \) -print -quit | grep -q .; then
   fail
 fi
+DEPENDENCY_MANIFEST="$EXPORT_ROOT/packages/runtime_release/paper_application/dependency-manifest.json"
+chmod 0444 "$DEPENDENCY_MANIFEST"
 
-mv -- "$EXPORT_ROOT/legacy/research-backend" "$STAGE/backend"
-mv -- "$EXPORT_ROOT/apps/dashboard" "$STAGE/dashboard"
-rmdir -- "$EXPORT_ROOT/legacy"
-rmdir -- "$EXPORT_ROOT/apps/dashboard" 2>/dev/null || true
-mv -- "$EXPORT_ROOT" "$STAGE/application"
+"$PYTHON" -I "$TOOL" project-paper-application \
+  --source "$EXPORT_ROOT" --destination "$STAGE/application" || fail
+"$PYTHON" -I "$TOOL" project-paper-backend \
+  --source "$EXPORT_ROOT" --destination "$STAGE/backend" || fail
+
+env -i PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
+  "$PYTHON" -I - \
+  "$EXPORT_ROOT/packages/runtime_release/offline_wheelhouse.py" \
+  "$WHEELHOUSE" "$STAGE/application/uv.lock" <<'PY' || fail
+import importlib.util
+import pathlib
+import sys
+
+module_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("release_offline_wheelhouse", module_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(2)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+digest = module.verify_offline_wheelhouse(sys.argv[2], sys.argv[3])
+print(digest)
+PY
+[[ $WHEELHOUSE_BEFORE == "$(cache_manifest "$WHEELHOUSE")" ]] || fail
 
 APP_VENV="$STAGE/application/.venv"
 BACKEND_VENV="$STAGE/backend/.venv"
-"$PYTHON" -I -m venv --without-pip --copies "$APP_VENV"
-"$PYTHON" -I -m venv --without-pip --copies "$BACKEND_VENV"
-rm -f -- "$APP_VENV/lib64" "$BACKEND_VENV/lib64"
+"$PYTHON" -I "$TOOL" project-python-runtime-archive \
+  --archive "$PYTHON_RUNTIME_ARCHIVE" --destination "$APP_VENV" || fail
+"$PYTHON" -I "$TOOL" project-python-runtime-archive \
+  --archive "$PYTHON_RUNTIME_ARCHIVE" --destination "$BACKEND_VENV" || fail
+"$PYTHON" -I "$TOOL" verify-python-runtime --runtime "$APP_VENV" || fail
+"$PYTHON" -I "$TOOL" verify-python-runtime --runtime "$BACKEND_VENV" || fail
 
-# A copied launcher is not a sealed runtime if its base prefix or stdlib still
-# resolves to the build host. Fail closed until a reviewed relocatable runtime
-# is supplied inside each candidate environment.
-for runtime in "$APP_VENV/bin/python3.11" "$BACKEND_VENV/bin/python3.11"; do
-  env -i PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 "$runtime" -I - "$STAGE" <<'PY' || fail
-import pathlib, sys, sysconfig
-stage = pathlib.Path(sys.argv[1]).resolve(strict=True)
-for value in (sys.base_prefix, sys.base_exec_prefix, sysconfig.get_path("stdlib")):
-    resolved = pathlib.Path(value).resolve(strict=True)
-    if resolved != stage and stage not in resolved.parents:
-        raise SystemExit(2)
+SAFE_PATH="$(dirname -- "$BUILD_UV"):$(dirname -- "$PYTHON"):/usr/bin:/bin"
+env -i \
+  HOME="$BUILD_HOME" PATH="$SAFE_PATH" \
+  UV_OFFLINE=1 UV_COMPILE_BYTECODE=0 \
+  "$BUILD_UV" export --project "$STAGE/application" --frozen --no-dev \
+  --no-emit-project --no-annotate --no-header --offline --no-cache \
+  --no-python-downloads --output-file "$REQUIREMENTS"
+env -i \
+  HOME="$BUILD_HOME" PATH="$SAFE_PATH" UV_COMPILE_BYTECODE=0 \
+  "$BUILD_UV" pip sync "$REQUIREMENTS" \
+  --python "$APP_VENV/bin/python3.11" --require-hashes --strict \
+  --only-binary=:all: --no-index --find-links "$WHEELHOUSE" \
+  --no-cache --link-mode copy --no-python-downloads
+env -i PATH=/usr/bin:/bin PYTHONDONTWRITEBYTECODE=1 \
+  "$PYTHON" -I - \
+  "$EXPORT_ROOT/packages/runtime_release/offline_wheelhouse.py" \
+  "$WHEELHOUSE" "$STAGE/application/uv.lock" \
+  "$APP_VENV/lib/python3.11/site-packages" "$DEPENDENCY_MANIFEST" <<'PY' >/dev/null || fail
+import importlib.util
+import pathlib
+import sys
+
+module_path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("release_offline_wheelhouse", module_path)
+if spec is None or spec.loader is None:
+    raise SystemExit(2)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module.canonicalize_installed_site_packages(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
 PY
-done
-
-SAFE_PATH="$(dirname -- "$UV"):$(dirname -- "$PYTHON"):/usr/bin:/bin"
-env -i \
-  HOME="$BUILD_HOME" PATH="$SAFE_PATH" UV_CACHE_DIR="$BUILD_HOME/uv-cache" \
-  UV_OFFLINE=1 UV_COMPILE_BYTECODE=0 VIRTUAL_ENV="$APP_VENV" \
-  "$UV" sync --project "$STAGE/application" --frozen --no-dev --no-editable \
-  --active --offline --link-mode copy --no-python-downloads
-env -i \
-  HOME="$BUILD_HOME" PATH="$SAFE_PATH" UV_CACHE_DIR="$BUILD_HOME/uv-cache" \
-  UV_OFFLINE=1 UV_COMPILE_BYTECODE=0 VIRTUAL_ENV="$BACKEND_VENV" \
-  "$UV" sync --project "$STAGE/backend" --frozen --no-dev --no-editable \
-  --active --offline --link-mode copy --no-python-downloads
-rm -f -- "$APP_VENV/lib64" "$BACKEND_VENV/lib64"
-
-NODE_PATH="$(dirname -- "$NODE"):/usr/bin:/bin"
-env -i HOME="$BUILD_HOME" PATH="$NODE_PATH" npm_config_offline=true \
-  npm_config_cache="$BUILD_HOME/npm-cache" \
-  npm_config_ignore_scripts=true NEXT_TELEMETRY_DISABLED=1 \
-  "$NPM" ci --offline --ignore-scripts --prefix "$STAGE/dashboard"
-env -i HOME="$BUILD_HOME" PATH="$NODE_PATH" npm_config_offline=true \
-  npm_config_cache="$BUILD_HOME/npm-cache" NEXT_TELEMETRY_DISABLED=1 \
-  "$NPM" run build --prefix "$STAGE/dashboard"
-rm -rf -- "$STAGE/dashboard/node_modules/.bin"
+find "$APP_VENV/bin" -mindepth 1 -maxdepth 1 ! -name python3.11 -delete
+"$PYTHON" -I "$TOOL" verify-python-runtime \
+  --runtime "$APP_VENV" --allow-site-packages || fail
+"$PYTHON" -I "$TOOL" verify-python-runtime --runtime "$BACKEND_VENV" || fail
 
 find "$STAGE" -type d -name __pycache__ -prune -exec rm -rf {} +
 find "$STAGE" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
@@ -295,12 +332,11 @@ fi
 
 "$PYTHON" -I "$TOOL" render-units --stage "$STAGE" --commit "$COMMIT" || fail
 APP_ID=$(
-  "$APP_VENV/bin/python3.11" -I -c 'import platform; print(f"{platform.python_implementation()} {platform.python_version()}")'
+  "$APP_VENV/bin/python3.11" -I -B -c 'import platform; print(f"{platform.python_implementation()} {platform.python_version()}")'
 ) || fail
 BACKEND_ID=$(
-  "$BACKEND_VENV/bin/python3.11" -I -c 'import platform; print(f"{platform.python_implementation()} {platform.python_version()}")'
+  "$BACKEND_VENV/bin/python3.11" -I -B -c 'import platform; print(f"{platform.python_implementation()} {platform.python_version()}")'
 ) || fail
-NODE_ID="Node.js $($NODE --version)" || fail
 
 git -C "$REPO" show "$COMMIT:ops/release-v2/verify-stage.py" >"$VERIFIER_BUILD"
 chmod 0555 "$VERIFIER_BUILD"
@@ -321,9 +357,8 @@ rm -f -- "$VERIFIER_BUILD"
   --source-proof "$SOURCE_PROOF" \
   --application-python-identity "$APP_ID" \
   --backend-python-identity "$BACKEND_ID" \
-  --node-executable "$NODE" \
-  --node-identity "$NODE_ID" \
   --external-verifier "$VERIFIER" \
+  --application-dependency-manifest "$DEPENDENCY_MANIFEST" \
   --prior-release-sha256 "$PRIOR_SHA" \
   --output "$AUTHORITY" || fail
 AUTHORITY_SHA=$(sha256sum "$AUTHORITY" | awk '{print $1}')

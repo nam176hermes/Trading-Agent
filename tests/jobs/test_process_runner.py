@@ -122,10 +122,7 @@ def command() -> BuiltCommand:
     return BuiltCommand(
         executable=Path("/fixed/python"),
         cwd=Path("/fixed/release"),
-        argv=(
-            "/fixed/python", "-I", "-B", "main.py", "--mode", "snapshot",
-            "--research-only",
-        ),
+        argv=("/fixed/python", "-I", "-B", "paper_main.py"),
         timeout_seconds=10,
         max_attempts=1,
         result_validator_id="legacy-report-v1",
@@ -246,6 +243,44 @@ def test_runner_consumes_once_at_spawn_and_uses_hardened_popen(monkeypatch, tmp_
     assert outcome.identity == identity()
     assert outcome.stdout.size_bytes == 3
     assert outcome.stderr.size_bytes == 3
+
+
+def test_runner_rejects_legacy_multi_mode_command_before_spawn(
+    monkeypatch, tmp_path
+) -> None:
+    calls = []
+    legacy = replace(
+        command(),
+        argv=(
+            "/fixed/python", "-I", "-B", "main.py", "--mode", "snapshot",
+            "--research-only",
+        ),
+    )
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.consume_prepared_spawn",
+        lambda item: item.value,
+    )
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.build_child_environment",
+        lambda _settings: {"SAFE": "1"},
+    )
+
+    with pytest.raises(ValueError, match="attested command shape is unsafe"):
+        runner(
+            tmp_path,
+            FakeProcess([0]),
+            Inspector([identity()]),
+            calls,
+        ).run(
+            lambda: Prepared(legacy),
+            object(),
+            10,
+            lambda _: HeartbeatDecision.CONTINUE,
+            job_id=JOB_ID,
+            attempt_id=ATTEMPT_ID,
+        )
+
+    assert calls == []
 
 
 def test_runner_requires_current_safety_preflight_before_preparation(

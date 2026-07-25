@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,14 +12,9 @@ from packages.runtime_release.config import (
     SemanticAuthority,
 )
 from packages.runtime_release.semantic import SemanticEvidence
+from packages.runtime_release.v2 import paper_command_manifest
 from services.job_worker import command_registry as module
 from services.job_worker.command_registry import CommandRegistryError
-
-
-def _canonical_fragment(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
 
 
 def _authority() -> RuntimeAuthorityV2:
@@ -29,24 +22,7 @@ def _authority() -> RuntimeAuthorityV2:
     root = Path(f"/opt/trading-agent-v2/releases/{commit}")
     backend = root / "backend"
     executable = backend / ".venv/bin/python3.11"
-    commands = [
-        {
-            "argv": [
-                str(executable),
-                "-I",
-                "-B",
-                "main.py",
-                "--mode",
-                "snapshot",
-                "--research-only",
-            ],
-            "cwd": str(backend),
-            "environment_policy": "EMPTY_ALLOWLIST_RESEARCH_ONLY_V1",
-            "executable": str(executable),
-            "job_type": "SNAPSHOT",
-            "shell": False,
-        }
-    ]
+
     now = datetime(2026, 7, 16, 18, 0, tzinfo=UTC)
     semantic_evidence = SemanticEvidence(
         active_authority_sha256="1" * 64,
@@ -66,11 +42,7 @@ def _authority() -> RuntimeAuthorityV2:
         backend_root=backend,
         backend_python=executable,
         backend_artifact_sha256="5" * 64,
-        command_manifest={
-            "commands": commands,
-            "manifest_sha256": hashlib.sha256(_canonical_fragment(commands)).hexdigest(),
-            "schema_version": 2,
-        },
+        command_manifest=paper_command_manifest(root),
         safety=SafetyAuthority(
             "c" * 40,
             Path("/run/trading-agent-v2/safety-state.json"),

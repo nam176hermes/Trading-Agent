@@ -375,10 +375,15 @@ def test_phase4_backend_policy_fails_if_any_audited_file_is_absent(tmp_path: Pat
         build_release(repo, commit, tmp_path / "backend-release", policy)
 
 
-def test_phase4_backend_audited_set_has_lock_and_no_runtime_or_deploy_paths() -> None:
+def test_phase4_backend_audited_set_is_exact_stdlib_paper_runtime() -> None:
     paths = set(PHASE4_BACKEND_AUDITED_PATHS)
 
-    assert {"main.py", "research_semantics.py", "pyproject.toml", "uv.lock", "SOUL.md"} <= paths
+    assert paths == {
+        "job_attribution.py",
+        "paper_main.py",
+        "paper_runtime_manifest.json",
+        "research_semantics.py",
+    }
     assert len(paths) == len(PHASE4_BACKEND_AUDITED_PATHS)
     forbidden_parts = {
         ".env", ".keys.enc", ".mode", ".kill_switch", "tests", "reports",

@@ -16,25 +16,27 @@ import ast
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import stat
 import subprocess
+import sys
+import tarfile
+import tempfile
 from typing import Any, Mapping, Sequence
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 STATIC_KIND = "STATIC_RELEASE"
-SEAL_VERSION = 2
-EXPECTED_ALEMBIC_HEAD = "0006_job_transition_database_authority"
-EXPECTED_ALEMBIC_PARENT = "0005_job_plane_role_split"
-EXPECTED_ALEMBIC_GRANDPARENT = "0004_durable_research_jobs"
+SEAL_VERSION = 3
+EXPECTED_DATABASE_REVISION = "0006_job_transition_database_authority"
 EXPECTED_DB_ROLES = {
     "api_role": "trading_job_api",
     "worker_role": "trading_job_worker",
-    "scheduler_role": "trading_job_scheduler",
 }
 JOB_PLANE_POLICY = {
     "allowed_job_types": ["SNAPSHOT"],
@@ -44,18 +46,226 @@ JOB_PLANE_POLICY = {
 }
 COMPONENT_PREFIXES = {
     "application": ".",
-    "backend": "legacy/research-backend",
-    "dashboard": "apps/dashboard",
+    "backend": ".",
 }
 COMPONENT_ARTIFACT_ROOTS = {
     "application": "application",
     "backend": "backend",
-    "dashboard": "dashboard",
 }
 LOCK_PATHS = {
     "application": "application/uv.lock",
-    "backend": "backend/uv.lock",
-    "dashboard": "dashboard/package-lock.json",
+    "backend": "backend/paper_runtime_manifest.json",
+}
+PAPER_ARTIFACT_CLASS = "CANONICAL_PAPER_V1"
+PAPER_BACKEND_ENTRYPOINT = "paper_main.py"
+PAPER_BACKEND_SOURCE_MAPPING = (
+    ("job_attribution.py", "legacy/research-backend/job_attribution.py"),
+    ("paper_main.py", "packages/runtime_release/paper_backend/paper_main.py"),
+    (
+        "paper_runtime_manifest.json",
+        "packages/runtime_release/paper_backend/paper_runtime_manifest.json",
+    ),
+    (
+        "research_semantics.py",
+        "packages/runtime_release/paper_backend/research_semantics.py",
+    ),
+)
+PAPER_BACKEND_SOURCE_PATHS = tuple(
+    artifact_path for artifact_path, _ in PAPER_BACKEND_SOURCE_MAPPING
+)
+PAPER_APPLICATION_SOURCE_MAPPING = (
+    ("apps/job_api/__init__.py", "apps/job_api/__init__.py"),
+    ("apps/job_api/app.py", "apps/job_api/app.py"),
+    ("apps/job_api/auth.py", "apps/job_api/auth.py"),
+    ("apps/job_api/config.py", "apps/job_api/config.py"),
+    ("apps/job_api/contracts.py", "apps/job_api/contracts.py"),
+    ("apps/job_api/errors.py", "apps/job_api/errors.py"),
+    ("apps/job_api/main.py", "apps/job_api/main.py"),
+    ("packages/__init__.py", "packages/__init__.py"),
+    (
+        "packages/job_contracts/__init__.py",
+        "packages/runtime_release/paper_application/job_contracts_init.py",
+    ),
+    (
+        "packages/job_contracts/api.py",
+        "packages/runtime_release/paper_application/job_contracts_api.py",
+    ),
+    (
+        "packages/job_contracts/enums.py",
+        "packages/runtime_release/paper_application/job_contracts_enums.py",
+    ),
+    ("packages/job_contracts/fingerprint.py", "packages/job_contracts/fingerprint.py"),
+    (
+        "packages/job_contracts/payloads.py",
+        "packages/runtime_release/paper_application/job_contracts_payloads.py",
+    ),
+    ("packages/job_contracts/transitions.py", "packages/job_contracts/transitions.py"),
+    (
+        "packages/runtime_release/__init__.py",
+        "packages/runtime_release/paper_application/runtime_release_init.py",
+    ),
+    (
+        "packages/runtime_release/config.py",
+        "packages/runtime_release/paper_application/runtime_release_config.py",
+    ),
+    (
+        "packages/runtime_release/job_plane.py",
+        "packages/runtime_release/paper_application/runtime_release_job_plane.py",
+    ),
+    (
+        "packages/runtime_release/semantic.py",
+        "packages/runtime_release/paper_application/runtime_release_semantic.py",
+    ),
+    ("packages/safety_evidence.py", "packages/safety_evidence.py"),
+    ("pyproject.toml", "packages/runtime_release/paper_application/pyproject.toml"),
+    ("services/__init__.py", "services/__init__.py"),
+    ("services/job_store/__init__.py", "services/job_store/__init__.py"),
+    ("services/job_store/config.py", "services/job_store/config.py"),
+    ("services/job_store/errors.py", "services/job_store/errors.py"),
+    ("services/job_store/records.py", "services/job_store/records.py"),
+    ("services/job_store/repository.py", "services/job_store/repository.py"),
+    (
+        "services/job_store/worker_repository.py",
+        "services/job_store/worker_repository.py",
+    ),
+    ("services/job_worker/__init__.py", "services/job_worker/__init__.py"),
+    ("services/job_worker/artifacts.py", "services/job_worker/artifacts.py"),
+    (
+        "services/job_worker/command_registry.py",
+        "packages/runtime_release/paper_application/command_registry.py",
+    ),
+    (
+        "services/job_worker/environment.py",
+        "packages/runtime_release/paper_application/environment.py",
+    ),
+    ("services/job_worker/errors.py", "services/job_worker/errors.py"),
+    ("services/job_worker/main.py", "services/job_worker/main.py"),
+    ("services/job_worker/process_runner.py", "services/job_worker/process_runner.py"),
+    ("services/job_worker/recovery.py", "services/job_worker/recovery.py"),
+    (
+        "services/job_worker/results.py",
+        "packages/runtime_release/paper_application/results.py",
+    ),
+    (
+        "services/job_worker/safety.py",
+        "packages/runtime_release/paper_application/safety.py",
+    ),
+    ("services/job_worker/safety_state.py", "services/job_worker/safety_state.py"),
+    ("services/job_worker/worker.py", "services/job_worker/worker.py"),
+    (
+        "services/safety_state_exporter/__init__.py",
+        "services/safety_state_exporter/__init__.py",
+    ),
+    (
+        "services/safety_state_exporter/exporter.py",
+        "packages/runtime_release/paper_application/safety_exporter.py",
+    ),
+    ("uv.lock", "packages/runtime_release/paper_application/uv.lock"),
+)
+PAPER_APPLICATION_SOURCE_PATHS = tuple(
+    artifact_path for artifact_path, _ in PAPER_APPLICATION_SOURCE_MAPPING
+)
+PAPER_FORCED_ENVIRONMENT = {
+    "LIVE_EXECUTION_ENABLED": "false",
+    "LIVE_TRADING_APPROVED": "false",
+    "LIVE_TRADING_ENABLED": "false",
+    "TRADING_MODE": "paper",
+}
+PAPER_FORBIDDEN_CAPABILITIES = (
+    "BROKER_ADAPTER",
+    "CREDENTIAL_LOADER",
+    "EXCHANGE_ADAPTER_REGISTRY",
+    "LIVE_EXECUTION",
+    "MODE_TRANSITION",
+    "REAL_ORDER_SUBMISSION",
+    "WITHDRAWAL",
+)
+PAPER_STDLIB_IMPORTS = (
+    "__future__",
+    "dataclasses",
+    "datetime",
+    "hashlib",
+    "hmac",
+    "json",
+    "os",
+    "pathlib",
+    "re",
+    "secrets",
+    "stat",
+    "sys",
+    "types",
+    "typing",
+    "urllib",
+)
+PAPER_PYTHON_RUNTIME_PROVENANCE = {
+    "identity": "CPython 3.11.15",
+    "normalized_core_sha256": (
+        "39632162b32a97b4ccd3f3dd5f79d0735137f9247401835d1287b433dc83dcf7"
+    ),
+    "upstream_archive": (
+        "cpython-3.11.15+20260414-x86_64-unknown-linux-gnu-"
+        "install_only_stripped.tar.gz"
+    ),
+    "upstream_archive_sha256": (
+        "b702a19b26cbd007abf9ccbaa45dfdff99e9dbd646d89c9f3c9bb7b501aea44f"
+    ),
+}
+PAPER_UV_PROVENANCE = {
+    "identity": "uv 0.11.7 (x86_64-unknown-linux-gnu)",
+    "sha256": "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4",
+}
+PAPER_APPLICATION_DEPENDENCY_PROVENANCE = {
+    "file_count": 546,
+    "installed_file_set_sha256": (
+        "d5e97e6843205315334f0665badfd75e58ef6893af033ca9cbdd7155df89b1aa"
+    ),
+    "lock_sha256": "a4fac2d6f0587c534555e6d8c3ca9c22460ba18b09e5eb684c7b38409ce2d759",
+    "manifest_sha256": "a98d670fe49964f71aabb9be3daaeb062412452329a72a6616e0f4f40681cba6",
+    "provenance_file_set_sha256": (
+        "687b409c91b40ed2293e09bca8bab1d53779fb58425c8ab56d29e459ec209603"
+    ),
+    "schema_version": 1,
+    "uv_sha256": PAPER_UV_PROVENANCE["sha256"],
+    "wheel_count": 16,
+    "wheelhouse_aggregate_sha256": (
+        "6871c43d484d58d6fd3b17c10357830fa4284cdcb6489968eaf3d4e348fc311d"
+    ),
+}
+PAPER_FORBIDDEN_ARTIFACT_PATHS = frozenset({
+    "main.py",
+    "live_execution_policy.py",
+    "execute_live.py",
+    "broker.py",
+    "trading_agent.py",
+    "exchange/adapter.py",
+    "exchange/ccxt_bridge.py",
+    "exchange/executor.py",
+    "exchange/secrets.py",
+})
+PAPER_RUNTIME_MANIFEST = {
+    "artifact_class": PAPER_ARTIFACT_CLASS,
+    "command_catalog": [
+        {"entrypoint": PAPER_BACKEND_ENTRYPOINT, "job_type": "SNAPSHOT", "shell": False},
+    ],
+    "dependency_policy": "PYTHON_STDLIB_ONLY",
+    "entrypoint": PAPER_BACKEND_ENTRYPOINT,
+    "forbidden_capabilities": list(PAPER_FORBIDDEN_CAPABILITIES),
+    "forced_environment": PAPER_FORCED_ENVIRONMENT,
+    "python_runtime": PAPER_PYTHON_RUNTIME_PROVENANCE,
+    "schema_version": 1,
+    "source_allowlist": list(PAPER_BACKEND_SOURCE_PATHS),
+    "stdlib_import_allowlist": list(PAPER_STDLIB_IMPORTS),
+}
+PAPER_ARTIFACT_POLICY = {
+    "artifact_class": PAPER_ARTIFACT_CLASS,
+    "backend_entrypoint": PAPER_BACKEND_ENTRYPOINT,
+    "backend_manifest": "backend/paper_runtime_manifest.json",
+    "backend_source_allowlist": list(PAPER_BACKEND_SOURCE_PATHS),
+    "dependency_policy": "PYTHON_STDLIB_ONLY",
+    "forced_child_environment": PAPER_FORCED_ENVIRONMENT,
+    "permitted_job_types": ["SNAPSHOT"],
+    "python_runtime": PAPER_PYTHON_RUNTIME_PROVENANCE,
+    "stdlib_import_allowlist": list(PAPER_STDLIB_IMPORTS),
 }
 UNIT_NAMES = ("trading-job-api.service", "trading-job-worker.service")
 EXTERNAL_VERIFIER_INSTALLATION_PATH = Path("/usr/libexec/trading-agent-v2/verify-stage.py")
@@ -80,16 +290,12 @@ SAFETY_SOURCE_FINGERPRINT = "7e22249151c4e86661dae78d907d21818619ca0bed272f34725
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_ID = re.compile(r"[0-9a-f]{40}\Z")
 _PYTHON_ID = re.compile(r"CPython 3\.11\.\d+\Z")
-_NODE_ID = re.compile(r"Node\.js v\d+\.\d+\.\d+\Z")
 _MAX_AUTHORITY_BYTES = 64 * 1024 * 1024
 _MAX_COMMIT_OBJECT_BYTES = 4 * 1024 * 1024
 _GIT_FILE_MODES = {"100644": "0444", "100755": "0555"}
 _ALLOWED_STAGE_ADDITION_ROOTS = (
     "application/.venv",
-    "application/generated",
     "backend/.venv",
-    "dashboard/.next",
-    "dashboard/node_modules",
 )
 _ALLOWED_UNIT_PATHS = {"units", *(f"units/{name}" for name in UNIT_NAMES)}
 
@@ -374,12 +580,821 @@ def _entry_map(entries: Sequence[dict[str, object]]) -> dict[str, dict[str, obje
     return {str(item["path"]): item for item in entries}
 
 
-def _source_stage_path(source_path: str) -> str:
-    if source_path.startswith("legacy/research-backend/"):
-        return "backend/" + source_path.removeprefix("legacy/research-backend/")
-    if source_path.startswith("apps/dashboard/"):
-        return "dashboard/" + source_path.removeprefix("apps/dashboard/")
-    return "application/" + source_path
+def _source_stage_path(source_path: str) -> str | None:
+    for artifact_path, repository_path in PAPER_BACKEND_SOURCE_MAPPING:
+        if source_path == repository_path:
+            return "backend/" + artifact_path
+    for artifact_path, repository_path in PAPER_APPLICATION_SOURCE_MAPPING:
+        if source_path == repository_path:
+            return "application/" + artifact_path
+    return None
+
+_PYTHON_RUNTIME_CONFIG = (
+    b"include-system-site-packages = false\n"
+    b"version = 3.11.15\n"
+)
+_PYTHON_RUNTIME_PROVENANCE_PATH = "runtime-provenance.json"
+
+
+def _excluded_python_runtime_core_path(relative: str) -> bool:
+    pure = PurePosixPath(relative)
+    return (
+        relative in {"pyvenv.cfg", _PYTHON_RUNTIME_PROVENANCE_PATH}
+        or "__pycache__" in pure.parts
+        or "site-packages" in pure.parts
+        or pure.suffix in {".pyc", ".pyo"}
+        or (pure.parts[0] == "bin" and relative != "bin/python3.11")
+    )
+
+
+def _python_runtime_core_entries(
+    runtime_root: Path,
+    *,
+    allow_internal_source_links: bool,
+) -> list[list[object]]:
+    root = Path(runtime_root)
+    if (
+        not root.is_absolute()
+        or root.resolve(strict=True) != root
+        or not root.is_dir()
+        or root.is_symlink()
+    ):
+        raise ValueError
+    entries: list[list[object]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: os.fsencode(item.relative_to(root).as_posix())):
+        relative = path.relative_to(root).as_posix()
+        if _excluded_python_runtime_core_path(relative):
+            continue
+        logical_info = path.lstat()
+        if stat.S_ISDIR(logical_info.st_mode):
+            continue
+        if stat.S_ISLNK(logical_info.st_mode):
+            if not allow_internal_source_links:
+                raise ValueError
+            resolved = path.resolve(strict=True)
+            if root not in resolved.parents:
+                raise ValueError
+        elif stat.S_ISREG(logical_info.st_mode):
+            resolved = path
+        else:
+            raise ValueError
+        before = resolved.stat()
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError
+        raw = resolved.read_bytes()
+        after = resolved.stat()
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise ValueError
+        entries.append([
+            relative,
+            len(raw),
+            _sha256_bytes(raw),
+            bool(before.st_mode & 0o111),
+        ])
+    if not entries or not any(entry[0] == "bin/python3.11" for entry in entries):
+        raise ValueError
+    return entries
+
+
+def python_runtime_core_sha256(
+    runtime_root: Path,
+    *,
+    allow_internal_source_links: bool = False,
+) -> str:
+    entries = _python_runtime_core_entries(
+        runtime_root,
+        allow_internal_source_links=allow_internal_source_links,
+    )
+    return _sha256_bytes(_fragment(entries))
+
+
+def inspect_python_runtime(
+    runtime_root: Path,
+    *,
+    expected_core_sha256: str | None = None,
+    require_empty_site_packages: bool,
+) -> dict[str, object]:
+    try:
+        root = Path(runtime_root)
+        expected = _digest(
+            expected_core_sha256
+            or str(PAPER_PYTHON_RUNTIME_PROVENANCE["normalized_core_sha256"])
+        )
+        for path in root.rglob("*"):
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                resolved = path.resolve(strict=True)
+                if root not in resolved.parents or not resolved.is_file():
+                    raise ValueError
+            elif not stat.S_ISDIR(info.st_mode) and (
+                not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            ):
+                raise ValueError
+            pure = PurePosixPath(path.relative_to(root).as_posix())
+            if "__pycache__" in pure.parts or pure.suffix in {".pyc", ".pyo"}:
+                raise ValueError
+        executable = root / "bin/python3.11"
+        config = root / "pyvenv.cfg"
+        provenance_path = root / _PYTHON_RUNTIME_PROVENANCE_PATH
+        for required_file in (executable, config, provenance_path):
+            required_info = required_file.lstat()
+            if not stat.S_ISREG(required_info.st_mode) or required_info.st_nlink != 1:
+                raise ValueError
+        bin_files = {
+            path.name
+            for path in (root / "bin").iterdir()
+            if path.is_file()
+        }
+        if bin_files != {"python3.11"}:
+            raise ValueError
+        if config.read_bytes() != _PYTHON_RUNTIME_CONFIG:
+            raise ValueError
+        provenance = _load_canonical(provenance_path.read_bytes())
+        if provenance != PAPER_PYTHON_RUNTIME_PROVENANCE:
+            raise ValueError
+        site_packages = root / "lib/python3.11/site-packages"
+        if not site_packages.is_dir() or site_packages.is_symlink():
+            raise ValueError
+        if require_empty_site_packages and any(site_packages.iterdir()):
+            raise ValueError
+        observed = python_runtime_core_sha256(
+            root,
+            allow_internal_source_links=True,
+        )
+        if observed != expected:
+            raise ValueError
+        return {
+            "core_sha256": observed,
+            "identity": PAPER_PYTHON_RUNTIME_PROVENANCE["identity"],
+            "provenance": deepcopy(PAPER_PYTHON_RUNTIME_PROVENANCE),
+        }
+    except ReleaseAuthorityV2Error:
+        raise
+    except Exception:
+        raise ReleaseAuthorityV2Error() from None
+
+
+def construct_python_runtime(
+    source: Path,
+    destination: Path,
+    *,
+    expected_core_sha256: str | None = None,
+) -> dict[str, object]:
+    created = False
+    try:
+        source_root = Path(source)
+        runtime_root = Path(destination)
+        expected = _digest(
+            expected_core_sha256
+            or str(PAPER_PYTHON_RUNTIME_PROVENANCE["normalized_core_sha256"])
+        )
+        entries = _python_runtime_core_entries(
+            source_root,
+            allow_internal_source_links=True,
+        )
+        if _sha256_bytes(_fragment(entries)) != expected:
+            raise ValueError
+        if (
+            not runtime_root.is_absolute()
+            or runtime_root.exists()
+            or runtime_root.is_symlink()
+        ):
+            raise ValueError
+        runtime_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+        created = True
+        for relative, _, _, executable in entries:
+            source_path = (source_root / str(relative)).resolve(strict=True)
+            if source_root not in source_path.parents:
+                raise ValueError
+            destination_path = runtime_root / str(relative)
+            destination_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _write_exclusive(
+                destination_path,
+                source_path.read_bytes(),
+                0o755 if executable else 0o644,
+            )
+        site_packages = runtime_root / "lib/python3.11/site-packages"
+        site_packages.mkdir(mode=0o700, parents=True, exist_ok=False)
+        _write_exclusive(runtime_root / "pyvenv.cfg", _PYTHON_RUNTIME_CONFIG, 0o644)
+        _write_exclusive(
+            runtime_root / _PYTHON_RUNTIME_PROVENANCE_PATH,
+            canonical_json_bytes(PAPER_PYTHON_RUNTIME_PROVENANCE),
+            0o644,
+        )
+        _normalize_private_directories(runtime_root)
+        return inspect_python_runtime(
+            runtime_root,
+            expected_core_sha256=expected,
+            require_empty_site_packages=True,
+        )
+    except Exception:
+        if created:
+            shutil.rmtree(destination, ignore_errors=True)
+        raise ReleaseAuthorityV2Error() from None
+
+
+def construct_python_runtime_archive(
+    archive_path: Path,
+    destination: Path,
+    *,
+    expected_archive_sha256: str | None = None,
+    expected_core_sha256: str | None = None,
+) -> dict[str, object]:
+    """Verify and safely project the code-owned CPython archive."""
+
+    try:
+        source_archive = Path(archive_path)
+        runtime_root = Path(destination)
+        expected_archive = _digest(
+            expected_archive_sha256
+            or str(PAPER_PYTHON_RUNTIME_PROVENANCE["upstream_archive_sha256"])
+        )
+        expected_core = _digest(
+            expected_core_sha256
+            or str(PAPER_PYTHON_RUNTIME_PROVENANCE["normalized_core_sha256"])
+        )
+        if (
+            not source_archive.is_absolute()
+            or source_archive.resolve(strict=True) != source_archive
+            or not runtime_root.is_absolute()
+            or runtime_root.exists()
+            or runtime_root.is_symlink()
+            or runtime_root.parent.resolve(strict=True) != runtime_root.parent
+        ):
+            raise ValueError
+
+        descriptor = os.open(
+            source_archive,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size <= 0
+                or before.st_size > 512 * 1024 * 1024
+            ):
+                raise ValueError
+            chunks: list[bytes] = []
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+                digest.update(chunk)
+            after = os.fstat(descriptor)
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ) or digest.hexdigest() != expected_archive:
+                raise ValueError
+            archive_raw = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+
+        with tempfile.TemporaryDirectory(
+            prefix=".paper-python-runtime-",
+            dir=runtime_root.parent,
+        ) as temporary_raw:
+            temporary = Path(temporary_raw)
+            extracted_root = temporary / "extracted"
+            extracted_root.mkdir(mode=0o700)
+            members: dict[PurePosixPath, tarfile.TarInfo] = {}
+            total_size = 0
+            with tarfile.open(fileobj=io.BytesIO(archive_raw), mode="r:gz") as source:
+                archive_members = source.getmembers()
+                if not 0 < len(archive_members) <= 100_000:
+                    raise ValueError
+                for member in archive_members:
+                    name = member.name
+                    pure = PurePosixPath(name)
+                    if (
+                        not name
+                        or "\\" in name
+                        or pure.is_absolute()
+                        or pure.as_posix() != name
+                        or len(pure.parts) < 2
+                        or pure.parts[0] != "python"
+                        or any(part in {"", ".", ".."} for part in pure.parts)
+                        or not (member.isreg() or member.issym())
+                        or bool(member.pax_headers)
+                        or bool(getattr(member, "sparse", None))
+                        or member.mode & 0o7000
+                    ):
+                        raise ValueError
+                    relative = PurePosixPath(*pure.parts[1:])
+                    if relative in members:
+                        raise ValueError
+                    if member.isreg():
+                        if member.size < 0 or member.size > 256 * 1024 * 1024:
+                            raise ValueError
+                        total_size += member.size
+                        if total_size > 1024 * 1024 * 1024:
+                            raise ValueError
+                    members[relative] = member
+
+                symlink_targets: dict[PurePosixPath, PurePosixPath] = {}
+                for relative, member in members.items():
+                    if not member.issym():
+                        continue
+                    link = PurePosixPath(member.linkname)
+                    if (
+                        not member.linkname
+                        or "\\" in member.linkname
+                        or link.is_absolute()
+                    ):
+                        raise ValueError
+                    stack = list(relative.parent.parts)
+                    for part in link.parts:
+                        if part in {"", "."}:
+                            continue
+                        if part == "..":
+                            if not stack:
+                                raise ValueError
+                            stack.pop()
+                        else:
+                            stack.append(part)
+                    target = PurePosixPath(*stack)
+                    if target not in members:
+                        raise ValueError
+                    symlink_targets[relative] = target
+                for link_path in symlink_targets:
+                    if any(
+                        len(other.parts) > len(link_path.parts)
+                        and other.parts[: len(link_path.parts)] == link_path.parts
+                        for other in members
+                    ):
+                        raise ValueError
+
+                for relative in sorted(members, key=lambda item: os.fsencode(str(item))):
+                    member = members[relative]
+                    if not member.isreg():
+                        continue
+                    extracted = source.extractfile(member)
+                    if extracted is None:
+                        raise ValueError
+                    raw = extracted.read(member.size + 1)
+                    if len(raw) != member.size:
+                        raise ValueError
+                    target = extracted_root / str(relative)
+                    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    _write_exclusive(target, raw, 0o755 if member.mode & 0o111 else 0o644)
+
+                for relative in sorted(symlink_targets, key=lambda item: os.fsencode(str(item))):
+                    member = members[relative]
+                    target = extracted_root / str(relative)
+                    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    os.symlink(member.linkname, target)
+
+            projected = temporary / "projected"
+            evidence = construct_python_runtime(
+                extracted_root,
+                projected,
+                expected_core_sha256=expected_core,
+            )
+            os.rename(projected, runtime_root)
+        return {
+            **evidence,
+            "archive_sha256": expected_archive,
+            "normalized_core_sha256": expected_core,
+        }
+    except ReleaseAuthorityV2Error:
+        raise
+    except Exception:
+        raise ReleaseAuthorityV2Error() from None
+
+
+def verify_python_runtime_execution(runtime_root: Path) -> dict[str, object]:
+    evidence = inspect_python_runtime(
+        runtime_root,
+        require_empty_site_packages=False,
+    )
+    root = Path(runtime_root).resolve(strict=True)
+    probe = (
+        "import json,platform,pathlib,sys,sysconfig;"
+        "print(json.dumps({"
+        "'identity':f'{platform.python_implementation()} {platform.python_version()}',"
+        "'prefixes':[sys.prefix,sys.exec_prefix,sys.base_prefix,sys.base_exec_prefix,"
+        "sysconfig.get_path('stdlib')]},sort_keys=True))"
+    )
+    completed = subprocess.run(
+        [root / "bin/python3.11", "-I", "-B", "-c", probe],
+        cwd=root,
+        env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"},
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    observed = json.loads(completed.stdout)
+    if (
+        observed.get("identity") != PAPER_PYTHON_RUNTIME_PROVENANCE["identity"]
+        or not isinstance(observed.get("prefixes"), list)
+        or len(observed["prefixes"]) != 5
+    ):
+        raise ReleaseAuthorityV2Error()
+    for value in observed["prefixes"]:
+        resolved = Path(value).resolve(strict=True)
+        if resolved != root and root not in resolved.parents:
+            raise ReleaseAuthorityV2Error()
+    return {**evidence, "prefixes": observed["prefixes"]}
+
+
+def construct_paper_application_artifact(source: Path, destination: Path) -> None:
+    """Project the exact paper application allowlist into a new root."""
+
+    created = False
+    try:
+        repository_root = Path(source)
+        artifact_root = Path(destination)
+        if (
+            not repository_root.is_absolute()
+            or repository_root.resolve(strict=True) != repository_root
+            or not repository_root.is_dir()
+            or not artifact_root.is_absolute()
+            or artifact_root.exists()
+            or artifact_root.is_symlink()
+        ):
+            raise ValueError
+        artifact_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+        created = True
+        for artifact_relative, source_relative in PAPER_APPLICATION_SOURCE_MAPPING:
+            source_path = repository_root / source_relative
+            info = source_path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or source_path.is_symlink()
+                or source_path.resolve(strict=True) != source_path
+                or repository_root not in source_path.parents
+            ):
+                raise ValueError
+            destination_path = artifact_root / artifact_relative
+            destination_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with source_path.open("rb") as source_file, destination_path.open("xb") as output:
+                shutil.copyfileobj(source_file, output, 1024 * 1024)
+            destination_path.chmod(0o755 if info.st_mode & 0o111 else 0o644)
+        _normalize_private_directories(artifact_root)
+        inspect_paper_application_artifact(artifact_root)
+    except Exception:
+        if created:
+            shutil.rmtree(destination, ignore_errors=True)
+        raise ReleaseAuthorityV2Error() from None
+
+
+def inspect_paper_application_artifact(
+    artifact_root: Path,
+    *,
+    test_expected_python_runtime_core_sha256: str | None = None,
+) -> dict[str, object]:
+    """Reject broad, live-capable, or dynamically extensible application bytes."""
+
+    try:
+        root = Path(artifact_root)
+        if not root.is_absolute() or root.resolve(strict=True) != root or not root.is_dir():
+            raise ValueError
+        source_files: set[str] = set()
+        venv_files: set[str] = set()
+        for path in root.rglob("*"):
+            relative = path.relative_to(root).as_posix()
+            info = path.lstat()
+            if relative == ".venv":
+                if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+                    raise ValueError
+                continue
+            if relative.startswith(".venv/"):
+                if stat.S_ISREG(info.st_mode):
+                    if info.st_nlink != 1:
+                        raise ValueError
+                    venv_files.add(relative)
+                elif not stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                    raise ValueError
+                continue
+            if path.is_symlink() or info.st_mode & 0o7022:
+                raise ValueError
+            if path.is_file():
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError
+                source_files.add(relative)
+            elif not path.is_dir():
+                raise ValueError
+        if source_files != set(PAPER_APPLICATION_SOURCE_PATHS):
+            raise ValueError
+        if venv_files:
+            inspect_python_runtime(
+                root / ".venv",
+                expected_core_sha256=test_expected_python_runtime_core_sha256,
+                require_empty_site_packages=False,
+            )
+            forbidden_site_packages = {"alembic", "greenlet", "mako", "sqlalchemy"}
+            site_prefix = ".venv/lib/python3.11/site-packages/"
+            for relative in venv_files:
+                if not relative.startswith(site_prefix):
+                    continue
+                top_level = relative.removeprefix(site_prefix).split("/", 1)[0].casefold().replace("_", "-")
+                if any(
+                    top_level == package or top_level.startswith(package + "-")
+                    for package in forbidden_site_packages
+                ):
+                    raise ValueError
+        elif (root / ".venv").exists():
+            raise ValueError
+
+        forbidden_fragments = (
+            "ReplayPayload",
+            "SafetyMode.LIVE",
+            "_SafetyMode.LIVE",
+            "JobType.REPLAY",
+            "JobType.EXECUTE",
+            "_RESEARCH_KEYS",
+            "API_KEY",
+            "load_dotenv",
+            "apps.control_api",
+            "control_api.",
+            "services.job_scheduler",
+            "asset_registry",
+            "ccxt",
+            "alpaca",
+            "create_order",
+            "place_order",
+            "--apply",
+            "shell=True",
+            "os.system",
+            "load_runtime_authority as",
+            "RuntimeAuthority,",
+        )
+        forbidden_calls = {"__import__", "compile", "eval", "exec", "import_module", "system"}
+        for relative in sorted(source_files, key=os.fsencode):
+            path = root / relative
+            if relative == "uv.lock":
+                continue
+            raw = path.read_text(encoding="utf-8")
+            if any(fragment.casefold() in raw.casefold() for fragment in forbidden_fragments):
+                raise ValueError
+            if not relative.endswith(".py"):
+                continue
+            tree = ast.parse(raw, filename=relative)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    called = (
+                        node.func.id
+                        if isinstance(node.func, ast.Name)
+                        else node.func.attr
+                        if isinstance(node.func, ast.Attribute)
+                        else ""
+                    )
+                    if isinstance(node.func, ast.Name) and called in {
+                        "__import__",
+                        "compile",
+                        "eval",
+                        "exec",
+                    }:
+                        raise ValueError
+                    if (
+                        isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "importlib"
+                        and node.func.attr == "import_module"
+                    ):
+                        raise ValueError
+                    if (
+                        isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "os"
+                        and node.func.attr == "system"
+                    ):
+                        raise ValueError
+                    if (
+                        isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id == "subprocess"
+                        and node.func.attr in {"Popen", "run", "call"}
+                    ):
+                        if relative != "services/job_worker/process_runner.py" or node.func.attr != "Popen":
+                            raise ValueError
+                        for keyword in node.keywords:
+                            if keyword.arg == "shell" and not (
+                                isinstance(keyword.value, ast.Constant)
+                                and keyword.value.value is False
+                            ):
+                                raise ValueError
+        return {
+            "artifact_class": PAPER_ARTIFACT_CLASS,
+            "decision": "GO",
+            "source_files": sorted(source_files, key=os.fsencode),
+        }
+    except ReleaseAuthorityV2Error:
+        raise
+    except Exception:
+        raise ReleaseAuthorityV2Error() from None
+
+
+def construct_paper_backend_artifact(source: Path, destination: Path) -> None:
+    """Project the exact paper runtime allowlist into a new artifact root."""
+
+    created = False
+    try:
+        repository_root = Path(source)
+        artifact_root = Path(destination)
+        if (
+            not repository_root.is_absolute()
+            or repository_root.resolve(strict=True) != repository_root
+            or not repository_root.is_dir()
+            or not artifact_root.is_absolute()
+            or artifact_root.exists()
+            or artifact_root.is_symlink()
+        ):
+            raise ValueError
+        artifact_root.mkdir(mode=0o700, parents=False, exist_ok=False)
+        created = True
+        for artifact_relative, source_relative in PAPER_BACKEND_SOURCE_MAPPING:
+            source_path = repository_root / source_relative
+            info = source_path.lstat()
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or source_path.is_symlink()
+                or source_path.resolve(strict=True) != source_path
+                or repository_root not in source_path.parents
+            ):
+                raise ValueError
+            destination_path = artifact_root / artifact_relative
+            with source_path.open("rb") as source_file, destination_path.open("xb") as output:
+                shutil.copyfileobj(source_file, output, 1024 * 1024)
+            destination_path.chmod(0o755 if info.st_mode & 0o111 else 0o644)
+        _normalize_private_directories(artifact_root)
+        inspect_paper_backend_artifact(
+            artifact_root,
+            paper_command_manifest(Path("/opt/trading-agent-v2/releases/" + "0" * 40)),
+        )
+    except Exception:
+        if created:
+            shutil.rmtree(destination, ignore_errors=True)
+        raise ReleaseAuthorityV2Error() from None
+
+
+def paper_command_manifest(install_root: Path) -> dict[str, object]:
+    root = _absolute(str(install_root))
+    backend = root / "backend"
+    executable = backend / ".venv/bin/python3.11"
+    commands: list[dict[str, object]] = [
+        {
+            "argv": [str(executable), "-I", "-B", PAPER_BACKEND_ENTRYPOINT],
+            "cwd": str(backend),
+            "environment_policy": "CANONICAL_PAPER_CHILD_V1",
+            "executable": str(executable),
+            "job_type": "SNAPSHOT",
+            "shell": False,
+        }
+    ]
+    return {
+        "commands": commands,
+        "manifest_sha256": _sha256_bytes(_fragment(commands)),
+        "schema_version": 3,
+    }
+
+
+def _validate_paper_venv(
+    root: Path,
+    venv_files: set[str],
+    *,
+    test_expected_python_runtime_core_sha256: str | None = None,
+) -> None:
+    if not (root / ".venv").exists():
+        if venv_files:
+            raise ValueError
+        return
+    if not venv_files:
+        raise ValueError
+    inspect_python_runtime(
+        root / ".venv",
+        expected_core_sha256=test_expected_python_runtime_core_sha256,
+        require_empty_site_packages=True,
+    )
+
+
+def inspect_paper_backend_artifact(
+    artifact_root: Path,
+    command_manifest: Mapping[str, object],
+    *,
+    test_expected_python_runtime_core_sha256: str | None = None,
+) -> dict[str, object]:
+    """Reject any paper artifact or command catalog with live authority surface."""
+
+    try:
+        root = Path(artifact_root)
+        if not root.is_absolute() or root.resolve(strict=True) != root or not root.is_dir():
+            raise ValueError
+        source_files: set[str] = set()
+        venv_files: set[str] = set()
+        for path in root.rglob("*"):
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                raise ValueError
+            if path.is_file():
+                if relative.startswith(".venv/"):
+                    venv_files.add(relative)
+                else:
+                    source_files.add(relative)
+            elif not path.is_dir() and not path.is_file():
+                raise ValueError
+        _validate_paper_venv(
+            root,
+            venv_files,
+            test_expected_python_runtime_core_sha256=(
+                test_expected_python_runtime_core_sha256
+            ),
+        )
+        if source_files != set(PAPER_BACKEND_SOURCE_PATHS):
+            raise ValueError
+        if source_files.intersection(PAPER_FORBIDDEN_ARTIFACT_PATHS):
+            raise ValueError
+        manifest_path = root / "paper_runtime_manifest.json"
+        manifest = json.loads(manifest_path.read_bytes(), object_pairs_hook=_pairs)
+        if manifest != PAPER_RUNTIME_MANIFEST:
+            raise ValueError
+
+        command = _exact(
+            command_manifest,
+            {"commands", "manifest_sha256", "schema_version"},
+        )
+        commands = command["commands"]
+        if command["schema_version"] != 3 or not isinstance(commands, list) or len(commands) != 1:
+            raise ValueError
+        snapshot = _exact(
+            commands[0],
+            {"argv", "cwd", "environment_policy", "executable", "job_type", "shell"},
+        )
+        cwd = _absolute(snapshot["cwd"])
+        if command != paper_command_manifest(cwd.parent):
+            raise ValueError
+
+        forbidden_symbols = {
+            "create_order", "place_order", "execute_live", "get_exchange",
+            "get_exchange_credentials", "load_dotenv", "mode_file", "set_mode",
+        }
+        forbidden_dynamic_calls = {"__import__", "compile", "eval", "exec"}
+        local_modules = {
+            Path(path).stem
+            for path in PAPER_BACKEND_SOURCE_PATHS
+            if path.endswith(".py")
+        }
+        allowed_imports = set(PAPER_STDLIB_IMPORTS).union(local_modules)
+        for relative in sorted(source_files):
+            if not relative.endswith(".py"):
+                continue
+            tree = ast.parse((root / relative).read_text(encoding="utf-8"), filename=relative)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports = [node.module]
+                else:
+                    imports = []
+                if any(name.split(".")[0] not in allowed_imports for name in imports):
+                    raise ValueError
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if node.name in forbidden_symbols:
+                        raise ValueError
+                if isinstance(node, ast.Call):
+                    called = (
+                        node.func.id if isinstance(node.func, ast.Name)
+                        else node.func.attr if isinstance(node.func, ast.Attribute)
+                        else ""
+                    )
+                    if called in forbidden_symbols:
+                        raise ValueError
+                    if isinstance(node.func, ast.Name) and called in forbidden_dynamic_calls:
+                        raise ValueError
+                    if isinstance(node.func, ast.Attribute) and node.func.attr == "import_module":
+                        raise ValueError
+        return {
+            "artifact_class": PAPER_ARTIFACT_CLASS,
+            "decision": "GO",
+            "entrypoint": PAPER_BACKEND_ENTRYPOINT,
+            "forced_environment": dict(PAPER_FORCED_ENVIRONMENT),
+            "source_files": sorted(source_files),
+        }
+    except ReleaseAuthorityV2Error:
+        raise
+    except Exception:
+        raise ReleaseAuthorityV2Error() from None
 
 
 def _allowed_stage_addition(path: str) -> bool:
@@ -464,42 +1479,46 @@ def _validated_source_proof(
     normalized: list[dict[str, object]] = []
     previous: bytes | None = None
     stage_paths: set[str] = set()
-    source_directories: set[str] = {"application", "backend", "dashboard"}
+    source_directories: set[str] = {"application", "backend"}
     for raw_entry in raw_entries:
         entry = _exact(
             raw_entry,
             {"git_blob", "mode", "sha256", "size", "source_path", "stage_path"},
         )
         source_path = _relative(entry["source_path"])
-        stage_path = _relative(entry["stage_path"])
+        expected_stage_path = _source_stage_path(source_path)
+        stage_path = (
+            None if entry["stage_path"] is None else _relative(entry["stage_path"])
+        )
         encoded = os.fsencode(source_path)
         if (
             source_path == "."
-            or stage_path != _source_stage_path(source_path)
+            or stage_path != expected_stage_path
             or (previous is not None and encoded <= previous)
-            or stage_path in stage_paths
+            or (stage_path is not None and stage_path in stage_paths)
             or entry["mode"] not in _GIT_FILE_MODES
             or type(entry["size"]) is not int
             or entry["size"] < 0
         ):
             raise ValueError
         previous = encoded
-        stage_paths.add(stage_path)
         git_blob = _git_id(entry["git_blob"])
         sha256 = _digest(entry["sha256"])
-        staged = by_path.get(stage_path)
-        if staged != {
-            "mode": _GIT_FILE_MODES[str(entry["mode"])],
-            "path": stage_path,
-            "sha256": sha256,
-            "size": entry["size"],
-            "type": "file",
-        }:
-            raise ValueError
-        parent = PurePosixPath(stage_path).parent
-        while parent.as_posix() != ".":
-            source_directories.add(parent.as_posix())
-            parent = parent.parent
+        if stage_path is not None:
+            stage_paths.add(stage_path)
+            staged = by_path.get(stage_path)
+            if staged != {
+                "mode": _GIT_FILE_MODES[str(entry["mode"])],
+                "path": stage_path,
+                "sha256": sha256,
+                "size": entry["size"],
+                "type": "file",
+            }:
+                raise ValueError
+            parent = PurePosixPath(stage_path).parent
+            while parent.as_posix() != ".":
+                source_directories.add(parent.as_posix())
+                parent = parent.parent
         normalized.append(
             {
                 "git_blob": git_blob,
@@ -520,7 +1539,11 @@ def _validated_source_proof(
     tree_ids = _git_tree_ids(normalized)
     if tree_ids.get("") != declared_tree:
         raise ValueError
-    for required in ("legacy/research-backend", "apps/dashboard"):
+    for required in (
+        "legacy/research-backend",
+        "packages/runtime_release/paper_application",
+        "packages/runtime_release/paper_backend",
+    ):
         if required not in tree_ids:
             raise ValueError
     proof: dict[str, object] = {
@@ -539,7 +1562,10 @@ def _validated_source_proof(
 
 def _verify_source_blobs(stage: Path, source: Mapping[str, object]) -> None:
     for entry in source["entries"]:
-        raw = (stage / str(entry["stage_path"])).read_bytes()
+        stage_path = entry["stage_path"]
+        if stage_path is None:
+            continue
+        raw = (stage / str(stage_path)).read_bytes()
         if (
             len(raw) != entry["size"]
             or _sha256_bytes(raw) != entry["sha256"]
@@ -616,7 +1642,8 @@ def capture_source_proof_v2(repository: Path, commit: str) -> dict[str, object]:
         if (
             tree_ids.get("") != tree_id
             or "legacy/research-backend" not in tree_ids
-            or "apps/dashboard" not in tree_ids
+            or "packages/runtime_release/paper_application" not in tree_ids
+            or "packages/runtime_release/paper_backend" not in tree_ids
         ):
             raise ValueError
         return {
@@ -660,67 +1687,10 @@ def _migration_identity(path: Path) -> tuple[str, str | None]:
         raise ReleaseAuthorityV2Error() from None
 
 
-def _alembic_graph(stage: Path) -> dict[str, object]:
-    try:
-        versions = stage / "application/alembic/versions"
-        files = sorted(
-            (path for path in versions.glob("*.py") if path.name != "__init__.py"),
-            key=lambda path: os.fsencode(path.name),
-        )
-        if not files:
-            raise ValueError
-        entries: list[dict[str, object]] = []
-        revisions: set[str] = set()
-        parents: set[str] = set()
-        for path in files:
-            revision, down_revision = _migration_identity(path)
-            if revision in revisions:
-                raise ValueError
-            revisions.add(revision)
-            if down_revision is not None:
-                parents.add(down_revision)
-            entries.append(
-                {
-                    "down_revision": down_revision,
-                    "path": path.relative_to(stage).as_posix(),
-                    "revision": revision,
-                    "sha256": _sha256_file(path),
-                }
-            )
-        if not parents.issubset(revisions) or revisions - parents != {EXPECTED_ALEMBIC_HEAD}:
-            raise ValueError
-        by_revision = {str(item["revision"]): item for item in entries}
-        if (
-            by_revision[EXPECTED_ALEMBIC_HEAD]["down_revision"]
-            != EXPECTED_ALEMBIC_PARENT
-            or by_revision[EXPECTED_ALEMBIC_PARENT]["down_revision"]
-            != EXPECTED_ALEMBIC_GRANDPARENT
-        ):
-            raise ValueError
-        visited: set[str] = set()
-        current: str | None = EXPECTED_ALEMBIC_HEAD
-        while current is not None:
-            if current in visited or current not in by_revision:
-                raise ValueError
-            visited.add(current)
-            parent = by_revision[current]["down_revision"]
-            current = parent if isinstance(parent, str) else None
-        if visited != revisions:
-            raise ValueError
-        return {
-            "alembic_graph_sha256": _sha256_bytes(_fragment(entries)),
-            "alembic_head": EXPECTED_ALEMBIC_HEAD,
-            "alembic_revisions": entries,
-        }
-    except ReleaseAuthorityV2Error:
-        raise
-    except Exception:
-        raise ReleaseAuthorityV2Error() from None
-
-
 def _artifact_digest(entries: Sequence[dict[str, object]], root: str) -> str:
     selected = [
-        item for item in entries
+        item
+        for item in entries
         if item["path"] == root or str(item["path"]).startswith(root + "/")
     ]
     if not selected:
@@ -750,25 +1720,30 @@ def _producer_bindings(commit: str) -> dict[str, str]:
 
 
 def _command_manifest(install_root: Path) -> dict[str, object]:
-    backend = install_root / "backend"
-    executable = backend / ".venv/bin/python3.11"
-    commands: list[dict[str, object]] = [
-        {
-            "argv": [
-                str(executable), "-I", "-B", "main.py", "--mode", "snapshot", "--research-only",
-            ],
-            "cwd": str(backend),
-            "environment_policy": "EMPTY_ALLOWLIST_RESEARCH_ONLY_V1",
-            "executable": str(executable),
-            "job_type": "SNAPSHOT",
-            "shell": False,
+    return paper_command_manifest(install_root)
+
+
+def _credential_references(service: str) -> dict[str, str]:
+    if service == "trading-job-api.service":
+        root = "/etc/trading-agent-v2/credentials/job-api"
+        return {
+            "database-host": f"{root}/database-host",
+            "database-name": f"{root}/database-name",
+            "database-password": f"{root}/database-password",
+            "database-port": f"{root}/database-port",
+            "job-api-principal-id": f"{root}/principal-id",
+            "job-api-principal-type": f"{root}/principal-type",
+            "job-api-token": f"{root}/token",
         }
-    ]
-    return {
-        "commands": commands,
-        "manifest_sha256": _sha256_bytes(_fragment(commands)),
-        "schema_version": 2,
-    }
+    if service == "trading-job-worker.service":
+        root = "/etc/trading-agent-v2/credentials/job-worker"
+        return {
+            "database-host": f"{root}/database-host",
+            "database-name": f"{root}/database-name",
+            "database-password": f"{root}/database-password",
+            "database-port": f"{root}/database-port",
+        }
+    raise ReleaseAuthorityV2Error()
 
 
 def _unit_specs(install_root: Path) -> dict[str, dict[str, object]]:
@@ -777,7 +1752,9 @@ def _unit_specs(install_root: Path) -> dict[str, dict[str, object]]:
     return {
         "trading-job-api.service": {
             "argv": [str(executable), "-I", "-m", "apps.job_api.main"],
-            "credential_reference": "/etc/trading-agent/job-api.env",
+            "credential_references": _credential_references(
+                "trading-job-api.service"
+            ),
             "database_role": "trading_job_api",
             "service_group": "trading-job-api",
             "service_user": "trading-job-api",
@@ -785,7 +1762,9 @@ def _unit_specs(install_root: Path) -> dict[str, dict[str, object]]:
         },
         "trading-job-worker.service": {
             "argv": [str(executable), "-I", "-m", "services.job_worker.main"],
-            "credential_reference": "/etc/trading-agent/job-worker.env",
+            "credential_references": _credential_references(
+                "trading-job-worker.service"
+            ),
             "database_role": "trading_job_worker",
             "service_group": "trading-job-worker",
             "service_user": "trading-job-worker",
@@ -806,6 +1785,13 @@ def _render_unit(name: str, spec: Mapping[str, object]) -> bytes:
         else "Environment=TRADING_ALLOWED_JOB_TYPES=SNAPSHOT\n"
     )
     argv = " ".join(str(item) for item in spec["argv"])
+    credential_references = _credential_references(name)
+    if spec.get("credential_references") != credential_references:
+        raise ReleaseAuthorityV2Error()
+    credential_lines = "".join(
+        f"LoadCredential={credential_name}:{credential_path}\n"
+        for credential_name, credential_path in sorted(credential_references.items())
+    )
     document = (
         "[Unit]\n"
         f"Description={description}\n"
@@ -815,11 +1801,13 @@ def _render_unit(name: str, spec: Mapping[str, object]) -> bytes:
         f"User={spec['service_user']}\n"
         f"Group={spec['service_group']}\n"
         f"WorkingDirectory={spec['working_directory']}\n"
-        f"EnvironmentFile={spec['credential_reference']}\n"
+        f"{credential_lines}"
+        "UnsetEnvironment=LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH PYTHONHOME PYTHONPATH\n"
         "Environment=PYTHONDONTWRITEBYTECODE=1\n"
         "Environment=TRADING_MODE=paper\n"
         "Environment=LIVE_EXECUTION_ENABLED=false\n"
         "Environment=LIVE_TRADING_APPROVED=false\n"
+        "Environment=LIVE_TRADING_ENABLED=false\n"
         f"Environment=TRADING_DATABASE_USER={spec['database_role']}\n"
         f"{extra}"
         f"ExecStart={argv}\n"
@@ -881,16 +1869,163 @@ def _authority_binding(document: Mapping[str, object]) -> str:
     return _sha256_bytes(_fragment(material))
 
 
+def _installed_site_package_entries(
+    by_path: Mapping[str, Mapping[str, object]],
+) -> list[dict[str, object]]:
+    prefix = "application/.venv/lib/python3.11/site-packages/"
+    return [
+        {
+            "path": path.removeprefix(prefix),
+            "sha256": entry["sha256"],
+            "size": entry["size"],
+        }
+        for path, entry in sorted(by_path.items(), key=lambda item: os.fsencode(item[0]))
+        if path.startswith(prefix) and entry["type"] == "file"
+    ]
+
+
+def _validate_dependency_provenance(value: object) -> dict[str, object]:
+    item = _exact(
+        value,
+        {
+            "file_count", "installed_file_set_sha256", "lock_sha256", "manifest_sha256",
+            "provenance_file_set_sha256", "schema_version", "uv_sha256", "wheel_count",
+            "wheelhouse_aggregate_sha256",
+        },
+    )
+    if (
+        item["schema_version"] != 1
+        or type(item["file_count"]) is not int
+        or item["file_count"] < 0
+        or type(item["wheel_count"]) is not int
+        or item["wheel_count"] < 0
+    ):
+        raise ValueError
+    for key in (
+        "installed_file_set_sha256", "lock_sha256", "manifest_sha256",
+        "provenance_file_set_sha256", "uv_sha256", "wheelhouse_aggregate_sha256",
+    ):
+        _digest(item[key])
+    if item["uv_sha256"] != PAPER_UV_PROVENANCE["sha256"]:
+        raise ValueError
+    return dict(item)
+
+
+def _load_application_dependency_manifest(
+    path: Path,
+    by_path: Mapping[str, Mapping[str, object]],
+    *,
+    production: bool,
+) -> dict[str, object]:
+    info, measured_sha256 = _safe_external_file(path, executable=False)
+    if stat.S_IMODE(info.st_mode) != 0o444:
+        raise ValueError
+    raw = path.read_bytes()
+    if _sha256_bytes(raw) != measured_sha256:
+        raise ValueError
+    document = _exact(
+        _load_canonical(raw),
+        {
+            "files", "installed_file_set_sha256", "lock_sha256",
+            "provenance_file_set_sha256", "schema_version", "uv",
+            "wheelhouse_aggregate_sha256", "wheels",
+        },
+    )
+    if document["schema_version"] != 1:
+        raise ValueError
+    uv = _exact(document["uv"], {"identity", "sha256"})
+    if uv != PAPER_UV_PROVENANCE:
+        raise ValueError
+    application_lock = by_path.get("application/uv.lock")
+    if (
+        application_lock is None
+        or application_lock["type"] != "file"
+        or document["lock_sha256"] != application_lock["sha256"]
+    ):
+        raise ValueError
+    _digest(document["lock_sha256"])
+    _digest(document["wheelhouse_aggregate_sha256"])
+
+    wheels = document["wheels"]
+    if not isinstance(wheels, list) or (production and not wheels):
+        raise ValueError
+    wheel_digests: set[str] = set()
+    previous_wheel: bytes | None = None
+    for value in wheels:
+        wheel = _exact(value, {"filename", "sha256"})
+        filename = _relative(wheel["filename"])
+        if PurePosixPath(filename).name != filename:
+            raise ValueError
+        encoded = os.fsencode(filename)
+        if previous_wheel is not None and encoded <= previous_wheel:
+            raise ValueError
+        previous_wheel = encoded
+        digest = _digest(wheel["sha256"])
+        if digest in wheel_digests:
+            raise ValueError
+        wheel_digests.add(digest)
+
+    files = document["files"]
+    if not isinstance(files, list) or (production and not files):
+        raise ValueError
+    normalized_files: list[dict[str, object]] = []
+    installed_files: list[dict[str, object]] = []
+    previous_path: bytes | None = None
+    for value in files:
+        entry = _exact(value, {"path", "sha256", "size", "wheel_sha256"})
+        relative = _relative(entry["path"])
+        if relative.startswith("."):
+            raise ValueError
+        encoded = os.fsencode(relative)
+        if previous_path is not None and encoded <= previous_path:
+            raise ValueError
+        previous_path = encoded
+        sha256 = _digest(entry["sha256"])
+        wheel_sha256 = _digest(entry["wheel_sha256"])
+        if wheel_sha256 not in wheel_digests or type(entry["size"]) is not int or entry["size"] < 0:
+            raise ValueError
+        normalized = {
+            "path": relative,
+            "sha256": sha256,
+            "size": entry["size"],
+            "wheel_sha256": wheel_sha256,
+        }
+        normalized_files.append(normalized)
+        installed_files.append({key: normalized[key] for key in ("path", "sha256", "size")})
+    if (
+        document["installed_file_set_sha256"] != _sha256_bytes(_fragment(installed_files))
+        or document["provenance_file_set_sha256"] != _sha256_bytes(_fragment(normalized_files))
+        or installed_files != _installed_site_package_entries(by_path)
+    ):
+        raise ValueError
+    summary = _validate_dependency_provenance(
+        {
+            "file_count": len(installed_files),
+            "installed_file_set_sha256": document["installed_file_set_sha256"],
+            "lock_sha256": document["lock_sha256"],
+            "manifest_sha256": measured_sha256,
+            "provenance_file_set_sha256": document["provenance_file_set_sha256"],
+            "schema_version": document["schema_version"],
+            "uv_sha256": uv["sha256"],
+            "wheel_count": len(wheels),
+            "wheelhouse_aggregate_sha256": document["wheelhouse_aggregate_sha256"],
+        }
+    )
+    if production and summary != PAPER_APPLICATION_DEPENDENCY_PROVENANCE:
+        raise ValueError
+    return summary
+
+
 def build_static_release_authority_v2(
     stage: Path,
     *,
     source_proof: Mapping[str, object],
     application_python_identity: str,
     backend_python_identity: str,
-    node_executable: Path,
-    node_identity: str,
     external_verifier: Path,
+    application_dependency_manifest: Path,
     prior_release_sha256: str,
+    test_expected_python_runtime_core_sha256: str | None = None,
 ) -> tuple[dict[str, object], str]:
     """Compose (but do not publish or activate) a static v2 authority."""
 
@@ -898,8 +2033,6 @@ def build_static_release_authority_v2(
         if _PYTHON_ID.fullmatch(application_python_identity) is None:
             raise ValueError
         if _PYTHON_ID.fullmatch(backend_python_identity) is None:
-            raise ValueError
-        if _NODE_ID.fullmatch(node_identity) is None:
             raise ValueError
         prior = _digest(prior_release_sha256)
         uid, gid, entries = _walk_sealed_stage(stage)
@@ -909,7 +2042,6 @@ def build_static_release_authority_v2(
         commit = str(source["commit"])
         source["binding_sha256"] = _sha256_bytes(_fragment(source))
         install_root = _installation_root(commit)
-        node_info, node_sha = _safe_root_executable(Path(node_executable))
         verifier_info, verifier_sha = _safe_external_file(Path(external_verifier), executable=True)
         if stat.S_IMODE(verifier_info.st_mode) != 0o555:
             raise ValueError
@@ -921,7 +2053,7 @@ def build_static_release_authority_v2(
                 "source_prefix": COMPONENT_PREFIXES[name],
                 "source_tree": (
                     tree_ids[""]
-                    if name == "application"
+                    if COMPONENT_PREFIXES[name] == "."
                     else tree_ids[COMPONENT_PREFIXES[name]]
                 ),
             }
@@ -933,36 +2065,47 @@ def build_static_release_authority_v2(
             if entry is None or entry["type"] != "file":
                 raise ValueError
             lockfiles[name] = {"path": path, "sha256": entry["sha256"]}
-
-        contract_entries = [
-            {"path": item["path"], "sha256": item["sha256"], "size": item["size"]}
-            for item in entries
-            if item["type"] == "file" and str(item["path"]).startswith("application/generated/")
-        ]
-        required_contracts = {
-            "application/generated/openapi/openapi.json",
-            "application/generated/job-api/openapi/openapi.json",
-            "application/generated/dashboard/api-schemas.ts",
-            "application/generated/dashboard/api-types.ts",
-        }
-        if not required_contracts.issubset({str(item["path"]) for item in contract_entries}):
-            raise ValueError
+        dependency_provenance = _load_application_dependency_manifest(
+            Path(application_dependency_manifest),
+            by_path,
+            production=test_expected_python_runtime_core_sha256 is None,
+        )
 
         app_python = "application/.venv/bin/python3.11"
         backend_python = "backend/.venv/bin/python3.11"
         for path in (app_python, backend_python):
             if path not in by_path or by_path[path]["mode"] != "0555":
                 raise ValueError
+        command_manifest = _command_manifest(install_root)
+        inspect_python_runtime(
+            stage / "application/.venv",
+            expected_core_sha256=test_expected_python_runtime_core_sha256,
+            require_empty_site_packages=False,
+        )
+        inspect_paper_application_artifact(
+            stage / "application",
+            test_expected_python_runtime_core_sha256=(
+                test_expected_python_runtime_core_sha256
+            ),
+        )
+        inspect_paper_backend_artifact(
+            stage / "backend",
+            command_manifest,
+            test_expected_python_runtime_core_sha256=(
+                test_expected_python_runtime_core_sha256
+            ),
+        )
         document: dict[str, object] = {
+            "artifact_policy": deepcopy(PAPER_ARTIFACT_POLICY),
             "authority_kind": STATIC_KIND,
+            "build_tools": {"uv": deepcopy(PAPER_UV_PROVENANCE)},
             "components": components,
-            "command_manifest": _command_manifest(install_root),
-            "contracts": {
-                "aggregate_sha256": _sha256_bytes(_fragment(contract_entries)),
-                "entries": contract_entries,
-                "root": "application/generated",
+            "command_manifest": command_manifest,
+            "database": {
+                "expected_revision": EXPECTED_DATABASE_REVISION,
+                **EXPECTED_DB_ROLES,
             },
-            "database": {**_alembic_graph(stage), **EXPECTED_DB_ROLES},
+            "dependency_manifests": {"application": dependency_provenance},
             "external_verifier": {
                 "gid": 0,
                 "installation_path": str(EXTERNAL_VERIFIER_INSTALLATION_PATH),
@@ -976,19 +2119,18 @@ def build_static_release_authority_v2(
                 "application_python": {
                     "identity": application_python_identity,
                     "path": app_python,
+                    "runtime_core_sha256": PAPER_PYTHON_RUNTIME_PROVENANCE[
+                        "normalized_core_sha256"
+                    ],
                     "sha256": by_path[app_python]["sha256"],
                 },
                 "backend_python": {
                     "identity": backend_python_identity,
                     "path": backend_python,
+                    "runtime_core_sha256": PAPER_PYTHON_RUNTIME_PROVENANCE[
+                        "normalized_core_sha256"
+                    ],
                     "sha256": by_path[backend_python]["sha256"],
-                },
-                "dashboard_node": {
-                    "gid": node_info.st_gid,
-                    "identity": node_identity,
-                    "path": str(Path(node_executable)),
-                    "sha256": node_sha,
-                    "uid": node_info.st_uid,
                 },
             },
             "job_plane_policy": deepcopy(JOB_PLANE_POLICY),
@@ -1014,7 +2156,10 @@ def build_static_release_authority_v2(
             "units": _unit_authority(stage, install_root),
         }
         document["binding_sha256"] = _authority_binding(document)
-        _validate_static_document(document)
+        _validate_static_document(
+            document,
+            expected_application_dependency_provenance=dependency_provenance,
+        )
         raw = canonical_json_bytes(document)
         return document, _sha256_bytes(raw)
     except ReleaseAuthorityV2Error:
@@ -1050,15 +2195,22 @@ def _validate_entries(value: object) -> list[dict[str, object]]:
     return result
 
 
-def _validate_static_document(document: object) -> dict[str, Any]:
+def _validate_static_document(
+    document: object,
+    *,
+    expected_application_dependency_provenance: Mapping[str, object] = (
+        PAPER_APPLICATION_DEPENDENCY_PROVENANCE
+    ),
+) -> dict[str, Any]:
     root = _exact(
         document,
         {
-            "authority_kind", "binding_sha256", "command_manifest", "components",
-            "contracts", "database", "external_verifier", "installation_root",
-            "interpreters", "job_plane_policy", "lockfiles", "prior_release_sha256", "schema_version",
-            "producer_bindings", "runtime_document_policy", "runtime_paths", "seal_version",
-            "source", "stage", "units",
+            "artifact_policy", "authority_kind", "binding_sha256", "build_tools",
+            "command_manifest", "components", "database", "dependency_manifests",
+            "external_verifier", "installation_root", "interpreters", "job_plane_policy",
+            "lockfiles", "prior_release_sha256", "schema_version", "producer_bindings",
+            "runtime_document_policy", "runtime_paths", "seal_version", "source", "stage",
+            "units",
         },
     )
     if (
@@ -1068,6 +2220,17 @@ def _validate_static_document(document: object) -> dict[str, Any]:
     ):
         raise ValueError
     if root["binding_sha256"] != _authority_binding(root):
+        raise ValueError
+    if root["artifact_policy"] != PAPER_ARTIFACT_POLICY:
+        raise ValueError
+    build_tools = _exact(root["build_tools"], {"uv"})
+    if _exact(build_tools["uv"], {"identity", "sha256"}) != PAPER_UV_PROVENANCE:
+        raise ValueError
+    dependency_manifests = _exact(root["dependency_manifests"], {"application"})
+    dependency_provenance = _validate_dependency_provenance(
+        dependency_manifests["application"]
+    )
+    if dependency_provenance != expected_application_dependency_provenance:
         raise ValueError
     _digest(root["prior_release_sha256"])
     source = _exact(
@@ -1122,6 +2285,15 @@ def _validate_static_document(document: object) -> dict[str, Any]:
     if stage["file_set_sha256"] != _sha256_bytes(_fragment(entries)):
         raise ValueError
     by_path = _entry_map(entries)
+    installed_dependencies = _installed_site_package_entries(by_path)
+    if (
+        dependency_provenance["file_count"] != len(installed_dependencies)
+        or dependency_provenance["installed_file_set_sha256"]
+        != _sha256_bytes(_fragment(installed_dependencies))
+        or by_path.get("application/uv.lock", {}).get("sha256")
+        != dependency_provenance["lock_sha256"]
+    ):
+        raise ValueError
     if any(
         path.startswith("units/") and (path.endswith(".timer") or ".wants/" in path)
         for path in by_path
@@ -1131,9 +2303,8 @@ def _validate_static_document(document: object) -> dict[str, Any]:
     if normalized_source != source:
         raise ValueError
     expected_component_trees = {
-        "application": tree_ids[""],
-        "backend": tree_ids["legacy/research-backend"],
-        "dashboard": tree_ids["apps/dashboard"],
+        name: tree_ids[""] if prefix == "." else tree_ids[prefix]
+        for name, prefix in COMPONENT_PREFIXES.items()
     }
     if component_trees != expected_component_trees:
         raise ValueError
@@ -1147,137 +2318,37 @@ def _validate_static_document(document: object) -> dict[str, Any]:
         if item["path"] != expected_path or by_path.get(expected_path, {}).get("sha256") != _digest(item["sha256"]):
             raise ValueError
 
-    interpreters = _exact(root["interpreters"], {"application_python", "backend_python", "dashboard_node"})
+    interpreters = _exact(root["interpreters"], {"application_python", "backend_python"})
     for name, expected_path in (
         ("application_python", "application/.venv/bin/python3.11"),
         ("backend_python", "backend/.venv/bin/python3.11"),
     ):
-        item = _exact(interpreters[name], {"identity", "path", "sha256"})
+        item = _exact(
+            interpreters[name],
+            {"identity", "path", "runtime_core_sha256", "sha256"},
+        )
         if (
             item["path"] != expected_path
             or _PYTHON_ID.fullmatch(item["identity"] if isinstance(item["identity"], str) else "") is None
+            or item["runtime_core_sha256"]
+            != PAPER_PYTHON_RUNTIME_PROVENANCE["normalized_core_sha256"]
             or by_path.get(expected_path, {}).get("sha256") != _digest(item["sha256"])
             or by_path.get(expected_path, {}).get("mode") != "0555"
         ):
             raise ValueError
-    node = _exact(interpreters["dashboard_node"], {"gid", "identity", "path", "sha256", "uid"})
-    _absolute(node["path"])
-    if (
-        _NODE_ID.fullmatch(node["identity"] if isinstance(node["identity"], str) else "") is None
-        or type(node["uid"]) is not int
-        or type(node["gid"]) is not int
-        or node["uid"] != 0
-        or node["gid"] != 0
-    ):
-        raise ValueError
-    _digest(node["sha256"])
     if root["job_plane_policy"] != JOB_PLANE_POLICY:
-        raise ValueError
-
-    contracts = _exact(root["contracts"], {"aggregate_sha256", "entries", "root"})
-    if contracts["root"] != "application/generated" or not isinstance(contracts["entries"], list):
-        raise ValueError
-    contract_entries: list[dict[str, object]] = []
-    previous: bytes | None = None
-    for item in contracts["entries"]:
-        entry = _exact(item, {"path", "sha256", "size"})
-        path = _relative(entry["path"])
-        if not path.startswith("application/generated/"):
-            raise ValueError
-        encoded = os.fsencode(path)
-        if previous is not None and encoded <= previous:
-            raise ValueError
-        previous = encoded
-        if type(entry["size"]) is not int or entry["size"] < 0:
-            raise ValueError
-        if by_path.get(path) != {
-            "mode": by_path.get(path, {}).get("mode"),
-            "path": path,
-            "sha256": _digest(entry["sha256"]),
-            "size": entry["size"],
-            "type": "file",
-        }:
-            raise ValueError
-        contract_entries.append(dict(entry))
-    actual_contract_paths = {
-        path for path, entry in by_path.items()
-        if entry["type"] == "file" and path.startswith("application/generated/")
-    }
-    if actual_contract_paths != {str(item["path"]) for item in contract_entries}:
-        raise ValueError
-    required_contracts = {
-        "application/generated/openapi/openapi.json",
-        "application/generated/job-api/openapi/openapi.json",
-        "application/generated/dashboard/api-schemas.ts",
-        "application/generated/dashboard/api-types.ts",
-    }
-    if not required_contracts.issubset(actual_contract_paths):
-        raise ValueError
-    if contracts["aggregate_sha256"] != _sha256_bytes(_fragment(contract_entries)):
-        raise ValueError
-
-    required_artifacts = {"dashboard/.next/BUILD_ID"}
-    if not all(by_path.get(path, {}).get("type") == "file" for path in required_artifacts):
         raise ValueError
 
     database = _exact(
         root["database"],
-        {"alembic_graph_sha256", "alembic_head", "alembic_revisions", *EXPECTED_DB_ROLES},
+        {"expected_revision", *EXPECTED_DB_ROLES},
     )
-    if (
-        database["alembic_head"] != EXPECTED_ALEMBIC_HEAD
-        or any(database[key] != value for key, value in EXPECTED_DB_ROLES.items())
-        or not isinstance(database["alembic_revisions"], list)
-    ):
+    if database != {
+        "expected_revision": EXPECTED_DATABASE_REVISION,
+        **EXPECTED_DB_ROLES,
+    }:
         raise ValueError
-    revisions: set[str] = set()
-    parents: set[str] = set()
-    normalized_revisions: list[dict[str, object]] = []
-    previous_migration: bytes | None = None
-    for raw_revision in database["alembic_revisions"]:
-        revision = _exact(raw_revision, {"down_revision", "path", "revision", "sha256"})
-        path = _relative(revision["path"])
-        encoded = os.fsencode(path)
-        if (
-            not path.startswith("application/alembic/versions/")
-            or not path.endswith(".py")
-            or (previous_migration is not None and encoded <= previous_migration)
-            or not isinstance(revision["revision"], str)
-            or re.fullmatch(r"[0-9A-Za-z_]+", revision["revision"]) is None
-            or revision["revision"] in revisions
-            or (revision["down_revision"] is not None and not isinstance(revision["down_revision"], str))
-            or by_path.get(path, {}).get("sha256") != _digest(revision["sha256"])
-        ):
-            raise ValueError
-        previous_migration = encoded
-        revisions.add(revision["revision"])
-        if revision["down_revision"] is not None:
-            parents.add(revision["down_revision"])
-        normalized_revisions.append(dict(revision))
-    head_entries = [
-        item for item in normalized_revisions if item["revision"] == EXPECTED_ALEMBIC_HEAD
-    ]
-    by_revision = {str(item["revision"]): item for item in normalized_revisions}
-    if (
-        not parents.issubset(revisions)
-        or revisions - parents != {EXPECTED_ALEMBIC_HEAD}
-        or len(head_entries) != 1
-        or head_entries[0]["down_revision"] != EXPECTED_ALEMBIC_PARENT
-        or by_revision[EXPECTED_ALEMBIC_PARENT]["down_revision"]
-        != EXPECTED_ALEMBIC_GRANDPARENT
-        or database["alembic_graph_sha256"] != _sha256_bytes(_fragment(normalized_revisions))
-    ):
-        raise ValueError
-    visited: set[str] = set()
-    current_revision: str | None = EXPECTED_ALEMBIC_HEAD
-    while current_revision is not None:
-        if current_revision in visited or current_revision not in by_revision:
-            raise ValueError
-        visited.add(current_revision)
-        parent = by_revision[current_revision]["down_revision"]
-        current_revision = parent if isinstance(parent, str) else None
-    if visited != revisions:
-        raise ValueError
+
     if root["command_manifest"] != _command_manifest(installation_root):
         raise ValueError
 
@@ -1288,7 +2359,7 @@ def _validate_static_document(document: object) -> dict[str, Any]:
         item = _exact(
             units[name],
             {
-                "argv", "credential_reference", "database_role", "enabled_by_default",
+                "argv", "credential_references", "database_role", "enabled_by_default",
                 "path", "service_group", "service_user", "sha256", "working_directory",
             },
         )
@@ -1320,9 +2391,19 @@ def _validate_static_document(document: object) -> dict[str, Any]:
     return root
 
 
-def parse_static_release_authority_v2(raw: bytes) -> StaticReleaseAuthorityV2:
+def parse_static_release_authority_v2(
+    raw: bytes,
+    *,
+    test_expected_application_dependency_provenance: Mapping[str, object] | None = None,
+) -> StaticReleaseAuthorityV2:
     try:
-        document = _validate_static_document(_load_canonical(raw))
+        document = _validate_static_document(
+            _load_canonical(raw),
+            expected_application_dependency_provenance=(
+                test_expected_application_dependency_provenance
+                or PAPER_APPLICATION_DEPENDENCY_PROVENANCE
+            ),
+        )
         return StaticReleaseAuthorityV2(
             digest=_sha256_bytes(raw),
             source_commit=document["source"]["commit"],
@@ -1344,6 +2425,7 @@ def verify_static_release_authority_v2(
     verifier_path: Path,
     content_copy: bool = False,
     test_fake_root_copy: bool = False,
+    test_expected_python_runtime_core_sha256: str | None = None,
 ) -> bool:
     """Verify one complete sealed tree without executing any staged file."""
 
@@ -1351,7 +2433,24 @@ def verify_static_release_authority_v2(
         expected = _digest(expected_digest)
         if _sha256_bytes(authority_raw) != expected:
             raise ValueError
-        document = _validate_static_document(_load_canonical(authority_raw))
+        loaded_document = _load_canonical(authority_raw)
+        expected_dependency_provenance: Mapping[str, object] = (
+            PAPER_APPLICATION_DEPENDENCY_PROVENANCE
+        )
+        if test_expected_python_runtime_core_sha256 is not None:
+            if not isinstance(loaded_document, Mapping):
+                raise ValueError
+            dependency_manifests = loaded_document.get("dependency_manifests")
+            if not isinstance(dependency_manifests, Mapping):
+                raise ValueError
+            application_dependency = dependency_manifests.get("application")
+            if not isinstance(application_dependency, Mapping):
+                raise ValueError
+            expected_dependency_provenance = application_dependency
+        document = _validate_static_document(
+            loaded_document,
+            expected_application_dependency_provenance=expected_dependency_provenance,
+        )
         if test_fake_root_copy and not content_copy:
             raise ValueError
         uid, gid, entries = _walk_sealed_stage(stage)
@@ -1389,13 +2488,30 @@ def verify_static_release_authority_v2(
             raise ValueError
         if stat.S_IMODE(verifier_info.st_mode) != 0o555 or verifier_sha != verifier["sha256"]:
             raise ValueError
-        node = document["interpreters"]["dashboard_node"]
-        node_info, node_sha = _safe_root_executable(Path(node["path"]))
-        if node_sha != node["sha256"] or node_info.st_uid != node["uid"] or node_info.st_gid != node["gid"]:
-            raise ValueError
-        if document["database"] != {**_alembic_graph(stage), **EXPECTED_DB_ROLES}:
+        if document["database"] != {
+            "expected_revision": EXPECTED_DATABASE_REVISION,
+            **EXPECTED_DB_ROLES,
+        }:
             raise ValueError
         _verify_source_blobs(stage, document["source"])
+        inspect_python_runtime(
+            stage / "application/.venv",
+            expected_core_sha256=test_expected_python_runtime_core_sha256,
+            require_empty_site_packages=False,
+        )
+        inspect_paper_application_artifact(
+            stage / "application",
+            test_expected_python_runtime_core_sha256=(
+                test_expected_python_runtime_core_sha256
+            ),
+        )
+        inspect_paper_backend_artifact(
+            stage / "backend",
+            document["command_manifest"],
+            test_expected_python_runtime_core_sha256=(
+                test_expected_python_runtime_core_sha256
+            ),
+        )
         expected_units = render_candidate_units(Path(document["installation_root"]))
         for name, raw in expected_units.items():
             if (stage / "units" / name).read_bytes() != raw:
@@ -1417,6 +2533,12 @@ def parse_release_activation_v2(*_args: object, **_kwargs: object) -> None:
     """Fail closed: the legacy combined activation schema is not runtime authority."""
 
     raise ReleaseAuthorityV2Error()
+
+
+def _normalize_private_directories(root: Path) -> None:
+    for path in (root, *(candidate for candidate in root.rglob("*") if candidate.is_dir())):
+        if not path.is_symlink():
+            path.chmod(0o700)
 
 
 def _write_exclusive(path: Path, raw: bytes, mode: int) -> None:
@@ -1442,6 +2564,39 @@ def _write_exclusive(path: Path, raw: bytes, mode: int) -> None:
             os.close(descriptor)
 
 
+def construct_pinned_uv_tool(source: Path, destination: Path) -> None:
+    """Copy only the code-owned uv bytes into a private build directory."""
+
+    try:
+        info, _ = _safe_external_file(source, executable=True)
+        if info.st_uid not in {0, os.geteuid()} or info.st_gid not in {0, os.getegid()}:
+            raise ValueError
+        parent = destination.parent
+        parent_info = parent.lstat()
+        if (
+            not destination.is_absolute()
+            or destination.exists()
+            or destination.is_symlink()
+            or not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != os.geteuid()
+            or parent_info.st_gid != os.getegid()
+            or stat.S_IMODE(parent_info.st_mode) != 0o700
+        ):
+            raise ValueError
+        _no_xattrs(parent)
+        raw = source.read_bytes()
+        if _sha256_bytes(raw) != PAPER_UV_PROVENANCE["sha256"]:
+            raise ValueError
+        _write_exclusive(destination, raw, 0o555)
+        copied_info, copied_sha256 = _safe_external_file(destination, executable=True)
+        if stat.S_IMODE(copied_info.st_mode) != 0o555 or copied_sha256 != PAPER_UV_PROVENANCE["sha256"]:
+            raise ValueError
+    except ReleaseAuthorityV2Error:
+        raise
+    except Exception:
+        raise ReleaseAuthorityV2Error() from None
+
+
 def _cli() -> int:
     parser = argparse.ArgumentParser(add_help=True)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1452,14 +2607,28 @@ def _cli() -> int:
     units = subparsers.add_parser("render-units")
     units.add_argument("--stage", type=Path, required=True)
     units.add_argument("--commit", required=True)
+    project = subparsers.add_parser("project-paper-backend")
+    project.add_argument("--source", type=Path, required=True)
+    project.add_argument("--destination", type=Path, required=True)
+    project_application = subparsers.add_parser("project-paper-application")
+    project_application.add_argument("--source", type=Path, required=True)
+    project_application.add_argument("--destination", type=Path, required=True)
+    project_runtime = subparsers.add_parser("project-python-runtime-archive")
+    project_runtime.add_argument("--archive", type=Path, required=True)
+    project_runtime.add_argument("--destination", type=Path, required=True)
+    project_uv = subparsers.add_parser("project-pinned-uv")
+    project_uv.add_argument("--source", type=Path, required=True)
+    project_uv.add_argument("--destination", type=Path, required=True)
+    verify_runtime = subparsers.add_parser("verify-python-runtime")
+    verify_runtime.add_argument("--runtime", type=Path, required=True)
+    verify_runtime.add_argument("--allow-site-packages", action="store_true")
     compose = subparsers.add_parser("compose")
     compose.add_argument("--stage", type=Path, required=True)
     compose.add_argument("--source-proof", type=Path, required=True)
     compose.add_argument("--application-python-identity", required=True)
     compose.add_argument("--backend-python-identity", required=True)
-    compose.add_argument("--node-executable", type=Path, required=True)
-    compose.add_argument("--node-identity", required=True)
     compose.add_argument("--external-verifier", type=Path, required=True)
+    compose.add_argument("--application-dependency-manifest", type=Path, required=True)
     compose.add_argument("--prior-release-sha256", required=True)
     compose.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
@@ -1476,20 +2645,38 @@ def _cli() -> int:
             for name, raw in render_candidate_units(_installation_root(commit)).items():
                 _write_exclusive(directory / name, raw, 0o644)
             return 0
+        if arguments.command == "project-paper-backend":
+            construct_paper_backend_artifact(arguments.source, arguments.destination)
+            return 0
+        if arguments.command == "project-paper-application":
+            construct_paper_application_artifact(arguments.source, arguments.destination)
+            return 0
+        if arguments.command == "project-python-runtime-archive":
+            construct_python_runtime_archive(arguments.archive, arguments.destination)
+            return 0
+        if arguments.command == "project-pinned-uv":
+            construct_pinned_uv_tool(arguments.source, arguments.destination)
+            return 0
+        if arguments.command == "verify-python-runtime":
+            verify_python_runtime_execution(arguments.runtime)
+            inspect_python_runtime(
+                arguments.runtime,
+                require_empty_site_packages=not arguments.allow_site_packages,
+            )
+            return 0
         document, _ = build_static_release_authority_v2(
             arguments.stage,
             source_proof=_load_canonical(arguments.source_proof.read_bytes()),
             application_python_identity=arguments.application_python_identity,
             backend_python_identity=arguments.backend_python_identity,
-            node_executable=arguments.node_executable,
-            node_identity=arguments.node_identity,
             external_verifier=arguments.external_verifier,
+            application_dependency_manifest=arguments.application_dependency_manifest,
             prior_release_sha256=arguments.prior_release_sha256,
         )
         _write_exclusive(arguments.output, canonical_json_bytes(document), 0o444)
         return 0
     except Exception:
-        print("release authority v2 rejected", file=os.sys.stderr)
+        print("release authority v2 rejected", file=sys.stderr)
         return 2
 
 
@@ -1498,9 +2685,19 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "EXPECTED_ALEMBIC_HEAD", "EXTERNAL_VERIFIER_INSTALLATION_PATH", "JOB_PLANE_POLICY",
+    "EXPECTED_DATABASE_REVISION", "EXTERNAL_VERIFIER_INSTALLATION_PATH", "JOB_PLANE_POLICY",
+    "PAPER_ARTIFACT_CLASS", "PAPER_ARTIFACT_POLICY", "PAPER_BACKEND_ENTRYPOINT",
+    "PAPER_APPLICATION_SOURCE_MAPPING", "PAPER_APPLICATION_SOURCE_PATHS",
+    "PAPER_BACKEND_SOURCE_MAPPING", "PAPER_BACKEND_SOURCE_PATHS", "PAPER_FORCED_ENVIRONMENT",
+    "PAPER_PYTHON_RUNTIME_PROVENANCE", "PAPER_RUNTIME_MANIFEST",
     "ReleaseAuthorityV2Error", "SCHEMA_VERSION", "SEAL_VERSION", "STATIC_KIND",
     "StaticReleaseAuthorityV2", "build_static_release_authority_v2", "canonical_json_bytes",
-    "capture_source_proof_v2", "parse_static_release_authority_v2",
-    "render_candidate_units", "verify_static_release_authority_v2",
+    "capture_source_proof_v2", "construct_paper_application_artifact",
+    "construct_paper_backend_artifact", "construct_python_runtime",
+    "construct_python_runtime_archive",
+    "inspect_paper_application_artifact", "inspect_paper_backend_artifact",
+    "inspect_python_runtime", "paper_command_manifest",
+    "python_runtime_core_sha256",
+    "parse_static_release_authority_v2", "render_candidate_units",
+    "verify_python_runtime_execution", "verify_static_release_authority_v2",
 ]

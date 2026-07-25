@@ -1,15 +1,9 @@
-"""Code-owned, manifest-attested commands for the research worker.
-
-This module never starts a process. Task 9 must call
-``prepare_immediate_spawn`` in the spawn path; it attests the complete release,
-issues a short-lived capability, consumes it, and re-attests before returning.
-"""
+"""Canonical v2-only SNAPSHOT command registry."""
 
 from __future__ import annotations
 
 import hashlib
 import hmac
-import json
 import os
 import stat
 import sys
@@ -21,33 +15,10 @@ from types import MappingProxyType
 from typing import Mapping
 
 from packages.job_contracts import JobType, SnapshotPayload, parse_payload
-from packages.runtime_release import (
-    ReleasePolicy,
-    load_runtime_authority as _load_runtime_authority,
-    read_protected_canonical_json,
-    verify_release as _verify_release,
-)
-from packages.runtime_release.config import (
-    RuntimeAuthority,
-    RuntimeAuthorityV2,
-    RuntimePathsV2,
-    attest_application_release_v2 as _attest_application_release_v2,
-    load_runtime_authority_v2 as _load_runtime_authority_v2,
-)
-from packages.runtime_release.semantic import SemanticEvidence, attest_current_semantic_inputs
-from packages.runtime_release.backend_policy import APPROVED_PHASE4_BACKEND_COMMIT
-
+from packages.runtime_release.config import RuntimeAuthorityV2, RuntimePathsV2, attest_application_release_v2 as _attest_application_release_v2, load_runtime_authority_v2 as _load_runtime_authority_v2
+from packages.runtime_release.semantic import SemanticEvidence
 from .errors import CommandRegistryError
 
-APPROVED_BACKEND_REVISION = APPROVED_PHASE4_BACKEND_COMMIT
-APPROVED_BACKEND_CWD = Path("/opt/trading-agent-phase4/releases") / f"backend-{APPROVED_BACKEND_REVISION}"
-APPROVED_BACKEND_PYTHON = APPROVED_BACKEND_CWD / ".venv/bin/python3.11"
-APPROVED_RELEASE_MANIFEST_PATH = Path("/opt/trading-agent-phase4/manifests") / f"backend-{APPROVED_BACKEND_REVISION}.manifest.json"
-# Both one-use authorities enclose one complete application/backend/semantic
-# re-attestation.  The reviewed legacy backend is roughly 5 GiB / 28k files,
-# so sub-second lifetimes are operationally impossible.  Five minutes remains
-# bounded while leaving cold-cache scan headroom; rollout must benchmark the
-# exact v2 candidate and stop if its full scan p99 exceeds two minutes.
 FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS = 120
 PRESPAWN_FULL_REATTESTATION_COUNT = 3
 _FULL_REATTESTATION_AUTHORITY_TTL_NS = 5 * 60 * 1_000_000_000
@@ -205,127 +176,8 @@ class WorkerRuntimeAuthority:
     runtime_paths: RuntimePathsV2
     runtime_authority: RuntimeAuthorityV2 = field(repr=False, compare=False)
 
-
-def _expected_command_document(authority: RuntimeAuthority) -> dict[str, object]:
-    commands = {
-        job_type.value: {
-            "executable": str(authority.backend.python_path),
-            "cwd": str(authority.backend.release_root),
-            "argv_prefix": list(spec.argv_prefix),
-            "timeout_seconds": spec.timeout_seconds,
-            "max_attempts": spec.max_attempts,
-            "result_validator": spec.result_validator_id,
-            "shell": False,
-        }
-        for job_type, spec in sorted(COMMAND_REGISTRY.items(), key=lambda item: item[0].value)
-    }
-    aggregate = hashlib.sha256(
-        json.dumps(commands, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    return {
-        "manifest_version": 1,
-        "backend_commit": authority.backend.git_commit,
-        "commands": commands,
-        "aggregate_sha256": aggregate,
-    }
-
-
-def _read_command_manifest(authority: RuntimeAuthority) -> dict[str, object]:
-    try:
-        return read_protected_canonical_json(
-            authority.command_manifest.path, authority.command_manifest.sha256
-        )
-    except Exception:
-        raise CommandRegistryError(
-            "COMMAND_MANIFEST_INVALID", "external command authority is unavailable"
-        ) from None
-
-
-def _attest_semantic_authority(authority: RuntimeAuthority) -> SemanticEvidence:
-    try:
-        evidence = attest_current_semantic_inputs(
-            authority.semantic,
-            authority.backend.git_commit,
-        )
-        if not isinstance(evidence, SemanticEvidence):
-            raise TypeError
-        return evidence
-    except Exception:
-        raise CommandRegistryError(
-            "SEMANTIC_INPUT_MISMATCH", "semantic input authority is unavailable"
-        ) from None
-
-
-def _verify_authority_release(release, release_type: str) -> None:
-    try:
-        valid = _verify_release(
-            release.release_root,
-            release.manifest_path,
-            release.manifest_sha256,
-            ReleasePolicy(
-                release_type=release_type,
-                expected_git_commit=release.git_commit,
-                expected_python_identity=release.python_identity,
-            ),
-        )
-    except Exception:
-        valid = False
-    if valid is not True:
-        _blocked("COMMAND_RELEASE_NOT_APPROVED", "immutable release attestation failed")
-
-
 def _runtime_python_path() -> Path:
     return Path(sys.executable)
-
-
-def _attest_release_v1() -> _Attestation:
-    try:
-        authority = _load_runtime_authority()
-    except Exception:
-        raise CommandRegistryError(
-            "RUNTIME_AUTHORITY_INVALID", "protected runtime authority is unavailable"
-        ) from None
-    if authority.backend.git_commit != APPROVED_BACKEND_REVISION:
-        _blocked("COMMAND_BACKEND_COMMIT_MISMATCH", "backend authority does not match reviewed code")
-    if _runtime_python_path() != authority.application.python_path:
-        _blocked("APPLICATION_INTERPRETER_MISMATCH", "worker is not running from the attested application")
-    _verify_authority_release(authority.application, "phase4-app")
-    _verify_authority_release(authority.backend, "phase4-backend")
-    observed_command = json.dumps(
-        _read_command_manifest(authority), ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
-    expected_command = json.dumps(
-        _expected_command_document(authority), ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
-    if not hmac.compare_digest(observed_command, expected_command):
-        _blocked("COMMAND_MANIFEST_MISMATCH", "external command manifest differs from code policy")
-    semantic_evidence = _attest_semantic_authority(authority)
-    try:
-        authority.recheck()
-        root_info = authority.backend.release_root.stat()
-        interpreter_info = authority.backend.python_path.stat()
-        manifest_info = authority.backend.manifest_path.stat()
-    except Exception:
-        raise CommandRegistryError(
-            "RUNTIME_AUTHORITY_CHANGED", "protected runtime authority changed during attestation"
-        ) from None
-    return _Attestation(
-        authority.application.git_commit,
-        authority.backend.git_commit,
-        authority.backend.manifest_sha256,
-        (root_info.st_dev, root_info.st_ino),
-        (interpreter_info.st_dev, interpreter_info.st_ino),
-        (manifest_info.st_dev, manifest_info.st_ino),
-        authority.backend.release_root,
-        authority.backend.python_path,
-        authority._identity,
-        authority._document_sha256,
-        authority.safety.snapshot_path,
-        authority.safety.exporter_commit,
-        authority.safety.source_fingerprint,
-        semantic_evidence,
-    )
-
 
 def _expected_v2_command_document(
     authority: RuntimeAuthorityV2,
@@ -676,7 +528,6 @@ def consume_prepared_spawn(prepared: PreparedSpawn) -> BuiltCommand:
 
 
 __all__ = [
-    "APPROVED_BACKEND_CWD", "APPROVED_BACKEND_PYTHON", "APPROVED_BACKEND_REVISION",
     "APPROVED_RELEASE_MANIFEST_PATH",
     "BuiltCommand", "COMMAND_REGISTRY", "CommandLineage", "CommandRegistryError",
     "CommandSpec", "FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS",

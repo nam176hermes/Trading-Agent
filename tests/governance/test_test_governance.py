@@ -741,6 +741,27 @@ def test_dashboard_security_node_cannot_downgrade_derived_criticality() -> None:
         )
 
 
+def test_runtime_release_node_cannot_downgrade_derived_criticality() -> None:
+    release_entry = entry(
+        test_node_id=(
+            "tests/runtime_release/test_v2.py::"
+            "test_pinned_uv_projection_identity_matches_builder_probe"
+        ),
+        owner="release-engineering",
+        reason_category="MISSING_HOST_CAPABILITY",
+        approval_record_type="host-capability-review-v1",
+        required_binary_or_service="exact pinned uv executable",
+        target_phase="Host release proof",
+        security_critical=False,
+        outcome="deselected",
+    )
+
+    with pytest.raises(GovernanceError, match="derived security criticality"):
+        validate_allowlist_document(
+            allowlist(release_entry), today=date(2026, 7, 24)
+        )
+
+
 @pytest.mark.parametrize(
     ("hidden_name", "hidden_source"),
     [

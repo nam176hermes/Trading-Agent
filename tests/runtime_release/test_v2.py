@@ -10,18 +10,34 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import Any, cast
 
 import pytest
 
 from packages.runtime_release.v2 import (
+    PAPER_ARTIFACT_CLASS,
+    PAPER_APPLICATION_SOURCE_MAPPING,
+    PAPER_APPLICATION_SOURCE_PATHS,
+    PAPER_BACKEND_SOURCE_MAPPING,
+    PAPER_BACKEND_SOURCE_PATHS,
+    PAPER_PYTHON_RUNTIME_PROVENANCE,
+    PAPER_UV_PROVENANCE,
     ReleaseAuthorityV2Error,
     build_release_activation_v2,
     build_static_release_authority_v2,
     canonical_json_bytes,
+    construct_pinned_uv_tool,
+    construct_python_runtime,
     parse_release_activation_v2,
     parse_static_release_authority_v2,
+    python_runtime_core_sha256,
     render_candidate_units,
     verify_static_release_authority_v2,
+    _artifact_digest,
+    _authority_binding,
+    _fragment,
+    _sha256_bytes,
+    _walk_sealed_stage,
 )
 
 
@@ -58,6 +74,23 @@ def _write(path: Path, data: str, mode: int = 0o644) -> None:
     path.chmod(mode)
 
 
+def _test_runtime_source(root: Path) -> tuple[Path, str]:
+    source = root / "fixture-runtime-source"
+    launcher = """#!/bin/sh
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+printf '{"identity":"CPython 3.11.15","prefixes":["%s","%s","%s","%s","%s/lib/python3.11"]}\n' \
+  "$root" "$root" "$root" "$root" "$root"
+"""
+    _write(source / "bin/python3.11", launcher, 0o755)
+    _write(source / "lib/python3.11/os.py", "name = 'posix'\n")
+    digest = python_runtime_core_sha256(source, allow_internal_source_links=True)
+    return source, digest
+
+
+def _test_runtime_core(stage: Path) -> str:
+    return python_runtime_core_sha256(stage / "application/.venv")
+
+
 def _seal(root: Path) -> None:
     for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
         if path.is_symlink():
@@ -71,33 +104,19 @@ def _git_object(kind: str, raw: bytes) -> str:
 
 
 def _source_proof(stage: Path) -> dict[str, object]:
+    application_sources = dict(PAPER_APPLICATION_SOURCE_MAPPING)
+    backend_sources = dict(PAPER_BACKEND_SOURCE_MAPPING)
     tracked_stage_paths = [
-        "application/uv.lock",
-        *sorted(
-            path.relative_to(stage).as_posix()
-            for path in (stage / "application/alembic/versions").glob("*.py")
-        ),
-        *sorted(
-            path.relative_to(stage).as_posix()
-            for path in (stage / "application/ops/systemd").glob("*")
-        ),
-        "application/generated/openapi/openapi.json",
-        "application/generated/job-api/openapi/openapi.json",
-        "application/generated/dashboard/api-schemas.ts",
-        "application/generated/dashboard/api-types.ts",
-        "backend/uv.lock",
-        "backend/main.py",
-        "dashboard/package-lock.json",
+        *(f"application/{path}" for path in PAPER_APPLICATION_SOURCE_PATHS),
+        *(f"backend/{path}" for path in PAPER_BACKEND_SOURCE_PATHS),
     ]
     entries: list[dict[str, object]] = []
     tree: dict[str, object] = {}
     for stage_path in tracked_stage_paths:
         if stage_path.startswith("backend/"):
-            source_path = "legacy/research-backend/" + stage_path.removeprefix("backend/")
-        elif stage_path.startswith("dashboard/"):
-            source_path = "apps/dashboard/" + stage_path.removeprefix("dashboard/")
+            source_path = backend_sources[stage_path.removeprefix("backend/")]
         else:
-            source_path = stage_path.removeprefix("application/")
+            source_path = application_sources[stage_path.removeprefix("application/")]
         path = stage / stage_path
         raw = path.read_bytes()
         mode = "100755" if path.stat().st_mode & 0o111 else "100644"
@@ -117,6 +136,27 @@ def _source_proof(stage: Path) -> dict[str, object]:
         for part in parts[:-1]:
             current = current.setdefault(part, {})
         current[parts[-1]] = (mode, blob)
+
+    excluded_raw = b"raise SystemExit('legacy live archive')\n"
+    excluded_source_path = "legacy/research-backend/main.py"
+    excluded_blob = _git_object("blob", excluded_raw)
+    entries.append(
+        {
+            "git_blob": excluded_blob,
+            "mode": "100644",
+            "sha256": hashlib.sha256(excluded_raw).hexdigest(),
+            "size": len(excluded_raw),
+            "source_path": excluded_source_path,
+            "stage_path": None,
+        }
+    )
+    current = tree
+    parts = excluded_source_path.split("/")
+    for part in parts[:-1]:
+        child = current.setdefault(part, {})
+        assert isinstance(child, dict)
+        current = child
+    current[parts[-1]] = ("100644", excluded_blob)
 
     tree_ids: dict[str, str] = {}
 
@@ -159,53 +199,101 @@ def _source_input(document: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _test_dependency_manifest(stage: Path, destination: Path) -> Path:
+    files: list[dict[str, object]] = []
+    digest = hashlib.sha256(canonical_json_bytes(files)[:-1]).hexdigest()
+    document = {
+        "files": files,
+        "installed_file_set_sha256": digest,
+        "lock_sha256": _sha(stage / "application/uv.lock"),
+        "provenance_file_set_sha256": digest,
+        "schema_version": 1,
+        "uv": PAPER_UV_PROVENANCE,
+        "wheelhouse_aggregate_sha256": "1" * 64,
+        "wheels": [],
+    }
+    destination.write_bytes(canonical_json_bytes(document))
+    destination.chmod(0o444)
+    return destination
+
+
 def make_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, object], str]:
     stage = tmp_path / "sealed-stage"
-    _write(stage / "application/uv.lock", "root-lock\n")
-    _write(
-        stage / "application/alembic/versions/0001_phase3_operational_store.py",
-        "revision = '0001_phase3_operational_store'\ndown_revision = None\n",
+    runtime_source, runtime_core = _test_runtime_source(tmp_path)
+    for relative, repository_source in PAPER_APPLICATION_SOURCE_MAPPING:
+        _write(
+            stage / "application" / relative,
+            (ROOT / repository_source).read_text(encoding="utf-8"),
+        )
+    construct_python_runtime(
+        runtime_source,
+        stage / "application/.venv",
+        expected_core_sha256=runtime_core,
     )
-    _write(
-        stage / "application/alembic/versions/0004_durable_research_jobs.py",
-        "revision = '0004_durable_research_jobs'\n"
-        "down_revision = '0001_phase3_operational_store'\n",
+    for relative, repository_source in PAPER_BACKEND_SOURCE_MAPPING:
+        _write(
+            stage / "backend" / relative,
+            (ROOT / repository_source).read_text(encoding="utf-8"),
+        )
+    construct_python_runtime(
+        runtime_source,
+        stage / "backend/.venv",
+        expected_core_sha256=runtime_core,
     )
-    _write(
-        stage / "application/alembic/versions/0005_job_plane_role_split.py",
-        "revision = '0005_job_plane_role_split'\n"
-        "down_revision = '0004_durable_research_jobs'\n",
-    )
-    _write(
-        stage
-        / "application/alembic/versions/0006_job_transition_database_authority.py",
-        "revision = '0006_job_transition_database_authority'\n"
-        "down_revision = '0005_job_plane_role_split'\n",
-    )
-    _write(stage / "application/generated/openapi/openapi.json", "{}\n")
-    _write(stage / "application/generated/job-api/openapi/openapi.json", "{}\n")
-    _write(stage / "application/generated/dashboard/api-schemas.ts", "export {};\n")
-    _write(stage / "application/generated/dashboard/api-types.ts", "export {};\n")
-    _write(stage / "application/ops/systemd/safety-export.timer", "[Timer]\nOnUnitActiveSec=2s\n")
-    _write(stage / "application/.venv/bin/python3.11", "#!/bin/sh\nexit 0\n", 0o755)
-    _write(stage / "backend/uv.lock", "backend-lock\n")
-    _write(stage / "backend/main.py", "raise SystemExit(0)\n")
-    _write(stage / "backend/.venv/bin/python3.11", "#!/bin/sh\nexit 0\n", 0o755)
-    _write(stage / "dashboard/package-lock.json", '{"lockfileVersion":3}\n')
-    _write(stage / "dashboard/.next/BUILD_ID", "fixture-build\n")
 
     source_proof = _source_proof(stage)
     install_root = Path(f"/opt/trading-agent-v2/releases/{source_proof['commit']}")
     for name, raw in render_candidate_units(install_root).items():
         _write(stage / "units" / name, raw.decode("utf-8"))
 
+    dependency_manifest = _test_dependency_manifest(
+        stage,
+        tmp_path / "application-dependency-manifest.json",
+    )
+    dependency_document = json.loads(dependency_manifest.read_bytes())
+    dependency_provenance = {
+        "file_count": len(dependency_document["files"]),
+        "installed_file_set_sha256": dependency_document["installed_file_set_sha256"],
+        "lock_sha256": dependency_document["lock_sha256"],
+        "manifest_sha256": _sha(dependency_manifest),
+        "provenance_file_set_sha256": dependency_document["provenance_file_set_sha256"],
+        "schema_version": dependency_document["schema_version"],
+        "uv_sha256": dependency_document["uv"]["sha256"],
+        "wheel_count": len(dependency_document["wheels"]),
+        "wheelhouse_aggregate_sha256": dependency_document["wheelhouse_aggregate_sha256"],
+    }
     verifier = tmp_path / "external-verify-stage.py"
-    shutil.copyfile(VERIFY, verifier)
+    verifier_source = VERIFY.read_text(encoding="utf-8")
+    production_pin = str(PAPER_PYTHON_RUNTIME_PROVENANCE["normalized_core_sha256"])
+    pin_assignment = (
+        '_EXPECTED_PYTHON_RUNTIME_CORE_SHA256 = (\n'
+        f'    "{production_pin}"\n'
+        ')'
+    )
+    test_assignment = (
+        '_EXPECTED_PYTHON_RUNTIME_CORE_SHA256 = (\n'
+        f'    "{runtime_core}"\n'
+        ')'
+    )
+    dependency_assignment = next(
+        line
+        for line in verifier_source.splitlines()
+        if line.startswith("_EXPECTED_APPLICATION_DEPENDENCY_PROVENANCE = ")
+    )
+    test_dependency_assignment = (
+        "_EXPECTED_APPLICATION_DEPENDENCY_PROVENANCE = "
+        + json.dumps(dependency_provenance, sort_keys=True)
+    )
+    assert verifier_source.count(pin_assignment) == 1
+    assert verifier_source.count(dependency_assignment) == 1
+    verifier.write_text(
+        verifier_source.replace(pin_assignment, test_assignment).replace(
+            dependency_assignment,
+            test_dependency_assignment,
+        ),
+        encoding="utf-8",
+    )
     verifier.chmod(0o555)
-    node = Path("/usr/bin/node").resolve(strict=True)
-    node_identity = "Node.js " + subprocess.run(
-        [node, "--version"], check=True, capture_output=True, text=True,
-    ).stdout.strip()
     _seal(stage)
 
     document, digest = build_static_release_authority_v2(
@@ -213,10 +301,10 @@ def make_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, ob
         source_proof=source_proof,
         application_python_identity="CPython 3.11.15",
         backend_python_identity="CPython 3.11.15",
-        node_executable=node,
-        node_identity=node_identity,
         external_verifier=verifier,
+        application_dependency_manifest=dependency_manifest,
         prior_release_sha256=PRIOR,
+        test_expected_python_runtime_core_sha256=runtime_core,
     )
     authority = tmp_path / "authority-v2.json"
     authority.write_bytes(canonical_json_bytes(document))
@@ -229,45 +317,53 @@ def test_static_authority_binds_one_source_complete_components_and_snapshot_only
 ) -> None:
     stage, authority, verifier, document, digest = make_release_fixture(tmp_path)
 
-    parsed = parse_static_release_authority_v2(authority.read_bytes())
+    with pytest.raises(ReleaseAuthorityV2Error):
+        parse_static_release_authority_v2(authority.read_bytes())
+    parsed = parse_static_release_authority_v2(
+        authority.read_bytes(),
+        test_expected_application_dependency_provenance=cast(
+            dict[str, Any], document["dependency_manifests"]
+        )["application"],
+    )
 
     assert parsed.digest == digest
     assert parsed.source_commit == document["source"]["commit"]
     assert parsed.source_tree == document["source"]["tree"]
-    assert set(document["components"]) == {"application", "backend", "dashboard"}
+    assert set(document["components"]) == {"application", "backend"}
     assert {item["path"] for item in document["lockfiles"].values()} == {
         "application/uv.lock",
-        "backend/uv.lock",
-        "dashboard/package-lock.json",
+        "backend/paper_runtime_manifest.json",
     }
-    assert (
-        document["database"]["alembic_head"]
-        == "0006_job_transition_database_authority"
-    )
-    assert document["database"]["api_role"] == "trading_job_api"
-    assert document["database"]["worker_role"] == "trading_job_worker"
-    assert document["database"]["scheduler_role"] == "trading_job_scheduler"
-    revisions = {
-        item["revision"]: item["down_revision"]
-        for item in document["database"]["alembic_revisions"]
+    assert document["database"] == {
+        "api_role": "trading_job_api",
+        "expected_revision": "0006_job_transition_database_authority",
+        "worker_role": "trading_job_worker",
     }
-    assert revisions["0006_job_transition_database_authority"] == (
-        "0005_job_plane_role_split"
-    )
-    assert revisions["0005_job_plane_role_split"] == "0004_durable_research_jobs"
     command = document["command_manifest"]["commands"]
     assert [item["job_type"] for item in command] == ["SNAPSHOT"]
+    assert document["artifact_policy"]["artifact_class"] == PAPER_ARTIFACT_CLASS
     backend_python = f"{document['installation_root']}/backend/.venv/bin/python3.11"
     assert command[0]["argv"] == [
-        backend_python, "-I", "-B", "main.py", "--mode", "snapshot", "--research-only",
+        backend_python, "-I", "-B", "paper_main.py",
     ]
     assert command[0]["shell"] is False
-    assert command[0]["environment_policy"] == "EMPTY_ALLOWLIST_RESEARCH_ONLY_V1"
+    assert command[0]["environment_policy"] == "CANONICAL_PAPER_CHILD_V1"
     assert "trading-job-scheduler.timer" not in document["units"]
-    assert any(
-        entry["stage_path"] == "application/ops/systemd/safety-export.timer"
+    source_stage_paths = {
+        entry["stage_path"]
         for entry in document["source"]["entries"]
+        if entry["stage_path"] is not None
+    }
+    assert "application/services/job_worker/main.py" in source_stage_paths
+    assert "backend/paper_main.py" in source_stage_paths
+    assert not any(
+        path.startswith(("dashboard/", "application/alembic/", "application/generated/"))
+        for path in source_stage_paths
     )
+    assert set(document["interpreters"]) == {
+        "application_python",
+        "backend_python",
+    }
     assert document["job_plane_policy"] == {
         "allowed_job_types": ["SNAPSHOT"],
         "scheduler_timer_enabled": False,
@@ -285,12 +381,94 @@ def test_static_authority_binds_one_source_complete_components_and_snapshot_only
         "signals_root": "/var/lib/trading-agent-v2/research-output/signals",
         "static_authority": "/etc/trading-agent-v2/release-authority-v2.json",
     }
-    assert b"LEASE_SECONDS" not in render_candidate_units(
+    worker_unit = render_candidate_units(
         Path(document["installation_root"])
     )["trading-job-worker.service"]
+    assert b"LEASE_SECONDS" not in worker_unit
+    for forced_line in (
+        b"Environment=TRADING_MODE=paper\n",
+        b"Environment=LIVE_EXECUTION_ENABLED=false\n",
+        b"Environment=LIVE_TRADING_APPROVED=false\n",
+        b"Environment=LIVE_TRADING_ENABLED=false\n",
+    ):
+        assert forced_line in worker_unit
+
+    credential_sources = {
+        "trading-job-api.service": {
+            "database-host": "/etc/trading-agent-v2/credentials/job-api/database-host",
+            "database-name": "/etc/trading-agent-v2/credentials/job-api/database-name",
+            "database-password": "/etc/trading-agent-v2/credentials/job-api/database-password",
+            "database-port": "/etc/trading-agent-v2/credentials/job-api/database-port",
+            "job-api-principal-id": "/etc/trading-agent-v2/credentials/job-api/principal-id",
+            "job-api-principal-type": "/etc/trading-agent-v2/credentials/job-api/principal-type",
+            "job-api-token": "/etc/trading-agent-v2/credentials/job-api/token",
+        },
+        "trading-job-worker.service": {
+            "database-host": "/etc/trading-agent-v2/credentials/job-worker/database-host",
+            "database-name": "/etc/trading-agent-v2/credentials/job-worker/database-name",
+            "database-password": "/etc/trading-agent-v2/credentials/job-worker/database-password",
+            "database-port": "/etc/trading-agent-v2/credentials/job-worker/database-port",
+        },
+    }
+    rendered_units = render_candidate_units(Path(cast(str, document["installation_root"])))
+    unit_documents = cast(dict[str, dict[str, Any]], document["units"])
+    for name, expected_sources in credential_sources.items():
+        unit = rendered_units[name]
+        assert b"EnvironmentFile=" not in unit
+        assert (
+            b"UnsetEnvironment=LD_PRELOAD LD_AUDIT LD_LIBRARY_PATH PYTHONHOME PYTHONPATH\n"
+            in unit
+        )
+        unit_lines = unit.splitlines()
+        assert not any(line.startswith(b"Environment=LD_PRELOAD") for line in unit_lines)
+        assert not any(line.startswith(b"Environment=LD_AUDIT") for line in unit_lines)
+        assert not any(
+            line.startswith(b"Environment=LD_LIBRARY_PATH") for line in unit_lines
+        )
+        assert unit_documents[name]["credential_references"] == expected_sources
+        assert "credential_reference" not in unit_documents[name]
+        assert {
+            line.decode("utf-8").removeprefix("LoadCredential=")
+            for line in unit.splitlines()
+            if line.startswith(b"LoadCredential=")
+        } == {f"{key}:{value}" for key, value in expected_sources.items()}
     assert verify_static_release_authority_v2(
         stage, authority.read_bytes(), expected_digest=digest, verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
     ) is True
+
+
+def test_pinned_uv_projection_rejects_fake_executable(tmp_path: Path) -> None:
+    source = tmp_path / "fake-uv"
+    _write(source, "#!/bin/sh\nexit 0\n", 0o755)
+    private = tmp_path / "private-build-root"
+    private.mkdir(mode=0o700)
+
+    with pytest.raises(ReleaseAuthorityV2Error):
+        construct_pinned_uv_tool(source, private / "uv")
+    assert not (private / "uv").exists()
+
+
+@pytest.mark.host_coupled
+def test_pinned_uv_projection_identity_matches_builder_probe(tmp_path: Path) -> None:
+    resolved = shutil.which("uv")
+    if resolved is None:
+        pytest.skip("pinned uv executable is unavailable")
+    source = Path(resolved).resolve()
+    assert _sha(source) == PAPER_UV_PROVENANCE["sha256"]
+    private = tmp_path / "private-build-root"
+    private.mkdir(mode=0o700)
+    projected = private / "uv"
+    construct_pinned_uv_tool(source, projected)
+
+    completed = subprocess.run(
+        [os.fspath(projected), "--version"],
+        check=True,
+        capture_output=True,
+        env={},
+        text=True,
+    )
+    assert completed.stdout.strip() == PAPER_UV_PROVENANCE["identity"]
 
 
 def test_activation_api_is_disabled_until_promotion_and_rotating_evidence_are_separated(
@@ -347,17 +525,13 @@ def _mutated(document: dict[str, object], name: str) -> bytes:
     elif name == "component_prefix":
         value["components"]["backend"]["source_prefix"] = "backend"
     elif name == "component_tree":
-        value["components"]["dashboard"]["source_tree"] = "d" * 40
+        value["components"]["application"]["source_tree"] = "d" * 40
     elif name == "lock_hash":
         value["lockfiles"]["application"]["sha256"] = "c" * 64
     elif name == "interpreter":
         value["interpreters"]["backend_python"]["identity"] = "CPython 3.12.0"
-    elif name == "node":
-        value["interpreters"]["dashboard_node"]["sha256"] = "0" * 64
-    elif name == "contract":
-        value["contracts"]["entries"][0]["sha256"] = "b" * 64
     elif name == "head":
-        value["database"]["alembic_head"] = "0005_job_plane_role_split"
+        value["database"]["expected_revision"] = "0005_job_plane_role_split"
     elif name == "role":
         value["database"]["worker_role"] = "trading_jobs"
     elif name == "command":
@@ -387,7 +561,7 @@ def _mutated(document: dict[str, object], name: str) -> bytes:
     "mutation",
     [
         "source_commit", "source_tree", "component_prefix", "component_tree",
-        "lock_hash", "interpreter", "node", "contract", "head", "role", "command",
+        "lock_hash", "interpreter", "head", "role", "command",
         "unit", "effective_command", "verifier", "stage_path", "prior",
         "unknown", "v1", "owner",
     ],
@@ -401,6 +575,7 @@ def test_v2_rejects_authority_field_tamper(tmp_path: Path, mutation: str) -> Non
             raw,
             expected_digest=hashlib.sha256(raw).hexdigest(),
             verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
         )
 
 
@@ -409,7 +584,7 @@ def test_v2_rejects_stage_complete_set_and_metadata_tamper(
     tmp_path: Path, mutation: str,
 ) -> None:
     stage, authority, verifier, _, digest = make_release_fixture(tmp_path)
-    target = stage / "backend/main.py"
+    target = stage / "backend/paper_main.py"
     if mutation == "extra":
         stage.chmod(0o755)
         _write(stage / "extra", "unexpected\n", 0o444)
@@ -420,7 +595,7 @@ def test_v2_rejects_stage_complete_set_and_metadata_tamper(
     elif mutation == "symlink":
         target.parent.chmod(0o755)
         target.unlink()
-        target.symlink_to("uv.lock")
+        target.symlink_to("job_attribution.py")
     elif mutation == "hardlink":
         os.link(target, tmp_path / "outside-hardlink")
     else:
@@ -429,6 +604,7 @@ def test_v2_rejects_stage_complete_set_and_metadata_tamper(
     with pytest.raises(ReleaseAuthorityV2Error):
         verify_static_release_authority_v2(
             stage, authority.read_bytes(), expected_digest=digest, verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
         )
 
 
@@ -463,6 +639,7 @@ def test_external_verifier_content_tamper_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ReleaseAuthorityV2Error):
         verify_static_release_authority_v2(
             stage, authority.read_bytes(), expected_digest=digest, verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
         )
 
 
@@ -474,6 +651,7 @@ def test_content_copy_requires_production_root_or_explicit_nonroot_fake_mode(tmp
             authority.read_bytes(),
             expected_digest=digest,
             verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
             content_copy=True,
         )
     if os.geteuid() == 0:
@@ -483,6 +661,7 @@ def test_content_copy_requires_production_root_or_explicit_nonroot_fake_mode(tmp
                 authority.read_bytes(),
                 expected_digest=digest,
                 verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
                 content_copy=True,
                 test_fake_root_copy=True,
             )
@@ -492,6 +671,7 @@ def test_content_copy_requires_production_root_or_explicit_nonroot_fake_mode(tmp
             authority.read_bytes(),
             expected_digest=digest,
             verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
             content_copy=True,
             test_fake_root_copy=True,
         ) is True
@@ -511,80 +691,7 @@ def test_static_authority_rejects_nonroot_install_owner_policy(tmp_path: Path) -
             raw,
             expected_digest=hashlib.sha256(raw).hexdigest(),
             verifier_path=verifier,
-        )
-
-
-def test_static_builder_rejects_user_owned_node_runtime(tmp_path: Path) -> None:
-    stage, _, verifier, document, _ = make_release_fixture(tmp_path)
-    node = tmp_path / "user-node"
-    _write(node, "#!/bin/sh\nexit 0\n", 0o555)
-    with pytest.raises(ReleaseAuthorityV2Error):
-        build_static_release_authority_v2(
-            stage,
-            source_proof=_source_input(document),
-            application_python_identity="CPython 3.11.15",
-            backend_python_identity="CPython 3.11.15",
-            node_executable=node,
-            node_identity="Node.js v22.17.0",
-            external_verifier=verifier,
-            prior_release_sha256=PRIOR,
-        )
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "second_head",
-        "wrong_0005_revision",
-        "wrong_0006_parent",
-        "disconnected_cycle",
-    ],
-)
-def test_static_builder_rejects_invalid_alembic_graph(
-    tmp_path: Path, mutation: str,
-) -> None:
-    stage, _, verifier, document, _ = make_release_fixture(tmp_path)
-    versions = stage / "application/alembic/versions"
-    for path in (stage, stage / "application", stage / "application/alembic", versions):
-        path.chmod(0o755)
-    if mutation == "second_head":
-        _write(
-            versions / "9999_second_head.py",
-            "revision = '9999_second_head'\ndown_revision = '0005_job_plane_role_split'\n",
-            0o444,
-        )
-    elif mutation == "wrong_0005_revision":
-        migration = versions / "0005_job_plane_role_split.py"
-        migration.chmod(0o644)
-        migration.write_text(
-            "revision = '0005_wrong_revision'\n"
-            "down_revision = '0004_durable_research_jobs'\n",
-            encoding="utf-8",
-        )
-    elif mutation == "wrong_0006_parent":
-        migration = versions / "0006_job_transition_database_authority.py"
-        migration.chmod(0o644)
-        migration.write_text(
-            "revision = '0006_job_transition_database_authority'\n"
-            "down_revision = '0004_durable_research_jobs'\n",
-            encoding="utf-8",
-        )
-    else:
-        _write(versions / "9000_cycle_a.py", "revision = 'cycle_a'\ndown_revision = 'cycle_b'\n", 0o444)
-        _write(versions / "9001_cycle_b.py", "revision = 'cycle_b'\ndown_revision = 'cycle_a'\n", 0o444)
-    _seal(stage)
-
-    node = Path(document["interpreters"]["dashboard_node"]["path"])
-    with pytest.raises(ReleaseAuthorityV2Error):
-        build_static_release_authority_v2(
-            stage,
-            source_proof=_source_proof(stage),
-            application_python_identity="CPython 3.11.15",
-            backend_python_identity="CPython 3.11.15",
-            node_executable=node,
-            node_identity=document["interpreters"]["dashboard_node"]["identity"],
-            external_verifier=verifier,
-            prior_release_sha256=PRIOR,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
         )
 
 
@@ -610,11 +717,134 @@ def test_static_builder_rejects_preseeded_bytecode(tmp_path: Path, relative: str
             source_proof=_source_input(document),
             application_python_identity="CPython 3.11.15",
             backend_python_identity="CPython 3.11.15",
-            node_executable=Path(document["interpreters"]["dashboard_node"]["path"]),
-            node_identity=document["interpreters"]["dashboard_node"]["identity"],
             external_verifier=verifier,
+            application_dependency_manifest=tmp_path / "application-dependency-manifest.json",
             prior_release_sha256=PRIOR,
         )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "application/.venv/lib/python3.11/site-packages/fastapi/implant.py",
+        "application/.venv/lib/python3.11/site-packages/surprise_package/__init__.py",
+    ],
+)
+def test_static_builder_rejects_site_package_outside_dependency_manifest(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    stage, _, verifier, document, _ = make_release_fixture(tmp_path)
+    target = stage / relative
+    for parent in target.parents:
+        if parent == stage.parent:
+            break
+        if parent.exists():
+            parent.chmod(0o755)
+    _write(target, "raise SystemExit('implanted')\n", 0o444)
+    _seal(stage)
+
+    with pytest.raises(ReleaseAuthorityV2Error):
+        build_static_release_authority_v2(
+            stage,
+            source_proof=_source_input(document),
+            application_python_identity="CPython 3.11.15",
+            backend_python_identity="CPython 3.11.15",
+            external_verifier=verifier,
+            application_dependency_manifest=tmp_path / "application-dependency-manifest.json",
+            prior_release_sha256=PRIOR,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
+        )
+
+
+def test_standalone_verifier_rejects_resealed_site_package_implant(tmp_path: Path) -> None:
+    stage, authority, verifier, document, _ = make_release_fixture(tmp_path)
+    implant = stage / "application/.venv/lib/python3.11/site-packages/fastapi/implant.py"
+    for parent in implant.parents:
+        if parent == stage.parent:
+            break
+        if parent.exists():
+            parent.chmod(0o755)
+    _write(implant, "raise SystemExit('implanted')\n", 0o444)
+    _seal(stage)
+
+    uid, gid, entries = _walk_sealed_stage(stage)
+    resealed = cast(dict[str, Any], deepcopy(document))
+    resealed["stage"]["entries"] = entries
+    resealed["stage"]["file_set_sha256"] = _sha256_bytes(_fragment(entries))
+    resealed["stage"]["uid"] = uid
+    resealed["stage"]["gid"] = gid
+    resealed["components"]["application"]["artifact_set_sha256"] = _artifact_digest(
+        entries,
+        "application",
+    )
+    resealed["binding_sha256"] = _authority_binding(resealed)
+    raw = canonical_json_bytes(resealed)
+    authority.chmod(0o644)
+    authority.write_bytes(raw)
+    authority.chmod(0o444)
+
+    rejected = subprocess.run(
+        [
+            os.fspath(verifier),
+            os.fspath(stage),
+            os.fspath(authority),
+            "--expected-authority-sha256",
+            hashlib.sha256(raw).hexdigest(),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode == 2
+    assert rejected.stdout == ""
+    assert rejected.stderr == "release authority v2 stage rejected\n"
+
+
+def test_standalone_verifier_rejects_resealed_environment_file_unit(
+    tmp_path: Path,
+) -> None:
+    stage, authority, verifier, document, _ = make_release_fixture(tmp_path)
+    unit_name = "trading-job-worker.service"
+    unit_path = stage / "units" / unit_name
+    unit_path.chmod(0o644)
+    malicious = unit_path.read_bytes().replace(
+        b"Type=simple\n",
+        b"Type=simple\n"
+        b"EnvironmentFile=/tmp/attacker-controlled.env\n"
+        b"Environment=LD_PRELOAD=/tmp/attacker-controlled.so\n",
+        1,
+    )
+    unit_path.write_bytes(malicious)
+    unit_path.chmod(0o444)
+    _seal(stage)
+
+    uid, gid, entries = _walk_sealed_stage(stage)
+    resealed = cast(dict[str, Any], deepcopy(document))
+    resealed["stage"]["entries"] = entries
+    resealed["stage"]["file_set_sha256"] = _sha256_bytes(_fragment(entries))
+    resealed["stage"]["uid"] = uid
+    resealed["stage"]["gid"] = gid
+    resealed["units"][unit_name]["sha256"] = _sha256_bytes(malicious)
+    resealed["binding_sha256"] = _authority_binding(resealed)
+    raw = canonical_json_bytes(resealed)
+    authority.chmod(0o644)
+    authority.write_bytes(raw)
+    authority.chmod(0o444)
+
+    rejected = subprocess.run(
+        [
+            os.fspath(verifier),
+            os.fspath(stage),
+            os.fspath(authority),
+            "--expected-authority-sha256",
+            hashlib.sha256(raw).hexdigest(),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode == 2
+    assert rejected.stdout == ""
+    assert rejected.stderr == "release authority v2 stage rejected\n"
 
 
 @pytest.mark.parametrize(
@@ -639,9 +869,8 @@ def test_static_builder_rejects_extra_candidate_unit_or_dropin(
             source_proof=_source_input(document),
             application_python_identity="CPython 3.11.15",
             backend_python_identity="CPython 3.11.15",
-            node_executable=Path(document["interpreters"]["dashboard_node"]["path"]),
-            node_identity=document["interpreters"]["dashboard_node"]["identity"],
             external_verifier=verifier,
+            application_dependency_manifest=tmp_path / "application-dependency-manifest.json",
             prior_release_sha256=PRIOR,
         )
 
@@ -660,6 +889,7 @@ def test_extended_attributes_are_rejected_when_supported(tmp_path: Path) -> None
         with pytest.raises(ReleaseAuthorityV2Error):
             verify_static_release_authority_v2(
                 stage, authority.read_bytes(), expected_digest=digest, verifier_path=verifier,
+            test_expected_python_runtime_core_sha256=_test_runtime_core(stage),
             )
     finally:
         os.removexattr(target, "user.release-test", follow_symlinks=False)
@@ -674,8 +904,19 @@ def test_capture_source_proof_reconstructs_exact_git_objects(tmp_path: Path) -> 
         ["git", "-C", repository, "config", "user.email", "release@example.invalid"], check=True,
     )
     _write(repository / "root file.txt", "root\n")
-    _write(repository / "legacy/research-backend/main.py", "print('backend')\n")
-    _write(repository / "apps/dashboard/package-lock.json", "{}\n")
+    _write(
+        repository / "legacy/research-backend/job_attribution.py",
+        "def bind_job():\n    return None\n",
+    )
+    _write(repository / "legacy/research-backend/main.py", "print('excluded')\n")
+    _write(
+        repository / "packages/runtime_release/paper_application/command_registry.py",
+        "COMMAND_REGISTRY = {}\n",
+    )
+    _write(
+        repository / "packages/runtime_release/paper_backend/paper_main.py",
+        "def main():\n    return 0\n",
+    )
     subprocess.run(["git", "-C", repository, "add", "--all"], check=True)
     subprocess.run(["git", "-C", repository, "commit", "-qm", "fixture"], check=True)
     commit = subprocess.run(
@@ -704,5 +945,8 @@ def test_capture_source_proof_reconstructs_exact_git_objects(tmp_path: Path) -> 
         check=True, capture_output=True, text=True,
     ).stdout.strip()
     assert {entry["stage_path"] for entry in proof["entries"]} == {
-        "application/root file.txt", "backend/main.py", "dashboard/package-lock.json",
+        None,
+        "application/services/job_worker/command_registry.py",
+        "backend/job_attribution.py",
+        "backend/paper_main.py",
     }

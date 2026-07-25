@@ -929,6 +929,11 @@ def test_worker_main_requires_exact_worker_database_role_before_repository(
     from services.job_worker import main
 
     calls = []
+    monkeypatch.setattr(
+        main,
+        "attest_worker_runtime_authority",
+        lambda: calls.append("authority") or object(),
+    )
 
     def reject_mismatch(cls, *, expected_user):
         calls.append(("settings", expected_user))
@@ -948,7 +953,40 @@ def test_worker_main_requires_exact_worker_database_role_before_repository(
     with pytest.raises(ValueError, match="database role"):
         main.main()
 
-    assert calls == [("settings", "trading_job_worker")]
+    assert calls == ["authority", ("settings", "trading_job_worker")]
+
+
+def test_worker_main_attests_authority_before_database_credentials(
+    monkeypatch,
+) -> None:
+    from services.job_worker import main
+    from services.job_worker.command_registry import CommandRegistryError
+
+    calls: list[str] = []
+    monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+
+    def reject_authority():
+        calls.append("authority")
+        raise CommandRegistryError("RUNTIME_AUTHORITY_INVALID", "closed")
+
+    monkeypatch.setattr(main, "attest_worker_runtime_authority", reject_authority)
+    monkeypatch.setattr(
+        main.JobStoreSettings,
+        "from_env",
+        classmethod(
+            lambda cls, *, expected_user: calls.append("database-credentials")
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "WorkerRepository",
+        lambda settings: calls.append("repository"),
+    )
+
+    with pytest.raises(CommandRegistryError):
+        main.main()
+
+    assert calls == ["authority"]
 
 
 def test_worker_main_checks_server_role_and_exact_head_before_recovery(
@@ -957,6 +995,7 @@ def test_worker_main_checks_server_role_and_exact_head_before_recovery(
     from services.job_worker import main
 
     calls: list[object] = []
+    authority = object()
 
     class Repository:
         def __enter__(self):
@@ -970,6 +1009,11 @@ def test_worker_main_checks_server_role_and_exact_head_before_recovery(
             calls.append(("identity", expected_user, expected_revision))
 
     monkeypatch.setattr(
+        main,
+        "attest_worker_runtime_authority",
+        lambda: calls.append("authority") or authority,
+    )
+    monkeypatch.setattr(
         main.JobStoreSettings,
         "from_env",
         classmethod(lambda cls, *, expected_user: object()),
@@ -978,18 +1022,21 @@ def test_worker_main_checks_server_role_and_exact_head_before_recovery(
     monkeypatch.setattr(
         main,
         "serve",
-        lambda repository, *, idle_seconds: calls.append("serve"),
+        lambda repository, *, idle_seconds, authority: calls.append(
+            ("serve", authority)
+        ),
     )
 
     assert main.main() is None
     assert calls == [
+        "authority",
         "enter",
         (
             "identity",
             "trading_job_worker",
             "0006_job_transition_database_authority",
         ),
-        "serve",
+        ("serve", authority),
         "exit",
     ]
 

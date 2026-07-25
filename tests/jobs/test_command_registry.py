@@ -10,6 +10,7 @@ from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -36,6 +37,7 @@ from packages.runtime_release.config import (
     SemanticAuthority,
 )
 from packages.runtime_release.semantic import SemanticEvidence
+from packages.runtime_release.v2 import paper_command_manifest
 from tests.jobs.backend_contract_fixtures import BACKEND_COMMIT
 
 
@@ -50,6 +52,23 @@ def tmp_path():
 
 def _job(job_type: JobType, payload: object) -> SimpleNamespace:
     return SimpleNamespace(job_type=job_type, payload=payload)
+
+
+def test_worker_v2_command_policy_matches_release_authority_manifest() -> None:
+    import services.job_worker.command_registry as module
+
+    install_root = Path("/opt/trading-agent-v2/releases/" + "a" * 40)
+    authority = cast(
+        Any,
+        SimpleNamespace(
+            backend_root=install_root / "backend",
+            backend_python=install_root / "backend/.venv/bin/python3.11",
+        ),
+    )
+
+    assert module._expected_v2_command_document(authority) == paper_command_manifest(
+        install_root
+    )
 
 
 def _semantic_evidence(version: str = "semantic-v1") -> SemanticEvidence:
@@ -429,7 +448,7 @@ def test_full_reattestation_tokens_have_bounded_operational_budget_and_accept_at
         _job(JobType.SNAPSHOT, {"scope": "default", "requested_as_of": None}),
         capability,
     )
-    assert built.argv[-2:] == ("snapshot", "--research-only")
+    assert built.argv[-1:] == ("paper_main.py",)
 
     monkeypatch.undo()
     _deployment(tmp_path / "prepared", monkeypatch)
@@ -439,9 +458,7 @@ def test_full_reattestation_tokens_have_bounded_operational_budget_and_accept_at
     monkeypatch.setattr(module, "_attest_release", lambda: prepared._attestation)
     prepared_ticks = iter((prepared._deadline_ns - 1, prepared._deadline_ns))
     monkeypatch.setattr(module.time, "monotonic_ns", lambda: next(prepared_ticks))
-    assert consume_prepared_spawn(prepared).argv[-2:] == (
-        "snapshot", "--research-only",
-    )
+    assert consume_prepared_spawn(prepared).argv[-1:] == ("paper_main.py",)
 
 
 def test_build_consumes_then_revalidates_manifest(tmp_path, monkeypatch):
@@ -465,8 +482,7 @@ def test_build_uses_exact_snapshot_only_isolated_argv_and_attested_paths(tmp_pat
     )
     assert set(COMMAND_REGISTRY) == {JobType.SNAPSHOT}
     assert built.argv == (
-        str(built.executable), "-I", "-B", "main.py", "--mode", "snapshot",
-        "--research-only",
+        str(built.executable), "-I", "-B", "paper_main.py",
     )
     assert built.cwd == tmp_path / APPROVED_BACKEND_REVISION
     assert built.backend_revision == BACKEND_COMMIT

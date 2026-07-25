@@ -91,6 +91,44 @@ def test_child_environment_is_fixed_empty_start_and_dedicated_names_only(tmp_pat
     assert not ({"OPENAI_API_KEY", "DEEPSEEK_API_KEY", "DATABASE_URL", "BINANCE_API_KEY"} & child.keys())
 
 
+@pytest.mark.parametrize(
+    "forbidden_key",
+    [
+        "BINANCE_API_KEY",
+        "BINANCE_API_SECRET",
+        "KRAKEN_API_KEY",
+        "KRAKEN_PRIVATE_KEY",
+        "ALPACA_API_KEY",
+        "APCA_API_SECRET_KEY",
+        "BROKER_API_KEY",
+        "BROKER_ACCESS_TOKEN",
+        "WITHDRAWAL_API_KEY",
+        "WITHDRAWAL_PRIVATE_KEY",
+        "TRADING_DASHBOARD_SERVICE_TOKEN",
+        "DASHBOARD_SERVICE_TOKEN",
+        "TRADING_JOB_API_TOKEN",
+        "DATABASE_URL",
+        "DATABASE_OWNER_URL",
+        "POSTGRES_PASSWORD",
+    ],
+)
+def test_paper_child_strips_trading_and_privileged_credentials(
+    tmp_path,
+    monkeypatch,
+    forbidden_key,
+):
+    settings, _ = _settings(tmp_path, monkeypatch, {forbidden_key: "must-not-leak"})
+
+    child = build_child_environment(settings)
+
+    assert forbidden_key not in child
+    assert "must-not-leak" not in child.values()
+    assert child["TRADING_MODE"] == "paper"
+    assert child["LIVE_EXECUTION_ENABLED"] == "false"
+    assert child["LIVE_TRADING_APPROVED"] == "false"
+    assert child["LIVE_TRADING_ENABLED"] == "false"
+
+
 def test_v2_child_roots_come_only_from_protected_runtime_authority(
     tmp_path, monkeypatch,
 ) -> None:

@@ -4,6 +4,7 @@ import hmac
 import inspect
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 import pytest
@@ -322,6 +323,52 @@ def test_environment_binds_bearer_credential_to_exact_server_principal() -> None
                 "TRADING_JOB_API_PRINCIPAL_ID": "forged-admin",
             }
         )
+
+
+def test_systemd_credentials_bind_token_to_exact_server_principal(
+    tmp_path: Path,
+) -> None:
+    credential_root = tmp_path / "credentials"
+    credential_root.mkdir(mode=0o700)
+    for name, value in {
+        "job-api-token": "dashboard-token",
+        "job-api-principal-type": "OPERATOR",
+        "job-api-principal-id": "dashboard-service",
+    }.items():
+        path = credential_root / name
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o400)
+
+    configured = JobApiSettings.from_systemd_credentials(
+        {"CREDENTIALS_DIRECTORY": str(credential_root)}
+    )
+
+    assert configured.bearer_token == "dashboard-token"
+    assert configured.principal == PRINCIPAL
+
+
+def test_systemd_principal_validation_error_does_not_disclose_credential(
+    tmp_path: Path,
+) -> None:
+    credential_root = tmp_path / "credentials"
+    credential_root.mkdir(mode=0o700)
+    sensitive_value = "private-invalid-principal-type-must-not-leak"
+    for name, value in {
+        "job-api-token": "dashboard-token",
+        "job-api-principal-type": sensitive_value,
+        "job-api-principal-id": "dashboard-service",
+    }.items():
+        path = credential_root / name
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o400)
+
+    with pytest.raises(ValueError) as caught:
+        JobApiSettings.from_systemd_credentials(
+            {"CREDENTIALS_DIRECTORY": str(credential_root)}
+        )
+
+    assert sensitive_value not in str(caught.value)
+    assert sensitive_value not in repr(caught.value)
 
 
 def test_liveness_is_independent_of_database_and_readiness_checks_all_dependencies() -> None:

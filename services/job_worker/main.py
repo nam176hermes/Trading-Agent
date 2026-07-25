@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import time
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from services.job_store.config import JobStoreSettings
 from services.job_store.worker_repository import WorkerRepository
@@ -18,6 +18,9 @@ from .results import ResultValidator
 from .safety_state import AuthorityBoundSafetyPreflight, SafetyStateClient
 from .worker import JobWorker, WORKER_LEASE_SECONDS
 
+if TYPE_CHECKING:
+    from .command_registry import WorkerRuntimeAuthority
+
 EXPECTED_DATABASE_REVISION = "0006_job_transition_database_authority"
 _FORBIDDEN_AUTHORITY_KEYS = frozenset({
     "TRADING_APP_MANIFEST_SHA256",
@@ -29,29 +32,34 @@ _FORBIDDEN_AUTHORITY_KEYS = frozenset({
 })
 
 
-def build_worker(repository: WorkerRepository, source: Mapping[str, str] | None = None) -> JobWorker:
+def build_worker(
+    repository: WorkerRepository,
+    source: Mapping[str, str] | None = None,
+    *,
+    authority: WorkerRuntimeAuthority | None = None,
+) -> JobWorker:
     values = os.environ if source is None else source
     if _FORBIDDEN_AUTHORITY_KEYS.intersection(values):
         raise ValueError("runtime authority cannot be supplied through environment digests")
     if "TRADING_WORKER_LEASE_SECONDS" in values:
         raise ValueError("worker lease is code-owned and cannot be overridden")
-    authority = attest_worker_runtime_authority()
-    runtime_authority = authority.runtime_authority
+    selected_authority = authority or attest_worker_runtime_authority()
+    runtime_authority = selected_authority.runtime_authority
     environment = ResearchEnvironmentSettings.from_authority(
         runtime_authority, values
     )
-    runtime_paths = authority.runtime_paths
+    runtime_paths = selected_authority.runtime_paths
     safety = SafetyStateClient(
-        authority.safety_snapshot_path,
-        expected_exporter_commit=authority.safety_exporter_commit,
-        expected_source_fingerprint=authority.safety_source_fingerprint,
+        selected_authority.safety_snapshot_path,
+        expected_exporter_commit=selected_authority.safety_exporter_commit,
+        expected_source_fingerprint=selected_authority.safety_source_fingerprint,
         protected_root_owned=True,
     )
-    safety_preflight = AuthorityBoundSafetyPreflight(authority, safety)
+    safety_preflight = AuthorityBoundSafetyPreflight(selected_authority, safety)
     # Fail before the worker can recover leases, claim, or construct a runner.
     safety_preflight()
     worker_id = values.get("TRADING_WORKER_ID") or f"worker-{socket.gethostname()}"
-    code_commit = authority.application_revision
+    code_commit = selected_authority.application_revision
     return JobWorker(
         repository,
         ProcessRunner(ArtifactWriter(runtime_paths.artifact_root)),
@@ -69,17 +77,32 @@ def build_worker(repository: WorkerRepository, source: Mapping[str, str] | None 
 
 
 def main() -> int:
-    idle_seconds = float(os.environ.get("TRADING_WORKER_IDLE_SECONDS", "1"))
-    settings = JobStoreSettings.from_env(expected_user="trading_job_worker")
+    values = os.environ
+    authority = attest_worker_runtime_authority()
+    idle_seconds = float(values.get("TRADING_WORKER_IDLE_SECONDS", "1"))
+    settings = (
+        JobStoreSettings.from_systemd_credentials(
+            expected_user="trading_job_worker"
+        )
+        if "CREDENTIALS_DIRECTORY" in values
+        else JobStoreSettings.from_env(
+            expected_user="trading_job_worker"
+        )
+    )
     with WorkerRepository(settings) as repository:
         repository.assert_runtime_identity(
             expected_user="trading_job_worker",
             expected_revision=EXPECTED_DATABASE_REVISION,
         )
-        serve(repository, idle_seconds=idle_seconds)
+        serve(repository, idle_seconds=idle_seconds, authority=authority)
 
 
-def serve(repository: WorkerRepository, *, idle_seconds: float) -> None:
+def serve(
+    repository: WorkerRepository,
+    *,
+    idle_seconds: float,
+    authority: WorkerRuntimeAuthority | None = None,
+) -> None:
     """Recover crash leftovers once, then enter the single-worker claim loop.
 
     Recovery exceptions intentionally escape and stop the service.  Claiming a
@@ -87,7 +110,11 @@ def serve(repository: WorkerRepository, *, idle_seconds: float) -> None:
     duplicate research process after a restart.
     """
 
-    worker = build_worker(repository)
+    worker = (
+        build_worker(repository)
+        if authority is None
+        else build_worker(repository, authority=authority)
+    )
     repository.recover_expired_leases(
         ProcProcessInspector(), recovery_id="worker-startup-recovery"
     )
