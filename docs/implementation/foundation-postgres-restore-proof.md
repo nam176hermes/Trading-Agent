@@ -42,8 +42,9 @@ later source-bound run at
 `dd1463a80b5a492d6f12b89f9aa69f03ce77416b` preserved the blocking comparisons
 and corrected extension-owner and constraint-reference normalization.
 
-`make test-runtime-postgres` then returned eight passing tests and exit status
-zero. The retained sanitized catalog evidence records:
+Historical controller output reported a successful final runtime command, but
+no retained protected artifact binds that command's exit status. The retained
+sanitized catalog artifact independently records:
 
 ```text
 semantic_groups_equal=true
@@ -56,8 +57,9 @@ effective ACL, functions, and triggers/policies. Source and restored table row
 counts also match.
 
 ```text
-GO - RESTORE SEMANTIC CATALOG PARITY PASSED
+PASS - RETAINED DISPOSABLE RESTORE SEMANTIC ARTIFACT
 ```
 
-The proof is limited to the expired disposable authority. It grants no access
-to the operator-managed PostgreSQL instance.
+This proves the scoped restore-semantic result, not the complete Package 2
+runtime gate. `runtime_postgres_parity` remains `PENDING_APPROVAL`. The expired
+authority grants no access to the operator-managed PostgreSQL instance.

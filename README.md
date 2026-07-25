@@ -137,12 +137,14 @@ implementation path, exact test proof, CI collection path, required final gate,
 and the source/runtime boundary. D0 source readiness is closed.
 
 The operator-managed PostgreSQL has not been migrated, mutated, or probed by
-these validation gates. Disposable PostgreSQL 16 runtime parity closed on the
-commit-bound Package 2 authority for `dd1463a80b5a492d6f12b89f9aa69f03ce77416b`:
-the event-ledger, restore-parity, and dual-read targets passed, semantic catalog
-groups and row counts matched, and all approved fixtures were removed. The ten
-source-bound files remain byte-identical in this tree. This disposable proof
-does not authorize production PostgreSQL access or any active runtime change.
+these validation gates. A commit-bound disposable PostgreSQL 16 run for
+`dd1463a80b5a492d6f12b89f9aa69f03ce77416b` retained evidence that restored
+semantic catalog groups and row counts matched. The retained records do not
+include an immutable transcript binding every final command result, so the
+executable D0 matrix correctly keeps `runtime_postgres_parity` at
+`PENDING_APPROVAL`. The ten source-bound files remain byte-identical in this
+tree. The disposable proof does not authorize production PostgreSQL access or
+any active runtime change.
 
 ## Source versus runtime
 

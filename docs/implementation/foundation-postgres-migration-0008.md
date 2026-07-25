@@ -36,7 +36,9 @@ disposable PostgreSQL 16 fixture. Package 2 remained open at this checkpoint.
 
 The later source-bound run at
 `dd1463a80b5a492d6f12b89f9aa69f03ce77416b` fixed the restore comparison
-without weakening it. The final runtime target passed eight tests, semantic
-catalog groups and row counts matched, and Package 2 closed. See
+without weakening it. Retained semantic evidence proves that restored catalog
+groups and row counts matched. No retained protected artifact binds the final
+runtime command exit status, so this result does not close Package 2 and the
+executable matrix remains `PENDING_APPROVAL`. See
 `foundation-postgres-restore-proof.md` and
 `foundation-postgres-approval-evidence.md`.

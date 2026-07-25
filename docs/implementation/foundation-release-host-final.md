@@ -112,7 +112,9 @@ GO - HOST RELEASE PROOF PASSED
 
 The release is offline, symlink-free, relocatable, and runnable on the actual
 host. Package 01 is closed. At this checkpoint Package 02 had not started and
-still required separate exact approval. Package 02 later closed under the
-commit-bound disposable authority documented in
-`foundation-postgres-approval-evidence.md`; neither result authorizes production
-PostgreSQL access or any active runtime operation.
+still required separate exact approval. A later commit-bound disposable run
+retained successful restore-semantic evidence, but not an immutable transcript
+binding every final command result. Package 02 therefore remains
+`PENDING_APPROVAL` in the executable closure matrix. Neither result authorizes
+production PostgreSQL access or any active runtime operation. See
+`foundation-postgres-approval-evidence.md`.
