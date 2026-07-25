@@ -83,9 +83,11 @@ def test_dashboard_manifest_is_fixed_complete_and_source_scoped() -> None:
         assert relative.suffix != ".pyc"
 
 
-def test_dashboard_snapshot_preserves_next_rule_and_exact_regular_files() -> None:
+def test_dashboard_snapshot_preserves_introduction_and_tracks_current_regular_files() -> None:
     document = _manifest()
-    expected = {entry["destination_path"] for entry in document["entries"]}
+    entries = document["entries"]
+    assert isinstance(entries, list)
+    expected_introduction = {entry["destination_path"] for entry in entries}
     actual: set[str] = set()
 
     agents = DESTINATION / "AGENTS.md"
@@ -121,7 +123,8 @@ def test_dashboard_snapshot_preserves_next_rule_and_exact_regular_files() -> Non
         stdout=subprocess.PIPE,
     )
     tracked_paths = {raw.decode("utf-8") for raw in tracked.stdout.split(b"\0") if raw}
-    assert expected == actual == tracked_paths
+    assert expected_introduction <= actual
+    assert actual == tracked_paths
 
 
 def test_dashboard_snapshot_passes_independent_verifier() -> None:

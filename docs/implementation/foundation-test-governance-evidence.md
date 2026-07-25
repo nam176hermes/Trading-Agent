@@ -5,16 +5,20 @@ Package: Test skip governance and critical coverage
 
 ## Implemented controls
 
-- Exact node-level pytest reporter for passed, failed, skipped and deselected tests.
-- Dashboard TAP inventory plus shell integration observation.
-- Committed 242-entry skip and deselection allowlist.
+- Exact node-level pytest reporter for passed, failed, skipped, deselected and not-run tests.
+- Collection-integrity detection for individual tests removed by repository hooks.
+- Fail-closed session status for any collected test that never executes.
+- Shared recursive Dashboard inventory consumed by `npm test` and governance, with file-qualified TAP and shell integration observations plus per-file zero-observation rejection.
+- Committed 242-entry skip and deselection allowlist sealing component, exact node ID, outcome and normalized reason.
 - Strict approved-category, field, ownership, expiry and approval validation.
-- New skip and stale allowlist rejection.
-- Security-critical approval enforcement.
+- New skip, stale allowlist, outcome drift and runtime-reason drift rejection.
+- Security-critical approval-metadata enforcement based on canonical component, path and category rules.
 - Machine-readable merged governance report.
 - Fail-closed stale-artifact removal and machine-readable error reports.
+- Private evidence directories and descriptor-relative atomic report writes resistant to symlink and parent-replacement races.
 - Per-unit Python and dashboard branch coverage ratchets.
-- Executed-test proof for the required safety cases.
+- Exact parameterized executed-test proof for the required safety cases.
+- Sealed critical source and required-case identities with denominator and covered-count shrinkage rejection.
 - Canonical `make check-test-skips` and `make check-critical-coverage` targets.
 - Both gates added to `make ci`, which is already called by `.github/workflows/foundation.yml`.
 - CI artifact publication for `/tmp/trading-agent-test-evidence`, retained for 14 days.
@@ -89,28 +93,28 @@ The implementation now writes runtime evidence under `/tmp/trading-agent-test-ev
 
 This preserves the scanner and changes report placement instead of weakening secret detection.
 
-## Final verification
+## Latest production-gate evidence
 
-`make check-critical-coverage` exited zero. It executed 652 Python tests and 52 focused dashboard tests, validated every required case and held every exact line and branch ratchet.
+`make check-critical-coverage` exited zero. It executed 652 Python tests and 52 focused dashboard tests, validated every exact required case and held every line, branch, denominator and covered-count ratchet.
 
-`make check-test-skips` collected all three components and validated the exact 242-entry allowlist with no new, stale, duplicate, unknown, expired or reason-drift entry. Its merged report recorded 2,530 passing tests, zero failures, 229 skips, 13 deselections and 238 approval-blocked observations. The command exited zero.
+`make check-test-skips` collected all three components and validated the exact 242-entry allowlist. Its merged report recorded 2,585 passing tests, zero failures, 229 skips, 13 deselections, zero not-run tests and 238 approval-blocked observations. Dashboard evidence came from the same recursive inventory used by `npm test`: 14 Node test files plus `dashboard-security.integration.sh` and `mode-auth.integration.sh`. The command exited zero.
 
-Portable source-authority integration now separates strict and portable verification. Strict import, proposal and standalone verification still require every external Git object. Portable audit is selected only when every declared external repository is absent. Partial availability, modified component bytes, manifest identity drift, aggregate drift and coordinated authority-plus-manifest tampering all fail closed. The complete consolidation suite passed `168` tests.
+Portable source-authority integration separates strict and portable verification. Strict mode verifies source authority and imported bytes at each unique atomic introduction commit, while permitting legitimate later monorepo evolution. Portable audit is explicit and available only when every declared external repository is absent; it verifies introduction and HEAD against immutable embedded evidence. Partial authority availability, modified imported bytes, manifest identity drift, aggregate drift and coordinated authority-plus-manifest tampering fail closed. The complete consolidation suite passed 171 tests.
 
-`make ci` exited zero. It passed the canonical audit, closure and contract checks, secret hygiene, root tests, legacy tests, dashboard tests, exact skip governance, critical coverage, dashboard production build, Bandit, Python dependency audits and npm dependency audits.
-
-The independent adversarial review did not execute. The delegated reviewer returned `HTTP 404: No active credentials for provider: openai`, and standalone `codex doctor` confirmed that no Codex credentials are available. The operator explicitly waived this review gate and accepted the machine-green state on 2026-07-24. This waiver is recorded as an acceptance decision, not as a successful review.
+The canonical `make ci` result and independent-review verdict are candidate-bound evidence. They must be generated after the final repository bytes are sealed and retained outside the repository. Earlier green CI or review output never accepts a modified candidate.
 
 ## Decision rule
 
 Use `GO -- TEST EVIDENCE IS MANAGED` only when:
 
-- the allowlist comparison passes with no unknown or stale entry;
-- required critical cases are observed as executed;
-- every coverage ratio is at or above its exact committed ratchet;
-- machine reports are generated;
-- `make ci` exits zero;
-- the high-risk provenance change receives an independent adversarial review with no unresolved finding, unless the operator explicitly waives that gate;
-- no unrelated safety or security assertion was weakened.
+- the allowlist comparison passes with no unknown, stale, changed-outcome or changed-reason entry;
+- no collected test is hidden or left not-run;
+- required critical cases are observed as executed under their exact sealed identities;
+- every coverage ratio and exact counter is at or above its committed ratchet;
+- current private machine reports are generated;
+- canonical `make ci` exits zero on the exact candidate;
+- a fresh isolated read-only review of the same candidate has no unresolved high or medium finding;
+- candidate bytes do not drift between review, CI and the acceptance decision;
+- no unrelated safety or security assertion is weakened.
 
-Current decision: `GO -- TEST EVIDENCE IS MANAGED; INDEPENDENT REVIEW WAIVED BY OPERATOR`.
+The final GO or NO-GO decision belongs in the external exact-candidate acceptance record, not this source document.

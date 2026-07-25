@@ -548,7 +548,8 @@ def test_json_success_has_exact_one_root_status_and_component_keys(tmp_path: Pat
 
     assert result.returncode == 0, result.stderr
     assert set(payload) == {
-        "schema_version", "root", "head", "branch", "status", "components", "result",
+        "schema_version", "root", "head", "branch", "status", "authority_mode",
+        "components", "result",
     }
     assert payload["root"] == str(repository)
     assert payload["head"] == _git(repository, "rev-parse", "HEAD")
@@ -558,15 +559,58 @@ def test_json_success_has_exact_one_root_status_and_component_keys(tmp_path: Pat
     assert payload["result"] == "PASS"
 
 
-def test_audit_accepts_portable_clone_when_all_external_authorities_are_absent(
+def test_audit_requires_explicit_portable_mode_when_all_authorities_are_absent(
     tmp_path: Path,
 ) -> None:
     repository = _valid_root(tmp_path)
     _remove_authority_repositories(repository)
 
-    result = _run(repository, "--release")
+    implicit = _run(repository)
+    portable = _run(repository, "--portable", "--json")
+    release = _run(repository, "--portable", "--release")
+
+    assert implicit.returncode != 0
+    assert implicit.stderr.strip() == "E_AUTHORITY"
+    assert portable.returncode == 0, portable.stderr
+    assert json.loads(portable.stdout)["authority_mode"] == "portable"
+    assert release.returncode != 0
+    assert release.stderr.strip() == "E_ARGUMENT"
+
+
+def test_strict_mode_is_default_and_exposes_authority_mode(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+
+    result = _run(repository, "--json")
 
     assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["authority_mode"] == "strict"
+
+
+def test_strict_mode_seals_introduction_but_allows_later_component_evolution(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    target = repository / "legacy/research-backend/main.py"
+    target.write_text("print('legitimate post-import evolution')\n", encoding="utf-8")
+    _git(repository, "add", str(target.relative_to(repository)))
+    _git(repository, "commit", "-qm", "evolve backend after atomic import")
+
+    result = _run(repository, "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["authority_mode"] == "strict"
+    assert payload["head"] == _git(repository, "rev-parse", "HEAD")
+    assert payload["components"]["backend"]["result"] == "PASS"
+
+
+def test_portable_flag_rejects_fully_available_authorities(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+
+    result = _run(repository, "--portable")
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_AUTHORITY"
 
 
 def test_audit_rejects_partial_external_authority_availability(tmp_path: Path) -> None:
@@ -587,7 +631,7 @@ def test_portable_audit_still_rejects_component_byte_tamper(tmp_path: Path) -> N
     _git(repository, "add", "--", "legacy/research-backend/main.py")
     _git(repository, "commit", "-qm", "tamper portable component")
 
-    result = _run(repository)
+    result = _run(repository, "--portable")
 
     assert result.returncode != 0
     assert result.stderr.strip() == "E_TAMPER: legacy/research-backend/main.py"
@@ -599,7 +643,7 @@ def test_portable_audit_rejects_manifest_identity_tamper(tmp_path: Path) -> None
     _rewrite_json(manifest, ("source_commit", "f" * 40))
     _remove_authority_repositories(repository)
 
-    result = _run(repository)
+    result = _run(repository, "--portable")
 
     assert result.returncode != 0
     assert result.stderr.strip() == "E_TAMPER"
@@ -611,7 +655,7 @@ def test_portable_audit_rejects_manifest_aggregate_tamper(tmp_path: Path) -> Non
     _rewrite_json(manifest, ("aggregate_sha256", "f" * 64))
     _remove_authority_repositories(repository)
 
-    result = _run(repository)
+    result = _run(repository, "--portable")
 
     assert result.returncode != 0
     assert result.stderr.strip() == "E_MANIFEST"
@@ -629,7 +673,7 @@ def test_portable_audit_rejects_coordinated_authority_and_manifest_tamper(
     _rewrite_json(manifest, ("source_commit", "f" * 40))
     _remove_authority_repositories(repository)
 
-    result = _run(repository)
+    result = _run(repository, "--portable")
 
     assert result.returncode != 0
     assert result.stderr.strip() == "E_AUTHORITY"
@@ -643,7 +687,8 @@ def test_json_failure_redacts_untrusted_absolute_root_from_all_output(tmp_path: 
 
     assert result.returncode != 0
     assert set(payload) == {
-        "schema_version", "root", "head", "branch", "status", "components", "result",
+        "schema_version", "root", "head", "branch", "status", "authority_mode",
+        "components", "result",
     }
     assert payload["root"] == ""
     assert "token-super-secret-root" not in result.stdout
@@ -664,7 +709,8 @@ def test_json_argument_failure_still_returns_exact_redacted_schema() -> None:
 
     assert result.returncode != 0
     assert set(payload) == {
-        "schema_version", "root", "head", "branch", "status", "components", "result",
+        "schema_version", "root", "head", "branch", "status", "authority_mode",
+        "components", "result",
     }
     assert payload["root"] == ""
     assert payload["result"] == "E_ARGUMENT"

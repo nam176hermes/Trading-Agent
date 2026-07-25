@@ -9,7 +9,7 @@ Long-term goals: at least 95% line coverage and 90% branch coverage for every cr
 
 Critical coverage is evaluated per safety-sensitive unit. Whole-repository line coverage is not used as a substitute.
 
-The policy stores exact covered and total counters as the no-regression floor. Ratio comparison uses integer cross multiplication, so rounding cannot hide a regression. A source change that increases the denominator must add enough covered evidence to preserve the ratchet.
+The policy stores exact covered and total counters as the no-regression floor. Ratio comparison uses integer cross multiplication, so rounding cannot hide a regression. The gate rejects denominator shrinkage, covered-count shrinkage and ratio regression. Critical source identities and required safety-case identities are sealed by the checker so a policy-only edit cannot remove a trust boundary.
 
 Coverage.py 7.10.6 runs through an ephemeral `uv` overlay. The project dependency graph and lockfile remain unchanged. Dashboard coverage uses Node's native test coverage and LCOV reporters. The gate requires Node 22 or newer before collecting dashboard evidence.
 
@@ -50,7 +50,7 @@ Dashboard coverage includes:
 
 ## Required safety cases
 
-The gate requires successful execution observations for each mapped test. A typo, failure, deselection or runtime skip fails required-case validation. For a parametrized pytest node, every collected variant must pass.
+The gate requires successful execution observations for each mapped test. A typo, failure, not-run result, deselection or runtime skip fails required-case validation. Parameterized requirements use exact sealed variant node IDs; a passing base node or one passing variant cannot hide a missing or failed sibling. Each sealed Dashboard test file must emit at least one file-qualified TAP observation.
 
 | Required behavior | Executed evidence |
 |---|---|
@@ -86,7 +86,7 @@ Machine-readable outputs:
 - `critical-coverage-dashboard.lcov`
 - Python, dashboard and coverage-generation logs
 
-Each run removes stale policy, test-observation, LCOV and merged-report artifacts before measurement. CI cannot upload an older successful report after a new gate fails early.
+Each run removes stale policy, test-observation, LCOV and merged-report artifacts before measurement. CI cannot upload an older successful report after a new gate fails early. Evidence directories must be real current-user-owned private directories; descriptor-relative temporary creation, replacement, cleanup and fsync bind report writes to the validated directory even during a same-user parent replacement attempt.
 
 Run locally:
 

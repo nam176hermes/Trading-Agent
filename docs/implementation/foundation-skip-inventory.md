@@ -7,10 +7,13 @@ Canonical gate: `make check-test-skips`
 
 ## Decision policy
 
-A skip or deselection is allowed only when its exact component and test node ID are present in the committed allowlist. The gate rejects:
+A skip or deselection is allowed only when its exact component, test node ID, outcome and normalized runtime reason are present in the committed allowlist. The gate rejects:
 
 - a skipped or deselected node that is absent from the allowlist;
 - an allowlist node that is no longer skipped or deselected;
+- a skip that changes into deselection, or a deselection that changes into skip;
+- every collected test that remains `not_run`;
+- an individual collected test removed without an explicit deselection observation;
 - an expired `review_by` date;
 - `UNKNOWN` as a reason category;
 - a security-critical entry without an explicit reason and approval record type;
@@ -42,7 +45,7 @@ The live root measurement found 227 skips, one more than the supplied 226-skip b
 
 All 242 component and node ID pairs are unique. There are 238 security-critical entries. Every security-critical entry has an explicit reason and non-`NONE` approval record type. Current review deadline: `2026-10-31`.
 
-Dashboard currently has no skipped or deselected test. It remains governed because the dashboard runner emits node-level observations and any future skip is unapproved by default.
+Dashboard currently has no skipped or deselected test. `apps/dashboard/tests/test-inventory.json` defines the recursive inventory consumed by both `npm test` and the governance runner. Every `*.test.mjs` and `*.integration.sh` file must be classified and observed; any future skip is unapproved by default.
 
 ## Required fields
 
@@ -50,6 +53,7 @@ Every entry contains exactly the governance fields requested by the package:
 
 - `test_node_id`
 - `component`
+- `outcome`
 - `reason_category`
 - `reason`
 - `owner`
@@ -88,7 +92,7 @@ Files include:
 - `test-governance-error.json` when policy evaluation fails
 - per-component command logs
 
-The merged report distinguishes passed, failed, skipped, deselected, not-run and approval-blocked observations. Each run removes stale merged and raw JSON before collection. A failure writes current error evidence instead of leaving a previous successful report available for upload. Reports remain outside the checkout because the repository secret-hygiene scanner intentionally scans ignored and untracked files.
+The merged report distinguishes passed, failed, skipped, deselected, not-run and approval-blocked observations. Each run removes stale merged and raw JSON before collection. A failure writes current error evidence instead of leaving a previous successful report available for upload. Evidence directories must be real current-user-owned private directories. Report creation, replacement, cleanup and fsync are bound to a validated stable directory descriptor. Reports remain outside the checkout because the repository secret-hygiene scanner intentionally scans ignored and untracked files.
 
 Override the evidence destination when needed:
 

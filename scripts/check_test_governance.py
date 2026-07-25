@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import re
+import secrets
+import stat
 import subprocess
 import sys
 from datetime import date, datetime, timezone
@@ -17,19 +19,20 @@ from typing import Any, Iterable, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALLOWLIST = ROOT / "tests/skip-allowlist.yaml"
 DEFAULT_REPORT_DIR = Path("/tmp/trading-agent-test-evidence/test-governance")
-APPROVED_CATEGORIES = frozenset(
-    {
-        "APPROVAL_REQUIRED",
-        "DISPOSABLE_POSTGRES_REQUIRED",
-        "MISSING_HOST_BINARY",
-        "MISSING_HOST_CAPABILITY",
-        "EXTERNAL_INTEGRATION",
-        "PROVIDER_CREDENTIAL_REQUIRED",
-        "PLATFORM_SPECIFIC",
-        "INTENTIONALLY_DEFERRED",
-        "QUARANTINED_FLAKY",
-        "UNKNOWN",
-    }
+APPROVAL_RECORD_BY_CATEGORY = {
+    "DISPOSABLE_POSTGRES_REQUIRED": "disposable-postgres-test-approval-v1",
+    "MISSING_HOST_CAPABILITY": "host-capability-review-v1",
+    "PROVIDER_CREDENTIAL_REQUIRED": "provider-credential-review-v1",
+}
+APPROVED_CATEGORIES = frozenset((*APPROVAL_RECORD_BY_CATEGORY, "UNKNOWN"))
+OWNERS_BY_COMPONENT = {
+    "root": frozenset({"control-plane", "event-ledger", "job-plane", "release-engineering"}),
+    "legacy": frozenset({"research-backend"}),
+    "dashboard": frozenset({"dashboard-security"}),
+}
+SECURITY_PATH_PREFIXES = (
+    "tests/jobs/", "tests/control_api/", "tests/event_ledger/",
+    "tests/production/", "tests/security/", "apps/dashboard/tests/",
 )
 APPROVAL_BLOCKED_CATEGORIES = frozenset(
     {"APPROVAL_REQUIRED", "DISPOSABLE_POSTGRES_REQUIRED"}
@@ -47,9 +50,15 @@ REQUIRED_FIELDS = frozenset(
         "review_by",
         "security_critical",
         "allowed_in_ci",
+        "outcome",
     }
 )
 INVENTORY_OUTCOMES = frozenset({"skipped", "deselected"})
+OBSERVED_OUTCOMES = frozenset({"passed", "failed", "skipped", "deselected", "not_run"})
+OBSERVATION_PHASES = frozenset({"collection", "setup", "call", "teardown", "report"})
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 
 class GovernanceError(RuntimeError):
@@ -58,6 +67,10 @@ class GovernanceError(RuntimeError):
 
 def _entry_key(item: dict[str, object]) -> tuple[str, str]:
     return str(item["component"]), str(item["test_node_id"])
+
+
+def _normalize_reason(reason: str) -> str:
+    return " ".join(reason.split())
 
 
 def _require_nonempty_string(entry: dict[str, object], field: str, index: int) -> None:
@@ -103,6 +116,12 @@ def validate_allowlist_document(
             )
         if category == "UNKNOWN":
             raise GovernanceError(f"allowlist entry {index} uses forbidden UNKNOWN category")
+        component = str(entry["component"])
+        owner = str(entry["owner"])
+        if component not in OWNERS_BY_COMPONENT:
+            raise GovernanceError(f"allowlist entry {index} has unapproved component")
+        if owner not in OWNERS_BY_COMPONENT[component]:
+            raise GovernanceError(f"allowlist entry {index} has unapproved owner")
         try:
             review_by = date.fromisoformat(str(entry["review_by"]))
         except ValueError as exc:
@@ -119,7 +138,17 @@ def validate_allowlist_document(
             )
         if not isinstance(entry["allowed_in_ci"], bool):
             raise GovernanceError(f"allowlist entry {index} has invalid allowed_in_ci")
-        if entry["security_critical"] and (
+        if entry["outcome"] not in INVENTORY_OUTCOMES:
+            raise GovernanceError(f"allowlist entry {index} has invalid outcome")
+        derived_security_critical = (
+            category == "DISPOSABLE_POSTGRES_REQUIRED"
+            or str(entry["test_node_id"]).startswith(SECURITY_PATH_PREFIXES)
+        )
+        if entry["security_critical"] is not derived_security_critical:
+            raise GovernanceError(
+                f"allowlist entry {index} has invalid derived security criticality"
+            )
+        if derived_security_critical and (
             str(entry["approval_record_type"]).strip().upper() == "NONE"
             or not isinstance(entry["reason"], str)
             or not entry["reason"].strip()
@@ -127,14 +156,46 @@ def validate_allowlist_document(
             raise GovernanceError(
                 f"allowlist entry {index} is security-critical without explicit approval reason"
             )
+        expected_approval = APPROVAL_RECORD_BY_CATEGORY.get(category)
+        if entry["approval_record_type"] != expected_approval:
+            raise GovernanceError(
+                f"allowlist entry {index} has invalid category approval record"
+            )
         if not isinstance(entry["reason"], str) or not entry["reason"].strip():
             raise GovernanceError(f"allowlist entry {index} has invalid reason")
+        if entry["reason"] != _normalize_reason(entry["reason"]):
+            raise GovernanceError(f"allowlist entry {index} has non-normalized reason")
         key = _entry_key(entry)
         if key in seen:
             raise GovernanceError(f"duplicate allowlist entry: {key[0]}::{key[1]}")
         seen.add(key)
         entries.append(entry)
     return entries
+
+
+def _validate_observation(item: object, index: int) -> dict[str, object]:
+    required = {"test_node_id", "component", "outcome", "reason", "phase"}
+    if not isinstance(item, dict) or not required.issubset(item):
+        raise GovernanceError(f"invalid observed test record at index {index}")
+    record = dict(item)
+    component = record["component"]
+    node_id = record["test_node_id"]
+    outcome = record["outcome"]
+    reason = record["reason"]
+    phase = record["phase"]
+    if component not in OWNERS_BY_COMPONENT:
+        raise GovernanceError(f"invalid observed test record at index {index}: component")
+    if not isinstance(node_id, str) or not node_id.strip() or node_id != node_id.strip():
+        raise GovernanceError(f"invalid observed test record at index {index}: node ID")
+    if not isinstance(outcome, str) or outcome not in OBSERVED_OUTCOMES:
+        raise GovernanceError(f"invalid observed outcome at index {index}: {outcome!r}")
+    if outcome == "failed":
+        raise GovernanceError(f"invalid observed outcome at index {index}: failed")
+    if not isinstance(reason, str) or reason != _normalize_reason(reason):
+        raise GovernanceError(f"invalid observed test record at index {index}: reason")
+    if not isinstance(phase, str) or phase not in OBSERVATION_PHASES:
+        raise GovernanceError(f"invalid observed test record at index {index}: phase")
+    return record
 
 
 def compare_inventory(
@@ -144,20 +205,31 @@ def compare_inventory(
     """Require exact equality between observed skips/deselections and approvals."""
 
     actual: dict[tuple[str, str], dict[str, object]] = {}
+    all_seen: set[tuple[str, str]] = set()
     duplicate_observations: list[tuple[str, str]] = []
-    for item in records:
+    not_run: list[tuple[str, str]] = []
+    for index, raw in enumerate(records):
+        item = _validate_observation(raw, index)
+        key = _entry_key(item)
+        if key in all_seen:
+            duplicate_observations.append(key)
+        all_seen.add(key)
+        if item.get("outcome") == "not_run":
+            not_run.append(key)
         if item.get("outcome") not in INVENTORY_OUTCOMES:
             continue
-        key = _entry_key(item)
-        if key in actual:
-            duplicate_observations.append(key)
         actual[key] = item
     if duplicate_observations:
         formatted = ", ".join(
             f"{component}::{node}"
             for component, node in sorted(set(duplicate_observations))
         )
-        raise GovernanceError(f"duplicate observed skip/deselection node IDs: {formatted}")
+        raise GovernanceError(f"duplicate observed test node IDs: {formatted}")
+    if not_run:
+        formatted = ", ".join(
+            f"{component}::{node}" for component, node in sorted(not_run)
+        )
+        raise GovernanceError(f"collected tests were not executed: {formatted}")
     approved = {_entry_key(item): item for item in allowlist_entries}
     new = sorted(set(actual) - set(approved))
     stale = sorted(set(approved) - set(actual))
@@ -167,8 +239,13 @@ def compare_inventory(
     changed_reasons = sorted(
         key
         for key in set(actual) & set(approved)
-        if str(actual[key].get("reason", "")).strip()
-        != str(approved[key].get("reason", "")).strip()
+        if _normalize_reason(str(actual[key].get("reason", "")))
+        != _normalize_reason(str(approved[key].get("reason", "")))
+    )
+    changed_outcomes = sorted(
+        key
+        for key in set(actual) & set(approved)
+        if actual[key].get("outcome") != approved[key].get("outcome")
     )
     problems: list[str] = []
     if new:
@@ -190,6 +267,11 @@ def compare_inventory(
         problems.append(
             "observed skip/deselection reasons changed: "
             + ", ".join(f"{component}::{node}" for component, node in changed_reasons)
+        )
+    if changed_outcomes:
+        problems.append(
+            "observed skip/deselection outcomes changed: "
+            + ", ".join(f"{component}::{node}" for component, node in changed_outcomes)
         )
     if problems:
         raise GovernanceError("; ".join(problems))
@@ -240,14 +322,98 @@ def _read_json(path: Path) -> object:
         raise GovernanceError(f"cannot read strict JSON document {path}: {exc}") from exc
 
 
+def _prepare_private_directory(path: Path) -> None:
+    try:
+        absolute = path.absolute()
+        lineage = [absolute, *absolute.parents]
+        below_trusted_sticky_root = False
+        for ancestor in reversed(lineage):
+            try:
+                metadata = ancestor.lstat()
+            except FileNotFoundError:
+                ancestor.mkdir(mode=0o700)
+                metadata = ancestor.lstat()
+            if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise OSError
+            if metadata.st_uid not in {0, os.getuid()}:
+                raise OSError
+            trusted_sticky = (
+                metadata.st_uid == 0 and bool(metadata.st_mode & stat.S_ISVTX)
+            )
+            writable = metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            if (
+                writable
+                and metadata.st_uid == os.getuid()
+                and (below_trusted_sticky_root or ancestor == absolute)
+            ):
+                os.chmod(ancestor, 0o700)
+                metadata = ancestor.lstat()
+            writable = metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            if writable and not trusted_sticky:
+                raise OSError
+            below_trusted_sticky_root = below_trusted_sticky_root or trusted_sticky
+        os.chmod(path, 0o700)
+    except OSError as exc:
+        raise GovernanceError("report directory is not a private owned directory") from exc
+
+
+def _write_bytes(path: Path, content: bytes) -> None:
+    _prepare_private_directory(path.parent)
+    expected = path.parent.lstat()
+    temporary_name = f".{path.name}.{secrets.token_hex(16)}.tmp"
+    directory: int | None = None
+    descriptor: int | None = None
+    published = False
+    try:
+        directory = os.open(
+            path.parent,
+            os.O_RDONLY | _DIRECTORY | _NOFOLLOW | _CLOEXEC,
+        )
+        actual = os.fstat(directory)
+        if (
+            (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino)
+            or actual.st_uid != os.getuid()
+            or actual.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise OSError
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC,
+            0o600,
+            dir_fd=directory,
+        )
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
+            descriptor = None
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+        )
+        published = True
+        os.fsync(directory)
+        current = path.parent.lstat()
+        if (current.st_dev, current.st_ino) != (actual.st_dev, actual.st_ino):
+            raise OSError
+    except OSError as exc:
+        if directory is not None:
+            try:
+                os.unlink(path.name if published else temporary_name, dir_fd=directory)
+            except OSError:
+                pass
+        raise GovernanceError(f"cannot write report artifact {path.name}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory is not None:
+            os.close(directory)
+
+
 def _write_json(path: Path, document: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(document, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
+    _write_bytes(path, (json.dumps(document, indent=2, sort_keys=True) + "\n").encode())
 
 
 def _remove_artifacts(*paths: Path) -> None:
@@ -276,8 +442,7 @@ def _run(
         stderr=subprocess.STDOUT,
         check=False,
     )
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_path.write_text(result.stdout, encoding="utf-8")
+    _write_bytes(log_path, result.stdout.encode("utf-8"))
     print(result.stdout, end="")
     return result.returncode
 
@@ -295,11 +460,21 @@ def _pytest_environment(component: str, report: Path) -> dict[str, str]:
     return env
 
 
-def _parse_dashboard_tap(output: str) -> list[dict[str, object]]:
+def _parse_dashboard_tap(output: str, test_file: str) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     pattern = re.compile(r"^(not )?ok\s+\d+\s+-\s+(.+?)(?:\s+#\s+(SKIP|TODO)\b(.*))?$")
-    for line in output.splitlines():
-        match = pattern.match(line.strip())
+    parents: dict[int, str] = {}
+    for raw_line in output.splitlines():
+        line = raw_line.lstrip()
+        indent = len(raw_line) - len(line)
+        subtest = re.match(r"^# Subtest:\s+(.+)$", line)
+        if subtest is not None:
+            parents[indent] = subtest.group(1).strip()
+            for level in tuple(parents):
+                if level > indent:
+                    del parents[level]
+            continue
+        match = pattern.match(line)
         if match is None:
             continue
         failed, name, directive, detail = match.groups()
@@ -309,13 +484,15 @@ def _parse_dashboard_tap(output: str) -> list[dict[str, object]]:
         reason = ""
         if directive == "SKIP":
             outcome = "skipped"
-            reason = detail.strip() or "node:test skip directive"
+            reason = _normalize_reason(detail) or "node:test skip directive"
         elif directive == "TODO":
             outcome = "skipped"
-            reason = detail.strip() or "node:test todo directive"
+            reason = _normalize_reason(detail) or "node:test todo directive"
+        hierarchy = [parents[level] for level in sorted(parents) if level < indent]
+        full_name = "::".join([*hierarchy, name])
         records.append(
             {
-                "test_node_id": f"dashboard::{name}",
+                "test_node_id": f"apps/dashboard/{test_file}::{full_name}",
                 "component": "dashboard",
                 "outcome": outcome,
                 "reason": reason,
@@ -325,67 +502,142 @@ def _parse_dashboard_tap(output: str) -> list[dict[str, object]]:
     return records
 
 
+def _load_dashboard_inventory(
+    dashboard: Path,
+    dashboard_env: dict[str, str],
+) -> tuple[list[Path], list[Path]]:
+    result = subprocess.run(
+        ["node", "tests/run-test-inventory.mjs", "--list-json"],
+        cwd=dashboard,
+        env=dashboard_env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise GovernanceError(
+            "dashboard canonical test inventory failed: " + result.stdout.strip()
+        )
+    try:
+        document = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise GovernanceError("dashboard canonical test inventory returned invalid JSON") from exc
+    if not isinstance(document, dict) or set(document) != {
+        "schema_version", "node_tests", "integration_tests"
+    } or document.get("schema_version") != 1:
+        raise GovernanceError("dashboard canonical test inventory has invalid schema")
+
+    def paths(field: str, suffix: str) -> list[Path]:
+        values = document.get(field)
+        if (
+            not isinstance(values, list)
+            or not values
+            or values != sorted(values)
+            or len(values) != len(set(values))
+            or any(
+                not isinstance(value, str)
+                or not value.startswith("tests/")
+                or not value.endswith(suffix)
+                or Path(value).is_absolute()
+                or ".." in Path(value).parts
+                for value in values
+            )
+        ):
+            raise GovernanceError(f"dashboard canonical test inventory has invalid {field}")
+        resolved = [dashboard / value for value in values]
+        if any(not path.is_file() or path.is_symlink() for path in resolved):
+            raise GovernanceError(f"dashboard canonical test inventory has unsafe {field}")
+        return resolved
+
+    return paths("node_tests", ".test.mjs"), paths(
+        "integration_tests", ".integration.sh"
+    )
+
+
 def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
     dashboard = ROOT / "apps/dashboard"
-    test_files = sorted((dashboard / "tests").glob("*.test.mjs"))
-    command = [
-        "node",
-        "--test",
-        "--test-reporter=tap",
-        *(str(path.relative_to(dashboard)) for path in test_files),
-    ]
-    result = subprocess.run(
-        command,
-        cwd=dashboard,
-        env={
-            **os.environ,
-            "LIVE_EXECUTION_ENABLED": "false",
-            "LIVE_TRADING_APPROVED": "false",
-        },
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
+    dashboard_env = {
+        **os.environ,
+        "LIVE_EXECUTION_ENABLED": "false",
+        "LIVE_TRADING_APPROVED": "false",
+    }
+    test_files, integration_files = _load_dashboard_inventory(
+        dashboard, dashboard_env
     )
     log_path = report_dir / "dashboard.log"
-    log_path.write_text(result.stdout, encoding="utf-8")
-    print(result.stdout, end="")
-    records = _parse_dashboard_tap(result.stdout)
-    integration = subprocess.run(
-        ["bash", "tests/dashboard-security.integration.sh"],
-        cwd=dashboard,
-        env={
-            **os.environ,
-            "LIVE_EXECUTION_ENABLED": "false",
-            "LIVE_TRADING_APPROVED": "false",
-        },
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    with log_path.open("a", encoding="utf-8") as stream:
-        stream.write(integration.stdout)
-    print(integration.stdout, end="")
-    records.append(
-        {
-            "test_node_id": "tests/dashboard-security.integration.sh::isolated security server",
-            "component": "dashboard",
-            "outcome": "passed" if integration.returncode == 0 else "failed",
-            "reason": "" if integration.returncode == 0 else "integration script failed",
-            "phase": "call",
-        }
-    )
-    if not records:
+    records: list[dict[str, object]] = []
+    outputs: list[str] = []
+    node_exit_status = 0
+    for path in test_files:
+        test_file = str(path.relative_to(dashboard))
+        result = subprocess.run(
+            ["node", "--test", "--test-reporter=tap", test_file],
+            cwd=dashboard,
+            env=dashboard_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        outputs.append(f"# file: {test_file}\n{result.stdout}")
+        file_records = _parse_dashboard_tap(result.stdout, test_file)
+        if not file_records:
+            file_records.append(
+                {
+                    "test_node_id": (
+                        f"apps/dashboard/{test_file}::static-test-inventory"
+                    ),
+                    "component": "dashboard",
+                    "outcome": "failed",
+                    "reason": "node:test TAP report contained no test records for file",
+                    "phase": "report",
+                }
+            )
+            node_exit_status = max(node_exit_status, 1)
+        records.extend(file_records)
+        node_exit_status = max(node_exit_status, result.returncode)
+    if not test_files and not integration_files:
         records.append(
             {
-                "test_node_id": "dashboard::test reporter",
+                "test_node_id": "apps/dashboard/tests::static-test-inventory",
                 "component": "dashboard",
                 "outcome": "failed",
-                "reason": "node:test TAP report contained no test records",
+                "reason": "dashboard test inventory contained no test files",
                 "phase": "report",
             }
         )
+        node_exit_status = max(node_exit_status, 1)
+    print("".join(outputs), end="")
+    integration_exit_statuses: dict[str, int] = {}
+    for path in integration_files:
+        test_file = str(path.relative_to(dashboard))
+        integration = subprocess.run(
+            ["bash", test_file],
+            cwd=dashboard,
+            env=dashboard_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        outputs.append(f"# file: {test_file}\n{integration.stdout}")
+        print(integration.stdout, end="")
+        integration_exit_statuses[test_file] = integration.returncode
+        records.append(
+            {
+                "test_node_id": (
+                    f"apps/dashboard/{test_file}::isolated integration script"
+                ),
+                "component": "dashboard",
+                "outcome": "passed" if integration.returncode == 0 else "failed",
+                "reason": "" if integration.returncode == 0 else "integration script failed",
+                "phase": "call",
+            }
+        )
+    _write_bytes(log_path, "".join(outputs).encode("utf-8"))
+    integration_exit_status = max(integration_exit_statuses.values(), default=0)
+
     counts: dict[str, int] = {}
     for record in records:
         counts[str(record["outcome"])] = counts.get(str(record["outcome"]), 0) + 1
@@ -395,17 +647,18 @@ def _run_dashboard(report_dir: Path) -> tuple[int, Path]:
         {
             "schema_version": 1,
             "component": "dashboard",
-            "node_exit_status": result.returncode,
-            "integration_exit_status": integration.returncode,
+            "node_exit_status": node_exit_status,
+            "integration_exit_status": integration_exit_status,
+            "integration_exit_statuses": integration_exit_statuses,
             "summary": counts,
             "tests": records,
         },
     )
-    return max(result.returncode, integration.returncode), report_path
+    return max(node_exit_status, integration_exit_status), report_path
 
 
 def run_suites(report_dir: Path) -> tuple[list[dict[str, object]], dict[str, int]]:
-    report_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_private_directory(report_dir)
     raw_paths = {
         "root": report_dir / "root-raw.json",
         "legacy": report_dir / "legacy-raw.json",
@@ -516,17 +769,7 @@ def _bootstrap_classification(record: dict[str, object]) -> dict[str, object]:
         owner = "production-safety"
     elif component == "dashboard":
         owner = "dashboard-security"
-    security_critical = any(
-        token in node_id
-        for token in (
-            "tests/jobs/",
-            "tests/control_api/",
-            "tests/event_ledger/",
-            "tests/production/",
-            "tests/security/",
-            "dashboard::",
-        )
-    )
+    security_critical = node_id.startswith(SECURITY_PATH_PREFIXES)
     governed_reason = reason or "Test is not executable in canonical portable CI."
     return {
         "test_node_id": node_id,
@@ -571,7 +814,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     records: list[dict[str, object]] = []
     exit_codes: dict[str, int] = {}
     try:
-        report_dir.mkdir(parents=True, exist_ok=True)
+        _prepare_private_directory(report_dir)
         _remove_artifacts(
             output,
             error_output,

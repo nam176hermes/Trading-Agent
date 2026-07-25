@@ -333,18 +333,26 @@ def _authority_availability(authority: SourceAuthority) -> tuple[bool, ...]:
     return tuple(available)
 
 
-def _audit_authority(path: Path) -> tuple[SourceAuthority, bool]:
+def _audit_authority(
+    path: Path,
+    *,
+    portable_requested: bool,
+) -> tuple[SourceAuthority, bool]:
     try:
         parsed = parse_source_authority(path)
     except AuthorityError:
         raise CliError("E_AUTHORITY") from None
     available = _authority_availability(parsed)
     if all(available):
+        if portable_requested:
+            raise CliError("E_AUTHORITY")
         try:
             return load_source_authority(path), False
         except AuthorityError:
             raise CliError("E_AUTHORITY") from None
     if any(available):
+        raise CliError("E_AUTHORITY")
+    if not portable_requested:
         raise CliError("E_AUTHORITY")
     return parsed, True
 
@@ -387,7 +395,13 @@ def _immutable_evidence(root: Path, relative: str, code: str) -> None:
         raise CliError(code)
 
 
-def audit(root_path: Path, release: bool) -> dict[str, object]:
+def audit(
+    root_path: Path,
+    release: bool,
+    portable_requested: bool = False,
+) -> dict[str, object]:
+    if release and portable_requested:
+        raise CliError("E_ARGUMENT")
     root = _root(root_path)
     _nested_git(root)
     index = _index(root)
@@ -398,7 +412,10 @@ def audit(root_path: Path, release: bool) -> dict[str, object]:
         raise CliError("E_DIRTY", dirty_path)
     _required(paths)
     authority_path = root / "ops/consolidation/source-authority.json"
-    authority, portable = _audit_authority(authority_path)
+    authority, portable = _audit_authority(
+        authority_path,
+        portable_requested=portable_requested,
+    )
     _scan_sources(root, paths)
     try:
         head = _git(
@@ -439,6 +456,7 @@ def audit(root_path: Path, release: bool) -> dict[str, object]:
         "head": head,
         "branch": branch,
         "status": status,
+        "authority_mode": "portable" if portable else "strict",
         "components": components,
         "result": "PASS",
     }
@@ -448,6 +466,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = CodeArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--release", action="store_true")
+    parser.add_argument("--portable", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -459,6 +478,7 @@ def _print_json_failure(error: str) -> None:
         "head": "",
         "branch": "",
         "status": "unknown",
+        "authority_mode": "unknown",
         "components": {},
         "result": error,
     }
@@ -471,7 +491,11 @@ def main(argv: list[str] | None = None) -> int:
     json_requested = "--json" in raw_arguments
     try:
         arguments = _parser().parse_args(argv)
-        result = audit(arguments.root, arguments.release)
+        result = audit(
+            arguments.root,
+            arguments.release,
+            portable_requested=arguments.portable,
+        )
     except CliError as error:
         if json_requested:
             _print_json_failure(str(error))
@@ -491,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
         component_text = ",".join(result["components"])
         print(
             f"head={result['head']} branch={result['branch']} status={result['status']} "
-            f"components={component_text} result=PASS"
+            f"authority_mode={result['authority_mode']} components={component_text} result=PASS"
         )
     return 0
 

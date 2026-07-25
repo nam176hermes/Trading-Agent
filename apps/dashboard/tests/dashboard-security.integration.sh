@@ -28,8 +28,11 @@ expect_status() {
   [[ "$actual" == "$expected" ]] || fail "$label returned HTTP $actual (expected $expected)"
 }
 
-grep -q 'dashboard-security.integration.sh' "$ROOT/package.json" \
-  || fail 'npm test does not run this integration smoke'
+grep -q 'node tests/run-test-inventory.mjs' "$ROOT/package.json" \
+  || fail 'npm test does not run the canonical dashboard test inventory'
+node "$ROOT/tests/run-test-inventory.mjs" --list-json \
+  | grep -q 'tests/dashboard-security.integration.sh' \
+  || fail 'canonical dashboard test inventory omits this integration smoke'
 
 PORT=$(node -e '
   const net = require("node:net");

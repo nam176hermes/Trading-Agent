@@ -139,30 +139,56 @@
     },
     {
       "case": "unknown mode and both live gates",
-      "tests": ["tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks"]
+      "tests": [
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes0-SAFETY_REQUESTED_MODE_UNKNOWN]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes1-SAFETY_REQUESTED_MODE_NOT_PAPER]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes2-SAFETY_EFFECTIVE_MODE_UNKNOWN]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes3-SAFETY_LIVE_EXECUTION_GATE_UNKNOWN]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes4-SAFETY_LIVE_EXECUTION_GATE_ENABLED]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes5-SAFETY_LIVE_APPROVAL_GATE_UNKNOWN]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes6-SAFETY_LIVE_APPROVAL_GATE_ENABLED]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes7-SAFETY_KILL_SWITCH_UNKNOWN]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes8-SAFETY_KILL_SWITCH_ACTIVE]"
+      ]
     },
     {
       "case": "kill switch active and unknown",
       "tests": [
-        "tests/jobs/test_worker_safety.py::test_only_complete_explicit_paper_evidence_passes",
-        "tests/jobs/test_worker_safety.py::test_worker_uses_canonical_kill_switch_format_only"
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes7-SAFETY_KILL_SWITCH_UNKNOWN]",
+        "tests/jobs/test_worker_safety.py::test_every_missing_or_noncanonical_safety_evidence_blocks[changes8-SAFETY_KILL_SWITCH_ACTIVE]"
       ]
     },
     {
       "case": "invalid manifest",
       "tests": [
         "tests/jobs/test_job_authority_verifier.py::test_authority_manifest_rejects_placeholder_input_hash",
-        "tests/jobs/test_job_authority_verifier.py::test_authority_manifest_rejects_valid_shape_with_wrong_catalog_digest"
+        "tests/jobs/test_job_authority_verifier.py::test_authority_manifest_rejects_valid_shape_with_wrong_catalog_digest[pre_sha256-catalog_0007_snapshot-pre]",
+        "tests/jobs/test_job_authority_verifier.py::test_authority_manifest_rejects_valid_shape_with_wrong_catalog_digest[post_sha256-catalog_0006_snapshot-post]"
       ]
     },
     {
       "case": "stale safety evidence",
-      "tests": ["tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots"]
+      "tests": [
+        "tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots[changes0-SAFETY_STATE_EXPORTER_COMMIT_MISMATCH]",
+        "tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots[changes1-SAFETY_STATE_SOURCE_MISMATCH]",
+        "tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots[changes2-SAFETY_STATE_FROM_FUTURE]",
+        "tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots[changes3-SAFETY_STATE_STALE]",
+        "tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots[changes4-SAFETY_STATE_WINDOW_INVALID]",
+        "tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots[changes5-SAFETY_REQUESTED_MODE_NOT_PAPER]",
+        "tests/jobs/test_safety_state.py::test_client_rejects_stale_mismatched_or_non_safe_snapshots[changes6-SAFETY_KILL_SWITCH_ACTIVE]"
+      ]
     },
     {
       "case": "unsafe child environment",
       "tests": [
-        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_DATA_ROOT]",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_REPORTS_DIR]",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_SIGNAL_OUTPUT_DIR]",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_JOB_ID]",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_JOB_ATTEMPT_ID]",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_ATTEMPT_ID]",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_RESEARCH_BACKEND_COMMIT]",
+        "tests/jobs/test_child_environment.py::test_path_and_root_overrides_are_rejected[TRADING_RESEARCH_SCRATCHPAD_ROOT]",
         "tests/jobs/test_child_environment.py::test_child_can_only_see_bound_semantic_tree_and_exact_output_roots"
       ]
     },

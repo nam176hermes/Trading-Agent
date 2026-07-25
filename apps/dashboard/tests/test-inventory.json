@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "recursive": true,
+  "node_test_suffix": ".test.mjs",
+  "integration_test_suffix": ".integration.sh",
+  "support_files": [
+    "run-test-inventory.mjs",
+    "test-inventory.json"
+  ]
+}
