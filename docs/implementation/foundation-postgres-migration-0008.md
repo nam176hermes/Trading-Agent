@@ -31,6 +31,12 @@ showed transactional upgrades:
 
 The runtime PostgreSQL suite also exercised empty-to-head, 0007-to-0008,
 head-cycle and application-role permission paths before reaching the separate
-restore blocker. Migration 0008 itself is runtime-proven on the approved
-disposable PostgreSQL 16 fixture; Package 2 remains open because restore
-semantic parity failed.
+restore blocker. Migration 0008 itself was runtime-proven on that approved
+disposable PostgreSQL 16 fixture. Package 2 remained open at this checkpoint.
+
+The later source-bound run at
+`dd1463a80b5a492d6f12b89f9aa69f03ce77416b` fixed the restore comparison
+without weakening it. The final runtime target passed eight tests, semantic
+catalog groups and row counts matched, and Package 2 closed. See
+`foundation-postgres-restore-proof.md` and
+`foundation-postgres-approval-evidence.md`.

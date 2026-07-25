@@ -136,11 +136,13 @@ has no unresolved source requirement. `make check-d0-closure` validates every
 implementation path, exact test proof, CI collection path, required final gate,
 and the source/runtime boundary. D0 source readiness is closed.
 
-The operator-managed PostgreSQL has not been migrated or mutated by these
-validation gates. Runtime PostgreSQL parity remains `PENDING_APPROVAL` in the
-matrix and requires the separately approved
-`make test-event-ledger-runtime-postgres` proof. That pending runtime status does
-not weaken or masquerade as source readiness.
+The operator-managed PostgreSQL has not been migrated, mutated, or probed by
+these validation gates. Disposable PostgreSQL 16 runtime parity closed on the
+commit-bound Package 2 authority for `dd1463a80b5a492d6f12b89f9aa69f03ce77416b`:
+the event-ledger, restore-parity, and dual-read targets passed, semantic catalog
+groups and row counts matched, and all approved fixtures were removed. The ten
+source-bound files remain byte-identical in this tree. This disposable proof
+does not authorize production PostgreSQL access or any active runtime change.
 
 ## Source versus runtime
 

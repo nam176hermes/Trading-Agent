@@ -34,3 +34,30 @@ PASS.
 The next investigation must identify exact differing owner and structural row
 types without weakening the blocking comparisons. Any source change requires
 a new commit-bound approval and Greenlight.
+
+## Superseding final proof
+
+The failed result above remains the audit record for the first successor. The
+later source-bound run at
+`dd1463a80b5a492d6f12b89f9aa69f03ce77416b` preserved the blocking comparisons
+and corrected extension-owner and constraint-reference normalization.
+
+`make test-runtime-postgres` then returned eight passing tests and exit status
+zero. The retained sanitized catalog evidence records:
+
+```text
+semantic_groups_equal=true
+row_counts_equal=true
+differing_semantic_subgroups=[]
+```
+
+Source and restored digests match for identity, owner, structural security,
+effective ACL, functions, and triggers/policies. Source and restored table row
+counts also match.
+
+```text
+GO - RESTORE SEMANTIC CATALOG PARITY PASSED
+```
+
+The proof is limited to the expired disposable authority. It grants no access
+to the operator-managed PostgreSQL instance.

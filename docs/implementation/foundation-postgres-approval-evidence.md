@@ -4,9 +4,11 @@ Date: 2026-07-23
 
 ## Decision
 
-The disposable PostgreSQL approval gate passed for the successor source, but
-the Package 2 runtime gate did not close. This evidence is non-authorizing and
-does not approve a retry, runtime PostgreSQL access, or live trading.
+The first successor approval passed, but its restore-parity attempt did not
+close Package 2. The original sections below preserve that historical
+checkpoint. A later exact authority and successful runtime proof supersede the
+package status without authorizing production PostgreSQL access or live
+trading.
 
 ## Successor authority
 
@@ -49,3 +51,41 @@ commit, tree, approval digest, validity window and Greenlight.
 
 The approval and fixture plan are tied to the source above. They do not
 authorize any later source commit.
+
+## Superseding final authority and proof
+
+- Final source commit: `dd1463a80b5a492d6f12b89f9aa69f03ce77416b`
+- Final source tree: `d8b1983fef30ef97439aa94cd7db2820a66353b6`
+- Record ID: `DISPOSABLE_POSTGRES_TEST_20260724_P02_DD1463A`
+- Approval record digest:
+  `d5de9aba700505127dab11eca1979bb16a760b3a97711bc11843f76cc86e74e8`
+- Fixture-plan digest:
+  `1ba8974706d6cbe642769144a136f8ff4a9d10d8a442d6f143582a8e51bc7482`
+- Operator: `thenamnguyen`
+- Reviewer: `hermes.agent`
+- Approved lifecycle: `INITDB`, `START`, `RESTORE`, `STOP`, `DELETE`
+- Bound interface: `127.0.0.1`, ports `56420` through `56428`
+- Forbidden ports: `3002`, `8401`, `55432`
+- Runtime settings: rejected if present
+- Current-tree binding audit: all ten source-bound files are byte-identical
+
+Final exact-authority commands returned:
+
+```text
+make test-event-ledger-runtime-postgres: 5 passed
+make test-runtime-postgres: 8 passed
+make test-runtime-dual-read: 1 passed
+```
+
+The retained sanitized semantic evidence records
+`semantic_groups_equal=true`, `row_counts_equal=true`, and no differing
+semantic subgroup. Final cleanup found zero approved roots, zero approved
+PostgreSQL processes, and zero listeners on the approved ports.
+
+```text
+GO - POSTGRESQL RUNTIME PARITY CLOSED
+```
+
+This authority was source-bound and expired after the run. It cannot authorize
+a retry, a different commit, the operator-managed database, or any production
+mutation.

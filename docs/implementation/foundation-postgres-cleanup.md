@@ -21,3 +21,20 @@ Verified targets:
 
 The operator-managed port `55432` was never used or probed. Only protected
 approval/plan records and sanitized documentation evidence were retained.
+
+## Final closure cleanup
+
+The final exact-authority run at
+`dd1463a80b5a492d6f12b89f9aa69f03ce77416b` used roots
+`/tmp/phase4-postgres-p02-dd1463a-1` through `-9` and ports `56420` through
+`56428`. A fresh post-run check found:
+
+```text
+approved roots present: 0
+approved PostgreSQL processes: 0
+approved listeners: 0
+```
+
+The private approval, fixture-plan, and sanitized semantic-evidence files were
+retained. The operator-managed port `55432` remained outside the disposable
+boundary and was not probed.
