@@ -1,48 +1,32 @@
 # Foundation PostgreSQL cleanup evidence
 
-Date: 2026-07-23
+Date: 2026-07-26
 
-Cleanup was checked after the initial failed run, the successful event-ledger
-run and the successor restore-parity failure.
+The operator separately approved `STOP` and `DELETE`. Each initialized cluster
+used exact-PGDATA `pg_ctl stop -m immediate`, status and listener checks, then
+validated parent, prefix, owner, type and symlink state before root deletion.
 
-Final checks returned:
-
-```text
-CLEANUP_PASS_ALL_SUCCESSOR_ROOTS_ABSENT
-CLEANUP_PASS_ALL_SUCCESSOR_LISTENERS_ABSENT
-CLEANUP_PASS_ALL_SUCCESSOR_POSTGRES_PIDS_ABSENT
-```
-
-Verified targets:
-
-- roots `/tmp/phase4-postgres-p02-48c2999-01` through `-09`;
-- listeners on ports `56420` through `56428`; and
-- PostgreSQL processes containing the exact successor root prefix.
-
-The operator-managed port `55432` was never used or probed. Only protected
-approval/plan records and sanitized documentation evidence were retained.
-
-## Later-run cleanup observations
-
-The later exact-authority run at
-`dd1463a80b5a492d6f12b89f9aa69f03ce77416b` used roots
-`/tmp/phase4-postgres-p02-dd1463a-1` through `-9` and ports `56420` through
-`56428`. Historical controller output and a separate 2026-07-25 host inspection
-reported:
+Verified scope:
 
 ```text
-approved roots present: 0
-approved PostgreSQL processes: 0
-approved listeners: 0
+roots=/tmp/phase4-postgres-p02-b42607c-01..09
+ports=56520..56528
+approved roots present=0
+approved listeners present=0
+approved PostgreSQL processes present=0
 ```
 
-The retained mode-`0600` files are:
+The manifest records the same empty post-state and `decision=PASS` under
+SHA-256 `98d369cbd5bd6a5794178c1e0f90ffc92ff8d8bf7bb5cbe80991b01493f351d3`.
+Port `55432` was forbidden and never targeted by the approved command path. No
+operator-managed service was stopped, queried or mutated.
 
-- `/tmp/trading-agent-p02-approval-dd1463a/disposable-postgres-approval.json`;
-- `/tmp/trading-agent-p02-approval-dd1463a/disposable-postgres-fixture-plan.json`;
-- `/tmp/foundation-postgres-evidence-dd1463a/catalog-restore-semantic-evidence.json`.
+Only sanitized mode-`0400` evidence remains at:
 
-Their hashes are recorded in `foundation-postgres-approval-evidence.md`. The
-absence observations show no disposable residue at inspection time, but do not
-replace a bound lifecycle transcript. The operator-managed port `55432`
-remained outside the disposable boundary and was not probed.
+```text
+/home/thenam176/.hermes/audits/trading-agent/package2/b42607c-20260726T061140Z
+```
+
+```text
+PASS - DISPOSABLE POSTGRESQL ROLLBACK AND CLEANUP VERIFIED
+```

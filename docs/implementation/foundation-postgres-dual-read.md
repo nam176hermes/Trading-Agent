@@ -1,18 +1,23 @@
 # Foundation PostgreSQL dual-read evidence
 
-Date: 2026-07-23
+Date: 2026-07-26
 
-The first authorized run intentionally stopped before dual-read. The preceding
-`make test-runtime-postgres` command found blocking restore owner and
-structural-security drift, so package policy required a fail-closed stop.
+```text
+make test-runtime-dual-read
+exit=0
+1 passed in 2.10s
+output_sha256=6d3df4651c81643219bf44822526de9bee8ca9e105a88658ca597bf747c1fff2
+```
 
-The later exact authority bound to
-`dd1463a80b5a492d6f12b89f9aa69f03ce77416b` superseded that checkpoint. After
-restore semantic parity passed, historical controller output reported a
-successful `make test-runtime-dual-read` command. No retained protected artifact
-binds that command's exit status, so this report is not durable closure evidence.
-Subsequent absence checks are documented separately.
+This command ran only after runtime PostgreSQL and restore parity returned exit
+`0`. It compared canonical PostgreSQL reads with reviewed legacy fixtures after
+removing approved nondeterministic envelope fields. No unexplained difference
+remained, and the required runner rejected skips.
 
-The executable Package 2 gate remains `PENDING_APPROVAL`. The expired
-disposable authority does not authorize the operator-managed database or a new
-runtime operation.
+The approved slot used port `56523`. Post-command reconciliation found no root,
+listener or PostgreSQL process. Exact argv, output digest, exit code and cleanup
+state are bound by the archived manifest.
+
+```text
+PASS - POSTGRESQL DUAL READ PARITY VERIFIED
+```

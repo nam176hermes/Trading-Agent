@@ -2,7 +2,7 @@
   "schema_version": 1,
   "phase": "D0",
   "source_readiness": "PASS",
-  "runtime_postgres_parity": "PENDING_APPROVAL",
+  "runtime_postgres_parity": "PASS",
   "requirements": [
     {
       "id": "D0-PROPERTY-TESTS",
@@ -237,10 +237,25 @@
     },
     {
       "id": "D0-POSTGRES-RUNTIME-PARITY",
-      "status": "PENDING_APPROVAL",
+      "status": "PASS",
       "implementation": [
         "alembic/versions/0008_trading_domain_ledger.py",
-        "tests/event_ledger/test_snapshot_postgres_runtime.py"
+        "scripts/validate_disposable_postgres_approval.py",
+        "scripts/validate_disposable_postgres_fixture_plan.py",
+        "tests/jobs/_postgres.py",
+        "tests/event_ledger/test_snapshot_postgres_runtime.py",
+        "tests/control_api/test_postgres_api.py",
+        "tests/control_api/test_postgres_repositories.py",
+        "tests/control_api/test_alembic_schema.py",
+        "tests/control_api/test_foundation_postgres_runtime_parity.py",
+        "tests/control_api/test_dual_read.py",
+        "docs/implementation/foundation-postgres-approval-evidence.md",
+        "docs/implementation/foundation-postgres-disposable-setup.md",
+        "docs/implementation/foundation-postgres-migration-0008.md",
+        "docs/implementation/foundation-event-ledger-runtime.md",
+        "docs/implementation/foundation-postgres-dual-read.md",
+        "docs/implementation/foundation-postgres-restore-proof.md",
+        "docs/implementation/foundation-postgres-cleanup.md"
       ],
       "proofs": [
         {
@@ -253,13 +268,22 @@
         },
         {
           "path": "tests/event_ledger/test_snapshot_postgres_runtime.py"
+        },
+        {
+          "path": "tests/control_api/test_foundation_postgres_runtime_parity.py"
+        },
+        {
+          "path": "tests/control_api/test_dual_read.py"
+        },
+        {
+          "path": "docs/implementation/foundation-postgres-approval-evidence.md"
         }
       ],
       "commands": [
-        "make test-event-ledger-runtime-postgres"
-      ],
-      "command": "make test-event-ledger-runtime-postgres",
-      "approval_boundary": "Requires explicit approval for a disposable PostgreSQL fixture or operator-managed runtime; source closure does not execute migrations or mutate a database."
+        "make test-event-ledger-runtime-postgres",
+        "make test-runtime-postgres",
+        "make test-runtime-dual-read"
+      ]
     }
   ],
   "final_proof_commands": [

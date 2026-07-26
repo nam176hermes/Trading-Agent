@@ -118,3 +118,7 @@ binding every final command result. Package 02 therefore remains
 `PENDING_APPROVAL` in the executable closure matrix. Neither result authorizes
 production PostgreSQL access or any active runtime operation. See
 `foundation-postgres-approval-evidence.md`.
+
+Superseding note, 2026-07-26: a new source-bound disposable run added a
+protected complete transcript, restore proof and cleanup evidence. The current
+closure matrix now records Package 02 as `PASS`.
