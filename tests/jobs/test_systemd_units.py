@@ -243,7 +243,7 @@ def test_job_env_examples_match_role_split_and_reject_code_owned_overrides() -> 
     api = _text("job-api.env.example")
     worker = _text("job-worker.env.example")
 
-    assert "TRADING_JOB_API_EXPECTED_REVISION=0005_job_plane_role_split" in api
+    assert "TRADING_JOB_API_EXPECTED_REVISION=0008_trading_domain_ledger" in api
     assert "TRADING_CODE_COMMIT" not in worker
     assert "TRADING_WORKER_LEASE_SECONDS" not in worker
 

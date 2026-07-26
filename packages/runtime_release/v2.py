@@ -33,7 +33,8 @@ from typing import Any, Mapping, Sequence, cast
 SCHEMA_VERSION = 3
 STATIC_KIND = "STATIC_RELEASE"
 SEAL_VERSION = 3
-EXPECTED_DATABASE_REVISION = "0006_job_transition_database_authority"
+# Isolated-builder pin. Tests require parity with the runtime canonical head.
+EXPECTED_DATABASE_REVISION = "0008_trading_domain_ledger"
 EXPECTED_DB_ROLES = {
     "api_role": "trading_job_api",
     "worker_role": "trading_job_worker",

@@ -7,7 +7,7 @@ import socket
 import time
 from typing import TYPE_CHECKING, Mapping, NoReturn
 
-from services.job_store.config import JobStoreSettings
+from services.job_store.config import CANONICAL_DATABASE_REVISION, JobStoreSettings
 from services.job_store.worker_repository import WorkerRepository
 from .artifacts import ArtifactWriter
 from .command_registry import attest_worker_runtime_authority
@@ -21,7 +21,7 @@ from .worker import JobWorker, WORKER_LEASE_SECONDS
 if TYPE_CHECKING:
     from .command_registry import WorkerRuntimeAuthority
 
-EXPECTED_DATABASE_REVISION = "0006_job_transition_database_authority"
+EXPECTED_DATABASE_REVISION = CANONICAL_DATABASE_REVISION
 _FORBIDDEN_AUTHORITY_KEYS = frozenset({
     "TRADING_APP_MANIFEST_SHA256",
     "TRADING_BACKEND_MANIFEST_SHA256",

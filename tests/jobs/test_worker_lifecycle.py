@@ -1034,7 +1034,7 @@ def test_worker_main_checks_server_role_and_exact_head_before_recovery(
         (
             "identity",
             "trading_job_worker",
-            "0006_job_transition_database_authority",
+            "0008_trading_domain_ledger",
         ),
         ("serve", authority),
         "exit",

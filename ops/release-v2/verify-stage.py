@@ -161,7 +161,8 @@ _PAPER_RUNTIME_MANIFEST = {
     "stdlib_import_allowlist": list(_PAPER_STDLIB_IMPORTS),
 }
 _UNITS = {"trading-job-api.service", "trading-job-worker.service"}
-_EXPECTED_DATABASE_REVISION = "0006_job_transition_database_authority"
+# Standalone-verifier pin. Tests require parity with the runtime canonical head.
+_EXPECTED_DATABASE_REVISION = "0008_trading_domain_ledger"
 _EXPECTED_DB_ROLES = {
     "api_role": "trading_job_api",
     "worker_role": "trading_job_worker",

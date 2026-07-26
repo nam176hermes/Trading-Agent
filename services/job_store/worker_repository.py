@@ -19,7 +19,7 @@ from psycopg_pool import ConnectionPool
 from packages.job_contracts import JobPayload, JobState, JobType, parse_payload, validate_transition
 from services.job_worker.recovery import ProcessIdentity, ProcessInspector
 
-from .config import JobStoreSettings
+from .config import CANONICAL_DATABASE_REVISION, JobStoreSettings
 from .errors import InvalidTraceId
 
 
@@ -111,7 +111,7 @@ class WorkerRepository:
 
         if expected_user != "trading_job_worker":
             raise ValueError("worker database role authority is invalid")
-        if expected_revision != "0006_job_transition_database_authority":
+        if expected_revision != CANONICAL_DATABASE_REVISION:
             raise ValueError("worker database revision authority is invalid")
         try:
             with self._pool.connection() as connection:

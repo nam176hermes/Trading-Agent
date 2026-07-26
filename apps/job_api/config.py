@@ -10,10 +10,13 @@ from packages.runtime_release import (
     ValidatedJobPlaneAuthority,
     validate_job_plane_authority,
 )
-from services.job_store.config import read_systemd_credential
+from services.job_store.config import (
+    CANONICAL_DATABASE_REVISION,
+    read_systemd_credential,
+)
 
 JOB_API_PORT = 8401
-EXPECTED_REVISION = "0006_job_transition_database_authority"
+EXPECTED_REVISION = CANONICAL_DATABASE_REVISION
 _FORBIDDEN_AUTHORITY_KEYS = frozenset({
     "TRADING_APP_MANIFEST_SHA256",
     "TRADING_BACKEND_MANIFEST_SHA256",

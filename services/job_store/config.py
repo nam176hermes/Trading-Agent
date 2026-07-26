@@ -8,6 +8,7 @@ from typing import Mapping
 from psycopg.conninfo import make_conninfo
 
 
+CANONICAL_DATABASE_REVISION = "0008_trading_domain_ledger"
 JOB_PLANE_DATABASE_USERS = frozenset(
     {
         "trading_job_api",

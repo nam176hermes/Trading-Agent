@@ -413,7 +413,7 @@ def test_readiness_is_200_only_with_exact_valid_authority() -> None:
     class Connection:
         def execute(self, query):
             return Result(
-                {"version_num": "0006_job_transition_database_authority"}
+                {"version_num": "0008_trading_domain_ledger"}
                 if "version_num" in query
                 else {"?column?": 1}
             )
@@ -463,7 +463,19 @@ def test_environment_cannot_supply_independent_digest_or_manifest_authority() ->
             JobApiSettings.from_env({key: "a" * 64})
 
 
-def test_real_repository_shape_accepts_dict_row_for_expected_revision() -> None:
+@pytest.mark.parametrize(
+    ("database_revision", "expected_status", "expected_readiness"),
+    [
+        ("0008_trading_domain_ledger", 200, "READY"),
+        ("0006_job_transition_database_authority", 503, "NOT_READY"),
+        ("unexpected_revision", 503, "NOT_READY"),
+    ],
+)
+def test_readiness_requires_exact_canonical_database_revision(
+    database_revision: str,
+    expected_status: int,
+    expected_readiness: str,
+) -> None:
     class Result:
         def __init__(self, row):
             self.row = row
@@ -474,9 +486,7 @@ def test_real_repository_shape_accepts_dict_row_for_expected_revision() -> None:
     class Connection:
         def execute(self, query):
             if "version_num" in query:
-                return Result(
-                    {"version_num": "0006_job_transition_database_authority"}
-                )
+                return Result({"version_num": database_revision})
             return Result({"?column?": 1})
 
     class Pool:
@@ -489,7 +499,10 @@ def test_real_repository_shape_accepts_dict_row_for_expected_revision() -> None:
 
     client = TestClient(create_app(settings(), RealRepositoryShape()))
 
-    assert client.get("/health/ready").status_code == 200
+    response = client.get("/health/ready")
+
+    assert response.status_code == expected_status
+    assert response.json()["data"]["status"] == expected_readiness
 
 
 @pytest.mark.parametrize(
