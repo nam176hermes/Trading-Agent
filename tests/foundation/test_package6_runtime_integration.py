@@ -257,8 +257,8 @@ def test_staged_artifact_exact_job_api_command_reaches_runtime_authority_gate() 
     assert completed.stdout == ""
     assert "ModuleNotFoundError" not in diagnostic
     assert diagnostic.splitlines()[-1] == (
-        "packages.runtime_release.paper_application.runtime_release_config."
-        "ProtectedAuthorityError: protected runtime authority is unavailable"
+        "packages.runtime_release.config.ProtectedAuthorityError: "
+        "protected runtime authority is unavailable"
     )
 
 
