@@ -106,6 +106,9 @@ class RiskAssessment(BaseModel):
     adjusted_stop_loss: Optional[float] = None
     adjusted_take_profit: Optional[float] = None
     rationale: str = Field(min_length=20)
+    status: Literal["AVAILABLE", "UNAVAILABLE"] = "AVAILABLE"
+    reason_code: Optional[str] = None
+    trace_id: Optional[str] = None
 
 
 class TradingDecision(BaseModel):

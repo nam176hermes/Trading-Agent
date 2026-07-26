@@ -119,8 +119,33 @@ def isolated_pipeline(monkeypatch, main_module):
         monkeypatch.setitem(sys.modules, collector_name, module)
 
     paper_trader = ModuleType("paper_trader")
-    paper_trader._load_report_prices = lambda: {"BTC": 100.0}
-    paper_trader.check_stops = lambda _prices: calls.append("check_stops") or []
+
+    class FakePortfolioStateError(Exception):
+        reason_code = "PORTFOLIO_STATE_INVALID"
+        trace_id = "fixture-portfolio"
+
+    class FakePriceSnapshot(dict):
+        status = "AVAILABLE"
+        reason_code = None
+        trace_id = "fixture-prices"
+
+    class FakeStopSweep(list):
+        status = "COMPLETED"
+        reason_code = None
+        trace_id = "fixture-stops"
+        unavailable_symbols = ()
+
+    setattr(paper_trader, "PortfolioStateError", FakePortfolioStateError)
+    setattr(
+        paper_trader,
+        "_load_report_prices",
+        lambda: FakePriceSnapshot({"BTC": 100.0}),
+    )
+    setattr(
+        paper_trader,
+        "check_stops",
+        lambda _prices: calls.append("check_stops") or FakeStopSweep(),
+    )
     paper_trader.execute_signal = lambda signal, _prices: (
         calls.append("paper_execute")
         or {
@@ -2136,6 +2161,463 @@ def test_legacy_pipeline_still_runs_execution_when_not_disabled(isolated_pipelin
     ]
     assert report["assets"][0]["execution"]["status"] == "filled"
     assert report["assets"][0]["broker"]["status"] == "filled"
+    assert report["status"] == "COMPLETED"
+    assert all(
+        source["status"] == "AVAILABLE"
+        for source in report["optional_source_refresh"]
+    )
+
+
+def test_optional_collector_failure_marks_pipeline_partial(
+    monkeypatch, isolated_pipeline, caplog
+):
+    main, _calls = isolated_pipeline
+
+    def fail_collector():
+        raise RuntimeError("fixture collector failure")
+
+    monkeypatch.setattr(sys.modules["adanos_collector"], "collect", fail_collector)
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    adanos = next(
+        source
+        for source in report["optional_source_refresh"]
+        if source["source"] == "adanos"
+    )
+    assert report["status"] == "PARTIAL"
+    assert report["reason_code"] == "OPTIONAL_SOURCE_REFRESH_PARTIAL"
+    assert adanos["status"] == "UNAVAILABLE"
+    assert adanos["reason_code"] == "ADANOS_REFRESH_FAILED"
+    assert adanos["error_type"] == "RuntimeError"
+    assert adanos["trace_id"]
+    matching_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if "event=optional_source_unavailable source=adanos" in record.getMessage()
+    ]
+    assert len(matching_logs) == 1
+    assert f"trace_id={adanos['trace_id']}" in matching_logs[0]
+    assert report["assets"][0]["execution"]["status"] == "filled"
+
+
+def test_backtest_gate_failure_blocks_execution_and_marks_pipeline_partial(
+    monkeypatch, isolated_pipeline, caplog
+):
+    main, calls = isolated_pipeline
+
+    def fail_gate(_symbol):
+        raise RuntimeError("fixture gate failure")
+
+    monkeypatch.setattr(sys.modules["backtest_gate"], "check", fail_gate)
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    asset = report["assets"][0]
+    assert "paper_execute" not in calls
+    assert "broker_execute" not in calls
+    assert asset["execution"]["status"] == "UNAVAILABLE"
+    assert asset["execution"]["reason_code"] == "BACKTEST_GATE_UNAVAILABLE"
+    assert asset["execution"]["trace_id"]
+    assert report["status"] == "PARTIAL"
+    assert "EXECUTION_PATH_PARTIAL" in report["reason_codes"]
+    failure = report["operational_failures"][0]
+    assert failure["source"] == "backtest_gate"
+    assert failure["trace_id"] == asset["execution"]["trace_id"]
+    assert any(
+        f"trace_id={failure['trace_id']}" in record.getMessage()
+        for record in caplog.records
+        if "event=execution_gate_unavailable" in record.getMessage()
+    )
+
+
+def test_paper_execution_exception_is_typed_and_marks_pipeline_partial(
+    monkeypatch, isolated_pipeline, caplog
+):
+    main, calls = isolated_pipeline
+
+    def fail_execution(_signal, _prices):
+        calls.append("paper_execute")
+        raise RuntimeError("fixture execution failure")
+
+    monkeypatch.setattr(sys.modules["paper_trader"], "execute_signal", fail_execution)
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    asset = report["assets"][0]
+    assert "paper_execute" in calls
+    assert "broker_execute" not in calls
+    assert asset["execution"]["status"] == "UNAVAILABLE"
+    assert asset["execution"]["reason_code"] == "PAPER_EXECUTION_FAILED"
+    assert asset["execution"]["trace_id"]
+    assert report["status"] == "PARTIAL"
+    assert "EXECUTION_PATH_PARTIAL" in report["reason_codes"]
+    failure = next(
+        item
+        for item in report["operational_failures"]
+        if item["source"] == "paper_execution"
+    )
+    assert failure["trace_id"] == asset["execution"]["trace_id"]
+    assert any(
+        f"trace_id={failure['trace_id']}" in record.getMessage()
+        for record in caplog.records
+        if "event=execution_unavailable" in record.getMessage()
+    )
+
+
+def test_broker_exception_preserves_fill_and_marks_pipeline_partial(
+    monkeypatch, isolated_pipeline, caplog
+):
+    main, calls = isolated_pipeline
+
+    def fail_broker(*_args):
+        calls.append("broker_execute")
+        raise RuntimeError("fixture broker failure")
+
+    monkeypatch.setattr(sys.modules["broker"], "execute", fail_broker)
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    asset = report["assets"][0]
+    assert asset["execution"]["status"] == "filled"
+    assert asset["broker"]["status"] == "UNAVAILABLE"
+    assert asset["broker"]["reason_code"] == "BROKER_EXECUTION_FAILED"
+    assert asset["broker"]["trace_id"]
+    assert report["status"] == "PARTIAL"
+    assert "EXECUTION_PATH_PARTIAL" in report["reason_codes"]
+    failure = next(
+        item
+        for item in report["operational_failures"]
+        if item["source"] == "broker_execution"
+    )
+    assert failure["trace_id"] == asset["broker"]["trace_id"]
+    assert any(
+        f"trace_id={failure['trace_id']}" in record.getMessage()
+        for record in caplog.records
+        if "event=broker_execution_unavailable" in record.getMessage()
+    )
+
+
+def test_broker_noop_is_explicitly_skipped_without_failing_paper_fill(
+    monkeypatch, isolated_pipeline
+):
+    main, _calls = isolated_pipeline
+    monkeypatch.setattr(
+        sys.modules["broker"],
+        "execute",
+        lambda *_args: {"paper": "skipped", "alpaca": None},
+    )
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    asset = report["assets"][0]
+    assert asset["execution"]["status"] == "filled"
+    assert asset["broker"] == {
+        "status": "SKIPPED",
+        "reason_code": "SECONDARY_BROKER_NOT_APPLICABLE",
+        "paper": "skipped",
+        "alpaca": None,
+    }
+    assert report["status"] == "COMPLETED"
+    assert report["operational_failures"] == []
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "accepted",
+        "new",
+        "partially_filled",
+        "filled",
+        "done_for_day",
+        "canceled",
+        "expired",
+        "replaced",
+        "pending_cancel",
+        "pending_replace",
+        "stopped",
+        "rejected",
+        "suspended",
+        "calculated",
+        "blocked",
+        "skipped",
+    ],
+)
+def test_known_explicit_broker_status_is_preserved(
+    monkeypatch, isolated_pipeline, status
+):
+    main, _calls = isolated_pipeline
+    monkeypatch.setattr(
+        sys.modules["broker"],
+        "execute",
+        lambda *_args: {"status": status, "id": "fixture-order"},
+    )
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    assert report["assets"][0]["execution"]["status"] == "filled"
+    assert report["assets"][0]["broker"]["status"] == status
+    assert report["status"] == "COMPLETED"
+
+
+@pytest.mark.parametrize(
+    "broker_result",
+    [
+        {},
+        {"status": "mystery"},
+        {"status": None},
+        {"paper": "filled", "alpaca": None},
+    ],
+)
+def test_invalid_broker_status_preserves_fill_and_marks_pipeline_partial(
+    monkeypatch, isolated_pipeline, broker_result
+):
+    main, _calls = isolated_pipeline
+    monkeypatch.setattr(
+        sys.modules["broker"],
+        "execute",
+        lambda *_args: broker_result,
+    )
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    asset = report["assets"][0]
+    assert asset["execution"]["status"] == "filled"
+    assert asset["broker"]["status"] == "UNAVAILABLE"
+    assert asset["broker"]["reason_code"] == "BROKER_RESULT_INVALID"
+    assert asset["broker"]["trace_id"]
+    assert report["status"] == "PARTIAL"
+    failure = next(
+        item
+        for item in report["operational_failures"]
+        if item["source"] == "broker_result"
+    )
+    assert failure["trace_id"] == asset["broker"]["trace_id"]
+
+
+def _install_decision_stage_fixtures(monkeypatch, main):
+    original_assemble = main.assemble_asset_json
+
+    def assemble_with_valid_rationale(**kwargs):
+        asset = original_assemble(**kwargs)
+        asset["rationale"] = "A sufficiently detailed fixture rationale for this decision."
+        return asset
+
+    class FakeAnalystCoordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def analyze_all(self, *_args, **_kwargs):
+            return (None, None, None, None)
+
+        def format_for_debate(self, *_args):
+            return "fixture analyst context"
+
+    class FakeRound:
+        def model_dump(self):
+            return {"round": 1}
+
+    class FakeDebate:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, *_args, **_kwargs):
+            return ([FakeRound()], "fixture bull", "fixture bear")
+
+    class FakeAssessment:
+        persona = "neutral"
+        rationale = "fixture risk rationale"
+
+        def model_dump(self):
+            return {"persona": self.persona, "rationale": self.rationale}
+
+    class SuccessfulRiskDebate:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, *_args, **_kwargs):
+            return [FakeAssessment()]
+
+    monkeypatch.setattr(main, "AnalystCoordinator", FakeAnalystCoordinator)
+    monkeypatch.setattr(main, "AdversarialDebate", FakeDebate)
+    monkeypatch.setattr(main, "RiskDebate", SuccessfulRiskDebate)
+    monkeypatch.setattr(main, "assemble_asset_json", assemble_with_valid_rationale)
+
+
+def test_portfolio_manager_exception_forces_hold_and_marks_execution_report_partial(
+    monkeypatch, isolated_pipeline
+):
+    main, calls = isolated_pipeline
+    _install_decision_stage_fixtures(monkeypatch, main)
+
+    class FailingPortfolioManager:
+        async def decide(self, *_args, **_kwargs):
+            raise RuntimeError("fixture portfolio failure")
+
+    monkeypatch.setattr(main, "PortfolioManager", FailingPortfolioManager)
+
+    report = asyncio.run(
+        main.run_pipeline(
+            ["BTC"],
+            enable_debate=True,
+            enable_risk_personas=True,
+            pad=FakeScratchpad(),
+            allow_execution=True,
+        )
+    )
+
+    asset = report["assets"][0]
+    assert asset["suggestion"] == "HOLD"
+    assert asset["portfolio_decision"]["status"] == "UNAVAILABLE"
+    assert asset["portfolio_decision"]["reason_code"] == "PORTFOLIO_DECISION_UNAVAILABLE"
+    assert asset["portfolio_decision"]["trace_id"]
+    assert "paper_execute" not in calls
+    assert "live_execute" not in calls
+    assert "broker_execute" not in calls
+    assert report["status"] == "PARTIAL"
+    failure = next(
+        item
+        for item in report["operational_failures"]
+        if item["source"] == "portfolio_manager"
+    )
+    assert failure["trace_id"] == asset["portfolio_decision"]["trace_id"]
+
+
+def test_portfolio_manager_exception_preserves_research_signal_only_as_partial(
+    monkeypatch, isolated_pipeline
+):
+    main, calls = isolated_pipeline
+    _install_decision_stage_fixtures(monkeypatch, main)
+
+    class FailingPortfolioManager:
+        async def decide(self, *_args, **_kwargs):
+            raise RuntimeError("fixture portfolio failure")
+
+    monkeypatch.setattr(main, "PortfolioManager", FailingPortfolioManager)
+
+    report = asyncio.run(
+        main.run_pipeline(
+            ["BTC"],
+            enable_debate=True,
+            enable_risk_personas=True,
+            pad=FakeScratchpad(),
+            allow_execution=False,
+        )
+    )
+
+    asset = report["assets"][0]
+    assert asset["suggestion"] == "BUY"
+    assert asset["portfolio_decision"]["status"] == "UNAVAILABLE"
+    assert asset["portfolio_decision"]["reason_code"] == "PORTFOLIO_DECISION_UNAVAILABLE"
+    assert report["status"] == "PARTIAL"
+    assert calls == [("collect_all", False)]
+
+
+def test_risk_debate_exception_blocks_execution_without_legacy_fallback(
+    monkeypatch, isolated_pipeline
+):
+    main, calls = isolated_pipeline
+    _install_decision_stage_fixtures(monkeypatch, main)
+
+    class FailingRiskDebate:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, *_args, **_kwargs):
+            raise RuntimeError("fixture risk failure")
+
+    monkeypatch.setattr(main, "RiskDebate", FailingRiskDebate)
+    monkeypatch.setattr(
+        main,
+        "build_persona_prompts",
+        lambda *_args: pytest.fail("legacy fallback must not run"),
+    )
+
+    report = asyncio.run(
+        main.run_pipeline(
+            ["BTC"],
+            enable_debate=True,
+            enable_risk_personas=True,
+            pad=FakeScratchpad(),
+            allow_execution=True,
+        )
+    )
+
+    asset = report["assets"][0]
+    assert asset["suggestion"] == "HOLD"
+    assert asset["risk_assessment"]["status"] == "UNAVAILABLE"
+    assert asset["risk_assessment"]["reason_code"] == "RISK_ASSESSMENT_UNAVAILABLE"
+    assert asset["risk_assessment"]["position_size_pct"] == 0
+    assert asset["risk_assessment"]["decision"] == "REJECT"
+    assert asset["risk_assessment"]["trace_id"]
+    assert "paper_execute" not in calls
+    assert "live_execute" not in calls
+    assert "broker_execute" not in calls
+    assert report["status"] == "PARTIAL"
+
+
+def test_research_risk_failure_is_typed_partial_without_legacy_approval(
+    monkeypatch, isolated_pipeline, caplog
+):
+    main, _calls = isolated_pipeline
+    _install_decision_stage_fixtures(monkeypatch, main)
+
+    class FailingRiskDebate:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, *_args, **_kwargs):
+            raise RuntimeError("fixture risk failure")
+
+    monkeypatch.setattr(main, "RiskDebate", FailingRiskDebate)
+    monkeypatch.setattr(
+        main,
+        "build_persona_prompts",
+        lambda *_args: pytest.fail("legacy risk fallback must not run"),
+    )
+
+    report = asyncio.run(
+        main.run_pipeline(
+            ["BTC"],
+            enable_debate=True,
+            enable_risk_personas=True,
+            pad=FakeScratchpad(),
+            allow_execution=False,
+        )
+    )
+
+    asset = report["assets"][0]
+    stage = asset["risk_stage"]
+    risk_result = asset["risk_assessment"]
+    assert stage["status"] == "UNAVAILABLE"
+    assert stage["reason_code"] == "RISK_ASSESSMENT_UNAVAILABLE"
+    assert stage["trace_id"]
+    assert risk_result["status"] == "UNAVAILABLE"
+    assert risk_result["reason_code"] == stage["reason_code"]
+    assert risk_result["trace_id"] == stage["trace_id"]
+    assert risk_result["decision"] == "UNKNOWN"
+    assert risk_result["accept_signal"] is False
+    assert risk_result["position_size_pct"] == 0
+    assert report["status"] == "PARTIAL"
+    assert any(
+        f"trace_id={stage['trace_id']}" in record.getMessage()
+        for record in caplog.records
+        if "event=risk_debate_unavailable" in record.getMessage()
+    )
 
 
 def test_research_llm_does_not_load_dotenv(monkeypatch, main_module):
@@ -2417,3 +2899,1556 @@ def test_portfolio_manager_default_still_uses_legacy_execution_mode(monkeypatch)
     )
 
     assert "DRYRUN mode" in prompt
+
+# Package 05 failure-mode regression coverage
+def _decision():
+    from schemas import TradingDecision, TradingSignal
+
+    return TradingDecision(
+        timestamp=datetime.now(timezone.utc) - timedelta(days=8),
+        asset="BTC",
+        initial_signal=TradingSignal(
+            asset="BTC",
+            action="BUY",
+            confidence=0.8,
+            entry_price=100.0,
+            reasoning="Deterministic fixture with enough detail for validation.",
+        ),
+        debate_rounds=[],
+        bull_synthesis="fixture bull case",
+        bear_synthesis="fixture bear case",
+        risk_assessments=[],
+        final_action="BUY",
+        final_position_size_pct=5.0,
+        executive_summary="Deterministic fixture decision for failure-mode tests.",
+    )
+
+
+def test_reflection_price_failure_is_typed_and_never_marks_reflected(monkeypatch):
+    import reflection_engine as module
+
+    decision = _decision()
+    engine = module.ReflectionEngine()
+    monkeypatch.setattr(
+        module,
+        "get_pending_reflections_typed",
+        lambda horizon_days: [(decision.timestamp, decision)],
+    )
+    marked: list[tuple] = []
+    monkeypatch.setattr(module, "mark_decision_reflected", lambda *args: marked.append(args))
+
+    async def unavailable_price(_asset: str):
+        return module.PriceFetchResult(
+            status=module.ReflectionStatus.UNAVAILABLE,
+            price=None,
+            reason_code="PRICE_PROVIDERS_UNAVAILABLE",
+            trace_id="trace-price",
+        )
+
+    monkeypatch.setattr(engine, "_fetch_current_price", unavailable_price)
+
+    result = asyncio.run(engine.reflect_on_pending(lambda *_args, **_kwargs: "unused", horizon_days=0))
+
+    assert result.status is module.ReflectionStatus.UNAVAILABLE
+    assert result.processed == 0
+    assert result.unavailable == 1
+    assert result.reason_codes == ("PRICE_PROVIDERS_UNAVAILABLE",)
+    assert marked == []
+
+
+def test_reflection_records_benchmark_as_unavailable_instead_of_fake_alpha(monkeypatch):
+    import reflection_engine as module
+
+    decision = _decision()
+    decision.exit_price = 110.0
+    decision.pnl_pct = 0.10
+    decision.outcome_label = "win"
+    captured: dict = {}
+    monkeypatch.setattr(module, "store_reflection", lambda **kwargs: captured.update(kwargs))
+
+    async def llm(_prompt, **_kwargs):
+        return "The base reflection remains available without a benchmark."
+
+    result = asyncio.run(
+        module.ReflectionEngine().reflect_single(
+            llm,
+            decision,
+            current_price=110.0,
+            actual_return=0.10,
+            trace_id="trace-alpha",
+        )
+    )
+
+    assert result.status is module.ReflectionStatus.PARTIAL
+    assert result.reason_code == "ALPHA_BENCHMARK_DISABLED"
+    assert captured["alpha_return_pct"] is None
+    assert captured["benchmark_status"] == "UNAVAILABLE"
+    assert captured["benchmark_reason_code"] == "ALPHA_BENCHMARK_DISABLED"
+
+
+def test_risk_persona_parse_failure_fails_closed_with_typed_status():
+    from risk_personas import RiskDebate
+    from schemas import TradingSignal
+
+    async def invalid_llm(_prompt, _system):
+        return "not-json"
+
+    debate = RiskDebate(invalid_llm)
+    signal = TradingSignal(
+        asset="BTC",
+        action="BUY",
+        confidence=0.9,
+        entry_price=100.0,
+        reasoning="Deterministic fixture with enough detail for validation.",
+    )
+    result = asyncio.run(
+        debate._persona_turn(
+            "aggressive",
+            signal,
+            "fixture bull case",
+            "fixture bear case",
+            {"asset": "BTC", "price": 100.0},
+            {"aggressive": None, "conservative": None, "neutral": None},
+            "fixture system",
+        )
+    )
+
+    assert result.status == "UNAVAILABLE"
+    assert result.reason_code == "RISK_ASSESSMENT_PARSE_FAILED"
+    assert result.trace_id
+    assert result.accept_signal is False
+    assert result.position_size_pct == 0.0
+
+
+def test_empty_risk_history_is_unavailable_and_never_uses_synthetic_data(monkeypatch, tmp_path):
+    import risk_validation as module
+
+    monkeypatch.setattr(module, "data_root", lambda: tmp_path)
+    output = tmp_path / "risk-validation.json"
+
+    report = module.run_risk_validation(
+        n_simulations=10,
+        horizon_days=2,
+        output_file=str(output),
+    )
+
+    assert report["status"] == "UNAVAILABLE"
+    assert report["reason_code"] == "INSUFFICIENT_HISTORICAL_RETURNS"
+    assert report["configuration"]["n_observations"] == 0
+    assert report["var_cvar"] is None
+    assert report["walk_forward_validation"] is None
+    assert output.exists()
+
+
+def test_corrupt_incubation_state_is_unavailable_and_not_overwritten(monkeypatch, tmp_path):
+    import incubation_tracker as module
+
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    log_path = memory_dir / "incubation_log.json"
+    log_path.write_text("{not-json")
+    monkeypatch.setattr(module, "MEMORY_DIR", memory_dir)
+    monkeypatch.setattr(module, "INCUBATION_LOG", log_path)
+
+    status = module.incubation_status()
+    assert status["status"] == "UNAVAILABLE"
+    assert status["reason_code"] == "INCUBATION_STATE_INVALID"
+    assert status["passed"] is False
+
+    with pytest.raises(module.IncubationStateError):
+        module.record_paper_signal("BTC", "BUY", 0.8)
+    assert log_path.read_text() == "{not-json"
+
+
+def test_corrupt_portfolio_state_does_not_reinitialize_as_clean(monkeypatch, tmp_memory):
+    import paper_trader as module
+
+    module.PORTFOLIO_FILE.write_text("{not-json")
+
+    with pytest.raises(module.PortfolioStateError) as exc_info:
+        module.load_portfolio()
+
+    assert exc_info.value.reason_code == "PORTFOLIO_STATE_INVALID"
+    assert module.PORTFOLIO_FILE.read_text() == "{not-json"
+
+
+def test_report_price_failure_is_typed(monkeypatch, tmp_memory):
+    import paper_trader as module
+
+    reports = tmp_memory / "reports"
+    reports.mkdir()
+    (reports / "report_20260725.json").write_text("{not-json")
+    monkeypatch.setattr(module, "runtime_reports_dir", lambda: reports)
+
+    snapshot = module._load_report_prices()
+
+    assert snapshot.status == "UNAVAILABLE"
+    assert snapshot.reason_code == "PRICE_REPORT_INVALID"
+    assert snapshot.trace_id
+    assert dict(snapshot) == {}
+
+
+def test_missing_position_price_blocks_new_buy_instead_of_using_average_cost(
+    monkeypatch, empty_portfolio, tmp_memory
+):
+    import paper_trader as module
+
+    reports = tmp_memory / "reports"
+    reports.mkdir()
+    monkeypatch.setattr(module, "runtime_reports_dir", lambda: reports)
+    portfolio = module.load_portfolio()
+    portfolio["cash"] = 90_000.0
+    portfolio["positions"]["ETH"] = {"shares": 1.0, "avg_cost": 3_000.0}
+    module.save_portfolio(portfolio)
+
+    result = module.execute_signal(
+        {"symbol": "BTC", "action": "BUY", "confidence": 0.8},
+        {"BTC": 50_000.0},
+    )
+
+    assert result["status"] == "unavailable"
+    assert result["reason_code"] == "POSITION_PRICE_MISSING"
+    assert result["trace_id"]
+    assert "BTC" not in module.load_portfolio()["positions"]
+
+
+def test_stop_sweep_reports_partial_when_position_price_is_missing(empty_portfolio):
+    import paper_trader as module
+
+    portfolio = module.load_portfolio()
+    portfolio["positions"]["BTC"] = {
+        "shares": 1.0,
+        "avg_cost": 50_000.0,
+        "stop_loss": 45_000.0,
+    }
+    module.save_portfolio(portfolio)
+
+    result = module.check_stops({"ETH": 3_000.0})
+
+    assert result == []
+    assert result.status == "PARTIAL"
+    assert result.reason_code == "POSITION_PRICE_MISSING"
+    assert result.unavailable_symbols == ("BTC",)
+
+
+def test_optional_macro_enrichment_is_explicitly_unavailable(monkeypatch, tmp_path):
+    import assembly as module
+
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    monkeypatch.setattr(module, "runtime_reports_dir", lambda: reports)
+
+    result = module._load_macro_regime()
+
+    assert result.status == "UNAVAILABLE"
+    assert result.reason_code == "MACRO_REPORT_MISSING"
+    assert result.regime is None
+    assert result.confidence is None
+    assert result.trace_id
+
+
+def test_available_macro_result_preserves_tuple_unpacking(monkeypatch, tmp_path):
+    import assembly as module
+
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    (reports / "macro_report_20260725.json").write_text(
+        json.dumps({"regime": "risk_off", "regime_confidence": 0.83})
+    )
+    monkeypatch.setattr(module, "runtime_reports_dir", lambda: reports)
+
+    result = module._load_macro_regime()
+    regime, confidence = result
+
+    assert result.status == "AVAILABLE"
+    assert result.reason_code is None
+    assert regime == "risk_off"
+    assert confidence == pytest.approx(0.83)
+
+
+def test_risk_validation_with_real_history_stays_unknown_without_walk_forward(
+    monkeypatch, tmp_path
+):
+    import numpy as np
+    import risk_validation as module
+
+    returns = np.asarray(
+        [0.01, -0.004, 0.006, 0.002, -0.003, 0.008, -0.002, 0.004, 0.001, -0.001, 0.005, 0.003]
+    )
+    equity = 100_000.0 * np.exp(np.concatenate(([0.0], np.cumsum(returns))))
+    monkeypatch.setattr(
+        module,
+        "_load_portfolio_returns",
+        lambda: module.RiskInputResult(
+            status="AVAILABLE",
+            returns=returns,
+            portfolio_values=equity,
+            reason_code=None,
+            trace_id="trace-real-history",
+        ),
+    )
+
+    report = module.run_risk_validation(
+        n_simulations=20,
+        horizon_days=2,
+        output_file=str(tmp_path / "risk-validation-real.json"),
+    )
+
+    assert report["status"] == "PARTIAL"
+    assert report["reason_code"] == "WALK_FORWARD_OBSERVATIONS_UNAVAILABLE"
+    assert report["validation_decision"] == "UNKNOWN"
+    assert report["walk_forward_validation"] is None
+    assert report["configuration"]["synthetic_fallback_used"] is False
+
+
+def test_live_preflight_blocks_unavailable_incubation_without_balance_lookup(monkeypatch):
+    import execute_live as module
+    import incubation_tracker
+
+    monkeypatch.setattr(module, "get_mode", lambda: "live")
+    monkeypatch.setattr(module, "LIVE_EXECUTION_ENABLED", True)
+    monkeypatch.setattr(
+        incubation_tracker,
+        "incubation_status",
+        lambda: {
+            "status": "UNAVAILABLE",
+            "reason_code": "INCUBATION_STATE_INVALID",
+            "trace_id": "trace-incubation",
+            "passed": False,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_balances",
+        lambda _exchange: pytest.fail("balance lookup must not run"),
+    )
+
+    allowed, reason = module.preflight("binance", "BTC", "buy", 1.0)
+
+    assert allowed is False
+    assert reason is not None
+    assert "INCUBATION_STATE_INVALID" in reason
+    assert "trace-incubation" in reason
+
+
+def test_safety_check_is_partial_when_any_position_price_is_missing(
+    monkeypatch, tmp_path
+):
+    import safety_engine as module
+
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {"shares": 1.0, "avg_cost": 100.0},
+                "ETH": {"shares": 2.0, "avg_cost": 50.0},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "get_current_prices",
+        lambda: module.PriceSnapshot(
+            {"BTC": 101.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-prices",
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_load_previous_checks",
+        lambda: module.PreviousChecksSnapshot(
+            {"BTC": 100.0, "ETH": 50.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-history",
+        ),
+    )
+    monkeypatch.setattr(module, "CHECKS_FILE", tmp_path / "stop_checks.jsonl")
+
+    result = module.run_safety_check()
+
+    assert result["status"] == "PARTIAL"
+    assert result["reason_code"] == "POSITION_PRICE_MISSING"
+    assert result["checked_symbols"] == ["BTC"]
+    assert result["missing_price_symbols"] == ["ETH"]
+    assert result["safe"] is False
+
+
+@pytest.mark.parametrize(
+    ("portfolio_or_error", "expected_status", "expected_safe"),
+    [
+        ({"positions": {}}, "COMPLETED", True),
+        pytest.param(
+            "portfolio-error",
+            "UNAVAILABLE",
+            False,
+            id="portfolio-state-unavailable",
+        ),
+    ],
+)
+def test_safety_check_early_returns_keep_complete_schema(
+    monkeypatch, portfolio_or_error, expected_status, expected_safe
+):
+    import safety_engine as module
+
+    expected_keys = {
+        "status",
+        "reason_code",
+        "trace_id",
+        "checked_symbols",
+        "missing_price_symbols",
+        "triggered_symbols",
+        "executed_symbols",
+        "execution_failures",
+        "previous_checks_status",
+        "previous_checks_reason_code",
+        "safe",
+    }
+
+    if portfolio_or_error == "portfolio-error":
+        def fail_load():
+            raise module.PortfolioStateError(
+                "PORTFOLIO_STATE_INVALID",
+                "trace-portfolio",
+            )
+
+        monkeypatch.setattr(module, "load_portfolio", fail_load)
+    else:
+        monkeypatch.setattr(module, "load_portfolio", lambda: portfolio_or_error)
+
+    result = module.run_safety_check()
+
+    assert set(result) == expected_keys
+    assert result["status"] == expected_status
+    assert result["safe"] is expected_safe
+
+
+def test_safety_check_triggered_stop_is_never_safe(monkeypatch, tmp_path):
+    import safety_engine as module
+
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 95.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "get_current_prices",
+        lambda: module.PriceSnapshot(
+            {"BTC": 90.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-prices",
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_load_previous_checks",
+        lambda: module.PreviousChecksSnapshot(
+            {"BTC": 100.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-history",
+        ),
+    )
+    monkeypatch.setattr(module, "CHECKS_FILE", tmp_path / "stop_checks.jsonl")
+    monkeypatch.setattr(
+        module,
+        "execute_signal",
+        lambda _signal, _prices: {
+            "status": "filled",
+            "audit_status": "COMPLETED",
+        },
+    )
+
+    result = module.run_safety_check()
+
+    assert result["status"] == "COMPLETED"
+    assert result["triggered_symbols"] == ["BTC"]
+    assert result["safe"] is False
+
+
+@pytest.mark.parametrize(
+    "paper_execution, expected_failure_reason",
+    [
+        (
+            {
+                "status": "filled",
+                "audit_status": "PARTIAL",
+                "audit_reason_code": "PAPER_AUDIT_WRITE_FAILED",
+                "trace_id": "trace-paper-audit",
+                "audit_failures": ["order"],
+            },
+            "PAPER_AUDIT_WRITE_FAILED",
+        ),
+        (
+            {"status": "filled"},
+            "PAPER_STOP_AUDIT_STATUS_INVALID",
+        ),
+    ],
+)
+def test_safety_check_preserves_fill_but_is_partial_when_audit_is_incomplete(
+    monkeypatch, tmp_path, paper_execution, expected_failure_reason
+):
+    import safety_engine as module
+
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 95.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "get_current_prices",
+        lambda: module.PriceSnapshot(
+            {"BTC": 90.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-prices",
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_load_previous_checks",
+        lambda: module.PreviousChecksSnapshot(
+            {"BTC": 100.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-history",
+        ),
+    )
+    monkeypatch.setattr(module, "CHECKS_FILE", tmp_path / "stop_checks.jsonl")
+    monkeypatch.setattr(
+        module,
+        "execute_signal",
+        lambda _signal, _prices: dict(paper_execution),
+    )
+
+    result = module.run_safety_check()
+
+    assert result["status"] == "PARTIAL"
+    assert result["reason_code"] == "PAPER_STOP_AUDIT_INCOMPLETE"
+    assert result["executed_symbols"] == ["BTC"]
+    assert result["execution_failures"] == [
+        {
+            "symbol": "BTC",
+            "reason_code": expected_failure_reason,
+            "status": "filled",
+            "audit_status": paper_execution.get("audit_status"),
+            "trace_id": paper_execution.get("trace_id") or result["trace_id"],
+        }
+    ]
+    assert result["safe"] is False
+
+
+def test_paper_batch_preserves_fill_and_propagates_partial_audit(
+    monkeypatch, empty_portfolio
+):
+    import paper_trader as module
+
+    monkeypatch.setattr(
+        module,
+        "execute_signal",
+        lambda _signal, _prices: {
+            "status": "filled",
+            "audit_status": "PARTIAL",
+            "audit_reason_code": "PAPER_AUDIT_WRITE_FAILED",
+            "trace_id": "trace-paper-audit",
+        },
+    )
+
+    result = module.execute_batch(
+        [{"symbol": "BTC", "action": "BUY", "confidence": 0.8}],
+        {"BTC": 100.0},
+    )
+
+    assert result["status"] == "PARTIAL"
+    assert result["reason_code"] == "PAPER_BATCH_HAS_UNAVAILABLE_ITEMS"
+    assert result["executed"][0]["result"]["status"] == "filled"
+    assert result["unavailable"] == [
+        {
+            "symbol": "BTC",
+            "reason_code": "PAPER_AUDIT_WRITE_FAILED",
+            "trace_id": "trace-paper-audit",
+        }
+    ]
+
+
+@pytest.mark.parametrize("failure_kind", ["mkdir", "open", "write"])
+def test_safety_check_log_failure_blocks_triggered_execution(
+    monkeypatch, tmp_path, failure_kind
+):
+    import safety_engine as module
+
+    memory_dir = tmp_path / "memory"
+    checks_file = memory_dir / "stop_checks.jsonl"
+    monkeypatch.setattr(module, "MEMORY_DIR", memory_dir)
+    monkeypatch.setattr(module, "CHECKS_FILE", checks_file)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 95.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "get_current_prices",
+        lambda: module.PriceSnapshot(
+            {"BTC": 90.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-prices",
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "_load_previous_checks",
+        lambda: module.PreviousChecksSnapshot(
+            {"BTC": 100.0},
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id="trace-history",
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_signal",
+        lambda *_args: pytest.fail("execution must not run after log failure"),
+    )
+
+    if failure_kind == "mkdir":
+        monkeypatch.setattr(
+            module.Path,
+            "mkdir",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("fixture mkdir failure")
+            ),
+        )
+    elif failure_kind == "open":
+        memory_dir.mkdir()
+        monkeypatch.setattr(
+            module.Path,
+            "open",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("fixture open failure")
+            ),
+        )
+    else:
+        memory_dir.mkdir()
+
+        class FailingWriter:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def write(self, _value):
+                raise TypeError("fixture write failure")
+
+        monkeypatch.setattr(module.Path, "open", lambda *_args, **_kwargs: FailingWriter())
+
+    result = module.run_safety_check()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "SAFETY_CHECK_LOG_WRITE_FAILED"
+    assert result["trace_id"]
+    assert result["checked_symbols"] == ["BTC"]
+    assert result["triggered_symbols"] == ["BTC"]
+    assert result["executed_symbols"] == []
+    assert result["previous_checks_status"] == "AVAILABLE"
+    assert result["previous_checks_reason_code"] is None
+
+
+def test_stop_enforcement_portfolio_failure_is_typed(monkeypatch):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+
+    def fail_load():
+        raise module.PortfolioStateError(
+            "PORTFOLIO_STATE_INVALID",
+            "trace-portfolio",
+        )
+
+    monkeypatch.setattr(module, "load_portfolio", fail_load)
+
+    result = module.main()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "PORTFOLIO_STATE_INVALID"
+    assert result["trace_id"] == "trace-portfolio"
+    assert result["batch_status"] == "NOT_RUN"
+    assert result["executed_symbols"] == []
+
+
+def test_stop_enforcement_memory_directory_failure_is_typed(monkeypatch, tmp_path):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {"positions": {"BTC": {"shares": 1.0, "avg_cost": 100.0}}},
+    )
+    monkeypatch.setattr(
+        module,
+        "latest_report",
+        lambda: {"assets": [{"symbol": "BTC", "current_price": 101.0}]},
+    )
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path / "blocked")
+    monkeypatch.setattr(
+        module.Path,
+        "mkdir",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("fixture mkdir failure")
+        ),
+    )
+
+    result = module.main()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "STOP_MEMORY_DIR_UNAVAILABLE"
+    assert result["trace_id"]
+    assert result["executed_symbols"] == []
+    assert result["batch_status"] == "NOT_RUN"
+
+
+@pytest.mark.parametrize(
+    "assets",
+    [
+        "not-a-list",
+        [None],
+        [{"symbol": "BTC", "current_price": "nan"}],
+        [{"symbol": "BTC", "current_price": 0}],
+        [{"symbol": "BTC", "current_price": 100, "target_suggestion": "inf"}],
+        [{"symbol": "BTC", "current_price": 100, "target_suggestion": 0}],
+        [{"symbol": "BTC", "current_price": 100, "stop_loss_suggestion": -1}],
+        [{"symbol": "BTC", "current_price": 100, "stop_loss_suggestion": {}}],
+    ],
+)
+def test_stop_enforcement_rejects_invalid_price_report(
+    monkeypatch, tmp_path, assets
+):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {"positions": {"BTC": {"shares": 1.0, "avg_cost": 100.0}}},
+    )
+    monkeypatch.setattr(module, "latest_report", lambda: {"assets": assets})
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr(
+        module,
+        "execute_batch",
+        lambda *_args: pytest.fail("execution must not run for invalid reports"),
+    )
+
+    result = module.main()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "PRICE_REPORT_INVALID"
+    assert result["trace_id"]
+    assert result["executed_symbols"] == []
+    assert result["batch_status"] == "NOT_RUN"
+
+
+def test_stop_enforcement_unexpected_batch_exception_is_typed(
+    monkeypatch, tmp_path
+):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 110.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "latest_report",
+        lambda: {
+            "assets": [
+                {
+                    "symbol": "BTC",
+                    "current_price": 100.0,
+                    "stop_loss_suggestion": 110.0,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr(
+        module,
+        "execute_batch",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("fixture batch failure")),
+    )
+
+    result = module.main()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "PAPER_BATCH_EXECUTION_FAILED"
+    assert result["trace_id"]
+    assert result["executed_symbols"] == []
+    assert result["batch_status"] == "UNAVAILABLE"
+    assert result["batch_reason_code"] == "PAPER_BATCH_EXECUTION_FAILED"
+
+
+@pytest.mark.parametrize(
+    "batch_result",
+    [
+        None,
+        {},
+        {"status": "COMPLETED", "executed": "not-a-list", "unavailable": []},
+        {"status": "SUCCESS", "executed": [], "unavailable": []},
+        {"status": "COMPLETED", "executed": [{}], "unavailable": []},
+    ],
+)
+def test_stop_enforcement_malformed_batch_result_is_typed(
+    monkeypatch, tmp_path, batch_result
+):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 110.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "latest_report",
+        lambda: {
+            "assets": [
+                {
+                    "symbol": "BTC",
+                    "current_price": 100.0,
+                    "stop_loss_suggestion": 110.0,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr(module, "execute_batch", lambda *_args: batch_result)
+
+    result = module.main()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "PAPER_BATCH_RESULT_INVALID"
+    assert result["trace_id"]
+    assert result["executed_symbols"] == []
+    assert result["batch_status"] == "UNAVAILABLE"
+    assert result["batch_reason_code"] == "PAPER_BATCH_RESULT_INVALID"
+
+
+def test_stock_earnings_rule_does_not_swallow_unexpected_input_failure(monkeypatch):
+    import risk_personas as module
+
+    class InvalidDate:
+        def __str__(self):
+            raise RuntimeError("earnings date unavailable")
+
+    monkeypatch.setattr(
+        module,
+        "_load_stock_fundamentals",
+        lambda _symbol: {
+            "profile": {"marketCap": 100_000_000_000, "sector": "Technology"},
+            "earnings": {"nextDate": InvalidDate()},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="earnings date unavailable"):
+        module.apply_stock_risk_rules("AAPL", 10.0)
+
+
+def test_corrupt_strategy_risk_state_denies_strategy_without_overwrite(
+    monkeypatch, tmp_path
+):
+    import strategy_risk_manager as module
+
+    state_path = tmp_path / "strategy_risk_state.json"
+    state_path.write_text("{corrupt", encoding="utf-8")
+    monkeypatch.setattr(module, "RISK_STATE_FILE", state_path)
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+
+    allowed, reason = module.is_strategy_allowed("ta")
+
+    assert allowed is False
+    assert reason == "strategy risk state unavailable"
+    assert state_path.read_text(encoding="utf-8") == "{corrupt"
+
+
+def test_portfolio_validation_failure_propagates_to_typed_pipeline_boundary(
+    monkeypatch, tmp_path
+):
+    import portfolio_manager as module
+    from schemas import PortfolioDecision, RiskAssessment, TradingSignal
+
+    signal = TradingSignal(
+        asset="BTC",
+        action="BUY",
+        confidence=0.8,
+        entry_price=100.0,
+        stop_loss=90.0,
+        take_profit=130.0,
+        reasoning="Deterministic validation failure fixture with sufficient detail.",
+    )
+    risks = [RiskAssessment(
+        persona="neutral",
+        accept_signal=True,
+        position_size_pct=2.0,
+        rationale="Deterministic accepted risk fixture with sufficient detail.",
+    )]
+
+    async def fake_llm(*_args, **_kwargs):
+        return "{}"
+
+    def invalid_parse(*_args, **_kwargs):
+        return PortfolioDecision.model_validate({})
+
+    monkeypatch.setattr(module, "parse_structured", invalid_parse)
+    monkeypatch.setattr(module, "get_allocation_context", lambda: ("", {}))
+    monkeypatch.setattr(module, "data_root", lambda: tmp_path)
+
+    with pytest.raises(Exception) as error:
+        asyncio.run(module.PortfolioManager().decide(
+            fake_llm,
+            signal,
+            [],
+            "bull",
+            "bear",
+            risks,
+            execution_mode="paper",
+        ))
+
+    assert error.type.__name__ == "ValidationError"
+
+
+def test_portfolio_swarm_failure_does_not_preserve_actionable_primary(
+    monkeypatch, tmp_path
+):
+    import portfolio_manager as module
+    from schemas import PortfolioDecision, RiskAssessment, TradingSignal
+
+    signal = TradingSignal(
+        asset="BTC",
+        action="BUY",
+        confidence=0.6,
+        entry_price=100.0,
+        stop_loss=90.0,
+        take_profit=130.0,
+        reasoning="Deterministic swarm failure fixture with sufficient detail.",
+    )
+    risks = [RiskAssessment(
+        persona="neutral",
+        accept_signal=True,
+        position_size_pct=1.0,
+        rationale="Deterministic accepted risk fixture with sufficient detail.",
+    )]
+    primary = PortfolioDecision(
+        asset="BTC",
+        original_signal=signal,
+        action="ratify",
+        rationale="Deterministic actionable primary decision for failure testing.",
+        conviction=0.6,
+    )
+    calls = 0
+
+    async def fake_llm(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return "primary"
+        raise RuntimeError("swarm unavailable")
+
+    monkeypatch.setattr(module, "parse_structured", lambda *_args, **_kwargs: primary)
+    monkeypatch.setattr(module, "get_allocation_context", lambda: ("", {}))
+    monkeypatch.setattr(module, "data_root", lambda: tmp_path)
+
+    with pytest.raises(RuntimeError, match="swarm unavailable"):
+        asyncio.run(module.PortfolioManager().decide(
+            fake_llm,
+            signal,
+            [],
+            "bull",
+            "bear",
+            risks,
+            execution_mode="paper",
+        ))
+
+
+def test_corrupt_portfolio_context_does_not_look_like_empty_portfolio(
+    monkeypatch, tmp_path
+):
+    import portfolio_manager as module
+
+    portfolio_path = tmp_path / "memory" / "paper" / "portfolio.json"
+    portfolio_path.parent.mkdir(parents=True)
+    portfolio_path.write_text("{corrupt", encoding="utf-8")
+    monkeypatch.setattr(module, "data_root", lambda: tmp_path)
+
+    with pytest.raises(json.JSONDecodeError):
+        module.get_allocation_context()
+
+
+def test_corrupt_correlation_cache_does_not_enable_static_success_fallback(
+    monkeypatch, tmp_path
+):
+    import portfolio_manager as module
+
+    matrix_path = tmp_path / "memory" / "correlation_matrix.json"
+    matrix_path.parent.mkdir(parents=True)
+    matrix_path.write_text("{corrupt", encoding="utf-8")
+    monkeypatch.setattr(module, "data_root", lambda: tmp_path)
+    monkeypatch.setattr(module, "_corr_cache", {})
+    monkeypatch.setattr(module, "_corr_cache_ts", None)
+
+    with pytest.raises(json.JSONDecodeError):
+        module.check_correlation("BTC", {"ETH": {}})
+
+
+def test_private_portfolio_fallback_is_always_reject_zero():
+    import portfolio_manager as module
+    from schemas import RiskAssessment, TradingSignal
+
+    signal = TradingSignal(
+        asset="BTC",
+        action="BUY",
+        confidence=0.9,
+        entry_price=100.0,
+        stop_loss=90.0,
+        take_profit=130.0,
+        reasoning="Deterministic private fallback fixture with sufficient detail.",
+    )
+    risks = [RiskAssessment(
+        persona="neutral",
+        accept_signal=True,
+        position_size_pct=5.0,
+        rationale="Deterministic accepted risk fixture with sufficient detail.",
+    )]
+
+    decision = module.PortfolioManager()._fallback_decision(signal, risks)
+
+    assert decision.action == "reject"
+    assert decision.modified_position_size_pct == 0.0
+    assert decision.conviction == 0.0
+
+
+def test_stop_enforcement_trailing_state_write_failure_blocks_execution(
+    monkeypatch, tmp_path
+):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 110.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "latest_report",
+        lambda: {
+            "assets": [
+                {
+                    "symbol": "BTC",
+                    "current_price": 100.0,
+                    "stop_loss_suggestion": 110.0,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr(
+        module.Path,
+        "write_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("fixture write failure")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_batch",
+        lambda *_args: pytest.fail("execution must not run"),
+    )
+
+    result = module.main()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "TRAILING_STOP_STATE_WRITE_FAILED"
+    assert result["batch_status"] == "NOT_RUN"
+    assert result["executed_symbols"] == []
+
+
+@pytest.mark.parametrize(
+    ("batch_status", "expected_status", "expected_reason"),
+    [
+        ("COMPLETED", "PARTIAL", "STOP_CHECK_LOG_WRITE_FAILED"),
+        ("UNAVAILABLE", "UNAVAILABLE", "PORTFOLIO_WRITE_FAILED"),
+    ],
+)
+def test_stop_enforcement_check_log_write_failure_preserves_execution_evidence(
+    monkeypatch,
+    tmp_path,
+    batch_status,
+    expected_status,
+    expected_reason,
+):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 110.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "latest_report",
+        lambda: {
+            "assets": [
+                {
+                    "symbol": "BTC",
+                    "current_price": 100.0,
+                    "stop_loss_suggestion": 110.0,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+    monkeypatch.setattr(module, "STOP_CHECKS_FILE", tmp_path)
+    monkeypatch.setattr(
+        module,
+        "execute_batch",
+        lambda _signals, _prices: {
+            "status": batch_status,
+            "reason_code": (
+                None if batch_status == "COMPLETED" else "PORTFOLIO_WRITE_FAILED"
+            ),
+            "trace_id": "trace-batch",
+            "executed": [
+                {
+                    "symbol": "BTC",
+                    "result": {
+                        "pnl": 1.0,
+                        "shares": 1.0,
+                        "fill_price": 100.0,
+                        "portfolio_cash_after": 100_000.0,
+                    },
+                }
+            ],
+            "unavailable": [],
+        },
+    )
+    monkeypatch.setattr(module, "send_telegram_text", lambda _message: None)
+
+    result = module.main()
+
+    assert result["status"] == expected_status
+    assert result["reason_code"] == expected_reason
+    assert result["batch_status"] == batch_status
+    assert result["executed_symbols"] == ["BTC"]
+    assert result["check_log_status"] == "UNAVAILABLE"
+    assert result["check_log_reason_code"] == "STOP_CHECK_LOG_WRITE_FAILED"
+
+
+def test_stop_enforcement_is_partial_when_price_coverage_is_incomplete(
+    monkeypatch, tmp_path
+):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {"shares": 1.0, "avg_cost": 100.0},
+                "ETH": {"shares": 1.0, "avg_cost": 50.0},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "latest_report",
+        lambda: {"assets": [{"symbol": "BTC", "current_price": 101.0}]},
+    )
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+
+    result = module.main()
+
+    assert result["status"] == "PARTIAL"
+    assert result["reason_code"] == "POSITION_PRICE_MISSING"
+    assert result["checked_symbols"] == ["BTC"]
+    assert result["missing_price_symbols"] == ["ETH"]
+
+
+def test_stop_enforcement_propagates_unavailable_batch_status(monkeypatch, tmp_path):
+    import enforce_stops as module
+    import kill_switch
+
+    monkeypatch.setattr(kill_switch, "is_kill_switch_active", lambda: False)
+    monkeypatch.setattr(
+        module,
+        "load_portfolio",
+        lambda: {
+            "positions": {
+                "BTC": {
+                    "shares": 1.0,
+                    "avg_cost": 100.0,
+                    "stop_loss": 110.0,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "latest_report",
+        lambda: {
+            "assets": [
+                {
+                    "symbol": "BTC",
+                    "current_price": 100.0,
+                    "stop_loss_suggestion": 110.0,
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_batch",
+        lambda _signals, _prices: {
+            "status": "UNAVAILABLE",
+            "reason_code": "PORTFOLIO_WRITE_FAILED",
+            "trace_id": "trace-batch",
+            "executed": [],
+            "unavailable": [{"symbol": "BTC"}],
+        },
+    )
+    monkeypatch.setattr(module, "MEMORY_DIR", tmp_path)
+
+    result = module.main()
+
+    assert result["status"] == "UNAVAILABLE"
+    assert result["reason_code"] == "PORTFOLIO_WRITE_FAILED"
+    assert result["batch_status"] == "UNAVAILABLE"
+    assert result["executed_symbols"] == []
+
+
+def test_alpha_source_failure_is_partial_and_preserves_available_source(
+    monkeypatch
+):
+    import assembly as module
+
+    predscope = ModuleType("predscope_signals")
+    setattr(
+        predscope,
+        "get_predscope_signals",
+        lambda: [{"symbol": "BTC", "direction": "BUY", "confidence": 0.8}],
+    )
+    adanos = ModuleType("adanos_signals")
+
+    def fail_adanos():
+        raise RuntimeError("fixture source failure")
+
+    setattr(adanos, "get_adanos_signals", fail_adanos)
+    monkeypatch.setitem(sys.modules, "predscope_signals", predscope)
+    monkeypatch.setitem(sys.modules, "adanos_signals", adanos)
+    monkeypatch.setattr(module, "_alpha_cache", None)
+
+    result = module._get_alpha_signals()
+
+    assert result.status == "PARTIAL"
+    assert result.reason_code == "ALPHA_SOURCE_PARTIAL"
+    assert result["predscope"]["BTC"]["direction"] == "BUY"
+    assert result["adanos"] == {}
+    assert result["source_errors"] == {"adanos": "RuntimeError"}
+
+
+def test_missing_prediction_and_social_reports_are_explicitly_unavailable(
+    monkeypatch, tmp_path
+):
+    import assembly as module
+
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    monkeypatch.setattr(module, "runtime_reports_dir", lambda: reports)
+
+    prediction = module._load_prediction_data()
+    social = module._load_social_sentiment()
+    report = module.assemble_full_report([])
+
+    assert prediction.status == "UNAVAILABLE"
+    assert prediction.reason_code == "PREDICTION_REPORT_MISSING"
+    assert social.status == "UNAVAILABLE"
+    assert social.reason_code == "SOCIAL_REPORT_MISSING"
+    assert report["status"] == "PARTIAL"
+    assert report["reason_code"] == "OPTIONAL_ENRICHMENT_PARTIAL"
+    assert {item["source"] for item in report["enrichment_failures"]} == {
+        "prediction_markets",
+        "social_sentiment",
+    }
+
+
+def test_reflection_batch_preserves_partial_item_status(monkeypatch):
+    import reflection_engine as module
+
+    decision = _decision()
+    engine = module.ReflectionEngine()
+    monkeypatch.setattr(
+        module,
+        "get_pending_reflections_typed",
+        lambda horizon_days: [(decision.timestamp, decision)],
+    )
+    monkeypatch.setattr(module, "mark_decision_reflected", lambda *_args: True)
+
+    async def available_price(_asset: str):
+        return module.PriceFetchResult(
+            module.ReflectionStatus.COMPLETED,
+            110.0,
+            None,
+            "trace-price",
+        )
+
+    async def partial_reflection(*_args, trace_id=None, **_kwargs):
+        return module.ReflectionWriteResult(
+            module.ReflectionStatus.PARTIAL,
+            "ALPHA_BENCHMARK_DISABLED",
+            trace_id or "trace-reflection",
+        )
+
+    monkeypatch.setattr(engine, "_fetch_current_price", available_price)
+    monkeypatch.setattr(engine, "reflect_single", partial_reflection)
+
+    result = asyncio.run(
+        engine.reflect_on_pending(lambda *_args, **_kwargs: "unused", horizon_days=0)
+    )
+
+    assert result.status is module.ReflectionStatus.PARTIAL
+    assert result.processed == 1
+    assert result.unavailable == 0
+    assert result.reason_codes == ("ALPHA_BENCHMARK_DISABLED",)
+
+
+def test_paper_buy_audit_failure_preserves_durable_fill_as_partial(
+    monkeypatch, empty_portfolio
+):
+    import paper_trader as module
+
+    journal_entries = []
+    monkeypatch.setattr(
+        module,
+        "_log_order",
+        lambda _entry: (_ for _ in ()).throw(OSError("order audit unavailable")),
+    )
+    monkeypatch.setattr(module, "_log_journal", journal_entries.append)
+
+    result = module.execute_signal(
+        {"symbol": "BTC", "action": "BUY", "confidence": 0.8},
+        {"BTC": 100.0},
+    )
+
+    assert result["status"] == "filled"
+    assert result["audit_status"] == "PARTIAL"
+    assert result["audit_reason_code"] == "PAPER_AUDIT_WRITE_FAILED"
+    assert result["trace_id"]
+    assert result["audit_failures"] == ["order"]
+    assert "BTC" in module.load_portfolio()["positions"]
+    assert len(journal_entries) == 1
+
+
+def test_paper_sell_audit_failure_preserves_durable_fill_as_partial(
+    monkeypatch, empty_portfolio
+):
+    import paper_trader as module
+
+    portfolio = module.load_portfolio()
+    portfolio["positions"]["BTC"] = {"shares": 1.0, "avg_cost": 100.0}
+    module.save_portfolio(portfolio)
+    monkeypatch.setattr(module, "_log_order", lambda _entry: None)
+    monkeypatch.setattr(
+        module,
+        "_log_journal",
+        lambda _entry: (_ for _ in ()).throw(OSError("journal unavailable")),
+    )
+
+    result = module.execute_signal(
+        {"symbol": "BTC", "action": "SELL", "confidence": 0.8},
+        {"BTC": 110.0},
+    )
+
+    assert result["status"] == "filled"
+    assert result["audit_status"] == "PARTIAL"
+    assert result["audit_reason_code"] == "PAPER_AUDIT_WRITE_FAILED"
+    assert result["audit_failures"] == ["journal"]
+    assert "BTC" not in module.load_portfolio()["positions"]
+
+
+def test_stop_audit_failure_occurs_after_durable_close_and_is_partial(
+    monkeypatch, empty_portfolio
+):
+    import paper_trader as module
+
+    portfolio = module.load_portfolio()
+    portfolio["positions"]["BTC"] = {
+        "shares": 1.0,
+        "avg_cost": 100.0,
+        "stop_loss": 110.0,
+    }
+    module.save_portfolio(portfolio)
+    journal_entries = []
+    monkeypatch.setattr(
+        module,
+        "_log_order",
+        lambda _entry: (_ for _ in ()).throw(OSError("order audit unavailable")),
+    )
+    monkeypatch.setattr(module, "_log_journal", journal_entries.append)
+
+    result = module.check_stops({"BTC": 100.0})
+
+    assert result.status == "PARTIAL"
+    assert result.reason_code == "STOP_AUDIT_WRITE_FAILED"
+    assert len(result) == 1
+    assert "BTC" not in module.load_portfolio()["positions"]
+    assert len(journal_entries) == 1
+
+
+def test_stop_portfolio_write_failure_never_writes_fill_audit(
+    monkeypatch, empty_portfolio
+):
+    import paper_trader as module
+
+    portfolio = module.load_portfolio()
+    portfolio["positions"]["BTC"] = {
+        "shares": 1.0,
+        "avg_cost": 100.0,
+        "stop_loss": 110.0,
+    }
+    module.save_portfolio(portfolio)
+    audit_entries = []
+    monkeypatch.setattr(module, "_log_order", audit_entries.append)
+    monkeypatch.setattr(module, "_log_journal", audit_entries.append)
+    monkeypatch.setattr(
+        module,
+        "save_portfolio",
+        lambda _portfolio: (_ for _ in ()).throw(
+            module.PortfolioStateError("PORTFOLIO_WRITE_FAILED", "trace-save")
+        ),
+    )
+
+    with pytest.raises(module.PortfolioStateError):
+        module.check_stops({"BTC": 100.0})
+
+    assert audit_entries == []
+
+
+def test_paper_audit_partial_preserves_fill_and_blocks_secondary_broker(
+    monkeypatch, isolated_pipeline
+):
+    main, calls = isolated_pipeline
+
+    def partial_paper_fill(_signal, _prices):
+        calls.append("paper_execute")
+        return {
+            "status": "filled",
+            "symbol": "BTC",
+            "side": "BUY",
+            "shares": 1.0,
+            "fill_price": 100.0,
+            "audit_status": "PARTIAL",
+            "audit_reason_code": "PAPER_AUDIT_WRITE_FAILED",
+            "trace_id": "trace-paper-audit",
+            "audit_failures": ["order"],
+        }
+
+    monkeypatch.setattr(
+        sys.modules["paper_trader"],
+        "execute_signal",
+        partial_paper_fill,
+    )
+
+    report = asyncio.run(
+        main.run_pipeline(["BTC"], pad=FakeScratchpad(), allow_execution=True)
+    )
+
+    asset = report["assets"][0]
+    assert "paper_execute" in calls
+    assert "broker_execute" not in calls
+    assert asset["execution"]["status"] == "filled"
+    assert asset["execution"]["audit_status"] == "PARTIAL"
+    assert report["status"] == "PARTIAL"
+    failure = next(
+        item
+        for item in report["operational_failures"]
+        if item["source"] == "paper_execution_audit"
+    )
+    assert failure["reason_code"] == "PAPER_AUDIT_WRITE_FAILED"
+    assert failure["trace_id"] == "trace-paper-audit"

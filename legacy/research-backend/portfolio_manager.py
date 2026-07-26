@@ -203,8 +203,13 @@ def _load_correlation_matrix() -> dict:
             _corr_cache = _json.loads(matrix_path.read_text())
             _corr_cache_ts = now
             return _corr_cache
-        except Exception:
-            pass
+        except (OSError, UnicodeError, _json.JSONDecodeError, TypeError) as exc:
+            log.error(
+                "event=correlation_state_unavailable "
+                "reason_code=CORRELATION_STATE_INVALID error_type=%s",
+                type(exc).__name__,
+            )
+            raise
     return {}
 
 
@@ -280,8 +285,13 @@ def get_allocation_context() -> tuple[str, dict[str, float]]:
 
     try:
         pf = json.loads(pf_path.read_text())
-    except Exception:
-        return "", {}
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        log.error(
+            "event=portfolio_state_unavailable "
+            "reason_code=PORTFOLIO_STATE_INVALID error_type=%s",
+            type(exc).__name__,
+        )
+        raise
 
     positions = pf.get("positions", {})
     if not positions:
@@ -522,9 +532,14 @@ class PortfolioManager:
 
             return decision
 
-        except ValidationError as e:
-            log.warning("Portfolio decision for %s failed validation: %s", signal.asset, e)
-            return self._fallback_decision(signal, risk_assessments)
+        except ValidationError as exc:
+            log.error(
+                "event=portfolio_decision_unavailable asset=%s "
+                "reason_code=PORTFOLIO_DECISION_INVALID error_type=%s",
+                signal.asset,
+                type(exc).__name__,
+            )
+            raise
 
     async def _swarm_decide(
         self,
@@ -553,9 +568,14 @@ class PortfolioManager:
                 llm_client, alt_response, PortfolioDecision,
                 context_hint=f"Devil's advocate for {signal.asset}",
             )
-        except Exception as e:
-            log.debug("[%s] Swarm second pass failed: %s", signal.asset, e)
-            return primary
+        except Exception as exc:
+            log.error(
+                "event=portfolio_swarm_unavailable asset=%s "
+                "reason_code=PORTFOLIO_SWARM_UNAVAILABLE error_type=%s",
+                signal.asset,
+                type(exc).__name__,
+            )
+            raise
 
         # Conservative consensus: reject > modify > ratify
         ACTION_RANK = {"reject": 0, "modify": 1, "ratify": 2}
@@ -660,8 +680,13 @@ class PortfolioManager:
         if pf_path.exists():
             try:
                 positions = _json.loads(pf_path.read_text()).get("positions", {})
-            except Exception:
-                pass
+            except (OSError, UnicodeError, _json.JSONDecodeError, TypeError) as exc:
+                log.error(
+                    "event=portfolio_state_unavailable "
+                    "reason_code=PORTFOLIO_STATE_INVALID error_type=%s",
+                    type(exc).__name__,
+                )
+                raise
         if signal.action.upper() == "BUY" and positions:
             corr = check_correlation(signal.asset, positions)
             if corr["warning"]:
@@ -692,72 +717,21 @@ class PortfolioManager:
         signal: TradingSignal,
         risk_assessments: list[RiskAssessment],
     ) -> PortfolioDecision:
-        """
-        Generate fallback decision when LLM fails.
-
-        Uses proportional sizing by confidence level:
-        - high (>=0.80) → 5% position
-        - medium (>=0.65) → 3% position
-        - low (>=0.50) → 1% position
-        Uses MIN_ACCEPTANCE_RATIO: at least 1 of 3 personas must accept.
-        """
-        accept_count = sum(1 for r in risk_assessments if r.accept_signal)
-        total = len(risk_assessments) if risk_assessments else 3
-        acceptance_ratio = accept_count / total if total > 0 else 0
-
-        # Determine confidence level and proportional size
-        conf = signal.confidence
-        if conf >= 0.80:
-            proportional_size = 5.0   # high confidence
-        elif conf >= 0.65:
-            proportional_size = 3.0   # medium confidence
-        elif conf >= 0.50:
-            proportional_size = 1.0   # low confidence
-        else:
-            proportional_size = 0.5   # minimal confidence
-
-        if acceptance_ratio >= MIN_ACCEPTANCE_RATIO and conf >= 0.35:
-            # At least 1 persona accepts, signal has some merit
-            if conf >= MIN_PM_CONVICTION and accept_count >= 2:
-                action = "ratify"
-                modified_size = None
-            else:
-                action = "modify"
-                modified_size = proportional_size
-
-            # CORRELATION CAP: if highly correlated, cap at 1%
-            import json as _json
-            pf_path = data_root() / "memory" / "paper" / "portfolio.json"
-            positions = {}
-            if pf_path.exists():
-                try:
-                    positions = _json.loads(pf_path.read_text()).get("positions", {})
-                except Exception:
-                    pass
-            if positions:
-                corr = check_correlation(signal.asset, positions)
-                if corr["warning"] and corr["correlation"] > 0.8:
-                    modified_size = min(modified_size or proportional_size, 1.0)
-                    log.info("[%s] Correlation %.2f > 0.8 — capping position at 1%%", signal.asset, corr["correlation"])
-        elif conf < 0.30:
-            action = "reject"
-            modified_size = 0.0
-        else:
-            # Borderline: modify to minimal size
-            action = "modify"
-            modified_size = signal.action in ("BUY", "SELL") and proportional_size or 0.0
-
+        """Return a defensive rejection if a compatibility caller invokes it."""
         return PortfolioDecision(
             asset=signal.asset,
             original_signal=signal,
-            action=action,
-            modified_action=None if action == "ratify" else signal.action,
-            modified_position_size_pct=modified_size,
+            action="reject",
+            modified_action="HOLD",
+            modified_position_size_pct=0.0,
             modified_stop_loss=signal.stop_loss,
             modified_take_profit=signal.take_profit,
-            rationale=f"Portfolio manager fallback (LLM failed) — acceptance ratio {accept_count}/{total}, confidence {signal.confidence:.2f}.",
+            rationale=(
+                "Portfolio decision unavailable; compatibility fallback rejects "
+                "the signal and assigns zero size."
+            ),
             risk_adjusted_return=None,
-            conviction=max(0.3, signal.confidence - 0.1),
+            conviction=0.0,
         )
 
     def apply_decision(

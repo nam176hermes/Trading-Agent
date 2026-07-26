@@ -13,8 +13,10 @@ Interface matches what main.py expects:
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Iterator, Optional
+from uuid import uuid4
 from ta_engine import calculate_indicators, interpret_macd, interpret_rsi
 from atr_stops import calculate_stop_target as atr_stop_target
 from regime_detector import RegimeResult
@@ -31,96 +33,281 @@ except ImportError:
     _apply_filters = None
 
 # ── Alpha signal caching ────────────────────────────────────────────────
-_alpha_cache: dict[str, list[dict]] | None = None
+class EnrichmentResult(dict):
+    """JSON-compatible optional enrichment with explicit availability."""
+
+    def __init__(
+        self,
+        data: dict,
+        *,
+        status: str,
+        reason_code: Optional[str],
+        trace_id: str,
+        source_errors: Optional[dict[str, str]] = None,
+    ) -> None:
+        super().__init__(data)
+        self["status"] = status
+        self["reason_code"] = reason_code
+        self["trace_id"] = trace_id
+        self["source_errors"] = source_errors or {}
+
+    @property
+    def status(self) -> str:
+        return self["status"]
+
+    @property
+    def reason_code(self) -> Optional[str]:
+        return self["reason_code"]
+
+    @property
+    def trace_id(self) -> str:
+        return self["trace_id"]
 
 
-def _get_alpha_signals() -> dict[str, list[dict]]:
-    """Load predscope + adanos signals once per process, keyed by symbol."""
+_alpha_cache: EnrichmentResult | None = None
+
+
+def _get_alpha_signals() -> EnrichmentResult:
+    """Load alpha sources and expose partial source coverage."""
     global _alpha_cache
     if _alpha_cache is not None:
         return _alpha_cache
-    _alpha_cache = {"predscope": {}, "adanos": {}}
+
+    trace_id = uuid4().hex[:16]
+    data: dict[str, dict[str, dict]] = {"predscope": {}, "adanos": {}}
+    source_errors: dict[str, str] = {}
+
     try:
         from predscope_signals import get_predscope_signals
-        for s in get_predscope_signals():
-            _alpha_cache["predscope"][s["symbol"]] = s
-    except Exception:
-        pass
+
+        for signal in get_predscope_signals():
+            data["predscope"][signal["symbol"]] = signal
+    except Exception as exc:  # Optional source boundary.
+        source_errors["predscope"] = type(exc).__name__
+        log.warning(
+            "event=alpha_source_unavailable trace_id=%s source=predscope "
+            "reason_code=ALPHA_SOURCE_FAILED error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+
     try:
         from adanos_signals import get_adanos_signals
-        for s in get_adanos_signals():
-            _alpha_cache["adanos"][s["symbol"]] = s
-    except Exception:
-        pass
+
+        for signal in get_adanos_signals():
+            data["adanos"][signal["symbol"]] = signal
+    except Exception as exc:  # Optional source boundary.
+        source_errors["adanos"] = type(exc).__name__
+        log.warning(
+            "event=alpha_source_unavailable trace_id=%s source=adanos "
+            "reason_code=ALPHA_SOURCE_FAILED error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+
+    if len(source_errors) == 2:
+        status = "UNAVAILABLE"
+        reason_code = "ALPHA_SOURCES_UNAVAILABLE"
+    elif source_errors:
+        status = "PARTIAL"
+        reason_code = "ALPHA_SOURCE_PARTIAL"
+    else:
+        status = "AVAILABLE"
+        reason_code = None
+
+    _alpha_cache = EnrichmentResult(
+        data,
+        status=status,
+        reason_code=reason_code,
+        trace_id=trace_id,
+        source_errors=source_errors,
+    )
     return _alpha_cache
 
 
-def _load_macro_regime() -> tuple[str, float]:
-    """Read the latest macro_report_*.json and return (regime, confidence).
-    Falls back to ('neutral', 0.5) if no report exists."""
-    import os as _os
+@dataclass(frozen=True)
+class MacroRegimeResult:
+    status: str
+    regime: Optional[str]
+    confidence: Optional[float]
+    reason_code: Optional[str]
+    trace_id: str
+
+    def __iter__(self) -> Iterator[Optional[str] | Optional[float]]:
+        yield self.regime
+        yield self.confidence
+
+
+def _load_macro_regime() -> MacroRegimeResult:
+    """Load optional macro context without manufacturing a neutral regime."""
+    trace_id = uuid4().hex[:16]
     reports_dir = runtime_reports_dir()
     try:
         files = sorted(
-            [f for f in _os.listdir(reports_dir) if f.startswith("macro_report_") and f.endswith(".json")],
+            [
+                path
+                for path in reports_dir.iterdir()
+                if path.name.startswith("macro_report_") and path.suffix == ".json"
+            ],
             reverse=True,
         )
         if not files:
-            return "neutral", 0.5
-        data = json.loads((reports_dir / files[0]).read_text())
-        return data.get("regime", "neutral"), float(data.get("regime_confidence", 0.5))
-    except Exception:
-        return "neutral", 0.5
+            reason_code = "MACRO_REPORT_MISSING"
+            log.info(
+                "event=macro_regime_unavailable trace_id=%s reason_code=%s",
+                trace_id,
+                reason_code,
+            )
+            return MacroRegimeResult(
+                status="UNAVAILABLE",
+                regime=None,
+                confidence=None,
+                reason_code=reason_code,
+                trace_id=trace_id,
+            )
+        data = json.loads(files[0].read_text())
+        regime = data["regime"]
+        confidence = float(data["regime_confidence"])
+        if not isinstance(regime, str) or not regime.strip():
+            raise ValueError("macro regime must be a non-empty string")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("macro confidence must be between 0 and 1")
+        return MacroRegimeResult(
+            status="AVAILABLE",
+            regime=regime,
+            confidence=confidence,
+            reason_code=None,
+            trace_id=trace_id,
+        )
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        reason_code = "MACRO_REPORT_INVALID"
+        log.warning(
+            "event=macro_regime_unavailable trace_id=%s reason_code=%s error_type=%s",
+            trace_id,
+            reason_code,
+            type(exc).__name__,
+        )
+        return MacroRegimeResult(
+            status="UNAVAILABLE",
+            regime=None,
+            confidence=None,
+            reason_code=reason_code,
+            trace_id=trace_id,
+        )
 
 
-def _load_prediction_data() -> dict:
-    """Read the latest prediction_market_*.json and return filtered crypto summary.
-    Falls back to empty dict if no report exists."""
+def _load_prediction_data() -> EnrichmentResult:
+    """Load prediction-market enrichment with explicit availability."""
+    trace_id = uuid4().hex[:16]
     reports_dir = runtime_reports_dir()
     try:
         files = sorted(
-            [f for f in reports_dir.iterdir() if f.name.startswith("prediction_market_") and f.suffix == ".json"],
+            [
+                path
+                for path in reports_dir.iterdir()
+                if path.name.startswith("prediction_market_")
+                and path.suffix == ".json"
+            ],
             reverse=True,
         )
         if not files:
-            return {}
+            return EnrichmentResult(
+                {},
+                status="UNAVAILABLE",
+                reason_code="PREDICTION_REPORT_MISSING",
+                trace_id=trace_id,
+            )
         raw = json.loads(files[0].read_text())
-        # Extract crypto-specific markets and aggregate probabilities
-        crypto_markets = [m for m in raw.get("markets", []) if "crypto" in m.get("categories", [])]
-        return {
-            "collected_at": raw.get("collected_at"),
-            "crypto_markets": crypto_markets[:10],
-            "crypto_market_count": len(crypto_markets),
-            "total_filtered": raw.get("filtered_markets", 0),
-        }
-    except Exception:
-        return {}
+        if not isinstance(raw, dict):
+            raise TypeError("prediction report must be an object")
+        markets = raw.get("markets", [])
+        if not isinstance(markets, list):
+            raise TypeError("prediction markets must be a list")
+        crypto_markets = [
+            market
+            for market in markets
+            if isinstance(market, dict)
+            and "crypto" in market.get("categories", [])
+        ]
+        return EnrichmentResult(
+            {
+                "collected_at": raw.get("collected_at"),
+                "crypto_markets": crypto_markets[:10],
+                "crypto_market_count": len(crypto_markets),
+                "total_filtered": raw.get("filtered_markets", 0),
+            },
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id=trace_id,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        log.warning(
+            "event=prediction_enrichment_unavailable trace_id=%s "
+            "reason_code=PREDICTION_REPORT_INVALID error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return EnrichmentResult(
+            {},
+            status="UNAVAILABLE",
+            reason_code="PREDICTION_REPORT_INVALID",
+            trace_id=trace_id,
+            source_errors={"prediction_market": type(exc).__name__},
+        )
 
 
-def _load_social_sentiment() -> dict:
-    """Read the latest social_sentiment_*.json and return sentiment summary."""
+def _load_social_sentiment() -> EnrichmentResult:
+    """Load social enrichment with explicit availability."""
+    trace_id = uuid4().hex[:16]
     reports_dir = runtime_reports_dir()
     try:
         files = sorted(
-            [f for f in reports_dir.iterdir() if f.name.startswith("social_sentiment_") and f.suffix == ".json"],
+            [
+                path
+                for path in reports_dir.iterdir()
+                if path.name.startswith("social_sentiment_")
+                and path.suffix == ".json"
+            ],
             reverse=True,
         )
         if not files:
-            return {}
+            return EnrichmentResult(
+                {},
+                status="UNAVAILABLE",
+                reason_code="SOCIAL_REPORT_MISSING",
+                trace_id=trace_id,
+            )
         raw = json.loads(files[0].read_text())
+        if not isinstance(raw, dict):
+            raise TypeError("social report must be an object")
         data = raw.get("data", {})
-        # Extract buzz and sentiment scores from Reddit/X
-        reddit = data.get("reddit_crypto", {})
-        twitter = data.get("x_twitter", {})
-        poly = data.get("polymarket", {})
-        return {
-            "collected_at": raw.get("collected_at"),
-            "reddit_crypto": reddit,
-            "x_twitter": twitter,
-            "polymarket_conviction": poly,
-        }
-    except Exception:
-        return {}
+        if not isinstance(data, dict):
+            raise TypeError("social report data must be an object")
+        return EnrichmentResult(
+            {
+                "collected_at": raw.get("collected_at"),
+                "reddit_crypto": data.get("reddit_crypto", {}),
+                "x_twitter": data.get("x_twitter", {}),
+                "polymarket_conviction": data.get("polymarket", {}),
+            },
+            status="AVAILABLE",
+            reason_code=None,
+            trace_id=trace_id,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        log.warning(
+            "event=social_enrichment_unavailable trace_id=%s "
+            "reason_code=SOCIAL_REPORT_INVALID error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return EnrichmentResult(
+            {},
+            status="UNAVAILABLE",
+            reason_code="SOCIAL_REPORT_INVALID",
+            trace_id=trace_id,
+            source_errors={"social_sentiment": type(exc).__name__},
+        )
 
 # Import new Pydantic schemas
 from schemas import TradingSignal as PydanticTradingSignal
@@ -936,6 +1123,9 @@ def assemble_asset_json(
         "suggestion": suggestion,
         "confidence": confidence,
         "signal_source": alpha_source or "ml_ta",
+        "alpha_enrichment_status": alpha.status,
+        "alpha_enrichment_reason_code": alpha.reason_code,
+        "alpha_enrichment_trace_id": alpha.trace_id,
         "signal_conflict": conflict,
         "reasoning": reasoning,
         "stop_loss_suggestion": stop,
@@ -1000,11 +1190,41 @@ def assemble_full_report(assembled_assets: list[dict]) -> dict:
     prediction_data = _load_prediction_data()
     social_data = _load_social_sentiment()
 
+    enrichment_failures = []
+    for source, enrichment in (
+        ("prediction_markets", prediction_data),
+        ("social_sentiment", social_data),
+    ):
+        if enrichment.status != "AVAILABLE":
+            enrichment_failures.append(
+                {
+                    "source": source,
+                    "status": enrichment.status,
+                    "reason_code": enrichment.reason_code,
+                    "trace_id": enrichment.trace_id,
+                }
+            )
+    for asset in assembled_assets:
+        if asset.get("alpha_enrichment_status") not in (None, "AVAILABLE"):
+            enrichment_failures.append(
+                {
+                    "source": f"alpha:{asset.get('symbol', 'UNKNOWN')}",
+                    "status": asset.get("alpha_enrichment_status"),
+                    "reason_code": asset.get("alpha_enrichment_reason_code"),
+                    "trace_id": asset.get("alpha_enrichment_trace_id"),
+                }
+            )
+
     return {
+        "status": "PARTIAL" if enrichment_failures else "COMPLETED",
+        "reason_code": (
+            "OPTIONAL_ENRICHMENT_PARTIAL" if enrichment_failures else None
+        ),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "assets": assembled_assets,
         "highest_confidence_trade": best_trade,
         "risk_warnings": risk_warnings,
         "prediction_markets": prediction_data,
         "social_sentiment": social_data,
+        "enrichment_failures": enrichment_failures,
     }

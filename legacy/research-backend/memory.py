@@ -330,18 +330,24 @@ def store_reflection(
     suggestion: str,
     confidence: float,
     raw_return_pct: float,
-    alpha_return_pct: float,
+    alpha_return_pct: Optional[float],
     holding_days: int,
     reflection: str,
+    benchmark_status: str = "AVAILABLE",
+    benchmark_reason_code: Optional[str] = None,
 ):
-    """Store a generated reflection for future injection."""
+    """Store a generated reflection without manufacturing unavailable benchmark data."""
     entry = {
         "ticker": ticker.upper(),
         "date": trade_date,
         "suggestion": suggestion,
         "confidence": confidence,
         "raw_return_pct": round(raw_return_pct, 2),
-        "alpha_return_pct": round(alpha_return_pct, 2),
+        "alpha_return_pct": (
+            round(alpha_return_pct, 2) if alpha_return_pct is not None else None
+        ),
+        "benchmark_status": benchmark_status,
+        "benchmark_reason_code": benchmark_reason_code,
         "holding_days": holding_days,
         "reflection": reflection,
         "stored_at": datetime.now(timezone.utc).isoformat(),

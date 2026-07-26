@@ -97,19 +97,25 @@ def preflight(exchange_id: str, symbol: str, side: str, amount: float) -> tuple[
     if mode == "live" and not LIVE_EXECUTION_ENABLED:
         return False, "LIVE_EXECUTION_ENABLED=False — kill switch active"
 
-    # 1.5. Incubation gate — live requires validated paper-trade history (Kevin Davey)
+    # 1.5. Incubation gate: unavailable state is a hard live-execution block.
     if mode == "live":
         try:
-            from incubation_tracker import is_incubation_passed, incubation_status
-            if not is_incubation_passed():
-                status = incubation_status()
-                return False, (
-                    f"Incubation gate not passed: "
-                    f"{status['n_resolved']}/{status['n_required']} signals resolved, "
-                    f"win rate {status['win_rate']:.0%}"
-                )
-        except ImportError:
-            pass
+            from incubation_tracker import incubation_status
+        except ImportError as exc:
+            return False, f"Incubation gate unavailable: IMPORT_FAILED ({type(exc).__name__})"
+
+        status = incubation_status()
+        if status["status"] != "AVAILABLE":
+            return False, (
+                "Incubation gate unavailable: "
+                f"{status['reason_code']} trace_id={status['trace_id']}"
+            )
+        if not status["passed"]:
+            return False, (
+                "Incubation gate not passed: "
+                f"{status['n_resolved']}/{status['n_required']} signals resolved, "
+                f"win rate {status['win_rate']:.0%}"
+            )
 
     # 2. Minimum order size
     if amount <= 0:

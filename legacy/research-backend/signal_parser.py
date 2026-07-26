@@ -183,10 +183,16 @@ def parse_structured(
     original_raw = raw_output
 
     # Try direct validation
+    initial_error: ValidationError | None = None
     try:
         return model_cls.model_validate_json(cleaned)
-    except ValidationError as e:
-        log.warning("Initial validation failed for %s: %s", model_cls.__name__, str(e)[:100])
+    except ValidationError as exc:
+        initial_error = exc
+        log.warning(
+            "Initial validation failed for %s: %s",
+            model_cls.__name__,
+            str(exc)[:100],
+        )
 
     # Repair attempt
     if max_retries > 0:
@@ -196,7 +202,7 @@ def parse_structured(
 
 Context: {context_hint or "Unknown"}
 
-Error: {str(e)[:500]}
+Error: {str(initial_error)[:500]}
 
 **YOUR ORIGINAL RESPONSE (DO NOT ADD, REMOVE, OR CHANGE ANY VALUES):**
 ```
@@ -257,11 +263,15 @@ If the original text is missing required fields, leave them as null or empty.
         except ValidationError as e2:
             log.error("Repair attempt failed for %s: %s", model_cls.__name__, str(e2)[:100])
             raise
-        except Exception as e3:
+        except Exception as e3:  # External repair-provider boundary.
             log.error("Unexpected error during repair: %s", str(e3)[:100])
-            raise ValidationError(f"Repair failed: {e3}")
+            if initial_error is not None:
+                raise initial_error from e3
+            raise
 
-    raise ValidationError(f"Could not validate {model_cls.__name__} from output")
+    if initial_error is not None:
+        raise initial_error
+    raise RuntimeError(f"Could not validate {model_cls.__name__} from output")
 
 
 # ── Price Extraction Patterns (TACN-CN approach) ──────────────────────────────

@@ -84,6 +84,7 @@ from packages.runtime_release import (
 )
 
 DEFAULT_TOOL_ROOT = ROOT / "apps" / "dashboard"
+TYPESCRIPT_FACTORY_COMPAT = ROOT / "scripts" / "typescript_factory_compat.cjs"
 CONTROL_SCHEMA_MODELS = (
     Asset,
     MarketReport,
@@ -245,9 +246,18 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         check=True,
     )
     (dashboard_output / "api-types.ts").chmod(0o644)
+    node_executable = shutil.which("node")
+    if node_executable is None:
+        raise RuntimeError("node executable is required for contract generation")
+    zod_client_entrypoint = (
+        tool_root / "node_modules" / "openapi-zod-client" / "bin.js"
+    )
     subprocess.run(
         [
-            str(npm_bin / "openapi-zod-client"),
+            node_executable,
+            "--require",
+            str(TYPESCRIPT_FACTORY_COMPAT),
+            str(zod_client_entrypoint),
             str(openapi_path),
             "--output",
             str(dashboard_output / "api-schemas.ts"),

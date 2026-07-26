@@ -9,7 +9,7 @@ Runs the full validation suite:
   3. Computes VaR(95%), VaR(99%), CVaR(95%), max drawdown distribution
   4. Runs strategy_robustness to get confidence intervals on Sharpe
   5. Outputs a risk report to reports/risk_validation_*.json
-  6. Feeds results into risk_engine.validate_walk_forward (the validation gate)
+  6. Leaves the validation decision UNKNOWN until genuine walk-forward windows exist
 
 Usage:
   python risk_validation.py                           # full report
@@ -22,24 +22,38 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
+from uuid import uuid4
 
 import numpy as np
 
 from monte_carlo import simulate_returns, var_cvar_simulation, strategy_robustness
-from risk_engine import (
-    validate_walk_forward,
-    ValidationGate,
-)
 from runtime_paths import data_root, reports_dir
 
 log = logging.getLogger("risk_validation")
 
 REPORT_DIR = reports_dir()
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+MIN_HISTORICAL_RETURNS = 10
+
+
+@dataclass(frozen=True)
+class RiskInputResult:
+    """Typed historical input state for risk validation."""
+
+    status: str
+    returns: np.ndarray
+    portfolio_values: np.ndarray
+    reason_code: str | None
+    trace_id: str
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        yield self.returns
+        yield self.portfolio_values
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -76,8 +90,12 @@ def _load_returns_from_decisions(symbol: Optional[str] = None) -> Tuple[np.ndarr
                     pnl_pct = d.get("outcome_pnl_pct")
                     if pnl_pct is not None and isinstance(pnl_pct, (int, float)):
                         returns_list.append(float(pnl_pct) / 100.0)  # convert % to decimal
-        except Exception as e:
-            log.debug("typed_decisions.jsonl load error: %s", e)
+        except (OSError, UnicodeError) as exc:
+            log.warning(
+                "event=risk_history_source_unavailable source=typed_decisions "
+                "error_type=%s",
+                type(exc).__name__,
+            )
 
     # Source 2: paper_trader trade journal
     journal_path = data_root() / "memory" / "trade_journal.jsonl"
@@ -96,29 +114,27 @@ def _load_returns_from_decisions(symbol: Optional[str] = None) -> Tuple[np.ndarr
                         # Approximate return from PnL — assume 5% capital risk per trade
                         ret_pct = float(pnl) / (100_000 * 0.05)
                         returns_list.append(ret_pct)
-        except Exception as e:
-            log.debug("trade_journal.jsonl load error: %s", e)
+        except (OSError, UnicodeError) as exc:
+            log.warning(
+                "event=risk_history_source_unavailable source=trade_journal "
+                "error_type=%s",
+                type(exc).__name__,
+            )
 
     # Source 3: paper_trader portfolio history (equity snapshots)
     portfolio_path = data_root() / "memory" / "paper" / "portfolio.json"
     equity_curve = _equity_from_portfolio(portfolio_path)
 
-    # Fallback: use synthetic returns if nothing loaded
-    if not returns_list:
-        log.warning("No historical returns found — using synthetic data for demo")
-        rng = np.random.default_rng(42)
-        returns_list = list(rng.normal(0.0005, 0.02, size=200))
-        # Build equity curve from synthetic returns
-        eq = np.cumprod(1 + np.array(returns_list))
-        equity_curve = np.insert(eq, 0, 1.0)
-
-    returns = np.array(returns_list, dtype=float)
+    returns = np.array(
+        [value for value in returns_list if np.isfinite(value) and value > -1.0],
+        dtype=float,
+    )
 
     # Convert simple returns to log-returns for monte_carlo
-    log_returns = np.log(1 + returns)
+    log_returns = np.log1p(returns)
 
     # Build equity curve from returns if not loaded from portfolio
-    if len(equity_curve) < 2:
+    if len(equity_curve) < 2 and len(returns) > 0:
         equity_curve = np.cumprod(1 + returns)
         equity_curve = np.insert(equity_curve, 0, 1.0)
 
@@ -139,23 +155,44 @@ def _equity_from_portfolio(portfolio_path: Path) -> np.ndarray:
         for pos in positions.values():
             if isinstance(pos, dict):
                 qty = float(pos.get("shares", 0))
-                price = float(pos.get("avg_price", 0))
+                price = float(pos.get("avg_cost", pos.get("avg_price", 0)))
                 position_value += qty * price
         equity = cash + position_value
         if equity <= 0:
             return np.array([1.0])
         # We only get a single snapshot — return as single-point curve
         return np.array([INITIAL_EQUITY, equity])
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         return np.array([1.0])
 
 
 INITIAL_EQUITY = 100_000.0
 
 
-def _load_portfolio_returns() -> Tuple[np.ndarray, np.ndarray]:
-    """Convience wrapper for _load_returns_from_decisions."""
-    return _load_returns_from_decisions()
+def _load_portfolio_returns() -> RiskInputResult:
+    """Load real historical inputs without manufacturing synthetic observations."""
+    trace_id = uuid4().hex[:16]
+    returns, portfolio_values = _load_returns_from_decisions()
+    if len(returns) == 0:
+        log.error(
+            "event=risk_history_unavailable trace_id=%s "
+            "reason_code=HISTORICAL_RETURNS_UNAVAILABLE",
+            trace_id,
+        )
+        return RiskInputResult(
+            status="UNAVAILABLE",
+            returns=returns,
+            portfolio_values=portfolio_values,
+            reason_code="HISTORICAL_RETURNS_UNAVAILABLE",
+            trace_id=trace_id,
+        )
+    return RiskInputResult(
+        status="AVAILABLE",
+        returns=returns,
+        portfolio_values=portfolio_values,
+        reason_code=None,
+        trace_id=trace_id,
+    )
 
 
 # ── Core validation pipeline ─────────────────────────────────────────────────
@@ -186,19 +223,54 @@ def run_risk_validation(
     if confidence_levels is None:
         confidence_levels = DEFAULT_CONFIDENCE_LEVELS
 
-    # Step 1: Load historical returns and equity curve
-    log_returns, equity_curve = _load_portfolio_returns()
+    # Step 1: Load only real historical returns and equity observations.
+    input_result = _load_portfolio_returns()
+    log_returns = input_result.returns
+    equity_curve = input_result.portfolio_values
     log.info(
-        "Loaded %d return observations | equity curve length=%d",
-        len(log_returns), len(equity_curve),
+        "event=risk_history_loaded trace_id=%s status=%s observations=%d "
+        "equity_points=%d",
+        input_result.trace_id,
+        input_result.status,
+        len(log_returns),
+        len(equity_curve),
     )
 
-    if len(log_returns) < 10:
-        log.warning("Insufficient returns (%d) — using synthetic fallback", len(log_returns))
-        rng = np.random.default_rng(42)
-        log_returns = np.asarray(rng.normal(0.0005, 0.02, size=200))
-        equity_curve = np.cumprod(1 + np.exp(log_returns))
-        equity_curve = np.insert(equity_curve, 0, 1.0)
+    if len(log_returns) < MIN_HISTORICAL_RETURNS:
+        report = {
+            "status": "UNAVAILABLE",
+            "reason_code": "INSUFFICIENT_HISTORICAL_RETURNS",
+            "trace_id": input_result.trace_id,
+            "validation_decision": "UNKNOWN",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "configuration": {
+                "n_simulations": n_simulations,
+                "horizon_days": horizon_days,
+                "confidence_levels": confidence_levels,
+                "method": method,
+                "n_observations": len(log_returns),
+                "minimum_observations": MIN_HISTORICAL_RETURNS,
+                "synthetic_fallback_used": False,
+            },
+            "var_cvar": None,
+            "max_drawdown_distribution": None,
+            "strategy_robustness": None,
+            "walk_forward_validation": None,
+        }
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filepath = output_file or str(
+            REPORT_DIR / f"risk_validation_{timestamp}.json"
+        )
+        with open(filepath, "w") as file_handle:
+            json.dump(report, file_handle, indent=2, default=str)
+        report["_filepath"] = filepath
+        log.error(
+            "event=risk_validation_unavailable trace_id=%s "
+            "reason_code=INSUFFICIENT_HISTORICAL_RETURNS observations=%d",
+            input_result.trace_id,
+            len(log_returns),
+        )
+        return report
 
     # Step 2: Simulate return paths
     paths = simulate_returns(
@@ -214,16 +286,25 @@ def run_risk_validation(
     for conf in confidence_levels:
         result = var_cvar_simulation(paths, confidence=conf)
         c_label = str(int(conf * 100))
-        var_cvar_results[f"var_{c_label}"] = {
-            "log_return": result.get(f"var_{c_label}", 0.0),
-            "simple_return": round(1.0 - np.exp(result.get(f"var_{c_label}", 0.0)), 6),
+        var_key = f"var_{c_label}"
+        cvar_key = f"cvar_{c_label}"
+        drawdown_key = f"max_drawdown_{c_label}"
+        if not all(
+            key in result for key in (var_key, cvar_key, drawdown_key)
+        ):
+            raise ValueError(
+                f"risk metric output missing required keys for {c_label}"
+            )
+        var_cvar_results[var_key] = {
+            "log_return": result[var_key],
+            "simple_return": round(1.0 - np.exp(result[var_key]), 6),
         }
-        var_cvar_results[f"cvar_{c_label}"] = {
-            "log_return": result.get(f"cvar_{c_label}", 0.0),
-            "simple_return": round(1.0 - np.exp(result.get(f"cvar_{c_label}", 0.0)), 6),
+        var_cvar_results[cvar_key] = {
+            "log_return": result[cvar_key],
+            "simple_return": round(1.0 - np.exp(result[cvar_key]), 6),
         }
-        var_cvar_results[f"max_drawdown_{c_label}"] = {
-            "log_return": result.get(f"max_drawdown_{c_label}", 0.0),
+        var_cvar_results[drawdown_key] = {
+            "log_return": result[drawdown_key],
         }
 
     # Step 3b: Compute max drawdown distribution across all paths
@@ -249,24 +330,16 @@ def run_risk_validation(
             random_state=random_state + 1,
         )
 
-    # Step 5: Feed into walk-forward validation gate
+    # Step 5: Foundation package has no genuine walk-forward windows. Do not
+    # manufacture them from bootstrap confidence intervals and do not emit PASS.
     wf_validation = None
-    if robustness is not None:
-        # Build pseudo-windowed metrics from bootstrap results
-        sharpe_per_window = _extract_window_metrics(robustness, "sharpe", n_windows=10)
-        sortino_per_window = _extract_window_metrics(robustness, "cvar_95", n_windows=10)
-        pnl_per_window = [-s for s in sortino_per_window]  # approximate from CVaR
-        max_dd = robustness.get("max_drawdown", {}).get("median", dd_distribution.get("median", 0.05))
-
-        wf_validation = validate_walk_forward(
-            sharpe_per_window=sharpe_per_window,
-            sortino_per_window=sortino_per_window,
-            pnl_per_window=pnl_per_window,
-            max_drawdown=max_dd,
-        )
 
     # Step 6: Build report
     report = {
+        "status": "PARTIAL",
+        "reason_code": "WALK_FORWARD_OBSERVATIONS_UNAVAILABLE",
+        "trace_id": input_result.trace_id,
+        "validation_decision": "UNKNOWN",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "configuration": {
             "n_simulations": n_simulations,
@@ -274,6 +347,8 @@ def run_risk_validation(
             "confidence_levels": confidence_levels,
             "method": method,
             "n_observations": len(log_returns),
+            "minimum_observations": MIN_HISTORICAL_RETURNS,
+            "synthetic_fallback_used": False,
         },
         "var_cvar": var_cvar_results,
         "max_drawdown_distribution": dd_distribution,
@@ -305,28 +380,16 @@ def run_risk_validation(
     return report
 
 
-def _extract_window_metrics(
-    robustness: Dict, metric: str, n_windows: int
-) -> List[float]:
-    """Extract pseudo-windowed metrics from bootstrap robustness results."""
-    entry = robustness.get(metric, {})
-    if not entry:
-        return [0.0] * n_windows
-
-    median = entry.get("median", 0)
-    ci_lower = entry.get("ci_lower", median * 0.8 if median else 0)
-    ci_upper = entry.get("ci_upper", median * 1.2 if median else 0)
-
-    # Spread values across windows to approximate walk-forward
-    rng = np.random.default_rng(1234)
-    return list(rng.uniform(ci_lower, ci_upper, size=n_windows))
-
-
 def print_summary(report: Dict) -> None:
     """Print a human-readable summary of the risk validation report."""
     print("=" * 60)
     print("  MONTE CARLO RISK VALIDATION REPORT")
     print("=" * 60)
+    print(f"  Status        : {report.get('status', 'UNKNOWN')}")
+    print(f"  Decision      : {report.get('validation_decision', 'UNKNOWN')}")
+    if report.get("reason_code"):
+        print(f"  Reason        : {report['reason_code']}")
+    print()
 
     cfg = report.get("configuration", {})
     print(f"  Simulations   : {cfg.get('n_simulations', 'N/A'):,}")
@@ -336,14 +399,14 @@ def print_summary(report: Dict) -> None:
     print()
 
     print("  ── VaR / CVaR ──")
-    for key, val in report.get("var_cvar", {}).items():
+    for key, val in (report.get("var_cvar") or {}).items():
         if isinstance(val, dict) and "simple_return" in val:
             sr = val["simple_return"]
             print(f"  {key:>18s}: {sr:+.4%}")
     print()
 
     print("  ── Max Drawdown Distribution (log-return) ──")
-    dd = report.get("max_drawdown_distribution", {})
+    dd = report.get("max_drawdown_distribution") or {}
     for key in ("mean", "median", "p95", "p99", "max"):
         v = dd.get(key, "N/A")
         if isinstance(v, float):

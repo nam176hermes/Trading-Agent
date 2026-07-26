@@ -8,11 +8,13 @@ Logs all checks to memory/stop_checks.jsonl.
 """
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
-from paper_trader import execute_batch, load_portfolio
+from paper_trader import PortfolioStateError, execute_batch, load_portfolio
 from alert_manager import send_telegram_text
 from runtime_paths import data_root, reports_dir
 
@@ -20,6 +22,34 @@ log = logging.getLogger("enforce_stops")
 REPORTS_DIR = reports_dir()
 MEMORY_DIR = data_root() / "memory"
 STOP_CHECKS_FILE = MEMORY_DIR / "stop_checks.jsonl"
+
+
+def _result(
+    *,
+    status: str,
+    reason_code: str | None,
+    trace_id: str,
+    checked_symbols: list[str] | None = None,
+    missing_price_symbols: list[str] | None = None,
+    executed_symbols: list[str] | None = None,
+    batch_status: str = "NOT_RUN",
+    batch_reason_code: str | None = None,
+    check_log_status: str = "NOT_RUN",
+    check_log_reason_code: str | None = None,
+) -> dict:
+    """Build the stable public status schema for every enforcement exit."""
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "trace_id": trace_id,
+        "checked_symbols": sorted(checked_symbols or []),
+        "missing_price_symbols": sorted(set(missing_price_symbols or [])),
+        "executed_symbols": sorted(executed_symbols or []),
+        "batch_status": batch_status,
+        "batch_reason_code": batch_reason_code,
+        "check_log_status": check_log_status,
+        "check_log_reason_code": check_log_reason_code,
+    }
 
 
 def latest_report() -> dict | None:
@@ -45,44 +75,128 @@ def latest_report() -> dict | None:
     return json.loads((REPORTS_DIR / files[0]).read_text())
 
 
-def main():
+def main() -> dict:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    trace_id = uuid4().hex[:16]
 
     from kill_switch import is_kill_switch_active
     if is_kill_switch_active():
         log.warning("Kill switch active — enforce_stops aborted")
-        return
+        return _result(
+            status="SKIPPED",
+            reason_code="KILL_SWITCH_ACTIVE",
+            trace_id=trace_id,
+        )
 
-    report = latest_report()
-    if not report:
-        log.info("No report found — nothing to enforce")
-        return
-
-    pf = load_portfolio()
+    try:
+        pf = load_portfolio()
+    except PortfolioStateError as exc:
+        log.error(
+            "event=stop_enforcement_unavailable trace_id=%s "
+            "reason_code=%s error_type=%s",
+            exc.trace_id,
+            exc.reason_code,
+            type(exc).__name__,
+        )
+        return _result(
+            status="UNAVAILABLE",
+            reason_code=exc.reason_code,
+            trace_id=exc.trace_id,
+        )
     positions = pf.get("positions", {})
     if not positions:
         log.info("No open positions — nothing to enforce")
-        return
+        return _result(status="COMPLETED", reason_code=None, trace_id=trace_id)
+
+    try:
+        report = latest_report()
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        log.error(
+            "event=stop_enforcement_unavailable trace_id=%s "
+            "reason_code=PRICE_REPORT_INVALID error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return _result(
+            status="UNAVAILABLE",
+            reason_code="PRICE_REPORT_INVALID",
+            trace_id=trace_id,
+            missing_price_symbols=list(positions),
+        )
+    if not report:
+        log.error(
+            "event=stop_enforcement_unavailable trace_id=%s "
+            "reason_code=PRICE_REPORT_MISSING",
+            trace_id,
+        )
+        return _result(
+            status="UNAVAILABLE",
+            reason_code="PRICE_REPORT_MISSING",
+            trace_id=trace_id,
+            missing_price_symbols=list(positions),
+        )
 
     # Build price map from report assets
     price_map: dict[str, float] = {}
     target_map: dict[str, float] = {}
     stop_map: dict[str, float] = {}
 
-    for a in report.get("assets", []):
-        sym = a.get("symbol", "").upper()
-        price = a.get("current_price")
-        target = a.get("target_suggestion")
-        stop_loss = a.get("stop_loss_suggestion")
+    try:
+        if not isinstance(report, dict):
+            raise TypeError("price report must be an object")
+        assets = report.get("assets")
+        if not isinstance(assets, list):
+            raise TypeError("price report assets must be a list")
+        for asset in assets:
+            if not isinstance(asset, dict):
+                raise TypeError("price report asset must be an object")
+            symbol_value = asset.get("symbol")
+            if not isinstance(symbol_value, str) or not symbol_value.strip():
+                raise TypeError("price report symbol must be a non-empty string")
+            sym = symbol_value.upper()
+            price = float(asset.get("current_price"))
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError("current price must be finite and positive")
+            price_map[sym] = price
+            for field, destination in (
+                ("target_suggestion", target_map),
+                ("stop_loss_suggestion", stop_map),
+            ):
+                value = asset.get(field)
+                if value is None:
+                    continue
+                threshold = float(value)
+                if not math.isfinite(threshold) or threshold <= 0:
+                    raise ValueError(f"{field} must be finite and positive")
+                destination[sym] = threshold
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        log.error(
+            "event=stop_enforcement_unavailable trace_id=%s "
+            "reason_code=PRICE_REPORT_INVALID error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return _result(
+            status="UNAVAILABLE",
+            reason_code="PRICE_REPORT_INVALID",
+            trace_id=trace_id,
+            missing_price_symbols=list(positions),
+        )
 
-        if price:
-            price_map[sym] = float(price)
-        if target is not None:
-            target_map[sym] = float(target)
-        if stop_loss is not None:
-            stop_map[sym] = float(stop_loss)
-
-    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.error(
+            "event=stop_enforcement_unavailable trace_id=%s "
+            "reason_code=STOP_MEMORY_DIR_UNAVAILABLE error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return _result(
+            status="UNAVAILABLE",
+            reason_code="STOP_MEMORY_DIR_UNAVAILABLE",
+            trace_id=trace_id,
+        )
 
     # First pass: collect all triggers
     signals = []
@@ -94,13 +208,29 @@ def main():
     if trailing_file.exists():
         try:
             trailing_stops = json.loads(trailing_file.read_text())
-        except (json.JSONDecodeError, KeyError):
-            pass
+            if not isinstance(trailing_stops, dict):
+                raise TypeError("trailing stop state must be an object")
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+            log.error(
+                "event=stop_enforcement_unavailable trace_id=%s "
+                "reason_code=TRAILING_STOP_STATE_INVALID error_type=%s",
+                trace_id,
+                type(exc).__name__,
+            )
+            return _result(
+                status="UNAVAILABLE",
+                reason_code="TRAILING_STOP_STATE_INVALID",
+                trace_id=trace_id,
+            )
 
+    missing_price_symbols = []
     for sym, pos in positions.items():
         current_price = price_map.get(sym)
         entry_price = pos.get("avg_cost", 0)
-        if not current_price or not entry_price:
+        if not current_price:
+            missing_price_symbols.append(sym)
+            continue
+        if not entry_price:
             continue
 
         pnl_pct = (current_price - entry_price) / entry_price
@@ -128,12 +258,32 @@ def main():
             })
             trailing_stops.pop(sym, None)
 
-    trailing_file.write_text(json.dumps(trailing_stops, indent=2))
+    try:
+        trailing_file.write_text(json.dumps(trailing_stops, indent=2))
+    except (OSError, UnicodeError) as exc:
+        log.error(
+            "event=stop_enforcement_unavailable trace_id=%s "
+            "reason_code=TRAILING_STOP_STATE_WRITE_FAILED error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return _result(
+            status="UNAVAILABLE",
+            reason_code="TRAILING_STOP_STATE_WRITE_FAILED",
+            trace_id=trace_id,
+            checked_symbols=list(set(positions) - set(missing_price_symbols)),
+            missing_price_symbols=missing_price_symbols,
+        )
 
     for sym, pos in positions.items():
         current_price = price_map.get(sym)
         if not current_price:
-            log.info("[%s] No current price — skipping", sym)
+            log.error(
+                "event=stop_position_unchecked trace_id=%s "
+                "reason_code=POSITION_PRICE_MISSING symbol=%s",
+                trace_id,
+                sym,
+            )
             continue
 
         stop_loss = stop_map.get(sym)
@@ -169,25 +319,102 @@ def main():
         checks.append(check_entry)
 
     # Execute all triggered stops as a batch
+    batch_result = {
+        "status": "COMPLETED",
+        "reason_code": None,
+        "trace_id": trace_id,
+        "executed": [],
+        "unavailable": [],
+    }
     if signals:
-        result = execute_batch(signals, price_map)
-        executed = [e["symbol"] for e in result["executed"]]
+        try:
+            batch_result = execute_batch(signals, price_map)
+        except Exception as exc:
+            log.error(
+                "event=stop_enforcement_unavailable trace_id=%s "
+                "reason_code=PAPER_BATCH_EXECUTION_FAILED error_type=%s",
+                trace_id,
+                type(exc).__name__,
+            )
+            return _result(
+                status="UNAVAILABLE",
+                reason_code="PAPER_BATCH_EXECUTION_FAILED",
+                trace_id=trace_id,
+                checked_symbols=list(set(positions) - set(missing_price_symbols)),
+                missing_price_symbols=missing_price_symbols,
+                batch_status="UNAVAILABLE",
+                batch_reason_code="PAPER_BATCH_EXECUTION_FAILED",
+            )
+        try:
+            if not isinstance(batch_result, dict):
+                raise TypeError("paper batch result must be an object")
+            batch_status = batch_result.get("status")
+            if batch_status not in {"COMPLETED", "PARTIAL", "UNAVAILABLE"}:
+                raise ValueError("paper batch result status is invalid")
+            executed_entries = batch_result.get("executed")
+            unavailable_entries = batch_result.get("unavailable")
+            if not isinstance(executed_entries, list) or not isinstance(
+                unavailable_entries, list
+            ):
+                raise TypeError("paper batch result lists are invalid")
+            executed = []
+            for entry in executed_entries:
+                if not isinstance(entry, dict):
+                    raise TypeError("paper batch executed entry must be an object")
+                symbol = entry.get("symbol")
+                result = entry.get("result")
+                if not isinstance(symbol, str) or not symbol:
+                    raise TypeError("paper batch executed symbol is invalid")
+                if not isinstance(result, dict):
+                    raise TypeError("paper batch executed result is invalid")
+                executed.append(symbol)
+        except (TypeError, ValueError) as exc:
+            log.error(
+                "event=stop_enforcement_unavailable trace_id=%s "
+                "reason_code=PAPER_BATCH_RESULT_INVALID error_type=%s",
+                trace_id,
+                type(exc).__name__,
+            )
+            return _result(
+                status="UNAVAILABLE",
+                reason_code="PAPER_BATCH_RESULT_INVALID",
+                trace_id=trace_id,
+                checked_symbols=list(set(positions) - set(missing_price_symbols)),
+                missing_price_symbols=missing_price_symbols,
+                batch_status="UNAVAILABLE",
+                batch_reason_code="PAPER_BATCH_RESULT_INVALID",
+            )
 
         # Update check entries with results
         for c in checks:
             if c["action"] == "SELL":
-                c["result"] = "filled" if c["symbol"] in executed else "skipped"
+                c["result"] = (
+                    "filled" if c["symbol"] in executed else "unavailable"
+                )
     else:
         executed = []
 
-    # Persist check log
-    for c in checks:
-        with open(STOP_CHECKS_FILE, "a") as f:
-            f.write(json.dumps(c, default=str) + "\n")
+    check_log_status = "COMPLETED"
+    check_log_reason_code = None
+    try:
+        for c in checks:
+            with open(STOP_CHECKS_FILE, "a") as f:
+                f.write(json.dumps(c, default=str) + "\n")
+    except (OSError, UnicodeError) as exc:
+        check_log_status = "UNAVAILABLE"
+        check_log_reason_code = "STOP_CHECK_LOG_WRITE_FAILED"
+        log.error(
+            "event=stop_check_log_unavailable trace_id=%s "
+            "reason_code=%s error_type=%s executed_count=%d",
+            trace_id,
+            check_log_reason_code,
+            type(exc).__name__,
+            len(executed),
+        )
 
     if executed:
         log.info("Executed %d stop/target sell(s): %s", len(executed), executed)
-        for e in result["executed"]:
+        for e in batch_result["executed"]:
             sym = e["symbol"]
             r = e["result"]
             try:
@@ -196,11 +423,57 @@ def main():
                     f"🛑 *Stop/Target Hit*\n{sym} — SELL {r.get('shares', 0):.4f} @ ${r.get('fill_price', 0):,.2f}\n"
                     f"PnL: ${pnl:,.2f} | Cash: ${r.get('portfolio_cash_after', 0):,.0f}"
                 )
-            except Exception:
-                pass
-    else:
+            except Exception as exc:
+                log.warning(
+                    "event=stop_alert_delivery_failed trace_id=%s "
+                    "symbol=%s error_type=%s",
+                    trace_id,
+                    sym,
+                    type(exc).__name__,
+                )
+    elif not signals and not missing_price_symbols:
         log.info("No stop-loss or take-profit triggers fired")
+
+    checked_symbols = sorted(set(positions) - set(missing_price_symbols))
+    status = "COMPLETED"
+    reason_code = None
+    if batch_result["status"] != "COMPLETED":
+        status = batch_result["status"]
+        reason_code = batch_result.get("reason_code") or "PAPER_BATCH_INCOMPLETE"
+    if missing_price_symbols:
+        if status == "COMPLETED":
+            status = "PARTIAL" if checked_symbols else "UNAVAILABLE"
+            reason_code = "POSITION_PRICE_MISSING"
+        elif status == "PARTIAL":
+            reason_code = "STOP_ENFORCEMENT_MULTIPLE_FAILURES"
+    if check_log_status != "COMPLETED" and status == "COMPLETED":
+        status = "PARTIAL"
+        reason_code = check_log_reason_code
+
+    if status != "COMPLETED":
+        log.error(
+            "event=stop_enforcement_incomplete trace_id=%s status=%s "
+            "reason_code=%s missing_symbols=%s",
+            trace_id,
+            status,
+            reason_code,
+            ",".join(sorted(set(missing_price_symbols))[:16]),
+        )
+    return _result(
+        status=status,
+        reason_code=reason_code,
+        trace_id=trace_id,
+        checked_symbols=checked_symbols,
+        missing_price_symbols=missing_price_symbols,
+        executed_symbols=executed,
+        batch_status=batch_result["status"],
+        batch_reason_code=batch_result.get("reason_code"),
+        check_log_status=check_log_status,
+        check_log_reason_code=check_log_reason_code,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    result = main()
+    if result["status"] not in {"COMPLETED", "SKIPPED"}:
+        raise SystemExit(1)

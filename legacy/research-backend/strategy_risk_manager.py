@@ -32,13 +32,27 @@ LOOKBACK_DAYS = 7
 COOLDOWN_HOURS = 24
 
 
+class StrategyRiskStateUnavailable(RuntimeError):
+    """Raised when persisted kill-switch state cannot be trusted."""
+
+
 def _load() -> dict:
-    if RISK_STATE_FILE.exists():
-        try:
-            return json.loads(RISK_STATE_FILE.read_text())
-        except Exception:
-            pass
-    return {"strategies": {}, "pnl_log": []}
+    if not RISK_STATE_FILE.exists():
+        return {"strategies": {}, "pnl_log": []}
+
+    try:
+        state = json.loads(RISK_STATE_FILE.read_text())
+        if not isinstance(state, dict):
+            raise TypeError("strategy risk state must be an object")
+        if not isinstance(state.get("strategies", {}), dict):
+            raise TypeError("strategies must be an object")
+        if not isinstance(state.get("pnl_log", []), list):
+            raise TypeError("pnl_log must be a list")
+        return state
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        raise StrategyRiskStateUnavailable(
+            "strategy risk state unavailable"
+        ) from exc
 
 
 def _save(state: dict) -> None:
@@ -83,7 +97,16 @@ def is_strategy_allowed(strategy: str) -> tuple[bool, Optional[str]]:
     Check whether a strategy may contribute signals this cycle.
     Returns (allowed: bool, reason: str | None).
     """
-    state = _load()
+    try:
+        state = _load()
+    except StrategyRiskStateUnavailable as exc:
+        log.error(
+            "event=strategy_risk_state_unavailable strategy=%s error_type=%s",
+            strategy,
+            type(exc.__cause__).__name__ if exc.__cause__ else type(exc).__name__,
+        )
+        return False, "strategy risk state unavailable"
+
     strat_info = state.get("strategies", {}).get(strategy, {})
 
     # Check active suspension

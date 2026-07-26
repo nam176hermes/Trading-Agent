@@ -8,15 +8,22 @@ Usage: python3 safety_engine.py
 """
 import json
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
-from paper_trader import load_portfolio, save_portfolio, execute_signal
+from paper_trader import (
+    PaperPortfolioError,
+    PortfolioStateError,
+    PriceSnapshot,
+    _load_report_prices,
+    execute_signal,
+    load_portfolio,
+)
 from runtime_paths import data_root, reports_dir as runtime_reports_dir
 
 log = logging.getLogger("safety_engine")
@@ -29,30 +36,9 @@ MEMORY_DIR = data_root() / "memory"
 CHECKS_FILE = MEMORY_DIR / "stop_checks.jsonl"
 
 
-def get_current_prices() -> dict[str, float]:
-    """Load latest prices from the most recent report."""
-    reports_dir = runtime_reports_dir()
-    if not reports_dir.exists():
-        return {}
-
-    files = sorted(
-        [f for f in os.listdir(reports_dir)
-         if f.startswith("report_") and f.endswith(".json")],
-        reverse=True,
-    )
-    if not files:
-        return {}
-
-    with open(reports_dir / files[0]) as f:
-        report = json.load(f)
-
-    prices = {}
-    for asset in report.get("assets", []):
-        symbol = asset.get("symbol", "").upper()
-        price = asset.get("current_price") or asset.get("price")
-        if symbol and price:
-            prices[symbol] = float(price)
-    return prices
+def get_current_prices() -> PriceSnapshot:
+    """Load prices through the paper trader's typed report boundary."""
+    return _load_report_prices()
 
 
 def check_position(symbol: str, pos: dict, current_price: float) -> dict | None:
@@ -90,77 +76,123 @@ def check_position(symbol: str, pos: dict, current_price: float) -> dict | None:
 
 
 
-def check_circuit_breaker(panic_threshold_pct: float = -15.0, single_asset_threshold_pct: float = -30.0) -> dict:
-    """
-    Check if market conditions warrant a circuit breaker halt.
-
-    Triggers when:
-    - Average 24h change across tracked assets drops below panic_threshold_pct (default -15%)
-    - Any single asset drops below single_asset_threshold_pct (default -30%)
-
-    Returns {"triggered": bool, "detail": str}
-    """
+def check_circuit_breaker(
+    panic_threshold_pct: float = -15.0,
+    single_asset_threshold_pct: float = -30.0,
+) -> dict:
+    """Evaluate market movement with explicit data-availability status."""
+    trace_id = uuid4().hex[:16]
     reports_dir = runtime_reports_dir()
-    if not reports_dir.exists():
-        return {"triggered": False, "detail": "No reports directory — skipping circuit breaker check"}
-
-    files = sorted(
-        [f for f in os.listdir(reports_dir)
-         if f.startswith("report_") and f.endswith(".json")],
-        reverse=True,
-    )
-    if not files:
-        return {"triggered": False, "detail": "No report files found"}
-
-    with open(reports_dir / files[0]) as f:
-        report = json.load(f)
-
-    assets = report.get("assets", [])
-    if not assets:
-        return {"triggered": False, "detail": "Report contains no asset data"}
+    try:
+        files = sorted(
+            [
+                path
+                for path in reports_dir.iterdir()
+                if path.name.startswith("report_") and path.suffix == ".json"
+            ],
+            reverse=True,
+        )
+        if not files:
+            return {
+                "status": "UNAVAILABLE",
+                "reason_code": "PRICE_REPORT_MISSING",
+                "trace_id": trace_id,
+                "triggered": False,
+                "detail": "No report files found",
+            }
+        report = json.loads(files[0].read_text())
+        assets = report.get("assets", [])
+        if not isinstance(assets, list) or not assets:
+            return {
+                "status": "UNAVAILABLE",
+                "reason_code": "PRICE_REPORT_HAS_NO_ASSETS",
+                "trace_id": trace_id,
+                "triggered": False,
+                "detail": "Report contains no asset data",
+            }
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        log.error(
+            "event=circuit_breaker_unavailable trace_id=%s "
+            "reason_code=PRICE_REPORT_INVALID error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return {
+            "status": "UNAVAILABLE",
+            "reason_code": "PRICE_REPORT_INVALID",
+            "trace_id": trace_id,
+            "triggered": False,
+            "detail": "Price report unavailable",
+        }
 
     changes = []
     extreme_asset = None
     extreme_change = 0.0
-
-    for asset in assets:
-        symbol = asset.get("symbol", "???")
-        change_pct = asset.get("price_change_24h_pct")
-        if change_pct is not None:
-            change_pct = float(change_pct)
-            changes.append(change_pct)
-            if change_pct < extreme_change:
-                extreme_change = change_pct
-                extreme_asset = symbol
+    try:
+        for asset in assets:
+            symbol = asset.get("symbol", "???")
+            change_pct = asset.get("price_change_24h_pct")
+            if change_pct is not None:
+                change_pct = float(change_pct)
+                changes.append(change_pct)
+                if change_pct < extreme_change:
+                    extreme_change = change_pct
+                    extreme_asset = symbol
+    except (AttributeError, TypeError, ValueError) as exc:
+        log.error(
+            "event=circuit_breaker_unavailable trace_id=%s "
+            "reason_code=PRICE_CHANGE_DATA_INVALID error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return {
+            "status": "UNAVAILABLE",
+            "reason_code": "PRICE_CHANGE_DATA_INVALID",
+            "trace_id": trace_id,
+            "triggered": False,
+            "detail": "Price-change data invalid",
+        }
 
     if not changes:
-        return {"triggered": False, "detail": "No 24h change data in report"}
+        return {
+            "status": "UNAVAILABLE",
+            "reason_code": "PRICE_CHANGE_DATA_MISSING",
+            "trace_id": trace_id,
+            "triggered": False,
+            "detail": "No 24h change data in report",
+        }
 
     avg_change = sum(changes) / len(changes)
-
-    # Check single-asset extreme move first (more specific alarm)
     if extreme_change <= single_asset_threshold_pct:
         return {
+            "status": "COMPLETED",
+            "reason_code": None,
+            "trace_id": trace_id,
             "triggered": True,
             "detail": (
-                f"Single-asset circuit breaker: {extreme_asset} {extreme_change:+.1f}% 24h "
-                f"(threshold {single_asset_threshold_pct:+.0f}%). "
-                f"Portfolio average: {avg_change:+.1f}% across {len(changes)} assets."
+                f"Single-asset circuit breaker: {extreme_asset} "
+                f"{extreme_change:+.1f}% 24h (threshold "
+                f"{single_asset_threshold_pct:+.0f}%). Portfolio average: "
+                f"{avg_change:+.1f}% across {len(changes)} assets."
             ),
         }
-
-    # Check portfolio-wide panic
     if avg_change <= panic_threshold_pct:
         return {
+            "status": "COMPLETED",
+            "reason_code": None,
+            "trace_id": trace_id,
             "triggered": True,
             "detail": (
-                f"Panic circuit breaker: average {avg_change:+.1f}% 24h across {len(changes)} assets "
-                f"(threshold {panic_threshold_pct:+.0f}%). "
-                f"Worst: {extreme_asset} {extreme_change:+.1f}%."
+                f"Panic circuit breaker: average {avg_change:+.1f}% 24h "
+                f"across {len(changes)} assets (threshold "
+                f"{panic_threshold_pct:+.0f}%). Worst: {extreme_asset} "
+                f"{extreme_change:+.1f}%."
             ),
         }
-
     return {
+        "status": "COMPLETED",
+        "reason_code": None,
+        "trace_id": trace_id,
         "triggered": False,
         "detail": (
             f"Circuit OK: avg {avg_change:+.1f}% across {len(changes)} assets. "
@@ -169,129 +201,374 @@ def check_circuit_breaker(panic_threshold_pct: float = -15.0, single_asset_thres
     }
 
 
-def _load_previous_checks() -> dict[str, float]:
-    """Load last known price for each symbol from previous safety checks."""
-    prev = {}
+class PreviousChecksSnapshot(dict):
+    """Mapping-compatible history state for extreme-move checks."""
+
+    def __init__(
+        self,
+        values: dict[str, float],
+        *,
+        status: str,
+        reason_code: str | None,
+        trace_id: str,
+    ) -> None:
+        super().__init__(values)
+        self.status = status
+        self.reason_code = reason_code
+        self.trace_id = trace_id
+
+
+def _load_previous_checks() -> PreviousChecksSnapshot:
+    """Load prior prices and expose incomplete or invalid history."""
+    trace_id = uuid4().hex[:16]
     if not CHECKS_FILE.exists():
-        return prev
+        return PreviousChecksSnapshot(
+            {},
+            status="PARTIAL",
+            reason_code="PREVIOUS_CHECK_HISTORY_MISSING",
+            trace_id=trace_id,
+        )
+
+    previous: dict[str, float] = {}
+    invalid_lines = 0
     try:
-        with open(CHECKS_FILE) as f:
-            lines = f.readlines()
-        # Read last 20 checks to find most recent price per symbol
+        lines = CHECKS_FILE.read_text().splitlines()
         for line in reversed(lines[-100:]):
             try:
                 entry = json.loads(line)
-                sym = entry.get("symbol", "")
-                if sym and sym not in prev:
-                    prev[sym] = entry.get("current_price", 0)
-            except (json.JSONDecodeError, KeyError):
-                continue
-    except Exception:
-        pass
-    return prev
+                symbol = str(entry.get("symbol", "")).upper()
+                current_price = float(entry["current_price"])
+                if symbol and symbol not in previous and current_price > 0:
+                    previous[symbol] = current_price
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                invalid_lines += 1
+    except (OSError, UnicodeError) as exc:
+        log.error(
+            "event=previous_checks_unavailable trace_id=%s "
+            "reason_code=PREVIOUS_CHECK_HISTORY_UNAVAILABLE error_type=%s",
+            trace_id,
+            type(exc).__name__,
+        )
+        return PreviousChecksSnapshot(
+            {},
+            status="UNAVAILABLE",
+            reason_code="PREVIOUS_CHECK_HISTORY_UNAVAILABLE",
+            trace_id=trace_id,
+        )
+
+    if invalid_lines:
+        log.warning(
+            "event=previous_checks_partial trace_id=%s "
+            "reason_code=PREVIOUS_CHECK_HISTORY_INVALID invalid_lines=%d",
+            trace_id,
+            invalid_lines,
+        )
+        return PreviousChecksSnapshot(
+            previous,
+            status="PARTIAL",
+            reason_code="PREVIOUS_CHECK_HISTORY_INVALID",
+            trace_id=trace_id,
+        )
+    return PreviousChecksSnapshot(
+        previous,
+        status="AVAILABLE",
+        reason_code=None,
+        trace_id=trace_id,
+    )
 
 
-def run_safety_check():
-    """Main safety check — runs through all positions."""
-    pf = load_portfolio()
-    prices = get_current_prices()
+def _safety_result(
+    *,
+    status: str,
+    reason_code: str | None,
+    trace_id: str,
+    checked_symbols: list[str] | None = None,
+    missing_price_symbols: list[str] | None = None,
+    triggered_symbols: list[str] | None = None,
+    executed_symbols: list[str] | None = None,
+    execution_failures: list[dict] | None = None,
+    previous_checks_status: str = "NOT_RUN",
+    previous_checks_reason_code: str | None = None,
+) -> dict:
+    """Build the stable public result schema for every safety-check exit."""
+    triggered = sorted(triggered_symbols or [])
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "trace_id": trace_id,
+        "checked_symbols": sorted(checked_symbols or []),
+        "missing_price_symbols": sorted(missing_price_symbols or []),
+        "triggered_symbols": triggered,
+        "executed_symbols": sorted(executed_symbols or []),
+        "execution_failures": execution_failures or [],
+        "previous_checks_status": previous_checks_status,
+        "previous_checks_reason_code": previous_checks_reason_code,
+        "safe": status == "COMPLETED" and not triggered,
+    }
 
-    if not prices:
-        log.warning("No prices available — skipping safety check")
-        return
 
-    positions = pf.get("positions", {})
+def run_safety_check() -> dict:
+    """Check every paper position and return explicit coverage status."""
+    trace_id = uuid4().hex[:16]
+    try:
+        portfolio = load_portfolio()
+    except PortfolioStateError as exc:
+        return _safety_result(
+            status="UNAVAILABLE",
+            reason_code=exc.reason_code,
+            trace_id=exc.trace_id,
+        )
+
+    positions = portfolio.get("positions", {})
     if not positions:
-        return  # No positions to check
+        return _safety_result(
+            status="COMPLETED",
+            reason_code=None,
+            trace_id=trace_id,
+        )
 
-    triggered = []
-    for symbol, pos in list(positions.items()):
+    prices = get_current_prices()
+    if prices.status != "AVAILABLE":
+        log.error(
+            "event=safety_check_unavailable trace_id=%s reason_code=%s",
+            prices.trace_id,
+            prices.reason_code,
+        )
+        return _safety_result(
+            status="UNAVAILABLE",
+            reason_code=prices.reason_code,
+            trace_id=prices.trace_id,
+            missing_price_symbols=list(positions),
+        )
+
+    previous_checks = _load_previous_checks()
+    checked_symbols: list[str] = []
+    missing_price_symbols: list[str] = []
+    triggered: list[tuple[str, dict]] = []
+    check_entries: list[dict] = []
+
+    for symbol, position in list(positions.items()):
         current_price = prices.get(symbol)
         if not current_price:
+            missing_price_symbols.append(symbol)
+            log.error(
+                "event=safety_position_unchecked trace_id=%s "
+                "reason_code=POSITION_PRICE_MISSING symbol=%s",
+                trace_id,
+                symbol,
+            )
             continue
 
-        # Log the check
+        checked_symbols.append(symbol)
         check_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "symbol": symbol,
             "current_price": current_price,
-            "stop_loss": pos.get("stop_loss"),
-            "target": pos.get("take_profit"),
-            "shares": pos.get("shares", 0),
-            "avg_cost": pos.get("avg_cost", 0),
+            "stop_loss": position.get("stop_loss"),
+            "target": position.get("take_profit"),
+            "shares": position.get("shares", 0),
+            "avg_cost": position.get("avg_cost", 0),
         }
-
-        signal = check_position(symbol, pos, current_price)
+        signal = check_position(symbol, position, current_price)
         if signal:
             check_entry["action"] = "SELL"
             check_entry["reason"] = signal["reasoning"]
             triggered.append((symbol, signal))
-            log.warning("[SAFETY] %s %s — executing SELL", symbol, signal["reasoning"])
+            log.warning(
+                "[SAFETY] %s %s; executing paper SELL",
+                symbol,
+                signal["reasoning"],
+            )
         else:
             check_entry["action"] = "HOLD"
             check_entry["reason"] = None
+        check_entries.append(check_entry)
 
-        # Persist check
+    try:
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-        with open(CHECKS_FILE, "a") as f:
-            f.write(json.dumps(check_entry, default=str) + "\n")
+        for check_entry in check_entries:
+            with CHECKS_FILE.open("a") as handle:
+                handle.write(json.dumps(check_entry, default=str) + "\n")
+    except (OSError, UnicodeError, TypeError) as exc:
+        log.error(
+            "event=safety_check_unavailable trace_id=%s "
+            "reason_code=SAFETY_CHECK_LOG_WRITE_FAILED error_type=%s "
+            "checked_count=%d missing_count=%d triggered_count=%d "
+            "previous_checks_status=%s",
+            trace_id,
+            type(exc).__name__,
+            len(checked_symbols),
+            len(missing_price_symbols),
+            len(triggered),
+            previous_checks.status,
+        )
+        return _safety_result(
+            status="UNAVAILABLE",
+            reason_code="SAFETY_CHECK_LOG_WRITE_FAILED",
+            trace_id=trace_id,
+            checked_symbols=checked_symbols,
+            missing_price_symbols=missing_price_symbols,
+            triggered_symbols=[symbol for symbol, _signal in triggered],
+            previous_checks_status=previous_checks.status,
+            previous_checks_reason_code=previous_checks.reason_code,
+        )
 
-    # Execute triggered stops
+    executed_symbols: list[str] = []
+    execution_failures: list[dict] = []
+    prices_for_execution = {
+        symbol: prices[symbol]
+        for symbol, _signal in triggered
+        if symbol in prices
+    }
+    for symbol, signal in triggered:
+        try:
+            execution = execute_signal(signal, prices_for_execution)
+        except (PaperPortfolioError, OSError, ValueError, TypeError, KeyError) as exc:
+            execution_failures.append(
+                {
+                    "symbol": symbol,
+                    "reason_code": getattr(
+                        exc,
+                        "reason_code",
+                        "PAPER_STOP_EXECUTION_FAILED",
+                    ),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            continue
+        if execution.get("status") == "filled":
+            executed_symbols.append(symbol)
+            audit_status = execution.get("audit_status")
+            if audit_status != "COMPLETED":
+                audit_reason = (
+                    execution.get("audit_reason_code")
+                    if audit_status == "PARTIAL"
+                    else "PAPER_STOP_AUDIT_STATUS_INVALID"
+                )
+                execution_failures.append(
+                    {
+                        "symbol": symbol,
+                        "reason_code": audit_reason
+                        or "PAPER_STOP_AUDIT_INCOMPLETE",
+                        "status": "filled",
+                        "audit_status": audit_status,
+                        "trace_id": execution.get("trace_id") or trace_id,
+                    }
+                )
+        else:
+            execution_failures.append(
+                {
+                    "symbol": symbol,
+                    "reason_code": execution.get(
+                        "reason_code",
+                        "PAPER_STOP_EXECUTION_NOT_FILLED",
+                    ),
+                    "status": execution.get("status"),
+                }
+            )
+
     if triggered:
-        prices_for_exec = {sym: prices.get(sym, 0) for sym, _ in triggered}
-        for symbol, signal in triggered:
-            try:
-                result = execute_signal(signal, prices_for_exec)
-                log.info("[SAFETY] %s SELL result: %s", symbol, result.get("status", "?"))
-            except Exception as e:
-                log.error("[SAFETY] Failed to execute SELL for %s: %s", symbol, e)
-
-        # Telegram alert for stops
         try:
             from alert_manager import send_telegram_text
-            lines = ["🛑 *Safety Engine — Stop Triggered*\n"]
-            for symbol, signal in triggered:
-                lines.append(f"🔴 *{symbol}* → SELL")
-                lines.append(f"  {signal['reasoning']}")
-            send_telegram_text("\n".join(lines))
-        except Exception:
-            pass
 
-    # ── Circuit breaker: extreme price moves ──
-    # Check if any position moved >10% since last check (flash crash protection)
+            lines = ["Safety Engine: stop triggered"]
+            for symbol, signal in triggered:
+                lines.append(f"{symbol}: SELL, {signal['reasoning']}")
+            send_telegram_text("\n".join(lines))
+        except Exception as exc:
+            log.warning(
+                "event=safety_alert_delivery_failed trace_id=%s error_type=%s",
+                trace_id,
+                type(exc).__name__,
+            )
+
     extreme_moves = []
-    prev_checks = _load_previous_checks()
-    for symbol, pos in positions.items():
-        current_price = prices.get(symbol)
-        if not current_price:
-            continue
-        prev_price = prev_checks.get(symbol)
-        if prev_price and prev_price > 0:
-            pct_change = (current_price - prev_price) / prev_price
-            if abs(pct_change) > 0.10:  # >10% move
+    for symbol in checked_symbols:
+        current_price = prices[symbol]
+        previous_price = previous_checks.get(symbol)
+        if previous_price and previous_price > 0:
+            pct_change = (current_price - previous_price) / previous_price
+            if abs(pct_change) > 0.10:
                 direction = "UP" if pct_change > 0 else "DOWN"
-                extreme_moves.append((symbol, current_price, prev_price, pct_change, direction))
-                log.warning("[SAFETY] EXTREME MOVE: %s %s %.1f%% (%.4f→%.4f)",
-                           symbol, direction, pct_change * 100, prev_price, current_price)
+                extreme_moves.append(
+                    (symbol, current_price, previous_price, pct_change, direction)
+                )
+                log.warning(
+                    "[SAFETY] EXTREME MOVE: %s %s %.1f%% (%.4f to %.4f)",
+                    symbol,
+                    direction,
+                    pct_change * 100,
+                    previous_price,
+                    current_price,
+                )
 
     if extreme_moves:
         try:
             from alert_manager import send_telegram_text
-            lines = ["⚠️ *Extreme Price Move Detected*\n"]
-            for sym, cur, prev, pct, direction in extreme_moves:
-                lines.append(f"🔴 *{sym}*: {direction} {pct*100:.1f}%")
-                lines.append(f"  {prev:.4f} → {cur:.4f}")
-                lines.append(f"  Stop: ${positions[sym].get('stop_loss', 'N/A')}")
-            send_telegram_text("\n".join(lines))
-        except Exception:
-            pass
 
-    triggered_count = len(triggered)
-    if triggered_count:
-        log.warning("[SAFETY] %d stops triggered", triggered_count)
+            lines = ["Extreme price move detected"]
+            for symbol, current, previous, pct, direction in extreme_moves:
+                lines.append(
+                    f"{symbol}: {direction} {pct * 100:.1f}%, "
+                    f"{previous:.4f} to {current:.4f}"
+                )
+            send_telegram_text("\n".join(lines))
+        except Exception as exc:
+            log.warning(
+                "event=safety_alert_delivery_failed trace_id=%s error_type=%s",
+                trace_id,
+                type(exc).__name__,
+            )
+
+    reason_code = None
+    status = "COMPLETED"
+    if execution_failures:
+        status = "PARTIAL" if executed_symbols else "UNAVAILABLE"
+        audit_only_failures = all(
+            failure.get("status") == "filled"
+            and "audit_status" in failure
+            for failure in execution_failures
+        )
+        reason_code = (
+            "PAPER_STOP_AUDIT_INCOMPLETE"
+            if audit_only_failures
+            else "PAPER_STOP_EXECUTION_INCOMPLETE"
+        )
+    elif missing_price_symbols:
+        status = "PARTIAL" if checked_symbols else "UNAVAILABLE"
+        reason_code = "POSITION_PRICE_MISSING"
+    elif previous_checks.status != "AVAILABLE":
+        status = "PARTIAL"
+        reason_code = previous_checks.reason_code
+
+    if status == "COMPLETED":
+        log.info("[SAFETY] Checked all %d positions", len(positions))
     else:
-        log.info("[SAFETY] All %d positions OK", len(positions))
+        log.error(
+            "event=safety_check_incomplete trace_id=%s status=%s "
+            "reason_code=%s missing_symbols=%s execution_failures=%d",
+            trace_id,
+            status,
+            reason_code,
+            ",".join(sorted(missing_price_symbols)[:16]),
+            len(execution_failures),
+        )
+
+    return _safety_result(
+        status=status,
+        reason_code=reason_code,
+        trace_id=trace_id,
+        checked_symbols=checked_symbols,
+        missing_price_symbols=missing_price_symbols,
+        triggered_symbols=[symbol for symbol, _signal in triggered],
+        executed_symbols=executed_symbols,
+        execution_failures=execution_failures,
+        previous_checks_status=previous_checks.status,
+        previous_checks_reason_code=previous_checks.reason_code,
+    )
 
 
 if __name__ == "__main__":
-    run_safety_check()
+    result = run_safety_check()
+    if result["status"] != "COMPLETED":
+        raise SystemExit(1)

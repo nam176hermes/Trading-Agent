@@ -16,7 +16,10 @@ Phase 2: Adds RiskDebate class for 3-way iterative debate between personas.
 import json
 import logging
 from dataclasses import dataclass
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable, Literal
+from uuid import uuid4
+
+from pydantic import ValidationError
 
 log = logging.getLogger("risk_personas")
 
@@ -59,27 +62,25 @@ def apply_stock_risk_rules(symbol: str, position_size_pct: float) -> tuple[float
         earnings = fund.get("earnings", {})
         next_date = earnings.get("nextDate") or earnings.get("next_date")
         if next_date:
-            try:
-                from datetime import datetime, timezone
-                # Parse date — handle various formats
-                for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ"):
-                    try:
-                        earnings_dt = datetime.strptime(str(next_date)[:19], fmt).replace(tzinfo=timezone.utc)
-                        break
-                    except ValueError:
-                        continue
-                else:
-                    earnings_dt = None
+            from datetime import datetime, timezone
+            # Parse date - handle various formats. Unexpected input errors propagate
+            # to the typed RiskDebate boundary instead of silently dropping the rule.
+            for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%fZ"):
+                try:
+                    earnings_dt = datetime.strptime(str(next_date)[:19], fmt).replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+            else:
+                earnings_dt = None
 
-                if earnings_dt:
-                    days_until = (earnings_dt - datetime.now(timezone.utc)).days
-                    if 0 <= days_until <= 7:
-                        warnings.append(f"Earnings in {days_until}d — position size reduced 50%")
-                        adjusted *= 0.5
-                    elif days_until < 0:
-                        warnings.append("Earnings date passed — exercise caution")
-            except Exception:
-                pass
+            if earnings_dt:
+                days_until = (earnings_dt - datetime.now(timezone.utc)).days
+                if 0 <= days_until <= 7:
+                    warnings.append(f"Earnings in {days_until}d - position size reduced 50%")
+                    adjusted *= 0.5
+                elif days_until < 0:
+                    warnings.append("Earnings date passed - exercise caution")
 
     # Sector concentration: max 40% in any single sector
     if fund:
@@ -376,7 +377,7 @@ class RiskDebate:
 
     async def _persona_turn(
         self,
-        persona: str,
+        persona: Literal["aggressive", "conservative", "neutral"],
         signal: "TradingSignal",
         bull_synth: str,
         bear_synth: str,
@@ -433,8 +434,30 @@ Respond with a JSON object matching the RiskAssessment schema.
 
         full_prompt = base_prompt + self.build_schema_prompt(self.RiskAssessment)
 
-        # Call LLM
-        raw_output = await self.llm_client(full_prompt, system_prompt)
+        trace_id = uuid4().hex[:16]
+        try:
+            raw_output = await self.llm_client(full_prompt, system_prompt)
+        except Exception as exc:  # External provider boundary.
+            log.error(
+                "event=risk_persona_unavailable trace_id=%s persona=%s "
+                "asset=%s reason_code=RISK_PROVIDER_FAILED error_type=%s",
+                trace_id,
+                persona,
+                signal.asset,
+                type(exc).__name__,
+            )
+            return self.RiskAssessment(
+                persona=persona,
+                accept_signal=False,
+                position_size_pct=0.0,
+                rationale=(
+                    f"Risk assessment unavailable for {signal.asset}; "
+                    "the signal is rejected by policy."
+                ),
+                status="UNAVAILABLE",
+                reason_code="RISK_PROVIDER_FAILED",
+                trace_id=trace_id,
+            )
 
         # Parse structured output
         try:
@@ -447,15 +470,26 @@ Respond with a JSON object matching the RiskAssessment schema.
             # Ensure persona field is set correctly
             assessment.persona = persona
             return assessment
-        except Exception as e:
-            log.warning("Failed to parse %s risk assessment: %s", persona, e)
-            # Fallback
-            default_position = 5.0 if persona == "aggressive" else 1.0
+        except (ValidationError, ValueError, TypeError) as exc:
+            log.error(
+                "event=risk_persona_unavailable trace_id=%s persona=%s "
+                "asset=%s reason_code=RISK_ASSESSMENT_PARSE_FAILED error_type=%s",
+                trace_id,
+                persona,
+                signal.asset,
+                type(exc).__name__,
+            )
             return self.RiskAssessment(
                 persona=persona,
-                accept_signal=signal.action in ("BUY", "BUY"),
-                position_size_pct=default_position,
-                rationale=f"{persona.capitalize()} risk assessment for {signal.asset}.",
+                accept_signal=False,
+                position_size_pct=0.0,
+                rationale=(
+                    f"Risk assessment unavailable for {signal.asset}; "
+                    "the signal is rejected by policy."
+                ),
+                status="UNAVAILABLE",
+                reason_code="RISK_ASSESSMENT_PARSE_FAILED",
+                trace_id=trace_id,
             )
 
     def _format_market_context(self, market_data: dict) -> str:
