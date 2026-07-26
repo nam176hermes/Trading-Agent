@@ -31,18 +31,13 @@ def run(*, env: Mapping[str, str] | None = None) -> None:
             environment,
             expected_user="trading_job_api",
         )
-    repository = JobRepository(store_settings)
-    try:
+    with JobRepository(store_settings) as repository:
         uvicorn.run(
             create_app(settings, repository, authority),
             host=settings.host,
             port=settings.port,
             access_log=False,
         )
-    finally:
-        close = getattr(repository, "close", None)
-        if callable(close):
-            close()
 
 
 if __name__ == "__main__":

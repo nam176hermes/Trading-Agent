@@ -34,6 +34,12 @@ def settings(token: str = "safe-token", **overrides) -> JobApiSettings:
 
 
 class Repository:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return None
+
     def list_jobs(self, filters):
         return ()
 
@@ -219,6 +225,55 @@ def test_settings_reject_every_non_explicit_loopback_bind() -> None:
     for host in ("0.0.0.0", "::", "::1", "localhost", "192.168.1.20"):
         with pytest.raises(ValueError, match="127.0.0.1"):
             settings(host=host)
+
+
+def test_entrypoint_waits_for_repository_pool_before_binding_listener(monkeypatch) -> None:
+    from apps.job_api import main
+
+    configured = settings()
+    events: list[str] = []
+
+    class ReadyRepository:
+        def __enter__(self):
+            events.append("repository-ready")
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("repository-closed")
+
+        def close(self):
+            events.append("repository-close-without-readiness")
+
+    monkeypatch.setattr(
+        main, "validate_job_plane_authority", configured.authority_factory
+    )
+    monkeypatch.setattr(main.JobApiSettings, "from_env", lambda env=None: configured)
+    monkeypatch.setattr(
+        main.JobStoreSettings,
+        "from_env",
+        lambda env=None, *, expected_user: object(),
+    )
+    monkeypatch.setattr(main, "JobRepository", lambda settings: ReadyRepository())
+    monkeypatch.setattr(
+        main,
+        "create_app",
+        lambda configured, repository, authority: events.append("app-created")
+        or "job-app",
+    )
+    monkeypatch.setattr(
+        main.uvicorn,
+        "run",
+        lambda app, **kwargs: events.append("listener-started"),
+    )
+
+    main.run(env={})
+
+    assert events == [
+        "repository-ready",
+        "app-created",
+        "listener-started",
+        "repository-closed",
+    ]
 
 
 def test_entrypoint_defaults_to_fixed_loopback_address(monkeypatch) -> None:
