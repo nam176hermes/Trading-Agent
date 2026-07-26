@@ -3,7 +3,7 @@
 	check-d0-closure check-test-skips check-critical-coverage \
 	check-secrets test test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
-	test-event-ledger-runtime-postgres \
+	test-event-ledger-runtime-postgres test-package6-paper-runtime \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard test-all ci
@@ -103,6 +103,10 @@ test-runtime-postgres:
 		tests/control_api/test_postgres_repositories.py \
 		tests/control_api/test_alembic_schema.py \
 		tests/control_api/test_foundation_postgres_runtime_parity.py
+
+test-package6-paper-runtime:
+	uv run python scripts/run_required_runtime_pytest.py \
+		tests/foundation/test_package6_runtime_integration.py
 
 test-event-ledger-runtime-postgres:
 	uv run python scripts/run_required_runtime_pytest.py \

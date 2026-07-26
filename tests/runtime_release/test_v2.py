@@ -28,6 +28,7 @@ from packages.runtime_release.v2 import (
     canonical_json_bytes,
     construct_pinned_uv_tool,
     construct_python_runtime,
+    install_paper_application_import_path,
     parse_release_activation_v2,
     parse_static_release_authority_v2,
     python_runtime_core_sha256,
@@ -230,6 +231,7 @@ def make_release_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, ob
         stage / "application/.venv",
         expected_core_sha256=runtime_core,
     )
+    install_paper_application_import_path(stage / "application")
     for relative, repository_source in PAPER_BACKEND_SOURCE_MAPPING:
         _write(
             stage / "backend" / relative,
@@ -757,6 +759,63 @@ def test_static_builder_rejects_site_package_outside_dependency_manifest(
         )
 
 
+@pytest.mark.parametrize("mutation", ["missing", "modified", "extra"])
+def test_standalone_verifier_rejects_resealed_application_import_path(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    stage, authority, verifier, document, _ = make_release_fixture(tmp_path)
+    import_path = (
+        stage
+        / "application/.venv/lib/python3.11/site-packages/trading-agent-paper-application.pth"
+    )
+    for parent in import_path.parents:
+        if parent == stage.parent:
+            break
+        if parent.exists():
+            parent.chmod(0o755)
+    if mutation == "missing":
+        import_path.unlink()
+    elif mutation == "modified":
+        import_path.chmod(0o644)
+        import_path.write_bytes(b"/tmp\n")
+        import_path.chmod(0o444)
+    else:
+        _write(import_path.with_name("escape.pth"), "/tmp\n", 0o444)
+    _seal(stage)
+
+    uid, gid, entries = _walk_sealed_stage(stage)
+    resealed = cast(dict[str, Any], deepcopy(document))
+    resealed["stage"]["entries"] = entries
+    resealed["stage"]["file_set_sha256"] = _sha256_bytes(_fragment(entries))
+    resealed["stage"]["uid"] = uid
+    resealed["stage"]["gid"] = gid
+    resealed["components"]["application"]["artifact_set_sha256"] = _artifact_digest(
+        entries,
+        "application",
+    )
+    resealed["binding_sha256"] = _authority_binding(resealed)
+    raw = canonical_json_bytes(resealed)
+    authority.chmod(0o644)
+    authority.write_bytes(raw)
+    authority.chmod(0o444)
+
+    rejected = subprocess.run(
+        [
+            os.fspath(verifier),
+            os.fspath(stage),
+            os.fspath(authority),
+            "--expected-authority-sha256",
+            hashlib.sha256(raw).hexdigest(),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode == 2
+    assert rejected.stdout == ""
+    assert rejected.stderr == "release authority v2 stage rejected\n"
+
+
 def test_standalone_verifier_rejects_resealed_site_package_implant(tmp_path: Path) -> None:
     stage, authority, verifier, document, _ = make_release_fixture(tmp_path)
     implant = stage / "application/.venv/lib/python3.11/site-packages/fastapi/implant.py"
@@ -905,7 +964,7 @@ def test_capture_source_proof_reconstructs_exact_git_objects(tmp_path: Path) -> 
     )
     _write(repository / "root file.txt", "root\n")
     _write(
-        repository / "legacy/research-backend/job_attribution.py",
+        repository / "packages/runtime_release/paper_backend/job_attribution.py",
         "def bind_job():\n    return None\n",
     )
     _write(repository / "legacy/research-backend/main.py", "print('excluded')\n")
@@ -916,6 +975,18 @@ def test_capture_source_proof_reconstructs_exact_git_objects(tmp_path: Path) -> 
     _write(
         repository / "packages/runtime_release/paper_backend/paper_main.py",
         "def main():\n    return 0\n",
+    )
+    _write(
+        repository / "packages/runtime_release/paper_backend/provider_free_fixture.py",
+        "def load_fixture():\n    return None\n",
+    )
+    _write(
+        repository / "packages/runtime_release/paper_backend/research_semantics.py",
+        "def research():\n    return None\n",
+    )
+    _write(
+        repository / "packages/runtime_release/staging_v2.py",
+        "STAGING_SCOPE = 'PACKAGE6_STAGING_ONLY'\n",
     )
     subprocess.run(["git", "-C", repository, "add", "--all"], check=True)
     subprocess.run(["git", "-C", repository, "commit", "-qm", "fixture"], check=True)
@@ -947,6 +1018,9 @@ def test_capture_source_proof_reconstructs_exact_git_objects(tmp_path: Path) -> 
     assert {entry["stage_path"] for entry in proof["entries"]} == {
         None,
         "application/services/job_worker/command_registry.py",
-        "backend/job_attribution.py",
-        "backend/paper_main.py",
-    }
+            "backend/job_attribution.py",
+            "backend/paper_main.py",
+            "backend/provider_free_fixture.py",
+            "backend/research_semantics.py",
+            "application/packages/runtime_release/staging_v2.py",
+        }

@@ -26,6 +26,7 @@ _JOB_ID = re.compile(r"job_[0-9a-f]{32}")
 _ATTEMPT_ID = re.compile(r"attempt_[0-9a-f]{32}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _SEMANTIC_INPUT_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ASSET_SYMBOL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,31}")
 _SAFE_EVENT_TYPES = frozenset({
     "init", "thinking", "tool_result", "llm_call", "validation",
@@ -244,6 +245,7 @@ class ResultValidator:
         progress: Callable[[], None],
     ) -> tuple[bytes, dict[str, object]]:
         valid: bytes | None = None
+        provider_free_metadata: dict[str, object] = {}
         count = 0
         for _, raw, value, modified_at in self._candidates(self._reports_root, "report_", progress):
             try:
@@ -265,6 +267,25 @@ class ResultValidator:
                 if valid is not None:
                     raise ResultValidationError("multiple attributable result artifacts were produced", reconciliation_required=True)
                 valid = raw
+                provenance = value.get("market_data_provenance")
+                fixture_sha256 = value.get("fixture_sha256")
+                if provenance is None and fixture_sha256 is None:
+                    provider_free_metadata = {}
+                elif provenance == "COINGECKO_PUBLIC" and fixture_sha256 is None:
+                    provider_free_metadata = {"market_data_provenance": provenance}
+                elif (
+                    provenance == "DETERMINISTIC_PROVIDER_FREE_V1"
+                    and isinstance(fixture_sha256, str)
+                    and _SHA256.fullmatch(fixture_sha256) is not None
+                ):
+                    provider_free_metadata = {
+                        "market_data_provenance": provenance,
+                        "fixture_sha256": fixture_sha256,
+                    }
+                else:
+                    raise ResultValidationError(
+                        "report market-data provenance is incomplete or invalid"
+                    )
             except (ValueError, TypeError):
                 continue
         if valid is None:
@@ -275,6 +296,7 @@ class ResultValidator:
             "backend_commit": backend_commit,
             "research_only": True,
             "semantic_input_fingerprint": semantic_input_fingerprint,
+            **provider_free_metadata,
         }
 
     @staticmethod
@@ -347,6 +369,7 @@ class ResultValidator:
         if not isinstance(payload, ReplayPayload):
             raise ResultValidationError("replay payload is invalid")
         valid: bytes | None = None
+        event_count = 0
         count = 0
         for _, raw, value, modified_at in self._candidates(self._replay_root, "replay_", progress):
             if datetime.fromtimestamp(modified_at, UTC) <= started:

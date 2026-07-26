@@ -86,6 +86,7 @@ def test_production_verifier_has_one_runtime_digest_and_exact_provision_pin() ->
 def _seed_prior(fake_root: Path) -> Path:
     release = fake_root / "opt/trading-agent-v2/releases" / PRIOR
     release.mkdir(parents=True)
+    fake_root.chmod(0o700)
     (release / "prior-evidence").write_text("preserve\n", encoding="utf-8")
     authorities = fake_root / "etc/trading-agent/release-authority-v2"
     authorities.mkdir(parents=True)
@@ -118,6 +119,7 @@ def _seed_bound_prior(
     installation_root = f"/opt/trading-agent-v2/releases/{prior_commit}"
     release = fake_root / installation_root.lstrip("/")
     release.mkdir(parents=True)
+    fake_root.chmod(0o700)
     (release / "prior-evidence").write_text("preserve\n", encoding="utf-8")
     prior_document = {
         "authority_kind": "STATIC_RELEASE",

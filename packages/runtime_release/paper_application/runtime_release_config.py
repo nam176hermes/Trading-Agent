@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import hmac
 import json
 import os
 from pathlib import Path
+import re
 import stat
+import sys
 from typing import Any, Mapping
+
+from packages.runtime_release.semantic import SemanticEvidence
+from packages.runtime_release.staging_v2 import (
+    STAGING_SCOPE_ENV,
+    StagingAuthorityMaterial,
+    attest_staging_material,
+    load_staging_authority_material,
+)
 
 RUNTIME_AUTHORITY_V2_PATH = Path("/etc/trading-agent-v2/release-authority-v2.json")
 RELEASE_ACTIVATION_V2_PATH = Path("/etc/trading-agent-v2/release-activation-v2.json")
 _EXPECTED_UID = 0
 _EXPECTED_GID = 0
 _MAX_BYTES = 64 * 1024
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 class ProtectedAuthorityError(RuntimeError):
     """Sanitized authority failure safe for readiness and service logs."""
@@ -37,9 +49,25 @@ class RuntimePathsV2:
     artifact_root: Path
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class SemanticAuthority:
+    authority_path: Path
+    policy_sha256: str
+    input_root: Path | None = None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SafetyAuthority:
+    exporter_commit: str
+    snapshot_path: Path
+    source_fingerprint: str
+    expected_owner_uid: int = 0
+    protected_root_owned: bool = True
+
+
 @dataclass(frozen=True, repr=False)
 class RuntimeAuthorityV2:
-    """Dormant v2 runtime projection; no factory exists before reviewed promotion."""
+    """Factory-issued v2 authority; production loading remains unavailable."""
 
     source_commit: str
     source_tree: str
@@ -57,6 +85,15 @@ class RuntimeAuthorityV2:
     semantic_evidence: object
     _authority_pin: tuple[object, ...]
     _dynamic_evidence_pin: tuple[object, ...]
+    scope: str = "PRODUCTION"
+    package6_approval_sha256: str = ""
+    production_release_authority_sha256: str = ""
+    stage_file_set_sha256: str = ""
+    application_artifact_sha256: str = ""
+    application_python_sha256: str = ""
+    backend_python_sha256: str = ""
+    command_authority_sha256: str = ""
+    _material: StagingAuthorityMaterial | None = None
 
     def recheck(self) -> "RuntimeAuthorityV2":
         current = load_runtime_authority_v2()
@@ -68,18 +105,88 @@ class RuntimeAuthorityV2:
         return "RuntimeAuthorityV2(validated=True)"
 
 
-def load_runtime_authority_v2() -> RuntimeAuthorityV2:
-    """Load v2 only; implemented after its protected runtime schema is bound."""
+def _runtime_python_path() -> Path:
+    return Path(sys.executable)
 
-    raise ProtectedAuthorityError("RUNTIME_AUTHORITY_V2_UNAVAILABLE")
+
+def load_runtime_authority_v2() -> RuntimeAuthorityV2:
+    """Load an explicit Package 6 staging activation, never production."""
+
+    if STAGING_SCOPE_ENV not in os.environ:
+        raise ProtectedAuthorityError("RUNTIME_AUTHORITY_V2_UNAVAILABLE")
+    try:
+        material = load_staging_authority_material()
+        semantic_evidence = SemanticEvidence(
+            policy_sha256=material.semantic_policy_sha256,
+            active_authority_sha256=material.semantic_active_authority_sha256,
+            version_manifest_sha256=material.semantic_version_manifest_sha256,
+            semantic_input_fingerprint=material.semantic_input_fingerprint,
+            manifest_version=material.semantic_manifest_version,
+            generated_at=material.semantic_generated_at,
+            expires_at=material.semantic_expires_at,
+        )
+        return RuntimeAuthorityV2(
+            source_commit=material.source_commit,
+            source_tree=material.source_tree,
+            installation_root=material.installation_root,
+            application_root=material.application_root,
+            application_python=material.application_python,
+            backend_root=material.backend_root,
+            backend_python=material.backend_python,
+            backend_artifact_sha256=material.backend_artifact_sha256,
+            command_manifest=material.command_manifest,
+            safety=SafetyAuthority(
+                exporter_commit=material.safety_exporter_commit,
+                snapshot_path=material.runtime_paths["safety_snapshot"],
+                source_fingerprint=material.safety_source_fingerprint,
+                expected_owner_uid=os.geteuid(),
+                protected_root_owned=False,
+            ),
+            semantic=SemanticAuthority(
+                authority_path=material.runtime_paths["semantic_authority"],
+                policy_sha256=material.semantic_policy_sha256,
+                input_root=material.runtime_paths["semantic_input_root"],
+            ),
+            runtime_paths=RuntimePathsV2(
+                safety_snapshot=material.runtime_paths["safety_snapshot"],
+                semantic_authority=material.runtime_paths["semantic_authority"],
+                semantic_input_root=material.runtime_paths["semantic_input_root"],
+                reports_root=material.runtime_paths["reports_root"],
+                signals_root=material.runtime_paths["signals_root"],
+                scratch_root=material.runtime_paths["scratch_root"],
+                artifact_root=material.runtime_paths["artifact_root"],
+            ),
+            safety_evidence=material.safety_snapshot_sha256,
+            semantic_evidence=semantic_evidence,
+            _authority_pin=material.authority_pin,
+            _dynamic_evidence_pin=material.dynamic_evidence_pin,
+            scope=material.scope,
+            package6_approval_sha256=material.package6_approval_sha256,
+            production_release_authority_sha256=(
+                material.production_release_authority_sha256
+            ),
+            stage_file_set_sha256=material.stage_file_set_sha256,
+            application_artifact_sha256=material.application_artifact_sha256,
+            application_python_sha256=material.application_python_sha256,
+            backend_python_sha256=material.backend_python_sha256,
+            command_authority_sha256=material.command_authority_sha256,
+            _material=material,
+        )
+    except Exception:
+        raise ProtectedAuthorityError("RUNTIME_AUTHORITY_V2_UNAVAILABLE") from None
 
 
 def attest_application_release_v2(authority: RuntimeAuthorityV2) -> bool:
-    """Fail closed until the v2 installed-tree verifier is fully integrated."""
+    """Recompute the staging artifact while production remains fail-closed."""
 
     if not isinstance(authority, RuntimeAuthorityV2):
-        raise ProtectedAuthorityError("APPLICATION_RELEASE_INVALID")
-    raise ProtectedAuthorityError("APPLICATION_RELEASE_INVALID")
+        return False
+    if authority.scope != "PACKAGE6_STAGING_ONLY":
+        return False
+    return attest_staging_material(
+        authority._material,
+        runtime_python_path=_runtime_python_path(),
+    )
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}

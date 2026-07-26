@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -211,6 +212,75 @@ def test_report_requires_exit_zero_and_one_fresh_attributable_schema_valid_file(
 
     (reports / "report_new.json").write_text("replaced", encoding="utf-8")
     assert copy.read_bytes() != b"replaced"
+
+
+def test_provider_free_provenance_is_sealed_into_validation_metadata(tmp_path) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    report = reports / "report_new.json"
+    _report(report)
+    document = json.loads(report.read_text(encoding="utf-8"))
+    document.update(
+        {
+            "market_data_provenance": "DETERMINISTIC_PROVIDER_FREE_V1",
+            "fixture_sha256": "f" * 64,
+        }
+    )
+    report.write_text(json.dumps(document), encoding="utf-8")
+    os.utime(report, ((START.timestamp() + 1), (START.timestamp() + 1)))
+
+    result = ResultValidator(
+        reports, tmp_path / "replays", tmp_path / "sealed"
+    ).validate(
+        "legacy-report-v1",
+        Job(),
+        exit_code=0,
+        attempt_started_at=START,
+        backend_commit=BACKEND_COMMIT,
+        semantic_input_fingerprint=SEMANTIC_INPUT_FINGERPRINT,
+    )
+
+    assert result.validation_metadata["market_data_provenance"] == (
+        "DETERMINISTIC_PROVIDER_FREE_V1"
+    )
+    assert result.validation_metadata["fixture_sha256"] == "f" * 64
+
+
+@pytest.mark.parametrize(
+    ("provenance", "fixture_sha256"),
+    [
+        ("DETERMINISTIC_PROVIDER_FREE_V1", None),
+        (None, "f" * 64),
+        ("COINGECKO_PUBLIC", "f" * 64),
+        ("DETERMINISTIC_PROVIDER_FREE_V1", "not-a-digest"),
+    ],
+)
+def test_provider_free_provenance_fails_closed_unless_exact_and_complete(
+    tmp_path: Path,
+    provenance: object,
+    fixture_sha256: object,
+) -> None:
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    report = reports / "report_new.json"
+    _report(report)
+    document = json.loads(report.read_text(encoding="utf-8"))
+    document["market_data_provenance"] = provenance
+    document["fixture_sha256"] = fixture_sha256
+    report.write_text(json.dumps(document), encoding="utf-8")
+    os.utime(report, ((START.timestamp() + 1), (START.timestamp() + 1)))
+
+    with pytest.raises(ResultValidationError, match="provenance"):
+        ResultValidator(
+            reports, tmp_path / "replays", tmp_path / "sealed"
+        ).validate(
+            "legacy-report-v1",
+            Job(),
+            exit_code=0,
+            attempt_started_at=START,
+            backend_commit=BACKEND_COMMIT,
+            semantic_input_fingerprint=SEMANTIC_INPUT_FINGERPRINT,
+        )
 
 
 def test_report_rejects_wrong_worker_owned_job_attribution(tmp_path) -> None:

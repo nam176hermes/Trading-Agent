@@ -316,6 +316,8 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 module.canonicalize_installed_site_packages(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
 PY
+"$PYTHON" -I "$TOOL" install-paper-application-import-path \
+  --application "$STAGE/application" || fail
 find "$APP_VENV/bin" -mindepth 1 -maxdepth 1 ! -name python3.11 -delete
 "$PYTHON" -I "$TOOL" verify-python-runtime \
   --runtime "$APP_VENV" --allow-site-packages || fail

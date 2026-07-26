@@ -13,6 +13,8 @@ import tomllib
 import pytest
 
 from packages.runtime_release.v2 import (
+    PAPER_APPLICATION_IMPORT_PATH,
+    PAPER_APPLICATION_IMPORT_PATH_BYTES,
     PAPER_APPLICATION_SOURCE_MAPPING,
     PAPER_ARTIFACT_CLASS,
     PAPER_BACKEND_ENTRYPOINT,
@@ -29,6 +31,7 @@ from packages.runtime_release.v2 import (
     inspect_paper_application_artifact,
     inspect_paper_backend_artifact,
     inspect_python_runtime,
+    install_paper_application_import_path,
     paper_command_manifest,
     python_runtime_core_sha256,
     verify_python_runtime_execution,
@@ -98,15 +101,64 @@ def test_paper_backend_repository_mapping_stays_outside_imported_snapshot() -> N
     mapping = dict(PAPER_BACKEND_SOURCE_MAPPING)
 
     assert tuple(mapping) == PAPER_BACKEND_SOURCE_PATHS
-    assert mapping["job_attribution.py"] == "legacy/research-backend/job_attribution.py"
+    assert mapping["job_attribution.py"] == (
+        "packages/runtime_release/paper_backend/job_attribution.py"
+    )
     assert mapping["research_semantics.py"] == (
         "packages/runtime_release/paper_backend/research_semantics.py"
     )
     assert mapping["paper_main.py"] == "packages/runtime_release/paper_backend/paper_main.py"
+    assert mapping["provider_free_fixture.py"] == (
+        "packages/runtime_release/paper_backend/provider_free_fixture.py"
+    )
     assert mapping["paper_runtime_manifest.json"] == (
         "packages/runtime_release/paper_backend/paper_runtime_manifest.json"
     )
     assert all((ROOT / source).is_file() for source in mapping.values())
+
+
+def test_package6_application_projection_preserves_fixture_authority_without_credentials() -> None:
+    mapping = dict(PAPER_APPLICATION_SOURCE_MAPPING)
+
+    assert mapping["packages/runtime_release/staging_v2.py"] == (
+        "packages/runtime_release/staging_v2.py"
+    )
+    projected = (
+        ROOT / "packages/runtime_release/paper_application/environment.py"
+    ).read_text(encoding="utf-8")
+    assert "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH" in projected
+    assert "TRADING_PACKAGE6_APPROVAL_SHA256" in projected
+    assert "_RESEARCH_KEYS" not in projected
+    assert "API_KEY" not in projected
+
+
+def test_projected_result_validator_matches_canonical_report_path() -> None:
+    canonical = ast.parse(
+        (ROOT / "services/job_worker/results.py").read_text(encoding="utf-8")
+    )
+    projected = ast.parse(
+        (
+            ROOT / "packages/runtime_release/paper_application/results.py"
+        ).read_text(encoding="utf-8")
+    )
+
+    def functions(tree: ast.AST) -> dict[str, str]:
+        selected = {
+            "_attributed",
+            "_candidates",
+            "_expected_lineage",
+            "_seal",
+            "_valid_report_assets",
+            "_validate_report",
+        }
+        return {
+            node.name: ast.dump(node, include_attributes=False)
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in selected
+        }
+
+    assert functions(projected) == functions(canonical)
 
 
 def test_paper_python_runtime_provenance_is_exact_and_code_owned() -> None:
@@ -564,6 +616,60 @@ def test_paper_application_inspector_delegates_validated_runtime_symlinks(
         artifact,
         test_expected_python_runtime_core_sha256=runtime_core_sha256,
     )
+
+
+def test_paper_application_import_path_is_exact_and_tamper_evident(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "paper-application"
+    construct_paper_application_artifact(REPOSITORY_SOURCE, artifact)
+    runtime_source = _tiny_runtime_source(tmp_path / "runtime-source")
+    runtime_core_sha256 = python_runtime_core_sha256(runtime_source)
+    construct_python_runtime(
+        runtime_source,
+        artifact / ".venv",
+        expected_core_sha256=runtime_core_sha256,
+    )
+
+    import_path = install_paper_application_import_path(artifact)
+
+    assert import_path == artifact / PAPER_APPLICATION_IMPORT_PATH
+    assert import_path.read_bytes() == PAPER_APPLICATION_IMPORT_PATH_BYTES
+    assert import_path.stat().st_mode & 0o7777 == 0o644
+    inspect_paper_application_artifact(
+        artifact,
+        test_expected_python_runtime_core_sha256=runtime_core_sha256,
+    )
+
+    import_path.write_bytes(b"../../../../..\n")
+    with pytest.raises(ReleaseAuthorityV2Error):
+        inspect_paper_application_artifact(
+            artifact,
+            test_expected_python_runtime_core_sha256=runtime_core_sha256,
+        )
+
+
+def test_paper_application_inspector_rejects_second_site_path_file(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "paper-application"
+    construct_paper_application_artifact(REPOSITORY_SOURCE, artifact)
+    runtime_source = _tiny_runtime_source(tmp_path / "runtime-source")
+    runtime_core_sha256 = python_runtime_core_sha256(runtime_source)
+    construct_python_runtime(
+        runtime_source,
+        artifact / ".venv",
+        expected_core_sha256=runtime_core_sha256,
+    )
+    install_paper_application_import_path(artifact)
+    injected = artifact / ".venv/lib/python3.11/site-packages/escape.pth"
+    injected.write_bytes(b"/tmp\n")
+
+    with pytest.raises(ReleaseAuthorityV2Error):
+        inspect_paper_application_artifact(
+            artifact,
+            test_expected_python_runtime_core_sha256=runtime_core_sha256,
+        )
 
 
 @pytest.mark.parametrize("package", ["alembic", "Mako", "SQLAlchemy", "greenlet"])

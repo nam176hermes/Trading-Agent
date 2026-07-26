@@ -35,6 +35,7 @@
     "job_attribution.py",
     "paper_main.py",
     "paper_runtime_manifest.json",
+    "provider_free_fixture.py",
     "research_semantics.py"
   ],
   "stdlib_import_allowlist": [
@@ -44,6 +45,7 @@
     "hashlib",
     "hmac",
     "json",
+    "math",
     "os",
     "pathlib",
     "re",

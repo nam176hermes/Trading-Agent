@@ -19,6 +19,7 @@ PHASE4_BACKEND_AUDITED_PATHS = (
     "job_attribution.py",
     "paper_main.py",
     "paper_runtime_manifest.json",
+    "provider_free_fixture.py",
     "research_semantics.py",
 )
 

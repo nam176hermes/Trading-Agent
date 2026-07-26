@@ -17,7 +17,8 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Callable
+from pathlib import Path
+from typing import BinaryIO, Callable, Protocol, Sequence, cast
 
 from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, ArtifactWriter
 from .command_registry import (
@@ -38,8 +39,6 @@ from .safety_state import SafetyEvidence, validate_current_safety_evidence
 _JOB_ID = re.compile(r"job_[0-9a-f]{32}")
 _ATTEMPT_ID = re.compile(r"attempt_[0-9a-f]{32}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
-_RESEARCH_SCRATCHPAD_ROOT = str(APPROVED_SCRATCH_HOME / "scratchpad")
-
 _PIDFD_SYSCALLS = {
     "x86_64": (434, 424),
     "amd64": (434, 424),
@@ -224,11 +223,37 @@ class _SessionCleanupState:
 
 @dataclass(slots=True)
 class _StreamState:
-    stream: object
+    stream: BinaryIO
     retained: bytearray
-    digest: object
+    digest: "_Digest"
     observed: int = 0
     eof: bool = False
+
+
+class _Digest(Protocol):
+    def update(self, value: bytes, /) -> None: ...
+    def hexdigest(self) -> str: ...
+
+
+class _Process(Protocol):
+    pid: int
+    stdout: BinaryIO | None
+    stderr: BinaryIO | None
+
+    def send_signal(self, sig: int) -> None: ...
+    def wait(self, timeout: float | None = None) -> int: ...
+
+
+class _SelectorKey(Protocol):
+    fd: int
+    data: str
+
+
+class _Selector(Protocol):
+    def register(self, fileobj: int, events: int, data: str) -> _SelectorKey: ...
+    def unregister(self, fileobj: int) -> _SelectorKey: ...
+    def select(self, timeout: float | None = None) -> Sequence[tuple[_SelectorKey, int]]: ...
+    def close(self) -> None: ...
 
 
 def _leader_exited_wnowait(pid: int) -> bool:
@@ -289,7 +314,9 @@ class ProcessRunner:
         self,
         artifacts: ArtifactWriter,
         *,
-        popen: Callable[..., object] = subprocess.Popen,
+        popen: Callable[..., _Process] = cast(
+            Callable[..., _Process], subprocess.Popen
+        ),
         inspector: ProcessInspector | None = None,
         leader_exited: Callable[[int], bool] = _leader_exited_wnowait,
         session_members: Callable[[ProcessIdentity], tuple[SessionMember, ...]] = _session_members_proc,
@@ -297,7 +324,9 @@ class ProcessRunner:
         leader_inspector: Callable[[int], SessionMember | None] = _read_leader_proc,
         pidfd_open: Callable[[int, int], int] | None = None,
         pidfd_send_signal: Callable[[int, int, object | None, int], None] | None = None,
-        selector_factory: Callable[[], object] = selectors.DefaultSelector,
+        selector_factory: Callable[[], _Selector] = cast(
+            Callable[[], _Selector], selectors.DefaultSelector
+        ),
         monotonic: Callable[[], float] = time.monotonic,
         safety_clock: Callable[[], datetime] | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -312,7 +341,11 @@ class ProcessRunner:
         if pidfd_open is None:
             resolved_pidfd_open, resolved_pidfd_send = _default_pidfd_api()
         else:
-            resolved_pidfd_open, resolved_pidfd_send = pidfd_open, pidfd_send_signal
+            resolved_pidfd_open = pidfd_open
+            resolved_pidfd_send = cast(
+                Callable[[int, int, object | None, int], None],
+                pidfd_send_signal,
+            )
         self._leader_exited = leader_exited
         self._session_members = session_members
         self._member_inspector = member_inspector
@@ -374,11 +407,35 @@ class ProcessRunner:
                 raise ValueError("timeout must equal the attested command timeout")
             if _COMMIT.fullmatch(built.backend_revision) is None:
                 raise ValueError("attested backend revision is invalid")
+            fixture_path = child_environment.get(
+                "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH"
+            )
+            fixture_approval = child_environment.get(
+                "TRADING_PACKAGE6_APPROVAL_SHA256"
+            )
+            if fixture_path is not None or fixture_approval is not None:
+                from packages.runtime_release.paper_backend.provider_free_fixture import (
+                    load_provider_free_fixture,
+                )
+
+                load_provider_free_fixture(
+                    Path(fixture_path or ""),
+                    expected_backend_commit=built.backend_revision,
+                    expected_package6_approval_sha256=fixture_approval or "",
+                )
             child_environment.update({
                 "TRADING_JOB_ID": job_id,
                 "TRADING_JOB_ATTEMPT_ID": attempt_id,
                 "TRADING_RESEARCH_BACKEND_COMMIT": built.backend_revision,
-                "TRADING_RESEARCH_SCRATCHPAD_ROOT": _RESEARCH_SCRATCHPAD_ROOT,
+                "TRADING_RESEARCH_SCRATCHPAD_ROOT": str(
+                    Path(
+                        child_environment.get(
+                            "HOME",
+                            str(APPROVED_SCRATCH_HOME),
+                        )
+                    )
+                    / "scratchpad"
+                ),
             })
             # Current safety is the final authority read. Immutable/semantic
             # attestation and all local command validation have already
@@ -399,7 +456,7 @@ class ProcessRunner:
         original_streams = (getattr(process, "stdout", None), getattr(process, "stderr", None))
 
         identity: ProcessIdentity | None = None
-        selector = None
+        selector: _Selector | None = None
         states: dict[str, _StreamState] = {}
         cleanup_errors: list[BaseException] = []
         session_cleanup = _SessionCleanupState({})
@@ -450,13 +507,14 @@ class ProcessRunner:
                 ) from exc
 
             selector = self._selector_factory()
+            active_selector = selector
             for kind, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
                 if stream is None:
                     raise RuntimeError("child pipe is missing")
                 fd = stream.fileno()
                 os.set_blocking(fd, False)
                 states[kind] = _StreamState(stream, bytearray(), hashlib.sha256())
-                selector.register(fd, selectors.EVENT_READ, kind)
+                active_selector.register(fd, selectors.EVENT_READ, kind)
 
             started = self._monotonic()
             leader_exited = False
@@ -469,7 +527,7 @@ class ProcessRunner:
             while True:
                 now = self._monotonic()
                 try:
-                    events = selector.select(self._poll_interval)
+                    events = active_selector.select(self._poll_interval)
                 except BaseException as exc:
                     cleanup_errors.append(exc)
                     events = ()
@@ -491,7 +549,10 @@ class ProcessRunner:
                             state.retained.extend(chunk[: MAX_STREAM_BYTES - len(state.retained)])
                     else:
                         state.eof = True
-                        self._best_effort(lambda fd=key.fd: selector.unregister(fd), cleanup_errors)
+                        self._best_effort(
+                            lambda fd=key.fd: active_selector.unregister(fd),
+                            cleanup_errors,
+                        )
                         self._best_effort(state.stream.close, cleanup_errors)
 
                 if not leader_exited:
@@ -748,7 +809,9 @@ class ProcessRunner:
         for key in tuple(state.handles):
             self._close_member_handle(state, key, errors)
 
-    def _wait_bounded(self, process, errors: list[BaseException]) -> int | None:
+    def _wait_bounded(
+        self, process: _Process, errors: list[BaseException]
+    ) -> int | None:
         try:
             return process.wait(timeout=max(self._terminate_grace_seconds, self._poll_interval))
         except (subprocess.TimeoutExpired, TimeoutError) as exc:
@@ -758,7 +821,9 @@ class ProcessRunner:
             errors.append(exc)
             return None
 
-    def _cleanup_child_handle(self, process, errors: list[BaseException]) -> bool:
+    def _cleanup_child_handle(
+        self, process: _Process, errors: list[BaseException]
+    ) -> bool:
         self._best_effort(lambda: process.send_signal(signal.SIGKILL), errors)
         return self._wait_bounded(process, errors) is not None
 
@@ -770,7 +835,10 @@ class ProcessRunner:
             errors.append(exc)
 
     def _close_selector_and_streams(
-        self, selector, states: dict[str, _StreamState], original_streams: tuple[object, ...],
+        self,
+        selector: _Selector | None,
+        states: dict[str, _StreamState],
+        original_streams: tuple[BinaryIO | None, ...],
         errors: list[BaseException],
     ) -> None:
         for state in states.values():

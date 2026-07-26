@@ -217,7 +217,13 @@ def test_runner_consumes_once_at_spawn_and_uses_hardened_popen(monkeypatch, tmp_
     consumed = []
     prepared = Prepared(command())
     monkeypatch.setattr("services.job_worker.process_runner.consume_prepared_spawn", lambda item: consumed.append(item) or item.value)
-    monkeypatch.setattr("services.job_worker.process_runner.build_child_environment", lambda settings: {"SAFE": "1"})
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.build_child_environment",
+        lambda settings: {
+            "SAFE": "1",
+            "HOME": "/home/thenam176/.local/run/trading-agent/research-home",
+        },
+    )
     process = FakeProcess([None, 0])
 
     outcome = runner(tmp_path, process, Inspector([identity()]), calls).run(
@@ -231,6 +237,7 @@ def test_runner_consumes_once_at_spawn_and_uses_hardened_popen(monkeypatch, tmp_
     assert kwargs == {
         "cwd": str(command().cwd), "env": {
             "SAFE": "1",
+            "HOME": "/home/thenam176/.local/run/trading-agent/research-home",
             "TRADING_JOB_ID": JOB_ID,
             "TRADING_JOB_ATTEMPT_ID": ATTEMPT_ID,
             "TRADING_RESEARCH_BACKEND_COMMIT": BACKEND_COMMIT,
@@ -243,6 +250,48 @@ def test_runner_consumes_once_at_spawn_and_uses_hardened_popen(monkeypatch, tmp_
     assert outcome.identity == identity()
     assert outcome.stdout.size_bytes == 3
     assert outcome.stderr.size_bytes == 3
+
+
+def test_runner_derives_staging_scratchpad_from_issued_child_environment(
+    monkeypatch, tmp_path
+) -> None:
+    calls = []
+    scratch_home = tmp_path / "runtime" / "scratch"
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.consume_prepared_spawn",
+        lambda item: item.value,
+    )
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.build_child_environment",
+        lambda settings: {
+            "HOME": str(scratch_home),
+            "TRADING_SEMANTIC_AUTHORITY_PATH": str(
+                tmp_path / "semantic" / "active.json"
+            ),
+        },
+    )
+
+    runner(
+        tmp_path,
+        FakeProcess([None, 0]),
+        Inspector([identity()]),
+        calls,
+    ).run(
+        lambda: Prepared(command()),
+        object(),
+        10,
+        lambda _: HeartbeatDecision.CONTINUE,
+        job_id=JOB_ID,
+        attempt_id=ATTEMPT_ID,
+    )
+
+    child = calls[0][1]["env"]
+    assert child["TRADING_RESEARCH_SCRATCHPAD_ROOT"] == str(
+        scratch_home / "scratchpad"
+    )
+    assert child["TRADING_SEMANTIC_AUTHORITY_PATH"] == str(
+        tmp_path / "semantic" / "active.json"
+    )
 
 
 def test_runner_rejects_legacy_multi_mode_command_before_spawn(

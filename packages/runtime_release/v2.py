@@ -27,7 +27,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 
 SCHEMA_VERSION = 3
@@ -59,11 +59,18 @@ LOCK_PATHS = {
 PAPER_ARTIFACT_CLASS = "CANONICAL_PAPER_V1"
 PAPER_BACKEND_ENTRYPOINT = "paper_main.py"
 PAPER_BACKEND_SOURCE_MAPPING = (
-    ("job_attribution.py", "legacy/research-backend/job_attribution.py"),
+    (
+        "job_attribution.py",
+        "packages/runtime_release/paper_backend/job_attribution.py",
+    ),
     ("paper_main.py", "packages/runtime_release/paper_backend/paper_main.py"),
     (
         "paper_runtime_manifest.json",
         "packages/runtime_release/paper_backend/paper_runtime_manifest.json",
+    ),
+    (
+        "provider_free_fixture.py",
+        "packages/runtime_release/paper_backend/provider_free_fixture.py",
     ),
     (
         "research_semantics.py",
@@ -116,6 +123,10 @@ PAPER_APPLICATION_SOURCE_MAPPING = (
         "packages/runtime_release/semantic.py",
         "packages/runtime_release/paper_application/runtime_release_semantic.py",
     ),
+    (
+        "packages/runtime_release/staging_v2.py",
+        "packages/runtime_release/staging_v2.py",
+    ),
     ("packages/safety_evidence.py", "packages/safety_evidence.py"),
     ("pyproject.toml", "packages/runtime_release/paper_application/pyproject.toml"),
     ("services/__init__.py", "services/__init__.py"),
@@ -165,6 +176,10 @@ PAPER_APPLICATION_SOURCE_MAPPING = (
 PAPER_APPLICATION_SOURCE_PATHS = tuple(
     artifact_path for artifact_path, _ in PAPER_APPLICATION_SOURCE_MAPPING
 )
+PAPER_APPLICATION_IMPORT_PATH = (
+    ".venv/lib/python3.11/site-packages/trading-agent-paper-application.pth"
+)
+PAPER_APPLICATION_IMPORT_PATH_BYTES = b"../../../..\n"
 PAPER_FORCED_ENVIRONMENT = {
     "LIVE_EXECUTION_ENABLED": "false",
     "LIVE_TRADING_APPROVED": "false",
@@ -187,6 +202,7 @@ PAPER_STDLIB_IMPORTS = (
     "hashlib",
     "hmac",
     "json",
+    "math",
     "os",
     "pathlib",
     "re",
@@ -1058,6 +1074,37 @@ def construct_paper_application_artifact(source: Path, destination: Path) -> Non
         raise ReleaseAuthorityV2Error() from None
 
 
+def install_paper_application_import_path(application_root: Path) -> Path:
+    """Make the projected application importable by its isolated interpreter."""
+
+    try:
+        root = Path(application_root)
+        if (
+            not root.is_absolute()
+            or root.is_symlink()
+            or root.resolve(strict=True) != root
+            or not root.is_dir()
+        ):
+            raise ValueError
+        import_path = root / PAPER_APPLICATION_IMPORT_PATH
+        site_packages = import_path.parent
+        if (
+            not site_packages.is_dir()
+            or site_packages.is_symlink()
+            or site_packages.resolve(strict=True) != site_packages
+            or root not in site_packages.parents
+            or import_path.exists()
+            or import_path.is_symlink()
+        ):
+            raise ValueError
+        _write_exclusive(import_path, PAPER_APPLICATION_IMPORT_PATH_BYTES, 0o644)
+        return import_path
+    except ReleaseAuthorityV2Error:
+        raise
+    except Exception:
+        raise ReleaseAuthorityV2Error() from None
+
+
 def inspect_paper_application_artifact(
     artifact_root: Path,
     *,
@@ -1104,6 +1151,23 @@ def inspect_paper_application_artifact(
             )
             forbidden_site_packages = {"alembic", "greenlet", "mako", "sqlalchemy"}
             site_prefix = ".venv/lib/python3.11/site-packages/"
+            site_files = {
+                relative for relative in venv_files if relative.startswith(site_prefix)
+            }
+            import_path_files = {
+                relative for relative in site_files if relative.endswith(".pth")
+            }
+            if site_files:
+                import_path = root / PAPER_APPLICATION_IMPORT_PATH
+                info = import_path.lstat()
+                if (
+                    import_path_files != {PAPER_APPLICATION_IMPORT_PATH}
+                    or not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) not in {0o444, 0o644}
+                    or import_path.read_bytes() != PAPER_APPLICATION_IMPORT_PATH_BYTES
+                ):
+                    raise ValueError
             for relative in venv_files:
                 if not relative.startswith(site_prefix):
                     continue
@@ -1440,7 +1504,7 @@ def _git_tree_ids(entries: Sequence[dict[str, object]]) -> dict[str, str]:
                 object_id = seal(value, f"{prefix}/{name}".strip("/"))
                 mode = "40000"
             else:
-                mode, object_id = value
+                mode, object_id = cast(tuple[str, str], value)
             material.extend(f"{mode} ".encode("ascii"))
             material.extend(name_raw)
             material.append(0)
@@ -1561,7 +1625,7 @@ def _validated_source_proof(
 
 
 def _verify_source_blobs(stage: Path, source: Mapping[str, object]) -> None:
-    for entry in source["entries"]:
+    for entry in cast(list[dict[str, object]], source["entries"]):
         stage_path = entry["stage_path"]
         if stage_path is None:
             continue
@@ -1784,7 +1848,7 @@ def _render_unit(name: str, spec: Mapping[str, object]) -> bytes:
         if name == "trading-job-api.service"
         else "Environment=TRADING_ALLOWED_JOB_TYPES=SNAPSHOT\n"
     )
-    argv = " ".join(str(item) for item in spec["argv"])
+    argv = " ".join(str(item) for item in cast(list[object], spec["argv"]))
     credential_references = _credential_references(name)
     if spec.get("credential_references") != credential_references:
         raise ReleaseAuthorityV2Error()
@@ -1880,7 +1944,9 @@ def _installed_site_package_entries(
             "size": entry["size"],
         }
         for path, entry in sorted(by_path.items(), key=lambda item: os.fsencode(item[0]))
-        if path.startswith(prefix) and entry["type"] == "file"
+        if path.startswith(prefix)
+        and path != "application/" + PAPER_APPLICATION_IMPORT_PATH
+        and entry["type"] == "file"
     ]
 
 
@@ -2613,6 +2679,10 @@ def _cli() -> int:
     project_application = subparsers.add_parser("project-paper-application")
     project_application.add_argument("--source", type=Path, required=True)
     project_application.add_argument("--destination", type=Path, required=True)
+    install_application_path = subparsers.add_parser(
+        "install-paper-application-import-path"
+    )
+    install_application_path.add_argument("--application", type=Path, required=True)
     project_runtime = subparsers.add_parser("project-python-runtime-archive")
     project_runtime.add_argument("--archive", type=Path, required=True)
     project_runtime.add_argument("--destination", type=Path, required=True)
@@ -2650,6 +2720,9 @@ def _cli() -> int:
             return 0
         if arguments.command == "project-paper-application":
             construct_paper_application_artifact(arguments.source, arguments.destination)
+            return 0
+        if arguments.command == "install-paper-application-import-path":
+            install_paper_application_import_path(arguments.application)
             return 0
         if arguments.command == "project-python-runtime-archive":
             construct_python_runtime_archive(arguments.archive, arguments.destination)

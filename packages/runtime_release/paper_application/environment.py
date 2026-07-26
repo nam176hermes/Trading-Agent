@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, NoReturn, cast
 
 from packages.runtime_release.config import RuntimeAuthorityV2, RuntimePathsV2
 
-from .errors import WorkerBlockedError
+from services.job_worker.errors import WorkerBlockedError
 
 FIXED_PATH = "/usr/bin:/bin"
 # Research input is deliberately separate from the active legacy tree.  The
@@ -32,13 +33,21 @@ _PATH_KEYS = frozenset({
     "TRADING_ATTEMPT_ID",
     "TRADING_RESEARCH_BACKEND_COMMIT",
     "TRADING_RESEARCH_SCRATCHPAD_ROOT",
+    "TRADING_SEMANTIC_AUTHORITY_PATH",
 })
+_PACKAGE6_FIXTURE_KEYS = (
+    "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH",
+    "TRADING_PACKAGE6_APPROVAL_SHA256",
+)
+_SEMANTIC_AUTHORITY_PATH_ENV = "TRADING_SEMANTIC_AUTHORITY_PATH"
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
 
 class EnvironmentValidationError(WorkerBlockedError):
     pass
 
 
-def _blocked(reason: str, message: str) -> None:
+def _blocked(reason: str, message: str) -> NoReturn:
     raise EnvironmentValidationError(reason, message)
 
 
@@ -67,7 +76,7 @@ def _root_policies(
     paths: RuntimePathsV2 | None = None,
 ) -> tuple[tuple[Path, _RootPolicy], ...]:
     runtime_owner = os.geteuid()
-    ancestor_owners = frozenset({0, runtime_owner})
+    ancestor_owners = frozenset({0, runtime_owner, Path("/").stat().st_uid})
     data_root = APPROVED_DATA_ROOT if paths is None else paths.semantic_input_root
     reports_root = APPROVED_REPORTS_DIR if paths is None else paths.reports_root
     signals_root = (
@@ -77,7 +86,11 @@ def _root_policies(
     return (
         (
             data_root,
-            _RootPolicy(SEMANTIC_ROOT_OWNER_UID, 0o711, ancestor_owners),
+            _RootPolicy(
+                SEMANTIC_ROOT_OWNER_UID if paths is None else runtime_owner,
+                0o711,
+                ancestor_owners,
+            ),
         ),
         (reports_root, _RootPolicy(runtime_owner, 0o700, ancestor_owners)),
         (
@@ -88,8 +101,16 @@ def _root_policies(
     )
 
 
-def _validate_ancestor(info: os.stat_result, policy: _RootPolicy) -> None:
+def _validate_ancestor(
+    info: os.stat_result, policy: _RootPolicy, *, disposable_tmp: bool = False
+) -> None:
     mode = stat.S_IMODE(info.st_mode)
+    if (
+        disposable_tmp
+        and info.st_uid in {0, Path("/").stat().st_uid}
+        and mode == 0o1777
+    ):
+        return
     if (
         not stat.S_ISDIR(info.st_mode)
         or info.st_uid not in policy.ancestor_owner_uids
@@ -101,7 +122,9 @@ def _validate_ancestor(info: os.stat_result, policy: _RootPolicy) -> None:
         )
 
 
-def _inspect_root(path: Path, policy: _RootPolicy) -> os.stat_result:
+def _inspect_root(
+    path: Path, policy: _RootPolicy, *, allow_disposable_tmp: bool = False
+) -> os.stat_result:
     """Open each component relative to a retained directory descriptor."""
 
     if not path.is_absolute() or ".." in path.parts:
@@ -118,11 +141,19 @@ def _inspect_root(path: Path, policy: _RootPolicy) -> os.stat_result:
         descriptors.append(current)
         _validate_ancestor(os.fstat(current), policy)
         components = path.parts[1:]
+        current_path = Path(path.anchor)
         for index, component in enumerate(components):
             current = os.open(component, flags, dir_fd=current)
             descriptors.append(current)
+            current_path /= component
             if index != len(components) - 1:
-                _validate_ancestor(os.fstat(current), policy)
+                _validate_ancestor(
+                    os.fstat(current),
+                    policy,
+                    disposable_tmp=(
+                        allow_disposable_tmp and current_path == Path("/tmp")
+                    ),
+                )
         return os.fstat(current)
     except FileNotFoundError:
         _blocked("ENVIRONMENT_ROOT_MISSING", "approved environment root does not exist")
@@ -135,8 +166,10 @@ def _inspect_root(path: Path, policy: _RootPolicy) -> os.stat_result:
             os.close(descriptor)
 
 
-def _validate_root(path: Path, policy: _RootPolicy) -> None:
-    info = _inspect_root(path, policy)
+def _validate_root(
+    path: Path, policy: _RootPolicy, *, allow_disposable_tmp: bool = False
+) -> None:
+    info = _inspect_root(path, policy, allow_disposable_tmp=allow_disposable_tmp)
     if not stat.S_ISDIR(info.st_mode):
         _blocked("ENVIRONMENT_ROOT_MISSING", "approved environment root is not a directory")
     if info.st_uid != policy.owner_uid:
@@ -151,6 +184,8 @@ def _validate_root(path: Path, policy: _RootPolicy) -> None:
 class ResearchEnvironmentSettings:
     _roots: tuple[Path, Path, Path, Path]
     _policies: tuple[tuple[Path, _RootPolicy], ...]
+    _package6_fixture: tuple[tuple[str, str], ...]
+    _semantic_authority_path: Path | None
 
     def __repr__(self) -> str:
         return "ResearchEnvironmentSettings(validated=True, credentials=0)"
@@ -164,9 +199,16 @@ class ResearchEnvironmentSettings:
         roots = tuple(root for root, _ in policies)
         for root, policy in policies:
             _validate_root(root, policy)
+        if any(key in values for key in _PACKAGE6_FIXTURE_KEYS):
+            _blocked(
+                "ENVIRONMENT_PACKAGE6_AUTHORITY_FORBIDDEN",
+                "Package 6 fixture authority requires validated v2 authority",
+            )
         settings = cls()
         object.__setattr__(settings, "_roots", roots)
         object.__setattr__(settings, "_policies", policies)
+        object.__setattr__(settings, "_package6_fixture", ())
+        object.__setattr__(settings, "_semantic_authority_path", None)
         _ISSUED_SETTINGS.add(settings)
         return settings
 
@@ -188,13 +230,65 @@ class ResearchEnvironmentSettings:
                 "ENVIRONMENT_PATH_OVERRIDE_FORBIDDEN",
                 "runtime path and root overrides are forbidden",
             )
-        policies = _root_policies(authority.runtime_paths)
+        runtime_paths = cast(RuntimePathsV2, authority.runtime_paths)
+        policies = _root_policies(runtime_paths)
         roots = tuple(root for root, _ in policies)
         for root, policy in policies:
-            _validate_root(root, policy)
+            _validate_root(
+                root,
+                policy,
+                allow_disposable_tmp=(
+                    getattr(authority, "scope", "") == "PACKAGE6_STAGING_ONLY"
+                    and authority._material is not None
+                    and root.is_relative_to(authority._material.disposable_root)
+                ),
+            )
+        supplied = tuple(values.get(key) for key in _PACKAGE6_FIXTURE_KEYS)
+        if any(value is not None for value in supplied):
+            if not all(isinstance(value, str) and value for value in supplied):
+                _blocked(
+                    "ENVIRONMENT_PACKAGE6_AUTHORITY_INCOMPLETE",
+                    "Package 6 fixture authority is incomplete",
+                )
+            authority_value = supplied[0]
+            approval_value = supplied[1]
+            if not isinstance(authority_value, str) or not isinstance(
+                approval_value, str
+            ):
+                _blocked(
+                    "ENVIRONMENT_PACKAGE6_AUTHORITY_INCOMPLETE",
+                    "Package 6 fixture authority is incomplete",
+                )
+            authority_path = Path(authority_value)
+            if (
+                not authority_path.is_absolute()
+                or ".." in authority_path.parts
+                or str(authority_path) != os.path.normpath(authority_path)
+                or authority_path.parts[:2] != ("/", "tmp")
+                or _SHA256.fullmatch(approval_value) is None
+            ):
+                _blocked(
+                    "ENVIRONMENT_PACKAGE6_AUTHORITY_INVALID",
+                    "Package 6 fixture authority is invalid",
+                )
+            package6_fixture = tuple(
+                zip(
+                    _PACKAGE6_FIXTURE_KEYS,
+                    (authority_value, approval_value),
+                    strict=True,
+                )
+            )
+        else:
+            package6_fixture = ()
         settings = cls()
         object.__setattr__(settings, "_roots", roots)
         object.__setattr__(settings, "_policies", policies)
+        object.__setattr__(settings, "_package6_fixture", package6_fixture)
+        object.__setattr__(
+            settings,
+            "_semantic_authority_path",
+            runtime_paths.semantic_authority,
+        )
         _ISSUED_SETTINGS.add(settings)
         return settings
 
@@ -212,7 +306,21 @@ def build_child_environment(settings: ResearchEnvironmentSettings) -> dict[str, 
     if len(policies) != 4 or settings._roots != roots:
         _blocked("ENVIRONMENT_ROOT_NOT_APPROVED", "environment settings no longer name the exact fixed roots")
     for root, policy in policies:
-        _validate_root(root, policy)
+        _validate_root(
+            root,
+            policy,
+            allow_disposable_tmp=(
+                settings._semantic_authority_path is not None
+                and root.parts[:2] == ("/", "tmp")
+            ),
+        )
+    package6_fixture = getattr(settings, "_package6_fixture", ())
+    fixture_keys = tuple(key for key, _ in package6_fixture)
+    if fixture_keys not in {(), _PACKAGE6_FIXTURE_KEYS}:
+        _blocked(
+            "ENVIRONMENT_PACKAGE6_AUTHORITY_INVALID",
+            "Package 6 fixture authority is not exact",
+        )
     data_root, reports_dir, signal_output_dir, scratch_home = roots
     child = {
         "PATH": FIXED_PATH,
@@ -223,6 +331,12 @@ def build_child_environment(settings: ResearchEnvironmentSettings) -> dict[str, 
         "TRADING_DATA_ROOT": str(data_root),
         "TRADING_REPORTS_DIR": str(reports_dir),
         "TRADING_SIGNAL_OUTPUT_DIR": str(signal_output_dir),
+        **(
+            {_SEMANTIC_AUTHORITY_PATH_ENV: str(settings._semantic_authority_path)}
+            if settings._semantic_authority_path is not None
+            else {}
+        ),
+        **dict(package6_fixture),
         "TRADING_MODE": "paper",
         "LIVE_EXECUTION_ENABLED": "false",
         "LIVE_TRADING_APPROVED": "false",

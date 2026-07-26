@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, NoReturn
 
 
 class ResearchSemanticInputError(RuntimeError):
@@ -84,7 +84,7 @@ _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 
-def _fail(message: str, exc: BaseException | None = None) -> None:
+def _fail(message: str, exc: BaseException | None = None) -> NoReturn:
     error = ResearchSemanticInputError(message)
     if exc is None:
         raise error
@@ -146,14 +146,16 @@ def _read_fd(fd: int, *, maximum: int, label: str) -> bytes:
     return b"".join(chunks)
 
 
-def _read_authority_file(parent_fd: int, name: str, label: str) -> bytes:
+def _read_authority_file(
+    parent_fd: int, name: str, label: str, *, owner_uid: int
+) -> bytes:
     file_fd = None
     try:
         file_fd = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=parent_fd)
         info = os.fstat(file_fd)
         if not stat.S_ISREG(info.st_mode):
             _fail(f"{label} is not a regular file")
-        if info.st_uid != TRUSTED_MANIFEST_OWNER_UID:
+        if info.st_uid != owner_uid:
             _fail(f"{label} owner is unsafe")
         if stat.S_IMODE(info.st_mode) != 0o444:
             _fail(f"{label} mode must be exactly 0444")
@@ -190,6 +192,8 @@ def _validate_plan_document(
     plan: Any,
     *, active_version: str, active_generated: str,
     authority_info: os.stat_result,
+    data_root: Path,
+    authority_path: Path,
 ) -> Mapping[str, Any]:
     if not isinstance(plan, dict) or set(plan) != _PLAN_FIELDS:
         _fail("approved semantic plan schema is invalid")
@@ -203,8 +207,8 @@ def _validate_plan_document(
         or not isinstance(expected_backend, str)
         or not _COMMIT.fullmatch(expected_backend)
         or plan["backend_commit"] != expected_backend
-        or plan["destination_root"] != str(APPROVED_RESEARCH_INPUT_ROOT)
-        or plan["active_authority_path"] != str(APPROVED_MANIFEST_PATH)
+        or plan["destination_root"] != str(data_root)
+        or plan["active_authority_path"] != str(authority_path)
         or plan["runtime_uid"] != EXPECTED_INPUT_OWNER_UID
         or plan["runtime_gid"] != EXPECTED_INPUT_OWNER_GID
         or type(plan["validity_minutes"]) is not int
@@ -263,14 +267,21 @@ def _validate_plan_document(
 
 
 def _open_external_manifest(
+    authority_path: Path,
+    data_root: Path,
+    *,
+    authority_owner_uid: int,
 ) -> tuple[bytes, str, str, str, str, str, str, Mapping[str, Any]]:
     parent_fd = _open_absolute_directory(
-        APPROVED_MANIFEST_PATH.parent,
-        allowed_owners={0, TRUSTED_MANIFEST_OWNER_UID},
+        authority_path.parent,
+        allowed_owners={0, authority_owner_uid},
     )
     try:
         active_raw = _read_authority_file(
-            parent_fd, APPROVED_MANIFEST_PATH.name, "active semantic authority",
+            parent_fd,
+            authority_path.name,
+            "active semantic authority",
+            owner_uid=authority_owner_uid,
         )
         try:
             active = json.loads(active_raw)
@@ -319,7 +330,10 @@ def _open_external_manifest(
             _fail("active semantic authority plan binding is invalid")
         active_generated = _parse_time(active["generated_at"], "active generated_at").isoformat()
         plan_raw = _read_authority_file(
-            parent_fd, plan_name, "approved semantic plan",
+            parent_fd,
+            plan_name,
+            "approved semantic plan",
+            owner_uid=authority_owner_uid,
         )
         actual_plan_digest = hashlib.sha256(plan_raw).hexdigest()
         if not hmac.compare_digest(actual_plan_digest, plan_digest):
@@ -337,9 +351,14 @@ def _open_external_manifest(
             active_version=version,
             active_generated=active_generated,
             authority_info=os.fstat(parent_fd),
+            data_root=data_root,
+            authority_path=authority_path,
         )
         raw = _read_authority_file(
-            parent_fd, manifest_name, "version semantic manifest",
+            parent_fd,
+            manifest_name,
+            "version semantic manifest",
+            owner_uid=authority_owner_uid,
         )
     finally:
         os.close(parent_fd)
@@ -451,10 +470,10 @@ def _validate_input_directory(info: os.stat_result, label: str) -> None:
         _fail(f"semantic input directory mode is unsafe: {label}")
 
 
-def _validate_input_parent(info: os.stat_result) -> None:
+def _validate_input_parent(info: os.stat_result, *, owner_uid: int) -> None:
     if not stat.S_ISDIR(info.st_mode):
         _fail("semantic input parent is invalid")
-    if info.st_uid != TRUSTED_INPUT_PARENT_OWNER_UID:
+    if info.st_uid != owner_uid:
         _fail("semantic input parent owner is unsafe")
     if stat.S_IMODE(info.st_mode) & 0o022:
         _fail("semantic input parent mode is unsafe")
@@ -553,11 +572,34 @@ class SnapshotSemanticInputs:
         }
 
 
+def _validated_path_profile(data_root: Path) -> tuple[Path, int]:
+    authority_value = os.environ.get("TRADING_SEMANTIC_AUTHORITY_PATH")
+    if authority_value is None:
+        if data_root != APPROVED_RESEARCH_INPUT_ROOT:
+            _fail("semantic input root is not the code-approved root")
+        return APPROVED_MANIFEST_PATH, TRUSTED_MANIFEST_OWNER_UID
+    authority_path = Path(authority_value)
+    if (
+        not data_root.is_absolute()
+        or not authority_path.is_absolute()
+        or ".." in data_root.parts
+        or ".." in authority_path.parts
+        or str(data_root) != os.path.normpath(data_root)
+        or str(authority_path) != os.path.normpath(authority_path)
+        or data_root.parts[:2] != ("/", "tmp")
+        or authority_path.parts[:2] != ("/", "tmp")
+        or data_root.name != "input"
+        or authority_path.name != "active.json"
+        or data_root.parent != authority_path.parent
+    ):
+        _fail("disposable semantic path profile is invalid")
+    return authority_path, os.geteuid()
+
+
 def load_snapshot_semantic_inputs(data_root: Path) -> SnapshotSemanticInputs:
     """Load one externally attested snapshot with descriptor-anchored reads."""
     root = Path(data_root)
-    if root != APPROVED_RESEARCH_INPUT_ROOT:
-        _fail("semantic input root is not the code-approved root")
+    authority_path, authority_owner_uid = _validated_path_profile(root)
     root_fd = _open_absolute_directory(
         root, allowed_owners={
             0, TRUSTED_INPUT_PARENT_OWNER_UID, EXPECTED_INPUT_OWNER_UID,
@@ -565,11 +607,22 @@ def load_snapshot_semantic_inputs(data_root: Path) -> SnapshotSemanticInputs:
     )
     version_fd = None
     try:
-        _validate_input_parent(os.fstat(root_fd))
+        _validate_input_parent(
+            os.fstat(root_fd),
+            owner_uid=(
+                TRUSTED_INPUT_PARENT_OWNER_UID
+                if authority_path == APPROVED_MANIFEST_PATH
+                else os.geteuid()
+            ),
+        )
         (
             manifest_raw, manifest_digest, active_version, input_directory,
             active_plan_path, active_plan_digest, active_generated_at, approved_plan,
-        ) = _open_external_manifest()
+        ) = _open_external_manifest(
+            authority_path,
+            root,
+            authority_owner_uid=authority_owner_uid,
+        )
         if approved_plan["input_parent_attestation"] != _attestation(os.fstat(root_fd)):
             _fail("approved semantic plan input parent attestation mismatch")
         version_fd = os.open(

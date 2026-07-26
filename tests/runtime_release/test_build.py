@@ -382,6 +382,7 @@ def test_phase4_backend_audited_set_is_exact_stdlib_paper_runtime() -> None:
         "job_attribution.py",
         "paper_main.py",
         "paper_runtime_manifest.json",
+        "provider_free_fixture.py",
         "research_semantics.py",
     }
     assert len(paths) == len(PHASE4_BACKEND_AUDITED_PATHS)

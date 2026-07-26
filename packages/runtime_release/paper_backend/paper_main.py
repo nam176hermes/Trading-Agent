@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import sys
 from typing import Mapping
@@ -49,6 +50,20 @@ from research_semantics import (  # noqa: E402
     SnapshotSemanticInputs,
     load_snapshot_semantic_inputs,
 )
+if __package__:
+    from .provider_free_fixture import (  # noqa: E402
+        PACKAGE6_APPROVAL_SHA256_ENV,
+        PACKAGE6_FIXTURE_AUTHORITY_PATH_ENV,
+        FixtureAuthorityError,
+        load_provider_free_fixture,
+    )
+else:
+    from provider_free_fixture import (  # type: ignore[no-redef]  # noqa: E402
+        PACKAGE6_APPROVAL_SHA256_ENV,
+        PACKAGE6_FIXTURE_AUTHORITY_PATH_ENV,
+        FixtureAuthorityError,
+        load_provider_free_fixture,
+    )
 
 
 WATCHLIST = ("BTC", "ETH", "SOL", "TON", "DOGE", "ADA", "AVAX", "DOT", "LINK", "MATIC")
@@ -106,17 +121,62 @@ def _public_market_snapshot() -> Mapping[str, Mapping[str, object]]:
     }
 
 
+def _fixture_market_snapshot():
+    authority_path = os.environ.get(PACKAGE6_FIXTURE_AUTHORITY_PATH_ENV)
+    approval_sha256 = os.environ.get(PACKAGE6_APPROVAL_SHA256_ENV)
+    expected_backend = os.environ.get("TRADING_RESEARCH_BACKEND_COMMIT")
+    supplied = (authority_path, approval_sha256, expected_backend)
+    if all(value is None for value in supplied):
+        return None
+    if not all(isinstance(value, str) and value for value in supplied):
+        raise FixtureAuthorityError(
+            "fixture requires complete spawn-bound Package 6 authority"
+        )
+    if (
+        not isinstance(authority_path, str)
+        or not isinstance(approval_sha256, str)
+        or not isinstance(expected_backend, str)
+    ):
+        raise FixtureAuthorityError(
+            "fixture requires complete spawn-bound Package 6 authority"
+        )
+    return load_provider_free_fixture(
+        Path(authority_path),
+        expected_backend_commit=expected_backend,
+        expected_package6_approval_sha256=approval_sha256,
+    )
+
+
+def _approved_market_snapshot() -> tuple[
+    Mapping[str, Mapping[str, object]], dict[str, str]
+]:
+    fixture = _fixture_market_snapshot()
+    if fixture is not None:
+        return fixture.market, {
+            "market_data_provenance": fixture.provenance,
+            "fixture_sha256": fixture.sha256,
+        }
+    return _public_market_snapshot(), {"market_data_provenance": "COINGECKO_PUBLIC"}
+
+
 def build_snapshot_report(
     semantic: SnapshotSemanticInputs,
     market: Mapping[str, Mapping[str, object]],
+    provenance: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
+    market_source = (
+        "deterministic_provider_free_fixture"
+        if (provenance or {}).get("market_data_provenance")
+        == "DETERMINISTIC_PROVIDER_FREE_V1"
+        else "coingecko_public"
+    )
     assets: list[dict[str, object]] = []
     for symbol in WATCHLIST:
         observed = market.get(symbol, {})
         assets.append(
             {
                 "symbol": symbol,
-                "source": "coingecko_public" if observed else "unavailable",
+                "source": market_source if observed else "unavailable",
                 "current_price": observed.get("current_price"),
                 "market_cap": observed.get("market_cap"),
                 "volume_24h": observed.get("total_volume"),
@@ -133,6 +193,7 @@ def build_snapshot_report(
         "artifact_class": "CANONICAL_PAPER_V1",
         "assets": assets,
         "semantic_input_fingerprint": semantic.source_fingerprint,
+        **dict(provenance or {}),
     }
 
 
@@ -142,8 +203,22 @@ def main() -> int:
     invocation = bootstrap_strict_worker_invocation()
     if invocation is None or invocation.reports_dir is None:
         raise ResearchInvocationError("canonical paper snapshot requires attributed worker context")
-    semantic = load_snapshot_semantic_inputs(APPROVED_RESEARCH_INPUT_ROOT)
-    report = with_lineage(build_snapshot_report(semantic, _public_market_snapshot()), invocation)
+    semantic_root_value = os.environ.get("TRADING_DATA_ROOT")
+    semantic_authority_value = os.environ.get(
+        "TRADING_SEMANTIC_AUTHORITY_PATH"
+    )
+    if (semantic_root_value is None) != (semantic_authority_value is None):
+        raise ResearchInvocationError(
+            "staging semantic authority requires complete issued paths"
+        )
+    semantic_root = (
+        APPROVED_RESEARCH_INPUT_ROOT
+        if semantic_root_value is None
+        else Path(semantic_root_value)
+    )
+    semantic = load_snapshot_semantic_inputs(semantic_root)
+    market, provenance = _approved_market_snapshot()
+    report = with_lineage(build_snapshot_report(semantic, market, provenance), invocation)
     suffix = invocation.attempt_id
     if suffix is None:
         raise ResearchInvocationError("canonical paper snapshot requires an attempt ID")

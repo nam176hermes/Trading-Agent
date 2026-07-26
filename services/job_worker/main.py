@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import time
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Mapping, NoReturn
 
 from services.job_store.config import JobStoreSettings
 from services.job_store.worker_repository import WorkerRepository
@@ -45,6 +45,7 @@ def build_worker(
         raise ValueError("worker lease is code-owned and cannot be overridden")
     selected_authority = authority or attest_worker_runtime_authority()
     runtime_authority = selected_authority.runtime_authority
+    safety_authority = getattr(runtime_authority, "safety", None)
     environment = ResearchEnvironmentSettings.from_authority(
         runtime_authority, values
     )
@@ -53,7 +54,10 @@ def build_worker(
         selected_authority.safety_snapshot_path,
         expected_exporter_commit=selected_authority.safety_exporter_commit,
         expected_source_fingerprint=selected_authority.safety_source_fingerprint,
-        protected_root_owned=True,
+        expected_owner_uid=getattr(safety_authority, "expected_owner_uid", 0),
+        protected_root_owned=getattr(
+            safety_authority, "protected_root_owned", True
+        ),
     )
     safety_preflight = AuthorityBoundSafetyPreflight(selected_authority, safety)
     # Fail before the worker can recover leases, claim, or construct a runner.
@@ -102,7 +106,7 @@ def serve(
     *,
     idle_seconds: float,
     authority: WorkerRuntimeAuthority | None = None,
-) -> None:
+) -> NoReturn:
     """Recover crash leftovers once, then enter the single-worker claim loop.
 
     Recovery exceptions intentionally escape and stop the service.  Claiming a

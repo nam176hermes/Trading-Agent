@@ -14,7 +14,7 @@ import re
 import stat
 import subprocess
 import sys
-from typing import Any
+from typing import Any, cast
 
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -38,13 +38,16 @@ _LOCKS = {
 }
 _PAPER_PATHS = (
     "job_attribution.py", "paper_main.py", "paper_runtime_manifest.json",
-    "research_semantics.py",
+    "provider_free_fixture.py", "research_semantics.py",
 )
 _PAPER_SOURCE_MAPPING = {
-    "legacy/research-backend/job_attribution.py": "job_attribution.py",
+    "packages/runtime_release/paper_backend/job_attribution.py": "job_attribution.py",
     "packages/runtime_release/paper_backend/paper_main.py": "paper_main.py",
     "packages/runtime_release/paper_backend/paper_runtime_manifest.json": (
         "paper_runtime_manifest.json"
+    ),
+    "packages/runtime_release/paper_backend/provider_free_fixture.py": (
+        "provider_free_fixture.py"
     ),
     "packages/runtime_release/paper_backend/research_semantics.py": (
         "research_semantics.py"
@@ -69,6 +72,7 @@ _PAPER_APPLICATION_SOURCE_MAPPING = {
     'packages/runtime_release/paper_application/runtime_release_config.py': 'packages/runtime_release/config.py',
     'packages/runtime_release/paper_application/runtime_release_job_plane.py': 'packages/runtime_release/job_plane.py',
     'packages/runtime_release/paper_application/runtime_release_semantic.py': 'packages/runtime_release/semantic.py',
+    'packages/runtime_release/staging_v2.py': 'packages/runtime_release/staging_v2.py',
     'packages/safety_evidence.py': 'packages/safety_evidence.py',
     'packages/runtime_release/paper_application/pyproject.toml': 'pyproject.toml',
     'services/__init__.py': 'services/__init__.py',
@@ -102,7 +106,7 @@ _PAPER_FORCED_ENVIRONMENT = {
     "TRADING_MODE": "paper",
 }
 _PAPER_STDLIB_IMPORTS = (
-    "__future__", "dataclasses", "datetime", "hashlib", "hmac", "json", "os",
+    "__future__", "dataclasses", "datetime", "hashlib", "hmac", "json", "math", "os",
     "pathlib", "re", "secrets", "stat", "sys", "types", "typing", "urllib",
 )
 _PAPER_PYTHON_RUNTIME_PROVENANCE = {
@@ -122,6 +126,8 @@ _EXPECTED_PYTHON_RUNTIME_CORE_SHA256 = (
     "39632162b32a97b4ccd3f3dd5f79d0735137f9247401835d1287b433dc83dcf7"
 )
 _PAPER_UV_PROVENANCE = {"identity": "uv 0.11.7 (x86_64-unknown-linux-gnu)", "sha256": "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"}
+_APPLICATION_IMPORT_PATH = "application/.venv/lib/python3.11/site-packages/trading-agent-paper-application.pth"
+_APPLICATION_IMPORT_PATH_BYTES = b"../../../..\n"
 _EXPECTED_APPLICATION_DEPENDENCY_PROVENANCE = {"file_count": 546, "installed_file_set_sha256": "d5e97e6843205315334f0665badfd75e58ef6893af033ca9cbdd7155df89b1aa", "lock_sha256": "a4fac2d6f0587c534555e6d8c3ca9c22460ba18b09e5eb684c7b38409ce2d759", "manifest_sha256": "a98d670fe49964f71aabb9be3daaeb062412452329a72a6616e0f4f40681cba6", "provenance_file_set_sha256": "687b409c91b40ed2293e09bca8bab1d53779fb58425c8ab56d29e459ec209603", "schema_version": 1, "uv_sha256": "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4", "wheel_count": 16, "wheelhouse_aggregate_sha256": "6871c43d484d58d6fd3b17c10357830fa4284cdcb6489968eaf3d4e348fc311d"}
 
 _PYTHON_RUNTIME_CONFIG = (
@@ -285,7 +291,7 @@ def _git_tree_ids(entries: list[dict[str, object]]) -> dict[str, str]:
                 object_id = seal(value, f"{prefix}/{name}".strip("/"))
                 mode = "40000"
             else:
-                mode, object_id = value
+                mode, object_id = cast(tuple[str, str], value)
             material.extend(f"{mode} ".encode("ascii") + name_raw + b"\0")
             material.extend(bytes.fromhex(str(object_id)))
         object_id = _git_object_id("tree", bytes(material))
@@ -638,6 +644,28 @@ def _inspect_paper_application(
 ) -> None:
     forbidden_site_packages = {"alembic", "greenlet", "mako", "sqlalchemy"}
     site_prefix = "application/.venv/lib/python3.11/site-packages/"
+    import_path_entry = by_path.get(_APPLICATION_IMPORT_PATH)
+    import_path_files = {
+        path
+        for path, entry in by_path.items()
+        if path.startswith(site_prefix)
+        and path.endswith(".pth")
+        and entry["type"] == "file"
+    }
+    if (
+        import_path_files != {_APPLICATION_IMPORT_PATH}
+        or import_path_entry
+        != {
+            "mode": "0444",
+            "path": _APPLICATION_IMPORT_PATH,
+            "sha256": _sha_bytes(_APPLICATION_IMPORT_PATH_BYTES),
+            "size": len(_APPLICATION_IMPORT_PATH_BYTES),
+            "type": "file",
+        }
+        or (stage / _APPLICATION_IMPORT_PATH).read_bytes()
+        != _APPLICATION_IMPORT_PATH_BYTES
+    ):
+        raise Rejected
     for path in by_path:
         if not path.startswith(site_prefix):
             continue
@@ -815,7 +843,7 @@ def _render_unit(name: str, spec: dict[str, object]) -> bytes:
         if name == "trading-job-api.service"
         else "Environment=TRADING_ALLOWED_JOB_TYPES=SNAPSHOT\n"
     )
-    argv = " ".join(str(item) for item in spec["argv"])
+    argv = " ".join(str(item) for item in cast(list[object], spec["argv"]))
     credential_references = _credential_references(name)
     if spec.get("credential_references") != credential_references:
         raise Rejected
@@ -977,7 +1005,9 @@ def verify(
             "size": item["size"],
         }
         for path, item in sorted(by_path.items(), key=lambda pair: os.fsencode(pair[0]))
-        if path.startswith(installed_prefix) and item["type"] == "file"
+        if path.startswith(installed_prefix)
+        and path != _APPLICATION_IMPORT_PATH
+        and item["type"] == "file"
     ]
     if (
         dependency["file_count"] != len(installed_dependencies)

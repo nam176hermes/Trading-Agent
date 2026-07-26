@@ -6,12 +6,14 @@ umask 077
 
 # Independently reviewed source pin. A digest declared only by the candidate
 # authority is never sufficient to select code for privileged verification.
-PINNED_VERIFIER_SHA256='325ca439f8428a4935c00b2500ce199889ad40c0adec7a62d5779997104a6b46'
+PINNED_VERIFIER_SHA256='35472681d4edee23e91df7de65626b4a5a4fd86f58369b6a14361a6f56241acd'
 
 fail() {
   printf '%s\n' 'release authority v2 provisioning rejected' >&2
   exit 2
 }
+
+ROOT_UID=$(stat -c '%u' -- /) || fail
 
 safe_directory_chain() {
   local current=$1 require_private_leaf=${2:-true} uid mode first=true
@@ -19,12 +21,12 @@ safe_directory_chain() {
   while :; do
     uid=$(stat -c '%u' -- "$current") || return 1
     mode=$(stat -c '%a' -- "$current") || return 1
-    [[ $uid == 0 || $uid == "$EUID" ]] || return 1
+    [[ $uid == "$ROOT_UID" || $uid == "$EUID" ]] || return 1
     if [[ $first == true && $require_private_leaf == true ]]; then
       (( (8#$mode & 07022) == 0 )) || return 1
       first=false
     elif (( (8#$mode & 0022) != 0 )); then
-      (( uid == 0 && (8#$mode & 01000) != 0 && (8#$mode & 07000) == 01000 )) || return 1
+      (( uid == ROOT_UID && (8#$mode & 01000) != 0 && (8#$mode & 07000) == 01000 )) || return 1
     else
       (( (8#$mode & 07000) == 0 )) || return 1
     fi
