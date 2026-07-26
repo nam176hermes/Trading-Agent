@@ -589,6 +589,81 @@ def test_start_tracks_the_exact_environment_supplied_to_each_popen(
     assert set(captured["worker"]) == set(child_environment_key_sets()["worker"])
 
 
+def test_wait_ready_allows_valid_response_beyond_half_second_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capability = _runtime_capability(tmp_path)
+    operation = capability.operations["job-api.start"]
+    object.__setattr__(operation, "bind_host", "127.0.0.1")
+    object.__setattr__(operation, "port", 8401)
+    clock = iter(float(tick) for tick in range(100))
+    controller = Package6Controller(capability, monotonic=lambda: next(clock))
+    identity = TrackedProcessIdentity(
+        operation_id=operation.operation_id,
+        component=operation.component,
+        pid=4101,
+        process_group=4101,
+        start_ticks=5101,
+        environment=SpawnEnvironmentEvidence(
+            component=operation.component,
+            operation_id=operation.operation_id,
+            pid=4101,
+            process_group=4101,
+            start_ticks=5101,
+            keys=(),
+        ),
+    )
+
+    class RunningProcess:
+        def poll(self) -> None:
+            return None
+
+    class ReadyResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self, limit: int) -> bytes:
+            assert limit == 16 * 1024
+            return b'{"data":{"status":"READY"}}'
+
+    probe_timeouts: list[float] = []
+
+    def delayed_ready_response(url: str, *, timeout: float):
+        assert url == "http://127.0.0.1:8401/health/ready"
+        probe_timeouts.append(timeout)
+        if timeout <= 0.5:
+            raise TimeoutError("valid readiness response needs more than 0.5 seconds")
+        return ReadyResponse()
+
+    controller._tracked[operation.component] = (
+        cast(subprocess.Popen[bytes], RunningProcess()),
+        identity,
+    )
+    monkeypatch.setattr(
+        "services.paper_runtime.controller._start_ticks", lambda pid: 5101
+    )
+    monkeypatch.setattr(
+        controller, "_listener_inode", lambda host, port, pid: 6101
+    )
+    monkeypatch.setattr(
+        "services.paper_runtime.controller.urlopen", delayed_ready_response
+    )
+    monkeypatch.setattr(
+        "services.paper_runtime.controller.time.sleep", lambda seconds: None
+    )
+
+    readiness = controller.wait_ready("job-api.start")
+
+    assert readiness.status == "READY"
+    assert readiness.listener_inode == 6101
+    assert probe_timeouts and probe_timeouts[0] > 0.5
+
+
 def test_controller_runs_exact_argv_and_writes_stable_hash_index(tmp_path: Path) -> None:
     script = (
         "import json,os;"

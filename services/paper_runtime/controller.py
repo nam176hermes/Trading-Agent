@@ -35,6 +35,9 @@ from scripts.validate_package6_runtime_approval import (
 )
 
 
+_READINESS_PROBE_TIMEOUT_SECONDS = 5.0
+
+
 class SourceDrift(RuntimeError):
     """Candidate identity changed immediately before process creation."""
 
@@ -615,10 +618,13 @@ class Package6Controller:
                 operation.bind_host, operation.port, identity.pid
             )
             if inode >= 0:
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    break
                 try:
                     with urlopen(  # noqa: S310 - exact approved loopback URL
                         f"http://{operation.bind_host}:{operation.port}/health/ready",
-                        timeout=0.5,
+                        timeout=min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining),
                     ) as response:
                         payload = json.loads(response.read(16 * 1024))
                     if (
