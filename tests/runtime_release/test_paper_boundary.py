@@ -134,6 +134,53 @@ def test_package6_application_projection_preserves_fixture_authority_without_cre
     assert "API_KEY" not in projected
 
 
+def test_package6_projected_command_registry_serializes_v2_command_document() -> None:
+    mapping = dict(PAPER_APPLICATION_SOURCE_MAPPING)
+    staged_path = "services/job_worker/command_registry.py"
+    projected_source = (
+        "packages/runtime_release/paper_application/command_registry.py"
+    )
+    assert mapping[staged_path] == projected_source
+
+    module_name = "services.job_worker._package6_projected_command_registry"
+    spec = importlib.util.spec_from_file_location(module_name, ROOT / projected_source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        authority = types.SimpleNamespace(
+            backend_python=Path("/opt/projected/backend/.venv/bin/python3.11"),
+            backend_root=Path("/opt/projected/backend"),
+        )
+        document = module._expected_v2_command_document(authority)
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert document == {
+        "commands": [
+            {
+                "argv": [
+                    "/opt/projected/backend/.venv/bin/python3.11",
+                    "-I",
+                    "-B",
+                    "paper_main.py",
+                ],
+                "cwd": "/opt/projected/backend",
+                "environment_policy": "CANONICAL_PAPER_CHILD_V1",
+                "executable": "/opt/projected/backend/.venv/bin/python3.11",
+                "job_type": "SNAPSHOT",
+                "shell": False,
+            }
+        ],
+        "manifest_sha256": (
+            "927bb4b9cda1a573001e90aec0c3b84e"
+            "959fe7706b350e47a226cb66ab269d62"
+        ),
+        "schema_version": 3,
+    }
+
+
 def test_package6_job_contract_projection_matches_snapshot_database_authority() -> None:
     from pydantic import ValidationError
 
