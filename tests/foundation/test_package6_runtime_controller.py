@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 from types import MappingProxyType
@@ -589,15 +590,31 @@ def test_start_tracks_the_exact_environment_supplied_to_each_popen(
     assert set(captured["worker"]) == set(child_environment_key_sets()["worker"])
 
 
-def test_wait_ready_allows_valid_response_beyond_half_second_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("response_crosses_deadline", (False, True))
+def test_wait_ready_enforces_global_deadline_around_delayed_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    response_crosses_deadline: bool,
 ) -> None:
     capability = _runtime_capability(tmp_path)
     operation = capability.operations["job-api.start"]
     object.__setattr__(operation, "bind_host", "127.0.0.1")
     object.__setattr__(operation, "port", 8401)
-    clock = iter(float(tick) for tick in range(100))
-    controller = Package6Controller(capability, monotonic=lambda: next(clock))
+
+    class ProbeClock:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.expired = False
+
+        def __call__(self) -> float:
+            if self.expired:
+                return 11.0
+            value = float(self.calls)
+            self.calls += 1
+            return value
+
+    clock = ProbeClock()
+    controller = Package6Controller(capability, monotonic=clock)
     identity = TrackedProcessIdentity(
         operation_id=operation.operation_id,
         component=operation.component,
@@ -629,13 +646,20 @@ def test_wait_ready_allows_valid_response_beyond_half_second_probe(
 
         def read(self, limit: int) -> bytes:
             assert limit == 16 * 1024
+            if response_crosses_deadline:
+                clock.expired = True
             return b'{"data":{"status":"READY"}}'
 
     probe_timeouts: list[float] = []
+    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
 
     def delayed_ready_response(url: str, *, timeout: float):
         assert url == "http://127.0.0.1:8401/health/ready"
         probe_timeouts.append(timeout)
+        alarm_remaining, alarm_interval = signal.getitimer(signal.ITIMER_REAL)
+        assert 0 < alarm_remaining <= timeout
+        assert alarm_interval == 0
+        assert callable(signal.getsignal(signal.SIGALRM))
         if timeout <= 0.5:
             raise TimeoutError("valid readiness response needs more than 0.5 seconds")
         return ReadyResponse()
@@ -657,11 +681,16 @@ def test_wait_ready_allows_valid_response_beyond_half_second_probe(
         "services.paper_runtime.controller.time.sleep", lambda seconds: None
     )
 
-    readiness = controller.wait_ready("job-api.start")
-
-    assert readiness.status == "READY"
-    assert readiness.listener_inode == 6101
+    if response_crosses_deadline:
+        with pytest.raises(RuntimeError, match="approved Job API readiness timeout"):
+            controller.wait_ready("job-api.start")
+    else:
+        readiness = controller.wait_ready("job-api.start")
+        assert readiness.status == "READY"
+        assert readiness.listener_inode == 6101
     assert probe_timeouts and probe_timeouts[0] > 0.5
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
 
 
 def test_controller_runs_exact_argv_and_writes_stable_hash_index(tmp_path: Path) -> None:

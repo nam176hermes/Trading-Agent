@@ -38,6 +38,10 @@ from scripts.validate_package6_runtime_approval import (
 _READINESS_PROBE_TIMEOUT_SECONDS = 5.0
 
 
+def _raise_readiness_probe_timeout(_signum: int, _frame: object) -> None:
+    raise TimeoutError("readiness probe exceeded approved timeout")
+
+
 class SourceDrift(RuntimeError):
     """Candidate identity changed immediately before process creation."""
 
@@ -621,16 +625,33 @@ class Package6Controller:
                 remaining = deadline - self._monotonic()
                 if remaining <= 0:
                     break
+                probe_timeout = min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining)
+                if any(signal.getitimer(signal.ITIMER_REAL)):
+                    raise RuntimeError("readiness probe timer authority is unavailable")
+                previous_handler = signal.signal(
+                    signal.SIGALRM, _raise_readiness_probe_timeout
+                )
                 try:
-                    with urlopen(  # noqa: S310 - exact approved loopback URL
-                        f"http://{operation.bind_host}:{operation.port}/health/ready",
-                        timeout=min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining),
-                    ) as response:
-                        payload = json.loads(response.read(16 * 1024))
-                    if (
-                        response.status == 200
+                    try:
+                        signal.setitimer(signal.ITIMER_REAL, probe_timeout)
+                        with urlopen(  # noqa: S310 - exact approved loopback URL
+                            f"http://{operation.bind_host}:{operation.port}/health/ready",
+                            timeout=probe_timeout,
+                        ) as response:
+                            response_status = response.status
+                            payload = json.loads(response.read(16 * 1024))
+                    finally:
+                        try:
+                            signal.setitimer(signal.ITIMER_REAL, 0.0)
+                        finally:
+                            signal.signal(signal.SIGALRM, previous_handler)
+                    ready = (
+                        response_status == 200
                         and payload.get("data", {}).get("status") == "READY"
-                    ):
+                    )
+                    if self._monotonic() >= deadline:
+                        break
+                    if ready:
                         return ReadinessEvidence(
                             operation_id=operation.operation_id,
                             pid=identity.pid,
@@ -641,7 +662,10 @@ class Package6Controller:
                         )
                 except (OSError, ValueError, json.JSONDecodeError):
                     pass
-            time.sleep(0.05)
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
         raise RuntimeError("approved Job API readiness timeout")
 
     @staticmethod
