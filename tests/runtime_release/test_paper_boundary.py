@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import io
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tarfile
 import tomllib
+import types
 
 import pytest
 
@@ -130,6 +132,71 @@ def test_package6_application_projection_preserves_fixture_authority_without_cre
     assert "TRADING_PACKAGE6_APPROVAL_SHA256" in projected
     assert "_RESEARCH_KEYS" not in projected
     assert "API_KEY" not in projected
+
+
+def test_package6_job_contract_projection_matches_snapshot_database_authority() -> None:
+    from pydantic import ValidationError
+
+    mapping = dict(PAPER_APPLICATION_SOURCE_MAPPING)
+    assert mapping["packages/job_contracts/payloads.py"] == (
+        "packages/runtime_release/paper_application/job_contracts_payloads.py"
+    )
+    package_name = "_package6_projected_job_contracts"
+    package = types.ModuleType(package_name)
+    package.__path__ = []
+    sys.modules[package_name] = package
+
+    def load_projected_module(name: str, source: str) -> types.ModuleType:
+        qualified_name = f"{package_name}.{name}"
+        spec = importlib.util.spec_from_file_location(qualified_name, ROOT / source)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[qualified_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    try:
+        enums = load_projected_module(
+            "enums",
+            "packages/runtime_release/paper_application/job_contracts_enums.py",
+        )
+        payloads = load_projected_module(
+            "payloads",
+            mapping["packages/job_contracts/payloads.py"],
+        )
+        api = load_projected_module(
+            "api",
+            "packages/runtime_release/paper_application/job_contracts_api.py",
+        )
+    finally:
+        sys.modules.pop(f"{package_name}.api", None)
+        sys.modules.pop(f"{package_name}.payloads", None)
+        sys.modules.pop(f"{package_name}.enums", None)
+        sys.modules.pop(package_name, None)
+
+    payload = payloads.SnapshotPayload.model_validate(
+        {"scope": "default", "requested_as_of": None}
+    )
+    body = api.EnqueueJobBody.model_validate(
+        {
+            "job_type": "SNAPSHOT",
+            "payload": {"scope": "default", "requested_as_of": None},
+            "idempotency_key": "foundation:manual:snapshot:foundation-001",
+        }
+    )
+
+    assert tuple(payloads.SnapshotPayload.model_fields) == ("scope", "requested_as_of")
+    assert payload.model_dump(mode="json") == {
+        "scope": "default",
+        "requested_as_of": None,
+    }
+    assert body.job_type is enums.JobType.SNAPSHOT
+    assert body.payload == payload
+    with pytest.raises(ValidationError):
+        payloads.SnapshotPayload.model_validate(
+            {"assets": ["BTC"], "include_debate": True}
+        )
+    assert list(enums.JobType) == [enums.JobType.SNAPSHOT]
 
 
 def test_projected_result_validator_matches_canonical_report_path() -> None:
