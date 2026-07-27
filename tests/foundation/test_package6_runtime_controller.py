@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import time
 from types import MappingProxyType
 from typing import Callable, cast
 
@@ -690,6 +691,220 @@ def test_wait_ready_enforces_global_deadline_around_delayed_response(
         assert readiness.listener_inode == 6101
     assert probe_timeouts and probe_timeouts[0] > 0.5
     assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
+
+
+def _tracked_readiness_controller(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    startup_timeout_seconds: float,
+) -> Package6Controller:
+    capability = _runtime_capability(tmp_path)
+    object.__setattr__(
+        capability, "startup_timeout_seconds", startup_timeout_seconds
+    )
+    operation = capability.operations["job-api.start"]
+    object.__setattr__(operation, "bind_host", "127.0.0.1")
+    object.__setattr__(operation, "port", 8401)
+    identity = TrackedProcessIdentity(
+        operation_id=operation.operation_id,
+        component=operation.component,
+        pid=4101,
+        process_group=4101,
+        start_ticks=5101,
+        environment=SpawnEnvironmentEvidence(
+            component=operation.component,
+            operation_id=operation.operation_id,
+            pid=4101,
+            process_group=4101,
+            start_ticks=5101,
+            keys=(),
+        ),
+    )
+
+    class RunningProcess:
+        def poll(self) -> None:
+            return None
+
+    controller = Package6Controller(capability)
+    controller._tracked[operation.component] = (
+        cast(subprocess.Popen[bytes], RunningProcess()),
+        identity,
+    )
+    monkeypatch.setattr(
+        "services.paper_runtime.controller._start_ticks", lambda pid: 5101
+    )
+    monkeypatch.setattr(
+        controller, "_listener_inode", lambda host, port, pid: 6101
+    )
+    return controller
+
+
+def test_wait_ready_accepts_real_response_beyond_half_second(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = _tracked_readiness_controller(
+        tmp_path, monkeypatch, startup_timeout_seconds=2.0
+    )
+    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
+
+    class ReadyResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self, limit: int) -> bytes:
+            assert limit == 16 * 1024
+            return b'{"data":{"status":"READY"}}'
+
+    def delayed_ready_response(url: str, *, timeout: float):
+        assert timeout > 0.5
+        time.sleep(0.55)
+        return ReadyResponse()
+
+    monkeypatch.setattr(
+        "services.paper_runtime.controller.urlopen", delayed_ready_response
+    )
+    started = time.monotonic()
+    readiness = controller.wait_ready("job-api.start")
+    elapsed = time.monotonic() - started
+
+    assert readiness.status == "READY"
+    assert 0.5 <= elapsed < 1.5
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
+
+
+@pytest.mark.parametrize("blocked_phase", ("connect", "headers", "body"))
+def test_wait_ready_alarm_bounds_each_http_phase_and_restores_timer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    blocked_phase: str,
+) -> None:
+    controller = _tracked_readiness_controller(
+        tmp_path, monkeypatch, startup_timeout_seconds=0.2
+    )
+    monkeypatch.setattr(
+        "services.paper_runtime.controller._READINESS_PROBE_TIMEOUT_SECONDS", 0.05
+    )
+    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
+    calls = 0
+
+    class BlockingBodyResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self, limit: int) -> bytes:
+            assert blocked_phase == "body"
+            time.sleep(1.0)
+            return b'{"data":{"status":"READY"}}'
+
+    def blocking_response(url: str, *, timeout: float):
+        nonlocal calls
+        calls += 1
+        alarm_remaining, alarm_interval = signal.getitimer(signal.ITIMER_REAL)
+        assert 0 < alarm_remaining <= timeout <= 0.05
+        assert alarm_interval == 0
+        if blocked_phase in {"connect", "headers"}:
+            time.sleep(1.0)
+        return BlockingBodyResponse()
+
+    monkeypatch.setattr(
+        "services.paper_runtime.controller.urlopen", blocking_response
+    )
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="approved Job API readiness timeout"):
+        controller.wait_ready("job-api.start")
+    elapsed = time.monotonic() - started
+
+    assert calls >= 1
+    assert 0.15 <= elapsed < 0.75
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
+
+
+@pytest.mark.parametrize("failure", ("parse", "exception"))
+def test_wait_ready_restores_timer_after_response_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    controller = _tracked_readiness_controller(
+        tmp_path, monkeypatch, startup_timeout_seconds=0.05
+    )
+    monkeypatch.setattr(
+        "services.paper_runtime.controller._READINESS_PROBE_TIMEOUT_SECONDS", 0.02
+    )
+    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
+    observed_alarm = False
+
+    class InvalidResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self, limit: int) -> bytes:
+            return b"{"
+
+    def failed_response(url: str, *, timeout: float):
+        nonlocal observed_alarm
+        observed_alarm = signal.getitimer(signal.ITIMER_REAL)[0] > 0
+        if failure == "exception":
+            raise RuntimeError("synthetic readiness failure")
+        return InvalidResponse()
+
+    monkeypatch.setattr(
+        "services.paper_runtime.controller.urlopen", failed_response
+    )
+    if failure == "exception":
+        with pytest.raises(RuntimeError, match="synthetic readiness failure"):
+            controller.wait_ready("job-api.start")
+    else:
+        with pytest.raises(RuntimeError, match="approved Job API readiness timeout"):
+            controller.wait_ready("job-api.start")
+
+    assert observed_alarm is True
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
+
+
+def test_wait_ready_rejects_active_timer_without_touching_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = _tracked_readiness_controller(
+        tmp_path, monkeypatch, startup_timeout_seconds=1.0
+    )
+    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
+    contacted = False
+
+    def unexpected_response(url: str, *, timeout: float):
+        nonlocal contacted
+        contacted = True
+        raise AssertionError("HTTP must not run while timer authority is occupied")
+
+    monkeypatch.setattr(signal, "getitimer", lambda which: (1.0, 0.0))
+    monkeypatch.setattr(
+        "services.paper_runtime.controller.urlopen", unexpected_response
+    )
+
+    with pytest.raises(RuntimeError, match="readiness probe timer authority"):
+        controller.wait_ready("job-api.start")
+
+    assert contacted is False
     assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
 
 
