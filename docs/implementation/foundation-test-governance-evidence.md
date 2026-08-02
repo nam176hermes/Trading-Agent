@@ -1,6 +1,6 @@
 # Foundation test governance evidence
 
-Date: 2026-07-24
+Date: 2026-08-02
 Package: Test skip governance and critical coverage
 
 ## Implemented controls
@@ -9,7 +9,7 @@ Package: Test skip governance and critical coverage
 - Collection-integrity detection for individual tests removed by repository hooks.
 - Fail-closed session status for any collected test that never executes.
 - Shared recursive Dashboard inventory consumed by `npm test` and governance, with file-qualified TAP and shell integration observations plus per-file zero-observation rejection.
-- Committed 242-entry skip and deselection allowlist sealing component, exact node ID, outcome and normalized reason.
+- Committed 246-entry skip and deselection allowlist sealing component, exact node ID, outcome and normalized reason.
 - Strict approved-category, field, ownership, expiry and approval validation.
 - New skip, stale allowlist, outcome drift and runtime-reason drift rejection.
 - Security-critical approval-metadata enforcement based on canonical component, path and category rules.
@@ -42,16 +42,16 @@ No existing failure was converted into a skip. No selection filter was broadened
 
 ## Critical coverage evidence
 
-Canonical checker result:
+Fresh canonical checker result:
 
 ```text
-652 passed, 44 skipped, 5 deselected in 10.11s
+692 passed, 44 skipped, 5 deselected in 10.35s
 packages/domain: lines=95.1359% branches=87.3737%
 packages/event_ledger: lines=95.2596% branches=90.1316%
 services/job_worker/safety.py: lines=86.8613% branches=80.3571%
 job state machine: lines=100.0000% branches=100.0000%
 transition authority: lines=86.3636% branches=78.2609%
-transition repositories: lines=58.7822% branches=28.8136%
+transition repositories: lines=85.4801% branches=75.4237%
 dashboard auth and mutation policy: lines=95.7684% branches=88.6792%
 ```
 
@@ -69,14 +69,14 @@ The report records status `pass` only when every required safety case appears in
 
 | Check | Result |
 |---|---:|
-| Managed entries | 242 |
+| Managed entries | 246 |
 | Root skips | 227 |
-| Root deselections | 13 |
+| Root deselections | 17 |
 | Legacy skips | 2 |
 | Dashboard skips | 0 |
 | Unknown categories | 0 |
 | Duplicate component/node pairs | 0 |
-| Security-critical entries | 238 |
+| Security-critical entries | 243 |
 | Security-critical entries without approval metadata | 0 |
 
 The supplied aggregate said 226 root skips. Two live full-suite observations found 227. The node-level live result is committed and the discrepancy is visible rather than normalized away.
@@ -95,9 +95,11 @@ This preserves the scanner and changes report placement instead of weakening sec
 
 ## Latest production-gate evidence
 
-`make check-critical-coverage` exited zero. It executed 652 Python tests and 52 focused dashboard tests, validated every exact required case and held every line, branch, denominator and covered-count ratchet.
+The transition-repository evidence now includes 23 additional provider-free cases for scheduler enqueue rollback and authority validation, read-filter boundaries, empty claims, lease-control and heartbeat validation, retry finalization, and expired-lease recovery observations. The measured transition-repository floor is 365/427 lines and 89/118 branches; the policy advances the next steps to 95% lines and 80% branches.
 
-`make check-test-skips` collected all three components and validated the exact 242-entry allowlist. Its merged report recorded 2,585 passing tests, zero failures, 229 skips, 13 deselections, zero not-run tests and 238 approval-blocked observations. Dashboard evidence came from the same recursive inventory used by `npm test`: 14 Node test files plus `dashboard-security.integration.sh` and `mode-auth.integration.sh`. The command exited zero.
+The final `make check-critical-coverage` run executed 692 Python tests and 52 focused dashboard tests, validated every exact required case, and held every line, branch, denominator and covered-count ratchet. Exit status: 0.
+
+`make check-test-skips` collected all three components and validated the exact 246-entry allowlist. Its merged report recorded 3,265 passing tests, zero failures, 229 skips, 17 deselections, zero not-run tests and 240 approval-blocked observations. Dashboard evidence came from the same recursive inventory used by `npm test`: 14 Node test files plus `dashboard-security.integration.sh` and `mode-auth.integration.sh`. The command exited zero.
 
 Portable source-authority integration separates strict and portable verification. Strict mode verifies source authority and imported bytes at each unique atomic introduction commit, while permitting legitimate later monorepo evolution. Portable audit is explicit and available only when every declared external repository is absent; it verifies introduction and HEAD against immutable embedded evidence. Partial authority availability, modified imported bytes, manifest identity drift, aggregate drift and coordinated authority-plus-manifest tampering fail closed. The complete consolidation suite passed 171 tests.
 

@@ -1,6 +1,6 @@
 # Foundation critical coverage
 
-Date: 2026-07-24
+Date: 2026-08-02
 Policy: `tests/critical-coverage-policy.json`
 Gate: `make check-critical-coverage`
 Long-term goals: at least 95% line coverage and 90% branch coverage for every critical unit
@@ -22,10 +22,10 @@ Coverage.py 7.10.6 runs through an ephemeral `uv` overlay. The project dependenc
 | `services/job_worker/safety.py` | 119/137, 86.8613% | 86.8613% | 45/56, 80.3571% | 80.3571% | Lines 90%, 93%, 95%; branches 85%, 90% |
 | Job state machine | 67/67, 100% | 100% | 16/16, 100% | 100% | Hold 100% |
 | Transition authority | 209/242, 86.3636% | 86.3636% | 72/92, 78.2609% | 78.2609% | Lines 90%, 93%, 95%; branches 82%, 86%, 90% |
-| Transition repositories | 251/427, 58.7822% | 58.7822% | 34/118, 28.8136% | 28.8136% | Lines 65%, 75%, 85%, 95%; branches 40%, 55%, 70%, 80%, 90% |
+| Transition repositories | 365/427, 85.4801% | 85.4801% | 89/118, 75.4237% | 75.4237% | Lines 95%; branches 80%, 90% |
 | Dashboard auth and mutation policy | 430/449, 95.7684% | 95.7684% | 141/159, 88.6792% | 88.6792% | Branch 90% |
 
-The stale-fence capability test raised transition repository coverage, so the committed ratchet was advanced to the new measured floor in the same change.
+Provider-free capability tests now cover scheduler enqueue authority validation and atomic heartbeat insertion, missing and invalid authority results, filtered read boundaries, empty worker claims, invalid lease authority responses, heartbeat validation and exact upserts, retry finalization metadata and artifact fencing, and the expired-lease process-observation matrix. The committed transition-repository ratchet was advanced to the exact fresh 365/427 line and 89/118 branch floor in the same change.
 
 ## Measured source scope
 
@@ -61,13 +61,13 @@ The gate requires successful execution observations for each mapped test. A typo
 | Stale safety evidence | stale, mismatched and non-safe snapshot matrix |
 | Unsafe child environment | path/root override and exact child environment tests |
 | Cancellation during heartbeat lifecycle | cancel race after process spawn and before start finalization |
-| Lease and fence mismatch | pure repository capability test that returns fail-closed on stale lease evidence |
+| Lease and fence mismatch | pure repository capability tests that return fail-closed on stale or invalid lease and recovery authority evidence |
 | Transition and event atomic failure | cancel event failure rollback test |
 | Dashboard auth timeout | browser authentication fail-closed test |
 | Dashboard origin failure | absent and cross-origin mutation rejection test |
 | Dashboard body-size failure | bounded reader declared, streamed and invalid UTF-8 rejection test |
 
-The disposable PostgreSQL lease integration tests remain in the managed skip inventory. The canonical critical suite adds a host-independent capability test so stale lease handling is covered on every CI host without pretending the PostgreSQL integration ran.
+The disposable PostgreSQL lease integration tests remain in the managed skip inventory. The canonical critical suite uses host-independent repository capability tests for transaction rollback, validation-before-access, stale fences, invalid authority responses and lease recovery observations without pretending the PostgreSQL integration ran.
 
 ## Reports
 

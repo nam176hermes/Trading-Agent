@@ -90,12 +90,12 @@
           "services/job_store/repository.py",
           "services/job_store/worker_repository.py"
         ],
-        "line_minimum": {"covered": 251, "total": 427},
-        "branch_minimum": {"covered": 34, "total": 118},
+        "line_minimum": {"covered": 365, "total": 427},
+        "branch_minimum": {"covered": 89, "total": 118},
         "line_goal_percent": 95,
         "branch_goal_percent": 90,
-        "line_next_step_percent": 65,
-        "branch_next_step_percent": 40
+        "line_next_step_percent": 95,
+        "branch_next_step_percent": 80
       }
     ]
   },
