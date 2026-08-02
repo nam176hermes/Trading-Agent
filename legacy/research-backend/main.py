@@ -29,6 +29,7 @@ import argparse
 import importlib
 import json
 import logging
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -427,6 +428,11 @@ async def call_llm(
 
 _AsyncLLMCall = Callable[..., Awaitable[str]]
 _Dependency = Callable[..., Any]
+_MIN_NORMAL_FLOAT = float.fromhex("0x1.0000000000000p-1022")
+_MAX_EXECUTION_NOTIONAL = 1_000_000_000.0
+_MAX_EXECUTION_QUANTITY = 1_000_000_000_000.0
+_MAX_EXECUTION_TEXT = 300
+_MAX_EXECUTION_IDENTIFIER = 128
 
 
 class _ExecutionDependencies(NamedTuple):
@@ -436,6 +442,99 @@ class _ExecutionDependencies(NamedTuple):
     process_alert_signals: _Dependency | None
     live_execute: _Dependency | None
     get_execution_mode: _Dependency | None
+
+
+def _normalized_execution_real(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    try:
+        normalized = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(normalized):
+        return None
+    if normalized != 0 and abs(normalized) < _MIN_NORMAL_FLOAT:
+        return None
+    return normalized
+
+
+def _strict_execution_real(
+    value: Any,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    positive: bool = False,
+) -> float | None:
+    """Normalize only finite non-bool, non-subnormal controller scalars."""
+    normalized = _normalized_execution_real(value)
+    if normalized is None:
+        return None
+    if positive and normalized <= 0:
+        return None
+    if minimum is not None and normalized < minimum:
+        return None
+    if maximum is not None and normalized > maximum:
+        return None
+    return normalized
+
+
+def _bounded_execution_text(
+    value: Any, *, maximum: int = _MAX_EXECUTION_TEXT, allow_empty: bool = False
+) -> str | None:
+    if not isinstance(value, str) or len(value) > maximum:
+        return None
+    if not allow_empty and not value.strip():
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return None
+    return value
+
+
+def _bounded_execution_identifier(value: Any) -> str | None:
+    return _bounded_execution_text(value, maximum=_MAX_EXECUTION_IDENTIFIER)
+
+
+def _validated_controller_execution_input(
+    sym: str, action: str, gate_modifier: Any, asset_json: dict, raw: dict
+) -> tuple[dict, dict[str, float]]:
+    price_value = asset_json.get("price")
+    if price_value is None:
+        price_value = raw.get("current_price")
+    price = _strict_execution_real(
+        price_value, positive=True, maximum=_MAX_EXECUTION_NOTIONAL
+    )
+    confidence = _strict_execution_real(
+        asset_json.get("confidence", 0.5), minimum=0, maximum=1
+    )
+    modifier = _strict_execution_real(gate_modifier, minimum=0, maximum=1)
+    rationale = _bounded_execution_text(
+        asset_json.get("rationale", ""), allow_empty=True
+    )
+    optional_prices = {}
+    for field in ("stop_loss_suggestion", "target_suggestion"):
+        value = asset_json.get(field)
+        if value is not None:
+            normalized = _strict_execution_real(
+                value, positive=True, maximum=_MAX_EXECUTION_NOTIONAL
+            )
+            if normalized is None:
+                raise ValueError("invalid execution input")
+            optional_prices[field] = normalized
+    if price is None or confidence is None or modifier is None or rationale is None:
+        raise ValueError("invalid execution input")
+    return (
+        {
+            "asset": sym,
+            "action": action,
+            "confidence": confidence,
+            "reasoning": rationale,
+            "entry_price": price,
+            "stop_loss": optional_prices.get("stop_loss_suggestion"),
+            "take_profit": optional_prices.get("target_suggestion"),
+            "position_modifier": modifier,
+        },
+        {sym: price},
+    )
 
 
 def _load_execution_dependencies() -> _ExecutionDependencies:
@@ -1179,20 +1278,9 @@ def _perform_execution(
             raise RuntimeError("paper execution dependency unavailable")
         if not callable(dependencies.live_execute):
             raise RuntimeError("live execution dependency unavailable")
-        price = asset_json.get("price") or raw.get("current_price")
-        if price is None:
-            raise ValueError("execution price unavailable")
-        current_prices = {sym: float(price)}
-        exec_signal = {
-            "asset": sym,
-            "action": action,
-            "confidence": float(asset_json.get("confidence", 0.5)),
-            "reasoning": asset_json.get("rationale", "")[:300],
-            "entry_price": price,
-            "stop_loss": asset_json.get("stop_loss_suggestion"),
-            "take_profit": asset_json.get("target_suggestion"),
-            "position_modifier": gate_modifier,
-        }
+        exec_signal, current_prices = _validated_controller_execution_input(
+            sym, action, gate_modifier, asset_json, raw
+        )
         exec_mode = dependencies.get_execution_mode()
         if exec_mode == "paper":
             confirmation = dependencies.paper_execute(exec_signal, current_prices)
@@ -1233,27 +1321,131 @@ def _perform_execution(
         return None, exec_mode
 
 
+def _validated_execution_evidence(
+    sym: str, confirmation: dict, *, require_order_id: bool
+) -> bool:
+    if (
+        confirmation.get("symbol") != sym
+        or confirmation.get("side") not in {"BUY", "SELL"}
+        or _strict_execution_real(
+            confirmation.get("shares"),
+            positive=True,
+            maximum=_MAX_EXECUTION_QUANTITY,
+        )
+        is None
+        or _strict_execution_real(
+            confirmation.get("fill_price"),
+            positive=True,
+            maximum=_MAX_EXECUTION_NOTIONAL,
+        )
+        is None
+    ):
+        return False
+    if not require_order_id:
+        return True
+    evidence = confirmation.get("execution_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    order_id = evidence.get("order_id", confirmation.get("order_id"))
+    return _bounded_execution_identifier(order_id) is not None
+
+
+def _validated_partial_execution_evidence(sym: str, confirmation: dict) -> bool:
+    evidence = confirmation.get("execution_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    nested_evidence_valid = _validated_execution_evidence(
+        sym, evidence, require_order_id=False
+    ) and _bounded_execution_identifier(evidence.get("order_id")) is not None
+    outer_evidence_valid = _validated_execution_evidence(
+        sym, confirmation, require_order_id=True
+    )
+    return nested_evidence_valid or outer_evidence_valid
+
+
+def _should_execute_secondary_broker(
+    execution_status: str, exec_mode: str | None, paper_audit_partial: bool
+) -> bool:
+    return (
+        execution_status == "filled"
+        and exec_mode == "paper"
+        and not paper_audit_partial
+    )
+
+
+def _accept_execution_result(
+    sym: str,
+    exec_mode: str | None,
+    execution_status: Any,
+    confirmation: dict,
+    asset_json: dict,
+    operational_failures: list[dict],
+) -> bool:
+    """Accept only schema-valid complete, rejected, or bounded partial results."""
+    if execution_status == "filled":
+        paper_result = exec_mode == "paper"
+        if not _validated_execution_evidence(
+            sym, confirmation, require_order_id=not paper_result
+        ):
+            return False
+        if paper_result and confirmation.get("audit_status") not in {
+            "COMPLETED",
+            "PARTIAL",
+        }:
+            return False
+        asset_json["execution"] = confirmation
+        return True
+    if execution_status == "rejected":
+        if _bounded_execution_text(confirmation.get("reason")) is None:
+            return False
+        asset_json["execution"] = confirmation
+        return True
+    reason_code = confirmation.get("reason_code")
+    trace_id = confirmation.get("trace_id")
+    if (
+        execution_status != "PARTIAL"
+        or reason_code
+        not in {
+            "EXECUTION_OBSERVABILITY_FAILED",
+            "EXECUTION_STATE_PERSISTENCE_FAILED",
+        }
+        or _bounded_execution_identifier(trace_id) is None
+        or not _validated_partial_execution_evidence(sym, confirmation)
+    ):
+        return False
+    asset_json["execution"] = confirmation
+    _record_operational_failure(
+        operational_failures,
+        "execution_result",
+        reason_code=reason_code,
+        error_type="PartialExecution",
+        trace_id=trace_id,
+    )
+    return True
+
+
 def _validate_execution_result(
     sym: str,
     confirmation: dict,
     exec_mode: str | None,
     asset_json: dict,
     operational_failures: list[dict],
-) -> tuple[Any, bool]:
+) -> tuple[str, bool]:
     execution_status = confirmation.get("status")
-    paper_audit_partial = bool(
-        exec_mode == "paper"
-        and execution_status == "filled"
-        and confirmation.get("audit_status") == "PARTIAL"
+    accepted = _accept_execution_result(
+        sym,
+        exec_mode,
+        execution_status,
+        confirmation,
+        asset_json,
+        operational_failures,
     )
-    if execution_status in {"filled", "rejected"}:
-        asset_json["execution"] = confirmation
-    else:
+    if not accepted:
         failure = _record_operational_failure(
             operational_failures,
             "execution_result",
             reason_code="EXECUTION_RESULT_INVALID",
-            error_type="InvalidExecutionStatus",
+            error_type="InvalidExecutionResult",
         )
         asset_json["execution"] = {
             "status": "UNAVAILABLE",
@@ -1268,6 +1460,14 @@ def _validate_execution_result(
             failure["reason_code"],
             failure["error_type"],
         )
+        return "UNAVAILABLE", False
+    if not isinstance(execution_status, str):
+        return "UNAVAILABLE", False
+    paper_audit_partial = bool(
+        exec_mode == "paper"
+        and execution_status == "filled"
+        and confirmation.get("audit_status") == "PARTIAL"
+    )
     return execution_status, paper_audit_partial
 
 
@@ -1317,6 +1517,111 @@ _KNOWN_BROKER_STATUSES = {
     "skipped",
 }
 
+_BROKER_ORDER_STATUSES = {
+    "accepted",
+    "new",
+    "partially_filled",
+    "filled",
+    "done_for_day",
+    "replaced",
+    "pending_cancel",
+    "pending_replace",
+    "calculated",
+}
+_BROKER_TERMINAL_NONFILL_STATUSES = {
+    "canceled",
+    "expired",
+    "stopped",
+    "rejected",
+    "suspended",
+    "blocked",
+    "skipped",
+}
+
+
+def _strict_broker_real(
+    value: Any, *, positive: bool = False, maximum: float
+) -> float | None:
+    if isinstance(value, str):
+        if not value or len(value) > 64 or value.strip() != value:
+            return None
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    return _strict_execution_real(value, positive=positive, maximum=maximum)
+
+
+def _validated_broker_order_core(sym: str, result: dict) -> bool:
+    return bool(
+        _bounded_execution_identifier(result.get("id"))
+        and result.get("symbol") == sym
+        and result.get("side") in {"buy", "sell", "BUY", "SELL"}
+        and _strict_broker_real(
+            result.get("qty", result.get("quantity")),
+            positive=True,
+            maximum=_MAX_EXECUTION_QUANTITY,
+        )
+        is not None
+    )
+
+
+def _validated_broker_fill_evidence(result: dict) -> bool:
+    return bool(
+        _strict_broker_real(
+            result.get("filled_qty", result.get("filled")),
+            positive=True,
+            maximum=_MAX_EXECUTION_QUANTITY,
+        )
+        is not None
+        and _strict_broker_real(
+            result.get("filled_avg_price", result.get("avg_fill_price")),
+            positive=True,
+            maximum=_MAX_EXECUTION_NOTIONAL,
+        )
+        is not None
+    )
+
+
+def _validated_broker_nonfill_terminal(sym: str, result: dict) -> bool:
+    return bool(
+        _bounded_execution_text(result.get("reason"))
+        or _validated_broker_order_core(sym, result)
+    )
+
+
+def _validated_secondary_broker_result(sym: str, result: dict) -> dict | None:
+    """Return only broker evidence satisfying the schema for its lifecycle status."""
+    if result == {"paper": "skipped", "alpaca": None}:
+        return {
+            "status": "SKIPPED",
+            "reason_code": "SECONDARY_BROKER_NOT_APPLICABLE",
+            **result,
+        }
+    if result.get("paper") == "skipped" and isinstance(result.get("alpaca"), dict):
+        nested = _validated_secondary_broker_result(sym, result["alpaca"])
+        if nested is None:
+            return None
+        return {"paper": "skipped", "alpaca": nested, "status": nested["status"]}
+
+    status = result.get("status")
+    if status not in _KNOWN_BROKER_STATUSES:
+        return None
+    if status in _BROKER_ORDER_STATUSES:
+        if not _validated_broker_order_core(sym, result):
+            return None
+        if status in {
+            "partially_filled",
+            "filled",
+        } and not _validated_broker_fill_evidence(result):
+            return None
+        return result
+    if status in _BROKER_TERMINAL_NONFILL_STATUSES:
+        if not _validated_broker_nonfill_terminal(sym, result):
+            return None
+        return result
+    return None
+
 
 def _execute_secondary_broker(
     sym: str,
@@ -1361,18 +1666,13 @@ def _execute_secondary_broker(
         )
         return
 
-    if broker_result == {"paper": "skipped", "alpaca": None}:
-        asset_json["broker"] = {
-            "status": "SKIPPED",
-            "reason_code": "SECONDARY_BROKER_NOT_APPLICABLE",
-            **broker_result,
-        }
-    elif broker_result.get("status") not in _KNOWN_BROKER_STATUSES:
+    validated_broker_result = _validated_secondary_broker_result(sym, broker_result)
+    if validated_broker_result is None:
         failure = _record_operational_failure(
             operational_failures,
             "broker_result",
             reason_code="BROKER_RESULT_INVALID",
-            error_type="InvalidBrokerStatus",
+            error_type="InvalidBrokerResult",
         )
         asset_json["broker"] = {
             "status": "UNAVAILABLE",
@@ -1388,7 +1688,7 @@ def _execute_secondary_broker(
             failure["error_type"],
         )
     else:
-        asset_json["broker"] = broker_result
+        asset_json["broker"] = validated_broker_result
     log.info(
         "[%s] Execution complete — %s=%s broker=%s",
         sym,
@@ -1489,7 +1789,9 @@ def _execute_asset(
         _record_partial_paper_audit(
             sym, confirmation, asset_json, operational_failures
         )
-    if execution_status == "filled" and not paper_audit_partial:
+    if _should_execute_secondary_broker(
+        execution_status, exec_mode, paper_audit_partial
+    ):
         _execute_secondary_broker(
             sym,
             confirmation,

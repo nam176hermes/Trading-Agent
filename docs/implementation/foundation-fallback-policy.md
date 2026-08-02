@@ -53,8 +53,20 @@ Logs contain bounded identifiers and exception type names. They exclude credenti
 | Strategy-risk state is corrupt | `StrategyRiskStateUnavailable`; strategy denied; original bytes preserved |
 | Backtest gate is unavailable | Typed `BACKTEST_GATE_UNAVAILABLE`; action becomes `HOLD` |
 | Paper executor fails | Typed `PAPER_EXECUTION_FAILED`; no successful pipeline state |
-| Broker fails after paper evidence exists | Preserve paper evidence, mark broker result `UNAVAILABLE`, and mark aggregate execution path `PARTIAL` |
-| Broker result schema or status is invalid | Normalize to `BROKER_RESULT_INVALID`; never infer success |
+| Broker fails after paper evidence exists | Preserve paper evidence, mark broker result `UNAVAILABLE`, and mark aggregate execution path `PARTIAL`. The secondary broker route exists only after a schema-valid, fully audited paper fill. Dryrun or live primary confirmation never invokes it. |
+| Broker result schema or status is invalid | Normalize to `BROKER_RESULT_INVALID`; never infer success. A lifecycle status alone is insufficient: successful order states require a bounded order ID, symbol, side, and quantity; partial or complete fills also require bounded fill quantity and price; non-fill terminal states require a bounded reason or fully identified order. |
+| Existing sizing-returns input cannot be read or parsed | `EXECUTION_DEPENDENCY_UNAVAILABLE`; submit no order; do not substitute valid-looking confidence sizing |
+| Symbol or equity return values, or CVaR sizing output, are malformed | `EXECUTION_DEPENDENCY_RESULT_INVALID` with the originating operation and trace ID; submit no order and do not coerce NaN, infinity, booleans, containers, or out-of-domain values |
+| Dryrun/live report, single-signal input, or controller execution input is malformed | Reject with a typed traceable result before coercion, sizing, preflight, or submission. Price, confidence, gate modifier, optional stop/target, and rationale are validated as raw values; booleans are never converted to numeric execution inputs. A zero position modifier is an explicit non-trading denial. |
+| Broker order ID is malformed | `ORDER_RESULT_INVALID`; do not infer a fill, persist an order, or retry/resubmit; only bounded safe scalar IDs are public or durable |
+| Live positions or tiered exit durable state is malformed or contains an out-of-domain quantity | `UNAVAILABLE/EXECUTION_STATE_UNAVAILABLE`; preserve bytes and do not size, submit, save, or mutate state |
+| Tiered exit strategy result is malformed, or its sell delta is below `MIN_ORDER_USD` or above the bounded notional ceiling | `EXECUTION_DEPENDENCY_RESULT_INVALID` for the originating validator; do not submit a sell and do not mutate tier state |
+| Optional GARCH or allocation enrichment fails validation after valid base sizing, including non-zero subnormal values | Preserve unchanged valid base sizing, retain bounded failure evidence, and mark aggregate execution `PARTIAL`; raw exception text is excluded. Explicit zero remains valid for both enrichment contracts. |
+| One batch item fails before a later item executes | Preserve both the first typed failure and later execution evidence; aggregate status is `PARTIAL`, never `COMPLETED` or `UNAVAILABLE` |
+| Execution mode lookup raises or returns an invalid mode | Typed `EXECUTION_DEPENDENCY_UNAVAILABLE` or `EXECUTION_DEPENDENCY_RESULT_INVALID`; no raw exception, sizing, preflight, or order submission |
+| Ticker price, balance, sizing, preflight, durable-state, or fill evidence is NaN, infinite, subnormal, boolean, unbounded, or creates an out-of-domain quantity or notional | `EXECUTION_DEPENDENCY_RESULT_INVALID` or the boundary-specific typed invalid result; perform no arithmetic that can authorize an order and submit no order. Zero remains valid only at contracts that explicitly permit zero. |
+| Broker fill exists but persistence or observability is incomplete | Authoritative result is `PARTIAL`; retain a complete validated fill envelope either in canonical nested `execution_evidence` or in the producer's complete outer observability envelope; sparse evidence is invalid and downstream callers must not invoke another broker |
+| Primary confirmation claims `filled` but lacks bounded symbol, side, shares, fill price, audit state, or required order evidence | `EXECUTION_RESULT_INVALID`; expose an effective `UNAVAILABLE` status and do not invoke the secondary broker |
 
 ## Optional enrichment policy
 
@@ -91,6 +103,14 @@ Disallowed behavior:
 
 Atomic temporary-file replacement is used where the module owns mutable JSON state and the existing contract permits replacement.
 
+## Native restart custody policy
+
+A durable cgroup removal intent does not prove post-restart physical custody.
+Device and inode values can be reused after the original object is removed.
+If the canonical or quarantine cgroup path is still present during restart
+reconciliation, the result is `RECOVERY_REQUIRED` and no removal adapter is
+called. Automatic finalization is allowed only when both paths are absent.
+
 ## Boundary examples
 
 | Boundary | Result |
@@ -117,7 +137,12 @@ Warnings are future breakage signals.
 
 ## Archive and live policy
 
-Package 05 does not change live strategy semantics. `allocation_engine.py`, `portfolio_optimizer.py`, `execute_live.py`, and `trading_agent.py` are excluded from the canonical paper artifact. Live sizing, order, and monitoring fallbacks remain Release Authority v2 debt.
+Package 05 and Track B P9 do not authorize live strategy semantics.
+`allocation_engine.py`, `portfolio_optimizer.py`, `execute_live.py`, and
+`trading_agent.py` are excluded from the canonical paper artifact. P9 makes the
+selected `execute_live.py` dependency, submission, persistence, sizing, and
+observability failures explicit. Remaining autonomous-agent, exchange, broker,
+monitoring, packaging, and activation review remains Release Authority v2 debt.
 
 Any future live activation requires a separate reviewed plan, typed live outcomes, complete monitoring coverage, and explicit approval. Archive classification does not approve the residual behavior.
 

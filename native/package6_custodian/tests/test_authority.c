@@ -5786,21 +5786,16 @@ static int service_removal_intent_restart_case(
     CHECK(p6c_service_run(&configuration) == P6C_RESULT_OK);
     CHECK(response_size ==
           P6C_HEADER_SIZE + 4U + P6C_OPERATION_SUMMARY_BYTES);
-    expected_state =
-        ((mode == INTENT_RESTART_ABSENT) ||
-         (mode == INTENT_RESTART_PRESENT)) ?
-            (uint8_t)P6C_OPERATION_RESULT_RETAINED :
-            (uint8_t)P6C_OPERATION_RECOVERY_REQUIRED;
+    expected_state = (mode == INTENT_RESTART_ABSENT) ?
+        (uint8_t)P6C_OPERATION_RESULT_RETAINED :
+        (uint8_t)P6C_OPERATION_RECOVERY_REQUIRED;
     CHECK(response[
               P6C_HEADER_SIZE + 4U +
               P6C_SUMMARY_STATE_OFFSET] == expected_state);
-    CHECK(fake.calls[FAKE_STAGE_REMOVE] ==
-          ((mode == INTENT_RESTART_PRESENT) ? 1U : 0U));
+    CHECK(fake.calls[FAKE_STAGE_REMOVE] == 0U);
     CHECK(service_config_destroy(
               &configuration, sockets[1]) == EXIT_SUCCESS);
-    if (mode == INTENT_RESTART_PRESENT) {
-        cgroup_present = false;
-    }
+
     if (cgroup_present) {
         char events_path[64];
 

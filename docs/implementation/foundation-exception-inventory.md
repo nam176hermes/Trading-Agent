@@ -4,27 +4,55 @@
 
 Package 05 covers tracked production Python that can affect paper safety, research correctness, durable state, or externally visible status.
 
-The inventory uses `git ls-files '*.py'`, excludes paths containing a `tests` component and excludes `scripts/`, then parses each file with Python `ast`. A broad handler catches bare `except`, `Exception`, or `BaseException`, including those names inside tuples.
+The P9 machine-readable inventory uses every `git ls-files '*.py'` path and
+parses each file with Python `ast`. A broad handler catches bare `except`,
+`Exception`, or `BaseException`, including those names inside nested tuples.
+Tests and tooling are classified explicitly rather than excluded.
 
-Current post-remediation measurement:
+Track B P9 current measurement, refreshed on 2026-08-02 after the bounded
+`execute_live.py` remediation:
 
 | Metric | Count |
 |---|---:|
-| Tracked production Python files | 241 |
-| Broad handlers | 365 |
-| Files containing broad handlers | 97 |
+| Tracked Python files | 413 |
+| Broad handlers | 416 |
+| Files containing broad handlers | 116 |
 | Parse errors | 0 |
-| First control-flow marker: re-raise | 91 |
-| First control-flow marker: return | 101 |
-| First control-flow marker: pass | 31 |
-| First control-flow marker: continue | 16 |
-| Other or log-only handler | 126 |
+| `Exception` handlers, including tuples | 346 |
+| `BaseException` handlers, including tuples | 70 |
+| Bare handlers | 0 |
+| First control-flow marker: re-raise | 115 |
+| First control-flow marker: return | 114 |
+| First control-flow marker: pass | 36 |
+| First control-flow marker: continue | 15 |
+| Other or log-only handler | 136 |
 
 The control-flow marker is an inventory aid, not a semantic verdict. Package 05 does not require zero broad handlers. It requires every safety or correctness handler to be remediated or assigned a boundary, owner, and closure condition.
 
-## Ownership counts
+## Classification taxonomy
 
-A fresh read-only Codex audit independently reproduced the AST totals and manually classified the exact current source.
+Mechanical inventory is classified by boundary and semantic intent before a
+handler is changed:
+
+| Class | Review question |
+|---|---|
+| `PRODUCTION_CRITICAL` | Can the handler hide authority, invariant, transaction, execution, broker, sizing, or durable-state failure? |
+| `INTENTIONAL_CONTAINMENT` | Does the outer boundary preserve non-success status, structured evidence, cancellation, and process semantics? |
+| `RETRY_PROVIDER_ADAPTER` | Does the adapter retry only controlled failures and expose final provider unavailability? |
+| `TRANSACTION_REPOSITORY` | Does failure roll back and re-raise or return a typed non-success result? |
+| `EXECUTION_BROKER` | Can any failure be confused with accepted, filled, persisted, or completely monitored execution? |
+| `CLI_BACKGROUND_WORKER` | Does the process or job exit nonzero or publish a typed failed result? |
+| `TEST_ONLY` | Is the handler reachable only from test code? |
+| `TOOLING_MIGRATION` | Is the handler isolated from production authority and durable runtime state? |
+
+P9 selected one reviewable `EXECUTION_BROKER` boundary rather than mechanically
+rewriting the repository-wide inventory.
+
+## Package 05 ownership counts
+
+The earlier Package 05 read-only Codex audit manually classified its then-current
+source. These are historical semantic counts, not a claim about the expanded P9
+inventory:
 
 | Class | Count | Alert catches included? |
 |---|---:|---|
@@ -77,13 +105,13 @@ Reachability labels:
 | `exchange/executor.py:120` | `OrderExecutor.execute` | ARCHIVE | JUSTIFIED | Release Authority v2. Failure report must not contain fill or success semantics. |
 | `exchange_health.py:57,63,128,139,149,190` | Client and health boundaries | ARCHIVE | JUSTIFIED | Release Authority v2. Unavailable health must block live execution. |
 | `exchange/secrets.py:94,211` | Key load and CLI | ARCHIVE | JUSTIFIED | Release Authority v2. Missing or invalid credentials remain explicit denial. |
-| `execute_live.py:210,244,291,328,500,531,538,558,622,725,736,850` | Sizing, allocation, execution, summary, monitoring | ARCHIVE | UNRESOLVED | Release Authority v2. Remove valid-looking fallback and add typed outcomes before any live activation. |
+| `execute_live.py:188,200,212` | External dependency, order submission, and observability wrappers | ARCHIVE | REMEDIATED FOR P9 | Track B maintainers. Retain immediate conversion to typed `UNAVAILABLE` or `PARTIAL`; malformed or unreadable sizing input fails closed, mixed execution is partial, and optional enrichment failure is returned. Release Authority v2 remains separately required before activation. |
 | `enforce_stops.py:332` | Stop batch exception boundary | LEGACY | REMEDIATED | Foundation maintainers. Retain `UNAVAILABLE/PAPER_BATCH_EXECUTION_FAILED`. |
 | `portfolio_manager.py:571` | Swarm decision boundary | LEGACY | REMEDIATED | Foundation maintainers. Retain re-raise and typed caller rejection. |
 | `portfolio_optimizer.py:41,457,477,495,515` | Covariance and CLI/report boundaries | ARCHIVE | JUSTIFIED | Release Authority v2. Covariance failure cannot manufacture an allocatable matrix before activation. |
 | `risk_personas.py:440` | Persona provider and parser boundary | LEGACY | REMEDIATED | Foundation maintainers. Retain typed unavailable, rejection, and zero size. |
 | `set_mode.py:79,96` | Mode status | ARCHIVE | JUSTIFIED | Release Authority v2. Invalid mode or kill-switch state must deny activation. |
-| `trading_agent.py:273,371,426,441,456,484,509,664,709,916` | Autonomous loop, gates, sizing, execution, latency | ARCHIVE | UNRESOLVED | Release Authority v2. Complete live and autonomous-path review before packaging or activation. |
+| `trading_agent.py:273,359,371,426,441,456,484,509,664,709,916,942,1061` | Autonomous loop, gates, sizing, execution, latency | ARCHIVE | UNRESOLVED | Release Authority v2. Complete live and autonomous-path review before packaging or activation. |
 
 ## Remaining DATA_CORRECTNESS handlers
 
@@ -114,7 +142,13 @@ The remediated legacy paper and research paths also showed no remaining broad fa
 
 ## Archive boundary
 
-`allocation_engine.py`, `portfolio_optimizer.py`, `execute_live.py`, and `trading_agent.py` are absent from the canonical paper projection. `execute_live.py` and `trading_agent.py` are explicitly forbidden artifact paths. Their residual behavior remains unresolved Release Authority v2 debt and blocks any future live activation.
+`allocation_engine.py`, `portfolio_optimizer.py`, `execute_live.py`, and
+`trading_agent.py` are absent from the canonical paper projection.
+`execute_live.py` and `trading_agent.py` are explicitly forbidden artifact
+paths. P9 closes the selected `execute_live.py` exception-taxonomy boundary,
+but does not close the remaining autonomous-agent, exchange, broker, monitoring,
+packaging, or activation review. Those remain Release Authority v2 debt and
+block any future live activation.
 
 Required live configuration remains:
 
@@ -130,3 +164,428 @@ Deferral is not approval of live behavior.
 ## Decision rule
 
 Package 05 can close only when tests, warning gates, contracts, dashboard checks, canonical CI, diff review, and independent review all pass on unchanged source bytes. Any reachable false-success residual keeps the package at `NO-GO`.
+
+## P9 machine-readable broad-handler inventory
+
+Scope is every `git ls-files '*.py'` path, parsed with Python `ast` in repo-relative lexical path and line order. A broad handler is bare, `Exception`, `BaseException`, or a nested tuple containing either. `TESTS` covers any path component named `tests`; `TOOLING_MIGRATION` covers `scripts/`; `INTENTIONAL_CONTAINMENT` is restricted to the three typed wrappers in `legacy/research-backend/execute_live.py`; all other tracked runtime paths remain conservatively `PRODUCTION_CRITICAL`. Each row is `path|line|exception_form|classification|disposition`. Disposition is the first lexical handler marker among `RAISE`, `RETURN`, `PASS`, and `CONTINUE`, or `OTHER` when none exists. It is an inventory aid, not a safety verdict. The regression in `legacy/research-backend/tests/test_live_execution_policy.py` recomputes every field and rejects stale, missing, extra, or duplicate rows.
+
+<!-- P9_BROAD_HANDLER_INVENTORY_START -->
+```text
+apps/control_api/control_api/repositories/status.py|41|Exception|PRODUCTION_CRITICAL|RETURN
+apps/control_api/trading_control/phase3b_writer.py|424|Exception|PRODUCTION_CRITICAL|RAISE
+apps/control_api/trading_control/real_import.py|938|Exception|PRODUCTION_CRITICAL|RAISE
+apps/control_api/trading_control/writer.py|425|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/app.py|173|Exception|PRODUCTION_CRITICAL|OTHER
+apps/job_api/app.py|267|Exception|PRODUCTION_CRITICAL|RETURN
+apps/job_api/app.py|274|Exception|PRODUCTION_CRITICAL|RETURN
+apps/job_api/app.py|405|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/app.py|418|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/app.py|439|Exception|PRODUCTION_CRITICAL|RETURN
+apps/job_api/app.py|452|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/config.py|67|Exception|PRODUCTION_CRITICAL|RAISE
+apps/job_api/config.py|116|Exception|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/alert_manager.py|98|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/allocation_engine.py|161|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/allocation_engine.py|187|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/allocation_engine.py|475|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/alpha_arena.py|80|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/alpha_backtest.py|80|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/alpha_backtest.py|409|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/alpha_backtest.py|420|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/alpha_backtest.py|751|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/analysts.py|314|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/analysts.py|351|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/analysts.py|376|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/assembly.py|85|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/assembly.py|99|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/assembly.py|804|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/assembly.py|836|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/assembly.py|867|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/assembly.py|877|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/assembly.py|914|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/assembly.py|1003|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/audit_lookahead.py|46|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/backtest_engine.py|178|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/backtest_engine.py|833|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/backtest_runner.py|592|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/broker.py|94|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/broker.py|150|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/broker.py|164|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/broker.py|178|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/broker.py|192|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/collector_utils.py|40|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/collector_utils.py|76|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/cra_tracker.py|49|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/cra_tracker.py|53|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/daily_report.py|111|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/daily_report.py|177|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/data_collector.py|167|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_collector.py|228|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_collector.py|278|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|243|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|283|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|326|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|369|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|438|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|480|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|522|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/data_vendors.py|605|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/db/repository.py|41|Exception|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/debate.py|513|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/debate.py|582|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/derivatives_collector.py|140|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/derivatives_collector.py|195|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/derivatives_collector.py|218|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/dl_predictor.py|367|Exception|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/dl_predictor.py|543|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/dl_predictor.py|831|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/enforce_stops.py|332|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/enforce_stops.py|426|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/event_bus.py|82|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/event_bus.py|129|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/event_bus.py|146|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/event_bus.py|171|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/event_bus.py|202|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/event_bus.py|222|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/event_hub.py|158|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/event_hub.py|177|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange/adapter.py|250|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/adapter.py|332|Exception|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/exchange/adapter.py|343|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/ccxt_bridge.py|131|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/ccxt_bridge.py|150|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/ccxt_bridge.py|196|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/ccxt_bridge.py|215|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/ccxt_bridge.py|231|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/ccxt_bridge.py|241|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/ccxt_bridge.py|281|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange/ccxt_bridge.py|304|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange/executor.py|120|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/secrets.py|94|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange/secrets.py|211|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange/ws_feed_old.py|99|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange/ws_feed_old.py|116|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange_health.py|57|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange_health.py|63|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/exchange_health.py|128|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange_health.py|139|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange_health.py|149|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/exchange_health.py|190|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/execute_live.py|188|Exception|INTENTIONAL_CONTAINMENT|RAISE
+legacy/research-backend/execute_live.py|200|Exception|INTENTIONAL_CONTAINMENT|RAISE
+legacy/research-backend/execute_live.py|212|Exception|INTENTIONAL_CONTAINMENT|RETURN
+legacy/research-backend/fallback.py|37|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/fallback.py|73|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/garch_vol.py|77|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/job_attribution.py|163|BaseException|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/job_attribution.py|169|BaseException|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/job_attribution.py|192|BaseException|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/job_attribution.py|462|BaseException|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/kalshi_collector.py|60|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/kalshi_collector.py|87|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/kalshi_collector.py|92|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/kalshi_collector.py|98|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/kalshi_collector.py|125|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/live_data.py|42|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/live_data.py|90|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/live_data.py|158|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/live_data.py|264|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/local_artifacts.py|168|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/local_artifacts.py|197|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/macro.py|34|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/macro.py|67|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/macro.py|259|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/macro_data.py|98|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/macro_data.py|165|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/macro_data.py|197|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/macro_data.py|257|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|199|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|206|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|222|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|297|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/main.py|398|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|422|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/main.py|669|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|687|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|709|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|731|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|753|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|882|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/main.py|973|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|1052|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/main.py|1174|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/main.py|1240|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|1292|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/main.py|1647|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/main.py|1721|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|1740|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|1968|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2180|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2200|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/main.py|2207|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/main.py|2309|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2345|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2441|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2450|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2456|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2462|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2467|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/main.py|2473|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/memory.py|421|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ml_predictor.py|100|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ml_predictor.py|115|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ml_predictor.py|146|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/ml_predictor.py|254|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ml_predictor.py|493|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/ml_predictor.py|594|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/ml_regime.py|85|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ml_regime.py|123|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ml_regime.py|268|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ml_toolkit.py|155|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ml_toolkit.py|261|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ml_toolkit.py|417|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/onchain_collector.py|60|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/onchain_collector.py|133|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/onchain_collector.py|199|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/onchain_collector.py|211|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/onchain_collector.py|241|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/orderflow_collector.py|228|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/orderflow_collector.py|235|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/orderflow_collector.py|284|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/pairs_trader.py|172|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/pairs_trader.py|355|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/pairs_trader.py|362|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/polymarket_collector.py|38|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/polymarket_collector.py|94|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/polymarket_collector.py|115|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/portfolio_manager.py|129|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/portfolio_manager.py|181|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/portfolio_manager.py|571|Exception|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/portfolio_optimizer.py|41|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/portfolio_optimizer.py|457|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/portfolio_optimizer.py|477|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/portfolio_optimizer.py|495|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/portfolio_optimizer.py|515|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/reconciliation.py|42|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/reconciliation.py|82|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/reflection_engine.py|371|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/reflection_engine.py|469|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/reflection_engine.py|513|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/regime_detector.py|97|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/regime_detector.py|182|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/regime_detector.py|235|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/regime_detector.py|431|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/regime_detector.py|496|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/risk_personas.py|440|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/rl_agent.py|117|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/rl_agent.py|137|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/rl_agent.py|153|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/run_arena_round.py|25|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/run_arena_round.py|60|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/run_arena_round.py|189|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/run_arena_round.py|230|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/run_arena_round.py|241|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/run_arena_round.py|249|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/safety_engine.py|478|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/safety_engine.py|516|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/sentiment_collector.py|56|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/sentiment_collector.py|68|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/sentiment_collector.py|181|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/sentiment_filter.py|221|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/sentiment_filter.py|327|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/set_mode.py|79|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/set_mode.py|96|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/signal_parser.py|266|Exception|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/strategy_optimizer.py|369|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ta_engine.py|202|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ta_engine.py|210|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ta_validation.py|150|Exception|PRODUCTION_CRITICAL|CONTINUE
+legacy/research-backend/tests/test_integration.py|86|Exception|TESTS|OTHER
+legacy/research-backend/tests/test_integration.py|174|Exception|TESTS|OTHER
+legacy/research-backend/trading_agent.py|273|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/trading_agent.py|359|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/trading_agent.py|371|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/trading_agent.py|426|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/trading_agent.py|441|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/trading_agent.py|456|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/trading_agent.py|484|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/trading_agent.py|509|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/trading_agent.py|664|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/trading_agent.py|709|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/trading_agent.py|916|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/trading_agent.py|942|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/trading_agent.py|1061|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/train_ensemble.py|168|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/walk_forward.py|91|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/weekly_report.py|248|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ws_stream.py|78|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ws_stream.py|98|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ws_stream.py|161|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ws_stream.py|198|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ws_stream.py|253|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/ws_stream.py|267|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ws_stream.py|324|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/ws_stream.py|337|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/ws_stream.py|346|Exception|PRODUCTION_CRITICAL|OTHER
+legacy/research-backend/yfinance_collector.py|111|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/yfinance_collector.py|144|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/yfinance_collector.py|164|Exception|PRODUCTION_CRITICAL|RETURN
+legacy/research-backend/yfinance_collector.py|196|Exception|PRODUCTION_CRITICAL|OTHER
+ops/phase4b/verify-release.py|91|Exception|PRODUCTION_CRITICAL|OTHER
+ops/phase4b/verify-release.py|138|Exception|PRODUCTION_CRITICAL|OTHER
+ops/phase4b/verify-release.py|339|Exception|PRODUCTION_CRITICAL|RETURN
+ops/release-v2/verify-stage.py|1270|Exception|PRODUCTION_CRITICAL|RETURN
+packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
+packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|366|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|456|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/config.py|488|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/job_plane.py|31|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/job_plane.py|41|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/job_plane.py|54|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/manifest.py|350|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/manifest.py|681|Exception|PRODUCTION_CRITICAL|PASS
+packages/runtime_release/paper_application/command_registry.py|214|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/command_registry.py|227|Exception|PRODUCTION_CRITICAL|OTHER
+packages/runtime_release/paper_application/command_registry.py|260|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/results.py|107|BaseException|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/results.py|116|BaseException|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/results.py|337|BaseException|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/runtime_release_config.py|175|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/runtime_release_config.py|289|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/runtime_release_config.py|304|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/runtime_release_job_plane.py|18|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_application/runtime_release_job_plane.py|28|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/paper_backend/paper_main.py|110|Exception|PRODUCTION_CRITICAL|RETURN
+packages/runtime_release/provisioning.py|44|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/provisioning.py|87|Exception|PRODUCTION_CRITICAL|PASS
+packages/runtime_release/provisioning.py|128|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/provisioning.py|141|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/provisioning.py|207|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/staging_v2.py|837|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/staging_v2.py|868|Exception|PRODUCTION_CRITICAL|RETURN
+packages/runtime_release/staging_v2.py|947|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/staging_v2.py|1010|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|353|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|392|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|418|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|474|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|495|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|517|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|535|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|592|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|760|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|817|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|996|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1072|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1105|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1269|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1311|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1461|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1722|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1751|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1907|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|1920|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|2234|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|2483|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|2589|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|2627|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|2663|Exception|PRODUCTION_CRITICAL|RAISE
+packages/runtime_release/v2.py|2752|Exception|PRODUCTION_CRITICAL|RETURN
+scripts/audit_canonical_repo.py|506|BaseException|TOOLING_MIGRATION|RETURN
+scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
+scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
+scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|PASS
+scripts/generate_phase4_command_manifest.py|63|Exception|TOOLING_MIGRATION|RETURN
+scripts/generate_phase4_runtime_authority.py|109|Exception|TOOLING_MIGRATION|RETURN
+scripts/import_component_snapshot.py|291|BaseException|TOOLING_MIGRATION|PASS
+scripts/import_component_snapshot.py|393|BaseException|TOOLING_MIGRATION|RAISE
+scripts/import_component_snapshot.py|403|BaseException|TOOLING_MIGRATION|RAISE
+scripts/import_component_snapshot.py|703|BaseException|TOOLING_MIGRATION|RAISE
+scripts/import_component_snapshot.py|755|BaseException|TOOLING_MIGRATION|RETURN
+scripts/prepare_runtime_release_wheelhouse.py|230|Exception|TOOLING_MIGRATION|RAISE
+scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
+scripts/validate_package6_runtime_approval.py|1070|Exception|TOOLING_MIGRATION|OTHER
+scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
+scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
+services/job_scheduler/main.py|48|Exception|PRODUCTION_CRITICAL|RETURN
+services/job_scheduler/scheduler.py|92|Exception|PRODUCTION_CRITICAL|RETURN
+services/job_store/config.py|55|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/config.py|113|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/config.py|199|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_store/worker_repository.py|132|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/artifacts.py|66|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/artifacts.py|87|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/artifacts.py|118|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/artifacts.py|143|BaseException|PRODUCTION_CRITICAL|PASS
+services/job_worker/command_registry.py|238|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|253|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|271|Exception|PRODUCTION_CRITICAL|OTHER
+services/job_worker/command_registry.py|284|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|308|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|361|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/command_registry.py|374|Exception|PRODUCTION_CRITICAL|OTHER
+services/job_worker/command_registry.py|407|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/process_runner.py|70|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/process_runner.py|453|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/process_runner.py|491|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/process_runner.py|531|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|542|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|561|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|573|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/process_runner.py|639|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/process_runner.py|686|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|717|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|736|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|751|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|761|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|802|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/process_runner.py|820|BaseException|PRODUCTION_CRITICAL|RETURN
+services/job_worker/process_runner.py|834|BaseException|PRODUCTION_CRITICAL|OTHER
+services/job_worker/results.py|113|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/results.py|122|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/results.py|423|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/safety_state.py|151|Exception|PRODUCTION_CRITICAL|OTHER
+services/job_worker/safety_state.py|351|Exception|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/controller.py|785|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/controller.py|854|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/controller.py|877|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/controller.py|901|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/controller.py|914|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/controller.py|939|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/controller.py|1421|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|406|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|622|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|634|BaseException|PRODUCTION_CRITICAL|PASS
+services/paper_runtime/evidence.py|677|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|737|BaseException|PRODUCTION_CRITICAL|PASS
+services/paper_runtime/evidence.py|775|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|1278|BaseException|PRODUCTION_CRITICAL|PASS
+services/paper_runtime/evidence.py|1320|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|1369|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|1486|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|1520|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|1624|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|1665|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|2703|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/evidence.py|2793|BaseException|PRODUCTION_CRITICAL|RAISE
+services/paper_runtime/integration.py|290|BaseException|PRODUCTION_CRITICAL|RETURN
+services/paper_runtime/integration.py|304|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/integration.py|378|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/integration.py|408|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/integration.py|474|BaseException|PRODUCTION_CRITICAL|RETURN
+services/paper_runtime/integration.py|498|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/integration.py|718|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/integration.py|726|BaseException|PRODUCTION_CRITICAL|OTHER
+services/paper_runtime/integration.py|751|BaseException|PRODUCTION_CRITICAL|OTHER
+services/semantic_input_refresher/main.py|61|Exception|PRODUCTION_CRITICAL|RAISE
+services/semantic_input_refresher/main.py|116|Exception|PRODUCTION_CRITICAL|RAISE
+services/semantic_input_refresher/main.py|164|Exception|PRODUCTION_CRITICAL|RAISE
+services/semantic_input_refresher/main.py|212|Exception|PRODUCTION_CRITICAL|RETURN
+tests/foundation/test_package6_controller_closure.py|632|BaseException|TESTS|OTHER
+tests/jobs/_postgres.py|170|Exception|TESTS|RAISE
+tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
+tests/jobs/test_repository_queries.py|336|BaseException|TESTS|OTHER
+```
+<!-- P9_BROAD_HANDLER_INVENTORY_END -->

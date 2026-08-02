@@ -122,12 +122,14 @@ def test_run_pipeline_remains_a_bounded_stage_coordinator():
         "_run_portfolio_decision": 9,
         "_regime_filtered_action": 7,
         "_apply_backtest_gate": 6,
-        "_perform_execution": 11,
-        "_validate_execution_result": 4,
+        "_perform_execution": 9,
+        "_accept_execution_result": 11,
+        "_validate_execution_result": 5,
         "_record_partial_paper_audit": 1,
-        "_execute_secondary_broker": 7,
+        "_should_execute_secondary_broker": 3,
+        "_execute_secondary_broker": 6,
         "_send_execution_alert": 9,
-        "_execute_asset": 8,
+        "_execute_asset": 7,
         "_finalize_asset": 5,
         "_assemble_pipeline_report": 11,
         "_log_final_decisions": 4,
@@ -301,6 +303,338 @@ def test_execution_status_is_captured_once_for_downstream_helpers(
     assert alerts and alerts[0].startswith("[PAPER] BUY BTC")
 
 
+def test_live_partial_execution_preserves_evidence_and_skips_secondary_broker(
+    monkeypatch, main_module
+):
+    confirmation = {
+        "status": "PARTIAL",
+        "reason_code": "EXECUTION_OBSERVABILITY_FAILED",
+        "trace_id": "trace-live-partial",
+        "symbol": "BTC",
+        "side": "BUY",
+        "shares": 1.0,
+        "fill_price": 100.0,
+        "execution_evidence": {"order_id": "live-order-1"},
+        "observability_failures": [],
+    }
+    broker_calls = []
+    operational_failures = []
+    asset = {"suggestion": "BUY", "market_regime": "trending_up", "confidence": 0.9}
+    dependencies = main_module._ExecutionDependencies(
+        lambda *_args: (_ for _ in ()).throw(AssertionError("paper execution")),
+        lambda *_args: broker_calls.append("broker") or {"status": "filled"},
+        lambda *_args: None,
+        None,
+        lambda *_args: confirmation,
+        lambda: "dryrun",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_apply_backtest_gate",
+        lambda *_args, **_kwargs: ("BUY", 1.0),
+    )
+
+    main_module._execute_asset(
+        "BTC",
+        {"current_price": 100.0},
+        asset,
+        allow_execution=True,
+        dependencies=dependencies,
+        operational_failures=operational_failures,
+    )
+
+    assert broker_calls == []
+    assert asset["execution"] == confirmation
+    assert asset["execution"]["execution_evidence"]["order_id"] == "live-order-1"
+    assert operational_failures == [
+        {
+            "source": "execution_result",
+            "status": "UNAVAILABLE",
+            "reason_code": "EXECUTION_OBSERVABILITY_FAILED",
+            "trace_id": "trace-live-partial",
+            "error_type": "PartialExecution",
+        }
+    ]
+
+
+def test_actual_persistence_partial_shape_preserves_nested_fill_and_skips_broker(
+    monkeypatch, main_module
+):
+    confirmation = {
+        "status": "PARTIAL",
+        "reason_code": "EXECUTION_STATE_PERSISTENCE_FAILED",
+        "trace_id": "trace-live-persistence",
+        "operation": "save_live_positions",
+        "symbol": "BTC",
+        "execution_evidence": {
+            "timestamp": "2026-08-02T00:00:00+00:00",
+            "symbol": "BTC",
+            "side": "BUY",
+            "shares": 1.0,
+            "fill_price": 100.0,
+            "cost": 100.0,
+            "exchange": "binance",
+            "mode": "dryrun",
+            "order_id": "live-order-1",
+            "slippage": 0.0,
+        },
+        "persistence_failures": [],
+    }
+    broker_calls = []
+    asset = {"suggestion": "BUY", "market_regime": "trending_up", "confidence": 0.9}
+    dependencies = main_module._ExecutionDependencies(
+        lambda *_args: (_ for _ in ()).throw(AssertionError("paper execution")),
+        lambda *_args: broker_calls.append("broker"),
+        lambda *_args: None,
+        None,
+        lambda *_args: confirmation,
+        lambda: "dryrun",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_apply_backtest_gate",
+        lambda *_args, **_kwargs: ("BUY", 1.0),
+    )
+
+    main_module._execute_asset(
+        "BTC",
+        {"current_price": 100.0},
+        asset,
+        allow_execution=True,
+        dependencies=dependencies,
+        operational_failures=[],
+    )
+
+    assert broker_calls == []
+    assert asset["execution"] == confirmation
+    assert asset["execution"]["execution_evidence"]["order_id"] == "live-order-1"
+
+
+@pytest.mark.parametrize("exec_mode", ["dryrun", "live"])
+def test_confirmed_nonpaper_primary_fill_never_invokes_secondary_broker(
+    monkeypatch, main_module, exec_mode
+):
+    confirmation = {
+        "status": "filled",
+        "symbol": "BTC",
+        "side": "BUY",
+        "shares": 1.0,
+        "fill_price": 100.0,
+        "execution_evidence": {"order_id": "primary-order-1"},
+    }
+    broker_calls = []
+    asset = {"suggestion": "BUY", "market_regime": "trending_up", "confidence": 0.9}
+    dependencies = main_module._ExecutionDependencies(
+        lambda *_args: (_ for _ in ()).throw(AssertionError("paper execution")),
+        lambda *_args: broker_calls.append("broker"),
+        lambda *_args: None,
+        None,
+        lambda *_args: confirmation,
+        lambda: exec_mode,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_apply_backtest_gate",
+        lambda *_args, **_kwargs: ("BUY", 1.0),
+    )
+
+    main_module._execute_asset(
+        "BTC",
+        {"current_price": 100.0},
+        asset,
+        allow_execution=True,
+        dependencies=dependencies,
+        operational_failures=[],
+    )
+
+    assert broker_calls == []
+    assert asset["execution"] == confirmation
+
+
+@pytest.mark.parametrize(
+    ("asset_override", "raw_override"),
+    [
+        ({"price": True}, {}),
+        ({"confidence": True}, {}),
+        ({"rationale": 7}, {}),
+        ({}, {"current_price": True}),
+    ],
+)
+def test_controller_rejects_malformed_raw_execution_inputs_before_adapter_call(
+    monkeypatch, main_module, asset_override, raw_override
+):
+    adapter_calls = []
+    operational_failures = []
+    asset = {
+        "suggestion": "BUY",
+        "market_regime": "trending_up",
+        "confidence": 0.9,
+        "rationale": "bounded",
+        **asset_override,
+    }
+    dependencies = main_module._ExecutionDependencies(
+        lambda *_args: adapter_calls.append("paper"),
+        lambda *_args: adapter_calls.append("broker"),
+        lambda *_args: None,
+        None,
+        lambda *_args: adapter_calls.append("live"),
+        lambda: "dryrun",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_apply_backtest_gate",
+        lambda *_args, **_kwargs: ("BUY", 1.0),
+    )
+
+    main_module._execute_asset(
+        "BTC",
+        {"current_price": 100.0, **raw_override},
+        asset,
+        allow_execution=True,
+        dependencies=dependencies,
+        operational_failures=operational_failures,
+    )
+
+    assert adapter_calls == []
+    assert asset["execution"]["status"] == "UNAVAILABLE"
+    assert asset["execution"]["reason_code"] == "EXECUTION_PRECHECK_FAILED"
+    assert operational_failures[-1]["source"] == "execution_precheck"
+
+
+def test_malformed_filled_confirmation_cannot_trigger_secondary_broker(
+    monkeypatch, main_module
+):
+    broker_calls = []
+    asset = {"suggestion": "BUY", "market_regime": "trending_up", "confidence": 0.9}
+    dependencies = main_module._ExecutionDependencies(
+        lambda *_args: (_ for _ in ()).throw(AssertionError("paper execution")),
+        lambda *_args: broker_calls.append("broker") or {"status": "filled"},
+        lambda *_args: None,
+        None,
+        lambda *_args: {"status": "filled"},
+        lambda: "dryrun",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_apply_backtest_gate",
+        lambda *_args, **_kwargs: ("BUY", 1.0),
+    )
+
+    main_module._execute_asset(
+        "BTC",
+        {"current_price": 100.0},
+        asset,
+        allow_execution=True,
+        dependencies=dependencies,
+        operational_failures=[],
+    )
+
+    assert broker_calls == []
+    assert asset["execution"]["status"] == "UNAVAILABLE"
+    assert asset["execution"]["reason_code"] == "EXECUTION_RESULT_INVALID"
+
+
+def test_status_only_secondary_broker_result_is_invalid(monkeypatch, main_module):
+    asset = {"suggestion": "BUY", "market_regime": "trending_up", "confidence": 0.9}
+    confirmation = {
+        "status": "filled",
+        "symbol": "BTC",
+        "side": "BUY",
+        "shares": 1.0,
+        "fill_price": 100.0,
+        "audit_status": "COMPLETED",
+        "order_id": "primary-order-1",
+        "execution_evidence": {"order_id": "primary-order-1"},
+    }
+    dependencies = main_module._ExecutionDependencies(
+        lambda *_args: confirmation,
+        lambda *_args: {"status": "filled"},
+        lambda *_args: None,
+        None,
+        lambda *_args: (_ for _ in ()).throw(AssertionError("live execution")),
+        lambda: "paper",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_apply_backtest_gate",
+        lambda *_args, **_kwargs: ("BUY", 1.0),
+    )
+
+    main_module._execute_asset(
+        "BTC",
+        {"current_price": 100.0},
+        asset,
+        allow_execution=True,
+        dependencies=dependencies,
+        operational_failures=[],
+    )
+
+    assert asset["execution"] == confirmation
+    assert asset["broker"]["status"] == "UNAVAILABLE"
+    assert asset["broker"]["reason_code"] == "BROKER_RESULT_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("shares", True),
+        ("shares", 5e-324),
+        ("fill_price", float("inf")),
+        ("fill_price", 5e-324),
+    ],
+)
+def test_primary_filled_schema_returns_effective_unavailable_for_bad_evidence(
+    main_module, field, value
+):
+    confirmation = {
+        "status": "filled",
+        "symbol": "BTC",
+        "side": "BUY",
+        "shares": 1.0,
+        "fill_price": 100.0,
+        "execution_evidence": {"order_id": "primary-order-1"},
+    }
+    confirmation[field] = value
+    asset = {}
+    failures = []
+
+    effective_status, paper_audit_partial = main_module._validate_execution_result(
+        "BTC", confirmation, "dryrun", asset, failures
+    )
+
+    assert effective_status == "UNAVAILABLE"
+    assert paper_audit_partial is False
+    assert asset["execution"]["status"] == "UNAVAILABLE"
+    assert asset["execution"]["reason_code"] == "EXECUTION_RESULT_INVALID"
+    assert failures[-1]["source"] == "execution_result"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("qty", True),
+        ("qty", "5e-324"),
+        ("filled_qty", float("inf")),
+        ("filled_avg_price", "5e-324"),
+    ],
+)
+def test_filled_secondary_broker_schema_rejects_bad_numeric_evidence(
+    main_module, field, value
+):
+    result = {
+        "status": "filled",
+        "id": "secondary-order-1",
+        "symbol": "BTC",
+        "side": "buy",
+        "qty": "1.0",
+        "filled_qty": "1.0",
+        "filled_avg_price": "100.0",
+    }
+    result[field] = value
+
+    assert main_module._validated_secondary_broker_result("BTC", result) is None
+
+
 class FakeScratchpad:
     def init_session(self, **_kwargs):
         pass
@@ -415,6 +749,8 @@ def isolated_pipeline(monkeypatch, main_module):
             "symbol": signal["asset"],
             "shares": 1.0,
             "side": signal["action"],
+            "fill_price": 100.0,
+            "audit_status": "COMPLETED",
         }
     )
     paper_trader.load_portfolio = lambda: {}
@@ -423,7 +759,19 @@ def isolated_pipeline(monkeypatch, main_module):
     monkeypatch.setitem(sys.modules, "paper_trader", paper_trader)
 
     broker = ModuleType("broker")
-    broker.execute = lambda *_args: calls.append("broker_execute") or {"status": "filled"}
+    setattr(
+        broker,
+        "execute",
+        lambda *_args: calls.append("broker_execute") or {
+            "status": "filled",
+            "id": "secondary-order-1",
+            "symbol": "BTC",
+            "side": "buy",
+            "qty": "1.0",
+            "filled_qty": "1.0",
+            "filled_avg_price": "100.0",
+        },
+    )
     broker.is_configured = lambda: True
     monkeypatch.setitem(sys.modules, "broker", broker)
 
@@ -2619,10 +2967,31 @@ def test_known_explicit_broker_status_is_preserved(
     monkeypatch, isolated_pipeline, status
 ):
     main, _calls = isolated_pipeline
+    broker_result = {
+        "status": status,
+        "id": "fixture-order",
+        "symbol": "BTC",
+        "side": "buy",
+        "qty": "1.0",
+    }
+    if status in {"partially_filled", "filled"}:
+        broker_result.update(
+            {"filled_qty": "1.0", "filled_avg_price": "100.0"}
+        )
+    if status in {
+        "canceled",
+        "expired",
+        "stopped",
+        "rejected",
+        "suspended",
+        "blocked",
+        "skipped",
+    }:
+        broker_result["reason"] = "bounded broker lifecycle result"
     monkeypatch.setattr(
         sys.modules["broker"],
         "execute",
-        lambda *_args: {"status": status, "id": "fixture-order"},
+        lambda *_args: broker_result,
     )
 
     report = asyncio.run(

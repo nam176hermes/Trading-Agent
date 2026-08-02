@@ -3437,43 +3437,16 @@ static enum p6c_result p6c_service_reconcile_removal_intent(
             }
         }
         if (named_result == 0) {
-        bool populated = false;
-        struct p6c_production_context production;
-        struct p6c_process_adapter adapter;
-        enum p6c_result result = p6c_openat2_owned(
-            &registry->configuration->cgroup_root,
-            physical_name,
-            O_RDONLY | O_DIRECTORY | O_NOFOLLOW, (mode_t)0,
-            P6C_DESCRIPTOR_CGROUP, &entry->cgroup);
-
-        if ((result != P6C_RESULT_OK) ||
-            ((uint64_t)entry->cgroup.device !=
-             entry->journal.cgroup_device) ||
-            ((uint64_t)entry->cgroup.inode !=
-             entry->journal.cgroup_inode) ||
-            (p6c_cgroup_is_populated(
-                 &entry->cgroup, &populated) != P6C_RESULT_OK) ||
-            populated) {
+            /*
+             * Device and inode are not generation identities: both can be
+             * reused after the original cgroup is removed. A restarted
+             * process has no descriptor custody that can distinguish an
+             * empty original from a same-name replacement, so any surviving
+             * physical object requires operator recovery.
+             */
             return P6C_RESULT_RECOVERY_REQUIRED;
         }
-        entry->operation.cgroup = &entry->cgroup;
-        entry->operation.journal = &entry->journal;
-        production.registry = registry;
-        production.entry = entry;
-        production.terminal_observed = true;
-        adapter = p6c_service_process_adapter(&production);
-        if ((adapter.remove_cgroup == NULL) ||
-            (adapter.remove_cgroup(
-                 adapter.context, &entry->operation) !=
-             P6C_RESULT_OK) ||
-            (fstatat(
-                 registry->configuration->cgroup_root.descriptor,
-                 entry->cgroup_name, &status,
-                 AT_SYMLINK_NOFOLLOW) == 0) ||
-            (errno != ENOENT)) {
-            return P6C_RESULT_RECOVERY_REQUIRED;
-        }
-        } else if (errno != ENOENT) {
+        if (errno != ENOENT) {
             return P6C_RESULT_RECOVERY_REQUIRED;
         }
     }
