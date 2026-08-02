@@ -32,7 +32,9 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
+from typing import Any, Awaitable, Callable, NamedTuple
 from uuid import uuid4
 
 # BEGIN ISOLATED SEALED BACKEND IMPORT BOOTSTRAP
@@ -423,441 +425,432 @@ async def call_llm(
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 
-async def run_pipeline(
-    symbols: list[str],
-    enable_debate: bool = False,
-    enable_risk_personas: bool = False,
-    pad: Scratchpad | None = None,
-    allow_execution: bool = False,
-    semantic_inputs: SnapshotSemanticInputs | None = None,
+_AsyncLLMCall = Callable[..., Awaitable[str]]
+_Dependency = Callable[..., Any]
+
+
+class _ExecutionDependencies(NamedTuple):
+    paper_execute: _Dependency | None
+    broker_execute: _Dependency | None
+    send_telegram_text: _Dependency | None
+    process_alert_signals: _Dependency | None
+    live_execute: _Dependency | None
+    get_execution_mode: _Dependency | None
+
+
+def _load_execution_dependencies() -> _ExecutionDependencies:
+    from paper_trader import execute_signal as paper_execute, check_stops
+    from broker import execute as broker_execute
+    from alert_manager import send_telegram_text, process_alerts as process_alert_signals
+    from execute_live import execute_signal as live_execute
+    from exchange.ccxt_bridge import get_mode as get_execution_mode
+
+    return _ExecutionDependencies(
+        paper_execute,
+        broker_execute,
+        send_telegram_text,
+        process_alert_signals,
+        live_execute,
+        get_execution_mode,
+    )
+
+
+async def _pipeline_call_llm(
+    *args: Any,
+    allow_execution: bool,
+    **kwargs: Any,
+) -> str:
+    return await call_llm(*args, allow_shared_env=allow_execution, **kwargs)
+
+
+def _build_pipeline_llm(allow_execution: bool) -> _AsyncLLMCall:
+    return partial(_pipeline_call_llm, allow_execution=allow_execution)
+
+
+def _record_optional_source(
+    statuses: list[dict],
+    source: str,
+    *,
+    status: str,
+    reason_code: str | None = None,
+    error_type: str | None = None,
 ) -> dict:
-    """Full single-pass pipeline with optional debate, risk personas, and audit trail."""
-    paper_execute = None
-    broker_execute = None
-    send_telegram_text = None
-    process_alert_signals = None
-    live_execute = None
-    get_execution_mode = None
+    entry = {
+        "source": source,
+        "status": status,
+        "reason_code": reason_code,
+        "trace_id": uuid4().hex[:16],
+        "error_type": error_type,
+    }
+    statuses.append(entry)
+    return entry
 
-    from kill_switch import is_kill_switch_active
-    if is_kill_switch_active():
-        log.warning("── Kill switch active — pipeline aborted ──")
-        return {"status": "kill_switch_active", "assets": []}
 
-    if allow_execution:
-        from paper_trader import execute_signal as paper_execute, check_stops
-        from broker import execute as broker_execute
-        from alert_manager import send_telegram_text, process_alerts as process_alert_signals
-        from execute_live import execute_signal as live_execute
-        from exchange.ccxt_bridge import get_mode as get_execution_mode
+def _record_operational_failure(
+    failures: list[dict],
+    source: str,
+    *,
+    reason_code: str,
+    error_type: str,
+    trace_id: str | None = None,
+) -> dict:
+    entry = {
+        "source": source,
+        "status": "UNAVAILABLE",
+        "reason_code": reason_code,
+        "trace_id": trace_id or uuid4().hex[:16],
+        "error_type": error_type,
+    }
+    failures.append(entry)
+    return entry
 
-    async def pipeline_call_llm(*args, **kwargs):
-        return await call_llm(*args, allow_shared_env=allow_execution, **kwargs)
 
-    log.info("── Pipeline start: %s (debate=%s, risk_personas=%s) ──",
-             symbols, enable_debate, enable_risk_personas)
-    optional_source_statuses: list[dict] = []
-    operational_failures: list[dict] = []
+def _sweep_open_positions() -> dict | None:
+    from alert_manager import send_telegram_text as send_stop_alert
+    from paper_trader import (
+        PortfolioStateError,
+        _load_report_prices,
+        check_stops as paper_check_stops,
+    )
 
-    def record_optional_source(
-        source: str,
-        *,
-        status: str,
-        reason_code: str | None = None,
-        error_type: str | None = None,
-    ) -> dict:
-        entry = {
-            "source": source,
-            "status": status,
-            "reason_code": reason_code,
-            "trace_id": uuid4().hex[:16],
-            "error_type": error_type,
+    last_prices = _load_report_prices()
+    if last_prices.status != "AVAILABLE":
+        log.error(
+            "event=stop_sweep_unavailable trace_id=%s reason_code=%s",
+            last_prices.trace_id,
+            last_prices.reason_code,
+        )
+        return {
+            "status": "unavailable",
+            "reason_code": last_prices.reason_code,
+            "trace_id": last_prices.trace_id,
+            "assets": [],
         }
-        optional_source_statuses.append(entry)
-        return entry
-
-    def record_operational_failure(
-        source: str,
-        *,
-        reason_code: str,
-        error_type: str,
-        trace_id: str | None = None,
-    ) -> dict:
-        entry = {
-            "source": source,
-            "status": "UNAVAILABLE",
-            "reason_code": reason_code,
-            "trace_id": trace_id or uuid4().hex[:16],
-            "error_type": error_type,
+    try:
+        stopped_out = paper_check_stops(dict(last_prices))
+    except PortfolioStateError as exc:
+        log.error(
+            "event=stop_sweep_unavailable trace_id=%s reason_code=%s",
+            exc.trace_id,
+            exc.reason_code,
+        )
+        return {
+            "status": "unavailable",
+            "reason_code": exc.reason_code,
+            "trace_id": exc.trace_id,
+            "assets": [],
         }
-        operational_failures.append(entry)
-        return entry
+    if stopped_out.status != "COMPLETED":
+        log.error(
+            "event=stop_sweep_partial trace_id=%s reason_code=%s symbols=%s",
+            stopped_out.trace_id,
+            stopped_out.reason_code,
+            ",".join(stopped_out.unavailable_symbols[:16]),
+        )
+        return {
+            "status": "unavailable",
+            "reason_code": stopped_out.reason_code,
+            "trace_id": stopped_out.trace_id,
+            "assets": [],
+        }
+    if stopped_out:
+        syms_out = [order["symbol"] for order in stopped_out]
+        log.info(
+            "Stop sweep closed %d position(s): %s",
+            len(stopped_out),
+            syms_out,
+        )
+        for order in stopped_out:
+            try:
+                send_stop_alert(
+                    f"🛑 [{order['exit_reason'].upper()}] {order['symbol']} closed "
+                    f"{order['shares']:.4f} @ ${order['fill_price']:,.2f} | "
+                    f"PnL ${order['pnl']:+,.2f}"
+                )
+            except Exception as exc:
+                log.warning(
+                    "event=stop_alert_delivery_failed symbol=%s error_type=%s",
+                    order["symbol"],
+                    type(exc).__name__,
+                )
+    return None
 
-    if pad is None:
-        pad = Scratchpad(query=f"Research: {', '.join(symbols)}")
-    pad.init_session(query=f"Research: {', '.join(symbols)}", symbols=symbols)
 
-    # Step 0.5: sweep open positions for stop-loss / trailing-stop exits
-    # Done before collecting new data so stale positions are closed first.
-    # Uses last-known prices from the most recent report (paper_trader._load_report_prices).
-    if allow_execution:
-        from alert_manager import send_telegram_text as send_stop_alert
-        from paper_trader import (
-            PortfolioStateError,
-            _load_report_prices,
-            check_stops as paper_check_stops,
+def _refresh_optional_sources(statuses: list[dict]) -> None:
+    try:
+        from adanos_collector import collect as _adanos_collect
+        _adanos_collect()
+        source_entry = _record_optional_source(statuses, "adanos", status="AVAILABLE")
+        log.info(
+            "event=optional_source_available source=adanos trace_id=%s",
+            source_entry["trace_id"],
+        )
+    except Exception as exc:  # Optional collector boundary.
+        source_entry = _record_optional_source(
+            statuses,
+            "adanos",
+            status="UNAVAILABLE",
+            reason_code="ADANOS_REFRESH_FAILED",
+            error_type=type(exc).__name__,
+        )
+        log.warning(
+            "event=optional_source_unavailable source=adanos "
+            "trace_id=%s reason_code=ADANOS_REFRESH_FAILED error_type=%s",
+            source_entry["trace_id"],
+            type(exc).__name__,
+        )
+    try:
+        from kalshi_collector import collect as _kalshi_collect
+        _kalshi_collect()
+        source_entry = _record_optional_source(statuses, "kalshi", status="AVAILABLE")
+        log.info(
+            "event=optional_source_available source=kalshi trace_id=%s",
+            source_entry["trace_id"],
+        )
+    except Exception as exc:  # Optional collector boundary.
+        source_entry = _record_optional_source(
+            statuses,
+            "kalshi",
+            status="UNAVAILABLE",
+            reason_code="KALSHI_REFRESH_FAILED",
+            error_type=type(exc).__name__,
+        )
+        log.warning(
+            "event=optional_source_unavailable source=kalshi "
+            "trace_id=%s reason_code=KALSHI_REFRESH_FAILED error_type=%s",
+            source_entry["trace_id"],
+            type(exc).__name__,
+        )
+    try:
+        from orderflow_collector import collect as _of_collect
+        _of_collect()
+        source_entry = _record_optional_source(statuses, "orderflow", status="AVAILABLE")
+        log.info(
+            "event=optional_source_available source=orderflow trace_id=%s",
+            source_entry["trace_id"],
+        )
+    except Exception as exc:  # Optional collector boundary.
+        source_entry = _record_optional_source(
+            statuses,
+            "orderflow",
+            status="UNAVAILABLE",
+            reason_code="ORDERFLOW_REFRESH_FAILED",
+            error_type=type(exc).__name__,
+        )
+        log.warning(
+            "event=optional_source_unavailable source=orderflow "
+            "trace_id=%s reason_code=ORDERFLOW_REFRESH_FAILED error_type=%s",
+            source_entry["trace_id"],
+            type(exc).__name__,
+        )
+    try:
+        from polymarket_collector import collect as _pm_collect
+        _pm_collect()
+        source_entry = _record_optional_source(statuses, "polymarket", status="AVAILABLE")
+        log.info(
+            "event=optional_source_available source=polymarket trace_id=%s",
+            source_entry["trace_id"],
+        )
+    except Exception as exc:  # Optional collector boundary.
+        source_entry = _record_optional_source(
+            statuses,
+            "polymarket",
+            status="UNAVAILABLE",
+            reason_code="POLYMARKET_REFRESH_FAILED",
+            error_type=type(exc).__name__,
+        )
+        log.warning(
+            "event=optional_source_unavailable source=polymarket "
+            "trace_id=%s reason_code=POLYMARKET_REFRESH_FAILED error_type=%s",
+            source_entry["trace_id"],
+            type(exc).__name__,
         )
 
-        last_prices = _load_report_prices()
-        if last_prices.status != "AVAILABLE":
-            log.error(
-                "event=stop_sweep_unavailable trace_id=%s reason_code=%s",
-                last_prices.trace_id,
-                last_prices.reason_code,
-            )
-            return {
-                "status": "unavailable",
-                "reason_code": last_prices.reason_code,
-                "trace_id": last_prices.trace_id,
-                "assets": [],
-            }
-        try:
-            stopped_out = paper_check_stops(dict(last_prices))
-        except PortfolioStateError as exc:
-            log.error(
-                "event=stop_sweep_unavailable trace_id=%s reason_code=%s",
-                exc.trace_id,
-                exc.reason_code,
-            )
-            return {
-                "status": "unavailable",
-                "reason_code": exc.reason_code,
-                "trace_id": exc.trace_id,
-                "assets": [],
-            }
-        if stopped_out.status != "COMPLETED":
-            log.error(
-                "event=stop_sweep_partial trace_id=%s reason_code=%s symbols=%s",
-                stopped_out.trace_id,
-                stopped_out.reason_code,
-                ",".join(stopped_out.unavailable_symbols[:16]),
-            )
-            return {
-                "status": "unavailable",
-                "reason_code": stopped_out.reason_code,
-                "trace_id": stopped_out.trace_id,
-                "assets": [],
-            }
-        if stopped_out:
-            syms_out = [order["symbol"] for order in stopped_out]
-            log.info(
-                "Stop sweep closed %d position(s): %s",
-                len(stopped_out),
-                syms_out,
-            )
-            for order in stopped_out:
-                try:
-                    send_stop_alert(
-                        f"🛑 [{order['exit_reason'].upper()}] {order['symbol']} closed "
-                        f"{order['shares']:.4f} @ ${order['fill_price']:,.2f} | "
-                        f"PnL ${order['pnl']:+,.2f}"
-                    )
-                except Exception as exc:
-                    log.warning(
-                        "event=stop_alert_delivery_failed symbol=%s error_type=%s",
-                        order["symbol"],
-                        type(exc).__name__,
-                    )
 
-    # Step 1 pre-run: refresh external signal sources. These three sources can
-    # touch exchange/trading credentials, so research-only runs omit them.
-    if allow_execution:
-        try:
-            from adanos_collector import collect as _adanos_collect
-            _adanos_collect()
-            source_entry = record_optional_source("adanos", status="AVAILABLE")
-            log.info(
-                "event=optional_source_available source=adanos trace_id=%s",
-                source_entry["trace_id"],
-            )
-        except Exception as exc:  # Optional collector boundary.
-            source_entry = record_optional_source(
-                "adanos",
-                status="UNAVAILABLE",
-                reason_code="ADANOS_REFRESH_FAILED",
-                error_type=type(exc).__name__,
-            )
-            log.warning(
-                "event=optional_source_unavailable source=adanos "
-                "trace_id=%s reason_code=ADANOS_REFRESH_FAILED error_type=%s",
-                source_entry["trace_id"],
-                type(exc).__name__,
-            )
-        try:
-            from kalshi_collector import collect as _kalshi_collect
-            _kalshi_collect()
-            source_entry = record_optional_source("kalshi", status="AVAILABLE")
-            log.info(
-                "event=optional_source_available source=kalshi trace_id=%s",
-                source_entry["trace_id"],
-            )
-        except Exception as exc:  # Optional collector boundary.
-            source_entry = record_optional_source(
-                "kalshi",
-                status="UNAVAILABLE",
-                reason_code="KALSHI_REFRESH_FAILED",
-                error_type=type(exc).__name__,
-            )
-            log.warning(
-                "event=optional_source_unavailable source=kalshi "
-                "trace_id=%s reason_code=KALSHI_REFRESH_FAILED error_type=%s",
-                source_entry["trace_id"],
-                type(exc).__name__,
-            )
-        try:
-            from orderflow_collector import collect as _of_collect
-            _of_collect()
-            source_entry = record_optional_source("orderflow", status="AVAILABLE")
-            log.info(
-                "event=optional_source_available source=orderflow trace_id=%s",
-                source_entry["trace_id"],
-            )
-        except Exception as exc:  # Optional collector boundary.
-            source_entry = record_optional_source(
-                "orderflow",
-                status="UNAVAILABLE",
-                reason_code="ORDERFLOW_REFRESH_FAILED",
-                error_type=type(exc).__name__,
-            )
-            log.warning(
-                "event=optional_source_unavailable source=orderflow "
-                "trace_id=%s reason_code=ORDERFLOW_REFRESH_FAILED error_type=%s",
-                source_entry["trace_id"],
-                type(exc).__name__,
-            )
-    if allow_execution:
-        try:
-            from polymarket_collector import collect as _pm_collect
-            _pm_collect()
-            source_entry = record_optional_source("polymarket", status="AVAILABLE")
-            log.info(
-                "event=optional_source_available source=polymarket trace_id=%s",
-                source_entry["trace_id"],
-            )
-        except Exception as exc:  # Optional collector boundary.
-            source_entry = record_optional_source(
-                "polymarket",
-                status="UNAVAILABLE",
-                reason_code="POLYMARKET_REFRESH_FAILED",
-                error_type=type(exc).__name__,
-            )
-            log.warning(
-                "event=optional_source_unavailable source=polymarket "
-                "trace_id=%s reason_code=POLYMARKET_REFRESH_FAILED error_type=%s",
-                source_entry["trace_id"],
-                type(exc).__name__,
-            )
-
-    # Step 1: collect raw data
-    pad.log_thinking("Starting data collection phase", "planning")
-    raw_assets = await collect_all(symbols, allow_exchange=allow_execution)
-    pad.log_tool_call("data_collector.collect_all", {"symbols": symbols},
-                      llm_summary=f"Collected data for {len(raw_assets)} assets")
-
-    # Step 1.5: inject enriched memory context for each symbol
-    memory_contexts = {}
+def _collect_memory_contexts(symbols: list[str]) -> dict[str, str]:
+    memory_contexts: dict[str, str] = {}
     for sym in symbols:
-        mc = build_memory_context(sym)  # Legacy reflections
-        enriched_mc = build_enriched_context(sym)  # New typed search
+        mc = build_memory_context(sym)
+        enriched_mc = build_enriched_context(sym)
         combined_mc = mc + enriched_mc
         if combined_mc:
             memory_contexts[sym] = combined_mc
             log.info("[%s] Memory context loaded (%d chars)", sym, len(combined_mc))
+    return memory_contexts
 
-    # Steps 2–5: TA → debate → personas → assemble per asset
-    assembled_assets = []
-    for sym in symbols:
-        raw = raw_assets.get(sym, {})
-        ohlcv = raw.get("ohlcv")
 
-        # Step 2: technical analysis
-        ta = None
-        if ohlcv:
-            ta = calculate_indicators(ohlcv, sym)
-            if ta is None:
-                log.warning("[%s] TA returned None — likely <200 candles", sym)
-        else:
-            log.warning("[%s] No OHLCV — TA skipped", sym)
+def _build_market_data(sym: str, raw: dict, ta: dict | None) -> dict:
+    market_data = {
+        "asset": sym,
+        "price": raw.get("price") or raw.get("current_price"),
+        "volume_24h": raw.get("volume_24h", "N/A"),
+        "change_24h": raw.get("change_24h", "N/A"),
+    }
+    if ta:
+        if "rsi" in ta:
+            market_data["rsi"] = ta["rsi"]
+        if "macd" in ta:
+            market_data["macd"] = ta["macd"]
+    return market_data
 
-        # Step 2.5: memory context prepends to analysis
-        memory_ctx = memory_contexts.get(sym, "")
 
-        # Step 2.7: Regime detection (before signal resolution)
-        regime_result = None
-        if ohlcv:
-            regime_result = detect_regime(ohlcv, sym)
+async def _prepare_asset(
+    sym: str,
+    raw: dict,
+    *,
+    allow_execution: bool,
+    semantic_inputs: SnapshotSemanticInputs | None,
+) -> tuple[dict, dict | None, dict]:
+    ohlcv = raw.get("ohlcv")
+    ta = None
+    if ohlcv:
+        ta = calculate_indicators(ohlcv, sym)
+        if ta is None:
+            log.warning("[%s] TA returned None — likely <200 candles", sym)
+    else:
+        log.warning("[%s] No OHLCV — TA skipped", sym)
 
-        # Step 3: Enrichment data fetch
-        if semantic_inputs is None:
-            sentiment_data = await fetch_sentiment(sym, allow_shared_env=allow_execution)
-            onchain_data = await fetch_onchain_risk(sym)
-        else:
-            sentiment_data = semantic_inputs.sentiment_for(sym)
-            onchain_data = semantic_inputs.onchain_for(sym)
-        derivatives_data = await fetch_derivatives(
+    regime_result = detect_regime(ohlcv, sym) if ohlcv else None
+    if semantic_inputs is None:
+        sentiment_data = await fetch_sentiment(sym, allow_shared_env=allow_execution)
+        onchain_data = await fetch_onchain_risk(sym)
+    else:
+        sentiment_data = semantic_inputs.sentiment_for(sym)
+        onchain_data = semantic_inputs.onchain_for(sym)
+    derivatives_data = await fetch_derivatives(
+        sym,
+        price_change_24h_pct=raw.get("price_change_24h_pct"),
+        allow_exchange=allow_execution,
+    )
+
+    asset_kwargs = {
+        "raw_data": raw,
+        "ta_data": ta,
+        "sentiment_data": sentiment_data,
+        "onchain_data": onchain_data,
+        "derivatives_data": derivatives_data,
+        "regime_result": regime_result,
+    }
+    if semantic_inputs is not None:
+        asset_kwargs["macro_regime_override"] = semantic_inputs.macro_regime
+    asset_json = assemble_asset_json(**asset_kwargs)
+
+    atr_14 = asset_json.get("atr_14", 0)
+    current_price = asset_json.get("current_price", 0) or asset_json.get("price", 0)
+    if current_price and atr_14:
+        if asset_json.get("stop_loss_suggestion") is None:
+            asset_json["stop_loss_suggestion"] = round(current_price - (atr_14 * 2), 2)
+        if asset_json.get("target_suggestion") is None:
+            asset_json["target_suggestion"] = round(current_price + (atr_14 * 3), 2)
+    return asset_json, ta, sentiment_data
+
+
+async def _run_analyst_reports(
+    sym: str,
+    raw: dict,
+    ta: dict | None,
+    sentiment_data: dict,
+    *,
+    enable_debate: bool,
+    allow_execution: bool,
+    semantic_inputs: SnapshotSemanticInputs | None,
+    pipeline_call_llm: _AsyncLLMCall,
+) -> str:
+    if not enable_debate:
+        return ""
+    analyst_context = ""
+    try:
+        market_data_dict = _build_market_data(sym, raw, ta)
+        analysts_coordinator = AnalystCoordinator(
+            pipeline_call_llm, allow_exchange=allow_execution
+        )
+        technical, sentiment, onchain, macro = await analysts_coordinator.analyze_all(
             sym,
-            price_change_24h_pct=raw.get("price_change_24h_pct"),
-            allow_exchange=allow_execution,
+            market_data_dict,
+            ta,
+            sentiment_data,
+            macro_snapshot=(
+                dict(semantic_inputs.macro_snapshot)
+                if semantic_inputs is not None
+                else None
+            ),
         )
-
-        # Assemble initial asset JSON
-        asset_kwargs = dict(
-            raw_data=raw,
-            ta_data=ta,
-            sentiment_data=sentiment_data,
-            onchain_data=onchain_data,
-            derivatives_data=derivatives_data,
-            regime_result=regime_result,
+        analyst_context = analysts_coordinator.format_for_debate(
+            technical, sentiment, onchain, macro
         )
-        if semantic_inputs is not None:
-            asset_kwargs["macro_regime_override"] = semantic_inputs.macro_regime
-        asset_json = assemble_asset_json(**asset_kwargs)
+        log.info("[%s] Analyst reports complete", sym)
+        return analyst_context
+    except Exception as exc:
+        log.warning("[%s] Analyst reports failed, continuing without: %s", sym, exc)
+        return analyst_context
 
-        # GAP 1: ATR-based default stop-loss / take-profit fallback
-        atr_14 = asset_json.get("atr_14", 0)
-        current_price = asset_json.get("current_price", 0) or asset_json.get("price", 0)
-        if current_price and atr_14:
-            if asset_json.get("stop_loss_suggestion") is None:
-                asset_json["stop_loss_suggestion"] = round(current_price - (atr_14 * 2), 2)
-            if asset_json.get("target_suggestion") is None:
-                asset_json["target_suggestion"] = round(current_price + (atr_14 * 3), 2)
 
-        # Step 3.5: Run analyst reports (BEFORE debate)
-        analyst_context = ""
-        analyst_reports = None
-        if enable_debate:
-            try:
-                # Build market data dict
-                market_data_dict = {
-                    "asset": sym,
-                    "price": raw.get("price") or raw.get("current_price"),
-                    "volume_24h": raw.get("volume_24h", "N/A"),
-                    "change_24h": raw.get("change_24h", "N/A"),
-                }
-                if ta:
-                    if "rsi" in ta:
-                        market_data_dict["rsi"] = ta["rsi"]
-                    if "macd" in ta:
-                        market_data_dict["macd"] = ta["macd"]
+def _normalize_typed_action(asset_json: dict) -> str:
+    raw_action = str(asset_json.get("suggestion", "HOLD")).upper()
+    if "WATCH" in raw_action or "ENTRY" in raw_action:
+        return "WATCH"
+    if "BUY" in raw_action:
+        return "BUY"
+    if "SELL" in raw_action or "SHORT" in raw_action:
+        return "SELL"
+    return "HOLD"
 
-                # Run all four analysts
-                analysts_coordinator = AnalystCoordinator(
-                    pipeline_call_llm, allow_exchange=allow_execution
-                )
-                technical, sentiment, onchain, macro = await analysts_coordinator.analyze_all(
-                    sym,
-                    market_data_dict,
-                    ta,
-                    sentiment_data,
-                    macro_snapshot=(
-                        dict(semantic_inputs.macro_snapshot)
-                        if semantic_inputs is not None
-                        else None
-                    ),
-                )
-                analyst_reports = {
-                    "technical": technical,
-                    "sentiment": sentiment,
-                    "onchain": onchain,
-                    "macro": macro,
-                }
 
-                # Format for debate context
-                analyst_context = analysts_coordinator.format_for_debate(
-                    technical, sentiment, onchain, macro
-                )
+async def _run_asset_debate(
+    sym: str,
+    raw: dict,
+    ta: dict | None,
+    asset_json: dict,
+    analyst_context: str,
+    *,
+    enable_debate: bool,
+    allow_execution: bool,
+    semantic_inputs: SnapshotSemanticInputs | None,
+    pipeline_call_llm: _AsyncLLMCall,
+) -> tuple[str, str, str, list[Any], TypedSignal | None]:
+    debate_context = ""
+    bull_synth = ""
+    bear_synth = ""
+    debate_rounds: list[Any] = []
+    typed_signal = None
+    if not enable_debate or asset_json.get("suggestion") in (None, "wait"):
+        return debate_context, bull_synth, bear_synth, debate_rounds, typed_signal
 
-                log.info("[%s] Analyst reports complete", sym)
-
-            except Exception as e:
-                log.warning("[%s] Analyst reports failed, continuing without: %s", sym, e)
-
-        # Step 4: Bull/Bear debate (if enabled)
-        debate_context = ""
-        bull_synth = ""
-        bear_synth = ""
-        debate_rounds = []
-        typed_signal = None
-
-        if enable_debate and asset_json.get("suggestion") not in (None, "wait"):
-            # Build TradingSignal Pydantic model
-            try:
-                # Normalize action
-                raw_action = str(asset_json.get("suggestion", "HOLD")).upper()
-                if "WATCH" in raw_action or "ENTRY" in raw_action:
-                    action = "WATCH"
-                elif "BUY" in raw_action:
-                    action = "BUY"
-                elif "SELL" in raw_action or "SHORT" in raw_action:
-                    action = "SELL"
-                else:
-                    action = "HOLD"
-
-                typed_signal = TypedSignal(
-                    asset=sym,
-                    action=action,
-                    confidence=float(asset_json.get("confidence", 0.5)),
-                    entry_price=asset_json.get("price"),
-                    stop_loss=asset_json.get("stop_loss_suggestion"),
-                    reasoning=asset_json.get("rationale", "No rationale provided")[:500],
-                )
-
-                # Build market data dict
-                market_data_dict = {
-                    "asset": sym,
-                    "price": raw.get("price") or raw.get("current_price"),
-                    "volume_24h": raw.get("volume_24h", "N/A"),
-                    "change_24h": raw.get("change_24h", "N/A"),
-                }
-                if ta:
-                    if "rsi" in ta:
-                        market_data_dict["rsi"] = ta["rsi"]
-                    if "macd" in ta:
-                        market_data_dict["macd"] = ta["macd"]
-
-                # Get per-agent memory for bull/bear
-                bull_memory = get_memory_for_bull(sym, limit=3)
-                bear_memory = get_memory_for_bear(sym, limit=3)
-
-                # Inject analyst reports and memory into debate
-                # (This is handled inside debate.py via the market_data and signal)
-
-                # Run adversarial debate
-                debate_config = DebateConfig(rounds=2)
-                debate = AdversarialDebate(
-                    pipeline_call_llm,
-                    debate_config,
-                    allow_kalshi=allow_execution,
-                    macro_context_override=(
-                        semantic_inputs.debate_macro_context
-                        if semantic_inputs is not None
-                        else None
-                    ),
-                )
-
-                # Note: Memory injection happens inside debate.run()
-                # For now, we prepend it to the signal reasoning
-                if bull_memory:
-                    typed_signal.reasoning = f"BULL PAST MISTAKES:\n{bull_memory}\n\nOriginal: {typed_signal.reasoning}"
-                if bear_memory:
-                    typed_signal.reasoning = f"{typed_signal.reasoning}\n\nBEAR PAST MISTAKES:\n{bear_memory}"
-
-                debate_rounds, bull_synth, bear_synth = await debate.run(
-                    sym, market_data_dict, typed_signal
-                )
-
-                # Format for prompt (backward compatible)
-                debate_context = f"""
+    try:
+        typed_signal = TypedSignal(
+            asset=sym,
+            action=_normalize_typed_action(asset_json),
+            confidence=float(asset_json.get("confidence", 0.5)),
+            entry_price=asset_json.get("price"),
+            stop_loss=asset_json.get("stop_loss_suggestion"),
+            reasoning=asset_json.get("rationale", "No rationale provided")[:500],
+        )
+        market_data_dict = _build_market_data(sym, raw, ta)
+        bull_memory = get_memory_for_bull(sym, limit=3)
+        bear_memory = get_memory_for_bear(sym, limit=3)
+        debate = AdversarialDebate(
+            pipeline_call_llm,
+            DebateConfig(rounds=2),
+            allow_kalshi=allow_execution,
+            macro_context_override=(
+                semantic_inputs.debate_macro_context
+                if semantic_inputs is not None
+                else None
+            ),
+        )
+        if bull_memory:
+            typed_signal.reasoning = (
+                f"BULL PAST MISTAKES:\n{bull_memory}\n\n"
+                f"Original: {typed_signal.reasoning}"
+            )
+        if bear_memory:
+            typed_signal.reasoning = (
+                f"{typed_signal.reasoning}\n\nBEAR PAST MISTAKES:\n{bear_memory}"
+            )
+        debate_rounds, bull_synth, bear_synth = await debate.run(
+            sym, market_data_dict, typed_signal
+        )
+        debate_context = f"""
 ## Adversarial Debate Results — {sym}
 
 **Analyst Reports:**
@@ -871,166 +864,199 @@ async def run_pipeline(
 
 **Debate Rounds:** {len(debate_rounds)}
 """
+        log.info(
+            "[%s] AdversarialDebate complete — %d rounds, bull=%d chars, bear=%d chars",
+            sym,
+            len(debate_rounds),
+            len(bull_synth),
+            len(bear_synth),
+        )
+    except Exception as exc:
+        log.warning("[%s] AdversarialDebate failed, falling back to legacy: %s", sym, exc)
+        ta_summary = json.dumps(ta, indent=2)[:500] if ta else "No TA data"
+        market_ctx = json.dumps({
+            "volume_24h": raw.get("volume_24h", "N/A"),
+            "market_cap": raw.get("market_cap", "N/A"),
+            "change_24h": raw.get("change_24h", "N/A"),
+        }, indent=2)
+        prompts = build_debate_prompts(
+            ticker=sym,
+            price=asset_json.get("price", 0),
+            suggestion=asset_json.get("suggestion", "wait"),
+            confidence=asset_json.get("confidence", 0.5),
+            ta_summary=ta_summary,
+            market_context=market_ctx,
+        )
+        bull_text = await pipeline_call_llm(
+            prompts["bull"],
+            "You are a bullish crypto analyst.",
+            task_type="bull_bear_debate",
+        )
+        bear_text = await pipeline_call_llm(
+            prompts["bear"],
+            "You are a bearish crypto analyst.",
+            task_type="bull_bear_debate",
+        )
+        debate_context = format_bull_bear_for_prompt(sym, bull_text, bear_text)
+        log.info(
+            "[%s] Legacy debate complete — bull=%d chars, bear=%d chars",
+            sym,
+            len(bull_text),
+            len(bear_text),
+        )
+    return debate_context, bull_synth, bear_synth, debate_rounds, typed_signal
 
-                log.info("[%s] AdversarialDebate complete — %d rounds, bull=%d chars, bear=%d chars",
-                         sym, len(debate_rounds), len(bull_synth), len(bear_synth))
 
-            except Exception as e:
-                log.warning("[%s] AdversarialDebate failed, falling back to legacy: %s", sym, e)
-                # Fallback to legacy debate
-                price = asset_json.get("price", 0)
-                suggestion = asset_json.get("suggestion", "wait")
-                confidence = asset_json.get("confidence", 0.5)
-
-                ta_summary = json.dumps(ta, indent=2)[:500] if ta else "No TA data"
-                market_ctx = json.dumps({
-                    "volume_24h": raw.get("volume_24h", "N/A"),
-                    "market_cap": raw.get("market_cap", "N/A"),
-                    "change_24h": raw.get("change_24h", "N/A"),
-                }, indent=2)
-
-                prompts = build_debate_prompts(
-                    ticker=sym,
-                    price=price,
-                    suggestion=suggestion,
-                    confidence=confidence,
-                    ta_summary=ta_summary,
-                    market_context=market_ctx,
-                )
-
-                bull_text = await pipeline_call_llm(prompts["bull"], "You are a bullish crypto analyst.", task_type="bull_bear_debate")
-                bear_text = await pipeline_call_llm(prompts["bear"], "You are a bearish crypto analyst.", task_type="bull_bear_debate")
-
-                debate_context = format_bull_bear_for_prompt(sym, bull_text, bear_text)
-                log.info("[%s] Legacy debate complete — bull=%d chars, bear=%d chars",
-                         sym, len(bull_text), len(bear_text))
-
-        # Step 4.6: 3-way risk personas (if enabled)
-        risk_context = ""
-        risk_assessments_list = []
-
-        if enable_risk_personas:
-            try:
-                if typed_signal is None:
-                    raise RuntimeError("typed signal unavailable for risk assessment")
-                # Build market data dict
-                market_data_dict = {
-                    "asset": sym,
-                    "price": raw.get("price") or raw.get("current_price"),
-                    "volume_24h": raw.get("volume_24h", "N/A"),
-                    "change_24h": raw.get("change_24h", "N/A"),
-                }
-                if ta:
-                    if "rsi" in ta:
-                        market_data_dict["rsi"] = ta["rsi"]
-                    if "macd" in ta:
-                        market_data_dict["macd"] = ta["macd"]
-
-                # Run risk debate
-                risk = RiskDebate(pipeline_call_llm, RiskDebateConfig(rounds=1))
-                risk_assessments_list = await risk.run(
-                    typed_signal, bull_synth, bear_synth, market_data_dict
-                )
-
-                # Format for prompt (backward compatible)
-                aggressive_rationale = next((r.rationale for r in risk_assessments_list if r.persona == "aggressive"), "")
-                conservative_rationale = next((r.rationale for r in risk_assessments_list if r.persona == "conservative"), "")
-                neutral_rationale = next((r.rationale for r in risk_assessments_list if r.persona == "neutral"), "")
-
-                risk_context = f"""
+async def _run_risk_assessment(
+    sym: str,
+    raw: dict,
+    ta: dict | None,
+    asset_json: dict,
+    typed_signal: TypedSignal | None,
+    bull_synth: str,
+    bear_synth: str,
+    *,
+    enable_risk_personas: bool,
+    allow_execution: bool,
+    pipeline_call_llm: _AsyncLLMCall,
+    operational_failures: list[dict],
+) -> tuple[str, list[Any]]:
+    if not enable_risk_personas:
+        return "", []
+    risk_assessments: list[Any] = []
+    try:
+        if typed_signal is None:
+            raise RuntimeError("typed signal unavailable for risk assessment")
+        market_data_dict = _build_market_data(sym, raw, ta)
+        risk = RiskDebate(pipeline_call_llm, RiskDebateConfig(rounds=1))
+        risk_assessments = await risk.run(
+            typed_signal, bull_synth, bear_synth, market_data_dict
+        )
+        aggressive_rationale = next(
+            (r.rationale for r in risk_assessments if r.persona == "aggressive"), ""
+        )
+        conservative_rationale = next(
+            (r.rationale for r in risk_assessments if r.persona == "conservative"), ""
+        )
+        neutral_rationale = next(
+            (r.rationale for r in risk_assessments if r.persona == "neutral"), ""
+        )
+        risk_context = f"""
 ## Risk Debate Results — {sym}
 
 **Aggressive:** {aggressive_rationale[:300]}
 **Conservative:** {conservative_rationale[:300]}
 **Neutral:** {neutral_rationale[:300]}
 """
+        log.info("[%s] RiskDebate complete — %d assessments", sym, len(risk_assessments))
+        return risk_context, risk_assessments
+    except Exception as exc:
+        reason_code = "RISK_ASSESSMENT_UNAVAILABLE"
+        failure = _record_operational_failure(
+            operational_failures,
+            "risk_debate",
+            reason_code=reason_code,
+            error_type=type(exc).__name__,
+        )
+        asset_json["risk_stage"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": reason_code,
+            "trace_id": failure["trace_id"],
+        }
+        asset_json["risk_assessment"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": reason_code,
+            "trace_id": failure["trace_id"],
+            "decision": "REJECT" if allow_execution else "UNKNOWN",
+            "accept_signal": False,
+            "position_size_pct": 0,
+        }
+        if allow_execution:
+            asset_json["suggestion"] = "HOLD"
+        risk_context = (
+            f"\n## Risk Debate — {sym}\n"
+            f"UNAVAILABLE ({reason_code}, trace={failure['trace_id']}).\n"
+        )
+        log.error(
+            "event=risk_debate_unavailable trace_id=%s symbol=%s "
+            "reason_code=%s error_type=%s execution_blocked=%s",
+            failure["trace_id"],
+            sym,
+            reason_code,
+            failure["error_type"],
+            allow_execution,
+        )
+        return risk_context, risk_assessments
 
-                log.info("[%s] RiskDebate complete — %d assessments", sym, len(risk_assessments_list))
 
-            except Exception as exc:
-                reason_code = "RISK_ASSESSMENT_UNAVAILABLE"
-                failure = record_operational_failure(
-                    "risk_debate",
-                    reason_code=reason_code,
-                    error_type=type(exc).__name__,
-                )
-                asset_json["risk_stage"] = {
-                    "status": "UNAVAILABLE",
-                    "reason_code": reason_code,
-                    "trace_id": failure["trace_id"],
-                }
-                asset_json["risk_assessment"] = {
-                    "status": "UNAVAILABLE",
-                    "reason_code": reason_code,
-                    "trace_id": failure["trace_id"],
-                    "decision": "REJECT" if allow_execution else "UNKNOWN",
-                    "accept_signal": False,
-                    "position_size_pct": 0,
-                }
-                if allow_execution:
-                    asset_json["suggestion"] = "HOLD"
-                risk_context = (
-                    f"\n## Risk Debate — {sym}\n"
-                    f"UNAVAILABLE ({reason_code}, trace={failure['trace_id']}).\n"
-                )
-                log.error(
-                    "event=risk_debate_unavailable trace_id=%s symbol=%s "
-                    "reason_code=%s error_type=%s execution_blocked=%s",
-                    failure["trace_id"],
-                    sym,
-                    reason_code,
-                    failure["error_type"],
-                    allow_execution,
-                )
+def _attach_asset_contexts(
+    asset_json: dict,
+    *,
+    memory_context: str,
+    debate_context: str,
+    risk_context: str,
+    debate_rounds: list[Any],
+    bull_synth: str,
+    bear_synth: str,
+    risk_assessments: list[Any],
+) -> None:
+    asset_json["_memory_context"] = memory_context
+    asset_json["_debate_context"] = debate_context
+    asset_json["_risk_context"] = risk_context
+    if debate_rounds:
+        asset_json["_debate_rounds"] = [r.model_dump() for r in debate_rounds]
+        asset_json["bull_synthesis"] = bull_synth
+        asset_json["bear_synthesis"] = bear_synth
+    if risk_assessments:
+        asset_json["_risk_assessments"] = [r.model_dump() for r in risk_assessments]
 
-        # Inject debate + risk context into asset JSON for downstream prompts
-        asset_json["_memory_context"] = memory_ctx
-        asset_json["_debate_context"] = debate_context
-        asset_json["_risk_context"] = risk_context
 
-        # Store new Phase 2 data
-        if debate_rounds:
-            asset_json["_debate_rounds"] = [r.model_dump() for r in debate_rounds]
-            asset_json["bull_synthesis"] = bull_synth
-            asset_json["bear_synthesis"] = bear_synth
-        if risk_assessments_list:
-            asset_json["_risk_assessments"] = [r.model_dump() for r in risk_assessments_list]
-
-        # Step 5: Portfolio Manager (FINAL DECISION)
-        # Only run if we have debate results and risk assessments
-        portfolio_context = ""
-        if (
-            enable_debate
-            and enable_risk_personas
-            and typed_signal is not None
-            and debate_rounds
-            and risk_assessments_list
-        ):
-            try:
-                pm = PortfolioManager()
-                portfolio_decision = await pm.decide(
-                    pipeline_call_llm,
-                    typed_signal,
-                    debate_rounds,
-                    bull_synth,
-                    bear_synth,
-                    risk_assessments_list,
-                    analyst_context,  # Include analyst reports
-                    execution_mode="paper" if not allow_execution else None,
-                )
-
-                # Apply portfolio decision to signal
-                final_signal = pm.apply_decision(typed_signal, portfolio_decision)
-
-                # Update asset_json with portfolio decision
-                asset_json["portfolio_decision"] = portfolio_decision.model_dump(mode="json", exclude_none=True)
-                asset_json["suggestion"] = final_signal.action
-                asset_json["confidence"] = float(final_signal.confidence)
-                asset_json["price"] = final_signal.entry_price
-                asset_json["stop_loss_suggestion"] = final_signal.stop_loss
-                asset_json["target_suggestion"] = final_signal.take_profit
-
-                portfolio_context = f"""
+async def _run_portfolio_decision(
+    sym: str,
+    asset_json: dict,
+    typed_signal: TypedSignal | None,
+    debate_rounds: list[Any],
+    bull_synth: str,
+    bear_synth: str,
+    risk_assessments: list[Any],
+    analyst_context: str,
+    *,
+    enable_debate: bool,
+    enable_risk_personas: bool,
+    allow_execution: bool,
+    pipeline_call_llm: _AsyncLLMCall,
+    operational_failures: list[dict],
+) -> str:
+    if not (
+        enable_debate
+        and enable_risk_personas
+        and typed_signal is not None
+        and debate_rounds
+        and risk_assessments
+    ):
+        return f"\n## Portfolio Manager — {sym}\nSkipped (debate or risk personas not enabled).\n"
+    try:
+        pm = PortfolioManager()
+        portfolio_decision = await pm.decide(
+            pipeline_call_llm,
+            typed_signal,
+            debate_rounds,
+            bull_synth,
+            bear_synth,
+            risk_assessments,
+            analyst_context,
+            execution_mode="paper" if not allow_execution else None,
+        )
+        final_signal = pm.apply_decision(typed_signal, portfolio_decision)
+        asset_json["portfolio_decision"] = portfolio_decision.model_dump(
+            mode="json", exclude_none=True
+        )
+        asset_json["suggestion"] = final_signal.action
+        asset_json["confidence"] = float(final_signal.confidence)
+        asset_json["price"] = final_signal.entry_price
+        asset_json["stop_loss_suggestion"] = final_signal.stop_loss
+        asset_json["target_suggestion"] = final_signal.take_profit
+        portfolio_context = f"""
 ## Portfolio Manager Decision — {sym}
 
 **Original:** {typed_signal.action} (confidence: {typed_signal.confidence:.2f})
@@ -1038,365 +1064,504 @@ async def run_pipeline(
 **Decision:** {portfolio_decision.action.upper()}
 **Rationale:** {portfolio_decision.rationale[:300]}
 """
+        log.info(
+            "[%s] Portfolio Manager: %s → %s (%s)",
+            sym,
+            typed_signal.action,
+            final_signal.action,
+            portfolio_decision.action,
+        )
+        return portfolio_context
+    except Exception as exc:
+        failure = _record_operational_failure(
+            operational_failures,
+            "portfolio_manager",
+            reason_code="PORTFOLIO_DECISION_UNAVAILABLE",
+            error_type=type(exc).__name__,
+        )
+        asset_json["portfolio_decision"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": failure["reason_code"],
+            "trace_id": failure["trace_id"],
+        }
+        if allow_execution:
+            asset_json["suggestion"] = "HOLD"
+        portfolio_context = (
+            f"\n## Portfolio Manager — {sym}\n"
+            f"UNAVAILABLE ({failure['reason_code']}, trace={failure['trace_id']}).\n"
+        )
+        log.error(
+            "event=portfolio_decision_unavailable trace_id=%s symbol=%s "
+            "reason_code=%s error_type=%s execution_blocked=%s",
+            failure["trace_id"],
+            sym,
+            failure["reason_code"],
+            failure["error_type"],
+            allow_execution,
+        )
+        return portfolio_context
 
-                log.info("[%s] Portfolio Manager: %s → %s (%s)",
-                         sym, typed_signal.action, final_signal.action, portfolio_decision.action)
 
-            except Exception as exc:
-                failure = record_operational_failure(
-                    "portfolio_manager",
-                    reason_code="PORTFOLIO_DECISION_UNAVAILABLE",
-                    error_type=type(exc).__name__,
-                )
-                asset_json["portfolio_decision"] = {
-                    "status": "UNAVAILABLE",
-                    "reason_code": failure["reason_code"],
-                    "trace_id": failure["trace_id"],
-                }
-                if allow_execution:
-                    asset_json["suggestion"] = "HOLD"
-                portfolio_context = (
-                    f"\n## Portfolio Manager — {sym}\n"
-                    f"UNAVAILABLE ({failure['reason_code']}, "
-                    f"trace={failure['trace_id']}).\n"
-                )
-                log.error(
-                    "event=portfolio_decision_unavailable trace_id=%s symbol=%s "
-                    "reason_code=%s error_type=%s execution_blocked=%s",
-                    failure["trace_id"],
-                    sym,
-                    failure["reason_code"],
-                    failure["error_type"],
-                    allow_execution,
-                )
+def _regime_filtered_action(asset_json: dict) -> str:
+    action = str(asset_json.get("suggestion", "")).upper()
+    regime = (asset_json.get("market_regime") or "").lower()
+    if regime == "unclear":
+        return "HOLD"
+    if action == "SELL" and regime != "trending_down":
+        return "HOLD"
+    if action == "BUY" and regime not in ("trending_up",):
+        return "HOLD"
+    return action
 
+
+def _apply_backtest_gate(
+    sym: str,
+    action: str,
+    asset_json: dict,
+    *,
+    allow_execution: bool,
+    operational_failures: list[dict],
+) -> tuple[str, float]:
+    gate_modifier = 1.0
+    if not allow_execution or action != "BUY":
+        return action, gate_modifier
+    try:
+        from backtest_gate import check as gate_check
+        gate_result = gate_check(sym)
+        if gate_result["status"] == "block":
+            log.info("[%s] Backtest gate BLOCK: %s", sym, gate_result["reason"])
+            action = "HOLD"
+        elif gate_result["position_modifier"] < 1.0:
+            gate_modifier = gate_result["position_modifier"]
+            log.info(
+                "[%s] Backtest gate WARNING — position reduced to %.0f%%",
+                sym,
+                gate_modifier * 100,
+            )
+    except Exception as exc:  # Safety-gate integration boundary.
+        failure = _record_operational_failure(
+            operational_failures,
+            "backtest_gate",
+            reason_code="BACKTEST_GATE_UNAVAILABLE",
+            error_type=type(exc).__name__,
+        )
+        action = "HOLD"
+        asset_json["execution"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": failure["reason_code"],
+            "trace_id": failure["trace_id"],
+        }
+        log.error(
+            "event=execution_gate_unavailable trace_id=%s symbol=%s "
+            "reason_code=%s error_type=%s",
+            failure["trace_id"],
+            sym,
+            failure["reason_code"],
+            failure["error_type"],
+        )
+    return action, gate_modifier
+
+
+def _perform_execution(
+    sym: str,
+    action: str,
+    gate_modifier: float,
+    asset_json: dict,
+    raw: dict,
+    dependencies: _ExecutionDependencies,
+    operational_failures: list[dict],
+) -> tuple[dict | None, str | None]:
+    exec_mode = None
+    try:
+        if not callable(dependencies.get_execution_mode):
+            raise RuntimeError("execution mode dependency unavailable")
+        if not callable(dependencies.paper_execute):
+            raise RuntimeError("paper execution dependency unavailable")
+        if not callable(dependencies.live_execute):
+            raise RuntimeError("live execution dependency unavailable")
+        price = asset_json.get("price") or raw.get("current_price")
+        if price is None:
+            raise ValueError("execution price unavailable")
+        current_prices = {sym: float(price)}
+        exec_signal = {
+            "asset": sym,
+            "action": action,
+            "confidence": float(asset_json.get("confidence", 0.5)),
+            "reasoning": asset_json.get("rationale", "")[:300],
+            "entry_price": price,
+            "stop_loss": asset_json.get("stop_loss_suggestion"),
+            "take_profit": asset_json.get("target_suggestion"),
+            "position_modifier": gate_modifier,
+        }
+        exec_mode = dependencies.get_execution_mode()
+        if exec_mode == "paper":
+            confirmation = dependencies.paper_execute(exec_signal, current_prices)
         else:
-            # No portfolio manager run
-            portfolio_context = f"\n## Portfolio Manager — {sym}\nSkipped (debate or risk personas not enabled).\n"
+            confirmation = dependencies.live_execute(exec_signal, current_prices)
+        if not isinstance(confirmation, dict):
+            raise TypeError("execution result must be a mapping")
+        return confirmation, exec_mode
+    except Exception as exc:  # Paper/live adapter boundary.
+        if exec_mode == "paper":
+            source = "paper_execution"
+            reason_code = "PAPER_EXECUTION_FAILED"
+        elif exec_mode:
+            source = "live_execution"
+            reason_code = "LIVE_EXECUTION_FAILED"
+        else:
+            source = "execution_precheck"
+            reason_code = "EXECUTION_PRECHECK_FAILED"
+        failure = _record_operational_failure(
+            operational_failures,
+            source,
+            reason_code=reason_code,
+            error_type=type(exc).__name__,
+        )
+        asset_json["execution"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": reason_code,
+            "trace_id": failure["trace_id"],
+        }
+        log.error(
+            "event=execution_unavailable trace_id=%s symbol=%s "
+            "reason_code=%s error_type=%s",
+            failure["trace_id"],
+            sym,
+            reason_code,
+            failure["error_type"],
+        )
+        return None, exec_mode
 
-        asset_json["_portfolio_context"] = portfolio_context
 
-        # ── Phase 5: Execution ───────────────────────────────────────────────────
-        action = str(asset_json.get("suggestion", "")).upper()
-        regime = (asset_json.get("market_regime") or "").lower()
-        
-        # ── Backtest-optimized regime filter (before paper execution) ──
-        # Prevents trading in losing regimes. Same rules as typed decision filter.
-        if regime == "unclear":
-            action = "HOLD"  # 36% win rate — reject all
-        elif action == "SELL" and regime != "trending_down":
-            action = "HOLD"  # SHORT loses -2.22% avg
-        elif action == "BUY" and regime not in ("trending_up",):
-            action = "HOLD"  # LONG only in trending_up
-        
-        # ── Backtest gate check (only for new BUY/SELL entries) ──
-        gate_modifier = 1.0
-        if allow_execution and action == "BUY":
+def _validate_execution_result(
+    sym: str,
+    confirmation: dict,
+    exec_mode: str | None,
+    asset_json: dict,
+    operational_failures: list[dict],
+) -> tuple[Any, bool]:
+    execution_status = confirmation.get("status")
+    paper_audit_partial = bool(
+        exec_mode == "paper"
+        and execution_status == "filled"
+        and confirmation.get("audit_status") == "PARTIAL"
+    )
+    if execution_status in {"filled", "rejected"}:
+        asset_json["execution"] = confirmation
+    else:
+        failure = _record_operational_failure(
+            operational_failures,
+            "execution_result",
+            reason_code="EXECUTION_RESULT_INVALID",
+            error_type="InvalidExecutionStatus",
+        )
+        asset_json["execution"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": failure["reason_code"],
+            "trace_id": failure["trace_id"],
+        }
+        log.error(
+            "event=execution_unavailable trace_id=%s symbol=%s "
+            "reason_code=%s error_type=%s",
+            failure["trace_id"],
+            sym,
+            failure["reason_code"],
+            failure["error_type"],
+        )
+    return execution_status, paper_audit_partial
+
+
+def _record_partial_paper_audit(
+    sym: str,
+    confirmation: dict,
+    asset_json: dict,
+    operational_failures: list[dict],
+) -> None:
+    audit_reason = confirmation.get("audit_reason_code", "PAPER_AUDIT_WRITE_FAILED")
+    failure = _record_operational_failure(
+        operational_failures,
+        "paper_execution_audit",
+        reason_code=audit_reason,
+        error_type="AuditPersistenceUnavailable",
+        trace_id=confirmation.get("trace_id"),
+    )
+    asset_json["broker"] = {
+        "status": "SKIPPED",
+        "reason_code": "PAPER_AUDIT_INCOMPLETE",
+        "trace_id": failure["trace_id"],
+    }
+    log.error(
+        "event=paper_execution_audit_partial trace_id=%s symbol=%s reason_code=%s",
+        failure["trace_id"],
+        sym,
+        audit_reason,
+    )
+
+
+_KNOWN_BROKER_STATUSES = {
+    "accepted",
+    "new",
+    "partially_filled",
+    "filled",
+    "done_for_day",
+    "canceled",
+    "expired",
+    "replaced",
+    "pending_cancel",
+    "pending_replace",
+    "stopped",
+    "rejected",
+    "suspended",
+    "calculated",
+    "blocked",
+    "skipped",
+}
+
+
+def _execute_secondary_broker(
+    sym: str,
+    confirmation: dict,
+    execution_status: str,
+    exec_mode: str | None,
+    asset_json: dict,
+    broker_execute: _Dependency | None,
+    operational_failures: list[dict],
+) -> None:
+    try:
+        if not callable(broker_execute):
+            raise RuntimeError("broker dependency unavailable")
+        broker_result = broker_execute(
+            confirmation["symbol"],
+            confirmation.get("shares", 0),
+            confirmation["side"].lower()
+            if isinstance(confirmation.get("side"), str)
+            else "",
+        )
+        if not isinstance(broker_result, dict):
+            raise TypeError("broker result must be a mapping")
+    except Exception as exc:  # Broker integration boundary.
+        failure = _record_operational_failure(
+            operational_failures,
+            "broker_execution",
+            reason_code="BROKER_EXECUTION_FAILED",
+            error_type=type(exc).__name__,
+        )
+        asset_json["broker"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": failure["reason_code"],
+            "trace_id": failure["trace_id"],
+        }
+        log.error(
+            "event=broker_execution_unavailable trace_id=%s symbol=%s "
+            "reason_code=%s error_type=%s",
+            failure["trace_id"],
+            sym,
+            failure["reason_code"],
+            failure["error_type"],
+        )
+        return
+
+    if broker_result == {"paper": "skipped", "alpaca": None}:
+        asset_json["broker"] = {
+            "status": "SKIPPED",
+            "reason_code": "SECONDARY_BROKER_NOT_APPLICABLE",
+            **broker_result,
+        }
+    elif broker_result.get("status") not in _KNOWN_BROKER_STATUSES:
+        failure = _record_operational_failure(
+            operational_failures,
+            "broker_result",
+            reason_code="BROKER_RESULT_INVALID",
+            error_type="InvalidBrokerStatus",
+        )
+        asset_json["broker"] = {
+            "status": "UNAVAILABLE",
+            "reason_code": failure["reason_code"],
+            "trace_id": failure["trace_id"],
+        }
+        log.error(
+            "event=broker_execution_unavailable trace_id=%s symbol=%s "
+            "reason_code=%s error_type=%s",
+            failure["trace_id"],
+            sym,
+            failure["reason_code"],
+            failure["error_type"],
+        )
+    else:
+        asset_json["broker"] = broker_result
+    log.info(
+        "[%s] Execution complete — %s=%s broker=%s",
+        sym,
+        exec_mode,
+        execution_status,
+        asset_json["broker"].get("status", "N/A"),
+    )
+
+
+def _send_execution_alert(
+    sym: str,
+    action: str,
+    confirmation: dict,
+    execution_status: str,
+    exec_mode: str | None,
+    asset_json: dict,
+    send_telegram_text: _Dependency | None,
+) -> None:
+    if execution_status == "filled":
+        if exec_mode != "paper":
+            return
+        try:
+            if not callable(send_telegram_text):
+                raise RuntimeError("alert dependency unavailable")
+            send_telegram_text(
+                f"[PAPER] {action} {sym}: {confirmation.get('shares', 0):.4f} shares "
+                f"@ ${confirmation.get('fill_price', 0):,.2f} "
+                f"(conf={float(asset_json.get('confidence', 0)):.2f})"
+            )
+        except Exception as exc:
+            alert_trace_id = uuid4().hex[:16]
+            log.warning(
+                "event=execution_alert_delivery_failed trace_id=%s "
+                "symbol=%s error_type=%s",
+                alert_trace_id,
+                sym,
+                type(exc).__name__,
+            )
+    elif execution_status == "rejected":
+        confidence = float(asset_json.get("confidence", 0))
+        if confidence > 0.6:
             try:
-                from backtest_gate import check as gate_check
-                gate_result = gate_check(sym)
-                if gate_result["status"] == "block":
-                    log.info("[%s] Backtest gate BLOCK: %s", sym, gate_result["reason"])
-                    action = "HOLD"
-                elif gate_result["position_modifier"] < 1.0:
-                    gate_modifier = gate_result["position_modifier"]
-                    log.info("[%s] Backtest gate WARNING — position reduced to %.0f%%",
-                             sym, gate_modifier * 100)
-            except Exception as exc:  # Safety-gate integration boundary.
-                failure = record_operational_failure(
-                    "backtest_gate",
-                    reason_code="BACKTEST_GATE_UNAVAILABLE",
-                    error_type=type(exc).__name__,
+                if not callable(send_telegram_text):
+                    raise RuntimeError("alert dependency unavailable")
+                send_telegram_text(
+                    f"[REJECTED] {sym} {action} (conf={confidence:.2f}): "
+                    f"{confirmation.get('reason', 'N/A')}"
                 )
-                action = "HOLD"
-                asset_json["execution"] = {
-                    "status": "UNAVAILABLE",
-                    "reason_code": failure["reason_code"],
-                    "trace_id": failure["trace_id"],
-                }
-                log.error(
-                    "event=execution_gate_unavailable trace_id=%s symbol=%s "
-                    "reason_code=%s error_type=%s",
-                    failure["trace_id"],
+            except Exception as exc:
+                alert_trace_id = uuid4().hex[:16]
+                log.warning(
+                    "event=execution_alert_delivery_failed trace_id=%s "
+                    "symbol=%s error_type=%s",
+                    alert_trace_id,
                     sym,
-                    failure["reason_code"],
-                    failure["error_type"],
+                    type(exc).__name__,
                 )
 
-        if allow_execution and action in ("BUY", "SELL"):
-            exec_mode = None
-            try:
-                if not callable(get_execution_mode):
-                    raise RuntimeError("execution mode dependency unavailable")
-                if not callable(paper_execute):
-                    raise RuntimeError("paper execution dependency unavailable")
-                if not callable(live_execute):
-                    raise RuntimeError("live execution dependency unavailable")
-                execution_mode_fn = get_execution_mode
-                paper_execute_fn = paper_execute
-                live_execute_fn = live_execute
-                price = asset_json.get("price") or raw.get("current_price")
-                if price is None:
-                    raise ValueError("execution price unavailable")
-                current_prices = {sym: float(price)}
-                exec_signal = {
-                    "asset": sym,
-                    "action": action,
-                    "confidence": float(asset_json.get("confidence", 0.5)),
-                    "reasoning": asset_json.get("rationale", "")[:300],
-                    "entry_price": price,
-                    "stop_loss": asset_json.get("stop_loss_suggestion"),
-                    "take_profit": asset_json.get("target_suggestion"),
-                    "position_modifier": gate_modifier,
-                }
-                exec_mode = execution_mode_fn()
-                if exec_mode == "paper":
-                    confirmation = paper_execute_fn(exec_signal, current_prices)
-                else:
-                    confirmation = live_execute_fn(exec_signal, current_prices)
-                if not isinstance(confirmation, dict):
-                    raise TypeError("execution result must be a mapping")
-            except Exception as exc:  # Paper/live adapter boundary.
-                if exec_mode == "paper":
-                    source = "paper_execution"
-                    reason_code = "PAPER_EXECUTION_FAILED"
-                elif exec_mode:
-                    source = "live_execution"
-                    reason_code = "LIVE_EXECUTION_FAILED"
-                else:
-                    source = "execution_precheck"
-                    reason_code = "EXECUTION_PRECHECK_FAILED"
-                failure = record_operational_failure(
-                    source,
-                    reason_code=reason_code,
-                    error_type=type(exc).__name__,
-                )
-                asset_json["execution"] = {
-                    "status": "UNAVAILABLE",
-                    "reason_code": reason_code,
-                    "trace_id": failure["trace_id"],
-                }
-                log.error(
-                    "event=execution_unavailable trace_id=%s symbol=%s "
-                    "reason_code=%s error_type=%s",
-                    failure["trace_id"],
-                    sym,
-                    reason_code,
-                    failure["error_type"],
-                )
-            else:
-                execution_status = confirmation.get("status")
-                paper_audit_partial = bool(
-                    exec_mode == "paper"
-                    and execution_status == "filled"
-                    and confirmation.get("audit_status") == "PARTIAL"
-                )
-                if execution_status not in {"filled", "rejected"}:
-                    failure = record_operational_failure(
-                        "execution_result",
-                        reason_code="EXECUTION_RESULT_INVALID",
-                        error_type="InvalidExecutionStatus",
-                    )
-                    asset_json["execution"] = {
-                        "status": "UNAVAILABLE",
-                        "reason_code": failure["reason_code"],
-                        "trace_id": failure["trace_id"],
-                    }
-                    log.error(
-                        "event=execution_unavailable trace_id=%s symbol=%s "
-                        "reason_code=%s error_type=%s",
-                        failure["trace_id"],
-                        sym,
-                        failure["reason_code"],
-                        failure["error_type"],
-                    )
-                else:
-                    asset_json["execution"] = confirmation
 
-                if paper_audit_partial:
-                    audit_reason = confirmation.get(
-                        "audit_reason_code",
-                        "PAPER_AUDIT_WRITE_FAILED",
-                    )
-                    audit_trace_id = confirmation.get("trace_id")
-                    failure = record_operational_failure(
-                        "paper_execution_audit",
-                        reason_code=audit_reason,
-                        error_type="AuditPersistenceUnavailable",
-                        trace_id=audit_trace_id,
-                    )
-                    asset_json["broker"] = {
-                        "status": "SKIPPED",
-                        "reason_code": "PAPER_AUDIT_INCOMPLETE",
-                        "trace_id": failure["trace_id"],
-                    }
-                    log.error(
-                        "event=paper_execution_audit_partial trace_id=%s "
-                        "symbol=%s reason_code=%s",
-                        failure["trace_id"],
-                        sym,
-                        audit_reason,
-                    )
-
-                if execution_status == "filled" and not paper_audit_partial:
-                    try:
-                        if not callable(broker_execute):
-                            raise RuntimeError("broker dependency unavailable")
-                        broker_result = broker_execute(
-                            confirmation["symbol"],
-                            confirmation.get("shares", 0),
-                            confirmation["side"].lower()
-                            if isinstance(confirmation.get("side"), str)
-                            else "",
-                        )
-                        if not isinstance(broker_result, dict):
-                            raise TypeError("broker result must be a mapping")
-                    except Exception as exc:  # Broker integration boundary.
-                        failure = record_operational_failure(
-                            "broker_execution",
-                            reason_code="BROKER_EXECUTION_FAILED",
-                            error_type=type(exc).__name__,
-                        )
-                        asset_json["broker"] = {
-                            "status": "UNAVAILABLE",
-                            "reason_code": failure["reason_code"],
-                            "trace_id": failure["trace_id"],
-                        }
-                        log.error(
-                            "event=broker_execution_unavailable trace_id=%s "
-                            "symbol=%s reason_code=%s error_type=%s",
-                            failure["trace_id"],
-                            sym,
-                            failure["reason_code"],
-                            failure["error_type"],
-                        )
-                    else:
-                        if broker_result == {"paper": "skipped", "alpaca": None}:
-                            asset_json["broker"] = {
-                                "status": "SKIPPED",
-                                "reason_code": "SECONDARY_BROKER_NOT_APPLICABLE",
-                                **broker_result,
-                            }
-                        elif broker_result.get("status") not in {
-                            "accepted",
-                            "new",
-                            "partially_filled",
-                            "filled",
-                            "done_for_day",
-                            "canceled",
-                            "expired",
-                            "replaced",
-                            "pending_cancel",
-                            "pending_replace",
-                            "stopped",
-                            "rejected",
-                            "suspended",
-                            "calculated",
-                            "blocked",
-                            "skipped",
-                        }:
-                            failure = record_operational_failure(
-                                "broker_result",
-                                reason_code="BROKER_RESULT_INVALID",
-                                error_type="InvalidBrokerStatus",
-                            )
-                            asset_json["broker"] = {
-                                "status": "UNAVAILABLE",
-                                "reason_code": failure["reason_code"],
-                                "trace_id": failure["trace_id"],
-                            }
-                            log.error(
-                                "event=broker_execution_unavailable trace_id=%s "
-                                "symbol=%s reason_code=%s error_type=%s",
-                                failure["trace_id"],
-                                sym,
-                                failure["reason_code"],
-                                failure["error_type"],
-                            )
-                        else:
-                            asset_json["broker"] = broker_result
-                        log.info(
-                            "[%s] Execution complete — %s=%s broker=%s",
-                            sym,
-                            exec_mode,
-                            execution_status,
-                            asset_json["broker"].get("status", "N/A"),
-                        )
-
-                    # Telegram is observability-only after the authoritative fill.
-                    if exec_mode == "paper":
-                        try:
-                            if not callable(send_telegram_text):
-                                raise RuntimeError("alert dependency unavailable")
-                            send_telegram_text(
-                                f"[PAPER] {action} {sym}: {confirmation.get('shares', 0):.4f} shares "
-                                f"@ ${confirmation.get('fill_price', 0):,.2f} "
-                                f"(conf={float(asset_json.get('confidence', 0)):.2f})"
-                            )
-                        except Exception as exc:
-                            alert_trace_id = uuid4().hex[:16]
-                            log.warning(
-                                "event=execution_alert_delivery_failed trace_id=%s "
-                                "symbol=%s error_type=%s",
-                                alert_trace_id,
-                                sym,
-                                type(exc).__name__,
-                            )
-                elif execution_status == "rejected":
-                    confidence = float(asset_json.get("confidence", 0))
-                    if confidence > 0.6:
-                        try:
-                            if not callable(send_telegram_text):
-                                raise RuntimeError("alert dependency unavailable")
-                            send_telegram_text(
-                                f"[REJECTED] {sym} {action} (conf={confidence:.2f}): "
-                                f"{confirmation.get('reason', 'N/A')}"
-                            )
-                        except Exception as exc:
-                            alert_trace_id = uuid4().hex[:16]
-                            log.warning(
-                                "event=execution_alert_delivery_failed trace_id=%s "
-                                "symbol=%s error_type=%s",
-                                alert_trace_id,
-                                sym,
-                                type(exc).__name__,
-                            )
-
-        assembled_assets.append(asset_json)
-        log.info("[%s] Assembled — suggestion: %s | confidence: %s",
-                 sym, asset_json.get("suggestion"), asset_json.get("confidence"))
-
-        # Log to scratchpad
-        pad.log_tool_call(
-            f"assembly.assemble_asset_json",
-            {"symbol": sym},
-            llm_summary=f"{sym}: {asset_json.get('suggestion')} (confidence={asset_json.get('confidence')})",
+def _execute_asset(
+    sym: str,
+    raw: dict,
+    asset_json: dict,
+    *,
+    allow_execution: bool,
+    dependencies: _ExecutionDependencies,
+    operational_failures: list[dict],
+) -> None:
+    action = _regime_filtered_action(asset_json)
+    action, gate_modifier = _apply_backtest_gate(
+        sym,
+        action,
+        asset_json,
+        allow_execution=allow_execution,
+        operational_failures=operational_failures,
+    )
+    if not allow_execution or action not in ("BUY", "SELL"):
+        return
+    confirmation, exec_mode = _perform_execution(
+        sym,
+        action,
+        gate_modifier,
+        asset_json,
+        raw,
+        dependencies,
+        operational_failures,
+    )
+    if confirmation is None:
+        return
+    execution_status, paper_audit_partial = _validate_execution_result(
+        sym,
+        confirmation,
+        exec_mode,
+        asset_json,
+        operational_failures,
+    )
+    if paper_audit_partial:
+        _record_partial_paper_audit(
+            sym, confirmation, asset_json, operational_failures
+        )
+    if execution_status == "filled" and not paper_audit_partial:
+        _execute_secondary_broker(
+            sym,
+            confirmation,
+            execution_status,
+            exec_mode,
+            asset_json,
+            dependencies.broker_execute,
+            operational_failures,
+        )
+    if not paper_audit_partial:
+        _send_execution_alert(
+            sym,
+            action,
+            confirmation,
+            execution_status,
+            exec_mode,
+            asset_json,
+            dependencies.send_telegram_text,
         )
 
-        # Validate asset completeness
-        valid, detail = validate_data_completeness(asset_json)
-        pad.log_validation(f"data_completeness_{sym}", valid, detail)
 
-        # Step 5: Store decision for future reflection (skip NO SIGNAL)
-        suggestion_val = asset_json.get("suggestion", "")
-        if (
-            allow_execution
-            and suggestion_val
-            and str(suggestion_val).upper() not in ("NO SIGNAL", "WAIT", "", "NONE")
-        ):
-            # Score signal quality before storing
-            asset_json["quality_score"] = score_decision(asset_json, [])
-            store_decision(
-                ticker=sym,
-                trade_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                suggestion=suggestion_val,
-                confidence=asset_json.get("confidence", 0.0),
-                price=asset_json.get("current_price") or asset_json.get("price", 0.0),
-                signals=ta,
-                report_snippet=json.dumps(asset_json, indent=2)[:500],
-            )
+def _finalize_asset(
+    sym: str,
+    asset_json: dict,
+    ta: dict | None,
+    assembled_assets: list[dict],
+    pad: Scratchpad,
+    *,
+    allow_execution: bool,
+) -> None:
+    assembled_assets.append(asset_json)
+    log.info(
+        "[%s] Assembled — suggestion: %s | confidence: %s",
+        sym,
+        asset_json.get("suggestion"),
+        asset_json.get("confidence"),
+    )
+    pad.log_tool_call(
+        "assembly.assemble_asset_json",
+        {"symbol": sym},
+        llm_summary=(
+            f"{sym}: {asset_json.get('suggestion')} "
+            f"(confidence={asset_json.get('confidence')})"
+        ),
+    )
+    valid, detail = validate_data_completeness(asset_json)
+    pad.log_validation(f"data_completeness_{sym}", valid, detail)
 
-    # Final validation
+    suggestion_val = asset_json.get("suggestion", "")
+    if (
+        allow_execution
+        and suggestion_val
+        and str(suggestion_val).upper() not in ("NO SIGNAL", "WAIT", "", "NONE")
+    ):
+        asset_json["quality_score"] = score_decision(asset_json, [])
+        store_decision(
+            ticker=sym,
+            trade_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            suggestion=suggestion_val,
+            confidence=asset_json.get("confidence", 0.0),
+            price=asset_json.get("current_price") or asset_json.get("price", 0.0),
+            signals=ta,
+            report_snippet=json.dumps(asset_json, indent=2)[:500],
+        )
+
+
+def _assemble_pipeline_report(
+    assembled_assets: list[dict],
+    optional_source_statuses: list[dict],
+    operational_failures: list[dict],
+    pad: Scratchpad,
+) -> dict:
     report = assemble_full_report(assembled_assets)
     report["optional_source_refresh"] = optional_source_statuses
     report["operational_failures"] = operational_failures
@@ -1427,9 +1592,15 @@ async def run_pipeline(
         report.setdefault("reason_code", None)
         report["reason_codes"] = []
     consistent, warnings = validate_consistency(report)
-    pad.log_validation("report_consistency", consistent, "; ".join(warnings) if warnings else "All checks passed")
+    pad.log_validation(
+        "report_consistency",
+        consistent,
+        "; ".join(warnings) if warnings else "All checks passed",
+    )
+    return report
 
-    # Log final decisions
+
+def _log_final_decisions(assembled_assets: list[dict], pad: Scratchpad) -> None:
     for asset in assembled_assets:
         sym = asset.get("symbol", "?")
         suggestion = asset.get("suggestion", "N/A")
@@ -1438,10 +1609,228 @@ async def run_pipeline(
         pad.log_final_decision(
             ticker=sym,
             decision=str(suggestion),
-            confidence=float(confidence) if isinstance(confidence, (int, float)) else 0.0,
+            confidence=(
+                float(confidence) if isinstance(confidence, (int, float)) else 0.0
+            ),
             risk_level=str(risk.get("risk_level", "MEDIUM")),
-            reasoning=asset.get("_debate_context", "")[:500] or asset.get("_risk_context", "")[:500],
+            reasoning=(
+                asset.get("_debate_context", "")[:500]
+                or asset.get("_risk_context", "")[:500]
+            ),
         )
+
+
+def _parse_pipeline_signals(report: dict) -> list[TradingSignal]:
+    parsed_signals = parse_report(report)
+    report["parsed_signals"] = [signal.to_dict() for signal in parsed_signals]
+    actionable = [signal for signal in parsed_signals if signal.is_actionable]
+    watch = [signal for signal in parsed_signals if signal.is_watch]
+    log.info(
+        "Signal parsing complete: %d actionable, %d watch, %d total",
+        len(actionable),
+        len(watch),
+        len(parsed_signals),
+    )
+    return parsed_signals
+
+
+def _process_signal_alerts(
+    report: dict,
+    parsed_signals: list[TradingSignal],
+    process_alert_signals: _Dependency | None,
+) -> None:
+    try:
+        if not callable(process_alert_signals):
+            raise RuntimeError("alert processing dependency unavailable")
+        alert_signals = []
+        report_ts = report.get("timestamp", datetime.now(timezone.utc).isoformat())
+        for signal in parsed_signals:
+            if signal.is_actionable:
+                alert_signals.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "asset": signal.ticker,
+                    "action": signal.action.upper(),
+                    "confidence": signal.confidence,
+                    "price": signal.entry_price,
+                    "reasoning": signal.reasoning[:300] if signal.reasoning else "",
+                    "delivered": False,
+                    "report_ts": report_ts,
+                })
+        if alert_signals:
+            delivered = process_alert_signals(alert_signals)
+            log.info(
+                "[alert] Processed %d alerts, %d delivered",
+                len(alert_signals),
+                delivered,
+            )
+    except Exception as exc:
+        log.warning("[alert] Alert processing failed: %s", exc)
+
+
+async def run_pipeline(
+    symbols: list[str],
+    enable_debate: bool = False,
+    enable_risk_personas: bool = False,
+    pad: Scratchpad | None = None,
+    allow_execution: bool = False,
+    semantic_inputs: SnapshotSemanticInputs | None = None,
+) -> dict:
+    """Full single-pass pipeline with optional debate, risk personas, and audit trail."""
+    from kill_switch import is_kill_switch_active
+    if is_kill_switch_active():
+        log.warning("── Kill switch active — pipeline aborted ──")
+        return {"status": "kill_switch_active", "assets": []}
+
+    dependencies = _ExecutionDependencies(None, None, None, None, None, None)
+    if allow_execution:
+        dependencies = _load_execution_dependencies()
+    pipeline_call_llm = _build_pipeline_llm(allow_execution)
+
+    log.info("── Pipeline start: %s (debate=%s, risk_personas=%s) ──",
+             symbols, enable_debate, enable_risk_personas)
+    optional_source_statuses: list[dict] = []
+    operational_failures: list[dict] = []
+
+    if pad is None:
+        pad = Scratchpad(query=f"Research: {', '.join(symbols)}")
+    pad.init_session(query=f"Research: {', '.join(symbols)}", symbols=symbols)
+
+    # Step 0.5: sweep open positions for stop-loss / trailing-stop exits
+    # Done before collecting new data so stale positions are closed first.
+    # Uses last-known prices from the most recent report (paper_trader._load_report_prices).
+    if allow_execution:
+        stop_sweep_failure = _sweep_open_positions()
+        if stop_sweep_failure is not None:
+            return stop_sweep_failure
+
+    # Step 1 pre-run: refresh external signal sources. These three sources can
+    # touch exchange/trading credentials, so research-only runs omit them.
+    if allow_execution:
+        _refresh_optional_sources(optional_source_statuses)
+
+    # Step 1: collect raw data
+    pad.log_thinking("Starting data collection phase", "planning")
+    raw_assets = await collect_all(symbols, allow_exchange=allow_execution)
+    pad.log_tool_call("data_collector.collect_all", {"symbols": symbols},
+                      llm_summary=f"Collected data for {len(raw_assets)} assets")
+
+    # Step 1.5: inject enriched memory context for each symbol
+    memory_contexts = _collect_memory_contexts(symbols)
+
+    # Steps 2–5: TA → debate → personas → assemble per asset
+    assembled_assets = []
+    for sym in symbols:
+        raw = raw_assets.get(sym, {})
+        asset_json, ta, sentiment_data = await _prepare_asset(
+            sym,
+            raw,
+            allow_execution=allow_execution,
+            semantic_inputs=semantic_inputs,
+        )
+        memory_ctx = memory_contexts.get(sym, "")
+
+        # Step 3.5: Run analyst reports (BEFORE debate)
+        analyst_context = await _run_analyst_reports(
+            sym,
+            raw,
+            ta,
+            sentiment_data,
+            enable_debate=enable_debate,
+            allow_execution=allow_execution,
+            semantic_inputs=semantic_inputs,
+            pipeline_call_llm=pipeline_call_llm,
+        )
+
+        # Step 4: Bull/Bear debate (if enabled)
+        (
+            debate_context,
+            bull_synth,
+            bear_synth,
+            debate_rounds,
+            typed_signal,
+        ) = await _run_asset_debate(
+            sym,
+            raw,
+            ta,
+            asset_json,
+            analyst_context,
+            enable_debate=enable_debate,
+            allow_execution=allow_execution,
+            semantic_inputs=semantic_inputs,
+            pipeline_call_llm=pipeline_call_llm,
+        )
+
+        # Step 4.6: 3-way risk personas (if enabled)
+        risk_context, risk_assessments_list = await _run_risk_assessment(
+            sym,
+            raw,
+            ta,
+            asset_json,
+            typed_signal,
+            bull_synth,
+            bear_synth,
+            enable_risk_personas=enable_risk_personas,
+            allow_execution=allow_execution,
+            pipeline_call_llm=pipeline_call_llm,
+            operational_failures=operational_failures,
+        )
+
+        # Inject debate + risk context into asset JSON for downstream prompts
+        _attach_asset_contexts(
+            asset_json,
+            memory_context=memory_ctx,
+            debate_context=debate_context,
+            risk_context=risk_context,
+            debate_rounds=debate_rounds,
+            bull_synth=bull_synth,
+            bear_synth=bear_synth,
+            risk_assessments=risk_assessments_list,
+        )
+
+        # Step 5: Portfolio Manager (FINAL DECISION)
+        asset_json["_portfolio_context"] = await _run_portfolio_decision(
+            sym,
+            asset_json,
+            typed_signal,
+            debate_rounds,
+            bull_synth,
+            bear_synth,
+            risk_assessments_list,
+            analyst_context,
+            enable_debate=enable_debate,
+            enable_risk_personas=enable_risk_personas,
+            allow_execution=allow_execution,
+            pipeline_call_llm=pipeline_call_llm,
+            operational_failures=operational_failures,
+        )
+
+        _execute_asset(
+            sym,
+            raw,
+            asset_json,
+            allow_execution=allow_execution,
+            dependencies=dependencies,
+            operational_failures=operational_failures,
+        )
+        _finalize_asset(
+            sym,
+            asset_json,
+            ta,
+            assembled_assets,
+            pad,
+            allow_execution=allow_execution,
+        )
+
+    # Final validation
+    report = _assemble_pipeline_report(
+        assembled_assets,
+        optional_source_statuses,
+        operational_failures,
+        pad,
+    )
+
+    # Log final decisions
+    _log_final_decisions(assembled_assets, pad)
 
     # Save scratchpad
     pad.log_thinking("Research complete — saving audit trail", "reflection")
@@ -1449,39 +1838,15 @@ async def run_pipeline(
         pad.save()
 
     # Parse structured signals from the report
-    parsed_signals = parse_report(report)
-    report["parsed_signals"] = [s.to_dict() for s in parsed_signals]
-
-    actionable = [s for s in parsed_signals if s.is_actionable]
-    watch = [s for s in parsed_signals if s.is_watch]
-    log.info("Signal parsing complete: %d actionable, %d watch, %d total",
-             len(actionable), len(watch), len(parsed_signals))
+    parsed_signals = _parse_pipeline_signals(report)
 
     # Process alerts from parsed signals
     if allow_execution:
-        try:
-            if not callable(process_alert_signals):
-                raise RuntimeError("alert processing dependency unavailable")
-            process_alert_signals_fn = process_alert_signals
-            alert_signals = []
-            report_ts = report.get("timestamp", datetime.now(timezone.utc).isoformat())
-            for s in parsed_signals:
-                if s.is_actionable:
-                    alert_signals.append({
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "asset": s.ticker,
-                        "action": s.action.upper(),
-                        "confidence": s.confidence,
-                        "price": s.entry_price,
-                        "reasoning": s.reasoning[:300] if s.reasoning else "",
-                        "delivered": False,
-                        "report_ts": report_ts,
-                    })
-            if alert_signals:
-                delivered = process_alert_signals_fn(alert_signals)
-                log.info("[alert] Processed %d alerts, %d delivered", len(alert_signals), delivered)
-        except Exception as e:
-            log.warning("[alert] Alert processing failed: %s", e)
+        _process_signal_alerts(
+            report,
+            parsed_signals,
+            dependencies.process_alert_signals,
+        )
 
     return report
 

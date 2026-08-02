@@ -1,4 +1,5 @@
 import argparse
+import ast
 import asyncio
 import builtins
 import hashlib
@@ -37,6 +38,267 @@ FORBIDDEN_TRADING_ENV = {
     "LIVE_EXECUTION_ENABLED",
     "LIVE_TRADING_ENABLED",
 }
+
+
+class _RadonComplexityVisitor(ast.NodeVisitor):
+    def __init__(self):
+        self.score = 0
+
+    def visit_FunctionDef(self, node):
+        return None
+
+    def visit_AsyncFunctionDef(self, node):
+        return None
+
+    def visit_Assert(self, node):
+        self.score += 1
+
+    def generic_visit(self, node):
+        if isinstance(node, ast.Try):
+            self.score += len(node.handlers) + bool(node.orelse)
+        elif isinstance(node, ast.BoolOp):
+            self.score += len(node.values) - 1
+        elif isinstance(node, (ast.If, ast.IfExp)):
+            self.score += 1
+        elif isinstance(node, ast.Match):
+            has_wildcard = any(
+                getattr(case.pattern, "pattern", False) is None for case in node.cases
+            )
+            self.score += max(0, len(node.cases) - has_wildcard)
+        elif isinstance(node, (ast.For, ast.While, ast.AsyncFor)):
+            self.score += 1 + bool(node.orelse)
+        elif isinstance(node, ast.comprehension):
+            self.score += 1 + len(node.ifs)
+        super().generic_visit(node)
+
+
+def _ast_radon_complexity(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    visitor = _RadonComplexityVisitor()
+    for child in function.body:
+        visitor.visit(child)
+    return 1 + visitor.score
+
+
+def test_run_pipeline_remains_a_bounded_stage_coordinator():
+    source = (Path(__file__).parents[1] / "main.py").read_text()
+    tree = ast.parse(source)
+    pipeline = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run_pipeline"
+    )
+
+    assert [argument.arg for argument in pipeline.args.args] == [
+        "symbols",
+        "enable_debate",
+        "enable_risk_personas",
+        "pad",
+        "allow_execution",
+        "semantic_inputs",
+    ]
+    assert pipeline.args.vararg is None
+    assert pipeline.args.kwarg is None
+
+    assert _ast_radon_complexity(pipeline) == 10
+    assert pipeline.end_lineno is not None
+    assert pipeline.end_lineno - pipeline.lineno + 1 <= 182
+
+    extracted_helper_complexity = {
+        "_load_execution_dependencies": 1,
+        "_pipeline_call_llm": 1,
+        "_build_pipeline_llm": 1,
+        "_record_optional_source": 1,
+        "_record_operational_failure": 2,
+        "_sweep_open_positions": 8,
+        "_refresh_optional_sources": 5,
+        "_collect_memory_contexts": 3,
+        "_build_market_data": 5,
+        "_prepare_asset": 11,
+        "_run_analyst_reports": 4,
+        "_normalize_typed_action": 6,
+        "_run_asset_debate": 9,
+        "_run_risk_assessment": 12,
+        "_attach_asset_contexts": 5,
+        "_run_portfolio_decision": 9,
+        "_regime_filtered_action": 7,
+        "_apply_backtest_gate": 6,
+        "_perform_execution": 11,
+        "_validate_execution_result": 4,
+        "_record_partial_paper_audit": 1,
+        "_execute_secondary_broker": 7,
+        "_send_execution_alert": 9,
+        "_execute_asset": 8,
+        "_finalize_asset": 5,
+        "_assemble_pipeline_report": 11,
+        "_log_final_decisions": 4,
+        "_parse_pipeline_signals": 6,
+        "_process_signal_alerts": 7,
+    }
+    top_level_functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {
+        name: _ast_radon_complexity(top_level_functions[name])
+        for name in extracted_helper_complexity
+    } == extracted_helper_complexity
+
+    private_complexity = {
+        name: _ast_radon_complexity(function)
+        for name, function in top_level_functions.items()
+        if name.startswith("_")
+    }
+    assert private_complexity.pop("_compact_for_llm") == 23
+    assert max(private_complexity.values()) <= 12
+
+    delegated_stages = {
+        node.func.id
+        for node in ast.walk(pipeline)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {
+        "_sweep_open_positions",
+        "_refresh_optional_sources",
+        "_prepare_asset",
+        "_run_analyst_reports",
+        "_run_asset_debate",
+        "_run_risk_assessment",
+        "_run_portfolio_decision",
+        "_execute_asset",
+        "_finalize_asset",
+        "_assemble_pipeline_report",
+        "_parse_pipeline_signals",
+    } <= delegated_stages
+
+
+def test_late_analyst_failure_preserves_formatted_context(monkeypatch, main_module):
+    class Coordinator:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def analyze_all(self, *_args, **_kwargs):
+            return "technical", "sentiment", "onchain", "macro"
+
+        def format_for_debate(self, *_args):
+            return "formatted analyst context"
+
+    async def pipeline_llm(*_args, **_kwargs):
+        return ""
+
+    monkeypatch.setattr(main_module, "AnalystCoordinator", Coordinator)
+    monkeypatch.setattr(
+        main_module.log,
+        "info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("late log")),
+    )
+
+    context = asyncio.run(
+        main_module._run_analyst_reports(
+            "BTC",
+            {"price": 100},
+            None,
+            {},
+            enable_debate=True,
+            allow_execution=False,
+            semantic_inputs=None,
+            pipeline_call_llm=pipeline_llm,
+        )
+    )
+
+    assert context == "formatted analyst context"
+
+
+def test_late_risk_failure_preserves_assigned_assessments(monkeypatch, main_module):
+    assessments = [
+        SimpleNamespace(persona="aggressive", rationale="risk accepted"),
+    ]
+
+    class Debate:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, *_args, **_kwargs):
+            return assessments
+
+    async def pipeline_llm(*_args, **_kwargs):
+        return ""
+
+    monkeypatch.setattr(main_module, "RiskDebate", Debate)
+    monkeypatch.setattr(
+        main_module.log,
+        "info",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("late log")),
+    )
+    asset = {"suggestion": "BUY"}
+    failures = []
+
+    context, returned = asyncio.run(
+        main_module._run_risk_assessment(
+            "BTC",
+            {"price": 100},
+            None,
+            asset,
+            object(),
+            "bull",
+            "bear",
+            enable_risk_personas=True,
+            allow_execution=False,
+            pipeline_call_llm=pipeline_llm,
+            operational_failures=failures,
+        )
+    )
+
+    assert "RISK_ASSESSMENT_UNAVAILABLE" in context
+    assert returned is assessments
+    assert failures[0]["source"] == "risk_debate"
+
+
+def test_execution_status_is_captured_once_for_downstream_helpers(
+    monkeypatch, main_module
+):
+    class Confirmation(dict):
+        status_reads = 0
+
+        def get(self, key, default=None):
+            if key == "status":
+                self.status_reads += 1
+                return "filled" if self.status_reads == 1 else "rejected"
+            return super().get(key, default)
+
+    confirmation = Confirmation(
+        symbol="BTC",
+        side="BUY",
+        shares=1.0,
+        fill_price=100.0,
+        audit_status="COMPLETED",
+    )
+    alerts = []
+    dependencies = main_module._ExecutionDependencies(
+        lambda *_args: confirmation,
+        lambda *_args: {"paper": "skipped", "alpaca": None},
+        alerts.append,
+        None,
+        lambda *_args: (_ for _ in ()).throw(AssertionError("live execution")),
+        lambda: "paper",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_apply_backtest_gate",
+        lambda *_args, **_kwargs: ("BUY", 1.0),
+    )
+
+    main_module._execute_asset(
+        "BTC",
+        {"current_price": 100},
+        {"suggestion": "BUY", "market_regime": "trending_up", "confidence": 0.9},
+        allow_execution=True,
+        dependencies=dependencies,
+        operational_failures=[],
+    )
+
+    assert confirmation.status_reads == 1
+    assert alerts and alerts[0].startswith("[PAPER] BUY BTC")
 
 
 class FakeScratchpad:
