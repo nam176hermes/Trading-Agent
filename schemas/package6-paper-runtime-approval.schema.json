@@ -4,30 +4,376 @@
   "title": "Package 6 paper runtime approval",
   "type": "object",
   "additionalProperties": false,
-  "required": ["record_kind", "schema_version", "record_id", "scope", "source", "validity", "review", "operations", "source_bindings", "constraints", "postgres_authority", "fixture_authority", "request", "authority_digests", "canonical_record_sha256"],
+  "required": [
+    "record_kind",
+    "schema_version",
+    "record_id",
+    "scope",
+    "source",
+    "validity",
+    "review",
+    "operations",
+    "source_bindings",
+    "custodian_authority",
+    "constraints",
+    "postgres_authority",
+    "fixture_authority",
+    "request",
+    "authority_digests",
+    "canonical_record_sha256"
+  ],
   "properties": {
     "record_kind": {"const": "PACKAGE6_PAPER_RUNTIME_APPROVAL"},
-    "schema_version": {"const": 2},
-    "record_id": {"type": "string", "pattern": "^PACKAGE6_RUNTIME_[A-Z0-9_-]{1,80}$"},
+    "schema_version": {"type": "string", "const": "3"},
+    "record_id": {
+      "type": "string",
+      "pattern": "^PACKAGE6_RUNTIME_[A-Z0-9_-]{1,80}$"
+    },
     "scope": {"const": "PACKAGE6_PAPER_RUNTIME"},
-    "source": {"type": "object", "additionalProperties": false, "required": ["commit", "tree"], "properties": {"commit": {"$ref": "#/$defs/git"}, "tree": {"$ref": "#/$defs/git"}}},
-    "validity": {"type": "object", "additionalProperties": false, "required": ["approved_at_utc", "expires_at_utc"], "properties": {"approved_at_utc": {"$ref": "#/$defs/time"}, "expires_at_utc": {"$ref": "#/$defs/time"}}},
-    "review": {"type": "object", "additionalProperties": false, "required": ["decision", "operator_identity", "reviewer_identity", "runtime_greenlight"], "properties": {"decision": {"const": "APPROVED"}, "operator_identity": {"$ref": "#/$defs/identity"}, "reviewer_identity": {"$ref": "#/$defs/identity"}, "runtime_greenlight": {"const": "APPROVE PACKAGE 6 RUNTIME"}}},
-    "operations": {"type": "array", "minItems": 2, "maxItems": 8, "uniqueItems": true, "items": {"$ref": "#/$defs/operation"}},
-    "source_bindings": {"type": "array", "minItems": 76, "maxItems": 76, "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9_./-]+$"}, "sha256": {"$ref": "#/$defs/sha"}}}},
-    "constraints": {"type": "object", "additionalProperties": false, "required": ["disposable_root", "evidence_root", "max_processes", "startup_timeout_seconds", "operation_timeout_seconds", "cleanup_timeout_seconds", "max_output_bytes", "live_execution_approved", "live_trading_approved", "systemd_allowed", "persistent_services_allowed", "network_policy"], "properties": {"disposable_root": {"$ref": "#/$defs/tmp"}, "evidence_root": {"$ref": "#/$defs/tmp"}, "max_processes": {"type": "integer", "minimum": 1, "maximum": 4}, "startup_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60}, "operation_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600}, "cleanup_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60}, "max_output_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}, "live_execution_approved": {"const": false}, "live_trading_approved": {"const": false}, "systemd_allowed": {"const": false}, "persistent_services_allowed": {"const": false}, "network_policy": {"const": "LOOPBACK_ONLY"}}},
-    "postgres_authority": {"type": "object", "additionalProperties": false, "required": ["approval_sha256", "bind_host", "port", "database_name", "pgdata", "cluster_name", "service_roles"], "properties": {"approval_sha256": {"$ref": "#/$defs/sha"}, "bind_host": {"const": "127.0.0.1"}, "port": {"type": "integer", "minimum": 1024, "maximum": 65535}, "database_name": {"const": "trading_agent_disposable_test"}, "pgdata": {"$ref": "#/$defs/tmp"}, "cluster_name": {"const": "trading-agent-disposable-tests"}, "service_roles": {"const": ["trading_job_api", "trading_job_worker"]}}},
-    "fixture_authority": {"type": "object", "additionalProperties": false, "required": ["fixture_sha256", "provenance", "path"], "properties": {"fixture_sha256": {"$ref": "#/$defs/sha"}, "provenance": {"const": "DETERMINISTIC_PROVIDER_FREE_V1"}, "path": {"$ref": "#/$defs/tmp"}}},
-    "request": {"type": "object", "additionalProperties": false, "required": ["job_type", "actor", "idempotency_key", "expected_job_count"], "properties": {"job_type": {"const": "SNAPSHOT"}, "actor": {"const": "FOUNDATION_VALIDATION"}, "idempotency_key": {"type": "string", "pattern": "^foundation:manual:snapshot:[a-z0-9][a-z0-9._-]{2,80}$"}, "expected_job_count": {"const": 1}}},
-    "authority_digests": {"type": "object", "additionalProperties": false, "required": ["release", "application", "backend", "command", "semantic", "fixture", "safety"], "properties": {"release": {"$ref": "#/$defs/sha"}, "application": {"$ref": "#/$defs/sha"}, "backend": {"$ref": "#/$defs/sha"}, "command": {"$ref": "#/$defs/sha"}, "semantic": {"$ref": "#/$defs/sha"}, "fixture": {"$ref": "#/$defs/sha"}, "safety": {"$ref": "#/$defs/sha"}}},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/git"},
+        "tree": {"$ref": "#/$defs/git"}
+      }
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approved_at_utc", "expires_at_utc"],
+      "properties": {
+        "approved_at_utc": {"$ref": "#/$defs/time"},
+        "expires_at_utc": {"$ref": "#/$defs/time"}
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "operator_identity",
+        "reviewer_identity",
+        "runtime_greenlight"
+      ],
+      "properties": {
+        "decision": {"const": "APPROVED"},
+        "operator_identity": {"$ref": "#/$defs/identity"},
+        "reviewer_identity": {"$ref": "#/$defs/identity"},
+        "runtime_greenlight": {"const": "APPROVE PACKAGE 6 RUNTIME"}
+      }
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/operation"}
+    },
+    "source_bindings": {
+      "type": "array",
+      "minItems": 77,
+      "maxItems": 77,
+      "items": {"$ref": "#/$defs/binding"}
+    },
+    "custodian_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_mode",
+        "helper_binary_sha256",
+        "native_source_set",
+        "native_source_set_sha256",
+        "protocol_version",
+        "protocol_features",
+        "endpoint_authority",
+        "production_socket_activation",
+        "operations",
+        "candidate_commit",
+        "candidate_tree",
+        "stage_sha256",
+        "fixture_identity",
+        "child_environment_contract",
+        "mode",
+        "live_execution_approved",
+        "live_trading_approved"
+      ],
+      "properties": {
+        "authority_mode": {"const": "DISPOSABLE_TEST_NATIVE_ONLY"},
+        "helper_binary_sha256": {"$ref": "#/$defs/sha"},
+        "native_source_set": {
+          "type": "array",
+          "minItems": 16,
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/binding"}
+        },
+        "native_source_set_sha256": {"$ref": "#/$defs/sha"},
+        "protocol_version": {"type": "string", "const": "1"},
+        "protocol_features": {"const": []},
+        "endpoint_authority": {
+          "const": "PREOPENED_UNIX_SEQPACKET_DESCRIPTOR"
+        },
+        "production_socket_activation": {"const": false},
+        "operations": {
+          "const": [
+            "START",
+            "STOP",
+            "STATUS",
+            "RECOVER",
+            "RUN_ONCE",
+            "READ_TRANSCRIPT",
+            "PUBLISH_BUNDLE",
+            "ACK"
+          ]
+        },
+        "candidate_commit": {"$ref": "#/$defs/git"},
+        "candidate_tree": {"$ref": "#/$defs/git"},
+        "stage_sha256": {"$ref": "#/$defs/sha"},
+        "fixture_identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha256", "provenance"],
+          "properties": {
+            "sha256": {"$ref": "#/$defs/sha"},
+            "provenance": {"const": "DETERMINISTIC_PROVIDER_FREE_V1"}
+          }
+        },
+        "child_environment_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["job_api", "worker"],
+          "properties": {
+            "job_api": {
+              "const": [
+                "CREDENTIALS_DIRECTORY",
+                "HOME",
+                "LANG",
+                "LC_ALL",
+                "LIVE_EXECUTION_ENABLED",
+                "LIVE_TRADING_APPROVED",
+                "LIVE_TRADING_ENABLED",
+                "PATH",
+                "TRADING_MODE",
+                "TRADING_PACKAGE6_APPROVAL_SHA256",
+                "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH",
+                "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH",
+                "TRADING_PACKAGE6_STAGING_SCOPE",
+                "TZ"
+              ]
+            },
+            "worker": {
+              "const": [
+                "CREDENTIALS_DIRECTORY",
+                "HOME",
+                "LANG",
+                "LC_ALL",
+                "LIVE_EXECUTION_ENABLED",
+                "LIVE_TRADING_APPROVED",
+                "LIVE_TRADING_ENABLED",
+                "PATH",
+                "TRADING_MODE",
+                "TRADING_PACKAGE6_APPROVAL_SHA256",
+                "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH",
+                "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH",
+                "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH",
+                "TRADING_PACKAGE6_STAGING_SCOPE",
+                "TZ"
+              ]
+            }
+          }
+        },
+        "mode": {"const": "PAPER"},
+        "live_execution_approved": {"const": false},
+        "live_trading_approved": {"const": false}
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposable_root",
+        "evidence_root",
+        "max_processes",
+        "startup_timeout_seconds",
+        "operation_timeout_seconds",
+        "cleanup_timeout_seconds",
+        "max_output_bytes",
+        "live_execution_approved",
+        "live_trading_approved",
+        "systemd_allowed",
+        "persistent_services_allowed",
+        "network_policy"
+      ],
+      "properties": {
+        "disposable_root": {"$ref": "#/$defs/tmp"},
+        "evidence_root": {"$ref": "#/$defs/tmp"},
+        "max_processes": {"type": "string", "pattern": "^[1-4]$"},
+        "startup_timeout_seconds": {
+          "type": "string",
+          "pattern": "^(?:[1-9]|[1-5][0-9]|60)$"
+        },
+        "operation_timeout_seconds": {
+          "type": "string",
+          "pattern": "^(?:[1-9]|[1-9][0-9]|[1-5][0-9]{2}|600)$"
+        },
+        "cleanup_timeout_seconds": {
+          "type": "string",
+          "pattern": "^(?:[1-9]|[1-5][0-9]|60)$"
+        },
+        "max_output_bytes": {
+          "type": "string",
+          "pattern": "^(?:10(?:2[4-9]|[3-9][0-9])|1[1-9][0-9]{2}|[2-9][0-9]{3}|[1-9][0-9]{4,5}|10[0-3][0-9]{4}|104[0-7][0-9]{3}|1048[0-4][0-9]{2}|10485[0-6][0-9]|104857[0-6])$"
+        },
+        "live_execution_approved": {"const": false},
+        "live_trading_approved": {"const": false},
+        "systemd_allowed": {"const": false},
+        "persistent_services_allowed": {"const": false},
+        "network_policy": {"const": "LOOPBACK_ONLY"}
+      }
+    },
+    "postgres_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_sha256",
+        "bind_host",
+        "port",
+        "database_name",
+        "pgdata",
+        "cluster_name",
+        "service_roles"
+      ],
+      "properties": {
+        "approval_sha256": {"$ref": "#/$defs/sha"},
+        "bind_host": {"const": "127.0.0.1"},
+        "port": {
+          "type": "string",
+          "pattern": "^(?:10(?:2[4-9]|[3-9][0-9])|1[1-9][0-9]{2}|[2-9][0-9]{3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$"
+        },
+        "database_name": {"const": "trading_agent_disposable_test"},
+        "pgdata": {"$ref": "#/$defs/tmp"},
+        "cluster_name": {"const": "trading-agent-disposable-tests"},
+        "service_roles": {
+          "const": ["trading_job_api", "trading_job_worker"]
+        }
+      }
+    },
+    "fixture_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture_sha256", "provenance", "path"],
+      "properties": {
+        "fixture_sha256": {"$ref": "#/$defs/sha"},
+        "provenance": {"const": "DETERMINISTIC_PROVIDER_FREE_V1"},
+        "path": {"$ref": "#/$defs/tmp"}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_type",
+        "actor",
+        "idempotency_key",
+        "expected_job_count"
+      ],
+      "properties": {
+        "job_type": {"const": "SNAPSHOT"},
+        "actor": {"const": "FOUNDATION_VALIDATION"},
+        "idempotency_key": {
+          "type": "string",
+          "pattern": "^foundation:manual:snapshot:[a-z0-9][a-z0-9._-]{2,80}$"
+        },
+        "expected_job_count": {"type": "string", "const": "1"}
+      }
+    },
+    "authority_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release",
+        "application",
+        "backend",
+        "command",
+        "semantic",
+        "fixture",
+        "safety",
+        "stage"
+      ],
+      "properties": {
+        "release": {"$ref": "#/$defs/sha"},
+        "application": {"$ref": "#/$defs/sha"},
+        "backend": {"$ref": "#/$defs/sha"},
+        "command": {"$ref": "#/$defs/sha"},
+        "semantic": {"$ref": "#/$defs/sha"},
+        "fixture": {"$ref": "#/$defs/sha"},
+        "safety": {"$ref": "#/$defs/sha"},
+        "stage": {"$ref": "#/$defs/sha"}
+      }
+    },
     "canonical_record_sha256": {"$ref": "#/$defs/sha"}
   },
   "$defs": {
     "git": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "sha": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "time": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
-    "identity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{2,127}$"},
-    "tmp": {"type": "string", "pattern": "^/tmp/(?:[A-Za-z0-9._-]+/?)+$"},
-    "operation": {"type": "object", "additionalProperties": false, "required": ["operation_id", "action", "component", "argv", "cwd", "bind_host", "port", "executable_sha256"], "properties": {"operation_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"}, "action": {"enum": ["START", "STOP"]}, "component": {"enum": ["JOB_API", "WORKER"]}, "argv": {"type": "array", "minItems": 0, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 512}}, "cwd": {"$ref": "#/$defs/tmp"}, "bind_host": {"type": ["string", "null"]}, "port": {"type": ["integer", "null"]}, "executable_sha256": {"anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]}}}
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "identity": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{2,127}$"
+    },
+    "tmp": {
+      "type": "string",
+      "pattern": "^/tmp/(?:[A-Za-z0-9._-]+/?)+$"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*\\.\\.)[A-Za-z0-9_./-]+$"
+        },
+        "sha256": {"$ref": "#/$defs/sha"}
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "action",
+        "component",
+        "argv",
+        "cwd",
+        "bind_host",
+        "port",
+        "executable_sha256"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+        },
+        "action": {"enum": ["START", "STOP"]},
+        "component": {"enum": ["JOB_API", "WORKER"]},
+        "argv": {
+          "type": "array",
+          "minItems": 0,
+          "maxItems": 16,
+          "items": {"type": "string", "minLength": 1, "maxLength": 512}
+        },
+        "cwd": {"$ref": "#/$defs/tmp"},
+        "bind_host": {"type": ["string", "null"]},
+        "port": {"enum": ["8401", null]},
+        "executable_sha256": {
+          "anyOf": [{"$ref": "#/$defs/sha"}, {"type": "null"}]
+        }
+      }
+    }
   }
 }

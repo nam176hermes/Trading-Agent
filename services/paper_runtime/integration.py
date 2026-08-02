@@ -22,11 +22,17 @@ from scripts.validate_package6_runtime_approval import (
 from services.job_store.config import read_systemd_credential
 
 from .controller import (
+    IncompleteCleanupProof,
     Package6Controller,
+    ProcessStatus,
     ReadinessEvidence,
+    RuntimeCleanupFailure,
     RuntimeChildAuthorities,
+    RuntimeRecoveryState,
+    RuntimeStartFailure,
     StopEvidence,
 )
+from .custodian_client import CustodianClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +47,84 @@ class RuntimeChainEvidence:
     dashboard_status: dict[str, object]
     worker_stop: dict[str, object]
     job_api_stop: dict[str, object]
+    native_publications: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCleanupSuccess:
+    """A component-labeled successful cleanup from an exceptional chain."""
+
+    component: str
+    evidence: StopEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeRecoverySnapshotFailure:
+    """A separately ordered metadata failure that never spends STOP authority."""
+
+    component: str
+    operation_id: str
+    cleanup_attempts_consumed: int
+    error: BaseException
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeCleanupResult:
+    """Internal successful cleanup together with ordered historical failures."""
+
+    evidence: StopEvidence
+    failures: tuple[RuntimeCleanupFailure, ...]
+
+    def __getattr__(self, name: str) -> object:
+        """Preserve read compatibility for direct callers of the retry helper."""
+
+        return getattr(self.evidence, name)
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeRecoveryOwner:
+    """Outer-custody owner for controllers with unproven tracked cleanup."""
+
+    controller: Package6Controller
+    records: tuple[RuntimeRecoveryState, ...]
+
+
+class RuntimeChainFailure(RuntimeError):
+    """Public-safe aggregate with cleanup evidence and optional recovery custody."""
+
+    PUBLIC_MESSAGE = "paper runtime chain failed safely"
+
+    def __init__(
+        self,
+        primary_error: BaseException | None,
+        cleanup_failures: list[RuntimeCleanupFailure],
+        cleanup_successes: list[RuntimeCleanupSuccess] | None = None,
+        recovery_owner: RuntimeRecoveryOwner | None = None,
+        recovery_snapshot_failures: (
+            list[RuntimeRecoverySnapshotFailure] | None
+        ) = None,
+    ) -> None:
+        super().__init__(self.PUBLIC_MESSAGE)
+        self.primary_error = primary_error
+        self.cleanup_failures = tuple(cleanup_failures)
+        self.cleanup_successes = tuple(cleanup_successes or ())
+        self.recovery_owner = recovery_owner
+        self.recovery_snapshot_failures = tuple(
+            recovery_snapshot_failures or ()
+        )
+
+
+class RuntimeCleanupExhausted(RuntimeError):
+    """Public-safe exhausted component budget with ordered attempt failures."""
+
+    PUBLIC_MESSAGE = "paper runtime cleanup failed safely"
+
+    def __init__(
+        self,
+        failures: tuple[RuntimeCleanupFailure, ...],
+    ) -> None:
+        super().__init__(self.PUBLIC_MESSAGE)
+        self.failures = failures
 
 
 def _request_json(
@@ -85,6 +169,13 @@ def _mapping_list(value: object, label: str) -> list[Mapping[str, object]]:
     if not isinstance(value, list):
         raise RuntimeError(f"{label} is not a list")
     return [_mapping(item, f"{label} item") for item in value]
+
+
+def _worker_exit_error(status: ProcessStatus) -> RuntimeError:
+    return RuntimeError(
+        "worker exited before terminal job state: "
+        f"exit_code={status.exit_code}"
+    )
 
 
 def _database_evidence(
@@ -174,9 +265,76 @@ def _database_evidence(
     }
 
 
+def _stop_with_retry(
+    controller: Package6Controller,
+    component: str,
+    operation_id: str,
+    *,
+    prior_failures: tuple[RuntimeCleanupFailure, ...] = (),
+) -> _RuntimeCleanupResult:
+    """Spend one two-attempt component budget.
+
+    Every failed or incomplete attempt remains part of the result even when a
+    later attempt proves cleanup. The caller can therefore expose the complete
+    bounded history without assigning recovery ownership to a cleaned process.
+    """
+
+    failures = list(prior_failures)
+    attempts_consumed = max(
+        (failure.attempt for failure in failures),
+        default=0,
+    )
+    for attempt in range(attempts_consumed + 1, 3):
+        try:
+            evidence = controller.stop(operation_id)
+        except BaseException as error:
+            failures.append(
+                RuntimeCleanupFailure(
+                    component,
+                    operation_id,
+                    attempt,
+                    error,
+                )
+            )
+            recover = getattr(controller, "recover_completed_stop", None)
+            recovered = None
+            if callable(recover):
+                try:
+                    recovered = recover(operation_id)
+                except BaseException as recovery_error:
+                    failures.append(
+                        RuntimeCleanupFailure(
+                            component,
+                            operation_id,
+                            attempt,
+                            recovery_error,
+                        )
+                    )
+                    recovered = None
+            if isinstance(recovered, StopEvidence):
+                return _RuntimeCleanupResult(recovered, tuple(failures))
+            continue
+        if evidence.cleanup_proven:
+            return _RuntimeCleanupResult(evidence, tuple(failures))
+        failures.append(
+            RuntimeCleanupFailure(
+                component,
+                operation_id,
+                attempt,
+                IncompleteCleanupProof(evidence),
+            )
+        )
+    exhausted = RuntimeCleanupExhausted(tuple(failures))
+    if failures:
+        raise exhausted from failures[-1].error
+    raise exhausted
+
+
 def run_approved_runtime_chain(
     capability: ValidatedPackage6Capability,
     child_authorities: RuntimeChildAuthorities,
+    *,
+    custodian_client: CustodianClient,
 ) -> RuntimeChainEvidence:
     """Run the one approved SNAPSHOT and always clean up in reverse order."""
 
@@ -184,14 +342,233 @@ def run_approved_runtime_chain(
         raise TypeError("validated Package 6 capability is required")
     controller = Package6Controller(
         capability,
+        custodian_client=custodian_client,
         child_authorities=child_authorities,
     )
     api_started = False
     worker_started = False
     worker_stop: StopEvidence | None = None
     api_stop: StopEvidence | None = None
+    primary_error: BaseException | None = None
+    cleanup_failures: list[RuntimeCleanupFailure] = []
+    cleanup_successes: list[RuntimeCleanupSuccess] = []
+    recovery_records: list[RuntimeRecoveryState] = []
+    recovery_snapshot_failures: list[RuntimeRecoverySnapshotFailure] = []
+    recovery_owner_required = False
+    consumed_stop_budgets: set[str] = set()
+    native_publications: dict[str, object] = {}
+    start_cleanup_failures: dict[
+        str, tuple[RuntimeCleanupFailure, ...]
+    ] = {}
+    result: RuntimeChainEvidence | None = None
+
+    def retain_recovery_state(
+        component: str,
+        operation_id: str,
+        cleanup_attempts_consumed: int,
+    ) -> None:
+        nonlocal recovery_owner_required
+        recovery_owner_required = True
+        try:
+            record = controller.snapshot_recovery_state(
+                component,
+                operation_id,
+                cleanup_attempts_consumed,
+            )
+        except BaseException as error:
+            recovery_snapshot_failures.append(
+                RuntimeRecoverySnapshotFailure(
+                    component,
+                    operation_id,
+                    cleanup_attempts_consumed,
+                    error,
+                )
+            )
+        else:
+            recovery_records.append(record)
+
+    def acknowledge_cleanup_proof(
+        component: str,
+        operation_id: str,
+        evidence: StopEvidence,
+        stop_attempt: int,
+    ) -> bool:
+        """Publish natively, then retry only idempotent publication/ACK."""
+
+        for _ in range(2):
+            try:
+                receipt = controller.publish_evidence(
+                    operation_id, evidence
+                )
+                native_publications[component] = {
+                    "operation_id": receipt.operation.operation_id.hex(),
+                    "manifest_sha256": receipt.manifest_sha256.hex(),
+                }
+                controller.acknowledge_stop(operation_id, evidence)
+            except BaseException as error:
+                cleanup_failures.append(
+                    RuntimeCleanupFailure(
+                        component,
+                        operation_id,
+                        stop_attempt,
+                        error,
+                    )
+                )
+            else:
+                return True
+        return False
+
+    def consume_stop_budget(
+        component: str,
+        operation_id: str,
+    ) -> StopEvidence | None:
+        consumed_stop_budgets.add(component)
+        prior_failures = start_cleanup_failures.get(component, ())
+        try:
+            cleanup = _stop_with_retry(
+                controller,
+                component,
+                operation_id,
+                prior_failures=prior_failures,
+            )
+            if isinstance(cleanup, StopEvidence):
+                cleanup = _RuntimeCleanupResult(cleanup, ())
+            cleanup_failures.extend(cleanup.failures)
+            acknowledged = acknowledge_cleanup_proof(
+                component,
+                operation_id,
+                cleanup.evidence,
+                max(
+                    (failure.attempt for failure in cleanup.failures),
+                    default=1,
+                ),
+            )
+            cleanup_successes.append(
+                RuntimeCleanupSuccess(component, cleanup.evidence)
+            )
+            if not acknowledged:
+                retain_recovery_state(
+                    component,
+                    operation_id,
+                    max(
+                        (
+                            failure.attempt
+                            for failure in cleanup.failures
+                        ),
+                        default=1,
+                    ),
+                )
+                return None
+            return cleanup.evidence
+        except RuntimeCleanupExhausted as error:
+            cleanup_failures.extend(error.failures)
+            retain_recovery_state(
+                component,
+                operation_id,
+                max(
+                    (failure.attempt for failure in error.failures),
+                    default=0,
+                ),
+            )
+            return None
+        except BaseException as error:
+            handoff_failures = list(prior_failures)
+            stop_attempt = min(
+                RuntimeStartFailure.MAX_CLEANUP_ATTEMPTS,
+                max(
+                    (failure.attempt for failure in handoff_failures),
+                    default=0,
+                )
+                + 1,
+            )
+            handoff_failures.append(
+                RuntimeCleanupFailure(
+                    component,
+                    operation_id,
+                    stop_attempt,
+                    error,
+                )
+            )
+            recover = getattr(controller, "recover_completed_stop", None)
+            recovered = None
+            if callable(recover):
+                for _ in range(2):
+                    try:
+                        recovered = recover(operation_id)
+                    except BaseException as recovery_error:
+                        handoff_failures.append(
+                            RuntimeCleanupFailure(
+                                component,
+                                operation_id,
+                                stop_attempt,
+                                recovery_error,
+                            )
+                        )
+                    else:
+                        break
+            if isinstance(recovered, StopEvidence):
+                cleanup_failures.extend(handoff_failures)
+                acknowledged = acknowledge_cleanup_proof(
+                    component,
+                    operation_id,
+                    recovered,
+                    stop_attempt,
+                )
+                cleanup_successes.append(
+                    RuntimeCleanupSuccess(component, recovered)
+                )
+                if not acknowledged:
+                    retain_recovery_state(
+                        component, operation_id, stop_attempt
+                    )
+                    return None
+                return recovered
+            cleanup_failures.extend(handoff_failures)
+            retain_recovery_state(
+                component,
+                operation_id,
+                stop_attempt,
+            )
+            return None
+
     try:
-        api_identity = controller.start("job-api.start")
+        try:
+            api_identity = controller.start("job-api.start")
+        except RuntimeStartFailure as error:
+            if error.cleanup_success is not None:
+                cleanup_successes.append(
+                    RuntimeCleanupSuccess("job_api", error.cleanup_success)
+                )
+                acknowledged = acknowledge_cleanup_proof(
+                    "job_api",
+                    "job-api.stop",
+                    error.cleanup_success,
+                    max(
+                        (
+                            failure.attempt
+                            for failure in error.cleanup_failures
+                        ),
+                        default=1,
+                    ),
+                )
+                if not acknowledged:
+                    consumed_stop_budgets.add("job_api")
+                    api_started = True
+                    retain_recovery_state(
+                        "job_api",
+                        "job-api.stop",
+                        max(
+                            (
+                                failure.attempt
+                                for failure in error.cleanup_failures
+                            ),
+                            default=1,
+                        ),
+                    )
+            if error.owns_recovery_state:
+                api_started = True
+                start_cleanup_failures["job_api"] = error.cleanup_failures
+            raise
         api_started = True
         readiness: ReadinessEvidence = controller.wait_ready("job-api.start")
         token = _credential(child_authorities.job_api_credentials, "job-api-token")
@@ -231,11 +608,50 @@ def run_approved_runtime_chain(
             or second_job.get("actor") != expected_actor
         ):
             raise RuntimeError("request actor does not match approved fixture authority")
-        worker_identity = controller.start("worker.start")
+        try:
+            worker_identity = controller.start("worker.start")
+        except RuntimeStartFailure as error:
+            if error.cleanup_success is not None:
+                cleanup_successes.append(
+                    RuntimeCleanupSuccess("worker", error.cleanup_success)
+                )
+                acknowledged = acknowledge_cleanup_proof(
+                    "worker",
+                    "worker.stop",
+                    error.cleanup_success,
+                    max(
+                        (
+                            failure.attempt
+                            for failure in error.cleanup_failures
+                        ),
+                        default=1,
+                    ),
+                )
+                if not acknowledged:
+                    consumed_stop_budgets.add("worker")
+                    worker_started = True
+                    retain_recovery_state(
+                        "worker",
+                        "worker.stop",
+                        max(
+                            (
+                                failure.attempt
+                                for failure in error.cleanup_failures
+                            ),
+                            default=1,
+                        ),
+                    )
+            if error.owns_recovery_state:
+                worker_started = True
+                start_cleanup_failures["worker"] = error.cleanup_failures
+            raise
         worker_started = True
         deadline = time.monotonic() + capability.operation_timeout_seconds
         detail: dict[str, object] = {}
         while time.monotonic() < deadline:
+            worker_status = controller.status("worker.start")
+            if worker_status.exit_code is not None:
+                raise _worker_exit_error(worker_status)
             status, detail = _request_json(
                 "GET", f"{base}/v1/jobs/{job_id}", token=token
             )
@@ -276,32 +692,116 @@ def run_approved_runtime_chain(
             key: api_job[key]
             for key in ("job_id", "state", "attempt_count", "reason_code", "result_hash")
         }
-        worker_stop = controller.stop("worker.stop")
-        worker_started = False
-        api_stop = controller.stop("job-api.stop")
-        api_started = False
-        if not worker_stop.cleanup_proven or not api_stop.cleanup_proven:
-            raise RuntimeError("reverse-order runtime cleanup is incomplete")
-        return RuntimeChainEvidence(
-            processes={
-                "job_api": asdict(api_identity),
-                "worker": asdict(worker_identity),
-            },
-            readiness=asdict(readiness),
-            first_request={"status": first_status, "body": first},
-            duplicate_request={"status": second_status, "body": second},
-            api_list=listed,
-            api_detail=detail,
-            database=database,
-            dashboard_status=dashboard_status,
-            worker_stop=asdict(worker_stop),
-            job_api_stop=asdict(api_stop),
-        )
+        worker_stop = consume_stop_budget("worker", "worker.stop")
+        if worker_stop is not None:
+            worker_started = False
+        api_stop = consume_stop_budget("job_api", "job-api.stop")
+        if api_stop is not None:
+            api_started = False
+        if worker_stop is not None and api_stop is not None:
+            result = RuntimeChainEvidence(
+                processes={
+                    "job_api": asdict(api_identity),
+                    "worker": asdict(worker_identity),
+                },
+                readiness=asdict(readiness),
+                first_request={"status": first_status, "body": first},
+                duplicate_request={"status": second_status, "body": second},
+                api_list=listed,
+                api_detail=detail,
+                database=database,
+                dashboard_status=dashboard_status,
+                worker_stop=asdict(worker_stop),
+                job_api_stop=asdict(api_stop),
+                native_publications=dict(native_publications),
+            )
+    except BaseException as error:
+        primary_error = error
     finally:
-        if worker_started:
-            controller.stop("worker.stop")
-        if api_started:
-            controller.stop("job-api.stop")
+        if worker_started and "worker" not in consumed_stop_budgets:
+            try:
+                worker_cleanup = consume_stop_budget(
+                    "worker", "worker.stop"
+                )
+            except BaseException as error:
+                cleanup_failures.append(
+                    RuntimeCleanupFailure(
+                        "worker",
+                        "worker.stop",
+                        len(start_cleanup_failures.get("worker", ())) + 1,
+                        error,
+                    )
+                )
+                retain_recovery_state(
+                    "worker",
+                    "worker.stop",
+                    min(
+                        RuntimeStartFailure.MAX_CLEANUP_ATTEMPTS,
+                        len(start_cleanup_failures.get("worker", ())) + 1,
+                    ),
+                )
+            else:
+                if worker_cleanup is not None:
+                    worker_started = False
+        if api_started and "job_api" not in consumed_stop_budgets:
+            try:
+                api_cleanup = consume_stop_budget(
+                    "job_api", "job-api.stop"
+                )
+            except BaseException as error:
+                cleanup_failures.append(
+                    RuntimeCleanupFailure(
+                        "job_api",
+                        "job-api.stop",
+                        len(start_cleanup_failures.get("job_api", ())) + 1,
+                        error,
+                    )
+                )
+                retain_recovery_state(
+                    "job_api",
+                    "job-api.stop",
+                    min(
+                        RuntimeStartFailure.MAX_CLEANUP_ATTEMPTS,
+                        len(start_cleanup_failures.get("job_api", ())) + 1,
+                    ),
+                )
+            else:
+                if api_cleanup is not None:
+                    api_started = False
+    if primary_error is not None or cleanup_failures:
+        recovery_records.sort(
+            key=lambda record: (
+                0 if record.component == "worker" else 1,
+                record.operation_id,
+            )
+        )
+        recovery_owner = (
+            RuntimeRecoveryOwner(controller, tuple(recovery_records))
+            if recovery_owner_required
+            else None
+        )
+        failure = RuntimeChainFailure(
+            primary_error,
+            cleanup_failures,
+            cleanup_successes,
+            recovery_owner,
+            recovery_snapshot_failures,
+        )
+        if primary_error is not None:
+            raise failure from primary_error
+        raise failure
+    if result is None:
+        raise RuntimeChainFailure(None, [])
+    return result
 
 
-__all__ = ["RuntimeChainEvidence", "run_approved_runtime_chain"]
+__all__ = [
+    "RuntimeChainEvidence",
+    "RuntimeChainFailure",
+    "RuntimeCleanupSuccess",
+    "RuntimeCleanupExhausted",
+    "RuntimeCleanupFailure",
+    "RuntimeRecoveryOwner",
+    "RuntimeRecoverySnapshotFailure",
+    "run_approved_runtime_chain",
+]

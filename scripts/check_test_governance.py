@@ -313,7 +313,56 @@ def build_governed_report(
         item["raw_outcome"] = outcome
         item["governed_outcome"] = governed_outcome
         tests.append(item)
-    return {"schema_version": 1, "summary": summary, "tests": tests}
+
+    def _is_postgres_approval_blocked(item: dict[str, object]) -> bool:
+        governance = item.get("governance")
+        return (
+            item.get("governed_outcome") == "approval_blocked"
+            and isinstance(governance, dict)
+            and governance.get("reason_category")
+            == "DISPOSABLE_POSTGRES_REQUIRED"
+        )
+
+    postgres_approval_blocked = sum(
+        1 for item in tests if _is_postgres_approval_blocked(item)
+    )
+    source_failed = summary["failed"] > 0 or summary["not_run"] > 0
+    postgres_disclosure = {
+        "approval_blocked_count": postgres_approval_blocked,
+        "production_postgres_mutation": {
+            "decision": "FORBIDDEN",
+            "requires_separate_authority": True,
+        },
+        "runtime_proof": {
+            "blocks_runtime_release": postgres_approval_blocked > 0,
+            "decision": (
+                "BLOCKED_PENDING_EXACT_COMMIT_AUTHORITY"
+                if postgres_approval_blocked
+                else "NOT_BLOCKED_BY_DISCLOSURE"
+            ),
+            "required_lifecycle_authorities": [
+                "INITDB",
+                "START",
+                "RESTORE",
+                "STOP",
+                "DELETE",
+            ],
+        },
+        "source_upgrade": {
+            "blocks_source_upgrade": source_failed,
+            "decision": (
+                "FAIL_SOURCE_TESTS"
+                if source_failed
+                else "PASS_WITH_POSTGRES_RUNTIME_DEFERRED"
+            ),
+        },
+    }
+    return {
+        "schema_version": 1,
+        "summary": summary,
+        "postgres_disclosure": postgres_disclosure,
+        "tests": tests,
+    }
 
 
 def _read_json(path: Path) -> object:
@@ -860,6 +909,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["status"] = "fail" if failed_suites else "pass"
         _write_json(output, report)
         print(json.dumps(report["summary"], sort_keys=True))
+        print(json.dumps(report["postgres_disclosure"], sort_keys=True))
         print(f"machine report: {output}")
         if failed_suites:
             raise GovernanceError(f"test suites failed: {failed_suites}")

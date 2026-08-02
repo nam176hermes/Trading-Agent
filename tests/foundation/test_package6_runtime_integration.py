@@ -11,6 +11,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import socket
 import subprocess
 from typing import Mapping, cast
 
@@ -32,16 +33,29 @@ from scripts.validate_disposable_postgres_approval import (
     validate_disposable_postgres_approval,
     validate_source_binding_files as validate_postgres_source_bindings,
 )
-from services.paper_runtime.controller import issue_runtime_child_authorities
+from services.paper_runtime.controller import (
+    ProcessStatus,
+    RuntimeRecoveryState,
+    StopEvidence,
+    TranscriptMetadata,
+    issue_runtime_child_authorities,
+)
+from services.paper_runtime.custodian_client import (
+    CustodianAttestation,
+    CustodianClient,
+)
 from services.paper_runtime.evidence import (
     request_and_wait_for_postgres_cleanup,
     verify_runtime_evidence_bundle,
     write_runtime_evidence_bundle,
 )
-from services.paper_runtime.integration import run_approved_runtime_chain
+from services.paper_runtime.integration import (
+    RuntimeChainFailure,
+    _worker_exit_error,
+    run_approved_runtime_chain,
+)
+import services.paper_runtime.integration as integration_module
 
-
-pytestmark = pytest.mark.runtime_postgres
 
 _REQUIRED = (
     "TRADING_PACKAGE6_APPROVAL_PATH",
@@ -60,6 +74,11 @@ _REQUIRED = (
     "TRADING_PACKAGE6_POSTGRES_PGDATA",
     "TRADING_PACKAGE6_JOB_API_CREDENTIALS",
     "TRADING_PACKAGE6_WORKER_CREDENTIALS",
+    "TRADING_PACKAGE6_CUSTODIAN_HELPER_SHA256",
+    "TRADING_PACKAGE6_CUSTODIAN_FD",
+    "TRADING_PACKAGE6_CUSTODIAN_PEER_PID",
+    "TRADING_PACKAGE6_CUSTODIAN_PEER_UID",
+    "TRADING_PACKAGE6_CUSTODIAN_PEER_GID",
 )
 
 
@@ -123,6 +142,9 @@ def _build_approval_contexts(
         staging_activation_path=Path(
             values["TRADING_PACKAGE6_STAGING_ACTIVATION_PATH"]
         ),
+        custodian_helper_binary_sha256=values[
+            "TRADING_PACKAGE6_CUSTODIAN_HELPER_SHA256"
+        ],
     )
     return postgres_context, package6_context
 
@@ -190,6 +212,7 @@ def test_approval_contexts_use_exact_authority_field_sets(tmp_path: Path) -> Non
         "TRADING_PACKAGE6_POSTGRES_DATABASE": "trading_agent_disposable_test",
         "TRADING_PACKAGE6_POSTGRES_PGDATA": str(tmp_path / "pgdata"),
         "TRADING_DISPOSABLE_POSTGRES_APPROVAL_SHA256": "c" * 64,
+        "TRADING_PACKAGE6_CUSTODIAN_HELPER_SHA256": "d" * 64,
     }
 
     postgres_context, package6_context = _build_approval_contexts(
@@ -208,6 +231,129 @@ def test_approval_contexts_use_exact_authority_field_sets(tmp_path: Path) -> Non
     assert context_fields["staging_activation_path"] == tmp_path / "activation.json"
 
 
+def test_worker_crash_fails_before_timeout_with_digests_and_reverse_cleanup() -> None:
+    status = ProcessStatus(
+        operation_id="worker.start",
+        component="WORKER",
+        native_operation_id="1" * 32,
+        state="RESULT_RETAINED",
+        exit_code=17,
+        authority_retained=True,
+        bundle_committed=False,
+    )
+
+    error = _worker_exit_error(status)
+
+    assert type(error) is RuntimeError
+    assert str(error) == (
+        "worker exited before terminal job state: exit_code=17"
+    )
+    assert "stdout" not in str(error)
+    assert "stderr" not in str(error)
+    assert "/" not in str(error)
+
+
+def test_publication_ack_exhaustion_retains_usable_outer_recovery_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transcript = TranscriptMetadata(
+        sha256=hashlib.sha256(b"").hexdigest(),
+        size=0,
+        observed_size=0,
+        truncated=False,
+        eof=True,
+    )
+    stop = StopEvidence(
+        operation_id="job-api.stop",
+        component="JOB_API",
+        native_operation_id="1" * 32,
+        recovery_token="2" * 32,
+        state="RESULT_RETAINED",
+        exit_code=0,
+        cleanup_proven=True,
+        stdout=transcript,
+        stderr=transcript,
+    )
+
+    class FakeController:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+            self.publish_calls = 0
+            self.snapshot_calls = 0
+
+        def start(self, _operation_id: str) -> object:
+            return object()
+
+        def wait_ready(self, _operation_id: str) -> object:
+            raise RuntimeError("primary")
+
+        def stop(self, _operation_id: str) -> StopEvidence:
+            self.stop_calls += 1
+            return stop
+
+        def publish_evidence(
+            self, _operation_id: str, _evidence: StopEvidence
+        ) -> object:
+            self.publish_calls += 1
+            raise RuntimeError("lost publication response")
+
+        def snapshot_recovery_state(
+            self,
+            component: str,
+            operation_id: str,
+            attempts: int,
+        ) -> RuntimeRecoveryState:
+            self.snapshot_calls += 1
+            return RuntimeRecoveryState(
+                component=component,
+                operation_id=operation_id,
+                cleanup_attempts_consumed=attempts,
+                native_operation_id=stop.native_operation_id,
+                state=stop.state,
+                cleanup_proven=True,
+                stdout=stop.stdout,
+                stderr=stop.stderr,
+            )
+
+    controller = FakeController()
+    monkeypatch.setattr(integration_module, "is_issued_capability", lambda _x: True)
+    monkeypatch.setattr(
+        integration_module,
+        "Package6Controller",
+        lambda *_args, **_kwargs: controller,
+    )
+
+    with pytest.raises(RuntimeChainFailure) as raised:
+        run_approved_runtime_chain(
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            custodian_client=object(),  # type: ignore[arg-type]
+        )
+
+    owner = raised.value.recovery_owner
+    assert owner is not None
+    assert owner.controller is controller
+    assert owner.records == (
+        RuntimeRecoveryState(
+            component="job_api",
+            operation_id="job-api.stop",
+            cleanup_attempts_consumed=1,
+            native_operation_id=stop.native_operation_id,
+            state=stop.state,
+            cleanup_proven=True,
+            stdout=stop.stdout,
+            stderr=stop.stderr,
+        ),
+    )
+    assert controller.stop_calls == 1
+    assert controller.publish_calls == 2
+    assert controller.snapshot_calls == 1
+    assert owner.controller.snapshot_recovery_state(
+        "job_api", "job-api.stop", 1
+    ).native_operation_id == stop.native_operation_id
+
+
+@pytest.mark.runtime_postgres
 def test_staged_artifact_exact_job_api_command_reaches_runtime_authority_gate() -> None:
     values = _required_environment()
     capability, _approval_bytes, _postgres_approval_bytes = _validated_capability(
@@ -262,6 +408,7 @@ def test_staged_artifact_exact_job_api_command_reaches_runtime_authority_gate() 
     )
 
 
+@pytest.mark.runtime_postgres
 def test_complete_package6_runtime_chain() -> None:
     values = _required_environment()
     source_root = Path(values["TRADING_PACKAGE6_SOURCE_ROOT"])
@@ -272,7 +419,41 @@ def test_complete_package6_runtime_chain() -> None:
         worker_credentials=Path(values["TRADING_PACKAGE6_WORKER_CREDENTIALS"]),
     )
 
-    evidence = run_approved_runtime_chain(capability, child_authorities)
+    protocol_socket = socket.socket(
+        fileno=os.dup(int(values["TRADING_PACKAGE6_CUSTODIAN_FD"]))
+    )
+    attestation = CustodianAttestation(
+        helper_binary_sha256=capability.custodian.helper_binary_sha256,
+        native_source_set_sha256=(
+            capability.custodian.native_source_set_sha256
+        ),
+        protocol_version=capability.custodian.protocol_version,
+        protocol_features=capability.custodian.protocol_features,
+        endpoint_authority=capability.custodian.endpoint_authority,
+        peer_pid=int(values["TRADING_PACKAGE6_CUSTODIAN_PEER_PID"]),
+        peer_uid=int(values["TRADING_PACKAGE6_CUSTODIAN_PEER_UID"]),
+        peer_gid=int(values["TRADING_PACKAGE6_CUSTODIAN_PEER_GID"]),
+        candidate_commit=capability.source_commit,
+        candidate_tree=capability.source_tree,
+        stage_sha256=capability.authority_digests["stage"],
+        fixture_sha256=capability.fixture_sha256,
+        mode=capability.custodian.mode,
+        live_execution_approved=False,
+        live_trading_approved=False,
+    )
+    custodian_client = CustodianClient(
+        protocol_socket,
+        attestation,
+        timeout_seconds=min(60, capability.operation_timeout_seconds),
+    )
+    try:
+        evidence = run_approved_runtime_chain(
+            capability,
+            child_authorities,
+            custodian_client=custodian_client,
+        )
+    finally:
+        custodian_client.close()
 
     assert evidence.first_request["status"] == 201
     assert evidence.duplicate_request["status"] == 200

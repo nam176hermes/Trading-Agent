@@ -1,218 +1,311 @@
-"""Tracked bounded process harness for approved Package 6 operations."""
+"""Paper-only Package 6 adapter for the native C11 custody authority."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, field
 import hashlib
 import json
 import os
 from pathlib import Path
-import selectors
-import signal
-import socket
 import stat
-import subprocess
+import struct
 import time
+from urllib.error import HTTPError
 from urllib.request import urlopen
 import weakref
-from uuid import uuid4
-from typing import Callable
 
-from packages.runtime_release.paper_backend.provider_free_fixture import (
-    load_provider_free_fixture,
-)
-from packages.runtime_release.staging_v2 import (
-    PACKAGE6_APPROVAL_SHA256_ENV,
-    STAGING_ACTIVATION_PATH_ENV,
-    STAGING_AUTHORITY_PATH_ENV,
-    STAGING_SCOPE_ENV,
-    load_staging_authority_material,
-)
 from scripts.validate_package6_runtime_approval import (
+    PACKAGE6_JOB_API_ENVIRONMENT_KEYS,
+    PACKAGE6_WORKER_ENVIRONMENT_KEYS,
     ValidatedPackage6Capability,
     is_issued_capability,
 )
 
+from .custodian_client import (
+    CustodianAttestation,
+    CustodianClient,
+    NativeBundleReceipt,
+    NativeOperationRequest,
+    NativeOperationStatus,
+    OperationState,
+    TranscriptStream,
+)
 
-_READINESS_PROBE_TIMEOUT_SECONDS = 5.0
 
-
-def _raise_readiness_probe_timeout(_signum: int, _frame: object) -> None:
-    raise TimeoutError("readiness probe exceeded approved timeout")
+_NATIVE_OPERATION_AUTHORITY = (
+    "START",
+    "STOP",
+    "STATUS",
+    "RECOVER",
+    "RUN_ONCE",
+    "READ_TRANSCRIPT",
+    "PUBLISH_BUNDLE",
+    "ACK",
+)
+_UNKNOWN_EXIT_STATUS = -(2**31)
 
 
 class SourceDrift(RuntimeError):
-    """Candidate identity changed immediately before process creation."""
+    """Candidate identity changed before the native request."""
 
 
 class EvidenceIncomplete(RuntimeError):
-    """The evidence bundle cannot support controller verification."""
+    """Native cleanup or publication evidence is incomplete."""
 
 
-@dataclass(frozen=True, slots=True)
-class SpawnEnvironmentEvidence:
-    component: str
-    operation_id: str
-    pid: int
-    process_group: int
-    start_ticks: int
-    keys: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ProcessEvidence:
-    operation_id: str
-    argv: tuple[str, ...]
-    cwd: str
-    shell: bool
-    stdin_closed: bool
-    pid: int
-    process_group: int
-    exit_code: int | None
-    timed_out: bool
-    stdout_sha256: str
-    stdout_size: int
-    stdout_truncated: bool
-    stderr_sha256: str
-    stderr_size: int
-    stderr_truncated: bool
-    pid_alive: bool
-    listener_alive: bool
-    start_ticks: int
-    process_group_alive: bool
-    listener_negative_probes: int
-    cleanup_proven: bool
-    environment: SpawnEnvironmentEvidence
-
-
-@dataclass(frozen=True, slots=True)
-class EvidenceBundle:
-    root: Path
-    process: ProcessEvidence
-
-
-@dataclass(frozen=True, slots=True)
-class TrackedProcessIdentity:
-    operation_id: str
-    component: str
-    pid: int
-    process_group: int
-    start_ticks: int
-    environment: SpawnEnvironmentEvidence
-
-
-@dataclass(frozen=True, slots=True)
-class StopEvidence:
-    operation_id: str
-    pid: int
-    process_group: int
-    start_ticks: int
-    listener_negative_probes: int
-    exit_code: int
-    cleanup_proven: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ReadinessEvidence:
-    operation_id: str
-    pid: int
-    start_ticks: int
-    listener_inode: int
-    attempts: int
-    status: str
-
-
-@dataclass(frozen=True, slots=True, init=False, eq=False, repr=False, weakref_slot=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class RuntimeChildAuthorities:
+    """Private credential-directory references used only to build child env."""
+
     job_api_credentials: Path
     worker_credentials: Path
-    fixture_authority: Path
-    staging_scope: str
-    staging_authority: Path
-    staging_activation: Path
-    package6_approval_sha256: str
-    _parent: ValidatedPackage6Capability
-    _authority_pin: tuple[object, ...]
-    _dynamic_pin: tuple[object, ...]
-    _path_identities: tuple[tuple[int, int], ...]
-    _credential_pins: tuple[tuple[object, ...], ...]
+    capability_sha256: str
+    _credential_pins: tuple[tuple[object, ...], ...] = field(repr=False)
+    _credential_authorities: tuple[
+        _CredentialDirectoryAuthority, ...
+    ] = field(repr=False)
 
 
-_ISSUED_CHILD_AUTHORITIES: weakref.WeakSet[RuntimeChildAuthorities] = weakref.WeakSet()
+_ISSUED_CHILD_AUTHORITIES: weakref.WeakSet[RuntimeChildAuthorities] = (
+    weakref.WeakSet()
+)
 _JOB_API_CREDENTIAL_NAMES = (
-    "database-host", "database-port", "database-name", "database-password",
-    "job-api-principal-type", "job-api-principal-id", "job-api-token",
+    "database-host",
+    "database-port",
+    "database-name",
+    "database-password",
+    "job-api-principal-type",
+    "job-api-principal-id",
+    "job-api-token",
 )
 _WORKER_CREDENTIAL_NAMES = (
-    "database-host", "database-port", "database-name", "database-password",
+    "database-host",
+    "database-port",
+    "database-name",
+    "database-password",
 )
 _MAX_CREDENTIAL_BYTES = 4096
 
 
-def _pin_credential_directory(
-    path: Path, required_names: tuple[str, ...]
-) -> tuple[object, ...]:
-    directory_fd = -1
+def _private_directory(path: Path, label: str) -> Path:
     try:
-        directory_fd = os.open(
-            path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        info = path.lstat()
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"{label} authority is unavailable") from error
+    if (
+        resolved != path
+        or stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_gid != os.getegid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise ValueError(f"{label} authority is unsafe")
+    return path
+
+
+def _credential_metadata(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_uid,
+        info.st_gid,
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+class _CredentialDirectoryAuthority:
+    """One process-local owner for a pathname-independent directory generation."""
+
+    __slots__ = ("descriptor", "manifest", "pins")
+
+    def __init__(
+        self,
+        descriptor: int,
+        pins: tuple[object, ...],
+        manifest: bytes,
+    ) -> None:
+        self.descriptor = descriptor
+        self.pins = pins
+        self.manifest = manifest
+
+    def __del__(self) -> None:
+        descriptor = self.descriptor
+        self.descriptor = -1
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _inspect_credential_directory(
+    directory_descriptor: int,
+    required_names: tuple[str, ...],
+) -> tuple[tuple[object, ...], bytes]:
+    """Bind exact leaf metadata and digests without retaining credential values."""
+
+    directory_before = os.fstat(directory_descriptor)
+    if (
+        not stat.S_ISDIR(directory_before.st_mode)
+        or directory_before.st_uid != os.geteuid()
+        or directory_before.st_gid != os.getegid()
+        or stat.S_IMODE(directory_before.st_mode) != 0o700
+        or tuple(sorted(os.listdir(directory_descriptor)))
+        != tuple(sorted(required_names))
+    ):
+        raise ValueError
+    pins: list[tuple[object, ...]] = []
+    entries = bytearray()
+    for name in sorted(required_names):
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_descriptor,
+            )
+            before = os.fstat(descriptor)
+            mode = stat.S_IMODE(before.st_mode)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or before.st_gid != os.getegid()
+                or mode not in {0o400, 0o600}
+                or before.st_nlink != 1
+                or not 1 <= before.st_size <= _MAX_CREDENTIAL_BYTES
+            ):
+                raise ValueError
+            digest = hashlib.sha256()
+            observed_size = 0
+            while observed_size <= _MAX_CREDENTIAL_BYTES:
+                chunk = os.read(
+                    descriptor,
+                    min(4096, _MAX_CREDENTIAL_BYTES + 1 - observed_size),
+                )
+                if not chunk:
+                    break
+                digest.update(chunk)
+                observed_size += len(chunk)
+            after = os.fstat(descriptor)
+            path_after = os.stat(
+                name,
+                dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+            metadata = _credential_metadata(before)
+            leaf_digest = digest.digest()
+            if (
+                _credential_metadata(after) != metadata
+                or _credential_metadata(path_after) != metadata
+                or observed_size != before.st_size
+                or observed_size > _MAX_CREDENTIAL_BYTES
+            ):
+                raise ValueError
+            pins.append((name, *metadata, leaf_digest))
+            encoded_name = name.encode("ascii", "strict")
+            entries.extend(struct.pack(">I", len(encoded_name)))
+            entries.extend(encoded_name)
+            entries.extend(
+                struct.pack(
+                    ">QQIIIQQqq",
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_uid,
+                    before.st_gid,
+                    before.st_mode,
+                    before.st_nlink,
+                    before.st_size,
+                    before.st_mtime_ns,
+                    before.st_ctime_ns,
+                )
+            )
+            entries.extend(leaf_digest)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    directory_after = os.fstat(directory_descriptor)
+    if (
+        _credential_metadata(directory_after)
+        != _credential_metadata(directory_before)
+        or tuple(sorted(os.listdir(directory_descriptor)))
+        != tuple(sorted(required_names))
+    ):
+        raise ValueError
+    manifest = (
+        b"P6CM1"
+        + struct.pack(
+            ">IQQIII",
+            len(pins),
+            directory_before.st_dev,
+            directory_before.st_ino,
+            directory_before.st_uid,
+            directory_before.st_gid,
+            directory_before.st_mode,
         )
-        directory = os.fstat(directory_fd)
+        + bytes(entries)
+    )
+    return (
+        (
+            directory_before.st_dev,
+            directory_before.st_ino,
+            tuple(pins),
+        ),
+        manifest,
+    )
+
+
+def _pin_credential_directory(
+    path: Path,
+    required_names: tuple[str, ...],
+) -> _CredentialDirectoryAuthority:
+    """Open and retain one exact credential-directory generation."""
+
+    directory_path = _private_directory(path, "runtime credential directory")
+    directory_descriptor = -1
+    try:
+        directory_descriptor = os.open(
+            directory_path,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        directory_before = os.fstat(directory_descriptor)
+        path_before = directory_path.lstat()
         if (
-            not stat.S_ISDIR(directory.st_mode)
-            or directory.st_uid != os.geteuid()
-            or stat.S_IMODE(directory.st_mode) != 0o700
-            or tuple(sorted(os.listdir(directory_fd))) != tuple(sorted(required_names))
+            _credential_metadata(directory_before)
+            != _credential_metadata(path_before)
         ):
             raise ValueError
-        pins: list[tuple[object, ...]] = []
-        for name in required_names:
-            descriptor = os.open(
-                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=directory_fd,
-            )
-            try:
-                before = os.fstat(descriptor)
-                mode = stat.S_IMODE(before.st_mode)
-                if (
-                    not stat.S_ISREG(before.st_mode)
-                    or before.st_nlink != 1
-                    or before.st_uid != os.geteuid()
-                    or mode & 0o022
-                    or not 1 <= before.st_size <= _MAX_CREDENTIAL_BYTES
-                ):
-                    raise ValueError
-                raw = os.read(descriptor, _MAX_CREDENTIAL_BYTES + 1)
-                after = os.fstat(descriptor)
-                value = raw.decode("utf-8")
-                if (
-                    any(
-                        getattr(before, field) != getattr(after, field)
-                        for field in (
-                            "st_dev", "st_ino", "st_uid", "st_gid", "st_mode",
-                            "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns",
-                        )
-                    )
-                    or len(raw) != before.st_size
-                    or not value
-                    or value.strip() != value
-                    or any(character in value for character in "\x00\n\r")
-                ):
-                    raise ValueError
-                pins.append((
-                    name, before.st_dev, before.st_ino, before.st_uid,
-                    before.st_gid, mode, before.st_nlink, before.st_size,
-                    hashlib.sha256(raw).digest(),
-                ))
-            finally:
-                os.close(descriptor)
-        return (directory.st_dev, directory.st_ino, tuple(pins))
-    except (OSError, UnicodeError, ValueError) as error:
-        raise ValueError("runtime credential directory policy is invalid") from error
+        pins, manifest = _inspect_credential_directory(
+            directory_descriptor, required_names
+        )
+        directory_after = os.fstat(directory_descriptor)
+        path_after = directory_path.lstat()
+        if (
+            _credential_metadata(directory_after)
+            != _credential_metadata(directory_before)
+            or _credential_metadata(path_after)
+            != _credential_metadata(directory_before)
+        ):
+            raise ValueError
+        authority = _CredentialDirectoryAuthority(
+            directory_descriptor,
+            pins,
+            manifest,
+        )
+        directory_descriptor = -1
+        return authority
+    except (OSError, ValueError) as error:
+        raise ValueError(
+            "runtime credential directory policy is invalid"
+        ) from error
     finally:
-        if directory_fd >= 0:
-            os.close(directory_fd)
+        if directory_descriptor >= 0:
+            os.close(directory_descriptor)
 
 
 def issue_runtime_child_authorities(
@@ -221,815 +314,1136 @@ def issue_runtime_child_authorities(
     job_api_credentials: Path,
     worker_credentials: Path,
 ) -> RuntimeChildAuthorities:
+    """Issue one candidate-bound pair of private credential directories."""
+
     if not is_issued_capability(capability):
         raise TypeError("validated Package 6 capability is required")
+    job_api_path = Path(job_api_credentials)
+    worker_path = Path(worker_credentials)
     credential_pins = (
-        _pin_credential_directory(job_api_credentials, _JOB_API_CREDENTIAL_NAMES),
-        _pin_credential_directory(worker_credentials, _WORKER_CREDENTIAL_NAMES),
-    )
-    material = _reload_child_material(capability)
-    fixture_authority = capability.fixture.path
-    load_provider_free_fixture(
-        fixture_authority,
-        expected_backend_commit=capability.source_commit,
-        expected_package6_approval_sha256=capability.approval_sha256,
-        now=datetime.now(UTC),
-        trusted_uid=os.geteuid(),
-    )
-    from services.job_store.config import read_systemd_credential
-
-    def credential(directory: Path, name: str) -> str:
-        return read_systemd_credential(
-            {"CREDENTIALS_DIRECTORY": str(directory)}, name
-        )
-
-    expected_database = {
-        "database-host": capability.postgres.bind_host,
-        "database-port": str(capability.postgres.port),
-        "database-name": capability.postgres.database_name,
-    }
-    for directory in (job_api_credentials, worker_credentials):
-        if any(
-            credential(directory, name) != expected
-            for name, expected in expected_database.items()
-        ):
-            raise ValueError("runtime credential database identity does not match")
-        credential(directory, "database-password")
-    if (
-        credential(job_api_credentials, "job-api-principal-type") != "OPERATOR"
-        or credential(job_api_credentials, "job-api-principal-id")
-        != "foundation-validation"
-    ):
-        raise ValueError("Job API request identity does not match approval")
-    credential(job_api_credentials, "job-api-token")
-    value = RuntimeChildAuthorities()
-    object.__setattr__(value, "job_api_credentials", job_api_credentials)
-    object.__setattr__(value, "worker_credentials", worker_credentials)
-    object.__setattr__(value, "fixture_authority", fixture_authority)
-    object.__setattr__(value, "staging_scope", material.scope)
-    object.__setattr__(value, "staging_authority", material.authority_path)
-    object.__setattr__(value, "staging_activation", material.activation_path)
-    object.__setattr__(
-        value, "package6_approval_sha256", material.package6_approval_sha256
-    )
-    object.__setattr__(value, "_parent", capability)
-    object.__setattr__(value, "_authority_pin", material.authority_pin)
-    object.__setattr__(value, "_dynamic_pin", material.dynamic_evidence_pin)
-    object.__setattr__(
-        value,
-        "_path_identities",
-        tuple(
-            (path.lstat().st_dev, path.lstat().st_ino)
-            for path in (
-                job_api_credentials,
-                worker_credentials,
-                material.authority_path,
-                material.activation_path,
-                fixture_authority,
-            )
+        _pin_credential_directory(
+            job_api_path,
+            _JOB_API_CREDENTIAL_NAMES,
+        ),
+        _pin_credential_directory(
+            worker_path,
+            _WORKER_CREDENTIAL_NAMES,
         ),
     )
-    object.__setattr__(value, "_credential_pins", credential_pins)
+    value = RuntimeChildAuthorities(
+        job_api_credentials=job_api_path,
+        worker_credentials=worker_path,
+        capability_sha256=capability.approval_sha256,
+        _credential_pins=tuple(item.pins for item in credential_pins),
+        _credential_authorities=credential_pins,
+    )
     _ISSUED_CHILD_AUTHORITIES.add(value)
     return value
 
 
-def _reload_child_material(capability: ValidatedPackage6Capability):
-    try:
-        return load_staging_authority_material(
-            {
-                STAGING_SCOPE_ENV: capability.staging_material.scope,
-                STAGING_AUTHORITY_PATH_ENV: str(
-                    capability.staging_material.authority_path
-                ),
-                STAGING_ACTIVATION_PATH_ENV: str(
-                    capability.staging_material.activation_path
-                ),
-                PACKAGE6_APPROVAL_SHA256_ENV: capability.approval_sha256,
-            },
-            now=datetime.now(UTC),
+@dataclass(frozen=True, slots=True)
+class SpawnEnvironmentEvidence:
+    component: str
+    operation_id: str
+    keys: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TrackedProcessIdentity:
+    """Opaque native operation identity; it is not a PID authority."""
+
+    operation_id: str
+    component: str
+    native_operation_id: str
+    recovery_token: str
+    state: str
+    environment: SpawnEnvironmentEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptMetadata:
+    sha256: str
+    size: int
+    observed_size: int
+    truncated: bool
+    eof: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessStatus:
+    operation_id: str
+    component: str
+    native_operation_id: str
+    state: str
+    exit_code: int | None
+    authority_retained: bool
+    bundle_committed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StopEvidence:
+    operation_id: str
+    component: str
+    native_operation_id: str
+    recovery_token: str
+    state: str
+    exit_code: int
+    cleanup_proven: bool
+    stdout: TranscriptMetadata
+    stderr: TranscriptMetadata
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessEvidence:
+    operation_id: str
+    native_operation_id: str
+    attempts: int
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeRecoveryState:
+    component: str
+    operation_id: str
+    cleanup_attempts_consumed: int
+    native_operation_id: str
+    state: str
+    cleanup_proven: bool
+    stdout: TranscriptMetadata | None
+    stderr: TranscriptMetadata | None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCleanupFailure:
+    component: str
+    operation_id: str
+    attempt: int
+    error: BaseException
+
+
+class IncompleteCleanupProof(RuntimeError):
+    PUBLIC_MESSAGE = "runtime cleanup proof is incomplete"
+
+    def __init__(self, evidence: StopEvidence) -> None:
+        super().__init__(self.PUBLIC_MESSAGE)
+        self.evidence = evidence
+
+
+class RuntimeStartFailure(RuntimeError):
+    PUBLIC_MESSAGE = "paper runtime start failed safely"
+    MAX_CLEANUP_ATTEMPTS = 2
+
+    def __init__(
+        self,
+        *,
+        component: str,
+        operation_id: str,
+        stop_operation_id: str,
+        cleanup_failures: tuple[RuntimeCleanupFailure, ...],
+        cleanup_attempts_consumed: int,
+        owns_recovery_state: bool,
+        cleanup_success: StopEvidence | None = None,
+    ) -> None:
+        super().__init__(self.PUBLIC_MESSAGE)
+        self.component = component
+        self.operation_id = operation_id
+        self.stop_operation_id = stop_operation_id
+        self.cleanup_failures = cleanup_failures
+        self.cleanup_attempts_consumed = cleanup_attempts_consumed
+        self.owns_recovery_state = owns_recovery_state
+        self.cleanup_success = cleanup_success
+        self.remaining_stop_attempts = (
+            max(0, self.MAX_CLEANUP_ATTEMPTS - cleanup_attempts_consumed)
+            if owns_recovery_state
+            else 0
         )
-    except Exception as error:
-        raise SourceDrift("runtime child authority is unavailable") from error
 
 
-def _attest_child_authorities(
-    capability: ValidatedPackage6Capability,
-    child: RuntimeChildAuthorities,
-) -> None:
-    if (
-        child not in _ISSUED_CHILD_AUTHORITIES
-        or child._parent is not capability
-    ):
-        raise TypeError("issued runtime child authorities are required")
-    material = _reload_child_material(capability)
-    paths = (
-        child.job_api_credentials,
-        child.worker_credentials,
-        child.staging_authority,
-        child.staging_activation,
-        child.fixture_authority,
+@dataclass(frozen=True, slots=True)
+class ProcessEvidence:
+    """Compatibility name for one native-completed operation proof."""
+
+    stop: StopEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBundle:
+    root: Path
+    process: StopEvidence
+    publication: NativeBundleReceipt
+
+
+def _empty_transcript() -> TranscriptMetadata:
+    return TranscriptMetadata(
+        sha256=hashlib.sha256(b"").hexdigest(),
+        size=0,
+        observed_size=0,
+        truncated=False,
+        eof=True,
     )
-    try:
-        metadata = tuple(path.lstat() for path in paths)
-        identities = tuple((info.st_dev, info.st_ino) for info in metadata)
-        fixture = load_provider_free_fixture(
-            child.fixture_authority,
-            expected_backend_commit=capability.source_commit,
-            expected_package6_approval_sha256=capability.approval_sha256,
-            now=datetime.now(UTC),
-            trusted_uid=os.geteuid(),
-        )
-        credential_pins = (
-            _pin_credential_directory(
-                child.job_api_credentials, _JOB_API_CREDENTIAL_NAMES
-            ),
-            _pin_credential_directory(
-                child.worker_credentials, _WORKER_CREDENTIAL_NAMES
-            ),
-        )
-    except Exception as error:
-        raise SourceDrift("runtime child authority is unavailable") from error
-    if (
-        identities != child._path_identities
-        or credential_pins != child._credential_pins
-        or any(
-            not stat.S_ISDIR(info.st_mode)
-            or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o700
-            for info in metadata[:2]
-        )
-        or material.authority_pin != child._authority_pin
-        or material.dynamic_evidence_pin != child._dynamic_pin
-        or material.scope != child.staging_scope
-        or material.authority_path != child.staging_authority
-        or material.activation_path != child.staging_activation
-        or material.package6_approval_sha256 != child.package6_approval_sha256
-        or fixture.sha256 != capability.fixture.sha256
-        or fixture.provenance != capability.fixture.provenance
-    ):
-        raise SourceDrift("runtime child authority changed before spawn")
 
 
-def _canonical_json(value: object) -> bytes:
-    return json.dumps(
-        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+def _operation_key(capability: object, component: str) -> str:
+    starts = [
+        operation.operation_id
+        for operation in capability.operations.values()
+        if operation.component == component and operation.action == "START"
+    ]
+    if len(starts) != 1:
+        raise RuntimeError("component native operation authority is invalid")
+    return starts[0]
 
 
-def _write_exclusive(path: Path, raw: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        view = memoryview(raw)
-        while view:
-            written = os.write(descriptor, view)
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _open_private_directory(path: Path, *, create: bool) -> int:
-    if (
-        not path.is_absolute()
-        or ".." in path.parts
-        or path.parts[:2] != ("/", "tmp")
-    ):
-        raise EvidenceIncomplete("evidence directory path is invalid")
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    current = os.open("/", flags)
-    try:
-        for index, component in enumerate(path.parts[1:]):
-            if create:
-                try:
-                    os.mkdir(component, 0o700, dir_fd=current)
-                except FileExistsError:
-                    pass
-            child = os.open(component, flags, dir_fd=current)
-            os.close(current)
-            current = child
-            info = os.fstat(current)
-            final = index == len(path.parts[1:]) - 1
-            if not stat.S_ISDIR(info.st_mode):
-                raise EvidenceIncomplete("evidence directory is not regular")
-            if index > 0 and (
-                info.st_uid != os.geteuid() or info.st_mode & 0o022
-            ):
-                raise EvidenceIncomplete("evidence directory ancestor is unsafe")
-            if final and (
-                info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o700
-            ):
-                raise EvidenceIncomplete("evidence directory policy is invalid")
-        return current
-    except Exception:
-        os.close(current)
-        raise
-
-
-def _write_exclusive_at(directory_fd: int, name: str, raw: bytes) -> None:
-    descriptor = os.open(
-        name,
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | os.O_NOFOLLOW
-        | os.O_CLOEXEC,
-        0o600,
-        dir_fd=directory_fd,
+def _native_operation_id(
+    capability: ValidatedPackage6Capability, component: str
+) -> bytes:
+    start_id = _operation_key(capability, component)
+    material = (
+        b"PACKAGE6_NATIVE_OPERATION_V1\x00"
+        + bytes.fromhex(capability.approval_sha256)
+        + start_id.encode("ascii")
     )
-    try:
-        view = memoryview(raw)
-        while view:
-            view = view[os.write(descriptor, view) :]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    value = hashlib.sha256(material).digest()[:16]
+    if value == bytes(16):  # pragma: no cover - cryptographic impossibility
+        raise RuntimeError("native operation identity is unavailable")
+    return value
 
 
-def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def _start_ticks(pid: int) -> int:
-    try:
-        fields = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").split()
-        return int(fields[21])
-    except (OSError, ValueError, IndexError):
-        return -1
-
-
-def _process_group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+def _publication_id(
+    capability: ValidatedPackage6Capability, operation_id: bytes
+) -> bytes:
+    material = (
+        b"PACKAGE6_NATIVE_PUBLICATION_V1\x00"
+        + operation_id
+        + bytes.fromhex(capability.source_commit)
+        + bytes.fromhex(capability.source_tree)
+        + bytes.fromhex(capability.fixture_sha256)
+        + bytes.fromhex(capability.authority_digests["stage"])
+    )
+    value = hashlib.sha256(material).digest()
+    if value == bytes(32):  # pragma: no cover - cryptographic impossibility
+        raise RuntimeError("native publication identity is unavailable")
+    return value
 
 
 class Package6Controller:
-    """Consume one validated private capability; never accepts raw approval data."""
+    """Delegate every Package 6 target lifecycle action to native custody."""
 
     def __init__(
         self,
         capability: ValidatedPackage6Capability,
         *,
+        custodian_client: CustodianClient | None = None,
         child_authorities: RuntimeChildAuthorities | None = None,
-        monotonic: Callable[[], float] = time.monotonic,
+        monotonic=time.monotonic,
     ) -> None:
         if not is_issued_capability(capability):
             raise TypeError("validated Package 6 capability is required")
-        self._capability = capability
-        self._monotonic = monotonic
-        if child_authorities is not None and child_authorities not in _ISSUED_CHILD_AUTHORITIES:
-            raise TypeError("issued runtime child authorities are required")
-        if child_authorities is not None:
-            _attest_child_authorities(capability, child_authorities)
-        self._child_authorities = child_authorities
-        self._tracked: dict[str, tuple[subprocess.Popen[bytes], TrackedProcessIdentity]] = {}
-
-    def _preflight(self, operation) -> None:
-        self._validate_bindings(self._capability.source_root)
-        if self._child_authorities is not None:
-            _attest_child_authorities(self._capability, self._child_authorities)
-        if operation.action == "START":
-            executable = Path(operation.argv[0])
-            try:
-                info = executable.lstat()
-                raw = executable.read_bytes()
-            except OSError as error:
-                raise SourceDrift("approved executable is unavailable") from error
-            if (
-                executable.is_symlink()
-                or not executable.is_file()
-                or info.st_uid != os.geteuid()
-                or info.st_mode & 0o022
-                or hashlib.sha256(raw).hexdigest()
-                != operation.executable_sha256
-            ):
-                raise SourceDrift("approved executable identity changed before spawn")
-
-    def start(self, operation_id: str) -> TrackedProcessIdentity:
-        operation = self._capability.operations.get(operation_id)
-        if operation is None or operation.action != "START":
-            raise ValueError("exact approved START operation is required")
-        if operation.component in self._tracked:
-            raise RuntimeError("component already has a tracked process")
-        if len(self._tracked) >= self._capability.max_processes:
-            raise RuntimeError("approved process limit reached")
-        self._preflight(operation)
-        if operation.bind_host is not None and operation.port is not None:
-            if self._listener_alive(operation.bind_host, operation.port):
-                raise RuntimeError("approved listener is already occupied")
-        child_environment = self._child_environment(operation.component)
-        process = subprocess.Popen(
-            list(operation.argv),
-            cwd=str(operation.cwd),
-            env=child_environment,
-            shell=False,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        pgid = os.getpgid(process.pid)
-        start_ticks = _start_ticks(process.pid)
-        environment = SpawnEnvironmentEvidence(
-            operation.component, operation.operation_id, process.pid, pgid,
-            start_ticks, tuple(sorted(child_environment)),
-        )
-        identity = TrackedProcessIdentity(
-            operation_id=operation.operation_id,
-            component=operation.component,
-            pid=process.pid,
-            process_group=pgid,
-            start_ticks=start_ticks,
-            environment=environment,
-        )
-        if pgid != process.pid or identity.start_ticks < 0:
-            self._terminate(process)
-            raise RuntimeError("spawned process identity is invalid")
-        self._tracked[operation.component] = (process, identity)
-        return identity
-
-    def stop(self, operation_id: str) -> StopEvidence:
-        operation = self._capability.operations.get(operation_id)
-        if operation is None or operation.action != "STOP":
-            raise ValueError("exact approved STOP operation is required")
-        tracked = self._tracked.pop(operation.component, None)
-        if tracked is None:
-            raise RuntimeError("STOP has no tracked process identity")
-        process, identity = tracked
-        if process.poll() is None and _start_ticks(identity.pid) != identity.start_ticks:
-            raise RuntimeError("tracked process identity changed before STOP")
-        self._terminate(process)
-        negative = 0
-        listener_alive = False
-        if operation.bind_host is not None and operation.port is not None:
-            for _ in range(3):
-                listener_alive = self._listener_alive(
-                    operation.bind_host, operation.port
-                )
-                if listener_alive:
-                    break
-                negative += 1
-        cleanup = (
-            process.poll() is not None
-            and not _pid_alive(identity.pid)
-            and not _process_group_alive(identity.process_group)
-            and not listener_alive
-            and (operation.port is None or negative == 3)
-        )
-        return StopEvidence(
-            operation_id=operation.operation_id,
-            pid=identity.pid,
-            process_group=identity.process_group,
-            start_ticks=identity.start_ticks,
-            listener_negative_probes=negative,
-            exit_code=process.returncode,
-            cleanup_proven=cleanup,
-        )
-
-    def wait_ready(self, operation_id: str) -> ReadinessEvidence:
-        operation = self._capability.operations.get(operation_id)
         if (
-            operation is None
-            or operation.action != "START"
-            or operation.bind_host is None
-            or operation.port is None
+            type(custodian_client) is not CustodianClient
+            or not self._attestation_matches(
+                capability, custodian_client.attestation
+            )
         ):
-            raise ValueError("exact approved listener START operation is required")
-        tracked = self._tracked.get(operation.component)
-        if tracked is None:
-            raise RuntimeError("readiness requires a tracked listener process")
-        process, identity = tracked
-        deadline = self._monotonic() + self._capability.startup_timeout_seconds
-        attempts = 0
-        while self._monotonic() < deadline:
-            attempts += 1
-            if process.poll() is not None or _start_ticks(identity.pid) != identity.start_ticks:
-                raise RuntimeError("tracked listener exited before readiness")
-            inode = self._listener_inode(
-                operation.bind_host, operation.port, identity.pid
-            )
-            if inode >= 0:
-                remaining = deadline - self._monotonic()
-                if remaining <= 0:
-                    break
-                probe_timeout = min(_READINESS_PROBE_TIMEOUT_SECONDS, remaining)
-                if any(signal.getitimer(signal.ITIMER_REAL)):
-                    raise RuntimeError("readiness probe timer authority is unavailable")
-                previous_handler = signal.signal(
-                    signal.SIGALRM, _raise_readiness_probe_timeout
-                )
-                try:
-                    try:
-                        signal.setitimer(signal.ITIMER_REAL, probe_timeout)
-                        with urlopen(  # noqa: S310 - exact approved loopback URL
-                            f"http://{operation.bind_host}:{operation.port}/health/ready",
-                            timeout=probe_timeout,
-                        ) as response:
-                            response_status = response.status
-                            payload = json.loads(response.read(16 * 1024))
-                    finally:
-                        try:
-                            signal.setitimer(signal.ITIMER_REAL, 0.0)
-                        finally:
-                            signal.signal(signal.SIGALRM, previous_handler)
-                    ready = (
-                        response_status == 200
-                        and payload.get("data", {}).get("status") == "READY"
-                    )
-                    if self._monotonic() >= deadline:
-                        break
-                    if ready:
-                        return ReadinessEvidence(
-                            operation_id=operation.operation_id,
-                            pid=identity.pid,
-                            start_ticks=identity.start_ticks,
-                            listener_inode=inode,
-                            attempts=attempts,
-                            status="READY",
-                        )
-                except (OSError, ValueError, json.JSONDecodeError):
-                    pass
-            remaining = deadline - self._monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(0.05, remaining))
-        raise RuntimeError("approved Job API readiness timeout")
+            raise TypeError("attested native custodian client is required")
+        if child_authorities is not None and (
+            child_authorities not in _ISSUED_CHILD_AUTHORITIES
+            or child_authorities.capability_sha256
+            != capability.approval_sha256
+        ):
+            raise TypeError("issued runtime child authorities are required")
+        self._capability = capability
+        self._client = custodian_client
+        self._child_authorities = child_authorities
+        self._monotonic = monotonic
+        self._active: dict[str, NativeOperationStatus] = {}
+        self._pending: dict[str, bytes] = {}
+        self._completed: dict[str, StopEvidence] = {}
+        self._receipts: dict[str, NativeBundleReceipt] = {}
+        self._acknowledged: set[str] = set()
 
     @staticmethod
-    def _listener_inode(host: str, port: int, pid: int) -> int:
-        if host != "127.0.0.1":
-            return -1
-        target = f"0100007F:{port:04X}"
-        inodes: set[str] = set()
-        try:
-            for raw in Path("/proc/net/tcp").read_text(encoding="ascii").splitlines()[1:]:
-                fields = raw.split()
-                if len(fields) > 9 and fields[1] == target and fields[3] == "0A":
-                    inodes.add(fields[9])
-            for fd in Path(f"/proc/{pid}/fd").iterdir():
-                try:
-                    link = os.readlink(fd)
-                except OSError:
-                    continue
-                if link.startswith("socket:[") and link[8:-1] in inodes:
-                    return int(link[8:-1])
-        except OSError:
-            return -1
-        return -1
-
-    def _child_environment(self, component: str) -> dict[str, str]:
-        child = {
-            "PATH": "/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(self._capability.disposable_root),
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "TZ": "UTC",
-            "TRADING_MODE": "paper",
-            "LIVE_EXECUTION_ENABLED": "false",
-            "LIVE_TRADING_APPROVED": "false",
-            "LIVE_TRADING_ENABLED": "false",
-        }
-        if self._child_authorities is not None:
-            _attest_child_authorities(self._capability, self._child_authorities)
-            credentials = (
-                self._child_authorities.job_api_credentials
-                if component == "JOB_API"
-                else self._child_authorities.worker_credentials
-            )
-            child["CREDENTIALS_DIRECTORY"] = str(credentials)
-            child.update(
-                {
-                    STAGING_SCOPE_ENV: self._child_authorities.staging_scope,
-                    STAGING_AUTHORITY_PATH_ENV: str(
-                        self._child_authorities.staging_authority
-                    ),
-                    STAGING_ACTIVATION_PATH_ENV: str(
-                        self._child_authorities.staging_activation
-                    ),
-                    PACKAGE6_APPROVAL_SHA256_ENV: (
-                        self._child_authorities.package6_approval_sha256
-                    ),
-                }
-            )
-            if component == "WORKER":
-                child.update(
-                    {
-                        "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH": str(
-                            self._child_authorities.fixture_authority
-                        ),
-                    }
-                )
-        return child
-
-    def run_once(self, operation_id: str) -> EvidenceBundle:
-        operation = self._capability.operations.get(operation_id)
-        if operation is None or operation.action != "START":
-            raise ValueError("exact approved START operation is required")
-        self._preflight(operation)
-        if operation.bind_host is not None and operation.port is not None:
-            if self._listener_alive(operation.bind_host, operation.port):
-                raise RuntimeError("approved listener is already occupied")
-        child_environment = self._child_environment(operation.component)
-        process = subprocess.Popen(
-            list(operation.argv),
-            cwd=str(operation.cwd),
-            env=child_environment,
-            shell=False,
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        pgid = os.getpgid(process.pid)
-        start_ticks = _start_ticks(process.pid)
-        environment = SpawnEnvironmentEvidence(
-            operation.component, operation.operation_id, process.pid, pgid,
-            start_ticks, tuple(sorted(child_environment)),
-        )
-        if pgid != process.pid:
-            self._terminate(process)
-            raise RuntimeError("spawned process group identity is invalid")
-        stdout, stderr, timed_out = self._capture(process)
-        cleanup_proven = self._terminate(process)
-        negative_probes = 0
-        listener_alive = False
-        if operation.bind_host is not None and operation.port is not None:
-            for _ in range(3):
-                listener_alive = self._listener_alive(
-                    operation.bind_host, operation.port
-                )
-                if listener_alive:
-                    break
-                negative_probes += 1
-        evidence = ProcessEvidence(
-            operation_id=operation.operation_id,
-            argv=operation.argv,
-            cwd=str(operation.cwd),
-            shell=False,
-            stdin_closed=True,
-            pid=process.pid,
-            process_group=pgid,
-            exit_code=None if timed_out else process.returncode,
-            timed_out=timed_out,
-            stdout_sha256=hashlib.sha256(stdout).hexdigest(),
-            stdout_size=len(stdout),
-            stdout_truncated=len(stdout) == self._capability.max_output_bytes,
-            stderr_sha256=hashlib.sha256(stderr).hexdigest(),
-            stderr_size=len(stderr),
-            stderr_truncated=len(stderr) == self._capability.max_output_bytes,
-            pid_alive=_pid_alive(process.pid),
-            listener_alive=listener_alive,
-            start_ticks=start_ticks,
-            process_group_alive=_process_group_alive(pgid),
-            listener_negative_probes=negative_probes,
-            cleanup_proven=(
-                cleanup_proven
-                and not _process_group_alive(pgid)
-                and not listener_alive
-                and (
-                    operation.port is None
-                    or negative_probes == 3
-                )
-            ),
-            environment=environment,
-        )
-        return self._write_bundle(evidence, stdout, stderr)
-
-    @staticmethod
-    def _listener_alive(host: str, port: int) -> bool:
-        try:
-            with socket.create_connection((host, port), timeout=0.1):
-                return True
-        except OSError:
+    def _attestation_matches(
+        capability: ValidatedPackage6Capability,
+        attestation: CustodianAttestation,
+    ) -> bool:
+        authority = getattr(capability, "custodian", None)
+        if authority is None:
             return False
+        expected = {
+            "helper_binary_sha256": authority.helper_binary_sha256,
+            "native_source_set_sha256": authority.native_source_set_sha256,
+            "protocol_version": authority.protocol_version,
+            "protocol_features": authority.protocol_features,
+            "endpoint_authority": authority.endpoint_authority,
+            "candidate_commit": capability.source_commit,
+            "candidate_tree": capability.source_tree,
+            "stage_sha256": capability.authority_digests["stage"],
+            "fixture_sha256": capability.fixture_sha256,
+            "mode": authority.mode,
+            "live_execution_approved": False,
+            "live_trading_approved": False,
+        }
+        return (
+            tuple(authority.operations) == _NATIVE_OPERATION_AUTHORITY
+            and all(
+                getattr(attestation, name, None) == value
+                for name, value in expected.items()
+            )
+            and attestation.peer_uid == os.geteuid()
+            and attestation.peer_gid == os.getegid()
+            and attestation.peer_pid > 0
+        )
 
-    def _validate_bindings(self, root: Path) -> None:
+    def _operation(self, operation_id: str, action: str):
+        operation = self._capability.operations.get(operation_id)
+        if operation is None or operation.action != action:
+            raise ValueError(f"exact approved {action} operation is required")
+        return operation
+
+    def _validate_bindings(self) -> None:
+        root = self._capability.source_root
         for relative, expected in self._capability.source_bindings:
             path = root / relative
             try:
                 info = path.lstat()
                 raw = path.read_bytes()
-            except OSError as error:
-                raise SourceDrift("source binding unavailable immediately before spawn") from error
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(root.resolve(strict=True))
+            except (OSError, ValueError) as error:
+                raise SourceDrift(
+                    "source binding is unavailable before native request"
+                ) from error
             if (
-                path.is_symlink()
-                or not path.is_file()
+                resolved != path
+                or stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISREG(info.st_mode)
                 or info.st_uid != os.geteuid()
-                or info.st_mode & 0o022
+                or stat.S_IMODE(info.st_mode) & 0o022
                 or hashlib.sha256(raw).hexdigest() != expected
             ):
-                raise SourceDrift("source binding drift detected immediately before spawn")
+                raise SourceDrift(
+                    "source binding drift detected before native request"
+                )
 
-    def _capture(self, process: subprocess.Popen[bytes]) -> tuple[bytes, bytes, bool]:
-        if process.stdout is None or process.stderr is None:
-            raise RuntimeError("bounded child pipes are unavailable")
-        selector = selectors.DefaultSelector()
-        buffers = {"stdout": bytearray(), "stderr": bytearray()}
-        for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
-            os.set_blocking(stream.fileno(), False)
-            selector.register(stream, selectors.EVENT_READ, name)
-        deadline = self._monotonic() + self._capability.operation_timeout_seconds
-        timed_out = False
-        try:
-            while selector.get_map():
-                remaining = deadline - self._monotonic()
-                if remaining <= 0:
-                    timed_out = True
-                    self._signal_group(process, signal.SIGTERM)
-                    break
-                for key, _mask in selector.select(min(remaining, 0.1)):
-                    chunk = os.read(key.fd, 65536)
-                    if not chunk:
-                        selector.unregister(key.fd)
-                        continue
-                    target = buffers[key.data]
-                    capacity = self._capability.max_output_bytes - len(target)
-                    target.extend(chunk[: max(0, capacity)])
-                if process.poll() is not None and not selector.get_map():
-                    break
-            if timed_out:
-                self._wait_or_kill(process)
-            else:
-                process.wait(timeout=self._capability.cleanup_timeout_seconds)
-        finally:
-            selector.close()
-            process.stdout.close()
-            process.stderr.close()
-        return bytes(buffers["stdout"]), bytes(buffers["stderr"]), timed_out
-
-    def _signal_group(self, process: subprocess.Popen[bytes], sig: int) -> None:
-        try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
+    def _attest_child_credentials(self) -> None:
+        child = self._child_authorities
+        if child is None:
             return
-
-    def _wait_or_kill(self, process: subprocess.Popen[bytes]) -> None:
         try:
-            process.wait(timeout=self._capability.cleanup_timeout_seconds)
-        except subprocess.TimeoutExpired:
-            self._signal_group(process, signal.SIGKILL)
-            process.wait(timeout=self._capability.cleanup_timeout_seconds)
-
-    def _terminate(self, process: subprocess.Popen[bytes]) -> bool:
-        if process.poll() is None:
-            self._signal_group(process, signal.SIGTERM)
-            self._wait_or_kill(process)
-        deadline = self._monotonic() + self._capability.cleanup_timeout_seconds
-        if _process_group_alive(process.pid):
-            self._signal_group(process, signal.SIGTERM)
-        while _process_group_alive(process.pid) and self._monotonic() < deadline:
-            time.sleep(0.02)
-        if _process_group_alive(process.pid):
-            self._signal_group(process, signal.SIGKILL)
-            kill_deadline = (
-                self._monotonic() + self._capability.cleanup_timeout_seconds
+            observed = tuple(
+                _inspect_credential_directory(
+                    authority.descriptor,
+                    required_names,
+                )
+                for authority, required_names in zip(
+                    child._credential_authorities,
+                    (
+                    _JOB_API_CREDENTIAL_NAMES,
+                    _WORKER_CREDENTIAL_NAMES,
+                    ),
+                    strict=True,
+                )
             )
-            while (
-                _process_group_alive(process.pid)
-                and self._monotonic() < kill_deadline
+        except (OSError, ValueError) as error:
+            raise SourceDrift(
+                "runtime credential authority is unavailable"
+            ) from error
+        if tuple(item[0] for item in observed) != child._credential_pins:
+            raise SourceDrift(
+                "runtime credential authority changed before native request"
+            )
+        if tuple(item[1] for item in observed) != tuple(
+            authority.manifest
+            for authority in child._credential_authorities
+        ):
+            raise SourceDrift(
+                "runtime credential authority changed before native request"
+            )
+
+    def _environment(self, operation: object) -> tuple[str, ...]:
+        values = {
+            "HOME": "/tmp",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "LIVE_EXECUTION_ENABLED": "false",
+            "LIVE_TRADING_APPROVED": "false",
+            "LIVE_TRADING_ENABLED": "false",
+            "PATH": "/usr/bin:/bin",
+            "TRADING_PACKAGE6_APPROVAL_SHA256": (
+                self._capability.approval_sha256
+            ),
+            "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH": str(
+                self._capability.staging_material.activation_path
+            ),
+            "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH": str(
+                self._capability.staging_material.authority_path
+            ),
+            "TRADING_PACKAGE6_STAGING_SCOPE": "PACKAGE6_STAGING_V2",
+            "TRADING_MODE": "paper",
+            "TZ": "UTC",
+        }
+        if operation.component == "WORKER":
+            values["TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH"] = str(
+                self._capability.fixture.path
+            )
+        if self._child_authorities is not None:
+            values["CREDENTIALS_DIRECTORY"] = "/proc/self/fd/5"
+            expected_keys = (
+                PACKAGE6_JOB_API_ENVIRONMENT_KEYS
+                if operation.component == "JOB_API"
+                else PACKAGE6_WORKER_ENVIRONMENT_KEYS
+            )
+            if tuple(sorted(values)) != expected_keys:
+                raise SourceDrift(
+                    "runtime child environment contract changed"
+                )
+        return tuple(f"{key}={values[key]}" for key in sorted(values))
+
+    def _request(self, operation: object) -> NativeOperationRequest:
+        try:
+            executable = Path(operation.argv[0]).relative_to(
+                operation.cwd
+            ).as_posix()
+        except (IndexError, ValueError) as error:
+            raise SourceDrift(
+                "approved executable is outside native source authority"
+            ) from error
+        credential_authority = None
+        if self._child_authorities is not None:
+            credential_authority = self._child_authorities._credential_authorities[
+                0 if operation.component == "JOB_API" else 1
+            ]
+        return NativeOperationRequest(
+            operation_id=_native_operation_id(
+                self._capability, operation.component
+            ),
+            executable=executable,
+            executable_sha256=bytes.fromhex(
+                operation.executable_sha256
+            ),
+            argv=tuple(operation.argv),
+            environment=self._environment(operation),
+            credential_directory_fd=(
+                None
+                if credential_authority is None
+                else credential_authority.descriptor
+            ),
+            credential_manifest=(
+                b""
+                if credential_authority is None
+                else credential_authority.manifest
+            ),
+        )
+
+    def start(self, operation_id: str) -> TrackedProcessIdentity:
+        operation = self._operation(operation_id, "START")
+        if (
+            operation.component in self._active
+            or operation.component in self._pending
+            or operation.component in self._completed
+        ):
+            raise RuntimeError(
+                "component already has native or retained custody"
+            )
+        self._validate_bindings()
+        request = self._request(operation)
+        self._attest_child_credentials()
+        self._pending[operation.component] = request.operation_id
+        status: NativeOperationStatus | None = None
+        try:
+            status = self._client.start(request)
+            if (
+                status.operation_id != request.operation_id
+                or status.recovery_token == bytes(16)
+                or not status.authority_retained
+                or status.state
+                not in {
+                    OperationState.RUNNING,
+                    OperationState.RESULT_RETAINED,
+                    OperationState.RECOVERY_REQUIRED,
+                }
             ):
-                time.sleep(0.02)
+                raise EvidenceIncomplete("native START proof is incomplete")
+            self._active[operation.component] = status
+            self._pending.pop(operation.component, None)
+            environment = self._environment(operation)
+            return TrackedProcessIdentity(
+                operation_id=operation.operation_id,
+                component=operation.component,
+                native_operation_id=status.operation_id.hex(),
+                recovery_token=status.recovery_token.hex(),
+                state=status.state.name,
+                environment=SpawnEnvironmentEvidence(
+                    component=operation.component,
+                    operation_id=operation.operation_id,
+                    keys=tuple(
+                        item.partition("=")[0] for item in environment
+                    ),
+                ),
+            )
+        except BaseException as error:
+            self._raise_request_failure(
+                operation,
+                request,
+                error,
+                observed_status=status,
+            )
+            raise AssertionError("request failure reconciliation returned")
+
+    def _stop_operation(self, component: str) -> object:
+        matches = [
+            item
+            for item in self._capability.operations.values()
+            if item.component == component and item.action == "STOP"
+        ]
+        if len(matches) != 1:
+            raise RuntimeError("component STOP authority is invalid")
+        return matches[0]
+
+    def _recover_operation_status(
+        self,
+        component: str,
+        expected_operation_id: bytes,
+    ) -> NativeOperationStatus | None:
+        matches = [
+            status
+            for status in self._client.recover()
+            if status.operation_id == expected_operation_id
+        ]
+        if len(matches) > 1:
+            raise EvidenceIncomplete("native recovery identity is ambiguous")
+        if not matches:
+            self._pending.pop(component, None)
+            return None
+        status = matches[0]
+        self._pending.pop(component, None)
+        if status.state not in {
+            OperationState.ACKNOWLEDGED,
+            OperationState.RESULT_RETAINED,
+        }:
+            self._active[component] = status
+        return status
+
+    def _raise_request_failure(
+        self,
+        operation: object,
+        request: NativeOperationRequest,
+        original_error: BaseException,
+        *,
+        observed_status: NativeOperationStatus | None,
+    ) -> None:
+        """Bound recovery after a native request may have taken effect."""
+
+        stop_operation = self._stop_operation(operation.component)
+        failures: list[RuntimeCleanupFailure] = []
+        cleanup_success: StopEvidence | None = self._completed.get(
+            operation.component
+        )
+        attempts_consumed = 0
+        status = observed_status
+        if status is None or (
+            status.operation_id != request.operation_id
+            or status.recovery_token == bytes(16)
+        ):
+            try:
+                status = self._recover_operation_status(
+                    operation.component,
+                    request.operation_id,
+                )
+            except BaseException as error:
+                failures.append(
+                    RuntimeCleanupFailure(
+                        operation.component.lower(),
+                        stop_operation.operation_id,
+                        0,
+                        error,
+                    )
+                )
+                status = None
+        else:
+            self._pending.pop(operation.component, None)
+
+        if cleanup_success is None and status is not None:
+            if status.state is OperationState.ACKNOWLEDGED:
+                self._acknowledged.add(operation.component)
+                self._active.pop(operation.component, None)
+            elif status.state is OperationState.RESULT_RETAINED:
+                try:
+                    cleanup_success = self._stop_evidence(
+                        stop_operation,
+                        status,
+                    )
+                except BaseException as error:
+                    failures.append(
+                        RuntimeCleanupFailure(
+                            operation.component.lower(),
+                            stop_operation.operation_id,
+                            0,
+                            error,
+                        )
+                    )
+                    self._active[operation.component] = status
+                else:
+                    self._completed[operation.component] = cleanup_success
+                    self._active.pop(operation.component, None)
+            else:
+                self._active[operation.component] = status
+
+        while (
+            cleanup_success is None
+            and operation.component in self._active
+            and attempts_consumed < RuntimeStartFailure.MAX_CLEANUP_ATTEMPTS
+        ):
+            attempts_consumed += 1
+            try:
+                cleanup_success = self.stop(stop_operation.operation_id)
+            except BaseException as error:
+                failures.append(
+                    RuntimeCleanupFailure(
+                        operation.component.lower(),
+                        stop_operation.operation_id,
+                        attempts_consumed,
+                        error,
+                    )
+                )
+                try:
+                    recovered = self.recover_completed_stop(
+                        stop_operation.operation_id
+                    )
+                except BaseException as recovery_error:
+                    failures.append(
+                        RuntimeCleanupFailure(
+                            operation.component.lower(),
+                            stop_operation.operation_id,
+                            attempts_consumed,
+                            recovery_error,
+                        )
+                    )
+                else:
+                    if recovered is not None:
+                        cleanup_success = recovered
+
+        publication_proven = operation.component in self._acknowledged
+        if cleanup_success is not None and not publication_proven:
+            for _attempt in range(2):
+                try:
+                    self.publish_evidence(
+                        stop_operation.operation_id,
+                        cleanup_success,
+                    )
+                    self.acknowledge_stop(
+                        stop_operation.operation_id,
+                        cleanup_success,
+                    )
+                except BaseException as error:
+                    failures.append(
+                        RuntimeCleanupFailure(
+                            operation.component.lower(),
+                            stop_operation.operation_id,
+                            max(1, attempts_consumed),
+                            error,
+                        )
+                    )
+                else:
+                    publication_proven = True
+                    break
+
+        owns_recovery_state = (
+            operation.component in self._pending
+            or operation.component in self._active
+            or (
+                cleanup_success is not None
+                and not publication_proven
+            )
+        )
+        failure = RuntimeStartFailure(
+            component=operation.component.lower(),
+            operation_id=operation.operation_id,
+            stop_operation_id=stop_operation.operation_id,
+            cleanup_failures=tuple(failures),
+            cleanup_attempts_consumed=attempts_consumed,
+            owns_recovery_state=owns_recovery_state,
+            cleanup_success=cleanup_success,
+        )
+        raise failure from original_error
+
+    @staticmethod
+    def _exit_code(status: NativeOperationStatus) -> int | None:
         return (
-            process.poll() is not None
-            and not _pid_alive(process.pid)
-            and not _process_group_alive(process.pid)
+            None
+            if status.exit_status == _UNKNOWN_EXIT_STATUS
+            else status.exit_status
         )
 
-    def _write_bundle(
-        self, evidence: ProcessEvidence, stdout: bytes, stderr: bytes
-    ) -> EvidenceBundle:
-        root = self._capability.evidence_root / f"run-{uuid4().hex}"
-        evidence_fd = _open_private_directory(
-            self._capability.evidence_root, create=True
-        )
-        try:
-            os.mkdir(root.name, 0o700, dir_fd=evidence_fd)
-            root_fd = os.open(
-                root.name,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=evidence_fd,
+    @staticmethod
+    def _validate_continuity(
+        prior: NativeOperationStatus,
+        current: NativeOperationStatus,
+        *,
+        permitted_states: frozenset[OperationState],
+        publication_may_appear: bool = False,
+    ) -> None:
+        publication_matches = (
+            current.publication_sha256 == prior.publication_sha256
+            or (
+                publication_may_appear
+                and prior.publication_sha256 == bytes(32)
+                and current.publication_sha256 != bytes(32)
             )
-        finally:
-            os.close(evidence_fd)
-        files = {
-            "approval.json": _canonical_json(
+        )
+        if (
+            current.operation_id != prior.operation_id
+            or current.recovery_token != prior.recovery_token
+            or current.request_sha256 != prior.request_sha256
+            or current.executable_sha256 != prior.executable_sha256
+            or not publication_matches
+            or current.state not in permitted_states
+        ):
+            raise EvidenceIncomplete(
+                "native operation continuity proof is incomplete"
+            )
+
+    def status(self, operation_id: str) -> ProcessStatus:
+        operation = self._operation(operation_id, "START")
+        retained = self._active.get(operation.component)
+        if retained is None and operation.component in self._pending:
+            retained = self._recover_operation_status(
+                operation.component,
+                self._pending[operation.component],
+            )
+        if retained is None:
+            raise RuntimeError("status requires native recovery authority")
+        status = self._client.status(
+            retained.operation_id, retained.recovery_token
+        )
+        self._validate_continuity(
+            retained,
+            status,
+            permitted_states=frozenset(
                 {
-                    "approval_sha256": self._capability.approval_sha256,
-                    "source_commit": self._capability.source_commit,
-                    "source_tree": self._capability.source_tree,
-                    "fixture_sha256": self._capability.fixture_sha256,
+                    retained.state,
+                    OperationState.RESULT_RETAINED,
+                    OperationState.RECOVERY_REQUIRED,
+                    OperationState.ACKNOWLEDGED,
                 }
             ),
-            "process.json": _canonical_json(asdict(evidence)),
-            "stdout.bin": stdout,
-            "stderr.bin": stderr,
-        }
-        try:
-            for name, raw in files.items():
-                _write_exclusive_at(root_fd, name, raw)
-            entries = [
+        )
+        self._active[operation.component] = status
+        return ProcessStatus(
+            operation_id=operation.operation_id,
+            component=operation.component,
+            native_operation_id=status.operation_id.hex(),
+            state=status.state.name,
+            exit_code=self._exit_code(status),
+            authority_retained=status.authority_retained,
+            bundle_committed=status.bundle_committed,
+        )
+
+    def _transcript_metadata(
+        self,
+        status: NativeOperationStatus,
+        stream: TranscriptStream,
+    ) -> TranscriptMetadata:
+        offset = 0
+        content_digest = hashlib.sha256()
+        observed_size: int | None = None
+        retained_size: int | None = None
+        native_digest: bytes | None = None
+        truncated: bool | None = None
+        eof = False
+        while not eof:
+            length = min(
+                64 * 1024,
+                max(1, self._capability.max_output_bytes - offset),
+            )
+            chunk = self._client.read_transcript(
+                status.operation_id,
+                status.recovery_token,
+                stream,
+                offset=offset,
+                length=length,
+            )
+            facts = (
+                chunk.observed_size,
+                chunk.retained_size,
+                chunk.sha256,
+                chunk.truncated,
+            )
+            if observed_size is None:
+                (
+                    observed_size,
+                    retained_size,
+                    native_digest,
+                    truncated,
+                ) = facts
+                if retained_size > self._capability.max_output_bytes:
+                    raise EvidenceIncomplete(
+                        "native transcript exceeds approved bound"
+                    )
+            elif facts != (
+                observed_size,
+                retained_size,
+                native_digest,
+                truncated,
+            ):
+                raise EvidenceIncomplete(
+                    "native transcript metadata changed during read"
+                )
+            if not chunk.data and not chunk.eof:
+                raise EvidenceIncomplete("native transcript read did not advance")
+            content_digest.update(chunk.data)
+            offset += len(chunk.data)
+            eof = chunk.eof
+        if (
+            observed_size is None
+            or retained_size is None
+            or native_digest is None
+            or truncated is None
+            or offset != retained_size
+            or (not truncated and content_digest.digest() != native_digest)
+        ):
+            raise EvidenceIncomplete("native transcript proof is incomplete")
+        return TranscriptMetadata(
+            sha256=native_digest.hex(),
+            size=retained_size,
+            observed_size=observed_size,
+            truncated=truncated,
+            eof=True,
+        )
+
+    def _stop_evidence(
+        self,
+        operation: object,
+        status: NativeOperationStatus,
+    ) -> StopEvidence:
+        if (
+            status.state is not OperationState.RESULT_RETAINED
+            or not status.authority_retained
+            or self._exit_code(status) is None
+        ):
+            raise EvidenceIncomplete("native cleanup proof is incomplete")
+        stdout = self._transcript_metadata(
+            status, TranscriptStream.STDOUT
+        )
+        stderr = self._transcript_metadata(
+            status, TranscriptStream.STDERR
+        )
+        return StopEvidence(
+            operation_id=operation.operation_id,
+            component=operation.component,
+            native_operation_id=status.operation_id.hex(),
+            recovery_token=status.recovery_token.hex(),
+            state=status.state.name,
+            exit_code=status.exit_status,
+            cleanup_proven=True,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def stop(self, operation_id: str) -> StopEvidence:
+        operation = self._operation(operation_id, "STOP")
+        retained = self._active.get(operation.component)
+        if retained is None:
+            recovered = self.recover_completed_stop(operation_id)
+            if recovered is not None:
+                return recovered
+            retained = self._active.get(operation.component)
+            if retained is None:
+                raise RuntimeError("STOP requires native recovery authority")
+        status = self._client.stop(
+            retained.operation_id, retained.recovery_token
+        )
+        self._validate_continuity(
+            retained,
+            status,
+            permitted_states=frozenset(
                 {
-                    "path": name,
-                    "sha256": hashlib.sha256(raw).hexdigest(),
-                    "size_bytes": len(raw),
+                    OperationState.RESULT_RETAINED,
+                    OperationState.RECOVERY_REQUIRED,
+                    OperationState.ACKNOWLEDGED,
                 }
-                for name, raw in sorted(files.items())
-            ]
-            index = {
-                "schema_version": 1,
-                "verdict": "PENDING_CONTROLLER_RUNTIME_VERIFICATION",
-                "entries": entries,
-            }
-            _write_exclusive_at(root_fd, "index.json", _canonical_json(index))
-        finally:
-            os.close(root_fd)
-        if not evidence.cleanup_proven:
-            raise EvidenceIncomplete("process cleanup proof is incomplete")
-        verify_evidence_bundle(root)
-        return EvidenceBundle(root=root, process=evidence)
+            ),
+        )
+        evidence = self._stop_evidence(operation, status)
+        self._completed[operation.component] = evidence
+        self._active.pop(operation.component, None)
+        return evidence
 
+    def recover_completed_stop(
+        self, operation_id: str
+    ) -> StopEvidence | None:
+        operation = self._operation(operation_id, "STOP")
+        cached = self._completed.get(operation.component)
+        if cached is not None:
+            return cached
+        expected = _native_operation_id(
+            self._capability, operation.component
+        )
+        status = self._recover_operation_status(
+            operation.component,
+            expected,
+        )
+        if status is None:
+            return None
+        if status.state is OperationState.ACKNOWLEDGED:
+            self._acknowledged.add(operation.component)
+            return None
+        if status.state is not OperationState.RESULT_RETAINED:
+            return None
+        evidence = self._stop_evidence(operation, status)
+        self._completed[operation.component] = evidence
+        self._active.pop(operation.component, None)
+        return evidence
 
-_PROCESS_FIELDS = {
-    field.name for field in ProcessEvidence.__dataclass_fields__.values()
-}
+    def publish_evidence(
+        self, operation_id: str, evidence: StopEvidence
+    ) -> NativeBundleReceipt:
+        operation = self._operation(operation_id, "STOP")
+        retained = self._completed.get(operation.component)
+        if retained != evidence or not evidence.cleanup_proven:
+            raise EvidenceIncomplete(
+                "native publication requires exact retained STOP proof"
+            )
+        prior = self._receipts.get(operation.component)
+        if prior is not None:
+            return prior
+        native_id = bytes.fromhex(evidence.native_operation_id)
+        receipt = self._client.publish_bundle(
+            native_id,
+            bytes.fromhex(evidence.recovery_token),
+            _publication_id(self._capability, native_id),
+        )
+        if (
+            receipt.operation.operation_id != native_id
+            or receipt.operation.recovery_token
+            != bytes.fromhex(evidence.recovery_token)
+            or not receipt.operation.bundle_committed
+            or receipt.manifest_sha256
+            != receipt.operation.publication_sha256
+        ):
+            raise EvidenceIncomplete(
+                "native publication receipt is incomplete"
+            )
+        self._receipts[operation.component] = receipt
+        return receipt
 
+    def acknowledge_stop(
+        self, operation_id: str, evidence: StopEvidence
+    ) -> None:
+        operation = self._operation(operation_id, "STOP")
+        if operation.component in self._acknowledged:
+            return
+        retained = self._completed.get(operation.component)
+        receipt = self._receipts.get(operation.component)
+        if retained != evidence or receipt is None:
+            raise EvidenceIncomplete(
+                "native acknowledgement requires publication receipt"
+            )
+        status = self._client.acknowledge(
+            bytes.fromhex(evidence.native_operation_id),
+            bytes.fromhex(evidence.recovery_token),
+            receipt.manifest_sha256,
+        )
+        if (
+            status.operation_id
+            != bytes.fromhex(evidence.native_operation_id)
+            or status.recovery_token
+            != bytes.fromhex(evidence.recovery_token)
+            or status.publication_sha256 != receipt.manifest_sha256
+            or status.state is not OperationState.ACKNOWLEDGED
+            or not status.acknowledged
+            or status.authority_retained
+        ):
+            raise EvidenceIncomplete(
+                "native acknowledgement proof is incomplete"
+            )
+        self._acknowledged.add(operation.component)
 
-def verify_evidence_bundle(root: Path) -> bool:
-    try:
-        (root / "runtime.json").lstat()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        raise EvidenceIncomplete("runtime evidence cannot be inspected") from error
-    else:
-        from .evidence import verify_runtime_evidence_bundle
+    def snapshot_recovery_state(
+        self,
+        component: str,
+        operation_id: str,
+        cleanup_attempts_consumed: int,
+    ) -> RuntimeRecoveryState:
+        operation = self._operation(operation_id, "STOP")
+        if (
+            operation.component.lower() != component
+            or type(cleanup_attempts_consumed) is not int
+            or not 1
+            <= cleanup_attempts_consumed
+            <= RuntimeStartFailure.MAX_CLEANUP_ATTEMPTS
+        ):
+            raise RuntimeError("runtime recovery snapshot authority is invalid")
+        completed = self._completed.get(operation.component)
+        if completed is not None:
+            return RuntimeRecoveryState(
+                component=component,
+                operation_id=operation_id,
+                cleanup_attempts_consumed=cleanup_attempts_consumed,
+                native_operation_id=completed.native_operation_id,
+                state=completed.state,
+                cleanup_proven=completed.cleanup_proven,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+        active = self._active.get(operation.component)
+        pending = self._pending.get(operation.component)
+        if active is None and pending is not None:
+            return RuntimeRecoveryState(
+                component=component,
+                operation_id=operation_id,
+                cleanup_attempts_consumed=cleanup_attempts_consumed,
+                native_operation_id=pending.hex(),
+                state=OperationState.RECOVERY_REQUIRED.name,
+                cleanup_proven=False,
+                stdout=None,
+                stderr=None,
+            )
+        if active is None:
+            raise RuntimeError("runtime recovery state is unavailable")
+        return RuntimeRecoveryState(
+            component=component,
+            operation_id=operation_id,
+            cleanup_attempts_consumed=cleanup_attempts_consumed,
+            native_operation_id=active.operation_id.hex(),
+            state=active.state.name,
+            cleanup_proven=False,
+            stdout=None,
+            stderr=None,
+        )
 
-        return verify_runtime_evidence_bundle(root)
-    from .evidence import _safe_read
+    def wait_ready(self, operation_id: str) -> ReadinessEvidence:
+        operation = self._operation(operation_id, "START")
+        retained = self._active.get(operation.component)
+        if retained is None:
+            raise RuntimeError("readiness requires native recovery authority")
+        if operation.bind_host is None or operation.port is None:
+            raise ValueError("approved operation has no readiness endpoint")
+        deadline = self._monotonic() + self._capability.startup_timeout_seconds
+        attempts = 0
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    "approved operation readiness timed out"
+                )
+            attempts += 1
+            status = self.status(operation_id)
+            if status.exit_code is not None:
+                raise RuntimeError("approved operation exited before readiness")
+            remaining = deadline - self._monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    "approved operation readiness timed out"
+                )
+            try:
+                with urlopen(  # noqa: S310 - exact approved loopback endpoint
+                    (
+                        f"http://{operation.bind_host}:{operation.port}"
+                        "/health/ready"
+                    ),
+                    timeout=remaining,
+                ) as response:
+                    if response.status != 200:
+                        raise RuntimeError(
+                            "approved readiness response is invalid"
+                        )
+                    raw = response.read(16 * 1024 + 1)
+            except HTTPError:
+                raise RuntimeError(
+                    "approved readiness response is invalid"
+                ) from None
+            except OSError:
+                remaining = deadline - self._monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        "approved operation readiness timed out"
+                    ) from None
+                time.sleep(min(0.02, remaining))
+                continue
+            if self._monotonic() >= deadline:
+                raise TimeoutError(
+                    "approved operation readiness timed out"
+                )
+            try:
+                document = json.loads(raw)
+            except (UnicodeError, json.JSONDecodeError):
+                raise RuntimeError(
+                    "approved readiness response is invalid"
+                ) from None
+            if (
+                len(raw) > 16 * 1024
+                or not isinstance(document, dict)
+                or not isinstance(document.get("data"), dict)
+                or document["data"].get("status") != "READY"
+            ):
+                raise RuntimeError(
+                    "approved readiness response is invalid"
+                )
+            return ReadinessEvidence(
+                operation_id=operation_id,
+                native_operation_id=retained.operation_id.hex(),
+                attempts=attempts,
+                status="READY",
+            )
 
-    try:
-        index = json.loads(_safe_read(root, "index.json"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise EvidenceIncomplete("evidence index is unavailable") from error
-    if (
-        not isinstance(index, dict)
-        or set(index) != {"schema_version", "verdict", "entries"}
-        or index["schema_version"] != 1
-        or index["verdict"] != "PENDING_CONTROLLER_RUNTIME_VERIFICATION"
-        or not isinstance(index["entries"], list)
-    ):
-        raise EvidenceIncomplete("evidence index schema is invalid")
-    for entry in index["entries"]:
-        if not isinstance(entry, dict) or set(entry) != {"path", "sha256", "size_bytes"}:
-            raise EvidenceIncomplete("evidence entry schema is invalid")
+    def run_once(self, operation_id: str) -> EvidenceBundle:
+        operation = self._operation(operation_id, "START")
+        if (
+            operation.component in self._active
+            or operation.component in self._pending
+        ):
+            raise RuntimeError("component already has native custody")
+        self._validate_bindings()
+        request = self._request(operation)
+        self._attest_child_credentials()
+        self._pending[operation.component] = request.operation_id
+        status: NativeOperationStatus | None = None
         try:
-            raw = _safe_read(root, entry["path"])
-        except OSError as error:
-            raise EvidenceIncomplete("evidence entry is unavailable") from error
-        if len(raw) != entry["size_bytes"] or hashlib.sha256(raw).hexdigest() != entry["sha256"]:
-            raise EvidenceIncomplete("evidence entry digest does not match")
-    try:
-        process = json.loads(_safe_read(root, "process.json"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise EvidenceIncomplete("process evidence is unavailable") from error
-    if not isinstance(process, dict) or set(process) != _PROCESS_FIELDS:
-        raise EvidenceIncomplete("process evidence fields are incomplete")
-    if (
-        process["shell"] is not False
-        or process["stdin_closed"] is not True
-        or process["cleanup_proven"] is not True
-        or process["pid_alive"] is not False
-        or process["listener_alive"] is not False
-        or process["process_group_alive"] is not False
-        or process["start_ticks"] < 0
-    ):
-        raise EvidenceIncomplete("process cleanup proof is incomplete")
-    return True
+            status = self._client.run_once(request)
+            self._pending.pop(operation.component, None)
+            stop_operation = self._stop_operation(operation.component)
+            evidence = self._stop_evidence(stop_operation, status)
+            self._completed[operation.component] = evidence
+            receipt = self.publish_evidence(
+                stop_operation.operation_id, evidence
+            )
+            self.acknowledge_stop(stop_operation.operation_id, evidence)
+            return EvidenceBundle(
+                root=(
+                    self._capability.evidence_root
+                    / evidence.native_operation_id
+                ),
+                process=evidence,
+                publication=receipt,
+            )
+        except BaseException as error:
+            self._raise_request_failure(
+                operation,
+                request,
+                error,
+                observed_status=status,
+            )
+            raise AssertionError("request failure reconciliation returned")
 
 
 __all__ = [
     "EvidenceBundle",
     "EvidenceIncomplete",
+    "IncompleteCleanupProof",
     "Package6Controller",
     "ProcessEvidence",
+    "ProcessStatus",
     "ReadinessEvidence",
     "RuntimeChildAuthorities",
+    "RuntimeCleanupFailure",
+    "RuntimeRecoveryState",
+    "RuntimeStartFailure",
     "SourceDrift",
+    "SpawnEnvironmentEvidence",
     "StopEvidence",
     "TrackedProcessIdentity",
-    "verify_evidence_bundle",
+    "TranscriptMetadata",
     "issue_runtime_child_authorities",
 ]

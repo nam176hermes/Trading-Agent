@@ -19,7 +19,10 @@ from packages.runtime_release.staging_v2 import (
     canonical_json_bytes,
 )
 from scripts.validate_package6_runtime_approval import (
+    PACKAGE6_CUSTODIAN_SOURCE_PATHS,
+    PACKAGE6_JOB_API_ENVIRONMENT_KEYS,
     PACKAGE6_SOURCE_BINDING_PATHS,
+    PACKAGE6_WORKER_ENVIRONMENT_KEYS,
     Package6ApprovalContext,
     Package6ApprovalRejected,
     canonical_record_sha256,
@@ -54,6 +57,7 @@ class StagingMaterial:
     application_sha256: str
     backend_sha256: str
     command_sha256: str
+    stage_sha256: str
 
 
 def _object(document: dict[str, object], key: str) -> dict[str, object]:
@@ -190,6 +194,7 @@ def _staging_material(root: Path) -> StagingMaterial:
         application_sha256=components["application"]["artifact_set_sha256"],
         backend_sha256=components["backend"]["artifact_set_sha256"],
         command_sha256=canonical_digest(static["command_manifest"]),
+        stage_sha256=cast(dict[str, str], static["stage"])["file_set_sha256"],
     )
 
 
@@ -205,6 +210,18 @@ def _record(root: Path) -> dict[str, object]:
         bindings.append(
             {"path": relative, "sha256": hashlib.sha256(binding.read_bytes()).hexdigest()}
         )
+    native_source_set = []
+    for relative in PACKAGE6_CUSTODIAN_SOURCE_PATHS:
+        binding = source_root / relative
+        binding.parent.mkdir(parents=True, exist_ok=True)
+        binding.write_text(f"/* native bound: {relative} */\n", encoding="utf-8")
+        binding.chmod(0o600)
+        native_source_set.append(
+            {
+                "path": relative,
+                "sha256": hashlib.sha256(binding.read_bytes()).hexdigest(),
+            }
+        )
     material = _staging_material(root)
     fixture_path = material.fixture_path
     fixture_authority_path = material.private / "authority/fixture-authority.json"
@@ -212,7 +229,7 @@ def _record(root: Path) -> dict[str, object]:
     interpreter_sha256 = hashlib.sha256(interpreter.read_bytes()).hexdigest()
     document: dict[str, object] = {
         "record_kind": "PACKAGE6_PAPER_RUNTIME_APPROVAL",
-        "schema_version": 2,
+        "schema_version": "3",
         "record_id": "PACKAGE6_RUNTIME_FOUNDATION_001",
         "scope": "PACKAGE6_PAPER_RUNTIME",
         "source": {"commit": COMMIT, "tree": TREE},
@@ -234,7 +251,7 @@ def _record(root: Path) -> dict[str, object]:
                 "argv": [str(interpreter), "-I", "-m", "apps.job_api.main"],
                 "cwd": str(material.application),
                 "bind_host": "127.0.0.1",
-                "port": 8401,
+                "port": "8401",
                 "executable_sha256": interpreter_sha256,
             },
             {
@@ -244,7 +261,7 @@ def _record(root: Path) -> dict[str, object]:
                 "argv": [],
                 "cwd": str(material.application),
                 "bind_host": "127.0.0.1",
-                "port": 8401,
+                "port": "8401",
                 "executable_sha256": None,
             },
             {
@@ -269,14 +286,55 @@ def _record(root: Path) -> dict[str, object]:
             },
         ],
         "source_bindings": bindings,
+        "custodian_authority": {
+            "authority_mode": "DISPOSABLE_TEST_NATIVE_ONLY",
+            "helper_binary_sha256": "8" * 64,
+            "native_source_set": native_source_set,
+            "native_source_set_sha256": hashlib.sha256(
+                json.dumps(
+                    native_source_set,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest(),
+            "protocol_version": "1",
+            "protocol_features": [],
+            "endpoint_authority": "PREOPENED_UNIX_SEQPACKET_DESCRIPTOR",
+            "production_socket_activation": False,
+            "operations": [
+                "START",
+                "STOP",
+                "STATUS",
+                "RECOVER",
+                "RUN_ONCE",
+                "READ_TRANSCRIPT",
+                "PUBLISH_BUNDLE",
+                "ACK",
+            ],
+            "candidate_commit": COMMIT,
+            "candidate_tree": TREE,
+            "stage_sha256": material.stage_sha256,
+            "fixture_identity": {
+                "sha256": material.fixture_sha256,
+                "provenance": "DETERMINISTIC_PROVIDER_FREE_V1",
+            },
+            "child_environment_contract": {
+                "job_api": list(PACKAGE6_JOB_API_ENVIRONMENT_KEYS),
+                "worker": list(PACKAGE6_WORKER_ENVIRONMENT_KEYS),
+            },
+            "mode": "PAPER",
+            "live_execution_approved": False,
+            "live_trading_approved": False,
+        },
         "constraints": {
             "disposable_root": str(root / "disposable"),
             "evidence_root": str(root / "evidence"),
-            "max_processes": 2,
-            "startup_timeout_seconds": 10,
-            "operation_timeout_seconds": 30,
-            "cleanup_timeout_seconds": 10,
-            "max_output_bytes": 65536,
+            "max_processes": "2",
+            "startup_timeout_seconds": "10",
+            "operation_timeout_seconds": "30",
+            "cleanup_timeout_seconds": "10",
+            "max_output_bytes": "65536",
             "live_execution_approved": False,
             "live_trading_approved": False,
             "systemd_allowed": False,
@@ -286,7 +344,7 @@ def _record(root: Path) -> dict[str, object]:
         "postgres_authority": {
             "approval_sha256": PG_APPROVAL,
             "bind_host": "127.0.0.1",
-            "port": 18432,
+            "port": "18432",
             "database_name": "trading_agent_disposable_test",
             "pgdata": str(root / "disposable" / "pgdata"),
             "cluster_name": "trading-agent-disposable-tests",
@@ -301,7 +359,7 @@ def _record(root: Path) -> dict[str, object]:
             "job_type": "SNAPSHOT",
             "actor": "FOUNDATION_VALIDATION",
             "idempotency_key": "foundation:manual:snapshot:foundation-001",
-            "expected_job_count": 1,
+            "expected_job_count": "1",
         },
         "authority_digests": {
             "release": "e" * 64,
@@ -311,6 +369,7 @@ def _record(root: Path) -> dict[str, object]:
             "semantic": "f" * 64,
             "fixture": material.fixture_sha256,
             "safety": material.safety_sha256,
+            "stage": material.stage_sha256,
         },
         "canonical_record_sha256": "0" * 64,
     }
@@ -372,6 +431,7 @@ def _context(root: Path) -> Package6ApprovalContext:
         staging_scope=STAGING_SCOPE,
         staging_authority_path=root / "package6-staging/authority/release-authority-v2.json",
         staging_activation_path=root / "package6-staging/authority/release-activation-v2.json",
+        custodian_helper_binary_sha256="8" * 64,
     )
 
 
@@ -406,6 +466,7 @@ def test_exact_candidate_approval_returns_private_capability(tmp_path: Path) -> 
 
     assert capability.source_commit == COMMIT
     assert capability.source_tree == TREE
+    assert capability.custodian.authority_mode == "DISPOSABLE_TEST_NATIVE_ONLY"
     assert capability.operation_ids == _context(tmp_path).operation_ids
     assert capability.fixture_sha256 == _object(document, "fixture_authority")[
         "fixture_sha256"
@@ -417,12 +478,51 @@ def test_job_api_uses_only_canonical_port_8401(tmp_path: Path) -> None:
     document = _record(tmp_path)
     for operation in _objects(document, "operations"):
         if operation["component"] == "JOB_API":
-            operation["port"] = 8401
+            operation["port"] = "8401"
     _resign(document)
 
     capability = validate_package6_runtime_approval(document, _context(tmp_path))
 
     assert capability.operations["job-api.start"].port == 8401
+    assert capability.operations["job-api.stop"].port == 8401
+
+
+@pytest.mark.parametrize("operation_id", ("job-api.start", "job-api.stop"))
+@pytest.mark.parametrize(
+    "invalid_port",
+    (
+        True,
+        8401,
+        8401.0,
+        "8.401e3",
+        "+8401",
+        "-8401",
+        " 8401",
+        "8401 ",
+        "08401",
+        "",
+        "٨٤٠١",
+        "0",
+        "65536",
+        "8402",
+    ),
+)
+def test_job_api_port_rejects_every_noncanonical_document_representation(
+    tmp_path: Path,
+    operation_id: str,
+    invalid_port: object,
+) -> None:
+    document = _record(tmp_path)
+    operation = next(
+        item
+        for item in _objects(document, "operations")
+        if item["operation_id"] == operation_id
+    )
+    operation["port"] = invalid_port
+    _resign(document)
+
+    with pytest.raises(Package6ApprovalRejected):
+        validate_package6_runtime_approval(document, _context(tmp_path))
 
 
 def test_arbitrary_executable_and_interpreter_escape_are_rejected(
@@ -475,12 +575,36 @@ def test_capability_retains_all_typed_runtime_authority(tmp_path: Path) -> None:
         "semantic",
         "fixture",
         "safety",
+        "stage",
     }
+    assert capability.custodian.helper_binary_sha256 == "8" * 64
+    assert capability.custodian.protocol_version == 1
+    assert capability.custodian.protocol_features == ()
+    assert capability.custodian.operations == (
+        "START",
+        "STOP",
+        "STATUS",
+        "RECOVER",
+        "RUN_ONCE",
+        "READ_TRANSCRIPT",
+        "PUBLISH_BUNDLE",
+        "ACK",
+    )
+    assert capability.custodian.mode == "PAPER"
 
 
 @pytest.mark.parametrize(
     "key",
-    ("release", "application", "backend", "command", "semantic", "fixture", "safety"),
+    (
+        "release",
+        "application",
+        "backend",
+        "command",
+        "semantic",
+        "fixture",
+        "safety",
+        "stage",
+    ),
 )
 def test_each_syntactically_valid_wrong_authority_digest_is_rejected(
     tmp_path: Path, key: str
@@ -584,7 +708,7 @@ def test_package6_behavior_sources_are_bound_at_exact_reviewed_cardinality() -> 
         binding_schema["minItems"]
         == binding_schema["maxItems"]
         == len(PACKAGE6_SOURCE_BINDING_PATHS)
-        == 76
+        == 77
     )
 
 
@@ -614,6 +738,251 @@ def test_public_schema_matches_and_enforces_canonical_source_binding_count(
 
 
 @pytest.mark.parametrize(
+    ("case", "message"),
+    (
+        ("missing-authority", "fields"),
+        ("extra-authority-field", "fields"),
+        ("production-native-authority", "disposable tests"),
+        ("helper-binary", "helper"),
+        ("missing-native-source", "source"),
+        ("extra-native-source", "source"),
+        ("reordered-native-source", "canonical"),
+        ("native-source-entry-digest", "source"),
+        ("native-source-set-digest", "source"),
+        ("protocol-version", "protocol"),
+        ("protocol-feature", "protocol"),
+        ("endpoint", "endpoint"),
+        ("socket-activation", "activation"),
+        ("missing-operation", "operation"),
+        ("unknown-operation", "operation"),
+        ("reordered-operation", "operation"),
+        ("candidate-commit", "candidate"),
+        ("candidate-tree", "candidate"),
+        ("stage", "stage"),
+        ("fixture-sha", "fixture"),
+        ("fixture-provenance", "fixture"),
+        ("missing-environment-key", "environment"),
+        ("unknown-environment-key", "environment"),
+        ("reordered-environment-key", "environment"),
+        ("mode", "paper"),
+        ("live-execution", "live"),
+        ("live-trading", "live"),
+    ),
+)
+def test_each_native_custodian_authority_tamper_or_omission_is_rejected(
+    tmp_path: Path,
+    case: str,
+    message: str,
+) -> None:
+    document = _record(tmp_path)
+    authority = _object(document, "custodian_authority")
+    if case == "missing-authority":
+        document.pop("custodian_authority")
+    elif case == "extra-authority-field":
+        authority["socket_path"] = "/tmp/forbidden.sock"
+    elif case == "production-native-authority":
+        authority["authority_mode"] = "PRODUCTION_NATIVE"
+    elif case == "helper-binary":
+        authority["helper_binary_sha256"] = "7" * 64
+    elif case == "missing-native-source":
+        cast(list[object], authority["native_source_set"]).pop()
+    elif case == "extra-native-source":
+        cast(list[object], authority["native_source_set"]).append(
+            {"path": "native/package6_custodian/src/extra.c", "sha256": "1" * 64}
+        )
+    elif case == "reordered-native-source":
+        cast(list[object], authority["native_source_set"]).reverse()
+    elif case == "native-source-entry-digest":
+        cast(list[dict[str, object]], authority["native_source_set"])[0][
+            "sha256"
+        ] = "1" * 64
+    elif case == "native-source-set-digest":
+        authority["native_source_set_sha256"] = "1" * 64
+    elif case == "protocol-version":
+        authority["protocol_version"] = 2
+    elif case == "protocol-feature":
+        authority["protocol_features"] = ["PIDFD_DELEGATION"]
+    elif case == "endpoint":
+        authority["endpoint_authority"] = "FILESYSTEM_SOCKET_PATH"
+    elif case == "socket-activation":
+        authority["production_socket_activation"] = True
+    elif case == "missing-operation":
+        cast(list[str], authority["operations"]).pop()
+    elif case == "unknown-operation":
+        cast(list[str], authority["operations"])[0] = "SPAWN"
+    elif case == "reordered-operation":
+        cast(list[str], authority["operations"]).reverse()
+    elif case == "candidate-commit":
+        authority["candidate_commit"] = "1" * 40
+    elif case == "candidate-tree":
+        authority["candidate_tree"] = "1" * 40
+    elif case == "stage":
+        authority["stage_sha256"] = "1" * 64
+    elif case == "fixture-sha":
+        cast(dict[str, object], authority["fixture_identity"])["sha256"] = "1" * 64
+    elif case == "fixture-provenance":
+        cast(dict[str, object], authority["fixture_identity"])[
+            "provenance"
+        ] = "EXTERNAL_PROVIDER"
+    elif case == "missing-environment-key":
+        cast(
+            dict[str, list[str]],
+            authority["child_environment_contract"],
+        )["job_api"].pop()
+    elif case == "unknown-environment-key":
+        cast(
+            dict[str, list[str]],
+            authority["child_environment_contract"],
+        )["worker"][0] = "SECRET_VALUE"
+    elif case == "reordered-environment-key":
+        cast(
+            dict[str, list[str]],
+            authority["child_environment_contract"],
+        )["job_api"].reverse()
+    elif case == "mode":
+        authority["mode"] = "LIVE"
+    elif case == "live-execution":
+        authority["live_execution_approved"] = True
+    elif case == "live-trading":
+        authority["live_trading_approved"] = True
+    else:  # pragma: no cover - exhaustive cases
+        raise AssertionError(case)
+    _rebind_dynamic_authorities(document, tmp_path)
+
+    with pytest.raises(Package6ApprovalRejected, match=message):
+        validate_package6_runtime_approval(document, _context(tmp_path))
+
+
+@pytest.mark.parametrize("invalid_count", (True, 1, 1.0))
+def test_runtime_request_expected_job_count_requires_exact_integer(
+    tmp_path: Path,
+    invalid_count: object,
+) -> None:
+    document = _record(tmp_path)
+    _object(document, "request")["expected_job_count"] = invalid_count
+    _rebind_dynamic_authorities(document, tmp_path)
+
+    with pytest.raises(Package6ApprovalRejected, match="single approved SNAPSHOT"):
+        validate_package6_runtime_approval(document, _context(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "invalid_value"),
+    (
+        (None, "schema_version", 3.0),
+        ("custodian_authority", "protocol_version", 1.0),
+        ("constraints", "max_processes", 2.0),
+        ("constraints", "startup_timeout_seconds", 10.0),
+        ("constraints", "operation_timeout_seconds", 30.0),
+        ("constraints", "cleanup_timeout_seconds", 10.0),
+        ("constraints", "max_output_bytes", 65536.0),
+        ("postgres_authority", "port", 18432.0),
+        ("request", "expected_job_count", 1.0),
+    ),
+)
+def test_all_approval_integer_authorities_reject_json_numbers(
+    tmp_path: Path,
+    section: str | None,
+    field: str,
+    invalid_value: float,
+) -> None:
+    document = _record(tmp_path)
+    target = document if section is None else _object(document, section)
+    target[field] = invalid_value
+    _rebind_dynamic_authorities(document, tmp_path)
+
+    with pytest.raises(Package6ApprovalRejected):
+        validate_package6_runtime_approval(document, _context(tmp_path))
+
+
+def test_approval_schema_has_no_ambiguous_json_numeric_authorities() -> None:
+    schema = json.loads(
+        Path("schemas/package6-paper-runtime-approval.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            declared_type = value.get("type")
+            assert declared_type != "integer"
+            if isinstance(declared_type, list):
+                assert "integer" not in declared_type
+            if "const" in value:
+                assert type(value["const"]) not in (int, float)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(schema)
+
+
+def test_native_source_file_drift_is_rejected_against_bound_bytes(
+    tmp_path: Path,
+) -> None:
+    document = _record(tmp_path)
+    path = tmp_path / "source" / PACKAGE6_CUSTODIAN_SOURCE_PATHS[0]
+    path.write_bytes(path.read_bytes() + b"drift\n")
+
+    with pytest.raises(Package6ApprovalRejected, match="source"):
+        validate_package6_runtime_approval(document, _context(tmp_path))
+
+
+def test_json_schema_and_validator_have_exact_native_authority_field_parity() -> None:
+    schema = json.loads(
+        Path("schemas/package6-paper-runtime-approval.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    required = set(schema["required"])
+    properties = set(schema["properties"])
+    custodian = schema["properties"]["custodian_authority"]
+    custodian_required = set(custodian["required"])
+    custodian_properties = set(custodian["properties"])
+
+    assert required == properties
+    assert "custodian_authority" in required
+    assert custodian_required == custodian_properties == {
+        "authority_mode",
+        "helper_binary_sha256",
+        "native_source_set",
+        "native_source_set_sha256",
+        "protocol_version",
+        "protocol_features",
+        "endpoint_authority",
+        "production_socket_activation",
+        "operations",
+        "candidate_commit",
+        "candidate_tree",
+        "stage_sha256",
+        "fixture_identity",
+        "child_environment_contract",
+        "mode",
+        "live_execution_approved",
+        "live_trading_approved",
+    }
+    native_sources = custodian["properties"]["native_source_set"]
+    assert native_sources["minItems"] == len(PACKAGE6_CUSTODIAN_SOURCE_PATHS)
+    assert native_sources["maxItems"] == len(PACKAGE6_CUSTODIAN_SOURCE_PATHS)
+    assert schema["properties"]["schema_version"] == {
+        "type": "string",
+        "const": "3",
+    }
+    assert custodian["properties"]["protocol_version"] == {
+        "type": "string",
+        "const": "1",
+    }
+    assert schema["properties"]["request"]["properties"][
+        "expected_job_count"
+    ] == {"type": "string", "const": "1"}
+    assert schema["$defs"]["operation"]["properties"]["port"] == {
+        "enum": ["8401", None]
+    }
+
+
+@pytest.mark.parametrize(
     ("mutation", "message"),
     [
         (lambda d: d.update(extra=True), "fields"),
@@ -637,9 +1006,9 @@ def test_public_schema_matches_and_enforces_canonical_source_binding_count(
             lambda d: _objects(d, "operations")[0].update(bind_host="0.0.0.0"),
             "loopback",
         ),
-        (lambda d: _objects(d, "operations")[0].update(port=0), "port"),
+        (lambda d: _objects(d, "operations")[0].update(port="0"), "port"),
         (
-            lambda d: _objects(d, "operations")[0].update(port=55432),
+            lambda d: _objects(d, "operations")[0].update(port="55432"),
             "port",
         ),
         (

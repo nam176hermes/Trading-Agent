@@ -221,10 +221,53 @@ def test_report_distinguishes_raw_and_governed_outcomes() -> None:
         "approval_blocked": 1,
         "not_run": 0,
     }
+    assert report["postgres_disclosure"] == {
+        "approval_blocked_count": 1,
+        "production_postgres_mutation": {
+            "decision": "FORBIDDEN",
+            "requires_separate_authority": True,
+        },
+        "runtime_proof": {
+            "blocks_runtime_release": True,
+            "decision": "BLOCKED_PENDING_EXACT_COMMIT_AUTHORITY",
+            "required_lifecycle_authorities": [
+                "INITDB",
+                "START",
+                "RESTORE",
+                "STOP",
+                "DELETE",
+            ],
+        },
+        "source_upgrade": {
+            "blocks_source_upgrade": False,
+            "decision": "PASS_WITH_POSTGRES_RUNTIME_DEFERRED",
+        },
+    }
     governed = {item["test_node_id"]: item for item in report["tests"]}
     assert governed[postgres["test_node_id"]]["raw_outcome"] == "skipped"
     assert governed[postgres["test_node_id"]]["governed_outcome"] == "approval_blocked"
     assert governed[host["test_node_id"]]["governed_outcome"] == "deselected"
+
+
+def test_postgres_disclosure_never_hides_source_test_failures() -> None:
+    postgres = entry()
+    report = build_governed_report(
+        [
+            record("failed", node_id="tests/domain/test_clock.py::test_clock"),
+            record(),
+        ],
+        [postgres],
+    )
+
+    disclosure = report["postgres_disclosure"]
+    assert isinstance(disclosure, dict)
+    assert disclosure["source_upgrade"] == {
+        "blocks_source_upgrade": True,
+        "decision": "FAIL_SOURCE_TESTS",
+    }
+    runtime_proof = disclosure["runtime_proof"]
+    assert isinstance(runtime_proof, dict)
+    assert runtime_proof["decision"] == "BLOCKED_PENDING_EXACT_COMMIT_AUTHORITY"
 
 
 def test_coverage_ratchet_uses_exact_ratios_and_never_rounds_down() -> None:

@@ -4,6 +4,7 @@
 	check-secrets test test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
 	test-event-ledger-runtime-postgres test-package6-paper-runtime \
+	build-package6-custodian test-package6-custodian-native \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard test-all ci
@@ -62,8 +63,24 @@ check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py
 
 check-test-skips:
-	uv run python scripts/check_test_governance.py \
-		--report-dir "$(TEST_EVIDENCE_DIR)/test-governance"
+	@set -eu; \
+		build_dir=$$(mktemp -d /tmp/package6-custodian-governance.XXXXXXXXXX); \
+		chmod 0700 "$$build_dir"; \
+		test "$$(stat -c '%u:%a' -- "$$build_dir")" = "$$(id -u):700"; \
+		$(MAKE) -C native/package6_custodian \
+			"BUILD_DIR=$$build_dir" build; \
+		set -- "$$build_dir"/python/_package6_fd_custody*.so; \
+		if test "$$#" -ne 1 || test -L "$$1" || ! test -f "$$1"; then \
+			printf '%s\n' "test governance requires exactly one regular native custody extension" >&2; \
+			exit 2; \
+		fi; \
+		extension=$$1; \
+		digest_line=$$(sha256sum -- "$$extension"); \
+		expected_sha256=$${digest_line%% *}; \
+		PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$extension" \
+		PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256" \
+			uv run python scripts/check_test_governance.py \
+				--report-dir "$(TEST_EVIDENCE_DIR)/test-governance"
 
 check-critical-coverage:
 	uv run python scripts/check_critical_coverage.py \
@@ -73,7 +90,23 @@ check-secrets:
 	uv run python scripts/verify_secret_hygiene.py --root "$(CURDIR)"
 
 test:
-	uv run pytest -q -m "not runtime_postgres and not host_coupled" tests
+	@set -eu; \
+		build_dir=$$(mktemp -d /tmp/package6-custodian-test.XXXXXXXXXX); \
+		chmod 0700 "$$build_dir"; \
+		test "$$(stat -c '%u:%a' -- "$$build_dir")" = "$$(id -u):700"; \
+		$(MAKE) -C native/package6_custodian \
+			"BUILD_DIR=$$build_dir" build; \
+		set -- "$$build_dir"/python/_package6_fd_custody*.so; \
+		if test "$$#" -ne 1 || test -L "$$1" || ! test -f "$$1"; then \
+			printf '%s\n' "canonical test requires exactly one regular native custody extension" >&2; \
+			exit 2; \
+		fi; \
+		extension=$$1; \
+		digest_line=$$(sha256sum -- "$$extension"); \
+		expected_sha256=$${digest_line%% *}; \
+		PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$extension" \
+		PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256" \
+			uv run pytest -q -m "not runtime_postgres and not host_coupled" tests
 
 test-core:
 	uv run pytest -q -m "not runtime_postgres" tests \
@@ -107,6 +140,17 @@ test-runtime-postgres:
 test-package6-paper-runtime:
 	uv run python scripts/run_required_runtime_pytest.py \
 		tests/foundation/test_package6_runtime_integration.py
+
+build-package6-custodian:
+	$(MAKE) -C native/package6_custodian build
+
+test-package6-custodian-native:
+	@set -eu; \
+		build_dir=$$(mktemp -d /tmp/package6-custodian-native-test.XXXXXXXXXX); \
+		chmod 0700 "$$build_dir"; \
+		test "$$(stat -c '%u:%a' -- "$$build_dir")" = "$$(id -u):700"; \
+		$(MAKE) -C native/package6_custodian \
+			"BUILD_DIR=$$build_dir" test
 
 test-event-ledger-runtime-postgres:
 	uv run python scripts/run_required_runtime_pytest.py \

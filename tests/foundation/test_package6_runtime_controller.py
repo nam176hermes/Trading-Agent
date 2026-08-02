@@ -1,130 +1,360 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from dataclasses import asdict, dataclass, replace
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
-import signal
-import subprocess
-import sys
-import time
-from types import MappingProxyType
-from typing import Callable, cast
+from types import MappingProxyType, SimpleNamespace
+from typing import Any
 
 import pytest
 
+from services.paper_runtime import controller as controller_module
 from services.paper_runtime.controller import (
+    EvidenceBundle,
     EvidenceIncomplete,
     Package6Controller,
-    RuntimeChildAuthorities,
+    RuntimeStartFailure,
     SourceDrift,
     SpawnEnvironmentEvidence,
+    StopEvidence,
     TrackedProcessIdentity,
+    TranscriptMetadata,
     issue_runtime_child_authorities,
-    verify_evidence_bundle,
 )
-from services.paper_runtime.evidence import (
-    child_environment_key_sets,
-    issue_postgres_cleanup_evidence,
-    verify_runtime_evidence_bundle,
-    write_runtime_evidence_bundle,
-)
-from services.paper_runtime.integration import RuntimeChainEvidence
-from scripts.validate_package6_runtime_approval import (
-    Package6ApprovalContext,
-    ValidatedPackage6Capability,
-    ValidatedOperation,
-    canonical_record_sha256,
-    validate_package6_runtime_approval,
-)
-from tests.foundation.test_package6_runtime_approval import (
-    COMMIT,
-    PG_APPROVAL,
-    TREE,
-    _context,
-    _rebind_dynamic_authorities,
-    _record,
+from services.paper_runtime.custodian_client import (
+    CustodianAttestation,
+    CustodianClient,
+    CustodianProtocolError,
+    CustodianTimeout,
+    NativeBundleReceipt,
+    NativeOperationStatus,
+    NativeTranscriptChunk,
+    OperationState,
+    TranscriptStream,
 )
 
-def _capability(
-    tmp_path: Path, argv: list[str], timeout: int = 5
-) -> ValidatedPackage6Capability:
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    tmp_path.chmod(0o700)
-    argv = [str(Path(argv[0]).resolve()), *argv[1:]]
-    document = _record(tmp_path)
-    cast(dict[str, object], document["constraints"])[
-        "operation_timeout_seconds"
-    ] = timeout
-    _rebind_dynamic_authorities(document, tmp_path)
-    capability = validate_package6_runtime_approval(document, _context(tmp_path))
-    operations = {}
-    for operation_id, action, operation_argv, digest in (
-        (
-            "fixture.start",
-            "START",
-            tuple(argv),
-            hashlib.sha256(Path(argv[0]).read_bytes()).hexdigest(),
-        ),
-        ("fixture.stop", "STOP", (), None),
-    ):
-        operation = ValidatedOperation()
-        for name, value in {
-            "operation_id": operation_id,
-            "action": action,
-            "component": "FIXTURE_TEST_DOUBLE",
-            "argv": operation_argv,
-            "cwd": tmp_path,
-            "bind_host": None,
-            "port": None,
-            "executable_sha256": digest,
-        }.items():
-            object.__setattr__(operation, name, value)
-        operations[operation_id] = operation
-    object.__setattr__(capability, "operations", MappingProxyType(operations))
-    object.__setattr__(
-        capability, "operation_ids", ("fixture.start", "fixture.stop")
+
+OPERATION_ID = bytes.fromhex("00112233445566778899aabbccddeeff")
+RECOVERY_TOKEN = bytes.fromhex("ffeeddccbbaa99887766554433221100")
+REQUEST_DIGEST = bytes.fromhex("11" * 32)
+EXECUTABLE_DIGEST = bytes.fromhex("22" * 32)
+PUBLICATION_DIGEST = bytes.fromhex("33" * 32)
+
+
+@dataclass(frozen=True, slots=True)
+class _Operation:
+    operation_id: str
+    action: str
+    component: str
+    argv: tuple[str, ...]
+    cwd: Path
+    bind_host: str | None
+    port: int | None
+    executable_sha256: str | None
+
+
+def _native_status(
+    *,
+    operation_id: bytes = OPERATION_ID,
+    state: OperationState = OperationState.RESULT_RETAINED,
+    authority_retained: bool = True,
+    bundle_committed: bool = False,
+    acknowledged: bool = False,
+    publication_sha256: bytes = bytes(32),
+    exit_status: int = 0,
+) -> NativeOperationStatus:
+    return NativeOperationStatus(
+        operation_id=operation_id,
+        recovery_token=RECOVERY_TOKEN,
+        state=state,
+        resume_state=state,
+        authority_retained=authority_retained,
+        bundle_committed=bundle_committed,
+        stdout_truncated=False,
+        stderr_truncated=False,
+        acknowledged=acknowledged,
+        exit_status=exit_status,
+        request_sha256=REQUEST_DIGEST,
+        executable_sha256=EXECUTABLE_DIGEST,
+        publication_sha256=publication_sha256,
     )
-    return capability
 
 
-def _credential_authorities(
-    tmp_path: Path,
-    capability: ValidatedPackage6Capability,
-    monkeypatch: pytest.MonkeyPatch,
-) -> RuntimeChildAuthorities:
-    directories: list[Path] = []
-    common = {
-        "database-host": capability.postgres.bind_host,
-        "database-port": str(capability.postgres.port),
-        "database-name": capability.postgres.database_name,
-        "database-password": "paper-only-password",
+def _attestation(**overrides: object) -> CustodianAttestation:
+    values: dict[str, object] = {
+        "helper_binary_sha256": "a" * 64,
+        "native_source_set_sha256": "b" * 64,
+        "protocol_version": 1,
+        "protocol_features": (),
+        "endpoint_authority": "PREOPENED_UNIX_SEQPACKET_DESCRIPTOR",
+        "peer_pid": os.getpid(),
+        "peer_uid": os.geteuid(),
+        "peer_gid": os.getegid(),
+        "candidate_commit": "c" * 40,
+        "candidate_tree": "d" * 40,
+        "stage_sha256": "e" * 64,
+        "fixture_sha256": "f" * 64,
+        "mode": "PAPER",
+        "live_execution_approved": False,
+        "live_trading_approved": False,
     }
-    for component in ("job-api", "worker"):
-        directory = tmp_path / f"{component}-credentials"
-        directory.mkdir(mode=0o700, parents=True)
-        values = dict(common)
-        if component == "job-api":
-            values.update(
-                {
-                    "job-api-principal-type": "OPERATOR",
-                    "job-api-principal-id": "foundation-validation",
-                    "job-api-token": "paper-only-token",
-                }
+    values.update(overrides)
+    return CustodianAttestation(**values)
+
+
+class _ClientScript:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+        self.status_value = _native_status(
+            state=OperationState.RUNNING,
+            authority_retained=True,
+            exit_status=-(2**31),
+        )
+        self.stop_value = _native_status()
+        self.run_once_value = _native_status()
+        self.recover_value: tuple[NativeOperationStatus, ...] = (
+            self.stop_value,
+        )
+        self.transcripts = {
+            TranscriptStream.STDOUT: b"stdout evidence",
+            TranscriptStream.STDERR: b"stderr evidence",
+        }
+
+    def bind(self, attestation: CustodianAttestation | None = None) -> CustodianClient:
+        client = CustodianClient.__new__(CustodianClient)
+        client._attestation = attestation or _attestation()
+        for name in (
+            "start",
+            "status",
+            "stop",
+            "run_once",
+            "read_transcript",
+            "publish_bundle",
+            "acknowledge",
+            "recover",
+        ):
+            setattr(client, name, getattr(self, name))
+        return client
+
+    def start(self, request: object) -> NativeOperationStatus:
+        self.calls.append(("start", (request,)))
+        return self.status_value
+
+    def status(
+        self, operation_id: bytes, recovery_token: bytes
+    ) -> NativeOperationStatus:
+        self.calls.append(("status", (operation_id, recovery_token)))
+        return self.status_value
+
+    def stop(
+        self, operation_id: bytes, recovery_token: bytes
+    ) -> NativeOperationStatus:
+        self.calls.append(("stop", (operation_id, recovery_token)))
+        return self.stop_value
+
+    def run_once(self, request: object) -> NativeOperationStatus:
+        self.calls.append(("run_once", (request,)))
+        return self.run_once_value
+
+    def read_transcript(
+        self,
+        operation_id: bytes,
+        recovery_token: bytes,
+        stream: TranscriptStream,
+        *,
+        offset: int,
+        length: int,
+    ) -> NativeTranscriptChunk:
+        self.calls.append(
+            (
+                "read_transcript",
+                (operation_id, recovery_token, stream, offset, length),
             )
-        for name, value in values.items():
+        )
+        content = self.transcripts[stream]
+        retained = content[offset : offset + length]
+        return NativeTranscriptChunk(
+            operation_id=operation_id,
+            stream=stream,
+            offset=offset,
+            data=retained,
+            observed_size=len(content),
+            retained_size=len(content),
+            sha256=hashlib.sha256(content).digest(),
+            eof=offset + len(retained) == len(content),
+            truncated=False,
+        )
+
+    def publish_bundle(
+        self,
+        operation_id: bytes,
+        recovery_token: bytes,
+        publication_id: bytes,
+    ) -> NativeBundleReceipt:
+        self.calls.append(
+            (
+                "publish_bundle",
+                (operation_id, recovery_token, publication_id),
+            )
+        )
+        published = _native_status(
+            bundle_committed=True,
+            publication_sha256=PUBLICATION_DIGEST,
+        )
+        return NativeBundleReceipt(
+            operation=published,
+            manifest_sha256=PUBLICATION_DIGEST,
+        )
+
+    def acknowledge(
+        self,
+        operation_id: bytes,
+        recovery_token: bytes,
+        publication_digest: bytes,
+    ) -> NativeOperationStatus:
+        self.calls.append(
+            (
+                "acknowledge",
+                (operation_id, recovery_token, publication_digest),
+            )
+        )
+        return _native_status(
+            state=OperationState.ACKNOWLEDGED,
+            authority_retained=False,
+            bundle_committed=True,
+            acknowledged=True,
+            publication_sha256=PUBLICATION_DIGEST,
+        )
+
+    def recover(self) -> tuple[NativeOperationStatus, ...]:
+        self.calls.append(("recover", ()))
+        return self.recover_value
+
+
+def _capability(tmp_path: Path) -> SimpleNamespace:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    bound = source_root / "bound.py"
+    bound.write_bytes(b"PAPER = True\n")
+    bound.chmod(0o644)
+    stage = tmp_path / "stage/application"
+    executable = stage / ".venv/bin/python3.11"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"\x7fELF" + bytes(124))
+    operations = (
+        _Operation(
+            "job-api.start",
+            "START",
+            "JOB_API",
+            (
+                str(executable),
+                "-I",
+                "-m",
+                "apps.job_api.main",
+            ),
+            stage,
+            "127.0.0.1",
+            8401,
+            EXECUTABLE_DIGEST.hex(),
+        ),
+        _Operation(
+            "job-api.stop",
+            "STOP",
+            "JOB_API",
+            (),
+            stage,
+            "127.0.0.1",
+            8401,
+            None,
+        ),
+    )
+    return SimpleNamespace(
+        approval_sha256="9" * 64,
+        source_commit="c" * 40,
+        source_tree="d" * 40,
+        source_root=source_root,
+        source_bindings=(
+            ("bound.py", hashlib.sha256(bound.read_bytes()).hexdigest()),
+        ),
+        operations=MappingProxyType(
+            {operation.operation_id: operation for operation in operations}
+        ),
+        max_output_bytes=65536,
+        startup_timeout_seconds=1,
+        cleanup_timeout_seconds=1,
+        evidence_root=tmp_path / "evidence",
+        fixture_sha256="f" * 64,
+        fixture=SimpleNamespace(path=tmp_path / "fixture.json"),
+        staging_material=SimpleNamespace(
+            authority_path=tmp_path / "staging-authority.json",
+            activation_path=tmp_path / "staging-activation.json",
+        ),
+        authority_digests=MappingProxyType({"stage": "e" * 64}),
+        custodian=SimpleNamespace(
+            helper_binary_sha256="a" * 64,
+            native_source_set_sha256="b" * 64,
+            protocol_version=1,
+            protocol_features=(),
+            endpoint_authority="PREOPENED_UNIX_SEQPACKET_DESCRIPTOR",
+            operations=(
+                "START",
+                "STOP",
+                "STATUS",
+                "RECOVER",
+                "RUN_ONCE",
+                "READ_TRANSCRIPT",
+                "PUBLISH_BUNDLE",
+                "ACK",
+            ),
+            candidate_commit="c" * 40,
+            candidate_tree="d" * 40,
+            stage_sha256="e" * 64,
+            fixture_sha256="f" * 64,
+            mode="PAPER",
+            live_execution_approved=False,
+            live_trading_approved=False,
+        ),
+    )
+
+
+_JOB_API_CREDENTIAL_NAMES = (
+    "database-host",
+    "database-port",
+    "database-name",
+    "database-password",
+    "job-api-principal-type",
+    "job-api-principal-id",
+    "job-api-token",
+)
+_WORKER_CREDENTIAL_NAMES = (
+    "database-host",
+    "database-port",
+    "database-name",
+    "database-password",
+)
+
+
+def _child_authorities(
+    tmp_path: Path,
+    capability: SimpleNamespace,
+) -> object:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    directories = []
+    for component, names in (
+        ("job-api", _JOB_API_CREDENTIAL_NAMES),
+        ("worker", _WORKER_CREDENTIAL_NAMES),
+    ):
+        directory = tmp_path / f"{component}-credentials"
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o700)
+        for name in names:
             path = directory / name
-            path.write_text(value, encoding="utf-8")
+            path.write_text(f"{component}-{name}", encoding="utf-8")
             path.chmod(0o600)
         directories.append(directory)
-    monkeypatch.setattr(
-        "services.job_store.config.read_systemd_credential",
-        lambda values, name: (
-            Path(values["CREDENTIALS_DIRECTORY"]) / name
-        ).read_text(encoding="utf-8"),
-    )
     return issue_runtime_child_authorities(
         capability,
         job_api_credentials=directories[0],
@@ -132,42 +362,38 @@ def _credential_authorities(
     )
 
 
-def _runtime_capability(tmp_path: Path) -> ValidatedPackage6Capability:
-    document = _record(tmp_path)
-    capability = validate_package6_runtime_approval(document, _context(tmp_path))
-    executable = str(Path(sys.executable).resolve())
-    executable_sha256 = hashlib.sha256(Path(executable).read_bytes()).hexdigest()
-    for operation in capability.operations.values():
-        object.__setattr__(operation, "cwd", capability.source_root)
-        object.__setattr__(operation, "bind_host", None)
-        object.__setattr__(operation, "port", None)
-        if operation.action == "START":
-            object.__setattr__(
-                operation,
-                "argv",
-                (executable, "-I", "-c", "import time;time.sleep(30)"),
-            )
-            object.__setattr__(
-                operation, "executable_sha256", executable_sha256
-            )
-    return capability
-
-
 @dataclass(frozen=True, slots=True)
 class SealedRuntimeFixture:
     bundle: Path
     identities: dict[str, TrackedProcessIdentity]
+    disposable_root: Path
 
 
 def _sealed_runtime_fixture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> SealedRuntimeFixture:
+    """Build a source-owned evidence fixture using native custody records."""
+
+    from scripts.validate_package6_runtime_approval import (
+        validate_package6_runtime_approval,
+    )
+    from services.paper_runtime.evidence import (
+        child_environment_key_sets,
+        issue_postgres_cleanup_evidence,
+        write_runtime_evidence_bundle,
+    )
+    from services.paper_runtime.integration import RuntimeChainEvidence
+    from tests.foundation.test_package6_runtime_approval import (
+        _context,
+        _rebind_dynamic_authorities,
+        _record,
+    )
+
     postgres_approval_bytes = b'{"approved":"synthetic-package6-test"}'
     postgres_sha256 = hashlib.sha256(postgres_approval_bytes).hexdigest()
     document = _record(tmp_path)
-    cast(dict[str, object], document["postgres_authority"])[
-        "approval_sha256"
-    ] = postgres_sha256
+    document["postgres_authority"]["approval_sha256"] = postgres_sha256
     _rebind_dynamic_authorities(document, tmp_path)
     approval_bytes = json.dumps(
         document,
@@ -179,64 +405,75 @@ def _sealed_runtime_fixture(
         disposable_postgres_approval_sha256=postgres_sha256
     )
     capability = validate_package6_runtime_approval(
-        document, context, approval_bytes=approval_bytes
+        document,
+        context,
+        approval_bytes=approval_bytes,
     )
     capability.source_root.chmod(0o755)
-    authorities = _credential_authorities(
-        tmp_path / "credentials", capability, monkeypatch
+    authorities = _child_authorities(
+        tmp_path / "credentials",
+        capability,
     )
-    evidence_root = capability.evidence_root
-    evidence_root.mkdir(mode=0o700)
-    job_keys = (
-        "CREDENTIALS_DIRECTORY",
-        "HOME",
-        "LANG",
-        "LC_ALL",
-        "LIVE_EXECUTION_ENABLED",
-        "LIVE_TRADING_APPROVED",
-        "LIVE_TRADING_ENABLED",
-        "PATH",
-        "TRADING_MODE",
-        "TRADING_PACKAGE6_APPROVAL_SHA256",
-        "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH",
-        "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH",
-        "TRADING_PACKAGE6_STAGING_SCOPE",
-        "TZ",
-    )
-    worker_keys = tuple(
-        sorted((*job_keys, "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH"))
-    )
+    capability.evidence_root.mkdir(mode=0o700)
+    capability.disposable_root.mkdir(mode=0o700)
+    key_sets = child_environment_key_sets()
+    operation_ids = {
+        "job_api": bytes.fromhex("11" * 16),
+        "worker": bytes.fromhex("22" * 16),
+    }
+    tokens = {
+        "job_api": bytes.fromhex("33" * 16),
+        "worker": bytes.fromhex("44" * 16),
+    }
     identities = {
-        "job_api": TrackedProcessIdentity(
-            operation_id="job-api.start",
-            component="JOB_API",
-            pid=4101,
-            process_group=4101,
-            start_ticks=5101,
-            environment=SpawnEnvironmentEvidence(
-                component="JOB_API",
-                operation_id="job-api.start",
-                pid=4101,
-                process_group=4101,
-                start_ticks=5101,
-                keys=job_keys,
+        component: TrackedProcessIdentity(
+            operation_id=(
+                "job-api.start" if component == "job_api" else "worker.start"
             ),
-        ),
-        "worker": TrackedProcessIdentity(
-            operation_id="worker.start",
-            component="WORKER",
-            pid=4102,
-            process_group=4102,
-            start_ticks=5102,
-            environment=SpawnEnvironmentEvidence(
-                component="WORKER",
-                operation_id="worker.start",
-                pid=4102,
-                process_group=4102,
-                start_ticks=5102,
-                keys=worker_keys,
+            component=(
+                "JOB_API" if component == "job_api" else "WORKER"
             ),
-        ),
+            native_operation_id=operation_ids[component].hex(),
+            recovery_token=tokens[component].hex(),
+            state="RUNNING",
+            environment=SpawnEnvironmentEvidence(
+                component=(
+                    "JOB_API" if component == "job_api" else "WORKER"
+                ),
+                operation_id=(
+                    "job-api.start"
+                    if component == "job_api"
+                    else "worker.start"
+                ),
+                keys=tuple(key_sets[component]),
+            ),
+        )
+        for component in ("job_api", "worker")
+    }
+    transcript = TranscriptMetadata(
+        sha256=hashlib.sha256(b"bounded native transcript").hexdigest(),
+        size=len(b"bounded native transcript"),
+        observed_size=len(b"bounded native transcript"),
+        truncated=False,
+        eof=True,
+    )
+    stops = {
+        component: StopEvidence(
+            operation_id=(
+                "job-api.stop" if component == "job_api" else "worker.stop"
+            ),
+            component=(
+                "JOB_API" if component == "job_api" else "WORKER"
+            ),
+            native_operation_id=operation_ids[component].hex(),
+            recovery_token=tokens[component].hex(),
+            state="RESULT_RETAINED",
+            exit_code=0,
+            cleanup_proven=True,
+            stdout=transcript,
+            stderr=transcript,
+        )
+        for component in ("job_api", "worker")
     }
     job_id = "00000000-0000-0000-0000-000000000006"
     result_sha256 = "6" * 64
@@ -250,35 +487,45 @@ def _sealed_runtime_fixture(
         "lease_expires_at": None,
         "cancel_requested_at": None,
     }
+    states = ("QUEUED", "CLAIMED", "RUNNING", "SUCCEEDED")
     events = [
         {
-            "sequence": sequence,
-            "from_state": None if sequence == 1 else states[sequence - 2],
+            "sequence": index,
+            "from_state": None if index == 1 else states[index - 2],
             "to_state": state,
             "reason_code": None,
-            "attempt_id": "attempt-1" if sequence > 1 else None,
-            "metadata": {} if sequence < 4 else {"lineage": {}},
-        }
-        for sequence, (state, states) in enumerate(
-            (
-                ("QUEUED", ("QUEUED", "CLAIMED", "RUNNING", "SUCCEEDED")),
-                ("CLAIMED", ("QUEUED", "CLAIMED", "RUNNING", "SUCCEEDED")),
-                ("RUNNING", ("QUEUED", "CLAIMED", "RUNNING", "SUCCEEDED")),
-                ("SUCCEEDED", ("QUEUED", "CLAIMED", "RUNNING", "SUCCEEDED")),
+            "attempt_id": "attempt-1" if index > 1 else None,
+            "metadata": (
+                {}
+                if index < 4
+                else {
+                    "lineage": {
+                        "command": {
+                            "sha256": capability.authority_digests[
+                                "command"
+                            ]
+                        },
+                        "safety": {
+                            "final": {
+                                "sha256": capability.authority_digests[
+                                    "safety"
+                                ]
+                            }
+                        },
+                    }
+                }
             ),
-            start=1,
-        )
+        }
+        for index, state in enumerate(states, start=1)
     ]
-    process_documents: dict[str, object] = {
-        component: asdict(identity) for component, identity in identities.items()
-    }
     chain = RuntimeChainEvidence(
-        processes=process_documents,
+        processes={
+            component: asdict(identity)
+            for component, identity in identities.items()
+        },
         readiness={
             "operation_id": "job-api.start",
-            "pid": 4101,
-            "start_ticks": 5101,
-            "listener_inode": 6101,
+            "native_operation_id": operation_ids["job_api"].hex(),
             "attempts": 1,
             "status": "READY",
         },
@@ -288,7 +535,9 @@ def _sealed_runtime_fixture(
         },
         duplicate_request={
             "status": 200,
-            "body": {"data": {"job": dict(job), "outcome": "DEDUPLICATED"}},
+            "body": {
+                "data": {"job": dict(job), "outcome": "DEDUPLICATED"}
+            },
         },
         api_list={"data": {"items": [dict(job)]}},
         api_detail={"data": {"job": dict(job)}},
@@ -320,7 +569,9 @@ def _sealed_runtime_fixture(
                     "media_type": "application/json",
                     "truncated": False,
                     "validation_metadata": {
-                        "market_data_provenance": "DETERMINISTIC_PROVIDER_FREE_V1",
+                        "market_data_provenance": (
+                            "DETERMINISTIC_PROVIDER_FREE_V1"
+                        ),
                         "fixture_sha256": capability.fixture.sha256,
                     },
                 }
@@ -340,23 +591,16 @@ def _sealed_runtime_fixture(
                 "result_hash",
             )
         },
-        worker_stop={
-            "operation_id": "worker.stop",
-            "pid": 4102,
-            "process_group": 4102,
-            "start_ticks": 5102,
-            "listener_negative_probes": 0,
-            "exit_code": 0,
-            "cleanup_proven": True,
-        },
-        job_api_stop={
-            "operation_id": "job-api.stop",
-            "pid": 4101,
-            "process_group": 4101,
-            "start_ticks": 5101,
-            "listener_negative_probes": 3,
-            "exit_code": 0,
-            "cleanup_proven": True,
+        worker_stop=asdict(stops["worker"]),
+        job_api_stop=asdict(stops["job_api"]),
+        native_publications={
+            component: {
+                "operation_id": operation_ids[component].hex(),
+                "manifest_sha256": (
+                    "7" * 64 if component == "job_api" else "8" * 64
+                ),
+            }
+            for component in ("job_api", "worker")
         },
     )
     cleanup = issue_postgres_cleanup_evidence(
@@ -384,835 +628,897 @@ def _sealed_runtime_fixture(
         approval_bytes=approval_bytes,
         postgres_approval_bytes=postgres_approval_bytes,
     )
-    return SealedRuntimeFixture(bundle=bundle, identities=identities)
+    return SealedRuntimeFixture(
+        bundle=bundle,
+        identities=identities,
+        disposable_root=capability.disposable_root,
+    )
 
 
-def _rewrite_runtime_and_index(
-    bundle: Path,
-    mutation: Callable[[dict[str, object]], None],
+@pytest.fixture
+def issued_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> SimpleNamespace:
+    capability = _capability(tmp_path)
+    monkeypatch.setattr(
+        controller_module,
+        "is_issued_capability",
+        lambda value: value is capability,
+    )
+    monkeypatch.setattr(
+        controller_module,
+        "_native_operation_id",
+        lambda _capability, _component: OPERATION_ID,
+    )
+    return capability
+
+
+def test_runtime_without_attested_native_client_fails_before_any_start(
+    issued_capability: SimpleNamespace,
 ) -> None:
-    runtime_path = bundle / "runtime.json"
-    index_path = bundle / "index.json"
-    runtime = cast(
-        dict[str, object],
-        json.loads(runtime_path.read_text(encoding="utf-8")),
-    )
-    mutation(runtime)
-    raw = json.dumps(
-        runtime, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    runtime_mode = runtime_path.stat().st_mode & 0o777
-    runtime_path.write_bytes(raw)
-    runtime_path.chmod(runtime_mode)
-    index = cast(
-        dict[str, object],
-        json.loads(index_path.read_text(encoding="utf-8")),
-    )
-    entries = cast(list[dict[str, object]], index["entries"])
-    runtime_entry = next(entry for entry in entries if entry["path"] == "runtime.json")
-    runtime_entry["sha256"] = hashlib.sha256(raw).hexdigest()
-    runtime_entry["size_bytes"] = len(raw)
-    index_raw = json.dumps(
-        index, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
-    index_mode = index_path.stat().st_mode & 0o777
-    index_path.write_bytes(index_raw)
-    index_path.chmod(index_mode)
+    with pytest.raises(TypeError, match="attested native custodian"):
+        Package6Controller(issued_capability)
 
 
-def _environment_records(
-    runtime: dict[str, object], component: str
-) -> tuple[dict[str, object], dict[str, object]]:
-    top = cast(dict[str, dict[str, object]], runtime["child_environments"])
-    chain = cast(dict[str, object], runtime["chain"])
-    processes = cast(dict[str, dict[str, object]], chain["processes"])
-    process_environment = cast(dict[str, object], processes[component]["environment"])
-    return top[component], process_environment
-
-
-def _mutate_both_environment_records(
-    runtime: dict[str, object],
-    component: str,
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("helper_binary_sha256", "0" * 64),
+        ("native_source_set_sha256", "0" * 64),
+        ("protocol_version", 2),
+        ("protocol_features", ("UNKNOWN",)),
+        ("endpoint_authority", "FILESYSTEM_SOCKET_PATH"),
+        ("candidate_commit", "0" * 40),
+        ("candidate_tree", "0" * 40),
+        ("stage_sha256", "0" * 64),
+        ("fixture_sha256", "0" * 64),
+        ("mode", "LIVE"),
+        ("live_execution_approved", True),
+        ("live_trading_approved", True),
+        ("peer_uid", os.geteuid() + 1),
+        ("peer_gid", os.getegid() + 1),
+    ),
+)
+def test_controller_rejects_every_attestation_mismatch_before_request(
+    issued_capability: SimpleNamespace,
     field: str,
     value: object,
 ) -> None:
-    for environment in _environment_records(runtime, component):
-        environment[field] = value
+    script = _ClientScript()
+    attestation = _attestation()
+    object.__setattr__(attestation, field, value)
+    client = script.bind(attestation)
+
+    with pytest.raises(TypeError, match="attested native custodian"):
+        Package6Controller(issued_capability, custodian_client=client)
+
+    assert script.calls == []
 
 
-def _add_environment_key(runtime: dict[str, object]) -> None:
-    top, process = _environment_records(runtime, "job_api")
-    keys = [*cast(list[str], top["keys"]), "UNAPPROVED_PACKAGE6_KEY"]
-    top["keys"] = keys
-    process["keys"] = list(keys)
-
-
-def _remove_environment_key(runtime: dict[str, object]) -> None:
-    top, process = _environment_records(runtime, "job_api")
-    keys = cast(list[str], top["keys"])[1:]
-    top["keys"] = keys
-    process["keys"] = list(keys)
-
-
-def _swap_environment_key_sets(runtime: dict[str, object]) -> None:
-    job_top, job_process = _environment_records(runtime, "job_api")
-    worker_top, worker_process = _environment_records(runtime, "worker")
-    job_keys = list(cast(list[str], job_top["keys"]))
-    worker_keys = list(cast(list[str], worker_top["keys"]))
-    job_top["keys"] = worker_keys
-    job_process["keys"] = list(worker_keys)
-    worker_top["keys"] = job_keys
-    worker_process["keys"] = list(job_keys)
-
-
-def _diverge_top_level_environment(runtime: dict[str, object]) -> None:
-    top, _process = _environment_records(runtime, "job_api")
-    top["pid"] = cast(int, top["pid"]) + 1
-
-
-def _add_credential_looking_environment_field(
-    runtime: dict[str, object],
+def test_start_delegates_exact_relative_executable_and_paper_environment(
+    issued_capability: SimpleNamespace,
 ) -> None:
-    for environment in _environment_records(runtime, "job_api"):
-        environment["authorization_material"] = "[REDACTED]"
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+
+    identity = controller.start("job-api.start")
+
+    assert identity.operation_id == "job-api.start"
+    assert identity.component == "JOB_API"
+    assert identity.native_operation_id == OPERATION_ID.hex()
+    assert identity.recovery_token == RECOVERY_TOKEN.hex()
+    assert [name for name, _arguments in script.calls] == ["start"]
+    request = script.calls[0][1][0]
+    assert request.operation_id == OPERATION_ID
+    assert request.executable == ".venv/bin/python3.11"
+    assert request.executable_sha256 == EXECUTABLE_DIGEST
+    assert request.argv[1:] == ("-I", "-m", "apps.job_api.main")
+    assert "TRADING_MODE=paper" in request.environment
+    assert "LIVE_EXECUTION_ENABLED=false" in request.environment
+    assert "LIVE_TRADING_APPROVED=false" in request.environment
+
+
+def test_source_drift_fails_before_native_start(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    (issued_capability.source_root / "bound.py").write_bytes(b"DRIFT\n")
+
+    with pytest.raises(SourceDrift, match="source binding"):
+        controller.start("job-api.start")
+
+    assert script.calls == []
 
 
 @pytest.mark.parametrize(
-    ("case", "mutation"),
-    (
-        ("unapproved-key", _add_environment_key),
-        ("missing-approved-key", _remove_environment_key),
-        ("swapped-component-key-sets", _swap_environment_key_sets),
-        (
-            "component",
-            lambda runtime: _mutate_both_environment_records(
-                runtime, "job_api", "component", "WORKER"
-            ),
-        ),
-        (
-            "operation-id",
-            lambda runtime: _mutate_both_environment_records(
-                runtime, "job_api", "operation_id", "worker.start"
-            ),
-        ),
-        (
-            "pid",
-            lambda runtime: _mutate_both_environment_records(
-                runtime, "job_api", "pid", 9991
-            ),
-        ),
-        (
-            "process-group",
-            lambda runtime: _mutate_both_environment_records(
-                runtime, "job_api", "process_group", 9992
-            ),
-        ),
-        (
-            "start-ticks",
-            lambda runtime: _mutate_both_environment_records(
-                runtime, "job_api", "start_ticks", 9993
-            ),
-        ),
-        ("top-level-divergence", _diverge_top_level_environment),
-        ("unexpected-credential-looking-field", _add_credential_looking_environment_field),
-    ),
+    "mutation",
+    ("content", "replace", "extra", "missing", "mode"),
 )
-def test_sealed_runtime_rejects_semantic_environment_tampering(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    case: str,
-    mutation: Callable[[dict[str, object]], None],
-) -> None:
-    fixture = _sealed_runtime_fixture(tmp_path, monkeypatch)
-    _rewrite_runtime_and_index(fixture.bundle, mutation)
-
-    with pytest.raises(EvidenceIncomplete) as caught:
-        verify_runtime_evidence_bundle(fixture.bundle)
-    assert str(caught.value) == (
-        "runtime state, event, or sealed result proof is invalid"
-    ), f"{case}: semantic environment tamper reached the wrong sanitized rejection"
-
-
-def test_sealed_child_environments_come_from_tracked_process_identities(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fixture = _sealed_runtime_fixture(tmp_path, monkeypatch)
-    runtime = cast(
-        dict[str, object],
-        json.loads((fixture.bundle / "runtime.json").read_text(encoding="utf-8")),
-    )
-    observed = cast(dict[str, object], runtime["child_environments"])
-
-    assert observed == {
-        component: {
-            **asdict(identity.environment),
-            "keys": list(identity.environment.keys),
-        }
-        for component, identity in fixture.identities.items()
-    }
-
-
-def test_start_tracks_the_exact_environment_supplied_to_each_popen(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    capability = _runtime_capability(tmp_path)
-    authorities = _credential_authorities(
-        tmp_path / "credentials", capability, monkeypatch
-    )
-    controller = Package6Controller(capability, child_authorities=authorities)
-    captured: dict[str, dict[str, str]] = {}
-    real_popen = subprocess.Popen
-    invoke_popen = cast(Callable[..., subprocess.Popen[bytes]], real_popen)
-
-    def observed_popen(
-        args: list[str], **kwargs: object
-    ) -> subprocess.Popen[bytes]:
-        environment = cast(dict[str, str], kwargs["env"])
-        component = (
-            "worker"
-            if "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH" in environment
-            else "job_api"
-        )
-        captured[component] = dict(environment)
-        return invoke_popen(args, **kwargs)
-
-    monkeypatch.setattr(
-        "services.paper_runtime.controller.subprocess.Popen", observed_popen
-    )
-
-    job_api = controller.start("job-api.start")
-    worker = controller.start("worker.start")
-    controller.stop("worker.stop")
-    controller.stop("job-api.stop")
-
-    assert job_api.environment.keys == tuple(sorted(captured["job_api"]))
-    assert worker.environment.keys == tuple(sorted(captured["worker"]))
-    assert set(captured["job_api"]) == set(child_environment_key_sets()["job_api"])
-    assert set(captured["worker"]) == set(child_environment_key_sets()["worker"])
-
-
-@pytest.mark.parametrize("response_crosses_deadline", (False, True))
-def test_wait_ready_enforces_global_deadline_around_delayed_response(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    response_crosses_deadline: bool,
-) -> None:
-    capability = _runtime_capability(tmp_path)
-    operation = capability.operations["job-api.start"]
-    object.__setattr__(operation, "bind_host", "127.0.0.1")
-    object.__setattr__(operation, "port", 8401)
-
-    class ProbeClock:
-        def __init__(self) -> None:
-            self.calls = 0
-            self.expired = False
-
-        def __call__(self) -> float:
-            if self.expired:
-                return 11.0
-            value = float(self.calls)
-            self.calls += 1
-            return value
-
-    clock = ProbeClock()
-    controller = Package6Controller(capability, monotonic=clock)
-    identity = TrackedProcessIdentity(
-        operation_id=operation.operation_id,
-        component=operation.component,
-        pid=4101,
-        process_group=4101,
-        start_ticks=5101,
-        environment=SpawnEnvironmentEvidence(
-            component=operation.component,
-            operation_id=operation.operation_id,
-            pid=4101,
-            process_group=4101,
-            start_ticks=5101,
-            keys=(),
-        ),
-    )
-
-    class RunningProcess:
-        def poll(self) -> None:
-            return None
-
-    class ReadyResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return None
-
-        def read(self, limit: int) -> bytes:
-            assert limit == 16 * 1024
-            if response_crosses_deadline:
-                clock.expired = True
-            return b'{"data":{"status":"READY"}}'
-
-    probe_timeouts: list[float] = []
-    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
-
-    def delayed_ready_response(url: str, *, timeout: float):
-        assert url == "http://127.0.0.1:8401/health/ready"
-        probe_timeouts.append(timeout)
-        alarm_remaining, alarm_interval = signal.getitimer(signal.ITIMER_REAL)
-        assert 0 < alarm_remaining <= timeout
-        assert alarm_interval == 0
-        assert callable(signal.getsignal(signal.SIGALRM))
-        if timeout <= 0.5:
-            raise TimeoutError("valid readiness response needs more than 0.5 seconds")
-        return ReadyResponse()
-
-    controller._tracked[operation.component] = (
-        cast(subprocess.Popen[bytes], RunningProcess()),
-        identity,
-    )
-    monkeypatch.setattr(
-        "services.paper_runtime.controller._start_ticks", lambda pid: 5101
-    )
-    monkeypatch.setattr(
-        controller, "_listener_inode", lambda host, port, pid: 6101
-    )
-    monkeypatch.setattr(
-        "services.paper_runtime.controller.urlopen", delayed_ready_response
-    )
-    monkeypatch.setattr(
-        "services.paper_runtime.controller.time.sleep", lambda seconds: None
-    )
-
-    if response_crosses_deadline:
-        with pytest.raises(RuntimeError, match="approved Job API readiness timeout"):
-            controller.wait_ready("job-api.start")
-    else:
-        readiness = controller.wait_ready("job-api.start")
-        assert readiness.status == "READY"
-        assert readiness.listener_inode == 6101
-    assert probe_timeouts and probe_timeouts[0] > 0.5
-    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
-    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
-
-
-def _tracked_readiness_controller(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    startup_timeout_seconds: float,
-) -> Package6Controller:
-    capability = _runtime_capability(tmp_path)
-    object.__setattr__(
-        capability, "startup_timeout_seconds", startup_timeout_seconds
-    )
-    operation = capability.operations["job-api.start"]
-    object.__setattr__(operation, "bind_host", "127.0.0.1")
-    object.__setattr__(operation, "port", 8401)
-    identity = TrackedProcessIdentity(
-        operation_id=operation.operation_id,
-        component=operation.component,
-        pid=4101,
-        process_group=4101,
-        start_ticks=5101,
-        environment=SpawnEnvironmentEvidence(
-            component=operation.component,
-            operation_id=operation.operation_id,
-            pid=4101,
-            process_group=4101,
-            start_ticks=5101,
-            keys=(),
-        ),
-    )
-
-    class RunningProcess:
-        def poll(self) -> None:
-            return None
-
-    controller = Package6Controller(capability)
-    controller._tracked[operation.component] = (
-        cast(subprocess.Popen[bytes], RunningProcess()),
-        identity,
-    )
-    monkeypatch.setattr(
-        "services.paper_runtime.controller._start_ticks", lambda pid: 5101
-    )
-    monkeypatch.setattr(
-        controller, "_listener_inode", lambda host, port, pid: 6101
-    )
-    return controller
-
-
-def test_wait_ready_accepts_real_response_beyond_half_second(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    controller = _tracked_readiness_controller(
-        tmp_path, monkeypatch, startup_timeout_seconds=2.0
-    )
-    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
-
-    class ReadyResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return None
-
-        def read(self, limit: int) -> bytes:
-            assert limit == 16 * 1024
-            return b'{"data":{"status":"READY"}}'
-
-    def delayed_ready_response(url: str, *, timeout: float):
-        assert timeout > 0.5
-        time.sleep(0.55)
-        return ReadyResponse()
-
-    monkeypatch.setattr(
-        "services.paper_runtime.controller.urlopen", delayed_ready_response
-    )
-    started = time.monotonic()
-    readiness = controller.wait_ready("job-api.start")
-    elapsed = time.monotonic() - started
-
-    assert readiness.status == "READY"
-    assert 0.5 <= elapsed < 1.5
-    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
-    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
-
-
-@pytest.mark.parametrize("blocked_phase", ("connect", "headers", "body"))
-def test_wait_ready_alarm_bounds_each_http_phase_and_restores_timer(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    blocked_phase: str,
-) -> None:
-    controller = _tracked_readiness_controller(
-        tmp_path, monkeypatch, startup_timeout_seconds=0.2
-    )
-    monkeypatch.setattr(
-        "services.paper_runtime.controller._READINESS_PROBE_TIMEOUT_SECONDS", 0.05
-    )
-    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
-    calls = 0
-
-    class BlockingBodyResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return None
-
-        def read(self, limit: int) -> bytes:
-            assert blocked_phase == "body"
-            time.sleep(1.0)
-            return b'{"data":{"status":"READY"}}'
-
-    def blocking_response(url: str, *, timeout: float):
-        nonlocal calls
-        calls += 1
-        alarm_remaining, alarm_interval = signal.getitimer(signal.ITIMER_REAL)
-        assert 0 < alarm_remaining <= timeout <= 0.05
-        assert alarm_interval == 0
-        if blocked_phase in {"connect", "headers"}:
-            time.sleep(1.0)
-        return BlockingBodyResponse()
-
-    monkeypatch.setattr(
-        "services.paper_runtime.controller.urlopen", blocking_response
-    )
-    started = time.monotonic()
-    with pytest.raises(RuntimeError, match="approved Job API readiness timeout"):
-        controller.wait_ready("job-api.start")
-    elapsed = time.monotonic() - started
-
-    assert calls >= 1
-    assert 0.15 <= elapsed < 0.75
-    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
-    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
-
-
-@pytest.mark.parametrize("failure", ("parse", "exception"))
-def test_wait_ready_restores_timer_after_response_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure: str,
-) -> None:
-    controller = _tracked_readiness_controller(
-        tmp_path, monkeypatch, startup_timeout_seconds=0.05
-    )
-    monkeypatch.setattr(
-        "services.paper_runtime.controller._READINESS_PROBE_TIMEOUT_SECONDS", 0.02
-    )
-    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
-    observed_alarm = False
-
-    class InvalidResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return None
-
-        def read(self, limit: int) -> bytes:
-            return b"{"
-
-    def failed_response(url: str, *, timeout: float):
-        nonlocal observed_alarm
-        observed_alarm = signal.getitimer(signal.ITIMER_REAL)[0] > 0
-        if failure == "exception":
-            raise RuntimeError("synthetic readiness failure")
-        return InvalidResponse()
-
-    monkeypatch.setattr(
-        "services.paper_runtime.controller.urlopen", failed_response
-    )
-    if failure == "exception":
-        with pytest.raises(RuntimeError, match="synthetic readiness failure"):
-            controller.wait_ready("job-api.start")
-    else:
-        with pytest.raises(RuntimeError, match="approved Job API readiness timeout"):
-            controller.wait_ready("job-api.start")
-
-    assert observed_alarm is True
-    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
-    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
-
-
-def test_wait_ready_rejects_active_timer_without_touching_http(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    controller = _tracked_readiness_controller(
-        tmp_path, monkeypatch, startup_timeout_seconds=1.0
-    )
-    previous_alarm_handler = signal.getsignal(signal.SIGALRM)
-    contacted = False
-
-    def unexpected_response(url: str, *, timeout: float):
-        nonlocal contacted
-        contacted = True
-        raise AssertionError("HTTP must not run while timer authority is occupied")
-
-    monkeypatch.setattr(signal, "getitimer", lambda which: (1.0, 0.0))
-    monkeypatch.setattr(
-        "services.paper_runtime.controller.urlopen", unexpected_response
-    )
-
-    with pytest.raises(RuntimeError, match="readiness probe timer authority"):
-        controller.wait_ready("job-api.start")
-
-    assert contacted is False
-    assert signal.getsignal(signal.SIGALRM) is previous_alarm_handler
-
-
-def test_controller_runs_exact_argv_and_writes_stable_hash_index(tmp_path: Path) -> None:
-    script = (
-        "import json,os;"
-        "print(json.dumps({'pid':os.getpid(),'fixture':'provider-free'}))"
-    )
-    capability = _capability(tmp_path, [sys.executable, "-I", "-c", script])
-    attestations: list[str] = []
-
-    bundle = Package6Controller(
-        capability,
-    ).run_once("fixture.start")
-
-    assert bundle.process.exit_code == 0
-    assert bundle.process.shell is False
-    assert bundle.process.stdin_closed is True
-    assert bundle.process.process_group == bundle.process.pid
-    assert bundle.process.cleanup_proven is True
-    assert bundle.process.stdout_size <= 65536
-    assert verify_evidence_bundle(bundle.root) is True
-    first = (bundle.root / "index.json").read_bytes()
-    assert json.loads(first)["verdict"] == "PENDING_CONTROLLER_RUNTIME_VERIFICATION"
-    assert verify_evidence_bundle(bundle.root) is True
-    assert (bundle.root / "index.json").read_bytes() == first
-
-
-def test_controller_rejects_source_drift_before_spawn(tmp_path: Path) -> None:
-    marker = tmp_path / "spawned"
-    capability = _capability(
-        tmp_path,
-        [sys.executable, "-I", "-c", f"open({str(marker)!r},'w').close()"],
-    )
-
-    (tmp_path / "source/apps/job_api/app.py").write_text("drift\n", encoding="utf-8")
-    with pytest.raises(SourceDrift):
-        Package6Controller(capability).run_once("fixture.start")
-
-    assert not marker.exists()
-
-
-@pytest.mark.parametrize(
-    ("script", "expected"),
-    [
-        ("import sys;sys.exit(7)", 7),
-        ("import time;time.sleep(30)", None),
-    ],
-)
-def test_failed_and_timed_out_children_are_reaped(
-    tmp_path: Path, script: str, expected: int | None
-) -> None:
-    capability = _capability(
-        tmp_path, [sys.executable, "-I", "-c", script], timeout=1
-    )
-
-    bundle = Package6Controller(capability).run_once("fixture.start")
-
-    assert bundle.process.exit_code == expected
-    assert bundle.process.cleanup_proven is True
-    assert bundle.process.pid_alive is False
-    assert bundle.process.timed_out is (expected is None)
-
-
-def test_output_is_bounded_and_missing_proof_blocks_completion(tmp_path: Path) -> None:
-    capability = _capability(
-        tmp_path,
-        [sys.executable, "-I", "-c", "print('x'*100000)"],
-    )
-    bundle = Package6Controller(capability).run_once("fixture.start")
-
-    assert bundle.process.stdout_size == 65536
-    process_path = bundle.root / "process.json"
-    process = json.loads(process_path.read_text(encoding="utf-8"))
-    process.pop("cleanup_proven")
-    process_path.chmod(0o600)
-    process_path.write_text(
-        json.dumps(process, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(EvidenceIncomplete):
-        verify_evidence_bundle(bundle.root)
-
-
-def test_evidence_tamper_is_detected(tmp_path: Path) -> None:
-    capability = _capability(
-        tmp_path, [sys.executable, "-I", "-c", "print('ok')"]
-    )
-    bundle = Package6Controller(capability).run_once("fixture.start")
-    (bundle.root / "stdout.bin").write_bytes(b"tampered")
-
-    with pytest.raises(EvidenceIncomplete, match="digest"):
-        verify_evidence_bundle(bundle.root)
-
-
-def test_preexisting_approved_listener_blocks_start(tmp_path: Path) -> None:
-    capability = _capability(
-        tmp_path, [sys.executable, "-I", "-c", "print('must not spawn')"]
-    )
-    operation = capability.operations["fixture.start"]
-    object.__setattr__(operation, "bind_host", "127.0.0.1")
-    object.__setattr__(operation, "port", 8401)
-    controller = Package6Controller(capability)
-    def occupied_listener(host: str, port: int) -> bool:
-        return True
-
-    controller._listener_alive = occupied_listener
-    with pytest.raises(RuntimeError, match="listener.*already"):
-        controller.run_once("fixture.start")
-
-
-def test_evidence_verifier_rejects_symlinked_index(tmp_path: Path) -> None:
-    target = tmp_path / "target.json"
-    target.write_text("{}", encoding="utf-8")
-    root = tmp_path / "evidence"
-    root.mkdir()
-    (root / "index.json").symlink_to(target)
-
-    with pytest.raises(EvidenceIncomplete, match="index|symlink|policy"):
-        verify_evidence_bundle(root)
-
-
-def test_stop_signals_the_tracked_start_process_without_spawning_again(
-    tmp_path: Path, monkeypatch
-) -> None:
-    capability = _capability(
-        tmp_path, [sys.executable, "-I", "-c", "import time;time.sleep(30)"]
-    )
-    controller = Package6Controller(capability)
-    real_popen = __import__("subprocess").Popen
-    spawns = []
-
-    def counted_popen(
-        args: list[str], **kwargs: object
-    ) -> subprocess.Popen[bytes]:
-        spawns.append(tuple(args))
-        return real_popen(args, **kwargs)
-
-    monkeypatch.setattr("services.paper_runtime.controller.subprocess.Popen", counted_popen)
-    identity = controller.start("fixture.start")
-    stopped = controller.stop("fixture.stop")
-
-    assert len(spawns) == 1
-    assert stopped.pid == identity.pid
-    assert stopped.cleanup_proven is True
-
-
-def test_postgres_cleanup_capability_rejects_any_residual_runtime_state(
-    tmp_path: Path,
-) -> None:
-    capability = _capability(
-        tmp_path, [sys.executable, "-I", "-c", "print('unused')"]
-    )
-    complete = {
-        "approval_sha256": capability.postgres.approval_sha256,
-        "listener_alive": False,
-        "listener_negative_probes": 3,
-        "process_alive": False,
-        "process_group_alive": False,
-        "process_pid": 123,
-        "process_group": 123,
-        "start_ticks": 456,
-        "exit_code": 0,
-        "pgdata_exists": False,
-        "cleanup_complete": True,
-    }
-    for field in (
-        "listener_alive",
-        "process_alive",
-        "process_group_alive",
-        "pgdata_exists",
-    ):
-        observed = dict(complete)
-        observed[field] = True
-        with pytest.raises(EvidenceIncomplete, match="cleanup"):
-            issue_postgres_cleanup_evidence(capability, observed)
-
-
-def test_factory_child_capability_transmits_exact_component_key_sets(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    capability = _capability(
-        tmp_path, [sys.executable, "-I", "-c", "print('unused')"]
-    )
-    authorities = _credential_authorities(tmp_path, capability, monkeypatch)
-    controller = Package6Controller(capability, child_authorities=authorities)
-
-    job_api = controller._child_environment("JOB_API")
-    worker = controller._child_environment("WORKER")
-
-    shared = {
-        "TRADING_PACKAGE6_STAGING_SCOPE": authorities.staging_scope,
-        "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH": str(authorities.staging_authority),
-        "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH": str(authorities.staging_activation),
-        "TRADING_PACKAGE6_APPROVAL_SHA256": authorities.package6_approval_sha256,
-    }
-    assert {key: job_api[key] for key in shared} == shared
-    assert {key: worker[key] for key in shared} == shared
-    assert "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH" not in job_api
-    assert worker["TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH"] == str(
-        authorities.fixture_authority
-    )
-    assert set(job_api) == {
-        "PATH", "HOME", "LANG", "LC_ALL", "TZ", "TRADING_MODE",
-        "LIVE_EXECUTION_ENABLED", "LIVE_TRADING_APPROVED",
-        "LIVE_TRADING_ENABLED", "CREDENTIALS_DIRECTORY", *shared,
-    }
-    assert set(worker) == {
-        *job_api,
-        "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH",
-    }
-
-
-def test_evidence_child_environment_contract_has_four_shared_staging_keys() -> None:
-    key_sets = child_environment_key_sets()
-    shared_staging = {
-        "TRADING_PACKAGE6_STAGING_SCOPE",
-        "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH",
-        "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH",
-        "TRADING_PACKAGE6_APPROVAL_SHA256",
-    }
-
-    assert shared_staging <= set(key_sets["job_api"])
-    assert set(key_sets["worker"]) == {
-        *key_sets["job_api"],
-        "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH",
-    }
-
-
-def test_child_capability_is_parent_bound_and_rechecked_before_environment(
-    tmp_path: Path, monkeypatch,
-) -> None:
-    first = _capability(tmp_path / "first", [sys.executable, "-I", "-c", "print(1)"])
-    second = _capability(tmp_path / "second", [sys.executable, "-I", "-c", "print(2)"])
-    authorities = _credential_authorities(
-        tmp_path / "credentials", first, monkeypatch
-    )
-
-    with pytest.raises(TypeError, match="child authorities"):
-        Package6Controller(second, child_authorities=authorities)
-
-    controller = Package6Controller(first, child_authorities=authorities)
-    activation = authorities.staging_activation
-    activation.chmod(0o600)
-    activation.write_bytes(activation.read_bytes() + b"tamper\n")
-    activation.chmod(0o444)
-    with pytest.raises(SourceDrift, match="authority"):
-        controller._child_environment("JOB_API")
-
-
-@pytest.mark.parametrize("mutation", ("content", "replace", "missing", "symlink", "mode"))
 def test_child_file_drift_fails_before_spawn(
-    tmp_path: Path, monkeypatch, mutation: str,
+    issued_capability: SimpleNamespace,
+    tmp_path: Path,
+    mutation: str,
 ) -> None:
-    capability = _capability(
-        tmp_path / "candidate", [sys.executable, "-I", "-c", "print(1)"]
+    authorities = _child_authorities(tmp_path, issued_capability)
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+        child_authorities=authorities,
     )
-    authorities = _credential_authorities(tmp_path / "credentials", capability, monkeypatch)
-    controller = Package6Controller(capability, child_authorities=authorities)
     credential = authorities.job_api_credentials / "database-host"
-    original = credential.read_text(encoding="utf-8")
+    original = credential.read_bytes()
     if mutation == "content":
-        credential.write_text("localhost", encoding="utf-8")
+        credential.write_bytes(b"in-place-drift")
         credential.chmod(0o600)
     elif mutation == "replace":
         replacement = credential.with_name("replacement")
-        replacement.write_text(original, encoding="utf-8")
+        replacement.write_bytes(original)
         replacement.chmod(0o600)
         replacement.replace(credential)
+    elif mutation == "extra":
+        extra = credential.with_name("unexpected-credential")
+        extra.write_bytes(b"unexpected")
+        extra.chmod(0o600)
     elif mutation == "missing":
         credential.unlink()
-    elif mutation == "symlink":
-        credential.unlink()
-        credential.symlink_to("/dev/null")
     else:
         credential.chmod(0o644)
-    calls = 0
 
-    def forbidden_popen(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        raise AssertionError("Popen must not be called")
+    with pytest.raises(SourceDrift, match="credential"):
+        controller.start("job-api.start")
 
-    monkeypatch.setattr("services.paper_runtime.controller.subprocess.Popen", forbidden_popen)
-    with pytest.raises(SourceDrift, match="authority"):
-        controller.run_once("fixture.start")
-    assert calls == 0
+    assert script.calls == []
 
 
-def test_private_pins_never_render_secret_or_digest(
-    tmp_path: Path, monkeypatch,
+def test_credential_directory_path_replacement_preserves_bound_generation(
+    issued_capability: SimpleNamespace,
+    tmp_path: Path,
 ) -> None:
-    capability = _capability(
-        tmp_path / "candidate", [sys.executable, "-I", "-c", "print(1)"]
+    authorities = _child_authorities(tmp_path, issued_capability)
+    original = authorities.job_api_credentials
+    displaced = original.with_name("job-api-credentials-displaced")
+    original.rename(displaced)
+    original.mkdir(mode=0o700)
+    for name in _JOB_API_CREDENTIAL_NAMES:
+        replacement = original / name
+        replacement.write_text(f"replacement-{name}", encoding="utf-8")
+        replacement.chmod(0o600)
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+        child_authorities=authorities,
     )
-    authorities = _credential_authorities(tmp_path / "credentials", capability, monkeypatch)
-    secret = (authorities.job_api_credentials / "job-api-token").read_bytes()
-    rendered = repr(authorities)
-    assert secret.decode() not in rendered
-    assert hashlib.sha256(secret).hexdigest() not in rendered
 
+    controller.start("job-api.start")
 
-def test_raw_or_forged_child_authority_is_rejected(tmp_path: Path) -> None:
-    capability = _capability(
-        tmp_path, [sys.executable, "-I", "-c", "print('unused')"]
+    request = script.calls[0][1][0]
+    assert request.credential_directory_fd is not None
+    assert (
+        os.fstat(request.credential_directory_fd).st_ino
+        == displaced.stat().st_ino
     )
-    forged = RuntimeChildAuthorities()
+    assert "CREDENTIALS_DIRECTORY=/proc/self/fd/5" in request.environment
+    assert request.credential_manifest.startswith(b"P6CM1")
+    assert b"job-api-database-password" not in request.credential_manifest
+    assert b"replacement-database-password" not in request.credential_manifest
 
-    with pytest.raises(TypeError, match="issued runtime child authorities"):
-        Package6Controller(capability, child_authorities=forged)
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        CustodianTimeout("private timeout errno=110"),
+        CustodianProtocolError("private protocol path=/authority"),
+        KeyboardInterrupt("private interrupt credential"),
+        SystemExit("private exit transcript"),
+    ),
+    ids=("timeout", "disconnect", "keyboard-interrupt", "system-exit"),
+)
+def test_internal_start_cleanup_recovers_proof_at_caller_assignment_opcode(
+    issued_capability: SimpleNamespace,
+    failure: BaseException,
+) -> None:
+    script = _ClientScript()
+    client = script.bind()
+
+    def interrupted_start(request: object) -> NativeOperationStatus:
+        script.calls.append(("start", (request,)))
+        script.recover_value = (script.status_value,)
+        raise failure
+
+    client.start = interrupted_start
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=client,
+    )
+
+    with pytest.raises(RuntimeStartFailure) as raised:
+        controller.start("job-api.start")
+
+    assert str(raised.value) == RuntimeStartFailure.PUBLIC_MESSAGE
+    assert raised.value.__cause__ is failure
+    assert raised.value.cleanup_success is not None
+    assert raised.value.owns_recovery_state is False
+    assert [name for name, _arguments in script.calls] == [
+        "start",
+        "recover",
+        "stop",
+        "read_transcript",
+        "read_transcript",
+        "publish_bundle",
+        "acknowledge",
+    ]
+    rendered = str(raised.value)
+    assert "private" not in rendered
+    assert "/authority" not in rendered
+    assert "errno" not in rendered
+
+
+def test_post_spawn_identity_setup_failure_retains_recovery_state(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    client = script.bind()
+    original = KeyboardInterrupt("private call-to-assignment failure")
+
+    def interrupted_start(request: object) -> NativeOperationStatus:
+        script.calls.append(("start", (request,)))
+        raise original
+
+    def interrupted_recover() -> tuple[NativeOperationStatus, ...]:
+        script.calls.append(("recover", ()))
+        raise CustodianProtocolError("private recovery disconnect")
+
+    client.start = interrupted_start
+    client.recover = interrupted_recover
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=client,
+    )
+
+    with pytest.raises(RuntimeStartFailure) as raised:
+        controller.start("job-api.start")
+
+    assert raised.value.__cause__ is original
+    assert raised.value.owns_recovery_state is True
+    assert raised.value.cleanup_attempts_consumed == 0
+    snapshot = controller.snapshot_recovery_state(
+        "job_api", "job-api.stop", 1
+    )
+    assert snapshot.native_operation_id == OPERATION_ID.hex()
+    assert snapshot.state == "RECOVERY_REQUIRED"
+    assert [name for name, _arguments in script.calls] == [
+        "start",
+        "recover",
+    ]
+
+
+def test_run_once_call_to_store_baseexception_has_no_orphan(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    client = script.bind()
+    original = SystemExit("private run-once transcript")
+
+    def interrupted_run_once(request: object) -> NativeOperationStatus:
+        script.calls.append(("run_once", (request,)))
+        script.recover_value = (script.run_once_value,)
+        raise original
+
+    client.run_once = interrupted_run_once
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=client,
+    )
+
+    with pytest.raises(RuntimeStartFailure) as raised:
+        controller.run_once("job-api.start")
+
+    assert raised.value.__cause__ is original
+    assert raised.value.cleanup_success is not None
+    assert raised.value.owns_recovery_state is False
+    assert [name for name, _arguments in script.calls] == [
+        "run_once",
+        "recover",
+        "read_transcript",
+        "read_transcript",
+        "publish_bundle",
+        "acknowledge",
+    ]
+
+
+def test_status_uses_only_native_operation_and_recovery_authority(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+
+    status = controller.status("job-api.start")
+
+    assert status.state == "RUNNING"
+    assert status.exit_code is None
+    assert script.calls[-1] == (
+        "status",
+        (OPERATION_ID, RECOVERY_TOKEN),
+    )
+
+
+def test_status_identity_mismatch_does_not_replace_retained_authority(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+    good_status = script.status_value
+    script.status_value = replace(
+        good_status,
+        recovery_token=bytes.fromhex("01" * 16),
+    )
+
+    with pytest.raises(EvidenceIncomplete, match="continuity"):
+        controller.status("job-api.start")
+
+    script.status_value = good_status
+    controller.status("job-api.start")
+    assert script.calls[-1] == (
+        "status",
+        (OPERATION_ID, RECOVERY_TOKEN),
+    )
+
+
+def test_stop_reads_bounded_native_transcript_metadata_and_retains_proof(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+
+    evidence = controller.stop("job-api.stop")
+    recovered = controller.recover_completed_stop("job-api.stop")
+
+    assert evidence.cleanup_proven is True
+    assert evidence.state == "RESULT_RETAINED"
+    assert evidence.stdout == TranscriptMetadata(
+        sha256=hashlib.sha256(b"stdout evidence").hexdigest(),
+        size=len(b"stdout evidence"),
+        observed_size=len(b"stdout evidence"),
+        truncated=False,
+        eof=True,
+    )
+    assert evidence.stderr.sha256 == hashlib.sha256(
+        b"stderr evidence"
+    ).hexdigest()
+    assert recovered is evidence
+    assert not hasattr(evidence.stdout, "path")
+    assert not hasattr(evidence.stdout, "content")
+    assert [name for name, _arguments in script.calls].count(
+        "read_transcript"
+    ) == 2
+
+
+def test_recover_rebuilds_completed_stop_through_native_recover_and_read(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+
+    recovered = controller.recover_completed_stop("job-api.stop")
+
+    assert isinstance(recovered, StopEvidence)
+    assert recovered.cleanup_proven is True
+    assert [name for name, _arguments in script.calls] == [
+        "recover",
+        "read_transcript",
+        "read_transcript",
+    ]
+
+
+def test_publish_then_ack_is_exact_and_idempotent(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+    evidence = controller.stop("job-api.stop")
+
+    receipt = controller.publish_evidence("job-api.stop", evidence)
+    controller.acknowledge_stop("job-api.stop", evidence)
+    controller.acknowledge_stop("job-api.stop", evidence)
+
+    assert receipt.manifest_sha256 == PUBLICATION_DIGEST
+    names = [name for name, _arguments in script.calls]
+    assert names[-2:] == ["publish_bundle", "acknowledge"]
+    publication_call = script.calls[-2][1]
+    assert publication_call[:2] == (OPERATION_ID, RECOVERY_TOKEN)
+    assert len(publication_call[2]) == 32
+    assert script.calls[-1][1] == (
+        OPERATION_ID,
+        RECOVERY_TOKEN,
+        PUBLICATION_DIGEST,
+    )
+
+
+def test_ack_before_native_publication_fails_closed(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+    evidence = controller.stop("job-api.stop")
+
+    with pytest.raises(RuntimeError, match="publication"):
+        controller.acknowledge_stop("job-api.stop", evidence)
+
+    assert "acknowledge" not in [
+        name for name, _arguments in script.calls
+    ]
+
+
+def test_run_once_uses_native_run_read_publish_ack_without_start_or_stop(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+
+    bundle = controller.run_once("job-api.start")
+
+    assert isinstance(bundle, EvidenceBundle)
+    assert bundle.process.cleanup_proven is True
+    assert bundle.publication.manifest_sha256 == PUBLICATION_DIGEST
+    assert [name for name, _arguments in script.calls] == [
+        "run_once",
+        "read_transcript",
+        "read_transcript",
+        "publish_bundle",
+        "acknowledge",
+    ]
+
+
+def test_transcript_bytes_never_enter_public_dataclasses_or_repr(
+    issued_capability: SimpleNamespace,
+) -> None:
+    script = _ClientScript()
+    secret = b"PRIVATE_TRANSCRIPT_TOKEN"
+    script.transcripts[TranscriptStream.STDOUT] = secret
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+
+    evidence = controller.stop("job-api.stop")
+
+    assert secret.decode() not in repr(evidence)
+    assert evidence.stdout.sha256 == hashlib.sha256(secret).hexdigest()
+
+
+def test_controller_source_has_no_direct_target_custody_symbols() -> None:
+    source = inspect.getsource(controller_module)
+    forbidden = (
+        "ctypes",
+        "subprocess.Popen",
+        "os.killpg",
+        "os.waitpid",
+        "os.getpgid",
+        "process_group",
+        "pidfd",
+        "unlink(",
+        "unlinkat",
+    )
+
+    assert all(term not in source for term in forbidden)
+
+
+def test_wait_ready_enforces_global_deadline_around_delayed_response(
+    issued_capability: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _ClientScript()
+    now = [0.0]
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+        monotonic=lambda: now[0],
+    )
+    controller.start("job-api.start")
+
+    original_status = script.status
+
+    def delayed_status(
+        operation_id: bytes, recovery_token: bytes
+    ) -> NativeOperationStatus:
+        value = original_status(operation_id, recovery_token)
+        now[0] = 2.0
+        return value
+
+    controller._client.status = delayed_status
+    contacted = False
+
+    def forbidden_probe(_url: str, *, timeout: float) -> object:
+        nonlocal contacted
+        contacted = True
+        raise AssertionError(f"probe exceeded total deadline: {timeout}")
+
+    monkeypatch.setattr(controller_module, "urlopen", forbidden_probe)
+
+    with pytest.raises(TimeoutError, match="readiness"):
+        controller.wait_ready("job-api.start")
+
+    assert contacted is False
+    assert "JOB_API" in controller._active
+
+
+def test_wait_ready_detects_native_exit_before_overall_timeout(
+    issued_capability: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+    script.status_value = _native_status(
+        state=OperationState.RESULT_RETAINED,
+        authority_retained=True,
+        exit_status=23,
+    )
+    contacted = False
+
+    def forbidden_probe(_url: str, *, timeout: float) -> object:
+        nonlocal contacted
+        contacted = True
+        raise AssertionError(f"exited child was probed: {timeout}")
+
+    monkeypatch.setattr(controller_module, "urlopen", forbidden_probe)
+
+    with pytest.raises(RuntimeError, match="exited before readiness"):
+        controller.wait_ready("job-api.start")
+
+    assert contacted is False
+    assert "JOB_API" in controller._active
+
+
+@pytest.mark.parametrize("response_case", ("wrong-status", "malformed"))
+def test_wait_ready_wrong_status_or_malformed_response_fails_closed(
+    issued_capability: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    response_case: str,
+) -> None:
+    script = _ClientScript()
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+    )
+    controller.start("job-api.start")
+
+    class Response:
+        status = 503 if response_case == "wrong-status" else 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, limit: int) -> bytes:
+            assert limit == 16 * 1024 + 1
+            return b"{" if response_case == "malformed" else b"{}"
+
+    monkeypatch.setattr(
+        controller_module,
+        "urlopen",
+        lambda _url, *, timeout: Response(),
+    )
+
+    with pytest.raises(RuntimeError, match="readiness response"):
+        controller.wait_ready("job-api.start")
+
+    assert "JOB_API" in controller._active
+
+
+def test_wait_ready_accepts_real_response_beyond_half_second(
+    issued_capability: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _ClientScript()
+    now = [0.0]
+    controller = Package6Controller(
+        issued_capability,
+        custodian_client=script.bind(),
+        monotonic=lambda: now[0],
+    )
+    controller.start("job-api.start")
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, limit: int) -> bytes:
+            assert limit == 16 * 1024 + 1
+            now[0] = 0.75
+            return b'{"data":{"status":"READY"}}'
+
+    observed: list[tuple[str, float]] = []
+
+    def delayed_probe(url: str, *, timeout: float) -> Response:
+        observed.append((url, timeout))
+        return Response()
+
+    monkeypatch.setattr(controller_module, "urlopen", delayed_probe)
+
+    readiness = controller.wait_ready("job-api.start")
+
+    assert readiness.status == "READY"
+    assert observed == [("http://127.0.0.1:8401/health/ready", 1.0)]
+
+
+def _exercise_exceptional_chain(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    worker_failures: int,
+    job_api_failures: int,
+) -> tuple[object, list[str], BaseException]:
+    from services.paper_runtime import integration as integration_module
+    from services.paper_runtime.integration import (
+        RuntimeChainFailure,
+        run_approved_runtime_chain,
+    )
+
+    primary = KeyboardInterrupt("private chain primary credential")
+    cleanup_order: list[str] = []
+    counts = {"worker.stop": 0, "job-api.stop": 0}
+    limits = {
+        "worker.stop": worker_failures,
+        "job-api.stop": job_api_failures,
+    }
+
+    def identity(
+        operation_id: str,
+        component: str,
+        native_byte: int,
+    ) -> TrackedProcessIdentity:
+        native_id = bytes((native_byte,)) * 16
+        return TrackedProcessIdentity(
+            operation_id=operation_id,
+            component=component,
+            native_operation_id=native_id.hex(),
+            recovery_token=bytes((native_byte + 1,)).hex() * 16,
+            state="RUNNING",
+            environment=SpawnEnvironmentEvidence(
+                component=component,
+                operation_id=operation_id,
+                keys=(),
+            ),
+        )
+
+    def stop_evidence(operation_id: str) -> StopEvidence:
+        worker = operation_id == "worker.stop"
+        native_id = bytes((0x22 if worker else 0x11,)) * 16
+        token = bytes((0x23 if worker else 0x12,)) * 16
+        empty = TranscriptMetadata(
+            sha256=hashlib.sha256(b"").hexdigest(),
+            size=0,
+            observed_size=0,
+            truncated=False,
+            eof=True,
+        )
+        return StopEvidence(
+            operation_id=operation_id,
+            component="WORKER" if worker else "JOB_API",
+            native_operation_id=native_id.hex(),
+            recovery_token=token.hex(),
+            state="RESULT_RETAINED",
+            exit_code=0,
+            cleanup_proven=True,
+            stdout=empty,
+            stderr=empty,
+        )
+
+    class Controller:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def start(self, operation_id: str) -> TrackedProcessIdentity:
+            if operation_id == "job-api.start":
+                return identity(operation_id, "JOB_API", 0x11)
+            return identity(operation_id, "WORKER", 0x22)
+
+        def wait_ready(self, operation_id: str) -> object:
+            return controller_module.ReadinessEvidence(
+                operation_id=operation_id,
+                native_operation_id=(bytes((0x11,)) * 16).hex(),
+                attempts=1,
+                status="READY",
+            )
+
+        def status(self, _operation_id: str) -> object:
+            raise primary
+
+        def stop(self, operation_id: str) -> StopEvidence:
+            cleanup_order.append(operation_id)
+            counts[operation_id] += 1
+            if counts[operation_id] <= limits[operation_id]:
+                raise SystemExit("private cleanup transcript")
+            return stop_evidence(operation_id)
+
+        def recover_completed_stop(
+            self, _operation_id: str
+        ) -> None:
+            return None
+
+        def snapshot_recovery_state(
+            self,
+            component: str,
+            operation_id: str,
+            cleanup_attempts_consumed: int,
+        ) -> object:
+            worker = component == "worker"
+            return controller_module.RuntimeRecoveryState(
+                component=component,
+                operation_id=operation_id,
+                cleanup_attempts_consumed=cleanup_attempts_consumed,
+                native_operation_id=(
+                    bytes((0x22 if worker else 0x11,)) * 16
+                ).hex(),
+                state="RECOVERY_REQUIRED",
+                cleanup_proven=False,
+                stdout=None,
+                stderr=None,
+            )
+
+        def publish_evidence(
+            self,
+            _operation_id: str,
+            evidence: StopEvidence,
+        ) -> NativeBundleReceipt:
+            digest = bytes.fromhex("33" * 32)
+            return NativeBundleReceipt(
+                operation=_native_status(
+                    operation_id=bytes.fromhex(
+                        evidence.native_operation_id
+                    ),
+                    bundle_committed=True,
+                    publication_sha256=digest,
+                ),
+                manifest_sha256=digest,
+            )
+
+        def acknowledge_stop(
+            self,
+            _operation_id: str,
+            _evidence: StopEvidence,
+        ) -> None:
+            return None
+
+    capability = SimpleNamespace(
+        listener=SimpleNamespace(host="127.0.0.1", port=8401),
+        request=SimpleNamespace(
+            job_type="SNAPSHOT",
+            idempotency_key="foundation:test",
+            actor="FOUNDATION_VALIDATION",
+            expected_job_count=1,
+        ),
+        operation_timeout_seconds=1,
+    )
+    child_authorities = SimpleNamespace(
+        job_api_credentials=Path("/private/not-read")
+    )
+    first_job = {
+        "job_id": "job-1",
+        "actor": {
+            "actor_type": "OPERATOR",
+            "actor_id": "foundation-validation",
+        },
+    }
+    responses = iter(
+        (
+            (201, {"data": {"outcome": "ENQUEUED", "job": first_job}}),
+            (
+                200,
+                {"data": {"outcome": "DEDUPLICATED", "job": first_job}},
+            ),
+        )
+    )
+    monkeypatch.setattr(integration_module, "is_issued_capability", lambda _: True)
+    monkeypatch.setattr(integration_module, "Package6Controller", Controller)
+    monkeypatch.setattr(
+        integration_module,
+        "_credential",
+        lambda *_args: "not-used-after-primary",
+    )
+    monkeypatch.setattr(
+        integration_module,
+        "_request_json",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    with pytest.raises(RuntimeChainFailure) as raised:
+        run_approved_runtime_chain(
+            capability,
+            child_authorities,
+            custodian_client=CustodianClient.__new__(CustodianClient),
+        )
+    return raised.value, cleanup_order, primary
+
+
+def test_chain_aggregates_baseexceptions_and_completes_reverse_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure, cleanup_order, primary = _exercise_exceptional_chain(
+        monkeypatch,
+        worker_failures=2,
+        job_api_failures=2,
+    )
+
+    assert str(failure) == "paper runtime chain failed safely"
+    assert failure.primary_error is primary
+    assert failure.__cause__ is primary
+    assert cleanup_order == [
+        "worker.stop",
+        "worker.stop",
+        "job-api.stop",
+        "job-api.stop",
+    ]
+    assert [record.component for record in failure.recovery_owner.records] == [
+        "worker",
+        "job_api",
+    ]
+
+
+def test_later_cleanup_success_preserves_prior_failure_without_recovery_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure, cleanup_order, primary = _exercise_exceptional_chain(
+        monkeypatch,
+        worker_failures=1,
+        job_api_failures=0,
+    )
+
+    assert failure.primary_error is primary
+    assert cleanup_order == [
+        "worker.stop",
+        "worker.stop",
+        "job-api.stop",
+    ]
+    assert [item.component for item in failure.cleanup_successes] == [
+        "worker",
+        "job_api",
+    ]
+    assert failure.cleanup_failures
+    assert failure.recovery_owner is None

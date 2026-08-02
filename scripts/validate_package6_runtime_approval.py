@@ -44,6 +44,7 @@ _TOP_FIELDS = frozenset(
         "review",
         "operations",
         "source_bindings",
+        "custodian_authority",
         "constraints",
         "postgres_authority",
         "fixture_authority",
@@ -76,6 +77,29 @@ _FIELDS = {
         }
     ),
     "binding": frozenset({"path", "sha256"}),
+    "custodian": frozenset(
+        {
+            "authority_mode",
+            "helper_binary_sha256",
+            "native_source_set",
+            "native_source_set_sha256",
+            "protocol_version",
+            "protocol_features",
+            "endpoint_authority",
+            "production_socket_activation",
+            "operations",
+            "candidate_commit",
+            "candidate_tree",
+            "stage_sha256",
+            "fixture_identity",
+            "child_environment_contract",
+            "mode",
+            "live_execution_approved",
+            "live_trading_approved",
+        }
+    ),
+    "fixture_identity": frozenset({"sha256", "provenance"}),
+    "child_environment_contract": frozenset({"job_api", "worker"}),
     "constraints": frozenset(
         {
             "disposable_root",
@@ -113,7 +137,16 @@ _FIELDS = {
         }
     ),
     "authority_digests": frozenset(
-        {"release", "application", "backend", "command", "semantic", "fixture", "safety"}
+        {
+            "release",
+            "application",
+            "backend",
+            "command",
+            "semantic",
+            "fixture",
+            "safety",
+            "stage",
+        }
     ),
 }
 _GIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -125,11 +158,61 @@ _TIMESTAMP = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z"
 )
 _IDEMPOTENCY = re.compile(r"foundation:manual:snapshot:[a-z0-9][a-z0-9._-]{2,80}\Z")
+_CANONICAL_PORT = re.compile(r"[1-9][0-9]{0,4}\Z")
 _PLACEHOLDERS = frozenset(
     {"", "TBD", "TODO", "UNKNOWN", "CHANGEME", "PLACEHOLDER", "REQUIRES_REVIEWER_INPUT"}
 )
 _FORBIDDEN_POSTGRES_PORTS = frozenset({0, 22, 80, 443, 3002, 5432, 8401, 55432})
 PACKAGE6_JOB_API_PORT = 8401
+PACKAGE6_CUSTODIAN_SOURCE_PATHS = (
+    "native/package6_custodian/Makefile",
+    "native/package6_custodian/include/p6c_protocol.h",
+    "native/package6_custodian/include/p6c_types.h",
+    "native/package6_custodian/src/cgroup.c",
+    "native/package6_custodian/src/journal.c",
+    "native/package6_custodian/src/linux_authority.c",
+    "native/package6_custodian/src/main.c",
+    "native/package6_custodian/src/process.c",
+    "native/package6_custodian/src/protocol.c",
+    "native/package6_custodian/src/publication.c",
+    "native/package6_custodian/src/python_fd_custody.c",
+    "native/package6_custodian/src/sha256.c",
+    "native/package6_custodian/src/transcript.c",
+    "native/package6_custodian/tests/test_authority.c",
+    "native/package6_custodian/tests/test_protocol.c",
+    "native/package6_custodian/tests/test_publication.c",
+)
+PACKAGE6_CUSTODIAN_OPERATIONS = (
+    "START",
+    "STOP",
+    "STATUS",
+    "RECOVER",
+    "RUN_ONCE",
+    "READ_TRANSCRIPT",
+    "PUBLISH_BUNDLE",
+    "ACK",
+)
+PACKAGE6_JOB_API_ENVIRONMENT_KEYS = (
+    "CREDENTIALS_DIRECTORY",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LIVE_EXECUTION_ENABLED",
+    "LIVE_TRADING_APPROVED",
+    "LIVE_TRADING_ENABLED",
+    "PATH",
+    "TRADING_MODE",
+    "TRADING_PACKAGE6_APPROVAL_SHA256",
+    "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH",
+    "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH",
+    "TRADING_PACKAGE6_STAGING_SCOPE",
+    "TZ",
+)
+PACKAGE6_WORKER_ENVIRONMENT_KEYS = (
+    *PACKAGE6_JOB_API_ENVIRONMENT_KEYS[:10],
+    "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH",
+    *PACKAGE6_JOB_API_ENVIRONMENT_KEYS[10:],
+)
 PACKAGE6_SOURCE_BINDING_PATHS = (
     "Makefile",
     "alembic/versions/0004_durable_research_jobs.py",
@@ -203,6 +286,7 @@ PACKAGE6_SOURCE_BINDING_PATHS = (
     "services/job_worker/worker.py",
     "services/paper_runtime/__init__.py",
     "services/paper_runtime/controller.py",
+    "services/paper_runtime/custodian_client.py",
     "services/paper_runtime/evidence.py",
     "services/paper_runtime/integration.py",
     "services/safety_state_exporter/__init__.py",
@@ -252,6 +336,7 @@ class Package6ApprovalContext(NamedTuple):
     staging_scope: str
     staging_authority_path: Path
     staging_activation_path: Path
+    custodian_helper_binary_sha256: str
 
 
 @dataclass(frozen=True, slots=True, init=False, eq=False, repr=False, weakref_slot=True)
@@ -285,6 +370,28 @@ class ValidatedFixtureAuthority:
 
 
 @dataclass(frozen=True, slots=True)
+class ValidatedCustodianAuthority:
+    authority_mode: str
+    helper_binary_sha256: str
+    native_source_set: tuple[tuple[str, str], ...]
+    native_source_set_sha256: str
+    protocol_version: int
+    protocol_features: tuple[str, ...]
+    endpoint_authority: str
+    production_socket_activation: bool
+    operations: tuple[str, ...]
+    candidate_commit: str
+    candidate_tree: str
+    stage_sha256: str
+    fixture_sha256: str
+    fixture_provenance: str
+    child_environment_contract: Mapping[str, tuple[str, ...]]
+    mode: str
+    live_execution_approved: bool
+    live_trading_approved: bool
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedRequestAuthority:
     job_type: str
     actor: str
@@ -310,6 +417,7 @@ class ValidatedPackage6Capability:
     fixture_sha256: str
     postgres: ValidatedPostgresAuthority
     fixture: ValidatedFixtureAuthority
+    custodian: ValidatedCustodianAuthority
     request: ValidatedRequestAuthority
     listener: ValidatedListenerAuthority
     authority_digests: Mapping[str, str]
@@ -423,7 +531,7 @@ def package6_authority_digests(
     material: StagingAuthorityMaterial,
     fixture: ProviderFreeFixture,
 ) -> Mapping[str, str]:
-    """Map validated candidate bytes to the seven stable approval meanings."""
+    """Map validated candidate bytes to the stable approval meanings."""
 
     return MappingProxyType(
         {
@@ -434,8 +542,49 @@ def package6_authority_digests(
             "semantic": material.semantic_policy_sha256,
             "fixture": fixture.sha256,
             "safety": material.safety_snapshot_sha256,
+            "stage": material.stage_file_set_sha256,
         }
     )
+
+
+def _native_source_set_sha256(
+    source_set: list[Mapping[str, object]],
+) -> str:
+    raw = json.dumps(
+        source_set,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _validate_custodian_source_files(
+    source_set: tuple[tuple[str, str], ...],
+    source_root: Path,
+) -> None:
+    try:
+        root = source_root.resolve(strict=True)
+    except OSError:
+        _reject("custodian source root is unavailable")
+    for relative, expected in source_set:
+        path = root / relative
+        try:
+            info = path.lstat()
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+            raw = path.read_bytes()
+        except (OSError, ValueError):
+            _reject("custodian source file is unavailable")
+        if (
+            resolved != path
+            or stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) & 0o022
+            or hashlib.sha256(raw).hexdigest() != expected
+        ):
+            _reject("custodian source binding does not match")
 
 
 def validate_source_binding_files(
@@ -543,12 +692,17 @@ def _operation(raw: object) -> ValidatedOperation:
         if host != "127.0.0.1":
             _reject("listener host must be exact loopback")
         if (
-            type(port) is not int
-            or port != PACKAGE6_JOB_API_PORT
+            not isinstance(port, str)
+            or _CANONICAL_PORT.fullmatch(port) is None
+            or not 1 <= int(port) <= 65535
+            or int(port) != PACKAGE6_JOB_API_PORT
         ):
             _reject("listener port is forbidden or ambiguous")
+        validated_port: int | None = int(port)
     elif host is not None or port is not None:
         _reject("non-listener operation cannot carry a host or port")
+    else:
+        validated_port = None
     value = ValidatedOperation()
     for name, item in (
         ("operation_id", operation_id),
@@ -557,7 +711,7 @@ def _operation(raw: object) -> ValidatedOperation:
         ("argv", tuple(argv)),
         ("cwd", cwd),
         ("bind_host", host),
-        ("port", port),
+        ("port", validated_port),
         ("executable_sha256", executable_sha256),
     ):
         object.__setattr__(value, name, item)
@@ -605,9 +759,24 @@ def validate_package6_runtime_approval(
         _FIELDS["authority_digests"],
         "authority digests",
     )
+    custodian = _exact(
+        document["custodian_authority"],
+        _FIELDS["custodian"],
+        "custodian authority",
+    )
+    custodian_fixture = _exact(
+        custodian["fixture_identity"],
+        _FIELDS["fixture_identity"],
+        "custodian fixture identity",
+    )
+    child_environment_contract = _exact(
+        custodian["child_environment_contract"],
+        _FIELDS["child_environment_contract"],
+        "custodian child environment contract",
+    )
     if (
         document["record_kind"] != "PACKAGE6_PAPER_RUNTIME_APPROVAL"
-        or document["schema_version"] != 2
+        or document["schema_version"] != "3"
         or not isinstance(document["record_id"], str)
         or _RECORD_ID.fullmatch(document["record_id"]) is None
         or document["scope"] != "PACKAGE6_PAPER_RUNTIME"
@@ -622,6 +791,101 @@ def validate_package6_runtime_approval(
         or _GIT.fullmatch(source["tree"]) is None
     ):
         _reject("approval candidate does not match")
+    helper_binary_sha256 = custodian["helper_binary_sha256"]
+    if custodian["authority_mode"] != "DISPOSABLE_TEST_NATIVE_ONLY":
+        _reject(
+            "native custodian authority is restricted to disposable tests; "
+            "production requires release authority v2 system-manager units"
+        )
+    if (
+        not isinstance(helper_binary_sha256, str)
+        or _SHA256.fullmatch(helper_binary_sha256) is None
+        or helper_binary_sha256
+        != context.custodian_helper_binary_sha256
+    ):
+        _reject("custodian helper binary authority does not match")
+    raw_native_source_set = custodian["native_source_set"]
+    if (
+        not isinstance(raw_native_source_set, list)
+        or len(raw_native_source_set)
+        != len(PACKAGE6_CUSTODIAN_SOURCE_PATHS)
+    ):
+        _reject("custodian source set is missing or excessive")
+    validated_native_source_set: list[tuple[str, str]] = []
+    canonical_native_source_set: list[Mapping[str, object]] = []
+    for raw in raw_native_source_set:
+        binding = _exact(
+            raw, _FIELDS["binding"], "custodian source binding"
+        )
+        relative = _relative_binding(binding["path"])
+        digest_value = binding["sha256"]
+        if (
+            not isinstance(digest_value, str)
+            or _SHA256.fullmatch(digest_value) is None
+        ):
+            _reject("custodian source digest is invalid")
+        validated_native_source_set.append((relative, digest_value))
+        canonical_native_source_set.append(binding)
+    if (
+        tuple(path for path, _digest in validated_native_source_set)
+        != PACKAGE6_CUSTODIAN_SOURCE_PATHS
+    ):
+        _reject("custodian source set is not in canonical order")
+    source_set_sha256 = custodian["native_source_set_sha256"]
+    if (
+        not isinstance(source_set_sha256, str)
+        or _SHA256.fullmatch(source_set_sha256) is None
+        or source_set_sha256
+        != _native_source_set_sha256(canonical_native_source_set)
+    ):
+        _reject("custodian source set digest does not match")
+    if (
+        not isinstance(custodian["protocol_version"], str)
+        or custodian["protocol_version"] != "1"
+        or custodian["protocol_features"] != []
+    ):
+        _reject("custodian protocol authority does not match")
+    if (
+        custodian["endpoint_authority"]
+        != "PREOPENED_UNIX_SEQPACKET_DESCRIPTOR"
+    ):
+        _reject("custodian endpoint authority does not match")
+    if custodian["production_socket_activation"] is not False:
+        _reject("custodian production socket activation is deferred")
+    if (
+        not isinstance(custodian["operations"], list)
+        or tuple(custodian["operations"])
+        != PACKAGE6_CUSTODIAN_OPERATIONS
+    ):
+        _reject("custodian operation authority does not match")
+    if (
+        custodian["candidate_commit"] != context.source_commit
+        or custodian["candidate_tree"] != context.source_tree
+    ):
+        _reject("custodian candidate authority does not match")
+    if (
+        custodian_fixture["sha256"] != fixture["fixture_sha256"]
+        or custodian_fixture["provenance"]
+        != "DETERMINISTIC_PROVIDER_FREE_V1"
+    ):
+        _reject("custodian fixture authority does not match")
+    if (
+        child_environment_contract["job_api"]
+        != list(PACKAGE6_JOB_API_ENVIRONMENT_KEYS)
+        or child_environment_contract["worker"]
+        != list(PACKAGE6_WORKER_ENVIRONMENT_KEYS)
+    ):
+        _reject("custodian child environment contract does not match")
+    if custodian["mode"] != "PAPER":
+        _reject("custodian mode must remain paper")
+    if (
+        custodian["live_execution_approved"] is not False
+        or custodian["live_trading_approved"] is not False
+    ):
+        _reject("custodian live authority must remain false")
+    _validate_custodian_source_files(
+        tuple(validated_native_source_set), context.source_root
+    )
     approved_at, expires_at = _timestamp(validity["approved_at_utc"]), _timestamp(
         validity["expires_at_utc"]
     )
@@ -694,11 +958,19 @@ def validate_package6_runtime_approval(
         "cleanup_timeout_seconds": (1, 60),
         "max_output_bytes": (1024, 1_048_576),
     }
+    bounded_values: dict[str, int] = {}
     for key, (minimum, maximum) in bounded.items():
         value = constraints[key]
-        if type(value) is not int or not minimum <= value <= maximum:
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"(?:0|[1-9][0-9]*)", value) is None
+        ):
             _reject(f"{key.replace('_', ' ')} is unbounded")
-    max_processes = cast(int, constraints["max_processes"])
+        parsed_value = int(value)
+        if not minimum <= parsed_value <= maximum:
+            _reject(f"{key.replace('_', ' ')} is unbounded")
+        bounded_values[key] = parsed_value
+    max_processes = bounded_values["max_processes"]
     if max_processes < len(components):
         _reject("maximum process count is smaller than approved components")
     if constraints["systemd_allowed"] is not False:
@@ -717,10 +989,18 @@ def validate_package6_runtime_approval(
         or any(not isinstance(role, str) for role in postgres["service_roles"])
     ):
         _reject("PostgreSQL service role identity is invalid")
+    raw_postgres_port = postgres["port"]
+    if (
+        not isinstance(raw_postgres_port, str)
+        or re.fullmatch(r"[1-9][0-9]*", raw_postgres_port) is None
+        or not 1024 <= int(raw_postgres_port) <= 65535
+    ):
+        _reject("PostgreSQL target port is invalid")
+    postgres_port_value = int(raw_postgres_port)
     if (
         postgres["approval_sha256"] != context.disposable_postgres_approval_sha256
         or postgres["bind_host"] != context.postgres_bind_host
-        or postgres["port"] != context.postgres_port
+        or postgres_port_value != context.postgres_port
         or postgres["database_name"] != context.postgres_database_name
         or postgres["pgdata"] != context.postgres_pgdata
         or postgres["cluster_name"] != context.postgres_cluster_name
@@ -730,8 +1010,7 @@ def validate_package6_runtime_approval(
         _reject("PostgreSQL authority does not match separately validated approval")
     if (
         postgres["bind_host"] != "127.0.0.1"
-        or type(postgres["port"]) is not int
-        or postgres["port"] in _FORBIDDEN_POSTGRES_PORTS
+        or postgres_port_value in _FORBIDDEN_POSTGRES_PORTS
         or postgres["database_name"] != "trading_agent_disposable_test"
         or postgres["cluster_name"] != "trading-agent-disposable-tests"
         or postgres["service_roles"]
@@ -751,7 +1030,7 @@ def validate_package6_runtime_approval(
     if (
         request["job_type"] != "SNAPSHOT"
         or request["actor"] != "FOUNDATION_VALIDATION"
-        or request["expected_job_count"] != 1
+        or request["expected_job_count"] != "1"
         or not isinstance(request["idempotency_key"], str)
         or _IDEMPOTENCY.fullmatch(request["idempotency_key"]) is None
     ):
@@ -813,10 +1092,12 @@ def validate_package6_runtime_approval(
     recomputed_digests = package6_authority_digests(material, loaded_fixture)
     if dict(authority_digests) != dict(recomputed_digests):
         _reject("authority digest set does not match staged candidate")
+    if custodian["stage_sha256"] != material.stage_file_set_sha256:
+        _reject("custodian stage authority does not match")
     capability = ValidatedPackage6Capability()
     postgres_approval_sha256 = cast(str, postgres["approval_sha256"])
     postgres_bind_host = cast(str, postgres["bind_host"])
-    postgres_port = cast(int, postgres["port"])
+    postgres_port = postgres_port_value
     postgres_database_name = cast(str, postgres["database_name"])
     postgres_cluster_name = cast(str, postgres["cluster_name"])
     postgres_service_roles = cast(list[str], postgres["service_roles"])
@@ -826,7 +1107,7 @@ def validate_package6_runtime_approval(
         job_type=cast(str, request["job_type"]),
         actor=cast(str, request["actor"]),
         idempotency_key=cast(str, request["idempotency_key"]),
-        expected_job_count=cast(int, request["expected_job_count"]),
+        expected_job_count=int(cast(str, request["expected_job_count"])),
     )
     values = {
         "source_commit": context.source_commit,
@@ -851,6 +1132,43 @@ def validate_package6_runtime_approval(
             provenance=fixture_provenance,
             path=fixture_path,
         ),
+        "custodian": ValidatedCustodianAuthority(
+            authority_mode=cast(str, custodian["authority_mode"]),
+            helper_binary_sha256=cast(str, helper_binary_sha256),
+            native_source_set=tuple(validated_native_source_set),
+            native_source_set_sha256=cast(str, source_set_sha256),
+            protocol_version=int(cast(str, custodian["protocol_version"])),
+            protocol_features=tuple(
+                cast(list[str], custodian["protocol_features"])
+            ),
+            endpoint_authority=cast(
+                str, custodian["endpoint_authority"]
+            ),
+            production_socket_activation=cast(
+                bool, custodian["production_socket_activation"]
+            ),
+            operations=tuple(cast(list[str], custodian["operations"])),
+            candidate_commit=cast(str, custodian["candidate_commit"]),
+            candidate_tree=cast(str, custodian["candidate_tree"]),
+            stage_sha256=cast(str, custodian["stage_sha256"]),
+            fixture_sha256=cast(str, custodian_fixture["sha256"]),
+            fixture_provenance=cast(
+                str, custodian_fixture["provenance"]
+            ),
+            child_environment_contract=MappingProxyType(
+                {
+                    "job_api": PACKAGE6_JOB_API_ENVIRONMENT_KEYS,
+                    "worker": PACKAGE6_WORKER_ENVIRONMENT_KEYS,
+                }
+            ),
+            mode=cast(str, custodian["mode"]),
+            live_execution_approved=cast(
+                bool, custodian["live_execution_approved"]
+            ),
+            live_trading_approved=cast(
+                bool, custodian["live_trading_approved"]
+            ),
+        ),
         "request": validated_request,
         "listener": ValidatedListenerAuthority(
             host="127.0.0.1", port=PACKAGE6_JOB_API_PORT
@@ -861,7 +1179,7 @@ def validate_package6_runtime_approval(
         "source_root": context.source_root,
         "staging_material": material,
         "fixture_material": loaded_fixture,
-        **{key: constraints[key] for key in bounded},
+        **bounded_values,
     }
     for name, value in values.items():
         object.__setattr__(capability, name, value)
@@ -870,11 +1188,16 @@ def validate_package6_runtime_approval(
 
 
 __all__ = [
+    "PACKAGE6_CUSTODIAN_OPERATIONS",
+    "PACKAGE6_CUSTODIAN_SOURCE_PATHS",
+    "PACKAGE6_JOB_API_ENVIRONMENT_KEYS",
     "Package6ApprovalContext",
     "Package6ApprovalRejected",
     "PACKAGE6_JOB_API_PORT",
     "PACKAGE6_SOURCE_BINDING_PATHS",
+    "PACKAGE6_WORKER_ENVIRONMENT_KEYS",
     "ValidatedFixtureAuthority",
+    "ValidatedCustodianAuthority",
     "ValidatedListenerAuthority",
     "ValidatedOperation",
     "ValidatedPackage6Capability",
