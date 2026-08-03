@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from .clock import FixedUtcClock, SystemUtcClock, require_utc
 from .instruments import InstrumentConstraints, InstrumentId, ProductType
+from .market_data import (
+    MarketCandle,
+    MarketContinuity,
+    MarketDataProvenance,
+    MarketSnapshot,
+    MarketTimeframe,
+    normalize_market_symbol,
+)
 from .events import EventEnvelope, validate_event_batch
 from .orders import FillEvent, OrderEvent, OrderIntent, OrderSide, OrderStatus, OrderType, TimeInForce
 from .portfolio import PortfolioSnapshot, PositionSnapshot, TargetPortfolio, TargetPosition
-from .primitives import CANONICAL_DECIMAL_POLICY_VERSION, Currency, Money, Price, Quantity
+from .primitives import CANONICAL_DECIMAL_POLICY_VERSION, Currency, FiniteDecimal, Money, Price, Quantity
 from .risk import RiskDecision, RiskOutcome, RiskReasonCode, RiskStateSnapshot
 from .signals import (
     EvidenceLocator,
@@ -28,10 +36,16 @@ __all__ = [
     "EvidenceReference",
     "EvidenceSource",
     "FillEvent",
+    "FiniteDecimal",
     "FixedUtcClock",
     "InstrumentConstraints",
     "InstrumentId",
     "Money",
+    "MarketCandle",
+    "MarketContinuity",
+    "MarketDataProvenance",
+    "MarketSnapshot",
+    "MarketTimeframe",
     "OrderEvent",
     "OrderIntent",
     "OrderSide",
@@ -55,4 +69,5 @@ __all__ = [
     "TimeInForce",
     "require_utc",
     "validate_event_batch",
+    "normalize_market_symbol",
 ]

@@ -1,0 +1,55 @@
+{
+  "$defs": {
+    "MarketTimeframe": {
+      "description": "Closed candle intervals represented by canonical compact names.",
+      "enum": [
+        "1m",
+        "5m",
+        "15m",
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "title": "MarketTimeframe",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Exact continuity observation; it reports and never invents candles.",
+  "properties": {
+    "duplicate_open_times": {
+      "default": [],
+      "items": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "maxItems": 4096,
+      "title": "Duplicate Open Times",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "missing_open_times": {
+      "default": [],
+      "items": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "maxItems": 4096,
+      "title": "Missing Open Times",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "timeframe": {
+      "$ref": "#/$defs/MarketTimeframe"
+    }
+  },
+  "required": [
+    "timeframe"
+  ],
+  "title": "MarketContinuity",
+  "type": "object",
+  "x-temporal-invariants": [
+    "duplicate_open_times and missing_open_times are sorted and unique",
+    "all issue timestamps are UTC and aligned to timeframe"
+  ]
+}

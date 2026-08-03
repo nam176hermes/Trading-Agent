@@ -54,6 +54,10 @@ from packages.domain import (
     EvidenceReference,
     EventEnvelope,
     FillEvent,
+    MarketCandle,
+    MarketContinuity,
+    MarketDataProvenance,
+    MarketSnapshot,
     OrderEvent,
     OrderIntent,
     PortfolioSnapshot,
@@ -111,6 +115,10 @@ JOB_SCHEMA_MODELS = (
     JobDetail,
 )
 DOMAIN_SCHEMA_MODELS = (
+    MarketCandle,
+    MarketDataProvenance,
+    MarketSnapshot,
+    MarketContinuity,
     EvidenceReference,
     ResearchPacket,
     SignalProposal,

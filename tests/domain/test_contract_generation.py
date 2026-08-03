@@ -11,6 +11,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_ROOT = ROOT / "generated" / "domain" / "json-schema"
 EXPECTED = {
+    "MarketCandle.json",
+    "MarketDataProvenance.json",
+    "MarketSnapshot.json",
+    "MarketContinuity.json",
     "EvidenceReference.json",
     "ResearchPacket.json",
     "SignalProposal.json",

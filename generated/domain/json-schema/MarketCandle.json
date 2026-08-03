@@ -1,0 +1,200 @@
+{
+  "$defs": {
+    "MarketTimeframe": {
+      "description": "Closed candle intervals represented by canonical compact names.",
+      "enum": [
+        "1m",
+        "5m",
+        "15m",
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "title": "MarketTimeframe",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One UTC-aligned OHLCV observation for a canonical instrument identity.",
+  "properties": {
+    "close": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[1-9]\\d{0,127}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 129,
+          "minLength": 3,
+          "pattern": "^[1-9]\\d*\\.\\d*[1-9]$",
+          "type": "string"
+        },
+        {
+          "maxLength": 257,
+          "minLength": 3,
+          "pattern": "^0\\.0{0,127}(?:[1-9]|[1-9]\\d{0,126}[1-9])$",
+          "type": "string"
+        }
+      ],
+      "title": "Close",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1",
+      "x-market-decimal-policy": "positive-normal-v1"
+    },
+    "high": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[1-9]\\d{0,127}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 129,
+          "minLength": 3,
+          "pattern": "^[1-9]\\d*\\.\\d*[1-9]$",
+          "type": "string"
+        },
+        {
+          "maxLength": 257,
+          "minLength": 3,
+          "pattern": "^0\\.0{0,127}(?:[1-9]|[1-9]\\d{0,126}[1-9])$",
+          "type": "string"
+        }
+      ],
+      "title": "High",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1",
+      "x-market-decimal-policy": "positive-normal-v1"
+    },
+    "instrument": {
+      "additionalProperties": false,
+      "properties": {
+        "product_type": {
+          "enum": [
+            "crypto_spot",
+            "equity"
+          ],
+          "type": "string"
+        },
+        "symbol": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[A-Z0-9][A-Z0-9._-]*$",
+          "type": "string"
+        },
+        "venue": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[A-Z0-9][A-Z0-9._-]*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "type": "object"
+    },
+    "low": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[1-9]\\d{0,127}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 129,
+          "minLength": 3,
+          "pattern": "^[1-9]\\d*\\.\\d*[1-9]$",
+          "type": "string"
+        },
+        {
+          "maxLength": 257,
+          "minLength": 3,
+          "pattern": "^0\\.0{0,127}(?:[1-9]|[1-9]\\d{0,126}[1-9])$",
+          "type": "string"
+        }
+      ],
+      "title": "Low",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1",
+      "x-market-decimal-policy": "positive-normal-v1"
+    },
+    "open": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "pattern": "^[1-9]\\d{0,127}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 129,
+          "minLength": 3,
+          "pattern": "^[1-9]\\d*\\.\\d*[1-9]$",
+          "type": "string"
+        },
+        {
+          "maxLength": 257,
+          "minLength": 3,
+          "pattern": "^0\\.0{0,127}(?:[1-9]|[1-9]\\d{0,126}[1-9])$",
+          "type": "string"
+        }
+      ],
+      "title": "Open",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1",
+      "x-market-decimal-policy": "positive-normal-v1"
+    },
+    "open_time": {
+      "format": "date-time",
+      "title": "Open Time",
+      "type": "string"
+    },
+    "timeframe": {
+      "$ref": "#/$defs/MarketTimeframe"
+    },
+    "volume": {
+      "anyOf": [
+        {
+          "const": "0",
+          "type": "string"
+        },
+        {
+          "maxLength": 128,
+          "pattern": "^[1-9]\\d{0,127}$",
+          "type": "string"
+        },
+        {
+          "maxLength": 129,
+          "minLength": 3,
+          "pattern": "^[1-9]\\d*\\.\\d*[1-9]$",
+          "type": "string"
+        },
+        {
+          "maxLength": 257,
+          "minLength": 3,
+          "pattern": "^0\\.0{0,127}(?:[1-9]|[1-9]\\d{0,126}[1-9])$",
+          "type": "string"
+        }
+      ],
+      "title": "Volume",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1",
+      "x-market-decimal-policy": "non-negative-normal-v1"
+    }
+  },
+  "required": [
+    "instrument",
+    "timeframe",
+    "open_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume"
+  ],
+  "title": "MarketCandle",
+  "type": "object"
+}
