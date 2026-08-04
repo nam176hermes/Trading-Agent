@@ -25,6 +25,7 @@ _POLICY_FIELDS = {
     "upstream_tag_object",
     "upstream_commit",
     "source_url",
+    "source_sha256",
     "cargo_lock_sha256",
     "pyproject_sha256",
     "required_cargo_version",
@@ -42,6 +43,7 @@ _EXPECTED_POLICY = {
     "upstream_tag_object": "0ccb5b55879c072a6e07fc7cbe5297c53c378107",
     "upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
     "source_url": "https://github.com/nautechsystems/nautilus_trader/archive/280ae1762df51a492a4ce71506a40b5c8706def5.tar.gz",
+    "source_sha256": "a00d3ab0c5b2ba1e4a4ac4c9af70f5b3fe30717d9b42a328e51696e3894a45e2",
     "cargo_lock_sha256": "083652294183947a352d1443ed0245311bf7ee5a716b66ccc21e814be25851ed",
     "pyproject_sha256": "f707cbe27b183ba598c31f1b3b6ec67e36f36e878c4228d3fef80741efb81b28",
     "required_cargo_version": "1.95.0",
@@ -112,7 +114,7 @@ def _validate_policy(document: object) -> dict[str, object]:
     for field in ("upstream_repository", "upstream_tag", "upstream_tag_object", "upstream_commit", "source_url", "required_cargo_version"):
         if not isinstance(document[field], str) or not document[field]:
             raise VerificationError(f"input cache policy {field} is invalid")
-    for field in ("cargo_lock_sha256", "pyproject_sha256"):
+    for field in ("source_sha256", "cargo_lock_sha256", "pyproject_sha256"):
         value = document[field]
         if not isinstance(value, str) or len(value) != _SHA256_LENGTH or any(character not in "0123456789abcdef" for character in value):
             raise VerificationError(f"input cache policy {field} is invalid")
@@ -295,6 +297,8 @@ def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, ob
         with urllib.request.urlopen(str(policy["source_url"]), timeout=120) as response, source_archive.open("wb") as target:
             shutil.copyfileobj(response, target)
         os.chmod(source_archive, 0o600)
+        if _sha256(source_archive) != policy["source_sha256"]:
+            raise VerificationError("Nautilus source archive digest does not match the input cache policy")
         with tempfile.TemporaryDirectory(dir=staging) as extraction_text:
             extracted = _safe_extract_source(source_archive, Path(extraction_text), str(policy["upstream_commit"]))
             derived = staging / _DERIVED_PREFIX

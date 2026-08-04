@@ -31,6 +31,7 @@ def test_committed_input_cache_policy_binds_the_01b_upstream_and_lockfile() -> N
             "https://github.com/nautechsystems/nautilus_trader/archive/"
             "280ae1762df51a492a4ce71506a40b5c8706def5.tar.gz"
         ),
+        "source_sha256": "a00d3ab0c5b2ba1e4a4ac4c9af70f5b3fe30717d9b42a328e51696e3894a45e2",
         "cargo_lock_sha256": "083652294183947a352d1443ed0245311bf7ee5a716b66ccc21e814be25851ed",
         "pyproject_sha256": "f707cbe27b183ba598c31f1b3b6ec67e36f36e878c4228d3fef80741efb81b28",
         "required_cargo_version": "1.95.0",
@@ -53,7 +54,7 @@ def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _policy(source_url: str, cargo_lock: bytes, pyproject: bytes) -> dict[str, object]:
+def _policy(source_url: str, source_sha256: str, cargo_lock: bytes, pyproject: bytes) -> dict[str, object]:
     return {
         "schema_version": 1,
         "upstream_repository": "https://github.com/nautechsystems/nautilus_trader.git",
@@ -61,6 +62,7 @@ def _policy(source_url: str, cargo_lock: bytes, pyproject: bytes) -> dict[str, o
         "upstream_tag_object": "0ccb5b55879c072a6e07fc7cbe5297c53c378107",
         "upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
         "source_url": source_url,
+        "source_sha256": source_sha256,
         "cargo_lock_sha256": _sha256(cargo_lock),
         "pyproject_sha256": _sha256(pyproject),
         "required_cargo_version": "1.95.0",
@@ -134,7 +136,7 @@ def test_acquire_binds_source_derived_inputs_and_cargo_closure(tmp_path: Path, p
     pyproject = b"[project]\nname = 'fixture'\n"
     archive = _source_archive(tmp_path, cargo_lock, pyproject)
     cache = private_cache_root / "external-cache"
-    policy = _policy(archive.as_uri(), cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
 
     manifest = module.acquire(cache, policy, _private_cargo(tmp_path))
 
@@ -153,6 +155,17 @@ def test_acquire_binds_source_derived_inputs_and_cargo_closure(tmp_path: Path, p
         assert artifact.stat().st_nlink == 1
 
 
+def test_acquisition_rejects_source_digest_drift(tmp_path: Path, private_cache_root: Path) -> None:
+    module = _module()
+    cargo_lock = b"version = 3\n"
+    pyproject = b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), "0" * 64, cargo_lock, pyproject)
+
+    with pytest.raises(module.VerificationError, match="source archive digest"):
+        module.acquire(private_cache_root / "digest-drift-cache", policy, _private_cargo(tmp_path))
+
+
 def test_verifier_rejects_missing_hash_drifted_mutable_and_symlinked_inputs(
     tmp_path: Path, private_cache_root: Path
 ) -> None:
@@ -161,7 +174,7 @@ def test_verifier_rejects_missing_hash_drifted_mutable_and_symlinked_inputs(
     pyproject = b"[project]\nname = 'fixture'\n"
     archive = _source_archive(tmp_path, cargo_lock, pyproject)
     cache = private_cache_root / "missing-cache"
-    policy = _policy(archive.as_uri(), cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
     cargo = _private_cargo(tmp_path)
     module.acquire(cache, policy, cargo)
 
@@ -200,7 +213,7 @@ def test_verification_is_offline_and_does_not_invoke_cargo(
     pyproject = b"[project]\nname = 'fixture'\n"
     archive = _source_archive(tmp_path, cargo_lock, pyproject)
     cache = private_cache_root / "external-cache"
-    policy = _policy(archive.as_uri(), cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
     module.acquire(cache, policy, _private_cargo(tmp_path))
 
     monkeypatch.setattr(module.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("cargo invoked"))
