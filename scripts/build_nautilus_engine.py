@@ -123,6 +123,16 @@ def _build_tool_environment(
     }
 
 
+def _stage_compiler_temp_environment(stage: Path) -> dict[str, str]:
+    compiler_tmp = stage / "compiler-tmp"
+    compiler_tmp.mkdir(mode=0o700)
+    return {
+        "TMPDIR": str(compiler_tmp),
+        "TEMP": str(compiler_tmp),
+        "TMP": str(compiler_tmp),
+    }
+
+
 def _reject_ambient_compilers(search_path: tuple[Path, ...]) -> None:
     for directory in search_path:
         for name in ("clang", "clang++", "ld.lld"):
@@ -671,6 +681,7 @@ def build_engine(
         base_environment.update(
             _build_tool_environment(llvm_toolchain / "bin", cargo.parent, venv / "bin")
         )
+        base_environment.update(_stage_compiler_temp_environment(stage))
         _sandbox_run(
             sandbox,
             stage,

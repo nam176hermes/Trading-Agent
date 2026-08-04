@@ -151,7 +151,9 @@ runs every environment-creation, wheel-installation, and build command inside
 Bubblewrap with a new network namespace. The host filesystem is read-only
 inside that namespace except for the staging directory. `CARGO_NET_OFFLINE`,
 `PIP_NO_INDEX`, and `UV_OFFLINE` are also set. A caller cannot select a
-network-enabled build path.
+network-enabled build path. The staging directory provides the only compiler
+temporary directory: `TMPDIR`, `TEMP`, and `TMP` all point to its private
+`compiler-tmp` child, while host `/tmp` remains read-only.
 
 The destination contains only the wheel and `artifact-manifest.json`, both
 `0400` under a `0500` directory. The manifest binds source/Cargo/wheel-cache

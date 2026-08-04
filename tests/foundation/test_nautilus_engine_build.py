@@ -334,6 +334,48 @@ def test_bubblewrap_build_boundary_has_no_host_network_route(tmp_path: Path) -> 
     )
 
 
+def test_bubblewrap_build_boundary_uses_a_private_writable_compiler_tempdir(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+    environment = {"PATH": "/usr/bin:/bin"}
+    environment.update(module._stage_compiler_temp_environment(stage))
+    host_temporary_file = Path("/tmp") / f"nautilus-host-temp-{os.getpid()}"
+    assert not host_temporary_file.exists()
+    probe = f"""\
+import os
+from pathlib import Path
+
+stage_temp = Path(os.environ["TMPDIR"])
+assert os.environ["TEMP"] == str(stage_temp)
+assert os.environ["TMP"] == str(stage_temp)
+assert stage_temp.is_dir()
+(stage_temp / "compiler-object").write_bytes(b"object")
+host_temp = Path({str(host_temporary_file)!r})
+assert not host_temp.exists()
+try:
+    host_temp.write_bytes(b"host")
+except OSError:
+    pass
+else:
+    raise SystemExit("host /tmp is writable inside the sandbox")
+"""
+
+    module._sandbox_run(
+        Path("/usr/bin/bwrap"),
+        stage,
+        stage,
+        environment,
+        [sys.executable, "-I", "-c", probe],
+        timeout=30,
+    )
+
+    assert (stage / "compiler-tmp" / "compiler-object").read_bytes() == b"object"
+    assert not host_temporary_file.exists()
+
+
 def test_make_build_and_verify_targets_preserve_the_offline_contract() -> None:
     variables = [
         "NAUTILUS_ENGINE_PYTHON=/approved/python3.12",
