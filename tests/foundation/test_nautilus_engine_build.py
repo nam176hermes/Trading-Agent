@@ -270,6 +270,25 @@ def test_artifact_verifier_accepts_the_exact_sealed_wheel() -> None:
         assert stat.S_IMODE(wheel.stat().st_mode) == 0o400
 
 
+def test_publish_preserves_seal_after_atomic_rename(tmp_path: Path) -> None:
+    module = _module()
+    staging = tmp_path / "staging"
+    staging.mkdir(mode=0o700)
+    wheel = staging / "nautilus_trader.whl"
+    wheel.write_bytes(b"wheel")
+    wheel.chmod(0o400)
+    staging.chmod(0o500)
+    destination = tmp_path / "published"
+
+    module._publish_artifacts(staging, destination)
+
+    assert not staging.exists()
+    assert destination.is_dir()
+    assert (destination / wheel.name).read_bytes() == b"wheel"
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o500
+    assert stat.S_IMODE((destination / wheel.name).stat().st_mode) == 0o400
+
+
 def test_wheel_cache_requires_the_operator_approved_manifest_and_exact_files(tmp_path: Path) -> None:
     module = _module()
     cache, digest = _sealed_wheel_cache(tmp_path)

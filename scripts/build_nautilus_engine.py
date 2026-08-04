@@ -419,6 +419,29 @@ def write_artifact_manifest(
     return document
 
 
+def _publish_artifacts(artifacts: Path, destination: Path) -> None:
+    """Atomically publish an already sealed artifact directory.
+
+    The staging directory is deliberately non-writable after its manifest is
+    written.  Some filesystems reject a directory rename in that state, so
+    temporarily restore owner-write permission solely for the rename, then
+    re-seal the published destination before it is verified or returned.
+    """
+    _directory(artifacts, "sealed artifact staging directory", 0o500)
+    if destination.exists() or destination.is_symlink():
+        raise VerificationError("engine artifact destination changed during build")
+    os.chmod(artifacts, 0o700)
+    try:
+        os.replace(artifacts, destination)
+    except OSError:
+        try:
+            os.chmod(artifacts, 0o500)
+        except OSError:
+            pass
+        raise
+    os.chmod(destination, 0o500)
+
+
 def verify_artifacts(artifacts: Path, policy: dict[str, object], *, python: Path) -> dict[str, object]:
     _reject_symlinked_ancestors(artifacts, "engine artifact directory")
     _directory(artifacts, "engine artifact directory", 0o500)
@@ -759,9 +782,7 @@ def build_engine(
             input_cache_manifest_sha256=input_manifest_digest,
             wheel_cache_manifest_sha256=wheel_cache_manifest_sha256,
         )
-        if destination.exists() or destination.is_symlink():
-            raise VerificationError("engine artifact destination changed during build")
-        os.replace(artifacts, destination)
+        _publish_artifacts(artifacts, destination)
         verify_artifacts(destination, policy, python=python)
         return document
 
