@@ -24,12 +24,12 @@ The actual cache and private toolchain remain outside Git:
 - Materialized Rust 1.95.0 toolchain:
   `/tmp/nautilus-ws01c-rust-toolchain`
 - Nautilus source/Cargo cache:
-  `/tmp/nautilus-ws01c-input-cache`
+  `/tmp/nautilus-ws01c-input-cache-v2`
 - External input-cache manifest:
-  `/tmp/nautilus-ws01c-input-cache/input-cache-manifest.json`
+  `/tmp/nautilus-ws01c-input-cache-v2/input-cache-manifest.json`
 
 The generated manifest SHA-256 is
-`fe60be651411b9e489eac383e6555e8303a7be6aad0b47b6b35a2e82a1fb0845`.
+`e0e249e0604d2d6790666f145b7d26a628648a6e5d500a3eb08e6a242e735fff`.
 It contains 45,769 individually hash-bound downloaded or derived inputs.
 
 The official source archive entry is SHA-256
@@ -43,7 +43,8 @@ The explicitly supplied private tools reported `rustc 1.95.0
 ## Security decisions
 
 - The committed policy reproduces the 01B annotated-tag object, peeled commit,
-  repository, source URL, and reviewed source-file digests exactly.
+  repository, source URL, source-archive SHA-256, and reviewed source-file
+  digests exactly.
 - Acquisition uses only the caller-provided absolute Cargo path. It validates
   direct, non-symlink Cargo and sibling rustc executables, verifies both are
   Rust 1.95.0, removes `RUSTUP_HOME`, sets `RUSTC` directly to the private
@@ -74,14 +75,14 @@ Passed commands:
 uv run pytest -q tests/foundation/test_nautilus_input_cache.py \
   tests/foundation/test_nautilus_toolchain_cache.py \
   tests/foundation/test_nautilus_provenance.py
-# 25 passed
+# 26 passed
 
 uv run python scripts/verify_nautilus_provenance.py --root .
 # nautilus provenance verification: PASS
 
 CARGO_NET_OFFLINE=true uv run python scripts/prepare_nautilus_input_cache.py \
   --policy engines/nautilus/input-cache-policy.json \
-  --cache /tmp/nautilus-ws01c-input-cache --verify
+  --cache /tmp/nautilus-ws01c-input-cache-v2 --verify
 # nautilus input cache verification: PASS
 ```
 
@@ -92,6 +93,7 @@ and did not run a build.
 ## Commits
 
 - `81c6a63 build(nautilus): cache source and Cargo inputs`
+- `0030155 fix(nautilus): pin cached source archive digest`
 
 ## Concerns
 
