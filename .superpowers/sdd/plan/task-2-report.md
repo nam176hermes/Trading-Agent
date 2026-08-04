@@ -95,6 +95,7 @@ and did not run a build.
 - `81c6a63 build(nautilus): cache source and Cargo inputs`
 - `0030155 fix(nautilus): pin cached source archive digest`
 - `303b117 fix(nautilus): reject symlinked cache ancestors`
+- `d1cab5f fix(nautilus): create private cache parents safely`
 
 ## Concerns
 
@@ -144,6 +145,43 @@ uv run pytest -q --basetemp=/tmp/nautilus-input-cache-review-2 \
   tests/foundation/test_nautilus_toolchain_cache.py \
   tests/foundation/test_nautilus_provenance.py
 # 30 passed
+
+uv run python scripts/verify_nautilus_provenance.py --root .
+# nautilus provenance verification: PASS
+
+CARGO_NET_OFFLINE=true uv run python scripts/prepare_nautilus_input_cache.py \
+  --policy engines/nautilus/input-cache-policy.json \
+  --cache /tmp/nautilus-ws01c-input-cache-v2 --verify
+# nautilus input cache verification: PASS
+```
+
+## Review fix round 2 — new cache parents
+
+The round-1 preflight required `cache.parent` to already exist, accidentally
+rejecting the documented normal case of acquiring into a new external cache
+path. Acquisition now creates any missing parent components using
+descriptor-relative `mkdir`/`open` operations rooted at `/`, with
+`O_DIRECTORY | O_NOFOLLOW` and `dir_fd`. Each existing component is inspected
+without following symlinks; a raced replacement can only produce a fail-closed
+unsafe-ancestor error. Newly created components are explicitly set to `0700`.
+Path traversal segments are rejected before the walk begins.
+
+The new regression proves acquisition succeeds for a missing
+`new-parent/nested/cache` path, verifies that both created parent directories
+are `0700`, and completes offline verification. The existing cache-alias test
+now also proves acquisition rejects a missing cache target through a symlinked
+parent, in addition to rejecting verification through that alias.
+
+TDD red evidence: the new cache-parent test initially failed with `input cache
+has a missing ancestor`. After descriptor-relative creation, the focused
+validation ran using a real Linux `/tmp` pytest base directory:
+
+```bash
+uv run pytest -q --basetemp=/tmp/nautilus-input-cache-round2-full \
+  tests/foundation/test_nautilus_input_cache.py \
+  tests/foundation/test_nautilus_toolchain_cache.py \
+  tests/foundation/test_nautilus_provenance.py
+# 31 passed
 
 uv run python scripts/verify_nautilus_provenance.py --root .
 # nautilus provenance verification: PASS
