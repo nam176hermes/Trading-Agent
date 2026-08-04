@@ -96,6 +96,7 @@ and did not run a build.
 - `0030155 fix(nautilus): pin cached source archive digest`
 - `303b117 fix(nautilus): reject symlinked cache ancestors`
 - `d1cab5f fix(nautilus): create private cache parents safely`
+- `766536b fix(nautilus): bind input cache staging to parent fd`
 
 ## Concerns
 
@@ -145,6 +146,47 @@ uv run pytest -q --basetemp=/tmp/nautilus-input-cache-review-2 \
   tests/foundation/test_nautilus_toolchain_cache.py \
   tests/foundation/test_nautilus_provenance.py
 # 30 passed
+
+uv run python scripts/verify_nautilus_provenance.py --root .
+# nautilus provenance verification: PASS
+
+CARGO_NET_OFFLINE=true uv run python scripts/prepare_nautilus_input_cache.py \
+  --policy engines/nautilus/input-cache-policy.json \
+  --cache /tmp/nautilus-ws01c-input-cache-v2 --verify
+# nautilus input cache verification: PASS
+```
+
+## Review fix round 3 — descriptor-bound staging and final placement
+
+The parent-directory preparation now returns an open no-follow directory file
+descriptor and acquisition keeps it open for the entire transaction. It checks
+the destination with `os.stat(..., dir_fd=parent_fd, follow_symlinks=False)`,
+creates a randomly named private staging directory with `os.mkdir(...,
+dir_fd=parent_fd)`, and opens that staging directory with `O_NOFOLLOW`.
+
+All staging writes are addressed through the open staging descriptor's
+`/proc/self/fd/<n>` handle. Cargo receives that descriptor through
+`pass_fds`, so its explicitly-set `CARGO_HOME` remains bound to the verified
+staging directory. Final placement uses `os.replace` with both source and
+destination `dir_fd=parent_fd`; it never reuses the caller's mutable lexical
+cache-parent path. A final descriptor-relative destination check fails closed
+if the target changed during acquisition. Failed staging directories are thawed
+and removed via the verified parent descriptor.
+
+The deterministic regression opens the verified parent, renames it, and
+replaces the original lexical parent path with a symlink before acquisition
+continues. Before this fix, acquisition wrote the cache through that substituted
+path. It now places the cache only in the renamed, descriptor-backed parent and
+leaves the substituted directory untouched.
+
+Fresh validation used a real Linux `/tmp` pytest base directory:
+
+```bash
+uv run pytest -q --basetemp=/tmp/nautilus-input-cache-round3-full \
+  tests/foundation/test_nautilus_input_cache.py \
+  tests/foundation/test_nautilus_toolchain_cache.py \
+  tests/foundation/test_nautilus_provenance.py
+# 32 passed
 
 uv run python scripts/verify_nautilus_provenance.py --root .
 # nautilus provenance verification: PASS
