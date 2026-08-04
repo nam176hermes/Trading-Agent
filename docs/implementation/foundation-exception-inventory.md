@@ -584,7 +584,7 @@ services/semantic_input_refresher/main.py|116|Exception|PRODUCTION_CRITICAL|RAIS
 services/semantic_input_refresher/main.py|164|Exception|PRODUCTION_CRITICAL|RAISE
 services/semantic_input_refresher/main.py|212|Exception|PRODUCTION_CRITICAL|RETURN
 tests/foundation/test_package6_controller_closure.py|632|BaseException|TESTS|OTHER
-tests/jobs/_postgres.py|170|Exception|TESTS|RAISE
+tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|336|BaseException|TESTS|OTHER
 ```

@@ -181,6 +181,20 @@ def test_load_frozen_contract_rejects_non_utf8_and_duplicate_keys(
         load_frozen_contract(path)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    (None, "[]"),
+)
+def test_frozen_contract_matrix_rejects_missing_and_non_object_documents(
+    tmp_path: Path, payload: str | None
+) -> None:
+    path = tmp_path / "contract.json"
+    if payload is not None:
+        path.write_text(payload, encoding="utf-8")
+    with pytest.raises(ValueError, match="frozen authority contract"):
+        load_frozen_contract(path)
+
+
 def test_load_migration_literals_uses_ast_without_importing_migration(
     tmp_path: Path,
 ) -> None:
@@ -270,6 +284,30 @@ def test_authority_manifest_rejects_placeholder_input_hash(tmp_path: Path) -> No
     path.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(ValueError, match="non-placeholder lowercase SHA-256"):
+        load_authority_manifest(path)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    (
+        (lambda document: document.__setitem__("record_kind", "OTHER"), "record kind is invalid"),
+        (lambda document: document.__setitem__("schema_version", 2), "schema version is invalid"),
+        (lambda document: document.__setitem__("exact_head", "0008"), "exact head is invalid"),
+        (lambda document: document.__setitem__("catalog", []), "catalog fields are missing or unknown"),
+        (lambda document: document["catalog"].__setitem__("query_id", "other"), "catalog query is invalid"),
+        (lambda document: document.__setitem__("frozen_inputs", {}), "frozen inputs are missing or unknown"),
+        (lambda document: document["frozen_inputs"]["migration_0007"].__setitem__("filename", "wrong.py"), "frozen input is invalid: migration_0007"),
+    ),
+)
+def test_authority_manifest_matrix_rejects_each_unbound_metadata_field(
+    tmp_path: Path, mutate, error: str
+) -> None:
+    document = json.loads(AUTHORITY_MANIFEST_PATH.read_text(encoding="utf-8"))
+    mutate(document)
+    path = tmp_path / "authority-manifest.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
         load_authority_manifest(path)
 
 

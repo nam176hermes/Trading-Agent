@@ -37,7 +37,10 @@ _TOP_FIELDS = frozenset(
 _SOURCE_FIELDS = frozenset({"commit", "tree"})
 _VALIDITY_FIELDS = frozenset({"approved_at_utc", "expires_at_utc"})
 _GREENLIGHT_FIELDS = frozenset(
-    {"decision", "operator_identity", "approved_at_utc", "lifecycle_actions"}
+    {"decision", "operator_identity", "approved_at_utc", "operation_lifecycles"}
+)
+_OPERATION_LIFECYCLE_FIELDS = frozenset(
+    {"test_path", "operation_id", "lifecycle_actions"}
 )
 _CONSTRAINT_FIELDS = frozenset(
     {
@@ -59,7 +62,11 @@ _ROOT = re.compile(r"^/tmp/phase4-postgres-[A-Za-z0-9._-]+$")
 _TIMESTAMP = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
 )
-_LIFECYCLE_ACTIONS = ("INITDB", "START", "RESTORE", "STOP", "DELETE")
+_LIFECYCLE_ACTIONS_BY_KIND = {
+    "MIGRATE": ("INITDB", "START", "MIGRATE", "STOP", "DELETE"),
+    "RESTORE": ("INITDB", "START", "RESTORE", "STOP", "DELETE"),
+}
+_VALID_LIFECYCLE_ACTIONS = frozenset(_LIFECYCLE_ACTIONS_BY_KIND.values())
 
 
 class DisposablePostgresFixturePlanRejected(ValueError):
@@ -73,6 +80,14 @@ class DisposablePostgresFixtureSlot(NamedTuple):
     root: str
     pgdata: str
     port: int
+    lifecycle_actions: tuple[str, ...]
+
+
+def lifecycle_actions_for(kind: str) -> tuple[str, ...]:
+    try:
+        return _LIFECYCLE_ACTIONS_BY_KIND[kind]
+    except KeyError as error:
+        raise ValueError("fixture lifecycle kind is not supported") from error
 
 
 def _reject(message: str) -> None:
@@ -189,9 +204,6 @@ def validate_disposable_postgres_fixture_plan(
     )
     if greenlight_at < approved_at or greenlight_at > now.astimezone(UTC):
         _reject("fixture plan Greenlight time is invalid")
-    if greenlight["lifecycle_actions"] != list(_LIFECYCLE_ACTIONS):
-        _reject("fixture plan lifecycle Greenlights are incomplete")
-
     constraints = _exact_mapping(
         document["constraints"], _CONSTRAINT_FIELDS, "fixture plan constraints"
     )
@@ -215,7 +227,7 @@ def validate_disposable_postgres_fixture_plan(
     raw_slots = document["slots"]
     if not isinstance(raw_slots, list) or not 1 <= len(raw_slots) <= 256:
         _reject("fixture plan slots are missing or excessive")
-    slots: list[DisposablePostgresFixtureSlot] = []
+    slot_data: list[tuple[str, str, int, str, str, int]] = []
     roots: set[str] = set()
     ports: set[int] = set()
     for index, raw_slot in enumerate(raw_slots):
@@ -248,27 +260,60 @@ def validate_disposable_postgres_fixture_plan(
             _reject("fixture plan roots and ports must be unique")
         roots.add(root)
         ports.add(port)
-        slots.append(
-            DisposablePostgresFixtureSlot(
-                test_path,
-                operation_id,
-                ordinal,
-                root,
-                pgdata,
-                port,
-            )
-        )
-    canonical_slots = sorted(
-        slots,
-        key=lambda item: (item.test_path, item.operation_id, item.ordinal),
-    )
-    if slots != canonical_slots:
+        slot_data.append((test_path, operation_id, ordinal, root, pgdata, port))
+    canonical_slot_data = sorted(slot_data, key=lambda item: item[:3])
+    if slot_data != canonical_slot_data:
         _reject("fixture plan slots are not in canonical order")
     by_pair: dict[tuple[str, str], list[int]] = {}
-    for slot in slots:
-        by_pair.setdefault((slot.test_path, slot.operation_id), []).append(slot.ordinal)
+    for test_path, operation_id, ordinal, _root, _pgdata, _port in slot_data:
+        by_pair.setdefault((test_path, operation_id), []).append(ordinal)
     if any(ordinals != list(range(1, len(ordinals) + 1)) for ordinals in by_pair.values()):
         _reject("fixture plan slot ordinals are not contiguous")
+
+    slot_pairs = tuple(sorted(by_pair))
+    raw_lifecycles = greenlight["operation_lifecycles"]
+    if not isinstance(raw_lifecycles, list) or len(raw_lifecycles) != len(slot_pairs):
+        _reject("fixture plan operation lifecycles are incomplete")
+    lifecycle_by_pair: dict[tuple[str, str], tuple[str, ...]] = {}
+    lifecycle_pairs: list[tuple[str, str]] = []
+    for index, raw_lifecycle in enumerate(raw_lifecycles):
+        lifecycle = _exact_mapping(
+            raw_lifecycle,
+            _OPERATION_LIFECYCLE_FIELDS,
+            f"fixture plan operation lifecycle {index}",
+        )
+        test_path = lifecycle["test_path"]
+        operation_id = lifecycle["operation_id"]
+        actions = lifecycle["lifecycle_actions"]
+        pair = (test_path, operation_id)
+        if (
+            not _valid_test_path(test_path)
+            or not isinstance(operation_id, str)
+            or _OPERATION_ID.fullmatch(operation_id) is None
+            or pair not in approved_pairs
+            or not isinstance(actions, list)
+            or not all(isinstance(action, str) for action in actions)
+            or tuple(actions) not in _VALID_LIFECYCLE_ACTIONS
+            or pair in lifecycle_by_pair
+        ):
+            _reject("fixture plan operation lifecycle is invalid")
+        lifecycle_pairs.append(pair)
+        lifecycle_by_pair[pair] = tuple(actions)
+    if tuple(lifecycle_pairs) != slot_pairs:
+        _reject("fixture plan operation lifecycles are not canonical or exact")
+
+    slots = tuple(
+        DisposablePostgresFixtureSlot(
+            test_path,
+            operation_id,
+            ordinal,
+            root,
+            pgdata,
+            port,
+            lifecycle_by_pair[(test_path, operation_id)],
+        )
+        for test_path, operation_id, ordinal, root, pgdata, port in slot_data
+    )
 
     digest = document["canonical_record_sha256"]
     if (
@@ -277,7 +322,7 @@ def validate_disposable_postgres_fixture_plan(
         or digest != canonical_record_sha256(document)
     ):
         _reject("fixture plan canonical digest does not match")
-    return tuple(slots)
+    return slots
 
 
 def load_protected_fixture_plan(path: Path) -> dict[str, object]:

@@ -166,6 +166,13 @@ UV_CACHE_DIR=/tmp/trading-agent-track-c-p10-root-uv-cache \
 
 Runtime PostgreSQL proof remains `PENDING_APPROVAL` until a separately approved disposable instance is used.
 
+**Slice 2 source-head boundary:** revision `0009_canonical_market_data` is the
+additive Alembic source head after this slice. This does not activate it for
+production: runtime release authority, deployment authority, and the Job API
+expected revision remain intentionally pinned at
+`0008_trading_domain_ledger` pending a separately reviewed activation. No role
+grants are introduced by Slice 2.
+
 ## Slice 3: job and ingestion authority
 
 ### Task 5: Extend snapshot job contracts additively
@@ -250,4 +257,7 @@ make ci
 
 ## First execution target
 
-Implement **Slice 1 only** as the first candidate. It has no database migration, no external I/O, no scheduler change, no runtime mutation, and no UI. Its public contract is the foundation for every later P10 slice and for P11 signal replay identity.
+Implement **Slice 2 only** as the next candidate. It is source-only additive
+PostgreSQL persistence with no external I/O, scheduler change, runtime mutation,
+or UI. Its public persistence contract builds on Slice 1 and remains inactive
+until separate Runtime Authority approval.

@@ -11,6 +11,9 @@ MATRIX = ROOT / "docs/implementation/d0-closure-matrix.json"
 MAKEFILE = ROOT / "Makefile"
 WORKFLOW = ROOT / ".github/workflows/foundation.yml"
 PYPROJECT = ROOT / "pyproject.toml"
+TRACK_C_PACKET_3_VERDICT = (
+    ROOT / "docs/plans/track-c-p10-canonical-market-data/PACKET-3-VERDICT.md"
+)
 
 SOURCE_REQUIREMENTS = {
     "D0-PROPERTY-TESTS",
@@ -129,7 +132,56 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
     assert "uses: actions/upload-artifact@v4" in workflow
     assert "path: /tmp/trading-agent-test-evidence" in workflow
     assert (
-        "ci: test-all check-test-skips check-critical-coverage build-dashboard "
+        "ci-private: test-all check-test-skips check-critical-coverage build-dashboard "
         "audit-python-source audit-dependencies"
     ) in makefile
     assert set(document["final_proof_commands"]) == REQUIRED_COMMANDS
+
+
+def test_canonical_ci_uses_a_private_linux_temp_root() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert "ci:\n\t@set -eu;" in makefile
+    assert "ci-private: test-all check-test-skips check-critical-coverage build-dashboard " in makefile
+    assert "ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci.XXXXXXXXXX)" in makefile
+    assert 'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700"' in makefile
+    assert "cleanup_ci_tmpdir() {" in makefile
+    assert 'find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +' in makefile
+    assert "trap 'cleanup_ci_tmpdir' EXIT" in makefile
+    assert 'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir"' in makefile
+    assert "$(MAKE) ci-private" in makefile
+
+
+def test_track_c_source_head_defers_runtime_activation() -> None:
+    verdict = TRACK_C_PACKET_3_VERDICT.read_text(encoding="utf-8")
+    migration_0008 = (
+        ROOT / "alembic/versions/0008_trading_domain_ledger.py"
+    ).read_text(encoding="utf-8")
+    migration_0009 = (
+        ROOT / "alembic/versions/0009_canonical_market_data.py"
+    ).read_text(encoding="utf-8")
+    job_store_config = (ROOT / "services/job_store/config.py").read_text(
+        encoding="utf-8"
+    )
+    job_api_config = (ROOT / "apps/job_api/config.py").read_text(encoding="utf-8")
+    release_v2 = (ROOT / "packages/runtime_release/v2.py").read_text(
+        encoding="utf-8"
+    )
+    stage_verifier = (ROOT / "ops/release-v2/verify-stage.py").read_text(
+        encoding="utf-8"
+    )
+    systemd_example = (ROOT / "ops/systemd/job-api.env.example").read_text(
+        encoding="utf-8"
+    )
+
+    assert "SOURCE_HEAD_0009_RUNTIME_ACTIVATION_DEFERRED" in verdict
+    assert "NO_GO" in verdict
+    assert 'revision = "0008_trading_domain_ledger"' in migration_0008
+    assert 'down_revision = "0007_job_event_chain_authority"' in migration_0008
+    assert 'revision = "0009_canonical_market_data"' in migration_0009
+    assert 'down_revision = "0008_trading_domain_ledger"' in migration_0009
+    assert 'CANONICAL_DATABASE_REVISION = "0008_trading_domain_ledger"' in job_store_config
+    assert "EXPECTED_REVISION = CANONICAL_DATABASE_REVISION" in job_api_config
+    assert 'EXPECTED_DATABASE_REVISION = "0008_trading_domain_ledger"' in release_v2
+    assert '_EXPECTED_DATABASE_REVISION = "0008_trading_domain_ledger"' in stage_verifier
+    assert "TRADING_JOB_API_EXPECTED_REVISION=0008_trading_domain_ledger" in systemd_example

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -605,6 +606,9 @@ def test_critical_dashboard_runner_fails_each_file_with_zero_observations(
     dashboard.mkdir()
 
     def fake_run(command, **kwargs):
+        assert kwargs["env"]["TMPDIR"] == "/tmp"
+        assert kwargs["env"]["TEMP"] == "/tmp"
+        assert kwargs["env"]["TMP"] == "/tmp"
         output = (
             "TAP version 13\n1..0\n"
             if command[-1] == "tests/empty.test.mjs"
@@ -613,22 +617,21 @@ def test_critical_dashboard_runner_fails_each_file_with_zero_observations(
         return subprocess.CompletedProcess(command, 0, stdout=output)
 
     monkeypatch.setattr(critical_coverage.subprocess, "run", fake_run)
-    report_dir = tmp_path / "reports"
-    report_dir.mkdir(mode=0o700)
+    with TemporaryDirectory(dir="/tmp") as temporary_directory:
+        report_dir = Path(temporary_directory)
+        exit_status, report_path = critical_coverage._run_dashboard_observations(
+            dashboard,
+            ["tests/empty.test.mjs", "tests/seen.test.mjs"],
+            report_dir,
+            {},
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
 
-    exit_status, report_path = critical_coverage._run_dashboard_observations(
-        dashboard,
-        ["tests/empty.test.mjs", "tests/seen.test.mjs"],
-        report_dir,
-        {},
-    )
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-
-    assert exit_status == 1
-    assert {
-        "test_node_id": "apps/dashboard/tests/empty.test.mjs::static-test-inventory",
-        "outcome": "failed",
-    } in report["tests"]
+        assert exit_status == 1
+        assert {
+            "test_node_id": "apps/dashboard/tests/empty.test.mjs::static-test-inventory",
+            "outcome": "failed",
+        } in report["tests"]
 
 
 def _run_governed_fixture(

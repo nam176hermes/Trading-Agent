@@ -45,3 +45,18 @@ dashboard. Source authority does not create runtime authority. Release
 installation, PostgreSQL recovery or migration, service changes, scheduler
 changes, paper-production promotion and live trading remain separate,
 approval-gated operations.
+
+## Current source status (2026-08-03)
+
+The checkout contains a paper-only, unsealed working candidate after P10
+canonical-market-data and Packet 9 coverage work. It includes migration `0009`
+and its source tests, but no source change creates runtime authority. In
+particular, this does not build or activate Release Authority v2, modify the
+historical production baseline, change `promotion-status.json` to `GO`, run a
+production PostgreSQL migration, restart a service, enable a scheduler, or
+enable live execution/trading.
+
+Dashboard ownership is recorded in
+[the route inventory](production/dashboard-route-inventory.md). The inventory
+is a static source map; an endpoint marked `typed unavailable` is deliberately
+not a canonical data source.

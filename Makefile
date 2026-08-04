@@ -3,11 +3,11 @@
 	check-d0-closure check-test-skips check-critical-coverage \
 	check-secrets test test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
-	test-event-ledger-runtime-postgres test-package6-paper-runtime \
+	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
-	build-dashboard test-all ci
+	build-dashboard test-all ci ci-private
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 RUNTIME_RELEASE_WHEELHOUSE_ROOT ?= $(HOME)/.cache/trading-agent/runtime-release-wheelhouse
@@ -156,6 +156,10 @@ test-event-ledger-runtime-postgres:
 	uv run python scripts/run_required_runtime_pytest.py \
 		tests/event_ledger/test_snapshot_postgres_runtime.py
 
+test-market-data-runtime-postgres:
+	uv run python scripts/run_required_runtime_pytest.py \
+		tests/market_data/test_postgres_runtime.py
+
 test-runtime-dual-read:
 	uv run python scripts/run_required_runtime_pytest.py \
 		tests/control_api/test_dual_read.py
@@ -180,4 +184,17 @@ build-dashboard:
 
 test-all: audit check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
 
-ci: test-all check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies
+ci:
+	@set -eu; \
+		ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci.XXXXXXXXXX); \
+		chmod 0700 "$$ci_tmpdir"; \
+		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
+		cleanup_ci_tmpdir() { \
+			find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; \
+			rm -rf -- "$$ci_tmpdir"; \
+		}; \
+		trap 'cleanup_ci_tmpdir' EXIT; \
+		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
+			$(MAKE) ci-private
+
+ci-private: test-all check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies

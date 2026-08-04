@@ -17,12 +17,17 @@ import pytest
 from scripts.validate_disposable_postgres_approval import (
     DisposablePostgresApprovalRejected,
 )
+from scripts.validate_disposable_postgres_fixture_plan import (
+    canonical_record_sha256 as fixture_plan_sha256,
+    lifecycle_actions_for,
+)
 from tests.jobs import _postgres
 from tests.jobs._postgres import (
     DISPOSABLE_DATABASE,
     ROOT,
     disposable_database,
     disposable_postgres_cluster,
+    disposable_restore_workflow,
     disposable_role_settings,
 )
 from tests.jobs.test_disposable_postgres_approval import (
@@ -1067,12 +1072,51 @@ def test_planned_session_uses_only_predeclared_root_and_port(
     with _postgres._disposable_postgres_session(
         operation_id=OPERATION_ID,
         planned=True,
+        expected_lifecycle_actions=lifecycle_actions_for("MIGRATE"),
     ) as session:
         assert session.root == expected_root
         assert session.data == expected_root / "data"
         assert session.authority.context.port == 49152
         assert expected_root.is_dir()
     assert not expected_root.exists()
+
+
+@pytest.mark.parametrize(
+    ("lifecycle_kind", "factory"),
+    (
+        ("RESTORE", disposable_database),
+        ("MIGRATE", disposable_restore_workflow),
+    ),
+)
+def test_planned_public_runtime_api_rejects_a_different_lifecycle_before_initdb(
+    lifecycle_kind: str,
+    factory,
+    protected_record_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval = write_record(
+        protected_record_dir / "approval.json",
+        build_record(),
+    )
+    plan_document = fixture_plan()
+    plan_document["greenlight"]["operation_lifecycles"][0][  # type: ignore[index]
+        "lifecycle_actions"
+    ] = list(lifecycle_actions_for(lifecycle_kind))
+    plan_document["canonical_record_sha256"] = fixture_plan_sha256(plan_document)
+    plan = protected_record_dir / "fixture-plan.json"
+    plan.write_text(json.dumps(plan_document), encoding="utf-8")
+    plan.chmod(0o600)
+    _set_controls(monkeypatch, approval)
+    monkeypatch.setenv("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN", str(plan))
+    monkeypatch.setattr(_postgres, "_current_source_identity", lambda: (COMMIT, TREE))
+    monkeypatch.setattr(_postgres, "_utc_now", lambda: NOW)
+
+    with pytest.raises(
+        DisposablePostgresApprovalRejected,
+        match="fixture plan lifecycle does not match the runtime operation",
+    ):
+        with factory(operation_id=OPERATION_ID, planned=True):
+            pass
 
 
 def test_forged_postgres_commands_reject_without_subprocess_call(
@@ -1403,6 +1447,7 @@ REVIEWED_DATABASE_CALLSITE_FILES = (
     "tests/control_api/test_dual_read.py",
     "tests/control_api/test_foundation_postgres_runtime_parity.py",
     "tests/event_ledger/test_snapshot_postgres_runtime.py",
+    "tests/market_data/test_postgres_runtime.py",
     "tests/jobs/test_repository_queries.py",
     "tests/jobs/test_worker_leases.py",
     "tests/jobs/test_repository_transactions.py",
@@ -1460,5 +1505,5 @@ def test_all_reviewed_database_calls_have_unique_explicit_operation_ids() -> Non
             operation_ids.append(value)
 
     assert missing == []
-    assert len(operation_ids) == 23
-    assert len(set(operation_ids)) == 23
+    assert len(operation_ids) == 26
+    assert len(set(operation_ids)) == 26

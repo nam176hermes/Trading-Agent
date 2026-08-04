@@ -33,6 +33,14 @@ position, order, withdrawal, service, scheduler, production database, or
 credential endpoint or state was read, contacted, started, stopped, or
 mutated.
 
+## Current-source note (2026-08-03)
+
+This baseline is historical and remains immutable. Later paper-only source
+work, including P10 canonical-market-data and critical-coverage ratcheting,
+does not update this record, change `promotion-status.json`, or establish
+deployment evidence. The current source candidate remains unsealed and cannot
+be read as production readiness, release installation, or trading approval.
+
 ## Observational deployment evidence
 
 The checked

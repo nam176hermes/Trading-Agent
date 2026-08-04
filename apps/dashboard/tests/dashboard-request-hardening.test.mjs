@@ -138,6 +138,18 @@ test('shared reader rejects declared, chunked, and invalid UTF-8 request bodies'
   assert.equal(invalidUtf8.status, 400);
 });
 
+test('bounded JSON reader rejects syntactically invalid UTF-8 text and releases its stream', async () => {
+  const { readBoundedJsonBody } = await import('../src/lib/trading/request-body.ts');
+  const result = await readBoundedJsonBody(
+    new Request('https://dashboard.test/api/trading/run', {
+      method: 'POST',
+      body: '{not json}',
+    }),
+    1024,
+  );
+  assert.deepEqual(result, { ok: false, reason: 'invalid' });
+});
+
 test('mutation DTOs reject extras, Infinity, and unsafe symbols while valid requests preserve state', async () => {
   const updateStop = await import('../src/app/api/trading/update-stop/route.ts');
   const plan = await import('../src/app/api/trading/plan/route.ts');

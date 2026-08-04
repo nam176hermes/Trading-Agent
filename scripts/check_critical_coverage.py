@@ -704,6 +704,12 @@ def _run_dashboard_observations(
     report_dir: Path,
     env: dict[str, str],
 ) -> tuple[int, Path]:
+    env = {
+        **env,
+        "TMPDIR": "/tmp",
+        "TEMP": "/tmp",
+        "TMP": "/tmp",
+    }
     records: list[dict[str, str]] = []
     logs: list[str] = []
     exit_codes: list[int] = []
@@ -899,6 +905,9 @@ def run_coverage(
         **os.environ,
         "LIVE_EXECUTION_ENABLED": "false",
         "LIVE_TRADING_APPROVED": "false",
+        "TMPDIR": "/tmp",
+        "TEMP": "/tmp",
+        "TMP": "/tmp",
     }
     node_command = [
         "node",

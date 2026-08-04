@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from services.job_worker.errors import SafetyBlockedError
+from services.job_worker import safety
 from services.job_worker.safety import (
     APPROVED_DATA_ROOT,
     KillSwitchState,
@@ -156,3 +157,61 @@ def test_data_root_rejects_override_traversal_wrong_owner_and_unsafe_mode(tmp_pa
     monkeypatch.setattr("services.job_worker.safety.os.geteuid", lambda: uid + 1)
     with pytest.raises(SafetyBlockedError) as raised: validate_data_root()
     assert raised.value.reason_code == "SAFETY_DATA_ROOT_OWNER_UNSAFE"
+
+
+@pytest.mark.parametrize("data_root", [object(), validate_data_root])
+def test_provider_requires_a_capability_created_by_validation(data_root):
+    with pytest.raises(TypeError, match="validated fixed data root"):
+        SafetyProvider(data_root)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("mode", "source", "kill", "requested", "effective"),
+    [
+        ("live", {"LIVE_EXECUTION_ENABLED": "true", "LIVE_TRADING_APPROVED": "true"}, None, SafetyMode.LIVE, SafetyMode.LIVE),
+        ("live", {"LIVE_EXECUTION_ENABLED": "false", "LIVE_TRADING_APPROVED": "true"}, None, SafetyMode.LIVE, SafetyMode.PAPER),
+        ("live", {"LIVE_EXECUTION_ENABLED": "true", "LIVE_TRADING_APPROVED": "false"}, None, SafetyMode.LIVE, SafetyMode.PAPER),
+        ("live", {"LIVE_EXECUTION_ENABLED": "true", "LIVE_TRADING_APPROVED": "true"}, "2026-07-12T00:00:00Z: active", SafetyMode.LIVE, SafetyMode.PAPER),
+        ("live", {"LIVE_EXECUTION_ENABLED": "sometimes", "LIVE_TRADING_APPROVED": "true"}, None, SafetyMode.LIVE, SafetyMode.UNKNOWN),
+        ("not-a-mode", {"LIVE_EXECUTION_ENABLED": "false", "LIVE_TRADING_APPROVED": "false"}, None, SafetyMode.UNKNOWN, SafetyMode.UNKNOWN),
+    ],
+)
+def test_provider_snapshot_matrix_never_infers_live_authority(
+    tmp_path, monkeypatch, mode, source, kill, requested, effective
+):
+    snapshot = _provider(tmp_path, monkeypatch, source, mode=mode, kill=kill).snapshot()
+    assert snapshot.requested_mode is requested
+    assert snapshot.effective_mode is effective
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"effective_mode": SafetyMode.LIVE}, "SAFETY_EFFECTIVE_MODE_NOT_PAPER"),
+        ({"requested_mode": SafetyMode.DRYRUN}, "SAFETY_REQUESTED_MODE_NOT_PAPER"),
+    ],
+)
+def test_assert_safe_rejects_all_non_paper_modes(changes, reason):
+    with pytest.raises(SafetyBlockedError) as raised:
+        assert_safe(_snapshot(**changes))
+    assert raised.value.reason_code == reason
+
+
+def test_data_root_unreadable_and_non_directory_evidence_is_rejected(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr("services.job_worker.safety.APPROVED_DATA_ROOT", root)
+    root.rmdir()
+    with pytest.raises(SafetyBlockedError) as raised:
+        validate_data_root()
+    assert raised.value.reason_code == "SAFETY_DATA_ROOT_MISSING"
+
+    root.write_text("not a directory", encoding="utf-8")
+    with pytest.raises(SafetyBlockedError) as raised:
+        validate_data_root()
+    assert raised.value.reason_code == "SAFETY_DATA_ROOT_MISSING"
+
+    monkeypatch.setattr(safety.Path, "lstat", lambda _path: (_ for _ in ()).throw(OSError("denied")))
+    with pytest.raises(SafetyBlockedError) as raised:
+        validate_data_root()
+    assert raised.value.reason_code == "SAFETY_DATA_ROOT_UNREADABLE"

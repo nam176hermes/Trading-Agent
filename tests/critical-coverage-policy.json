@@ -54,8 +54,8 @@
       {
         "name": "services/job_worker/safety.py",
         "files": ["services/job_worker/safety.py"],
-        "line_minimum": {"covered": 119, "total": 137},
-        "branch_minimum": {"covered": 45, "total": 56},
+        "line_minimum": {"covered": 137, "total": 137},
+        "branch_minimum": {"covered": 55, "total": 56},
         "line_goal_percent": 95,
         "branch_goal_percent": 90,
         "line_next_step_percent": 90,
@@ -77,8 +77,8 @@
       {
         "name": "transition authority",
         "prefixes": ["packages/job_authority/"],
-        "line_minimum": {"covered": 209, "total": 242},
-        "branch_minimum": {"covered": 72, "total": 92},
+        "line_minimum": {"covered": 219, "total": 242},
+        "branch_minimum": {"covered": 80, "total": 92},
         "line_goal_percent": 95,
         "branch_goal_percent": 90,
         "line_next_step_percent": 90,
@@ -90,8 +90,8 @@
           "services/job_store/repository.py",
           "services/job_store/worker_repository.py"
         ],
-        "line_minimum": {"covered": 365, "total": 427},
-        "branch_minimum": {"covered": 89, "total": 118},
+        "line_minimum": {"covered": 413, "total": 427},
+        "branch_minimum": {"covered": 108, "total": 118},
         "line_goal_percent": 95,
         "branch_goal_percent": 90,
         "line_next_step_percent": 95,
@@ -124,8 +124,8 @@
         "src/lib/trading/session.ts",
         "src/proxy.ts"
       ],
-      "line_minimum": {"covered": 430, "total": 449},
-      "branch_minimum": {"covered": 141, "total": 159},
+      "line_minimum": {"covered": 445, "total": 449},
+      "branch_minimum": {"covered": 151, "total": 164},
       "line_goal_percent": 95,
       "branch_goal_percent": 90,
       "line_next_step_percent": 95,

@@ -52,8 +52,10 @@ EXPECTED_TABLES = {
     "event_publications",
     "consumer_inbox",
     "aggregate_snapshots",
+    "market_data_snapshots",
+    "market_data_candles",
 }
-EXACT_HEAD = "0008_trading_domain_ledger"
+EXACT_HEAD = "0009_canonical_market_data"
 
 
 def alembic_config() -> Config:
@@ -84,6 +86,9 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "ix_capability_evidence_latest",
                 "domain_events_stream_sequence_idx",
                 "event_outbox_topic_event_idx",
+                "market_data_snapshots_lookup_idx",
+                "market_data_snapshots_digest_idx",
+                "market_data_candles_snapshot_sequence_idx",
             }
             actual_indexes = {
                 index["name"]
@@ -103,6 +108,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "uq_decisions_source_record",
                 "uq_signals_source_record",
                 "uq_migration_source_chunks_identity",
+                "market_data_snapshot_identity",
             } <= unique_names
 
             context = MigrationContext.configure(connection)
@@ -238,11 +244,11 @@ def test_prior_supported_0007_revision_upgrades_to_exact_0008() -> None:
                 "SELECT to_regclass('public.domain_events')"
             ).fetchone()[0] is None
 
-        _upgrade_to_revision(owner, EXACT_HEAD)
+        _upgrade_to_revision(owner, "0008_trading_domain_ledger")
         with psycopg.connect(owner.conninfo()) as connection:
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone()[0] == EXACT_HEAD
+            ).fetchone()[0] == "0008_trading_domain_ledger"
             assert connection.execute(
                 "SELECT to_regclass('public.domain_events')"
             ).fetchone()[0] == "domain_events"
@@ -253,3 +259,27 @@ def test_prior_supported_0007_revision_upgrades_to_exact_0008() -> None:
                 "SELECT has_database_privilege("
                 "'trading_jobs', current_database(), 'CONNECT')"
             ).fetchone()[0] is False
+
+
+def test_prior_0008_revision_upgrades_to_exact_0009() -> None:
+    with disposable_database(
+        operation_id="control-api-alembic-0008-to-0009-v1",
+        planned=True,
+    ) as owner:
+        _upgrade_to_revision(owner, "0008_trading_domain_ledger")
+        with psycopg.connect(owner.conninfo()) as connection:
+            assert connection.execute(
+                "SELECT to_regclass('public.market_data_snapshots')"
+            ).fetchone()[0] is None
+
+        _upgrade_to_revision(owner, EXACT_HEAD)
+        with psycopg.connect(owner.conninfo()) as connection:
+            assert connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()[0] == EXACT_HEAD
+            assert connection.execute(
+                "SELECT to_regclass('public.market_data_snapshots')"
+            ).fetchone()[0] == "market_data_snapshots"
+            assert connection.execute(
+                "SELECT to_regprocedure('public.save_market_data_snapshot(text)')"
+            ).fetchone()[0] is not None

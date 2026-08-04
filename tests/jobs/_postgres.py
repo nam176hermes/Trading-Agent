@@ -40,6 +40,7 @@ from scripts.validate_disposable_postgres_approval import (
 from scripts.validate_disposable_postgres_fixture_plan import (
     DisposablePostgresFixturePlanRejected,
     DisposablePostgresFixtureSlot,
+    lifecycle_actions_for,
     load_protected_fixture_plan,
     validate_disposable_postgres_fixture_plan,
 )
@@ -291,6 +292,7 @@ def disposable_database(
         operation_id=operation_id,
         red_sql_file=red_sql_file,
         planned=planned,
+        expected_lifecycle_actions=lifecycle_actions_for("MIGRATE"),
     ) as session:
         yield _prepare_disposable_database(session)
 
@@ -306,11 +308,13 @@ def disposable_restore_workflow(
     with _disposable_postgres_session(
         operation_id=operation_id,
         planned=planned,
+        expected_lifecycle_actions=lifecycle_actions_for("RESTORE"),
     ) as source_session:
         source = _prepare_disposable_database(source_session)
         with _disposable_postgres_session(
             operation_id=operation_id,
             planned=planned,
+            expected_lifecycle_actions=lifecycle_actions_for("RESTORE"),
         ) as target_session:
             target = _prepare_disposable_database(target_session)
             workflow = DisposableRestoreWorkflow(
@@ -339,6 +343,7 @@ def disposable_red_derivation_database(
     with _disposable_postgres_session(
         operation_id=operation_id,
         red_sql_file=red_sql_file,
+        expected_lifecycle_actions=lifecycle_actions_for("MIGRATE"),
     ) as session:
         owner = _prepare_disposable_database(session)
         state = _require_red_derivation_phase(session, "RED_PREPARED")
@@ -398,6 +403,7 @@ def disposable_legacy_database(
     with _disposable_postgres_session(
         operation_id=operation_id,
         red_sql_file=red_sql_file,
+        expected_lifecycle_actions=lifecycle_actions_for("MIGRATE"),
     ) as session:
         _provision_base_roles(session)
         yield _owner_settings(_public_cluster(session))
@@ -1236,6 +1242,7 @@ def _require_paper_safety_environment() -> None:
 def _planned_fixture_slot(
     approval_record: dict[str, object],
     operation_id: str,
+    expected_lifecycle_actions: tuple[str, ...],
 ) -> DisposablePostgresFixtureSlot:
     plan_path = os.environ.get("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN", "")
     if not plan_path:
@@ -1285,6 +1292,10 @@ def _planned_fixture_slot(
         raise DisposablePostgresApprovalRejected(
             "fixture plan slot order is invalid"
         )
+    if slot.lifecycle_actions != expected_lifecycle_actions:
+        raise DisposablePostgresApprovalRejected(
+            "fixture plan lifecycle does not match the runtime operation"
+        )
     _PLANNED_SLOT_COUNTERS[key] = ordinal
     return slot
 
@@ -1295,6 +1306,7 @@ def _fixture_root(
     operation_id: str,
     *,
     planned: bool,
+    expected_lifecycle_actions: tuple[str, ...] | None,
 ):
     if not planned:
         with tempfile.TemporaryDirectory(
@@ -1305,7 +1317,15 @@ def _fixture_root(
             yield root, root / "data", _unused_tcp_port()
         return
 
-    slot = _planned_fixture_slot(approval_record, operation_id)
+    if expected_lifecycle_actions is None:
+        raise DisposablePostgresApprovalRejected(
+            "planned PostgreSQL session lacks an exact lifecycle binding"
+        )
+    slot = _planned_fixture_slot(
+        approval_record,
+        operation_id,
+        expected_lifecycle_actions,
+    )
     root = Path(slot.root)
     data = Path(slot.pgdata)
     if root.exists() or _loopback_listener_present(slot.port):
@@ -1445,6 +1465,7 @@ def _disposable_postgres_session(
     operation_id: str | None = None,
     red_sql_file: Path | None = None,
     planned: bool = False,
+    expected_lifecycle_actions: tuple[str, ...] | None = None,
 ):
     """Yield a private capability for one validated disposable cluster."""
 
@@ -1453,6 +1474,7 @@ def _disposable_postgres_session(
         record,
         stable_operation_id,
         planned=planned,
+        expected_lifecycle_actions=expected_lifecycle_actions,
     ) as (root, data, port):
         session: _DisposablePostgresSession | None = None
         initialized = False

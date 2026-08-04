@@ -145,6 +145,27 @@ test('checkAuth is pure and never appends mutation audit events', async () => {
   assert.deepEqual(auditEvents(), []);
 });
 
+test('auth helpers fail closed for malformed cookies and unavailable session configuration', async () => {
+  const { authorizeMutation, checkAuth } = await import('../src/lib/trading/auth.ts');
+  const malformedCookie = new Request('https://dashboard.test/api/trading/run', {
+    headers: { cookie: 'not-a-session; trading_session; other=value' },
+  });
+  assert.equal(checkAuth(malformedCookie)?.status, 401);
+
+  process.env.TRADING_DASHBOARD_SESSION_SECRET = 'too-short';
+  const configured = new Request('https://dashboard.test/api/trading/run', {
+    headers: { cookie: 'trading_session=synthetic.token' },
+  });
+  assert.equal(checkAuth(configured)?.status, 503);
+  assert.equal(authorizeMutation(
+    configured,
+    'pipeline.run',
+    'MUTATION_EXECUTION_SENSITIVE',
+    'operator',
+  )?.status, 503);
+  assert.equal(auditEvents().at(-1)?.outcome, 'CONFIGURATION_ERROR');
+});
+
 test('client auth guard never unlocks on timeout or fetch failure', () => {
   const source = fs.readFileSync(path.join(root, 'src/components/trading/auth-guard.tsx'), 'utf8');
   assert.doesNotMatch(source, /setTimeout\([\s\S]{0,200}setState\(['"]authorized['"]\)/);

@@ -383,7 +383,11 @@ def test_makefile_exposes_safe_component_orchestration() -> None:
 
     ci_gate = re.search(r"^ci\s*:(.*)$", makefile, re.MULTILINE)
     assert ci_gate is not None
-    assert set(ci_gate.group(1).split()) == {
+    assert ci_gate.group(1).split() == []
+
+    ci_private_gate = re.search(r"^ci-private\s*:(.*)$", makefile, re.MULTILINE)
+    assert ci_private_gate is not None
+    assert set(ci_private_gate.group(1).split()) == {
         "test-all",
         "check-test-skips",
         "check-critical-coverage",

@@ -38,6 +38,7 @@ TARGETS = {
         "control-api-alembic-head-cycle-v1",
         "control-api-application-role-permissions-v1",
         "control-api-alembic-0007-to-0008-v1",
+        "control-api-alembic-0008-to-0009-v1",
     },
     "tests/control_api/test_foundation_postgres_runtime_parity.py": {
         "foundation-postgres-restore-green-v1"
@@ -45,6 +46,10 @@ TARGETS = {
     "tests/control_api/test_dual_read.py": {"control-api-dual-read-green-v1"},
     "tests/event_ledger/test_snapshot_postgres_runtime.py": {
         "event-ledger-durability-runtime-green-v1"
+    },
+    "tests/market_data/test_postgres_runtime.py": {
+        "market-data-canonical-persistence-runtime-green-v1",
+        "market-data-empty-head-runtime-green-v1",
     },
 }
 FORBIDDEN_SOURCE = (
@@ -129,6 +134,11 @@ def test_make_targets_select_only_reviewed_disposable_modules() -> None:
         "test-event-ledger-runtime-postgres:\n"
         "\tuv run python scripts/run_required_runtime_pytest.py \\\n"
         "\t\ttests/event_ledger/test_snapshot_postgres_runtime.py"
+    ) in makefile
+    assert (
+        "test-market-data-runtime-postgres:\n"
+        "\tuv run python scripts/run_required_runtime_pytest.py \\\n"
+        "\t\ttests/market_data/test_postgres_runtime.py"
     ) in makefile
     assert (
         "test-runtime-dual-read:\n"

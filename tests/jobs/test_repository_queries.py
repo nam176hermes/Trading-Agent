@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from threading import Event, Thread
 from types import MappingProxyType
@@ -16,11 +16,13 @@ from packages.job_contracts import (
 )
 from services.job_store import (
     InvalidJobFilters,
+    JobNotFound,
     JobFilters,
     JobRepository,
     JobStoreSettings,
 )
 from services.job_store.worker_repository import WorkerRepository
+from services.job_store import repository as repository_module
 from services.job_worker.recovery import ProcessIdentity
 from tests.jobs._postgres import (
     disposable_database,
@@ -428,3 +430,101 @@ def test_get_job_recursively_freezes_event_and_artifact_metadata(
 def test_get_job_returns_none_for_unknown_id(repository_database) -> None:
     repository, _, _ = repository_database
     assert repository.get_job("job_unknown") is None
+
+
+class _MatrixResult:
+    def __init__(self, one=None, many=()):
+        self.one, self.many = one, many
+
+    def fetchone(self):
+        return self.one
+
+    def fetchall(self):
+        return self.many
+
+
+class _MatrixConnection:
+    def __init__(self, responses=()):
+        self.responses, self.calls = iter(responses), []
+
+    def transaction(self):
+        return nullcontext()
+
+    def execute(self, query, parameters=None):
+        self.calls.append((str(query), parameters))
+        return next(self.responses, _MatrixResult())
+
+
+class _MatrixPool:
+    def __init__(self, connection=None):
+        self.connection_value = connection or _MatrixConnection()
+        self.waited = self.closed = False
+
+    def connection(self):
+        return nullcontext(self.connection_value)
+
+    def wait(self):
+        self.waited = True
+
+    def close(self):
+        self.closed = True
+
+
+def test_repository_coverage_matrix_lifecycle_wrappers_and_authority(monkeypatch):
+    pool, captured = _MatrixPool(), {}
+    monkeypatch.setattr(
+        repository_module, "ConnectionPool", lambda **kwargs: captured.update(kwargs) or pool
+    )
+    settings = JobStoreSettings(host="localhost", port=5432, database="test", user="test", password="test")
+    repository = JobRepository(settings)
+    assert captured["open"] is True
+    assert repository.__enter__() is repository and pool.waited
+    repository.__exit__(None, None, None)
+    assert pool.closed
+
+    repository._pool = _MatrixPool()
+    called = {}
+    repository._enqueue = lambda connection, **kwargs: called.update(kwargs) or "result"
+    assert repository.enqueue(_request("coverage:enqueue"), trace_id="coverage:enqueue") == "result"
+    assert called["trace_id"] == "coverage:enqueue"
+
+    with pytest.raises(ValueError, match="only for SNAPSHOT"):
+        JobRepository._enqueue(
+            repository,
+            object(), request=_request("coverage:debate", job_type="DEBATE"), trace_id="coverage:authority"
+        )
+
+
+def test_repository_coverage_matrix_read_heartbeat_filters_and_unknown_authority():
+    connection = _MatrixConnection([_MatrixResult(one=None)])
+    repository = object.__new__(JobRepository)
+    repository._pool = _MatrixPool(connection)
+    assert repository.get_job("missing") is None
+    repository.record_scheduler_heartbeat(
+        scheduler_id="scheduler", code_commit="a" * 40, actor_id="scheduler",
+        trace_id="coverage:heartbeat", tick_at=datetime(2026, 8, 3, tzinfo=timezone.utc),
+        slot_at=None, outcome="SKIPPED", reason_code="SKIPPED",
+    )
+    assert "INSERT INTO scheduler_heartbeats" in connection.calls[-1][0]
+
+    for filters in (
+        JobFilters(actor_id=3, actor_type="OPERATOR"),
+        JobFilters(actor_id="actor"),
+        JobFilters(requested_from=datetime(2026, 8, 3)),
+        JobFilters(requested_from=datetime(2026, 8, 4, tzinfo=timezone.utc), requested_to=datetime(2026, 8, 3, tzinfo=timezone.utc)),
+    ):
+        with pytest.raises(InvalidJobFilters):
+            JobRepository._validate_filters(filters)
+
+    repository._pool = _MatrixPool(_MatrixConnection([_MatrixResult(one=None)]))
+    with pytest.raises(JobNotFound):
+        repository.request_cancel("job-missing", _request("coverage:cancel").actor, "coverage:cancel")
+    with pytest.raises(RuntimeError, match="unknown job"):
+        JobRepository._select_job(_MatrixConnection([_MatrixResult(one=None)]), "job-missing")
+
+
+def test_repository_coverage_matrix_freezes_only_json_metadata():
+    frozen = JobRepository._freeze_mapping({"nested": {"items": [1, {"ok": True}]}})
+    assert frozen["nested"]["items"] == (1, {"ok": True})
+    with pytest.raises(TypeError, match="non-JSON"):
+        JobRepository._freeze_json(object())

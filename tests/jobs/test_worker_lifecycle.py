@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from inspect import signature
@@ -10,6 +11,8 @@ import pytest
 
 from packages.job_contracts import JobState, JobType, SnapshotPayload
 from packages.runtime_release import RuntimeAuthorityV2, RuntimePathsV2
+from services.job_store import JobStoreSettings
+from services.job_store import worker_repository as worker_repository_module
 from services.job_store.worker_repository import ClaimedJob, WorkerRepository
 from services.job_worker.artifacts import ArtifactMetadata
 from services.job_worker.process_runner import (
@@ -297,6 +300,52 @@ def test_completion_event_persists_only_sanitized_lineage_and_digest() -> None:
     assert event["lineage"] == outcome().lineage.as_metadata()
     assert "secret" not in event["lineage"]
     assert "credential" not in event["lineage"]["command"]
+
+
+def test_worker_repository_identity_and_lifecycle_validation_matrix(monkeypatch) -> None:
+    class Result:
+        def __init__(self, row): self.row = row
+        def fetchone(self): return self.row
+
+    class Connection:
+        def __init__(self, row): self.row = row
+        def execute(self, _query): return Result(self.row)
+
+    class Pool:
+        def __init__(self, row): self.row, self.waited, self.closed = row, False, False
+        def connection(self): return nullcontext(Connection(self.row))
+        def wait(self): self.waited = True
+        def close(self): self.closed = True
+
+    expected = worker_repository_module.CANONICAL_DATABASE_REVISION
+    pool = Pool({"current_user": "trading_job_worker", "version_num": expected})
+    monkeypatch.setattr(worker_repository_module, "ConnectionPool", lambda **_kwargs: pool)
+    repository = WorkerRepository(
+        JobStoreSettings(host="localhost", port=5432, database="test", user="test", password="test")
+    )
+    assert repository.__enter__() is repository and pool.waited
+    repository.assert_runtime_identity(expected_user="trading_job_worker", expected_revision=expected)
+    repository.__exit__(None, None, None)
+    assert pool.closed
+    assert claim().lease_token_sha256 == worker_repository_module.hashlib.sha256(b"secret").hexdigest()
+
+    for user, revision in (("wrong", expected), ("trading_job_worker", "wrong")):
+        with pytest.raises(ValueError, match="authority is invalid"):
+            repository.assert_runtime_identity(expected_user=user, expected_revision=revision)
+    repository._pool = Pool(("wrong", expected))
+    with pytest.raises(RuntimeError, match="authority is unavailable"):
+        repository.assert_runtime_identity(expected_user="trading_job_worker", expected_revision=expected)
+
+    invalid = object.__new__(WorkerRepository)
+    with pytest.raises(ValueError, match="complete process identity"):
+        invalid.start_attempt("job", "attempt", "worker-1", "token", object(), "coverage:start")
+    assert WorkerRepository._completion_event_metadata({"lineage": {"command": [], "safety": {}}})
+    assert WorkerRepository._completion_event_metadata({"lineage": {"command": {}, "safety": {"initial": {}}}})
+
+    retried = {}
+    invalid.finalize = lambda *args, **kwargs: retried.update(kwargs) or True
+    assert invalid.finalize_retry(claim(), reason_code="PROCESS_FAILED", trace_id="coverage:retry", outcome=outcome(), stream_artifacts=())
+    assert retried["retry"] is True
 
 
 def test_long_job_lineage_retains_initial_and_latest_safe_heartbeat_evidence() -> None:

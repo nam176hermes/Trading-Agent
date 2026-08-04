@@ -42,6 +42,7 @@ SOURCE_BINDING_PATHS = (
     "alembic/versions/0006_job_transition_database_authority.py",
     "alembic/versions/0007_job_event_chain_authority.py",
     "alembic/versions/0008_trading_domain_ledger.py",
+    "alembic/versions/0009_canonical_market_data.py",
     "ops/postgres/provision-job-roles.sql",
     "ops/postgres/provision-roles.sql",
 )
@@ -186,6 +187,45 @@ def test_schema_and_validator_are_closed_explicit_artifacts() -> None:
         "red_sql_binding",
         "canonical_record_sha256",
     }
+
+
+def test_canonical_record_matches_draft_2020_schema_and_validator_binding_order() -> None:
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    document = build_record()
+    dashboard_root = ROOT / "apps" / "dashboard"
+    script = """
+const fs = require('fs');
+const Ajv2020 = require(process.argv[1] + '/node_modules/@redocly/ajv/dist/2020').default;
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const validate = new Ajv2020({allErrors: true, strict: false}).compile(input.schema);
+const valid = validate(input.document);
+process.stdout.write(JSON.stringify({valid, errors: validate.errors}));
+"""
+    completed = subprocess.run(
+        ["node", "-e", script, str(dashboard_root)],
+        input=json.dumps({"schema": schema, "document": document}),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+    assert result == {"valid": True, "errors": None}
+
+    prefix_items = schema["properties"]["source_bindings"]["prefixItems"]
+    schema_paths = tuple(
+        schema["$defs"][item["$ref"].removeprefix("#/$defs/")]["allOf"][1][
+            "properties"
+        ]["path"]["const"]
+        for item in prefix_items
+    )
+    module = load_validator()
+    assert schema_paths == module.APPROVAL_SOURCE_BINDING_PATHS
+    assert schema["properties"]["source_bindings"]["minItems"] == len(
+        module.APPROVAL_SOURCE_BINDING_PATHS
+    )
+    assert schema["properties"]["source_bindings"]["maxItems"] == len(
+        module.APPROVAL_SOURCE_BINDING_PATHS
+    )
 
 
 def test_pure_validator_accepts_exact_complete_record() -> None:

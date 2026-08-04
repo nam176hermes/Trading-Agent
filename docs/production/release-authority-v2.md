@@ -2,6 +2,17 @@
 
 **Status:** source implementation only; no candidate built, installed, or activated.
 
+## Current-source note (2026-08-03)
+
+This is a future Release Authority v2 design/implementation document, not a
+description of the current paper-only source candidate. The canonical source
+now also contains the reviewed P10 canonical-market-data migration `0009`; the
+v2 static-authority graph below still names its older reviewed `0006` boundary.
+That mismatch is a release-authority integration blocker, not permission to
+reinterpret this document or to build, provision, promote, or activate a v2
+candidate. Current source validation and the historical production baseline
+remain `NO_GO` until a separately reviewed v2 update binds the newer graph.
+
 Release Authority v2 is the fail-closed provenance boundary for a future
 canonical-monorepo release. It does not replace or reinterpret the Phase 4B/v1
 authority. A v1 document is rejected by the v2 parser and verifier.
