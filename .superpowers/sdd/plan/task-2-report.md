@@ -94,6 +94,7 @@ and did not run a build.
 
 - `81c6a63 build(nautilus): cache source and Cargo inputs`
 - `0030155 fix(nautilus): pin cached source archive digest`
+- `303b117 fix(nautilus): reject symlinked cache ancestors`
 
 ## Concerns
 
@@ -103,3 +104,52 @@ and did not run a build.
 - The manifest intentionally tracks Cargo registry/index inputs as well as
   crate archives, producing a large (45,769-entry) closure. This is expected
   for a fail-closed offline cache and remains external to Git.
+
+## Review fix round 1 — symlink ancestry and portable tests
+
+The review found that final-node `lstat` checks did not detect a symlink in an
+ancestor of a supplied Cargo/rustc or cache path. The cache tool now walks each
+lexical ancestor with `lstat` before invoking Cargo, materializing a cache, or
+verifying one. An absolute path which traverses a symlink now fails with a
+`symlinked ancestor` error. This covers both the caller-supplied Cargo/rustc
+path and the cache path used by acquisition and offline verification.
+
+The private-toolchain fixture now leaves its temporary `bin` and toolchain
+directories at `0700`, rather than `0500`, so its deliberate rename/symlink
+mutation is portable on a real Linux `/tmp` filesystem. Cached output remains
+tested as `0500` directories and `0400` files.
+
+Source archive preflight now explicitly rejects an absolute symlink `linkname`
+before extraction. The existing relative-link containment check remains in
+place for Nautilus's reviewed in-root LICENSE links.
+
+New regressions prove:
+
+- Cargo and rustc reject an otherwise-regular executable through a symlinked
+  ancestor.
+- Offline cache verification rejects a cache path through a symlinked parent.
+- Extraction rejects an absolute archive symlink target.
+- The final-node symlink case still rejects correctly on a real `/tmp` pytest
+  base directory.
+
+TDD red evidence: before the hardening, the new focused tests produced four
+expected failures—Cargo and rustc aliases were accepted, a cache alias was
+accepted, and an absolute archive link reached `tarfile` rather than the
+reviewed verifier rejection. After the minimal hardening, the actual Linux
+temporary-root validation passed:
+
+```bash
+uv run pytest -q --basetemp=/tmp/nautilus-input-cache-review-2 \
+  tests/foundation/test_nautilus_input_cache.py \
+  tests/foundation/test_nautilus_toolchain_cache.py \
+  tests/foundation/test_nautilus_provenance.py
+# 30 passed
+
+uv run python scripts/verify_nautilus_provenance.py --root .
+# nautilus provenance verification: PASS
+
+CARGO_NET_OFFLINE=true uv run python scripts/prepare_nautilus_input_cache.py \
+  --policy engines/nautilus/input-cache-policy.json \
+  --cache /tmp/nautilus-ws01c-input-cache-v2 --verify
+# nautilus input cache verification: PASS
+```
