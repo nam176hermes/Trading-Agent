@@ -25,7 +25,10 @@ verifies Task 5's committed policy, sealed manifest, exact binary set, modes,
 SHA-256 values, and identities before staging source. The build environment
 sets `CC`, `CXX`, and `LD` to absolute private binaries and places only that
 explicit LLVM `bin` directory ahead of the private Rust and Python paths. It
-does not install or select an ambient compiler.
+does not install or select an ambient compiler. Before staging source, it also
+fails closed if `clang`, `clang++`, or `ld.lld` exists in the later system
+`PATH` entries, so removal of a private tool cannot fall through to an ambient
+compiler.
 
 ## Private LLVM cache and toolchain
 

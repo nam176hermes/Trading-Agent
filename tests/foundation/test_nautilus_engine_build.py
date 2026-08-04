@@ -386,3 +386,13 @@ def test_build_environment_selects_only_absolute_private_compilers(tmp_path: Pat
         str(cargo_bin),
         str(venv_bin),
     ]
+
+
+def test_build_rejects_an_ambient_compiler_fallback(tmp_path: Path) -> None:
+    module = _module()
+    ambient_bin = tmp_path / "ambient-bin"
+    ambient_bin.mkdir()
+    (ambient_bin / "clang").write_text("ambient", encoding="utf-8")
+
+    with pytest.raises(module.VerificationError, match="ambient compiler fallback"):
+        module._reject_ambient_compilers((ambient_bin,))

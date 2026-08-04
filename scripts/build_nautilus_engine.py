@@ -24,6 +24,7 @@ _INPUT_CACHE_TOOL = _ROOT / "scripts/prepare_nautilus_input_cache.py"
 _INPUT_CACHE_POLICY = _ROOT / "engines/nautilus/input-cache-policy.json"
 _LLVM_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_llvm_toolchain.py"
 _LLVM_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/llvm-toolchain-policy.json"
+_AMBIENT_BUILD_PATH = (Path("/usr/bin"), Path("/bin"))
 _ARTIFACT_MANIFEST = "artifact-manifest.json"
 _WHEEL_CACHE_MANIFEST = "wheel-cache-manifest.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -120,6 +121,16 @@ def _build_tool_environment(
         "LD": str(llvm_bin / "ld.lld"),
         "PATH": f"{llvm_bin}:{cargo_bin}:{venv_bin}:/usr/bin:/bin",
     }
+
+
+def _reject_ambient_compilers(search_path: tuple[Path, ...]) -> None:
+    for directory in search_path:
+        for name in ("clang", "clang++", "ld.lld"):
+            candidate = directory / name
+            if candidate.exists() or candidate.is_symlink():
+                raise VerificationError(
+                    f"ambient compiler fallback is present: {candidate}"
+                )
 
 
 def _sha256(path: Path) -> str:
@@ -602,6 +613,7 @@ def build_engine(
     try:
         llvm_policy = llvm_tool.load_policy(_LLVM_TOOLCHAIN_POLICY)
         llvm_tool.verify_materialized(llvm_toolchain, llvm_policy)
+        _reject_ambient_compilers(_AMBIENT_BUILD_PATH)
     except (OSError, ValueError) as exc:
         raise VerificationError(f"private LLVM toolchain verification failed: {exc}") from exc
     wheel_manifest = verify_wheel_cache(wheel_cache, wheel_cache_manifest_sha256, policy)
