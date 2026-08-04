@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/nautechsystems/nautilus_trader.git",
+  "upstream_tag": "v1.227.0",
+  "upstream_tag_object": "0ccb5b55879c072a6e07fc7cbe5297c53c378107",
+  "upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+  "source_url": "https://github.com/nautechsystems/nautilus_trader/archive/280ae1762df51a492a4ce71506a40b5c8706def5.tar.gz",
+  "cargo_lock_sha256": "083652294183947a352d1443ed0245311bf7ee5a716b66ccc21e814be25851ed",
+  "pyproject_sha256": "f707cbe27b183ba598c31f1b3b6ec67e36f36e878c4228d3fef80741efb81b28",
+  "required_cargo_version": "1.95.0"
+}
