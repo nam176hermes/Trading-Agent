@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "version": "22.1.3",
+  "release_tag": "llvmorg-22.1.3",
+  "platform": "linux-x86_64",
+  "asset": {
+    "filename": "LLVM-22.1.3-Linux-X64.tar.xz",
+    "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.3/LLVM-22.1.3-Linux-X64.tar.xz",
+    "sha256": "6e776c396895837a168a36d13e0b0e4552680eda58d8dab6aa5fb75e2c3d13ea",
+    "size": 1939973900,
+    "archive_root": "LLVM-22.1.3-Linux-X64"
+  },
+  "tools": {
+    "clang": {
+      "archive_path": "bin/clang",
+      "sha256": "05148feea3de2d50a7a1a7c51aedddb2cde03da93038f0d6b13f49422c6d744f",
+      "size": 271521920,
+      "identity_prefix": "clang version 22.1.3"
+    },
+    "clang++": {
+      "archive_path": "bin/clang++",
+      "sha256": "05148feea3de2d50a7a1a7c51aedddb2cde03da93038f0d6b13f49422c6d744f",
+      "size": 271521920,
+      "identity_prefix": "clang version 22.1.3"
+    },
+    "ld.lld": {
+      "archive_path": "bin/ld.lld",
+      "sha256": "879d47621106d726c18f0d25f25bf73167d4109521b147341e40139181e3db05",
+      "size": 200223320,
+      "identity_prefix": "LLD 22.1.3"
+    }
+  }
+}

@@ -165,6 +165,7 @@ build-nautilus-engine:
 		test -n "$(NAUTILUS_ENGINE_WHEEL_CACHE)"; \
 		test -n "$(NAUTILUS_ENGINE_WHEEL_CACHE_MANIFEST_SHA256)"; \
 		test -n "$(NAUTILUS_ENGINE_CARGO)"; \
+		test -n "$(NAUTILUS_ENGINE_LLVM_TOOLCHAIN)"; \
 		test -n "$(NAUTILUS_ENGINE_ARTIFACTS)"; \
 		$(NAUTILUS_ENGINE_CONTROLLER_PYTHON) scripts/build_nautilus_engine.py \
 			--policy engines/nautilus/engine-build-policy.json \
@@ -173,6 +174,7 @@ build-nautilus-engine:
 			--wheel-cache "$(NAUTILUS_ENGINE_WHEEL_CACHE)" \
 			--wheel-cache-manifest-sha256 "$(NAUTILUS_ENGINE_WHEEL_CACHE_MANIFEST_SHA256)" \
 			--cargo "$(NAUTILUS_ENGINE_CARGO)" \
+			--llvm-toolchain "$(NAUTILUS_ENGINE_LLVM_TOOLCHAIN)" \
 			--sandbox "$(NAUTILUS_ENGINE_SANDBOX)" \
 			--artifacts "$(NAUTILUS_ENGINE_ARTIFACTS)" \
 			--build --offline

@@ -22,6 +22,8 @@ import zipfile
 _ROOT = Path(__file__).resolve().parents[1]
 _INPUT_CACHE_TOOL = _ROOT / "scripts/prepare_nautilus_input_cache.py"
 _INPUT_CACHE_POLICY = _ROOT / "engines/nautilus/input-cache-policy.json"
+_LLVM_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_llvm_toolchain.py"
+_LLVM_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/llvm-toolchain-policy.json"
 _ARTIFACT_MANIFEST = "artifact-manifest.json"
 _WHEEL_CACHE_MANIFEST = "wheel-cache-manifest.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -96,6 +98,28 @@ _PIP_BOOTSTRAP = (
 
 class VerificationError(ValueError):
     """Raised when a build input or produced artifact fails closed."""
+
+
+def _load_llvm_toolchain_tool():
+    spec = importlib.util.spec_from_file_location(
+        "prepare_nautilus_llvm_toolchain", _LLVM_TOOLCHAIN_TOOL
+    )
+    if spec is None or spec.loader is None:
+        raise VerificationError("private LLVM verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _build_tool_environment(
+    llvm_bin: Path, cargo_bin: Path, venv_bin: Path
+) -> dict[str, str]:
+    return {
+        "CC": str(llvm_bin / "clang"),
+        "CXX": str(llvm_bin / "clang++"),
+        "LD": str(llvm_bin / "ld.lld"),
+        "PATH": f"{llvm_bin}:{cargo_bin}:{venv_bin}:/usr/bin:/bin",
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -556,6 +580,7 @@ def build_engine(
     wheel_cache_manifest_sha256: str,
     python: Path,
     cargo: Path,
+    llvm_toolchain: Path,
     sandbox: Path,
     destination: Path,
     offline: bool,
@@ -573,6 +598,12 @@ def build_engine(
         rustc_identity = input_tool.validate_private_rustc(cargo.parent / "rustc", str(policy["required_rust_version"]))
     except (OSError, ValueError) as exc:
         raise VerificationError(f"Nautilus source/Cargo input verification failed: {exc}") from exc
+    llvm_tool = _load_llvm_toolchain_tool()
+    try:
+        llvm_policy = llvm_tool.load_policy(_LLVM_TOOLCHAIN_POLICY)
+        llvm_tool.verify_materialized(llvm_toolchain, llvm_policy)
+    except (OSError, ValueError) as exc:
+        raise VerificationError(f"private LLVM toolchain verification failed: {exc}") from exc
     wheel_manifest = verify_wheel_cache(wheel_cache, wheel_cache_manifest_sha256, policy)
     input_manifest_path = input_cache / "input-cache-manifest.json"
     input_manifest_digest = _sha256(input_manifest_path)
@@ -580,6 +611,7 @@ def build_engine(
         (input_cache, "source/Cargo input cache"),
         (wheel_cache, "wheel cache"),
         (cargo, "private Cargo toolchain"),
+        (llvm_toolchain, "private LLVM toolchain"),
         (destination, "engine artifact destination"),
     ):
         _require_external(path, label)
@@ -616,7 +648,6 @@ def build_engine(
             "HOME": str(home),
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
-            "PATH": f"{cargo.parent}:{venv / 'bin'}:/usr/bin:/bin",
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
             "PIP_NO_INDEX": "1",
             "PYTHONNOUSERSITE": "1",
@@ -625,6 +656,9 @@ def build_engine(
             "SOURCE_DATE_EPOCH": "0",
             "UV_OFFLINE": "1",
         }
+        base_environment.update(
+            _build_tool_environment(llvm_toolchain / "bin", cargo.parent, venv / "bin")
+        )
         _sandbox_run(
             sandbox,
             stage,
@@ -722,13 +756,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wheel-cache", type=Path)
     parser.add_argument("--wheel-cache-manifest-sha256")
     parser.add_argument("--cargo", type=Path)
+    parser.add_argument("--llvm-toolchain", type=Path)
     parser.add_argument("--sandbox", type=Path, default=Path("/usr/bin/bwrap"))
     args = parser.parse_args(argv)
     try:
         policy = load_policy(args.policy)
         if args.build:
-            if None in (args.input_cache, args.wheel_cache, args.wheel_cache_manifest_sha256, args.cargo):
-                raise VerificationError("build requires explicit input, Cargo, and approved wheel cache paths")
+            if None in (
+                args.input_cache,
+                args.wheel_cache,
+                args.wheel_cache_manifest_sha256,
+                args.cargo,
+                args.llvm_toolchain,
+            ):
+                raise VerificationError(
+                    "build requires explicit input, Cargo, LLVM, and approved wheel cache paths"
+                )
             build_engine(
                 policy_path=args.policy,
                 input_cache=args.input_cache,
@@ -736,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
                 wheel_cache_manifest_sha256=args.wheel_cache_manifest_sha256,
                 python=args.python,
                 cargo=args.cargo,
+                llvm_toolchain=args.llvm_toolchain,
                 sandbox=args.sandbox,
                 destination=args.artifacts,
                 offline=args.offline,

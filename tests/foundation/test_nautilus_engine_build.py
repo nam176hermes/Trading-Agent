@@ -172,6 +172,7 @@ def test_network_enabled_build_path_is_rejected_before_inputs_are_read(tmp_path:
             wheel_cache_manifest_sha256="0" * 64,
             python=tmp_path / "missing-python",
             cargo=tmp_path / "missing-cargo",
+            llvm_toolchain=tmp_path / "missing-llvm-toolchain",
             sandbox=tmp_path / "missing-sandbox",
             destination=tmp_path / "candidate",
             offline=False,
@@ -340,6 +341,7 @@ def test_make_build_and_verify_targets_preserve_the_offline_contract() -> None:
         "NAUTILUS_ENGINE_WHEEL_CACHE=/approved/wheel-cache",
         f"NAUTILUS_ENGINE_WHEEL_CACHE_MANIFEST_SHA256={'a' * 64}",
         "NAUTILUS_ENGINE_CARGO=/approved/toolchain/bin/cargo",
+        "NAUTILUS_ENGINE_LLVM_TOOLCHAIN=/approved/llvm-toolchain",
         "NAUTILUS_ENGINE_ARTIFACTS=/approved/artifacts",
     ]
 
@@ -362,6 +364,25 @@ def test_make_build_and_verify_targets_preserve_the_offline_contract() -> None:
     assert "--build" in build.stdout
     assert "--offline" in build.stdout
     assert "--wheel-cache-manifest-sha256" in build.stdout
+    assert '--llvm-toolchain "/approved/llvm-toolchain"' in build.stdout
     assert verify.returncode == 0, verify.stderr
     assert "--verify" in verify.stdout
     assert "--build" not in verify.stdout
+
+
+def test_build_environment_selects_only_absolute_private_compilers(tmp_path: Path) -> None:
+    module = _module()
+    llvm_bin = tmp_path / "llvm" / "bin"
+    cargo_bin = tmp_path / "rust" / "bin"
+    venv_bin = tmp_path / "venv" / "bin"
+
+    environment = module._build_tool_environment(llvm_bin, cargo_bin, venv_bin)
+
+    assert environment["CC"] == str(llvm_bin / "clang")
+    assert environment["CXX"] == str(llvm_bin / "clang++")
+    assert environment["LD"] == str(llvm_bin / "ld.lld")
+    assert environment["PATH"].split(":")[:3] == [
+        str(llvm_bin),
+        str(cargo_bin),
+        str(venv_bin),
+    ]

@@ -11,6 +11,8 @@ All paths must be absolute, private, and outside this checkout:
 - CPython 3.12 executable (the repository controller remains Python 3.11);
 - Task 1's private Rust 1.95.0 `cargo` and sibling `rustc`, never rustup or a
   global Rust installation;
+- Task 5's verified private LLVM toolchain root containing direct, non-symlink
+  `bin/clang`, `bin/clang++`, and `bin/ld.lld` executables;
 - Task 2's verified source/Cargo cache;
 - a flat, sealed build-wheel cache and its separately reviewed manifest
   SHA-256;
@@ -18,10 +20,47 @@ All paths must be absolute, private, and outside this checkout:
 - Bubblewrap, normally `/usr/bin/bwrap`, for the network namespace.
 
 The pinned upstream build script selects `clang`, `clang++`, and the LLVM
-linker on Linux. Those host build tools must already be installed in
-`/usr/bin`; the contract does not install system packages. They were not
-present on the implementation host, so they are a second execution-time host
-precondition after the approved wheel cache.
+linker on Linux. The build requires `NAUTILUS_ENGINE_LLVM_TOOLCHAIN` and
+verifies Task 5's committed policy, sealed manifest, exact binary set, modes,
+SHA-256 values, and identities before staging source. The build environment
+sets `CC`, `CXX`, and `LD` to absolute private binaries and places only that
+explicit LLVM `bin` directory ahead of the private Rust and Python paths. It
+does not install or select an ambient compiler.
+
+## Private LLVM cache and toolchain
+
+`llvm-toolchain-policy.json` pins the official LLVM 22.1.3 Linux x86-64
+release archive and the dereferenced bytes of all three required tools. Create
+an absent cache and toolchain destination under an existing operator-owned
+`0700` external directory:
+
+```bash
+python3.11 -I scripts/prepare_nautilus_llvm_toolchain.py \
+  --policy engines/nautilus/llvm-toolchain-policy.json \
+  --cache /absolute/private/llvm-22.1.3-cache \
+  --acquire
+
+python3.11 -I scripts/prepare_nautilus_llvm_toolchain.py \
+  --policy engines/nautilus/llvm-toolchain-policy.json \
+  --cache /absolute/private/llvm-22.1.3-cache \
+  --verify-cache
+
+python3.11 -I scripts/prepare_nautilus_llvm_toolchain.py \
+  --policy engines/nautilus/llvm-toolchain-policy.json \
+  --cache /absolute/private/llvm-22.1.3-cache \
+  --destination /absolute/private/llvm-22.1.3-toolchain \
+  --materialize
+```
+
+Acquisition downloads only the policy URL and verifies its pinned size,
+archive SHA-256, complete safe member layout, and the hashes of the resolved
+compiler/linker targets before atomic publication. Later cache verification
+is offline and hash-bound. Materialization extracts only the three required
+tools, dereferences the release archive's tool symlinks into independent
+regular files, seals the result, and invokes each executable by absolute path
+for its identity. `--verify-toolchain` repeats those checks without network
+access; `--print-compiler-env` prints the isolated compiler variables only
+after verification.
 
 The approved build-wheel cache is produced separately by
 `scripts/prepare_nautilus_wheel_cache.py` from the exact versions in
@@ -95,6 +134,7 @@ make build-nautilus-engine \
   NAUTILUS_ENGINE_WHEEL_CACHE=/absolute/private/approved-wheel-cache \
   NAUTILUS_ENGINE_WHEEL_CACHE_MANIFEST_SHA256=<reviewed-sha256> \
   NAUTILUS_ENGINE_CARGO=/tmp/nautilus-ws01c-rust-toolchain/bin/cargo \
+  NAUTILUS_ENGINE_LLVM_TOOLCHAIN=/absolute/private/llvm-22.1.3-toolchain \
   NAUTILUS_ENGINE_ARTIFACTS=/absolute/private/nautilus-1.227.0-cp312
 
 make verify-nautilus-engine \
