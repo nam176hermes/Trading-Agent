@@ -5,6 +5,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 CANONICAL_ROOT=$(cd "$ROOT/../.." && pwd)
 BACKEND_ROOT="$CANONICAL_ROOT/legacy/research-backend"
 WORK=$(mktemp -d)
+APP="$WORK/apps/dashboard"
 DATA_ROOT="$WORK/runtime"
 MODE_FILE="$WORK/runtime/mode"
 KILL_SWITCH_FILE="$WORK/runtime/kill-switch"
@@ -45,16 +46,17 @@ BASE_URL="http://localhost:${PORT}"
 COOKIE_JAR="$WORK/admin-cookies.txt"
 SERVER_LOG="$WORK/server.log"
 
-mkdir -p "$WORK/app" "$WORK/home" "$DATA_ROOT"
+mkdir -p "$APP" "$WORK/generated" "$WORK/home" "$DATA_ROOT"
 chmod 0700 "$DATA_ROOT"
 printf 'paper\n' > "$MODE_FILE"
 chmod 0600 "$MODE_FILE"
 cp -a "$ROOT/src" "$ROOT/public" "$ROOT/package.json" "$ROOT/package-lock.json" \
-  "$ROOT/tsconfig.json" "$ROOT/next.config.ts" "$ROOT/postcss.config.mjs" "$WORK/app/"
-ln -s "$ROOT/node_modules" "$WORK/app/node_modules"
+  "$ROOT/tsconfig.json" "$ROOT/next.config.ts" "$ROOT/postcss.config.mjs" "$APP/"
+cp -a "$CANONICAL_ROOT/generated/dashboard" "$WORK/generated/"
+ln -s "$ROOT/node_modules" "$APP/node_modules"
 
 if ! (
-  cd "$WORK/app"
+  cd "$APP"
   HOME="$WORK/home" NEXT_TELEMETRY_DISABLED=1 \
     ./node_modules/.bin/next build --webpack >"$WORK/build.log" 2>&1
 ); then
@@ -63,7 +65,7 @@ if ! (
 fi
 
 (
-  cd "$WORK/app"
+  cd "$APP"
   exec env \
     HOME="$WORK/home" \
     TRADING_DATA_ROOT="$DATA_ROOT" \

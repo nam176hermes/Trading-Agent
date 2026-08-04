@@ -9,8 +9,6 @@ from typing import Callable
 from uuid import uuid4
 
 from packages.job_contracts import JobState, JobType, SnapshotPayload
-from services.market_data import MarketDataPersistenceOutcome
-
 from .command_registry import (
     FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS,
     PRESPAWN_FULL_REATTESTATION_COUNT,
@@ -254,6 +252,12 @@ class JobWorker:
                     outcome_metadata = self._market_data_ingestor.ingest(market_data_payload)
                 except Exception as exc:
                     raise ResultValidationError("market-data ingestion failed") from exc
+                # The paper-release projection intentionally excludes the
+                # canonical market-data persistence package.  Resolve this
+                # runtime-only type only when a P10 payload actually reaches
+                # the injected core ingestor.
+                from services.market_data import MarketDataPersistenceOutcome
+
                 if not isinstance(outcome_metadata, MarketDataPersistenceOutcome):
                     raise ResultValidationError("market-data ingestion returned invalid outcome")
                 result = replace(
@@ -325,7 +329,10 @@ class JobWorker:
     @staticmethod
     def _market_data_payload(claimed: object) -> SnapshotPayload | None:
         payload = getattr(claimed, "payload", None)
-        if isinstance(payload, SnapshotPayload) and payload.market_data is not None:
+        if (
+            isinstance(payload, SnapshotPayload)
+            and getattr(payload, "market_data", None) is not None
+        ):
             return payload
         return None
 

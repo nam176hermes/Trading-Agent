@@ -549,7 +549,10 @@ services/job_worker/results.py|122|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/results.py|423|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/safety_state.py|151|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/safety_state.py|351|Exception|PRODUCTION_CRITICAL|OTHER
-services/job_worker/worker.py|255|Exception|PRODUCTION_CRITICAL|RAISE
+services/job_worker/worker.py|253|Exception|PRODUCTION_CRITICAL|RAISE
+services/market_data/ingestion.py|53|Exception|PRODUCTION_CRITICAL|RAISE
+services/market_data/ingestion.py|58|Exception|PRODUCTION_CRITICAL|RAISE
+services/market_data/ingestion.py|81|Exception|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/controller.py|785|BaseException|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/controller.py|854|BaseException|PRODUCTION_CRITICAL|OTHER
 services/paper_runtime/controller.py|877|BaseException|PRODUCTION_CRITICAL|OTHER
