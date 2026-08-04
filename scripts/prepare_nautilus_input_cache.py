@@ -105,10 +105,18 @@ def _safe_directory(path: Path, label: str) -> os.stat_result:
     return info
 
 
-def _reject_symlinked_ancestors(path: Path, label: str) -> None:
-    """Reject a lexical path that traverses any symlink, including a parent."""
+def _absolute_parts(path: Path, label: str) -> tuple[str, ...]:
     if not path.is_absolute():
         raise VerificationError(f"{label} must be supplied as an absolute private path")
+    parts = path.parts
+    if any(part in {"", ".", ".."} for part in parts[1:]):
+        raise VerificationError(f"{label} has unsafe path traversal")
+    return parts
+
+
+def _reject_symlinked_ancestors(path: Path, label: str) -> None:
+    """Reject a lexical path that traverses any symlink, including a parent."""
+    _absolute_parts(path, label)
     current = path
     while True:
         try:
@@ -120,6 +128,42 @@ def _reject_symlinked_ancestors(path: Path, label: str) -> None:
         if current == current.parent:
             return
         current = current.parent
+
+
+def _prepare_private_cache_parent(path: Path) -> None:
+    """Create a cache parent through descriptor-relative, no-follow operations."""
+    parts = _absolute_parts(path, "input cache")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(os.sep, flags)
+    current_fd = root_fd
+    try:
+        for part in parts[1:]:
+            created = False
+            while True:
+                try:
+                    info = os.stat(part, dir_fd=current_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=current_fd)
+                        created = True
+                    except FileExistsError:
+                        continue
+                    continue
+                if stat.S_ISLNK(info.st_mode):
+                    raise VerificationError("input cache has a symlinked ancestor")
+                if not stat.S_ISDIR(info.st_mode):
+                    raise VerificationError("input cache has an unsafe ancestor")
+                try:
+                    child_fd = os.open(part, flags, dir_fd=current_fd)
+                except OSError as exc:
+                    raise VerificationError("input cache has an unsafe ancestor") from exc
+                if created:
+                    os.fchmod(child_fd, 0o700)
+                break
+            os.close(current_fd)
+            current_fd = child_fd
+    finally:
+        os.close(current_fd)
 
 
 def _validate_policy(document: object) -> dict[str, object]:
@@ -300,8 +344,12 @@ def _freeze_cache(cache: Path) -> None:
 def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, object]:
     """Create one immutable external cache from the pinned source and Cargo lockfile."""
     policy = _validate_policy(policy)
-    _reject_symlinked_ancestors(cache.parent, "input cache")
-    if cache.exists() or cache.is_symlink():
+    _prepare_private_cache_parent(cache.parent)
+    try:
+        cache.lstat()
+    except FileNotFoundError:
+        pass
+    else:
         raise VerificationError("input cache destination must not already exist")
     cargo_version = validate_private_cargo(cargo, str(policy["required_cargo_version"]))
     rustc_version = validate_private_rustc(cargo.parent / "rustc", str(policy["required_cargo_version"]))

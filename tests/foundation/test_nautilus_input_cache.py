@@ -173,6 +173,21 @@ def test_acquisition_rejects_source_digest_drift(tmp_path: Path, private_cache_r
         module.acquire(private_cache_root / "digest-drift-cache", policy, _private_cargo(tmp_path))
 
 
+def test_acquisition_creates_a_missing_private_cache_parent(tmp_path: Path, private_cache_root: Path) -> None:
+    module = _module()
+    cargo_lock = b"version = 3\n"
+    pyproject = b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
+    cache = private_cache_root / "new-parent" / "nested" / "cache"
+
+    module.acquire(cache, policy, _private_cargo(tmp_path))
+
+    assert stat.S_IMODE(cache.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(cache.parent.parent.stat().st_mode) == 0o700
+    assert module.verify(cache, policy)["schema_version"] == 1
+
+
 def test_source_extraction_rejects_an_absolute_symlink_target(tmp_path: Path) -> None:
     module = _module()
     cargo_lock = b"version = 3\n"
@@ -271,10 +286,15 @@ def test_cache_verification_rejects_a_symlinked_ancestor(
     policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
     backing = private_cache_root / "backing"
     backing.mkdir()
-    cache = backing / "cache"
-    module.acquire(cache, policy, _private_cargo(tmp_path))
     alias = private_cache_root / "alias"
     os.symlink(backing, alias)
+    cargo = _private_cargo(tmp_path)
+
+    with pytest.raises(module.VerificationError, match="symlinked ancestor"):
+        module.acquire(alias / "new-cache", policy, cargo)
+
+    cache = backing / "cache"
+    module.acquire(cache, policy, cargo)
 
     with pytest.raises(module.VerificationError, match="symlinked ancestor"):
         module.verify(alias / "cache", policy)
