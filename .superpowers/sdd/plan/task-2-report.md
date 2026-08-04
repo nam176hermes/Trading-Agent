@@ -97,6 +97,7 @@ and did not run a build.
 - `303b117 fix(nautilus): reject symlinked cache ancestors`
 - `d1cab5f fix(nautilus): create private cache parents safely`
 - `766536b fix(nautilus): bind input cache staging to parent fd`
+- `c89706b fix(nautilus): preserve acquisition errors during cleanup`
 
 ## Concerns
 
@@ -224,6 +225,38 @@ uv run pytest -q --basetemp=/tmp/nautilus-input-cache-round2-full \
   tests/foundation/test_nautilus_toolchain_cache.py \
   tests/foundation/test_nautilus_provenance.py
 # 31 passed
+
+uv run python scripts/verify_nautilus_provenance.py --root .
+# nautilus provenance verification: PASS
+
+CARGO_NET_OFFLINE=true uv run python scripts/prepare_nautilus_input_cache.py \
+  --policy engines/nautilus/input-cache-policy.json \
+  --cache /tmp/nautilus-ws01c-input-cache-v2 --verify
+# nautilus input cache verification: PASS
+```
+
+## Review fix round 4 — cleanup error precedence and descriptor closure
+
+Acquisition cleanup now records whether a primary exception is already in
+flight before attempting to discard failed staging. A discard failure cannot
+replace that primary error, and staging descriptor closure is attempted even
+when discard fails. Parent descriptor closure follows the same precedence:
+close errors surface only when no earlier error is propagating.
+
+The regression forces both a source-integrity failure and a staging-discard
+failure. Before the fix it failed with the discard `OSError`, and the captured
+staging descriptor remained open. After the fix the source-integrity
+`VerificationError` remains observable and both the staging and parent
+descriptors reject `fstat` with `EBADF`.
+
+Fresh validation used an explicit real Linux `/tmp` pytest base directory:
+
+```bash
+uv run pytest -q --basetemp=/tmp/nautilus-input-cache-round4-full \
+  tests/foundation/test_nautilus_input_cache.py \
+  tests/foundation/test_nautilus_toolchain_cache.py \
+  tests/foundation/test_nautilus_provenance.py
+# 33 passed
 
 uv run python scripts/verify_nautilus_provenance.py --root .
 # nautilus provenance verification: PASS
