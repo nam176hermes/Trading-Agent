@@ -184,6 +184,9 @@ documented checks above and Python compilation passed.
   `e0e249e0604d2d6790666f145b7d26a628648a6e5d500a3eb08e6a242e735fff`
 - Approved build-wheel cache: not available; must be supplied externally using
   the schema in `engines/nautilus/README.md`.
+- Upstream Linux compiler/linker tools: `clang`, `clang++`, and `lld` were not
+  present in `/usr/bin`; installing system packages was outside Task 3 scope
+  and requires operator approval.
 - Engine artifact destination: not created because the approved wheel cache is
   absent.
 
@@ -198,8 +201,11 @@ Paths under `/tmp` are ephemeral and may be removed by host maintenance.
 
 - A real Nautilus wheel and native-library manifest cannot be produced until
   an operator supplies and separately approves the sealed CPython 3.12 build
-  wheel cache. This is the only incomplete external precondition; the code and
-  failure boundary are implemented and tested.
+  wheel cache. The pinned upstream Linux build also requires the host's
+  `clang`, `clang++`, and `lld`; those were absent and were not installed
+  because system package changes are outside this task and require approval.
+  The code and immediate wheel-cache failure boundary are implemented and
+  tested.
 - The upstream policy pins Cython and poetry-core exactly. Upstream expresses
   lower bounds for numpy and setuptools and does not pin packaging/pip for this
   controller. Their exact selected wheels are therefore controlled by the

@@ -17,6 +17,12 @@ All paths must be absolute, private, and outside this checkout:
 - an absent artifact destination under an operator-owned private directory;
 - Bubblewrap, normally `/usr/bin/bwrap`, for the network namespace.
 
+The pinned upstream build script selects `clang`, `clang++`, and the LLVM
+linker on Linux. Those host build tools must already be installed in
+`/usr/bin`; the contract does not install system packages. They were not
+present on the implementation host, so they are a second execution-time host
+precondition after the approved wheel cache.
+
 The approved build-wheel cache is an external precondition. No approved cache
 was available while this contract was implemented, so the repository does not
 claim that a real Nautilus wheel was produced. The build fails closed rather
