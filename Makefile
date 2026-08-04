@@ -5,6 +5,7 @@
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
+	build-nautilus-engine verify-nautilus-engine \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard test-all ci ci-private
@@ -13,6 +14,8 @@ RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 RUNTIME_RELEASE_WHEELHOUSE_ROOT ?= $(HOME)/.cache/trading-agent/runtime-release-wheelhouse
 RUNTIME_RELEASE_WHEELHOUSE := $(RUNTIME_RELEASE_WHEELHOUSE_ROOT)/$(RUNTIME_RELEASE_LOCK_SHA256)
 TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence
+NAUTILUS_ENGINE_CONTROLLER_PYTHON ?= python3.11
+NAUTILUS_ENGINE_SANDBOX ?= /usr/bin/bwrap
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
@@ -154,6 +157,35 @@ test-package6-custodian-native:
 		test "$$(stat -c '%u:%a' -- "$$build_dir")" = "$$(id -u):700"; \
 		$(MAKE) -C native/package6_custodian \
 			"BUILD_DIR=$$build_dir" test
+
+build-nautilus-engine:
+	@set -eu; \
+		test -n "$(NAUTILUS_ENGINE_PYTHON)"; \
+		test -n "$(NAUTILUS_ENGINE_INPUT_CACHE)"; \
+		test -n "$(NAUTILUS_ENGINE_WHEEL_CACHE)"; \
+		test -n "$(NAUTILUS_ENGINE_WHEEL_CACHE_MANIFEST_SHA256)"; \
+		test -n "$(NAUTILUS_ENGINE_CARGO)"; \
+		test -n "$(NAUTILUS_ENGINE_ARTIFACTS)"; \
+		$(NAUTILUS_ENGINE_CONTROLLER_PYTHON) scripts/build_nautilus_engine.py \
+			--policy engines/nautilus/engine-build-policy.json \
+			--python "$(NAUTILUS_ENGINE_PYTHON)" \
+			--input-cache "$(NAUTILUS_ENGINE_INPUT_CACHE)" \
+			--wheel-cache "$(NAUTILUS_ENGINE_WHEEL_CACHE)" \
+			--wheel-cache-manifest-sha256 "$(NAUTILUS_ENGINE_WHEEL_CACHE_MANIFEST_SHA256)" \
+			--cargo "$(NAUTILUS_ENGINE_CARGO)" \
+			--sandbox "$(NAUTILUS_ENGINE_SANDBOX)" \
+			--artifacts "$(NAUTILUS_ENGINE_ARTIFACTS)" \
+			--build --offline
+
+verify-nautilus-engine:
+	@set -eu; \
+		test -n "$(NAUTILUS_ENGINE_PYTHON)"; \
+		test -n "$(NAUTILUS_ENGINE_ARTIFACTS)"; \
+		$(NAUTILUS_ENGINE_CONTROLLER_PYTHON) scripts/build_nautilus_engine.py \
+			--policy engines/nautilus/engine-build-policy.json \
+			--python "$(NAUTILUS_ENGINE_PYTHON)" \
+			--artifacts "$(NAUTILUS_ENGINE_ARTIFACTS)" \
+			--verify
 
 test-event-ledger-runtime-postgres:
 	uv run python scripts/run_required_runtime_pytest.py \
