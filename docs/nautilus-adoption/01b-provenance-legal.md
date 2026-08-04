@@ -18,10 +18,11 @@ the release name—as the authority.
 vendored NautilusTrader source in this repository, no engine dependency added
 to an existing Python 3.11 graph, and no build/runtime activation.
 
-If a later packet vendors source, it must switch the metadata mode to
-`vendored_source`, add every regular source file to `FILE_MANIFEST.json`, retain
-the upstream license, and record each patch in `MODIFICATIONS.md`. The checker
-rejects unlisted, changed, special, or symbolic-link source entries.
+Packet 01B accepts only `external_pinned_upstream`; any source directory,
+symbolic link, special file, or extra vendor entry is rejected. A later packet
+that vendors source must first add a separately reviewed trusted upstream file
+manifest and patch-record verifier. It must not switch `distribution_mode` or
+claim that a self-authored manifest proves source provenance.
 
 ## Verification
 
@@ -31,6 +32,7 @@ Run:
 uv run python scripts/verify_nautilus_provenance.py --root .
 ```
 
-The verifier is offline: it validates the recorded identity, notices, license
-digest, distribution mode and, when present, the complete vendored file
-manifest. Network retrieval and engine build belong to packet 01C.
+Without `--verify-upstream`, the verifier checks local, reviewed bytes only.
+`--verify-upstream` additionally resolves the exact tag object and peeled commit
+against the official remote. Network retrieval of an engine artifact and engine
+build still belong to packet 01C.

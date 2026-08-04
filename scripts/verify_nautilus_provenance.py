@@ -8,6 +8,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,7 @@ from typing import Any
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
-_ALLOWED_MODES = {"external_pinned_upstream", "vendored_source"}
+_EXTERNAL_MODE = "external_pinned_upstream"
 _UPSTREAM_FIELDS = {
     "schema_version", "distribution_mode", "upstream_repository", "upstream_tag",
     "upstream_tag_object", "upstream_commit", "tag_commit", "license_spdx",
@@ -24,6 +25,18 @@ _UPSTREAM_FIELDS = {
 _MANIFEST_FIELDS = {"schema_version", "upstream_commit", "distribution_mode", "files"}
 _APPROVED_DERIVED_PATHS = {
     "scripts/verify_nautilus_provenance.py",
+}
+_EXPECTED_UPSTREAM = {
+    "upstream_repository": "https://github.com/nautechsystems/nautilus_trader.git",
+    "upstream_tag": "v1.227.0",
+    "upstream_tag_object": "0ccb5b55879c072a6e07fc7cbe5297c53c378107",
+    "upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+    "tag_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+    "license_spdx": "LGPL-3.0-or-later",
+    "license_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+}
+_EXTERNAL_VENDOR_FILES = {
+    "UPSTREAM.json", "FILE_MANIFEST.json", "MODIFICATIONS.md", "LICENSE",
 }
 
 
@@ -59,36 +72,17 @@ def _regular_file(path: Path) -> os.stat_result:
     return info
 
 
-def _relative_file_set(root: Path) -> dict[str, Path]:
-    result: dict[str, Path] = {}
-    for directory, _, names in os.walk(root, followlinks=False):
-        directory_path = Path(directory)
-        for name in names:
-            path = directory_path / name
-            if path.is_symlink():
-                raise VerificationError(f"symbolic link is forbidden: {path}")
-            _regular_file(path)
-            relative = path.relative_to(root).as_posix()
-            result[relative] = path
-    return result
-
-
 def _verify_upstream(document: dict[str, Any], license_path: Path) -> None:
     if set(document) != _UPSTREAM_FIELDS or document.get("schema_version") != 1:
         raise VerificationError("UPSTREAM.json fields are missing or unknown")
-    if document["distribution_mode"] not in _ALLOWED_MODES:
-        raise VerificationError("unsupported Nautilus distribution mode")
-    if document["upstream_repository"] != "https://github.com/nautechsystems/nautilus_trader.git":
-        raise VerificationError("unexpected Nautilus upstream repository")
-    if not isinstance(document["upstream_tag"], str) or not document["upstream_tag"].startswith("v"):
-        raise VerificationError("Nautilus upstream tag is not pinned")
+    if document["distribution_mode"] != _EXTERNAL_MODE:
+        raise VerificationError("vendored Nautilus source is not permitted in packet 01B")
+    for key, expected in _EXPECTED_UPSTREAM.items():
+        if document.get(key) != expected:
+            raise VerificationError(f"unexpected Nautilus {key}")
     for key in ("upstream_tag_object", "upstream_commit", "tag_commit"):
         if not isinstance(document[key], str) or _COMMIT.fullmatch(document[key]) is None:
             raise VerificationError(f"invalid Nautilus {key}")
-    if document["upstream_commit"] != document["tag_commit"]:
-        raise VerificationError("Nautilus tag does not resolve to the pinned commit")
-    if document["license_spdx"] != "LGPL-3.0-or-later":
-        raise VerificationError("Nautilus license is not LGPL-3.0-or-later")
     if not isinstance(document["license_sha256"], str) or _SHA256.fullmatch(document["license_sha256"]) is None:
         raise VerificationError("invalid Nautilus license digest")
     _regular_file(license_path)
@@ -96,7 +90,7 @@ def _verify_upstream(document: dict[str, Any], license_path: Path) -> None:
         raise VerificationError("Nautilus license digest mismatch")
 
 
-def _verify_manifest(document: dict[str, Any], upstream: dict[str, Any], source: Path) -> None:
+def _verify_manifest(document: dict[str, Any], upstream: dict[str, Any]) -> None:
     if set(document) != _MANIFEST_FIELDS or document.get("schema_version") != 1:
         raise VerificationError("FILE_MANIFEST.json fields are missing or unknown")
     if document.get("upstream_commit") != upstream["upstream_commit"]:
@@ -106,31 +100,35 @@ def _verify_manifest(document: dict[str, Any], upstream: dict[str, Any], source:
     records = document.get("files")
     if not isinstance(records, list):
         raise VerificationError("file manifest records must be a list")
-    if upstream["distribution_mode"] == "external_pinned_upstream":
-        if source.exists() or records:
-            raise VerificationError("external upstream mode cannot contain vendored source")
-        return
-    if not source.is_dir() or source.is_symlink():
-        raise VerificationError("vendored source directory is missing or unsafe")
-    actual = _relative_file_set(source)
-    expected: dict[str, dict[str, Any]] = {}
-    for record in records:
-        if not isinstance(record, dict) or set(record) != {"path", "size", "sha256"}:
-            raise VerificationError("invalid vendored source manifest record")
-        relative = record["path"]
-        if not isinstance(relative, str) or not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
-            raise VerificationError("unsafe vendored source manifest path")
-        if relative in expected or not isinstance(record["size"], int) or record["size"] < 0:
-            raise VerificationError("duplicate or invalid vendored source manifest record")
-        if not isinstance(record["sha256"], str) or _SHA256.fullmatch(record["sha256"]) is None:
-            raise VerificationError("invalid vendored source digest")
-        expected[relative] = record
-    if set(actual) != set(expected):
-        raise VerificationError("vendored source manifest has missing or unexpected file")
-    for relative, path in actual.items():
-        record = expected[relative]
-        if path.stat().st_size != record["size"] or _sha256(path) != record["sha256"]:
-            raise VerificationError(f"vendored source drift: {relative}")
+    if records:
+        raise VerificationError("packet 01B cannot contain a vendored source manifest")
+
+
+def _verify_external_vendor_layout(vendor: Path) -> None:
+    info = vendor.lstat()
+    if not stat.S_ISDIR(info.st_mode) or vendor.is_symlink():
+        raise VerificationError("Nautilus vendor root is missing or unsafe")
+    observed = {child.name for child in vendor.iterdir()}
+    if observed != _EXTERNAL_VENDOR_FILES:
+        raise VerificationError("external Nautilus vendor tree has unexpected entry")
+    for name in observed:
+        _regular_file(vendor / name)
+
+
+def _verify_remote_tag(upstream: dict[str, Any]) -> None:
+    tag = upstream["upstream_tag"]
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", upstream["upstream_repository"], f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"],
+            check=True, capture_output=True, text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise VerificationError("unable to resolve Nautilus upstream tag") from exc
+    refs = {line.split("\t", 1)[1]: line.split("\t", 1)[0] for line in result.stdout.splitlines() if "\t" in line}
+    if refs.get(f"refs/tags/{tag}") != upstream["upstream_tag_object"]:
+        raise VerificationError("Nautilus upstream tag object mismatch")
+    if refs.get(f"refs/tags/{tag}^{{}}") != upstream["upstream_commit"]:
+        raise VerificationError("Nautilus upstream tag peel mismatch")
 
 
 def _verify_no_unapproved_derived_source(root: Path) -> None:
@@ -151,7 +149,7 @@ def _verify_no_unapproved_derived_source(root: Path) -> None:
             raise VerificationError(f"Nautilus-derived source outside approved path: {relative}")
 
 
-def verify(root: Path) -> None:
+def verify(root: Path, *, verify_upstream: bool = False) -> None:
     root = root.resolve(strict=True)
     vendor = root / "third_party/nautilus_trader"
     upstream_path = vendor / "UPSTREAM.json"
@@ -162,6 +160,14 @@ def verify(root: Path) -> None:
     notices = root / "legal/THIRD_PARTY_NOTICES.md"
     for path in (upstream_path, manifest_path, modifications, vendor_license, legal_license, notices):
         _regular_file(path)
+    _verify_external_vendor_layout(vendor)
+    source = vendor / "source"
+    try:
+        source.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise VerificationError("external upstream mode cannot contain vendored source")
     upstream = _load_json(upstream_path)
     _verify_upstream(upstream, vendor_license)
     if vendor_license.read_bytes() != legal_license.read_bytes():
@@ -170,16 +176,19 @@ def verify(root: Path) -> None:
         raise VerificationError("modification log does not identify the pinned upstream commit")
     if upstream["upstream_commit"] not in notices.read_text(encoding="utf-8"):
         raise VerificationError("third-party notice does not identify the pinned upstream commit")
-    _verify_manifest(_load_json(manifest_path), upstream, vendor / "source")
+    _verify_manifest(_load_json(manifest_path), upstream)
+    if verify_upstream:
+        _verify_remote_tag(upstream)
     _verify_no_unapproved_derived_source(root)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--verify-upstream", action="store_true")
     args = parser.parse_args(argv)
     try:
-        verify(args.root)
+        verify(args.root, verify_upstream=args.verify_upstream)
     except (OSError, VerificationError) as exc:
         print(f"nautilus provenance verification failed: {exc}", file=sys.stderr)
         return 2

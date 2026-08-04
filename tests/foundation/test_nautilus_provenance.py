@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import hashlib
 import json
+import os
 import shutil
 from pathlib import Path
 
 import pytest
 
+import scripts.verify_nautilus_provenance as provenance
 from scripts.verify_nautilus_provenance import VerificationError, verify
 
 
@@ -38,27 +39,6 @@ def _write_json(path: Path, document: dict[str, object]) -> None:
     path.write_text(json.dumps(document, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
-def _enable_vendored_mode(root: Path) -> Path:
-    upstream_path = root / "third_party/nautilus_trader/UPSTREAM.json"
-    manifest_path = root / "third_party/nautilus_trader/FILE_MANIFEST.json"
-    upstream = _read_json(upstream_path)
-    upstream["distribution_mode"] = "vendored_source"
-    _write_json(upstream_path, upstream)
-    source = root / "third_party/nautilus_trader/source"
-    source.mkdir()
-    entry = source / "module.py"
-    entry.write_text("value = 1\n", encoding="utf-8")
-    manifest = _read_json(manifest_path)
-    manifest["distribution_mode"] = "vendored_source"
-    manifest["files"] = [{
-        "path": "module.py",
-        "size": entry.stat().st_size,
-        "sha256": hashlib.sha256(entry.read_bytes()).hexdigest(),
-    }]
-    _write_json(manifest_path, manifest)
-    return entry
-
-
 def test_current_external_pinned_upstream_is_valid() -> None:
     verify(ROOT)
 
@@ -79,24 +59,28 @@ def test_missing_license_is_rejected(tmp_path: Path) -> None:
         verify(root)
 
 
-def test_wrong_upstream_commit_is_rejected(tmp_path: Path) -> None:
+def test_self_consistent_wrong_upstream_metadata_is_rejected(tmp_path: Path) -> None:
     root = _fixture_root(tmp_path)
     upstream_path = root / "third_party/nautilus_trader/UPSTREAM.json"
     upstream = _read_json(upstream_path)
-    upstream["tag_commit"] = "0" * 40
+    upstream["upstream_tag"] = "v0.0.0"
+    upstream["upstream_tag_object"] = "1" * 40
+    upstream["upstream_commit"] = "2" * 40
+    upstream["tag_commit"] = "2" * 40
+    upstream["license_sha256"] = "3" * 64
     _write_json(upstream_path, upstream)
 
-    with pytest.raises(VerificationError, match="does not resolve"):
+    with pytest.raises(VerificationError, match="unexpected Nautilus"):
         verify(root)
 
 
-def test_changed_vendored_file_is_rejected(tmp_path: Path) -> None:
+def test_any_vendored_source_is_rejected_until_a_trusted_manifest_exists(tmp_path: Path) -> None:
     root = _fixture_root(tmp_path)
-    entry = _enable_vendored_mode(root)
-    verify(root)
-    entry.write_text("value = 2\n", encoding="utf-8")
+    source = root / "third_party/nautilus_trader/source"
+    source.mkdir()
+    (source / "module.py").write_text("value = 2\n", encoding="utf-8")
 
-    with pytest.raises(VerificationError, match="vendored source drift"):
+    with pytest.raises(VerificationError, match="unexpected entry"):
         verify(root)
 
 
@@ -106,7 +90,36 @@ def test_unexpected_vendored_source_is_rejected(tmp_path: Path) -> None:
     source.mkdir()
     (source / "unexpected.py").write_text("value = 1\n", encoding="utf-8")
 
-    with pytest.raises(VerificationError, match="external upstream mode"):
+    with pytest.raises(VerificationError, match="unexpected entry"):
+        verify(root)
+
+
+def test_dangling_vendor_source_symlink_is_rejected(tmp_path: Path) -> None:
+    root = _fixture_root(tmp_path)
+    os.symlink(root / "does-not-exist", root / "third_party/nautilus_trader/source")
+
+    with pytest.raises(VerificationError, match="unexpected entry"):
+        verify(root)
+
+
+def test_unmarked_extra_vendor_file_is_rejected(tmp_path: Path) -> None:
+    root = _fixture_root(tmp_path)
+    (root / "third_party/nautilus_trader/unlisted_vendor.py").write_text(
+        "value = 1\n", encoding="utf-8"
+    )
+
+    with pytest.raises(VerificationError, match="unexpected entry"):
+        verify(root)
+
+
+def test_vendor_root_symlink_is_rejected(tmp_path: Path) -> None:
+    root = _fixture_root(tmp_path)
+    vendor = root / "third_party/nautilus_trader"
+    backing = root / "third_party/vendor-backing"
+    vendor.rename(backing)
+    os.symlink(backing, vendor)
+
+    with pytest.raises(VerificationError, match="vendor root is missing or unsafe"):
         verify(root)
 
 
@@ -118,3 +131,18 @@ def test_nonautorised_derived_source_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(VerificationError, match="outside approved path"):
         verify(root)
+
+
+def test_remote_verification_rejects_wrong_tag_peel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _fixture_root(tmp_path)
+
+    class Result:
+        stdout = (
+            "0ccb5b55879c072a6e07fc7cbe5297c53c378107\trefs/tags/v1.227.0\n"
+            + "0" * 40
+            + "\trefs/tags/v1.227.0^{}\n"
+        )
+
+    monkeypatch.setattr(provenance.subprocess, "run", lambda *_args, **_kwargs: Result())
+    with pytest.raises(VerificationError, match="tag peel mismatch"):
+        verify(root, verify_upstream=True)
