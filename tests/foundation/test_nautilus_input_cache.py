@@ -173,6 +173,44 @@ def test_acquisition_rejects_source_digest_drift(tmp_path: Path, private_cache_r
         module.acquire(private_cache_root / "digest-drift-cache", policy, _private_cargo(tmp_path))
 
 
+def test_acquisition_preserves_primary_error_and_closes_descriptors_when_discard_fails(
+    tmp_path: Path, private_cache_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    cargo_lock = b"version = 3\n"
+    pyproject = b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), "0" * 64, cargo_lock, pyproject)
+    descriptors: list[int] = []
+    prepare_parent = module._prepare_private_cache_parent
+    create_staging = module._create_private_staging
+
+    def capture_parent(path: Path) -> int:
+        descriptor = prepare_parent(path)
+        descriptors.append(descriptor)
+        return descriptor
+
+    def capture_staging(parent_fd: int) -> tuple[str, int]:
+        name, descriptor = create_staging(parent_fd)
+        descriptors.append(descriptor)
+        return name, descriptor
+
+    def fail_discard(_parent_fd: int, _name: str, _staging: Path) -> None:
+        raise OSError("discard failed")
+
+    monkeypatch.setattr(module, "_prepare_private_cache_parent", capture_parent)
+    monkeypatch.setattr(module, "_create_private_staging", capture_staging)
+    monkeypatch.setattr(module, "_discard_private_staging", fail_discard)
+
+    with pytest.raises(module.VerificationError, match="source archive digest"):
+        module.acquire(private_cache_root / "failed-cleanup-cache", policy, _private_cargo(tmp_path))
+
+    assert len(descriptors) == 2
+    for descriptor in descriptors:
+        with pytest.raises(OSError, match="Bad file descriptor"):
+            os.fstat(descriptor)
+
+
 def test_acquisition_creates_a_missing_private_cache_parent(tmp_path: Path, private_cache_root: Path) -> None:
     module = _module()
     cargo_lock = b"version = 3\n"

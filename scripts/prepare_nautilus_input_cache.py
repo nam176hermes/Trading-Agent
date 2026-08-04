@@ -442,11 +442,27 @@ def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, ob
             committed = True
             return manifest
         finally:
+            primary_error = sys.exception()
+            cleanup_error: BaseException | None = None
             if not committed:
-                _discard_private_staging(parent_fd, staging_name, staging)
-            os.close(staging_fd)
+                try:
+                    _discard_private_staging(parent_fd, staging_name, staging)
+                except BaseException as exc:
+                    cleanup_error = exc
+            try:
+                os.close(staging_fd)
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            if primary_error is None and cleanup_error is not None:
+                raise cleanup_error
     finally:
-        os.close(parent_fd)
+        primary_error = sys.exception()
+        try:
+            os.close(parent_fd)
+        except BaseException:
+            if primary_error is None:
+                raise
 
 
 def _validate_manifest(document: object, policy: dict[str, object]) -> dict[str, object]:
