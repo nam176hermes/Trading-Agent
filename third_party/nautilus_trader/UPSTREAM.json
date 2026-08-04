@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "distribution_mode": "external_pinned_upstream",
+  "upstream_repository": "https://github.com/nautechsystems/nautilus_trader.git",
+  "upstream_tag": "v1.227.0",
+  "upstream_tag_object": "0ccb5b55879c072a6e07fc7cbe5297c53c378107",
+  "upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+  "tag_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+  "license_spdx": "LGPL-3.0-or-later",
+  "license_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+  "source_acquisition": "Fetch only the exact annotated tag object and verify it resolves to upstream_commit before any engine build."
+}

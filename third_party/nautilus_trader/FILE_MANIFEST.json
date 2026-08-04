@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+  "distribution_mode": "external_pinned_upstream",
+  "files": []
+}
