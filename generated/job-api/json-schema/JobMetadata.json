@@ -148,6 +148,53 @@
       "title": "JobType",
       "type": "string"
     },
+    "MarketDataSnapshotRequest": {
+      "additionalProperties": false,
+      "description": "Closed, paper-only acquisition intent for the injected P10 fixture.",
+      "properties": {
+        "instrument": {
+          "const": "crypto_spot:FIXTURE:BTC",
+          "title": "Instrument",
+          "type": "string"
+        },
+        "interval_seconds": {
+          "const": 60,
+          "title": "Interval Seconds",
+          "type": "integer"
+        },
+        "provider": {
+          "const": "deterministic-provider-free-fixture-v1",
+          "title": "Provider",
+          "type": "string"
+        },
+        "provider_retry_limit": {
+          "const": 1,
+          "title": "Provider Retry Limit",
+          "type": "integer"
+        },
+        "requested_at": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$",
+          "title": "Requested At",
+          "type": "string"
+        },
+        "timeframe": {
+          "const": "1m",
+          "title": "Timeframe",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "instrument",
+        "timeframe",
+        "interval_seconds",
+        "requested_at",
+        "provider_retry_limit"
+      ],
+      "title": "MarketDataSnapshotRequest",
+      "type": "object"
+    },
     "ReplayPayload": {
       "additionalProperties": false,
       "properties": {
@@ -168,6 +215,17 @@
     "SnapshotPayload": {
       "additionalProperties": false,
       "properties": {
+        "market_data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MarketDataSnapshotRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "requested_as_of": {
           "title": "Requested As Of",
           "type": "null"

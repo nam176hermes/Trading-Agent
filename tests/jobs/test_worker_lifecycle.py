@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from packages.job_contracts import JobState, JobType, SnapshotPayload
+from packages.job_contracts import JobState, JobType, SnapshotPayload, parse_payload
 from packages.runtime_release import RuntimeAuthorityV2, RuntimePathsV2
 from services.job_store import JobStoreSettings
 from services.job_store import worker_repository as worker_repository_module
@@ -31,6 +31,8 @@ from services.job_worker.worker import (
     WORKER_LEASE_SECONDS,
     WorkerControl,
 )
+from services.market_data.ingestion import MarketDataIngestionError
+from services.market_data.repository import MarketDataPersistenceOutcome
 from tests.jobs.backend_contract_fixtures import BACKEND_COMMIT
 
 
@@ -38,6 +40,33 @@ def claim(*, attempt_number=1, max_attempts=2):
     return ClaimedJob(
         job_id="job-1", job_type=JobType.SNAPSHOT,
         payload=SnapshotPayload(scope="default", requested_as_of=None),
+        attempt_id="attempt-1", attempt_number=attempt_number,
+        worker_id="worker-1", lease_token="secret",
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=30),
+        max_attempts=max_attempts,
+    )
+
+
+def market_data_claim(*, attempt_number=1, max_attempts=2):
+    payload = parse_payload(
+        JobType.SNAPSHOT,
+        {
+            "scope": "default",
+            "requested_as_of": None,
+            "market_data": {
+                "provider": "deterministic-provider-free-fixture-v1",
+                "instrument": "crypto_spot:FIXTURE:BTC",
+                "timeframe": "1m",
+                "interval_seconds": 60,
+                "requested_at": "2026-08-04T12:00:00Z",
+                "provider_retry_limit": 1,
+            },
+        },
+    )
+    assert isinstance(payload, SnapshotPayload)
+    return ClaimedJob(
+        job_id="job-1", job_type=JobType.SNAPSHOT,
+        payload=payload,
         attempt_id="attempt-1", attempt_number=attempt_number,
         worker_id="worker-1", lease_token="secret",
         lease_expires_at=datetime.now(UTC) + timedelta(seconds=30),
@@ -151,12 +180,14 @@ def worker(
     runner,
     validator=Validator(),
     safety=lambda: safety_evidence("4" * 64),
+    market_data_ingestor=None,
 ):
     return JobWorker(
         repository, runner, validator, worker_id="worker-1", code_commit="e" * 40,
         environment=object(), safety_preflight=safety,
         prepare_spawn=lambda job: object(), lease_seconds=WORKER_LEASE_SECONDS,
         clock=lambda: datetime(2026, 7, 12, tzinfo=UTC),
+        market_data_ingestor=market_data_ingestor,
     )
 
 
@@ -174,6 +205,70 @@ def test_run_once_claims_starts_heartbeats_validates_and_atomically_finalizes_su
     assert final[2]["final_state"] is JobState.SUCCEEDED
     assert final[2]["result"].sha256 == "d" * 64
     assert len(final[2]["stream_artifacts"]) == 2
+
+
+def test_market_data_job_without_injected_core_ingestor_blocks_before_spawn() -> None:
+    repository = Repository(market_data_claim())
+    process = Runner(outcome())
+
+    assert worker(repository, process).run_once() is True
+
+    assert process.decisions == []
+    final = [call for call in repository.calls if call[0] == "finalize"][0]
+    assert final[2]["expected_state"] is JobState.CLAIMED
+    assert final[2]["final_state"] is JobState.BLOCKED
+    assert final[2]["reason_code"] == "MARKET_DATA_INGESTOR_UNAVAILABLE"
+
+
+def test_market_data_job_persists_only_after_result_validation() -> None:
+    events: list[str] = []
+
+    class OrderedValidator(Validator):
+        def validate(self, *args, **kwargs):
+            events.append("validated")
+            return super().validate(*args, **kwargs)
+
+    class Ingestor:
+        def __init__(self) -> None:
+            self.payloads = []
+
+        def ingest(self, payload):
+            events.append("ingested")
+            self.payloads.append(payload)
+            return MarketDataPersistenceOutcome("a" * 64, True)
+
+    repository = Repository(market_data_claim())
+    ingestor = Ingestor()
+
+    assert worker(
+        repository,
+        Runner(outcome()),
+        validator=OrderedValidator(),
+        market_data_ingestor=ingestor,
+    ).run_once() is True
+
+    assert events == ["validated", "ingested"]
+    assert ingestor.payloads == [market_data_claim().payload]
+    final = [call for call in repository.calls if call[0] == "finalize"][0]
+    assert final[2]["final_state"] is JobState.SUCCEEDED
+    assert final[2]["result"].validation_metadata == {
+        "market_data_snapshot_digest": "a" * 64,
+        "market_data_inserted": True,
+    }
+
+
+def test_market_data_ingestion_failure_uses_existing_retry_lifecycle() -> None:
+    class FailingIngestor:
+        def ingest(self, payload):
+            raise MarketDataIngestionError("provider evidence digest does not match")
+
+    repository = Repository(market_data_claim(max_attempts=2))
+
+    assert worker(
+        repository, Runner(outcome()), market_data_ingestor=FailingIngestor()
+    ).run_once() is True
+
+    assert [call[0] for call in repository.calls if call[0] in {"finalize", "retry"}] == ["retry"]
 
 
 def test_worker_repository_claim_authority_defaults_to_snapshot_only() -> None:

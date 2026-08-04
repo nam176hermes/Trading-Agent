@@ -106,6 +106,40 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/v1/market-data/latest": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Canonical Market Data Latest */
+        readonly get: operations["canonical_market_data_latest_v1_market_data_latest_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/v1/market-data/snapshots/{snapshot_digest}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Canonical Market Data Snapshot */
+        readonly get: operations["canonical_market_data_snapshot_v1_market_data_snapshots__snapshot_digest__get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/v1/market/latest": {
         readonly parameters: {
             readonly query?: never;
@@ -178,6 +212,45 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** CanonicalMarketDataLatestData */
+        readonly CanonicalMarketDataLatestData: {
+            readonly snapshot: components["schemas"]["CanonicalMarketDataSnapshot"] | null;
+        };
+        /** CanonicalMarketDataLatestEnvelope */
+        readonly CanonicalMarketDataLatestEnvelope: {
+            readonly data: components["schemas"]["CanonicalMarketDataLatestData"];
+            readonly freshness?: components["schemas"]["DataFreshness"] | null;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            readonly generated_at: string;
+            /** Schema Version */
+            readonly schema_version: string;
+            /** Trace Id */
+            readonly trace_id: string;
+        };
+        /** CanonicalMarketDataSnapshot */
+        readonly CanonicalMarketDataSnapshot: {
+            readonly continuity: components["schemas"]["MarketContinuity"];
+            readonly snapshot: components["schemas"]["MarketSnapshot"];
+            /** Snapshot Digest */
+            readonly snapshot_digest: string;
+        };
+        /** CanonicalMarketDataSnapshotEnvelope */
+        readonly CanonicalMarketDataSnapshotEnvelope: {
+            readonly data: components["schemas"]["CanonicalMarketDataSnapshot"];
+            readonly freshness?: components["schemas"]["DataFreshness"] | null;
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            readonly generated_at: string;
+            /** Schema Version */
+            readonly schema_version: string;
+            /** Trace Id */
+            readonly trace_id: string;
+        };
         /** CapabilityEvidence */
         readonly CapabilityEvidence: {
             /** Benchmark Run Id */
@@ -455,6 +528,17 @@ export interface components {
             readonly detail?: readonly components["schemas"]["ValidationError"][];
         };
         /**
+         * InstrumentId
+         * @description A normalized identity whose canonical form includes type and venue.
+         */
+        readonly InstrumentId: {
+            readonly product_type: components["schemas"]["ProductType"];
+            /** Symbol */
+            readonly symbol: string;
+            /** Venue */
+            readonly venue: string;
+        };
+        /**
          * KillSwitchState
          * @enum {string}
          */
@@ -570,6 +654,70 @@ export interface components {
             /** Warning */
             readonly warning: string | null;
         };
+        /**
+         * MarketCandle
+         * @description One UTC-aligned OHLCV observation for a canonical instrument identity.
+         */
+        readonly MarketCandle: {
+            /** Close */
+            readonly close: string;
+            /** High */
+            readonly high: string;
+            readonly instrument: components["schemas"]["InstrumentId"];
+            /** Low */
+            readonly low: string;
+            /** Open */
+            readonly open: string;
+            /**
+             * Open Time
+             * Format: date-time
+             */
+            readonly open_time: string;
+            readonly timeframe: components["schemas"]["MarketTimeframe"];
+            /** Volume */
+            readonly volume: string;
+        };
+        /**
+         * MarketContinuity
+         * @description Exact continuity observation; it reports and never invents candles.
+         */
+        readonly MarketContinuity: {
+            /**
+             * Duplicate Open Times
+             * @default []
+             */
+            readonly duplicate_open_times: readonly string[];
+            /**
+             * Missing Open Times
+             * @default []
+             */
+            readonly missing_open_times: readonly string[];
+            readonly timeframe: components["schemas"]["MarketTimeframe"];
+        };
+        /**
+         * MarketDataProvenance
+         * @description Bounded public-provider provenance with evidence integrity metadata.
+         */
+        readonly MarketDataProvenance: {
+            /**
+             * Fetched At
+             * Format: date-time
+             */
+            readonly fetched_at: string;
+            /** Normalization Version */
+            readonly normalization_version: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            readonly observed_at: string;
+            /** Provider */
+            readonly provider: string;
+            /** Raw Evidence Sha256 */
+            readonly raw_evidence_sha256: string;
+            /** Schema Version */
+            readonly schema_version: string;
+        };
         /** MarketLatestData */
         readonly MarketLatestData: {
             readonly report: components["schemas"]["MarketReport"] | null;
@@ -604,6 +752,32 @@ export interface components {
             /** Source File */
             readonly source_file: string;
         };
+        /**
+         * MarketSnapshot
+         * @description A deterministic, provenance-bound canonical market-data observation.
+         */
+        readonly MarketSnapshot: {
+            /** Candles */
+            readonly candles: readonly components["schemas"]["MarketCandle"][];
+            readonly instrument: components["schemas"]["InstrumentId"];
+            /**
+             * Known At
+             * Format: date-time
+             */
+            readonly known_at: string;
+            /** Normalization Version */
+            readonly normalization_version: string;
+            readonly provenance: components["schemas"]["MarketDataProvenance"];
+            /** Schema Version */
+            readonly schema_version: string;
+            readonly timeframe: components["schemas"]["MarketTimeframe"];
+        };
+        /**
+         * MarketTimeframe
+         * @description Closed candle intervals represented by canonical compact names.
+         * @enum {string}
+         */
+        readonly MarketTimeframe: "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
         /** MetaEnvelope */
         readonly MetaEnvelope: {
             readonly data: components["schemas"]["DeploymentMeta"];
@@ -631,6 +805,12 @@ export interface components {
             /** Total */
             readonly total: number;
         };
+        /**
+         * ProductType
+         * @description Product classes supported by the canonical domain model.
+         * @enum {string}
+         */
+        readonly ProductType: "crypto_spot" | "equity";
         /** RiskAssessment */
         readonly RiskAssessment: {
             /** Position Size Pct */
@@ -888,6 +1068,69 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["DecisionDetailEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly canonical_market_data_latest_v1_market_data_latest_get: {
+        readonly parameters: {
+            readonly query: {
+                readonly instrument: "crypto_spot:FIXTURE:BTC";
+                readonly timeframe: "1m";
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["CanonicalMarketDataLatestEnvelope"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly canonical_market_data_snapshot_v1_market_data_snapshots__snapshot_digest__get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly snapshot_digest: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["CanonicalMarketDataSnapshotEnvelope"];
                 };
             };
             /** @description Validation Error */

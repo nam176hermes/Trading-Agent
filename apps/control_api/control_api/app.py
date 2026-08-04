@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Callable, Literal, Mapping
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -17,6 +17,10 @@ from .contracts import (
     ApiEnvelope,
     ApiError,
     ApiErrorEnvelope,
+    CanonicalMarketDataLatestData,
+    CanonicalMarketDataLatestEnvelope,
+    CanonicalMarketDataSnapshot,
+    CanonicalMarketDataSnapshotEnvelope,
     CapabilityListData,
     CapabilityListEnvelope,
     CapabilityStatus,
@@ -43,6 +47,13 @@ from .repositories.costs import LegacyCostRepository, PostgresCostRepository
 from .repositories.decisions import LegacyDecisionRepository, PostgresDecisionRepository
 from .repositories.decisions import MAX_DECISION_WINDOW
 from .repositories.market import LegacyMarketReportRepository, PostgresMarketReportRepository
+from .repositories.market_data import (
+    CanonicalMarketDataReadError,
+    CanonicalMarketDataRepository,
+    CanonicalMarketDataUnavailable,
+    PostgresCanonicalMarketDataRepository,
+    UnavailableCanonicalMarketDataRepository,
+)
 from .repositories.status import (
     LegacyOperationalStatusRepository,
     PostgresOperationalStatusRepository,
@@ -91,6 +102,7 @@ def create_app(
     *,
     env: Mapping[str, str] | None = None,
     safety_provider: Callable[[], SafetySnapshot] | None = None,
+    canonical_market_data_repository: CanonicalMarketDataRepository | None = None,
 ) -> FastAPI:
     configured = settings or Settings.from_env()
     environment = os.environ if env is None else env
@@ -119,6 +131,13 @@ def create_app(
         selected_decision_repository = PostgresDecisionRepository(database_settings)
         selected_capability_repository = PostgresCapabilityRepository(database_settings)
         selected_cost_repository = PostgresCostRepository(database_settings)
+        selected_canonical_market_data_repository = (
+            canonical_market_data_repository
+            or PostgresCanonicalMarketDataRepository(
+                database_settings,
+                stale_after_seconds=configured.stale_after_seconds,
+            )
+        )
         readiness_probe = PostgresReadinessProbe(database_settings)
         selected_status_repository = PostgresOperationalStatusRepository(
             database_settings,
@@ -133,6 +152,10 @@ def create_app(
         selected_decision_repository = LegacyDecisionRepository(configured.data_root)
         selected_capability_repository = LegacyCapabilityRepository(configured.data_root)
         selected_cost_repository = LegacyCostRepository(configured.data_root)
+        selected_canonical_market_data_repository = (
+            canonical_market_data_repository
+            or UnavailableCanonicalMarketDataRepository()
+        )
         readiness_probe = None
         selected_status_repository = LegacyOperationalStatusRepository(
             configured.data_root,
@@ -149,6 +172,20 @@ def create_app(
 
     def status_repository():
         return selected_status_repository
+
+    def canonical_market_data_repository() -> CanonicalMarketDataRepository:
+        return selected_canonical_market_data_repository
+
+    def canonical_snapshot_data(result) -> CanonicalMarketDataLatestData:
+        if result.snapshot is None or result.snapshot_digest is None:
+            return CanonicalMarketDataLatestData(snapshot=None)
+        return CanonicalMarketDataLatestData(
+            snapshot=CanonicalMarketDataSnapshot(
+                snapshot_digest=result.snapshot_digest,
+                snapshot=result.snapshot,
+                continuity=result.snapshot.continuity,
+            )
+        )
 
     @app.exception_handler(ControlApiError)
     async def handle_control_error(request: Request, error: ControlApiError):
@@ -215,6 +252,61 @@ def create_app(
     def market_latest(request: Request):
         result = market_repository().latest()
         return _envelope(request, MarketLatestData(report=result.report), freshness=result.freshness)
+
+    @app.get("/v1/market-data/latest", response_model=CanonicalMarketDataLatestEnvelope)
+    def canonical_market_data_latest(
+        request: Request,
+        instrument: Literal["crypto_spot:FIXTURE:BTC"] = Query(...),
+        timeframe: Literal["1m"] = Query(...),
+    ):
+        try:
+            result = canonical_market_data_repository().latest(
+                instrument=instrument,
+                timeframe=timeframe,
+            )
+        except (CanonicalMarketDataReadError, CanonicalMarketDataUnavailable) as exc:
+            raise ControlApiError(
+                503,
+                "CANONICAL_MARKET_DATA_UNAVAILABLE",
+                "Canonical market data is unavailable.",
+            ) from exc
+        return _envelope(
+            request,
+            canonical_snapshot_data(result),
+            freshness=result.freshness,
+        )
+
+    @app.get(
+        "/v1/market-data/snapshots/{snapshot_digest}",
+        response_model=CanonicalMarketDataSnapshotEnvelope,
+    )
+    def canonical_market_data_snapshot(
+        request: Request,
+        snapshot_digest: str = Path(pattern=r"^[0-9a-f]{64}$"),
+    ):
+        try:
+            result = canonical_market_data_repository().get(snapshot_digest)
+        except (CanonicalMarketDataReadError, CanonicalMarketDataUnavailable) as exc:
+            raise ControlApiError(
+                503,
+                "CANONICAL_MARKET_DATA_UNAVAILABLE",
+                "Canonical market data is unavailable.",
+            ) from exc
+        if result is None or result.snapshot is None or result.snapshot_digest is None:
+            raise ControlApiError(
+                404,
+                "MARKET_DATA_SNAPSHOT_NOT_FOUND",
+                "Canonical market-data snapshot was not found.",
+            )
+        return _envelope(
+            request,
+            CanonicalMarketDataSnapshot(
+                snapshot_digest=result.snapshot_digest,
+                snapshot=result.snapshot,
+                continuity=result.snapshot.continuity,
+            ),
+            freshness=result.freshness,
+        )
 
     @app.get("/v1/signals", response_model=SignalListEnvelope)
     def signals(request: Request, asset: str | None = None):

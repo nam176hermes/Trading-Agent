@@ -1,7 +1,7 @@
-import fs from 'fs';
 import path from 'path';
 
 import { roleSatisfies } from './access-policy';
+import { readLocalStateFile, writePrivateLocalStateFile } from './local-state';
 import { memoryDir } from './paths';
 import { verifySession } from './session';
 import type { SessionPayload, SessionRole } from './session';
@@ -11,36 +11,54 @@ export type MutationClassification =
   | 'MUTATION_EXECUTION_SENSITIVE'
   | 'SECRET_MANAGEMENT';
 
-type AuditOutcome = 'AUTHORIZED' | 'CONFIGURATION_ERROR' | 'FORBIDDEN' | 'UNAUTHORIZED';
+type AuthorizationOutcome = 'GRANTED' | 'CONFIGURATION_ERROR' | 'FORBIDDEN' | 'UNAUTHORIZED';
+
+const MAX_AUDIT_BYTES = 1024 * 1024;
+
+function hasValidAuditRecords(existing: string | null): boolean {
+  if (existing === null || existing === '') return true;
+  if (!existing.endsWith('\n')) return false;
+  try {
+    for (const line of existing.slice(0, -1).split('\n')) {
+      if (line === '') return false;
+      JSON.parse(line);
+    }
+  } catch {
+    return false;
+  }
+  return true;
+}
 
 function appendAuditEvent(
   action: string,
   classification: MutationClassification,
-  outcome: AuditOutcome,
+  authorizationOutcome: AuthorizationOutcome,
   role?: SessionRole,
-): void {
+): boolean {
   const auditPath = path.join(memoryDir(), 'dashboard_mutation_audit.jsonl');
   try {
-    fs.mkdirSync(path.dirname(auditPath), { recursive: true, mode: 0o700 });
-    const fd = fs.openSync(auditPath, fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_WRONLY, 0o600);
-    try {
-      const event = {
-        event: 'dashboard_mutation_authorization',
-        action,
-        classification,
-        outcome,
-        occurred_at: new Date().toISOString(),
-        ...(role ? { role } : {}),
-      };
-      fs.writeSync(fd, `${JSON.stringify(event)}\n`);
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    fs.chmodSync(auditPath, 0o600);
-  } catch (error) {
-    console.error('Failed to write mutation authorization audit event', error instanceof Error ? error.name : 'UnknownError');
+    const existing = readLocalStateFile(auditPath, MAX_AUDIT_BYTES);
+    if (!hasValidAuditRecords(existing)) return false;
+    const event = {
+      event: 'dashboard_mutation_authorization',
+      action,
+      classification,
+      authorization_outcome: authorizationOutcome,
+      occurred_at: new Date().toISOString(),
+      ...(role ? { role } : {}),
+    };
+    writePrivateLocalStateFile(auditPath, `${existing ?? ''}${JSON.stringify(event)}\n`);
+    return true;
+  } catch {
+    return false;
   }
+}
+
+function auditUnavailable(): Response {
+  return Response.json(
+    { ok: false, code: 'AUDIT_UNAVAILABLE', message: 'Mutation audit is unavailable.' },
+    { status: 503 },
+  );
 }
 
 function sessionCookie(request: Request): string | null {
@@ -93,7 +111,9 @@ export function authorizeMutation(
     );
   }
 
-  appendAuditEvent(action, classification, 'AUTHORIZED', session.role);
+  if (!appendAuditEvent(action, classification, 'GRANTED', session.role)) {
+    return auditUnavailable();
+  }
   return null;
 }
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Generic, Literal, TypeVar
+from typing import Annotated, Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from packages.domain import MarketContinuity, MarketSnapshot
 
 
 class StrictModel(BaseModel):
@@ -308,6 +310,19 @@ class MarketLatestData(StrictModel):
     report: MarketReport | None
 
 
+SnapshotDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
+class CanonicalMarketDataSnapshot(StrictModel):
+    snapshot_digest: SnapshotDigest
+    snapshot: MarketSnapshot
+    continuity: MarketContinuity
+
+
+class CanonicalMarketDataLatestData(StrictModel):
+    snapshot: CanonicalMarketDataSnapshot | None
+
+
 class SignalListData(StrictModel):
     items: list[Signal]
     total: int = Field(ge=0)
@@ -333,6 +348,14 @@ class SystemStatusEnvelope(ApiEnvelope[SystemStatus]):
 
 
 class MarketLatestEnvelope(ApiEnvelope[MarketLatestData]):
+    pass
+
+
+class CanonicalMarketDataLatestEnvelope(ApiEnvelope[CanonicalMarketDataLatestData]):
+    pass
+
+
+class CanonicalMarketDataSnapshotEnvelope(ApiEnvelope[CanonicalMarketDataSnapshot]):
     pass
 
 

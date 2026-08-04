@@ -1,6 +1,80 @@
 import { makeApi, Zodios, type ZodiosOptions } from "@zodios/core";
 import { z } from "zod";
 
+type CanonicalMarketDataLatestData = Readonly<{
+  snapshot:
+    | (CanonicalMarketDataSnapshot | null)
+    | Readonly<Array<CanonicalMarketDataSnapshot | null>>;
+}>;
+type CanonicalMarketDataSnapshot = Readonly<{
+  continuity: MarketContinuity;
+  snapshot: MarketSnapshot;
+  snapshot_digest: string;
+}>;
+type MarketContinuity = Readonly<{
+  duplicate_open_times?: Readonly<Array<string>> | undefined;
+  missing_open_times?: Readonly<Array<string>> | undefined;
+  timeframe: MarketTimeframe;
+}>;
+type MarketTimeframe = "1m" | "5m" | "15m" | "1h" | "4h" | "1d";
+type MarketSnapshot = Readonly<{
+  readonly candles: Readonly<Array<MarketCandle>>;
+  instrument: InstrumentId;
+  known_at: string;
+  normalization_version: string;
+  provenance: MarketDataProvenance;
+  schema_version: string;
+  timeframe: MarketTimeframe;
+}>;
+type MarketCandle = Readonly<{
+  close: string;
+  high: string;
+  instrument: InstrumentId;
+  low: string;
+  open: string;
+  open_time: string;
+  timeframe: MarketTimeframe;
+  volume: string;
+}>;
+type InstrumentId = Readonly<{
+  product_type: ProductType;
+  symbol: string;
+  venue: string;
+}>;
+type ProductType = "crypto_spot" | "equity";
+type MarketDataProvenance = Readonly<{
+  fetched_at: string;
+  normalization_version: string;
+  observed_at: string;
+  provider: string;
+  raw_evidence_sha256: string;
+  schema_version: string;
+}>;
+type CanonicalMarketDataLatestEnvelope = Readonly<{
+  data: CanonicalMarketDataLatestData;
+  freshness?:
+    | ((DataFreshness | null) | Readonly<Array<DataFreshness | null>>)
+    | undefined;
+  generated_at: string;
+  schema_version: string;
+  trace_id: string;
+}>;
+type DataFreshness = Readonly<{
+  age_seconds: (number | null) | Readonly<Array<number | null>>;
+  as_of: (string | null) | Readonly<Array<string | null>>;
+  stale_after_seconds: number;
+  status: FreshnessStatus;
+}>;
+type FreshnessStatus = "FRESH" | "STALE" | "NO_DATA" | "UNKNOWN";
+type CanonicalMarketDataSnapshotEnvelope = Readonly<{
+  data: CanonicalMarketDataSnapshot;
+  freshness?:
+    | ((DataFreshness | null) | Readonly<Array<DataFreshness | null>>)
+    | undefined;
+  generated_at: string;
+  schema_version: string;
+  trace_id: string;
+}>;
 type CapabilityEvidence = Readonly<{
   benchmark_run_id: (string | null) | Readonly<Array<string | null>>;
   capability_id: string;
@@ -28,13 +102,6 @@ type CapabilityListEnvelope = Readonly<{
   schema_version: string;
   trace_id: string;
 }>;
-type DataFreshness = Readonly<{
-  age_seconds: (number | null) | Readonly<Array<number | null>>;
-  as_of: (string | null) | Readonly<Array<string | null>>;
-  stale_after_seconds: number;
-  status: FreshnessStatus;
-}>;
-type FreshnessStatus = "FRESH" | "STALE" | "NO_DATA" | "UNKNOWN";
 type CostSummary = Readonly<{
   amount?: ((number | null) | Readonly<Array<number | null>>) | undefined;
   currency: string;
@@ -489,6 +556,122 @@ const DecisionDetailEnvelope: z.ZodType<DecisionDetailEnvelope> = z
   })
   .strict()
   .readonly();
+const MarketTimeframe = z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]);
+const MarketContinuity: z.ZodType<MarketContinuity> = z
+  .object({
+    duplicate_open_times: z
+      .array(z.string().datetime({ offset: true }))
+      .readonly()
+      .max(4096)
+      .optional()
+      .default([]),
+    missing_open_times: z
+      .array(z.string().datetime({ offset: true }))
+      .readonly()
+      .max(4096)
+      .optional()
+      .default([]),
+    timeframe: MarketTimeframe,
+  })
+  .strict()
+  .readonly();
+const ProductType = z.enum(["crypto_spot", "equity"]);
+const InstrumentId: z.ZodType<InstrumentId> = z
+  .object({ product_type: ProductType, symbol: z.string(), venue: z.string() })
+  .strict()
+  .passthrough()
+  .readonly();
+const MarketCandle: z.ZodType<MarketCandle> = z
+  .object({
+    close: z.string(),
+    high: z.string(),
+    instrument: InstrumentId,
+    low: z.string(),
+    open: z.string(),
+    open_time: z.string().datetime({ offset: true }),
+    timeframe: MarketTimeframe,
+    volume: z.string(),
+  })
+  .strict()
+  .readonly();
+const MarketDataProvenance: z.ZodType<MarketDataProvenance> = z
+  .object({
+    fetched_at: z.string().datetime({ offset: true }),
+    normalization_version: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+    observed_at: z.string().datetime({ offset: true }),
+    provider: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][a-z0-9.-]{0,63}$/),
+    raw_evidence_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    schema_version: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+  })
+  .strict()
+  .readonly();
+const MarketSnapshot: z.ZodType<MarketSnapshot> = z
+  .object({
+    candles: z.array(MarketCandle).readonly().min(1).max(4096),
+    instrument: InstrumentId,
+    known_at: z.string().datetime({ offset: true }),
+    normalization_version: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+    provenance: MarketDataProvenance,
+    schema_version: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+    timeframe: MarketTimeframe,
+  })
+  .strict()
+  .readonly();
+const CanonicalMarketDataSnapshot: z.ZodType<CanonicalMarketDataSnapshot> = z
+  .object({
+    continuity: MarketContinuity,
+    snapshot: MarketSnapshot,
+    snapshot_digest: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict()
+  .readonly();
+const CanonicalMarketDataLatestData: z.ZodType<CanonicalMarketDataLatestData> =
+  z
+    .object({ snapshot: z.union([CanonicalMarketDataSnapshot, z.null()]) })
+    .strict()
+    .readonly();
+const CanonicalMarketDataLatestEnvelope: z.ZodType<CanonicalMarketDataLatestEnvelope> =
+  z
+    .object({
+      data: CanonicalMarketDataLatestData,
+      freshness: z.union([DataFreshness, z.null()]).optional(),
+      generated_at: z.string().datetime({ offset: true }),
+      schema_version: z.string(),
+      trace_id: z.string(),
+    })
+    .strict()
+    .readonly();
+const CanonicalMarketDataSnapshotEnvelope: z.ZodType<CanonicalMarketDataSnapshotEnvelope> =
+  z
+    .object({
+      data: CanonicalMarketDataSnapshot,
+      freshness: z.union([DataFreshness, z.null()]).optional(),
+      generated_at: z.string().datetime({ offset: true }),
+      schema_version: z.string(),
+      trace_id: z.string(),
+    })
+    .strict()
+    .readonly();
 const ConfidenceLevel = z.enum(["low", "medium", "high"]);
 const RiskLevel = z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
 const RiskAssessment: z.ZodType<RiskAssessment> = z
@@ -694,6 +877,17 @@ export const schemas = {
   ValidationError,
   HTTPValidationError,
   DecisionDetailEnvelope,
+  MarketTimeframe,
+  MarketContinuity,
+  ProductType,
+  InstrumentId,
+  MarketCandle,
+  MarketDataProvenance,
+  MarketSnapshot,
+  CanonicalMarketDataSnapshot,
+  CanonicalMarketDataLatestData,
+  CanonicalMarketDataLatestEnvelope,
+  CanonicalMarketDataSnapshotEnvelope,
   ConfidenceLevel,
   RiskLevel,
   RiskAssessment,
@@ -795,6 +989,51 @@ const endpoints = makeApi([
       },
     ],
     response: DecisionDetailEnvelope,
+    errors: [
+      {
+        status: 422,
+        description: `Validation Error`,
+        schema: HTTPValidationError,
+      },
+    ],
+  },
+  {
+    method: "get",
+    path: "/v1/market-data/latest",
+    requestFormat: "json",
+    parameters: [
+      {
+        name: "instrument",
+        type: "Query",
+        schema: z.string(),
+      },
+      {
+        name: "timeframe",
+        type: "Query",
+        schema: z.string(),
+      },
+    ],
+    response: CanonicalMarketDataLatestEnvelope,
+    errors: [
+      {
+        status: 422,
+        description: `Validation Error`,
+        schema: HTTPValidationError,
+      },
+    ],
+  },
+  {
+    method: "get",
+    path: "/v1/market-data/snapshots/:snapshot_digest",
+    requestFormat: "json",
+    parameters: [
+      {
+        name: "snapshot_digest",
+        type: "Path",
+        schema: z.string().regex(/^[0-9a-f]{64}$/),
+      },
+    ],
+    response: CanonicalMarketDataSnapshotEnvelope,
     errors: [
       {
         status: 422,

@@ -112,7 +112,7 @@ test('disabled reads are audit-pure and authorized mutations record only authori
 
     const events = fs.readFileSync(auditPath, 'utf8').trim().split('\n').map(JSON.parse);
     assert.equal(events.length, 3);
-    assert.deepEqual(events.map((event) => event.outcome), ['AUTHORIZED', 'AUTHORIZED', 'AUTHORIZED']);
+    assert.deepEqual(events.map((event) => event.authorization_outcome), ['GRANTED', 'GRANTED', 'GRANTED']);
     assert.deepEqual(events.map((event) => event.action), ['position.close', 'service.control', 'keys.manage']);
   } finally {
     fs.rmSync(researchRoot, { recursive: true, force: true });

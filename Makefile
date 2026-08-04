@@ -1,6 +1,6 @@
 .PHONY: audit audit-release audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
-	check-d0-closure check-test-skips check-critical-coverage \
+	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
@@ -61,6 +61,9 @@ check-contracts:
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py
+
+check-broad-handler-inventory:
+	uv run python scripts/check_broad_handler_inventory.py --check
 
 check-test-skips:
 	@set -eu; \

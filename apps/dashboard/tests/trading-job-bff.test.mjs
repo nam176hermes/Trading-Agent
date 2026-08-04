@@ -431,7 +431,11 @@ test('deprecated run route only enqueues a fixed snapshot and does not touch run
   const afterHash = createHash('sha256').update(fs.readFileSync(legacy)).digest('hex');
   assert.equal(afterHash, beforeHash);
   assert.equal(after.mtimeMs, before.mtimeMs);
-  assert.deepEqual(calls, { read: 0, write: 0, rename: 0, spawn: 0 });
+  assert.deepEqual(calls, { read: 0, write: 1, rename: 1, spawn: 0 });
+  const auditRows = fs.readFileSync(path.join(temp, 'memory', 'dashboard_mutation_audit.jsonl'), 'utf8')
+    .trim().split('\n').map(JSON.parse);
+  assert.deepEqual(auditRows.map((event) => event.action), ['pipeline.run']);
+  assert.deepEqual(auditRows.map((event) => event.authorization_outcome), ['GRANTED']);
 
   const source = fs.readFileSync(path.join(ROOT, 'src/app/api/trading/run/route.ts'), 'utf8');
   assert.doesNotMatch(source, /child_process|node:child_process|spawn\s*\(|\.venv|python/i);

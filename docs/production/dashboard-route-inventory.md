@@ -12,6 +12,41 @@ fail-closed `503` `SOURCE_UNAVAILABLE` envelope, unless a row says otherwise.
 No handler is classified `dead`: removal requires caller proof and replacement
 tests.
 
+## Phase 4 vertical-slice disposition
+
+Every `canonical` row below is **IMPLEMENT_CANONICAL_UPSTREAM**: market data
+uses the P10 canonical snapshot, jobs use Job API envelopes, and
+decisions/signals/risk use validated Control API contracts. Every `typed
+unavailable` row is **RETAIN_TYPED_UNAVAILABLE_WITH_CLEAR_UX** until its
+canonical upstream contract exists. This explicitly includes portfolio,
+performance, balances, positions, orders, PnL, and exports: none may be
+represented by fabricated empty or healthy values. `compatibility` rows remain
+bounded local-state or alias behavior, not a hidden upstream fallback. No row
+is selected for **REMOVE_AFTER_CALLER_PROOF_AND_REPLACEMENT_TESTS** in this
+phase.
+
+## Mutation authorization audit policy
+
+Every classification — `MUTATION_EXECUTION_SENSITIVE`, `SECRET_MANAGEMENT`,
+and `MUTATION_LOW_RISK` — requires a protected authorization-audit write after
+session and role authorization, before the mutation handler runs. An unsafe,
+malformed, over-bound, or unavailable audit file returns the bounded
+`503 AUDIT_UNAVAILABLE` response and the handler is not called. This includes
+the low-risk watchlist mutation because it persists a protected local override.
+
+The `dashboard_mutation_authorization` record contains only the `event`
+discriminator, action, classification, authenticated role, timestamp, and
+`authorization_outcome`. It contains no session token, secret, path, request
+body, or mutation result.
+`authorization_outcome: GRANTED` means authorization only; it neither asserts
+that a route handler ran nor that any operation completed. If completion
+evidence is required, the responsible route or canonical downstream authority
+must emit it separately. In particular, Job API status and events remain the
+authority for job completion. Denied attempts retain their typed authorization
+response even when their best-effort audit write is unavailable; they cannot
+reach a mutation handler. The mandatory pre-handler audit persistence applies
+only to the granted path because only that path can reach a mutation handler.
+
 | Route | Method / role | Upstream and response contract | Frontend callers | Class |
 |---|---|---|---|---|
 | `/agents` | GET / reader | Static module catalog; JSON array | `settings-state` | compatibility |
@@ -43,7 +78,7 @@ tests.
 | `/kill-switch` | GET / reader; POST / admin | Control status plus protected local switch; structured state/error JSON | `quick-actions`, `halt-banner` | compatibility |
 | `/live-positions` | GET / reader | None; `SOURCE_UNAVAILABLE` | `live-positions-card` | typed unavailable |
 | `/macro` | GET / reader | None; `SOURCE_UNAVAILABLE` | `macro-dashboard` | typed unavailable |
-| `/market` | GET / reader | Control API market JSON or typed unavailable | `market-ticker` | canonical |
+| `/market` | GET / reader | Control API canonical P10 snapshot/freshness envelope or typed unavailable | `market-ticker` | canonical |
 | `/memory` | GET / reader | None; `SOURCE_UNAVAILABLE` | `memory-context` | typed unavailable |
 | `/meta` | GET / reader | Control API deployment metadata JSON | `operator-state` | canonical |
 | `/mode` | GET / reader; POST / admin | Control status plus protected local mode; structured mode/error JSON | `operator-state` (GET); no static POST caller | compatibility |

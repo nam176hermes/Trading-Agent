@@ -1,23 +1,10 @@
 import { NextResponse } from 'next/server';
-import { getAllMarketData } from '@/lib/trading/data';
-import { AssetClass } from '@/lib/trading/types';
-import { controlApiUnavailableResponse } from '@/lib/trading/control-api';
+import { controlApiUnavailableResponse, getControlCanonicalMarketData } from '@/lib/trading/control-api';
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    const { searchParams } = new URL(request.url);
-    const classParam = searchParams.get('class');
-    const normalizedClass = classParam?.replace(/s$/, '') as AssetClass | undefined;
-
-    const data = await getAllMarketData();
-
-    const tickers = normalizedClass
-      ? data.tickers.filter(t => t.asset_class === normalizedClass)
-      : data.tickers;
-
-    return NextResponse.json({
-      timestamp: data.timestamp,
-      tickers,
+    return NextResponse.json(await getControlCanonicalMarketData(), {
+      headers: { 'cache-control': 'no-store' },
     });
   } catch {
     return controlApiUnavailableResponse();

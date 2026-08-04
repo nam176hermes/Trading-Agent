@@ -10,6 +10,7 @@ registerHooks({
     if (specifier === 'server-only') {
       return { shortCircuit: true, url: 'data:text/javascript,export%20{}' };
     }
+    if (specifier === 'next/server') return nextResolve('next/server.js', context);
     if (specifier.startsWith('@/')) {
       const target = pathToFileURL(path.join(root, 'src', specifier.slice(2))).href;
       for (const suffix of ['.ts', '.tsx', '/index.ts']) {
@@ -64,6 +65,52 @@ function statusEnvelope(extra = {}) {
   };
 }
 
+function canonicalMarketEnvelope({ freshness, snapshot } = {}) {
+  const canonicalSnapshot = {
+    continuity: {
+      duplicate_open_times: [],
+      missing_open_times: [],
+      timeframe: '1m',
+    },
+    snapshot: {
+      candles: [{
+        close: '64240',
+        high: '64260',
+        instrument: { symbol: 'BTC', venue: 'FIXTURE', product_type: 'crypto_spot' },
+        low: '64180',
+        open: '64200',
+        open_time: '2026-08-04T11:59:00Z',
+        timeframe: '1m',
+        volume: '12.5',
+      }],
+      instrument: { symbol: 'BTC', venue: 'FIXTURE', product_type: 'crypto_spot' },
+      known_at: '2026-08-04T12:00:00Z',
+      normalization_version: 'p10-fixture-v1',
+      provenance: {
+        fetched_at: '2026-08-04T12:00:00Z',
+        normalization_version: 'p10-fixture-v1',
+        observed_at: '2026-08-04T12:00:00Z',
+        provider: 'deterministic-provider-free-fixture-v1',
+        raw_evidence_sha256: 'a'.repeat(64),
+        schema_version: 'market-data-v1',
+      },
+      schema_version: 'market-data-v1',
+      timeframe: '1m',
+    },
+    snapshot_digest: 'b'.repeat(64),
+  };
+  return {
+    schema_version: '2.0.0',
+    trace_id: 'trace_market_fixture',
+    generated_at: '2026-08-04T12:00:01Z',
+    freshness: freshness ?? {
+      status: 'FRESH', as_of: '2026-08-04T12:00:00Z', age_seconds: 1,
+      stale_after_seconds: 60,
+    },
+    data: { snapshot: snapshot === undefined ? canonicalSnapshot : snapshot },
+  };
+}
+
 test('Control API client uses one fixed loopback origin and validates a strict status envelope', async () => {
   const requested = [];
   globalThis.fetch = async (url) => {
@@ -98,6 +145,104 @@ test('Control API client cancels an oversized upstream response', async () => {
 
   await assert.rejects(getControlStatus(), (error) => error instanceof ControlApiClientError);
   assert.equal(cancelled, true);
+});
+
+test('dashboard canonical market-data client requests the closed fixture and retains freshness and provenance', async () => {
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(String(url));
+    return Response.json(canonicalMarketEnvelope());
+  };
+  const { getControlCanonicalMarketData } = await import('../src/lib/trading/control-api.ts');
+
+  const response = await getControlCanonicalMarketData();
+
+  assert.deepEqual(requested, [
+    'http://127.0.0.1:8400/v1/market-data/latest?instrument=crypto_spot%3AFIXTURE%3ABTC&timeframe=1m',
+  ]);
+  assert.equal(response.data.snapshot.snapshot.candles[0].close, '64240');
+  assert.equal(response.data.snapshot.snapshot.provenance.provider, 'deterministic-provider-free-fixture-v1');
+  assert.equal(response.freshness.status, 'FRESH');
+});
+
+test('dashboard canonical market-data client rejects malformed upstream snapshots', async () => {
+  const malformed = canonicalMarketEnvelope();
+  malformed.data.snapshot.snapshot.candles[0].unexpected = 'forbidden';
+  globalThis.fetch = async () => Response.json(malformed);
+  const { ControlApiClientError, getControlCanonicalMarketData } = await import('../src/lib/trading/control-api.ts');
+
+  await assert.rejects(getControlCanonicalMarketData(), (error) => error instanceof ControlApiClientError);
+});
+
+test('market BFF exposes canonical fresh, stale, and no-data states without legacy tickers', async () => {
+  const { GET } = await import('../src/app/api/trading/market/route.ts');
+  globalThis.fetch = async () => Response.json(canonicalMarketEnvelope());
+
+  const fresh = await GET(new Request('http://dashboard.test/api/trading/market'));
+  assert.equal(fresh.status, 200);
+  const freshBody = await fresh.json();
+  assert.equal(freshBody.data.snapshot.snapshot_digest, 'b'.repeat(64));
+  assert.equal(freshBody.freshness.status, 'FRESH');
+  assert.equal(Object.hasOwn(freshBody, 'tickers'), false);
+
+  globalThis.fetch = async () => Response.json(canonicalMarketEnvelope({
+    freshness: { status: 'STALE', as_of: '2026-08-04T12:00:00Z', age_seconds: 61, stale_after_seconds: 60 },
+  }));
+  const stale = await GET(new Request('http://dashboard.test/api/trading/market'));
+  assert.equal((await stale.json()).freshness.status, 'STALE');
+
+  globalThis.fetch = async () => Response.json(canonicalMarketEnvelope({
+    freshness: { status: 'NO_DATA', as_of: null, age_seconds: null, stale_after_seconds: 60 },
+    snapshot: null,
+  }));
+  const unavailable = await GET(new Request('http://dashboard.test/api/trading/market'));
+  const unavailableBody = await unavailable.json();
+  assert.equal(unavailable.status, 200);
+  assert.equal(unavailableBody.data.snapshot, null);
+  assert.equal(unavailableBody.freshness.status, 'NO_DATA');
+  assert.equal(Object.hasOwn(unavailableBody, 'tickers'), false);
+
+  const malformed = canonicalMarketEnvelope();
+  malformed.data.snapshot.snapshot.provenance.provider = 'untrusted-provider';
+  globalThis.fetch = async () => Response.json(malformed);
+  const upstreamUnavailable = await GET(new Request('http://dashboard.test/api/trading/market'));
+  assert.equal(upstreamUnavailable.status, 503);
+  assert.deepEqual(await upstreamUnavailable.json(), {
+    ok: false,
+    code: 'CONTROL_API_UNAVAILABLE',
+    message: 'Canonical trading data is unavailable.',
+  });
+});
+
+test('canonical market ticker view preserves fresh and stale provenance and never invents a quote for no data', async () => {
+  const { parseCanonicalMarketTickerView } = await import('../src/lib/trading/market-data-view.ts');
+
+  const fresh = parseCanonicalMarketTickerView(canonicalMarketEnvelope());
+  assert.deepEqual(fresh, {
+    kind: 'snapshot',
+    freshness: 'FRESH',
+    close: '64240',
+    knownAt: '2026-08-04T12:00:00Z',
+    provider: 'deterministic-provider-free-fixture-v1',
+    evidenceDigest: 'a'.repeat(64),
+    snapshotDigest: 'b'.repeat(64),
+  });
+
+  const stale = parseCanonicalMarketTickerView(canonicalMarketEnvelope({
+    freshness: { status: 'STALE', as_of: '2026-08-04T12:00:00Z', age_seconds: 61, stale_after_seconds: 60 },
+  }));
+  assert.equal(stale.kind, 'snapshot');
+  assert.equal(stale.freshness, 'STALE');
+
+  const noData = parseCanonicalMarketTickerView(canonicalMarketEnvelope({
+    freshness: { status: 'NO_DATA', as_of: null, age_seconds: null, stale_after_seconds: 60 },
+    snapshot: null,
+  }));
+  assert.deepEqual(noData, { kind: 'no_data' });
+
+  const malformed = canonicalMarketEnvelope();
+  malformed.data.snapshot.snapshot.provenance.provider = 'untrusted-provider';
+  assert.equal(parseCanonicalMarketTickerView(malformed), null);
 });
 
 test('read-only dashboard routes and server data modules have no legacy filesystem reader', () => {

@@ -1,5 +1,7 @@
 import 'server-only';
 
+import type { components } from '../../../../../generated/dashboard/api-types';
+
 const CONTROL_API_ORIGIN = 'http://127.0.0.1:8400';
 const CONTROL_API_SCHEMA_VERSION = '2.0.0';
 const CONTROL_API_TIMEOUT_MS = 5_000;
@@ -203,6 +205,11 @@ export interface ControlEnvelope<T> {
   data: T;
   freshness: ControlFreshness | null;
 }
+
+// These aliases deliberately consume the generated Control API contract. Runtime
+// parsing below remains strict because the Control API is an upstream boundary.
+export type ControlCanonicalMarketData = components['schemas']['CanonicalMarketDataLatestData'];
+export type ControlCanonicalMarketSnapshot = components['schemas']['CanonicalMarketDataSnapshot'];
 
 export class ControlApiClientError extends Error {
   constructor() {
@@ -482,6 +489,91 @@ function parseEnvelope<T>(value: unknown, parser: Parser<T>): ControlEnvelope<T>
   };
 }
 
+const P10_INSTRUMENT = 'crypto_spot:FIXTURE:BTC';
+const P10_TIMEFRAME = '1m';
+const P10_PROVIDER = 'deterministic-provider-free-fixture-v1';
+const SHA256 = /^[0-9a-f]{64}$/;
+const CANONICAL_DECIMAL = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+function canonicalUtcDate(value: unknown): value is string {
+  return isoDate(value) && value.endsWith('Z');
+}
+
+function canonicalDecimal(value: unknown): value is string {
+  return nonEmptyString(value, 128) && CANONICAL_DECIMAL.test(value);
+}
+
+function parseCanonicalInstrument(value: unknown): boolean {
+  return isObject(value)
+    && hasExactKeys(value, ['symbol', 'venue', 'product_type'])
+    && value.symbol === 'BTC'
+    && value.venue === 'FIXTURE'
+    && value.product_type === 'crypto_spot';
+}
+
+function parseCanonicalCandle(value: unknown): boolean {
+  return isObject(value)
+    && hasExactKeys(value, ['close', 'high', 'instrument', 'low', 'open', 'open_time', 'timeframe', 'volume'])
+    && canonicalDecimal(value.open)
+    && canonicalDecimal(value.high)
+    && canonicalDecimal(value.low)
+    && canonicalDecimal(value.close)
+    && canonicalDecimal(value.volume)
+    && canonicalUtcDate(value.open_time)
+    && value.timeframe === P10_TIMEFRAME
+    && parseCanonicalInstrument(value.instrument);
+}
+
+function parseCanonicalProvenance(value: unknown): boolean {
+  return isObject(value)
+    && hasExactKeys(value, [
+      'fetched_at', 'normalization_version', 'observed_at', 'provider',
+      'raw_evidence_sha256', 'schema_version',
+    ])
+    && canonicalUtcDate(value.fetched_at)
+    && nonEmptyString(value.normalization_version, 64)
+    && canonicalUtcDate(value.observed_at)
+    && value.provider === P10_PROVIDER
+    && typeof value.raw_evidence_sha256 === 'string' && SHA256.test(value.raw_evidence_sha256)
+    && nonEmptyString(value.schema_version, 64);
+}
+
+function parseCanonicalSnapshot(value: unknown): ControlCanonicalMarketSnapshot | null {
+  if (!(isObject(value)
+    && hasExactKeys(value, ['continuity', 'snapshot', 'snapshot_digest'])
+    && typeof value.snapshot_digest === 'string' && SHA256.test(value.snapshot_digest)
+    && isObject(value.continuity)
+    && hasExactKeys(value.continuity, ['duplicate_open_times', 'missing_open_times', 'timeframe'])
+    && value.continuity.timeframe === P10_TIMEFRAME
+    && Array.isArray(value.continuity.duplicate_open_times)
+    && Array.isArray(value.continuity.missing_open_times)
+    && value.continuity.duplicate_open_times.length <= 4096
+    && value.continuity.missing_open_times.length <= 4096
+    && value.continuity.duplicate_open_times.every(canonicalUtcDate)
+    && value.continuity.missing_open_times.every(canonicalUtcDate)
+    && isObject(value.snapshot)
+    && hasExactKeys(value.snapshot, [
+      'candles', 'instrument', 'known_at', 'normalization_version', 'provenance', 'schema_version', 'timeframe',
+    ])
+    && Array.isArray(value.snapshot.candles)
+    && value.snapshot.candles.length > 0 && value.snapshot.candles.length <= 4096
+    && value.snapshot.candles.every(parseCanonicalCandle)
+    && parseCanonicalInstrument(value.snapshot.instrument)
+    && canonicalUtcDate(value.snapshot.known_at)
+    && nonEmptyString(value.snapshot.normalization_version, 64)
+    && parseCanonicalProvenance(value.snapshot.provenance)
+    && nonEmptyString(value.snapshot.schema_version, 64)
+    && value.snapshot.timeframe === P10_TIMEFRAME)) return null;
+  return value as unknown as ControlCanonicalMarketSnapshot;
+}
+
+const parseCanonicalMarketData: Parser<ControlCanonicalMarketData> = (value) => {
+  if (!isObject(value) || !hasExactKeys(value, ['snapshot'])) return null;
+  if (value.snapshot === null) return { snapshot: null } as ControlCanonicalMarketData;
+  const snapshot = parseCanonicalSnapshot(value.snapshot);
+  return snapshot === null ? null : { snapshot } as ControlCanonicalMarketData;
+};
+
 async function readBoundedBody(response: Response): Promise<string | null> {
   const declared = response.headers.get('content-length');
   if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > MAX_UPSTREAM_BODY_BYTES)) {
@@ -542,6 +634,24 @@ async function requestControlApi<T>(pathname: string, parser: Parser<T>): Promis
 
 export function getControlMarket(): Promise<ControlEnvelope<{ report: ControlMarketReport | null }>> {
   return requestControlApi('/v1/market/latest', parseMarket);
+}
+
+export async function getControlCanonicalMarketData(): Promise<ControlEnvelope<ControlCanonicalMarketData>> {
+  const query = new URLSearchParams({ instrument: P10_INSTRUMENT, timeframe: P10_TIMEFRAME });
+  const response = await requestControlApi(
+    `/v1/market-data/latest?${query.toString()}`,
+    parseCanonicalMarketData,
+  );
+  const freshness = response.freshness;
+  const snapshotPresent = response.data.snapshot !== null;
+  if (freshness === null
+    || (snapshotPresent && (freshness.status !== 'FRESH' && freshness.status !== 'STALE'))
+    || (!snapshotPresent && freshness.status !== 'NO_DATA')
+    || (snapshotPresent && (freshness.as_of === null || freshness.age_seconds === null))
+    || (!snapshotPresent && (freshness.as_of !== null || freshness.age_seconds !== null))) {
+    throw new ControlApiClientError();
+  }
+  return response;
 }
 
 export function getControlDecisions(query = ''): Promise<ControlEnvelope<ControlDecisionPage>> {

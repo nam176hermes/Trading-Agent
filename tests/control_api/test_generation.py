@@ -46,6 +46,15 @@ def test_generated_contracts_are_present_and_current() -> None:
     openapi = json.loads((ROOT / "generated" / "openapi" / "openapi.json").read_text(encoding="utf-8"))
     assert openapi["openapi"].startswith("3.1.")
     assert "/v1/market/latest" in openapi["paths"]
+    assert "/v1/market-data/latest" in openapi["paths"]
+    assert "/v1/market-data/snapshots/{snapshot_digest}" in openapi["paths"]
+    market_data_parameters = openapi["paths"]["/v1/market-data/latest"]["get"]["parameters"]
+    assert [parameter["schema"]["const"] for parameter in market_data_parameters] == [
+        "crypto_spot:FIXTURE:BTC",
+        "1m",
+    ]
+    snapshot_parameter = openapi["paths"]["/v1/market-data/snapshots/{snapshot_digest}"]["get"]["parameters"][0]
+    assert snapshot_parameter["schema"]["pattern"] == "^[0-9a-f]{64}$"
     job_openapi = json.loads(
         (ROOT / "generated" / "job-api" / "openapi" / "openapi.json").read_text(
             encoding="utf-8"

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Annotated, Any, Literal, Mapping, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, BeforeValidator, WithJsonSchema
+from pydantic import BaseModel, ConfigDict, Field, BeforeValidator, WithJsonSchema, model_serializer
+
+from packages.domain.clock import require_utc
 
 from .asset_registry import APPROVED_ASSET_SYMBOLS
 from .enums import JobType
@@ -57,6 +60,31 @@ SessionId = Annotated[
 ]
 
 
+def _canonical_utc_request_time(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("requested_at must be a canonical UTC timestamp string")
+    if not value.endswith("Z"):
+        raise ValueError("requested_at must use the canonical UTC Z suffix")
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ValueError("requested_at must be an ISO-8601 UTC timestamp") from exc
+    return require_utc(parsed)
+
+
+CanonicalUtcRequestTime = Annotated[
+    datetime,
+    BeforeValidator(_canonical_utc_request_time),
+    WithJsonSchema(
+        {
+            "type": "string",
+            "format": "date-time",
+            "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$",
+        }
+    ),
+]
+
+
 class StrictPayload(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", frozen=True)
 
@@ -64,6 +92,25 @@ class StrictPayload(BaseModel):
 class SnapshotPayload(StrictPayload):
     scope: Literal["default"]
     requested_as_of: None
+    market_data: "MarketDataSnapshotRequest | None" = None
+
+    @model_serializer(mode="wrap")
+    def _legacy_compatible_serialization(self, handler: Any) -> Any:
+        serialized = handler(self)
+        if self.market_data is None:
+            serialized.pop("market_data", None)
+        return serialized
+
+
+class MarketDataSnapshotRequest(StrictPayload):
+    """Closed, paper-only acquisition intent for the injected P10 fixture."""
+
+    provider: Literal["deterministic-provider-free-fixture-v1"]
+    instrument: Literal["crypto_spot:FIXTURE:BTC"]
+    timeframe: Literal["1m"]
+    interval_seconds: Literal[60]
+    requested_at: CanonicalUtcRequestTime
+    provider_retry_limit: Literal[1]
 
 
 class DebatePayload(StrictPayload):

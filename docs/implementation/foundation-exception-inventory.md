@@ -6,8 +6,9 @@ Package 05 covers tracked production Python that can affect paper safety, resear
 
 The P9 machine-readable inventory uses every `git ls-files '*.py'` path and
 parses each file with Python `ast`. A broad handler catches bare `except`,
-`Exception`, or `BaseException`, including those names inside nested tuples.
-Tests and tooling are classified explicitly rather than excluded.
+`Exception`, `BaseException`, `builtins.Exception`, or
+`builtins.BaseException`, including those names inside nested tuples. Tests and
+tooling are classified explicitly rather than excluded.
 
 Track B P9 current measurement, refreshed on 2026-08-02 after the bounded
 `execute_live.py` remediation:
@@ -167,7 +168,7 @@ Package 05 can close only when tests, warning gates, contracts, dashboard checks
 
 ## P9 machine-readable broad-handler inventory
 
-Scope is every `git ls-files '*.py'` path, parsed with Python `ast` in repo-relative lexical path and line order. A broad handler is bare, `Exception`, `BaseException`, or a nested tuple containing either. `TESTS` covers any path component named `tests`; `TOOLING_MIGRATION` covers `scripts/`; `INTENTIONAL_CONTAINMENT` is restricted to the three typed wrappers in `legacy/research-backend/execute_live.py`; all other tracked runtime paths remain conservatively `PRODUCTION_CRITICAL`. Each row is `path|line|exception_form|classification|disposition`. Disposition is the first lexical handler marker among `RAISE`, `RETURN`, `PASS`, and `CONTINUE`, or `OTHER` when none exists. It is an inventory aid, not a safety verdict. The regression in `legacy/research-backend/tests/test_live_execution_policy.py` recomputes every field and rejects stale, missing, extra, or duplicate rows.
+Scope is every `git ls-files '*.py'` path, parsed with Python `ast` in repo-relative lexical path and line order. A broad handler is bare, `Exception`, `BaseException`, `builtins.Exception`, `builtins.BaseException`, or a nested tuple containing either. `TESTS` covers any path component named `tests`; `TOOLING_MIGRATION` covers `scripts/`; `INTENTIONAL_CONTAINMENT` is restricted to the three typed wrappers in `legacy/research-backend/execute_live.py`; all other tracked runtime paths remain conservatively `PRODUCTION_CRITICAL`. Each row is `path|line|exception_form|classification|disposition`. Disposition is the first lexical handler marker among `RAISE`, `RETURN`, `PASS`, and `CONTINUE` in the handler's executable scope, or `OTHER` when none exists; nested functions, classes, lambdas, and handlers are excluded. It is an inventory aid, not a safety verdict. `scripts/check_broad_handler_inventory.py` recomputes every field and rejects stale, missing, extra, or duplicate rows; `--write` updates only this marked block.
 
 <!-- P9_BROAD_HANDLER_INVENTORY_START -->
 ```text
@@ -280,7 +281,7 @@ legacy/research-backend/garch_vol.py|77|Exception|PRODUCTION_CRITICAL|PASS
 legacy/research-backend/job_attribution.py|163|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/job_attribution.py|169|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/job_attribution.py|192|BaseException|PRODUCTION_CRITICAL|RAISE
-legacy/research-backend/job_attribution.py|462|BaseException|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/job_attribution.py|462|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/kalshi_collector.py|60|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/kalshi_collector.py|87|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/kalshi_collector.py|92|Exception|PRODUCTION_CRITICAL|RETURN
@@ -290,8 +291,8 @@ legacy/research-backend/live_data.py|42|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/live_data.py|90|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/live_data.py|158|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/live_data.py|264|Exception|PRODUCTION_CRITICAL|RETURN
-legacy/research-backend/local_artifacts.py|168|Exception|PRODUCTION_CRITICAL|PASS
-legacy/research-backend/local_artifacts.py|197|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/local_artifacts.py|168|Exception|PRODUCTION_CRITICAL|RAISE
+legacy/research-backend/local_artifacts.py|197|Exception|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/macro.py|34|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/macro.py|67|Exception|PRODUCTION_CRITICAL|CONTINUE
 legacy/research-backend/macro.py|259|Exception|PRODUCTION_CRITICAL|PASS
@@ -383,7 +384,7 @@ legacy/research-backend/rl_agent.py|153|Exception|PRODUCTION_CRITICAL|CONTINUE
 legacy/research-backend/run_arena_round.py|25|Exception|PRODUCTION_CRITICAL|PASS
 legacy/research-backend/run_arena_round.py|60|Exception|PRODUCTION_CRITICAL|RETURN
 legacy/research-backend/run_arena_round.py|189|Exception|PRODUCTION_CRITICAL|CONTINUE
-legacy/research-backend/run_arena_round.py|230|Exception|PRODUCTION_CRITICAL|PASS
+legacy/research-backend/run_arena_round.py|230|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/run_arena_round.py|241|Exception|PRODUCTION_CRITICAL|PASS
 legacy/research-backend/run_arena_round.py|249|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/safety_engine.py|478|Exception|PRODUCTION_CRITICAL|OTHER
@@ -445,7 +446,7 @@ packages/runtime_release/job_plane.py|31|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/job_plane.py|41|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/job_plane.py|54|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/manifest.py|350|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/manifest.py|681|Exception|PRODUCTION_CRITICAL|PASS
+packages/runtime_release/manifest.py|681|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/paper_application/command_registry.py|214|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/paper_application/command_registry.py|227|Exception|PRODUCTION_CRITICAL|OTHER
 packages/runtime_release/paper_application/command_registry.py|260|Exception|PRODUCTION_CRITICAL|RAISE
@@ -459,7 +460,7 @@ packages/runtime_release/paper_application/runtime_release_job_plane.py|18|Excep
 packages/runtime_release/paper_application/runtime_release_job_plane.py|28|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/paper_backend/paper_main.py|110|Exception|PRODUCTION_CRITICAL|RETURN
 packages/runtime_release/provisioning.py|44|Exception|PRODUCTION_CRITICAL|RAISE
-packages/runtime_release/provisioning.py|87|Exception|PRODUCTION_CRITICAL|PASS
+packages/runtime_release/provisioning.py|87|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/provisioning.py|128|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/provisioning.py|141|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/provisioning.py|207|Exception|PRODUCTION_CRITICAL|RAISE
@@ -496,10 +497,10 @@ packages/runtime_release/v2.py|2752|Exception|PRODUCTION_CRITICAL|RETURN
 scripts/audit_canonical_repo.py|506|BaseException|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
-scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|PASS
+scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
 scripts/generate_phase4_command_manifest.py|63|Exception|TOOLING_MIGRATION|RETURN
 scripts/generate_phase4_runtime_authority.py|109|Exception|TOOLING_MIGRATION|RETURN
-scripts/import_component_snapshot.py|291|BaseException|TOOLING_MIGRATION|PASS
+scripts/import_component_snapshot.py|291|BaseException|TOOLING_MIGRATION|RAISE
 scripts/import_component_snapshot.py|393|BaseException|TOOLING_MIGRATION|RAISE
 scripts/import_component_snapshot.py|403|BaseException|TOOLING_MIGRATION|RAISE
 scripts/import_component_snapshot.py|703|BaseException|TOOLING_MIGRATION|RAISE
@@ -518,7 +519,7 @@ services/job_store/worker_repository.py|132|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|66|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|87|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/artifacts.py|118|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/artifacts.py|143|BaseException|PRODUCTION_CRITICAL|PASS
+services/job_worker/artifacts.py|143|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|238|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|253|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|271|Exception|PRODUCTION_CRITICAL|OTHER
@@ -548,6 +549,7 @@ services/job_worker/results.py|122|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/results.py|423|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/safety_state.py|151|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/safety_state.py|351|Exception|PRODUCTION_CRITICAL|OTHER
+services/job_worker/worker.py|255|Exception|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/controller.py|785|BaseException|PRODUCTION_CRITICAL|RAISE
 services/paper_runtime/controller.py|854|BaseException|PRODUCTION_CRITICAL|OTHER
 services/paper_runtime/controller.py|877|BaseException|PRODUCTION_CRITICAL|OTHER
@@ -586,6 +588,7 @@ services/semantic_input_refresher/main.py|212|Exception|PRODUCTION_CRITICAL|RETU
 tests/foundation/test_package6_controller_closure.py|632|BaseException|TESTS|OTHER
 tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
-tests/jobs/test_repository_queries.py|336|BaseException|TESTS|OTHER
+tests/jobs/test_repository_queries.py|338|BaseException|TESTS|OTHER
+tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->

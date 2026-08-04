@@ -8,7 +8,8 @@ from enum import StrEnum
 from typing import Callable
 from uuid import uuid4
 
-from packages.job_contracts import JobState, JobType
+from packages.job_contracts import JobState, JobType, SnapshotPayload
+from services.market_data import MarketDataPersistenceOutcome
 
 from .command_registry import (
     FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS,
@@ -68,6 +69,7 @@ class JobWorker:
         environment: object,
         safety_preflight: Callable[[], SafetyEvidence],
         prepare_spawn: Callable[[object], object] = prepare_immediate_spawn,
+        market_data_ingestor: object | None = None,
         lease_seconds: int = WORKER_LEASE_SECONDS,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -81,6 +83,7 @@ class JobWorker:
         self._environment = environment
         self._safety_preflight = safety_preflight
         self._prepare_spawn = prepare_spawn
+        self._market_data_ingestor = market_data_ingestor
         self._lease_seconds = lease_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -162,6 +165,19 @@ class JobWorker:
             self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
             return True
 
+        market_data_payload = self._market_data_payload(claimed)
+        if market_data_payload is not None and self._market_data_ingestor is None:
+            finalized = self._repository.finalize_execution(
+                claimed, expected_state=JobState.CLAIMED,
+                expected_attempt_outcome="CLAIMED", final_state=JobState.BLOCKED,
+                reason_code="MARKET_DATA_INGESTOR_UNAVAILABLE", trace_id=trace_id,
+                outcome=None, result=None, stream_artifacts=(),
+            )
+            self._worker_heartbeat(
+                "IDLE" if finalized else "UNHEALTHY", None if finalized else claimed
+            )
+            return True
+
         def heartbeat(identity) -> HeartbeatDecision | HeartbeatInstruction:
             nonlocal started
             # Every lease/start heartbeat is conditional on a newly opened,
@@ -232,6 +248,22 @@ class JobWorker:
                 ),
                 progress=lambda: self._validation_progress(claimed, safety_preflight),
             )
+            if market_data_payload is not None:
+                self._validation_progress(claimed, safety_preflight)
+                try:
+                    outcome_metadata = self._market_data_ingestor.ingest(market_data_payload)
+                except Exception as exc:
+                    raise ResultValidationError("market-data ingestion failed") from exc
+                if not isinstance(outcome_metadata, MarketDataPersistenceOutcome):
+                    raise ResultValidationError("market-data ingestion returned invalid outcome")
+                result = replace(
+                    result,
+                    validation_metadata={
+                        **result.validation_metadata,
+                        "market_data_snapshot_digest": outcome_metadata.snapshot_digest,
+                        "market_data_inserted": outcome_metadata.inserted,
+                    },
+                )
             # Validation can be long enough for a previously fresh snapshot to
             # expire. Recheck once more before any SUCCEEDED transition.
             self._validation_progress(claimed, safety_preflight)
@@ -289,6 +321,13 @@ class JobWorker:
             )
         self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
         return True
+
+    @staticmethod
+    def _market_data_payload(claimed: object) -> SnapshotPayload | None:
+        payload = getattr(claimed, "payload", None)
+        if isinstance(payload, SnapshotPayload) and payload.market_data is not None:
+            return payload
+        return None
 
     def _validation_progress(
         self, claimed, safety_preflight: Callable[[], object] | None = None,

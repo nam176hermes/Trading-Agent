@@ -1770,69 +1770,16 @@ def test_post_ack_state_revalidation_preserves_evidence_without_resubmission(
 def test_machine_readable_broad_handler_inventory_has_exact_tracked_coverage():
     root = Path(__file__).resolve().parents[3]
     inventory_path = root / "docs" / "implementation" / "foundation-exception-inventory.md"
-    text = inventory_path.read_text()
-    start = "<!-- P9_BROAD_HANDLER_INVENTORY_START -->\n```text\n"
-    end = "\n```\n<!-- P9_BROAD_HANDLER_INVENTORY_END -->"
-    assert start in text and end in text
-    rows = text.split(start, 1)[1].split(end, 1)[0].splitlines()
-    documented = [tuple(row.split("|")) for row in rows if row]
-    assert all(len(row) == 5 for row in documented)
-    assert len(documented) == len(set(documented))
+    specification = importlib.util.spec_from_file_location(
+        "broad_handler_inventory",
+        root / "scripts" / "check_broad_handler_inventory.py",
+    )
+    assert specification is not None and specification.loader is not None
+    tool = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(tool)
 
-    def exception_form(node):
-        if node is None:
-            return "bare"
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Tuple):
-            return "(" + ",".join(exception_form(item) for item in node.elts) + ")"
-        return ast.unparse(node)
-
-    def inventory_classification(path):
-        parts = path.split("/")
-        if "tests" in parts:
-            return "TESTS"
-        if parts[0] == "scripts":
-            return "TOOLING_MIGRATION"
-        if path == "legacy/research-backend/execute_live.py":
-            return "INTENTIONAL_CONTAINMENT"
-        return "PRODUCTION_CRITICAL"
-
-    def handler_disposition(handler):
-        marker_names = {
-            ast.Raise: "RAISE",
-            ast.Return: "RETURN",
-            ast.Pass: "PASS",
-            ast.Continue: "CONTINUE",
-        }
-        markers = []
-        for node in ast.walk(handler):
-            for node_type, marker in marker_names.items():
-                if isinstance(node, node_type):
-                    markers.append(
-                        (getattr(node, "lineno", -1), getattr(node, "col_offset", -1), marker)
-                    )
-                    break
-        return min(markers)[2] if markers else "OTHER"
-
-    git = __import__("subprocess")
-    tracked = git.check_output(
-        ["git", "-C", str(root), "ls-files", "*.py"], text=True
-    ).splitlines()
-    observed = []
-    for relative_path in tracked:
-        tree = ast.parse((root / relative_path).read_text())
-        for handler in ast.walk(tree):
-            if isinstance(handler, ast.ExceptHandler) and _is_broad_exception_type(handler.type):
-                observed.append((
-                    relative_path,
-                    str(handler.lineno),
-                    exception_form(handler.type),
-                    inventory_classification(relative_path),
-                    handler_disposition(handler),
-                ))
-    observed.sort(key=lambda row: (row[0], int(row[1]), row[2:]))
-    assert documented == observed
+    tool.check_inventory(root, inventory_path)
+    documented = tool.read_documented_rows(inventory_path)
     assert {row[3] for row in documented} <= {
         "PRODUCTION_CRITICAL", "INTENTIONAL_CONTAINMENT", "TESTS", "TOOLING_MIGRATION"
     }
