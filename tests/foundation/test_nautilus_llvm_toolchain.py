@@ -36,12 +36,21 @@ def _add_file(archive: tarfile.TarFile, name: str, content: bytes, mode: int = 0
     archive.addfile(member, io.BytesIO(content))
 
 
-def _fixture_archive(path: Path, *, unsafe_name: str | None = None) -> dict[str, bytes]:
+def _fixture_archive(
+    path: Path,
+    *,
+    unsafe_name: str | None = None,
+    symlinked_header: bool = False,
+) -> tuple[dict[str, bytes], dict[str, bytes]]:
     clang = b"#!/bin/sh\necho 'clang version 18.1.8 (private fixture)'\n"
     tools = {
         "clang": clang,
         "clang++": clang,
         "ld.lld": b"#!/bin/sh\necho 'LLD 18.1.8 (private fixture)'\n",
+    }
+    headers = {
+        "__stddef_size_t.h": b"typedef __SIZE_TYPE__ size_t;\n",
+        "stddef.h": b'#include "__stddef_size_t.h"\n',
     }
     root = "clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04"
     with tarfile.open(path, "w:xz") as archive:
@@ -59,14 +68,25 @@ def _fixture_archive(path: Path, *, unsafe_name: str | None = None) -> dict[str,
         linker.type = tarfile.SYMTYPE
         linker.linkname = "lld"
         archive.addfile(linker)
+        for name, content in headers.items():
+            archive_name = f"{root}/lib/clang/18/include/{name}"
+            if symlinked_header and name == "stddef.h":
+                header = tarfile.TarInfo(archive_name)
+                header.type = tarfile.SYMTYPE
+                header.linkname = "__stddef_size_t.h"
+                archive.addfile(header)
+            else:
+                _add_file(archive, archive_name, content, mode=0o644)
         if unsafe_name is not None:
             _add_file(archive, unsafe_name, b"escape")
-    return tools
+    return tools, headers
 
 
-def _fixture_policy(archive: Path, tools: dict[str, bytes]) -> dict[str, object]:
+def _fixture_policy(
+    archive: Path, tools: dict[str, bytes], headers: dict[str, bytes]
+) -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "version": "18.1.8",
         "release_tag": "llvmorg-18.1.8",
         "platform": "linux-x86_64",
@@ -91,6 +111,16 @@ def _fixture_policy(archive: Path, tools: dict[str, bytes]) -> dict[str, object]
             }
             for name, content in tools.items()
         },
+        "resource_headers": {
+            "archive_root": "lib/clang/18/include",
+            "files": {
+                name: {
+                    "sha256": _sha256_bytes(content),
+                    "size": len(content),
+                }
+                for name, content in headers.items()
+            },
+        },
     }
 
 
@@ -103,7 +133,7 @@ def _private_parent(tmp_path: Path) -> Path:
 def test_committed_policy_pins_one_official_linux_x86_64_release() -> None:
     document = json.loads(POLICY.read_text(encoding="utf-8"))
 
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2
     assert document["platform"] == "linux-x86_64"
     assert document["asset"]["url"].startswith(
         "https://github.com/llvm/llvm-project/releases/download/llvmorg-"
@@ -115,13 +145,20 @@ def test_committed_policy_pins_one_official_linux_x86_64_release() -> None:
     for record in document["tools"].values():
         assert len(record["sha256"]) == 64
         assert record["size"] > 0
+    resource_headers = document["resource_headers"]
+    assert resource_headers["archive_root"] == "lib/clang/22/include"
+    assert "stddef.h" in resource_headers["files"]
+    for path, record in resource_headers["files"].items():
+        assert path and not path.startswith("/") and ".." not in Path(path).parts
+        assert len(record["sha256"]) == 64
+        assert record["size"] > 0
 
 
 def test_cache_and_materialization_are_sealed_and_direct(tmp_path: Path) -> None:
     tool = _load_tool()
     archive = tmp_path / "fixture.tar.xz"
-    contents = _fixture_archive(archive)
-    policy = _fixture_policy(archive, contents)
+    contents, headers = _fixture_archive(archive)
+    policy = _fixture_policy(archive, contents, headers)
     parent = _private_parent(tmp_path)
     cache = parent / "cache"
     destination = parent / "toolchain"
@@ -141,6 +178,17 @@ def test_cache_and_materialization_are_sealed_and_direct(tmp_path: Path) -> None
         assert stat.S_ISREG(binary.lstat().st_mode)
         assert stat.S_IMODE(binary.stat().st_mode) == 0o500
         assert binary.read_bytes() == content
+    include = destination / "lib" / "clang" / "18" / "include"
+    assert stat.S_IMODE((destination / "lib").stat().st_mode) == 0o500
+    assert stat.S_IMODE((destination / "lib" / "clang").stat().st_mode) == 0o500
+    assert stat.S_IMODE((destination / "lib" / "clang" / "18").stat().st_mode) == 0o500
+    assert stat.S_IMODE(include.stat().st_mode) == 0o500
+    assert {path.name for path in include.iterdir()} == set(headers)
+    for name, content in headers.items():
+        header = include / name
+        assert header.is_file() and not header.is_symlink()
+        assert stat.S_IMODE(header.stat().st_mode) == 0o400
+        assert header.read_bytes() == content
 
 
 def test_acquisition_downloads_into_descriptor_bound_private_staging(
@@ -148,8 +196,8 @@ def test_acquisition_downloads_into_descriptor_bound_private_staging(
 ) -> None:
     tool = _load_tool()
     archive = tmp_path / "fixture.tar.xz"
-    contents = _fixture_archive(archive)
-    policy = _fixture_policy(archive, contents)
+    contents, headers = _fixture_archive(archive)
+    policy = _fixture_policy(archive, contents, headers)
     cache = _private_parent(tmp_path) / "cache"
     payload = archive.read_bytes()
     monkeypatch.setattr(tool.urllib.request, "urlopen", lambda *_args, **_kwargs: io.BytesIO(payload))
@@ -166,11 +214,24 @@ def test_acquisition_downloads_into_descriptor_bound_private_staging(
 def test_unsafe_archive_paths_never_publish_a_cache(tmp_path: Path, unsafe_name: str) -> None:
     tool = _load_tool()
     archive = tmp_path / "unsafe.tar.xz"
-    contents = _fixture_archive(archive, unsafe_name=unsafe_name)
-    policy = _fixture_policy(archive, contents)
+    contents, headers = _fixture_archive(archive, unsafe_name=unsafe_name)
+    policy = _fixture_policy(archive, contents, headers)
     cache = _private_parent(tmp_path) / "cache"
 
     with pytest.raises(tool.VerificationError, match="unsafe archive path"):
+        tool.publish_verified_archive(archive, cache, policy)
+
+    assert not cache.exists()
+
+
+def test_resource_headers_must_be_direct_archive_files(tmp_path: Path) -> None:
+    tool = _load_tool()
+    archive = tmp_path / "symlinked-header.tar.xz"
+    contents, headers = _fixture_archive(archive, symlinked_header=True)
+    policy = _fixture_policy(archive, contents, headers)
+    cache = _private_parent(tmp_path) / "cache"
+
+    with pytest.raises(tool.VerificationError, match="direct regular file"):
         tool.publish_verified_archive(archive, cache, policy)
 
     assert not cache.exists()
@@ -180,8 +241,8 @@ def test_unsafe_archive_paths_never_publish_a_cache(tmp_path: Path, unsafe_name:
 def test_offline_cache_verification_rejects_substitution(tmp_path: Path, mutation: str) -> None:
     tool = _load_tool()
     archive = tmp_path / "fixture.tar.xz"
-    contents = _fixture_archive(archive)
-    policy = _fixture_policy(archive, contents)
+    contents, headers = _fixture_archive(archive)
+    policy = _fixture_policy(archive, contents, headers)
     cache = _private_parent(tmp_path) / "cache"
     tool.publish_verified_archive(archive, cache, policy)
     cached_archive = cache / archive.name
@@ -212,8 +273,8 @@ def test_identity_check_never_falls_back_to_ambient_tools(
 ) -> None:
     tool = _load_tool()
     archive = tmp_path / "fixture.tar.xz"
-    contents = _fixture_archive(archive)
-    policy = _fixture_policy(archive, contents)
+    contents, headers = _fixture_archive(archive)
+    policy = _fixture_policy(archive, contents, headers)
     parent = _private_parent(tmp_path)
     cache = parent / "cache"
     destination = parent / "toolchain"
@@ -240,6 +301,47 @@ def test_identity_check_never_falls_back_to_ambient_tools(
     with pytest.raises(tool.VerificationError, match="clang"):
         tool.verify_materialized(destination, policy)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("mutation", ["digest", "extra", "symlink"])
+def test_materialized_verifier_rejects_resource_header_substitution(
+    tmp_path: Path, mutation: str
+) -> None:
+    tool = _load_tool()
+    archive = tmp_path / "fixture.tar.xz"
+    contents, headers = _fixture_archive(archive)
+    policy = _fixture_policy(archive, contents, headers)
+    parent = _private_parent(tmp_path)
+    cache = parent / "cache"
+    destination = parent / "toolchain"
+    tool.publish_verified_archive(archive, cache, policy)
+    tool.materialize(cache, destination, policy)
+    include = destination / "lib" / "clang" / "18" / "include"
+    header = include / "stddef.h"
+    os.chmod(destination, 0o700)
+    os.chmod(destination / "lib", 0o700)
+    os.chmod(destination / "lib" / "clang", 0o700)
+    os.chmod(destination / "lib" / "clang" / "18", 0o700)
+    os.chmod(include, 0o700)
+    if mutation == "digest":
+        os.chmod(header, 0o600)
+        header.write_bytes(b"substituted")
+        os.chmod(header, 0o400)
+    elif mutation == "extra":
+        extra = include / "ambient.h"
+        extra.write_bytes(b"unexpected")
+        os.chmod(extra, 0o400)
+    else:
+        header.unlink()
+        header.symlink_to(include / "__stddef_size_t.h")
+    os.chmod(include, 0o500)
+    os.chmod(destination / "lib" / "clang" / "18", 0o500)
+    os.chmod(destination / "lib" / "clang", 0o500)
+    os.chmod(destination / "lib", 0o500)
+    os.chmod(destination, 0o500)
+
+    with pytest.raises(tool.VerificationError):
+        tool.verify_materialized(destination, policy)
 
 
 def test_compiler_environment_contains_only_absolute_private_tools(tmp_path: Path) -> None:

@@ -11,8 +11,9 @@ All paths must be absolute, private, and outside this checkout:
 - CPython 3.12 executable (the repository controller remains Python 3.11);
 - Task 1's private Rust 1.95.0 `cargo` and sibling `rustc`, never rustup or a
   global Rust installation;
-- Task 5's verified private LLVM toolchain root containing direct, non-symlink
-  `bin/clang`, `bin/clang++`, and `bin/ld.lld` executables;
+- the verified private LLVM toolchain root containing direct, non-symlink
+  `bin/clang`, `bin/clang++`, and `bin/ld.lld` executables plus the exact
+  hash-bound Clang resource headers beneath `lib/clang/22/include`;
 - Task 2's verified source/Cargo cache;
 - a flat, sealed build-wheel cache and its separately reviewed manifest
   SHA-256;
@@ -21,10 +22,11 @@ All paths must be absolute, private, and outside this checkout:
 
 The pinned upstream build script selects `clang`, `clang++`, and the LLVM
 linker on Linux. The build requires `NAUTILUS_ENGINE_LLVM_TOOLCHAIN` and
-verifies Task 5's committed policy, sealed manifest, exact binary set, modes,
-SHA-256 values, and identities before staging source. The build environment
-sets `CC`, `CXX`, and `LD` to absolute private binaries and places only that
-explicit LLVM `bin` directory ahead of the private Rust and Python paths. It
+verifies the committed policy, sealed manifest, exact binary and resource-file
+sets, modes, SHA-256 values, and tool identities before staging source. The
+build environment sets `CC`, `CXX`, and `LD` to absolute private binaries and
+places only that explicit LLVM `bin` directory ahead of the private Rust and
+Python paths. It
 does not install or select an ambient compiler. Before staging source, it also
 fails closed if `clang`, `clang++`, or `ld.lld` exists in the later system
 `PATH` entries, so removal of a private tool cannot fall through to an ambient
@@ -33,9 +35,10 @@ compiler.
 ## Private LLVM cache and toolchain
 
 `llvm-toolchain-policy.json` pins the official LLVM 22.1.3 Linux x86-64
-release archive and the dereferenced bytes of all three required tools. Create
-an absent cache and toolchain destination under an existing operator-owned
-`0700` external directory:
+release archive, the dereferenced bytes of all three required tools, and every
+direct regular file in the release's `lib/clang/22/include` resource-header
+tree. Create an absent cache and toolchain destination under an existing
+operator-owned `0700` external directory:
 
 ```bash
 python3.11 -I scripts/prepare_nautilus_llvm_toolchain.py \
@@ -59,11 +62,15 @@ Acquisition downloads only the policy URL and verifies its pinned size,
 archive SHA-256, complete safe member layout, and the hashes of the resolved
 compiler/linker targets before atomic publication. Later cache verification
 is offline and hash-bound. Materialization extracts only the three required
-tools, dereferences the release archive's tool symlinks into independent
-regular files, seals the result, and invokes each executable by absolute path
-for its identity. `--verify-toolchain` repeats those checks without network
-access; `--print-compiler-env` prints the isolated compiler variables only
-after verification.
+tools and the policy's exact resource-header set. It dereferences the release
+archive's tool symlinks into independent regular files, requires every
+resource header to be a direct archive file, and seals tools as `0500`,
+headers and the manifest as `0400`, and all directories as `0500`.
+Verification rejects missing, changed, symlinked, mutable, or unexpected
+materialized entries before invoking each executable by absolute path for its
+identity. `--verify-toolchain` repeats those checks without network access;
+`--print-compiler-env` prints the isolated compiler variables only after
+verification.
 
 The approved build-wheel cache is produced separately by
 `scripts/prepare_nautilus_wheel_cache.py` from the exact versions in

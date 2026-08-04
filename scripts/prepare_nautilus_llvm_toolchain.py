@@ -53,9 +53,17 @@ def load_policy(path: Path) -> dict[str, object]:
 
 
 def _validate_policy(policy: dict[str, object]) -> None:
-    if set(policy) != {"schema_version", "version", "release_tag", "platform", "asset", "tools"}:
+    if set(policy) != {
+        "schema_version",
+        "version",
+        "release_tag",
+        "platform",
+        "asset",
+        "tools",
+        "resource_headers",
+    }:
         raise VerificationError("invalid LLVM policy fields")
-    if policy["schema_version"] != 1 or policy["platform"] != "linux-x86_64":
+    if policy["schema_version"] != 2 or policy["platform"] != "linux-x86_64":
         raise VerificationError("unsupported LLVM policy")
     version = policy["version"]
     tag = policy["release_tag"]
@@ -91,6 +99,24 @@ def _validate_policy(policy: dict[str, object]) -> None:
         if not isinstance(record["identity_prefix"], str) or not record["identity_prefix"]:
             raise VerificationError(f"invalid LLVM identity: {name}")
         _validate_digest_size(record, f"LLVM tool {name}")
+    resource_headers = policy["resource_headers"]
+    if not isinstance(resource_headers, dict) or set(resource_headers) != {
+        "archive_root",
+        "files",
+    }:
+        raise VerificationError("invalid LLVM resource header policy")
+    resource_root = resource_headers["archive_root"]
+    expected_resource_root = f"lib/clang/{version.split('.')[0]}/include"
+    if resource_root != expected_resource_root:
+        raise VerificationError("invalid LLVM resource header archive root")
+    files = resource_headers["files"]
+    if not isinstance(files, dict) or not files:
+        raise VerificationError("LLVM resource header policy must bind files")
+    for relative, record in files.items():
+        _safe_relative_path(relative, "LLVM resource header")
+        if not isinstance(record, dict) or set(record) != {"sha256", "size"}:
+            raise VerificationError(f"invalid LLVM resource header policy: {relative}")
+        _validate_digest_size(record, f"LLVM resource header {relative}")
 
 
 def _validate_digest_size(record: dict[str, object], label: str) -> None:
@@ -105,6 +131,15 @@ def _validate_digest_size(record: dict[str, object], label: str) -> None:
         or size <= 0
     ):
         raise VerificationError(f"invalid {label} digest or size")
+
+
+def _safe_relative_path(value: object, label: str) -> PurePosixPath:
+    if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value:
+        raise VerificationError(f"invalid {label} path")
+    path = PurePosixPath(value)
+    if str(path) != value or any(part in ("", ".", "..") for part in path.parts):
+        raise VerificationError(f"invalid {label} path")
+    return path
 
 
 def _ensure_external(path: Path, label: str) -> Path:
@@ -249,6 +284,37 @@ def _tool_member(
     raise VerificationError(f"archive link chain too deep for {name}")
 
 
+def _resource_member(
+    members: dict[str, tarfile.TarInfo], root: str, archive_root: str, relative: str
+) -> tarfile.TarInfo:
+    member = members.get(str(PurePosixPath(root) / archive_root / relative))
+    if member is None:
+        raise VerificationError(f"required LLVM resource header missing: {relative}")
+    if not member.isfile() or member.issym() or member.islnk():
+        raise VerificationError(
+            f"required LLVM resource header is not a direct regular file: {relative}"
+        )
+    return member
+
+
+def _verify_member_content(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    record: dict[str, object],
+    label: str,
+) -> None:
+    extracted = archive.extractfile(member)
+    if extracted is None:
+        raise VerificationError(f"cannot read {label}")
+    digest = hashlib.sha256()
+    size = 0
+    for chunk in iter(lambda: extracted.read(1024 * 1024), b""):
+        digest.update(chunk)
+        size += len(chunk)
+    if size != record["size"] or digest.hexdigest() != record["sha256"]:
+        raise VerificationError(f"{label} digest mismatch in archive")
+
+
 def _verify_archive(
     path: Path, policy: dict[str, object], *, reject_ancestors: bool = True
 ) -> None:
@@ -289,6 +355,31 @@ def _verify_archive(
                 assert isinstance(record, dict)
                 if size != record["size"] or observed_digest != record["sha256"]:
                     raise VerificationError(f"LLVM tool digest mismatch in archive: {name}")
+            resource_headers = policy["resource_headers"]
+            assert isinstance(resource_headers, dict)
+            resource_files = resource_headers["files"]
+            assert isinstance(resource_files, dict)
+            verified_resources: list[
+                tuple[tarfile.TarInfo, str, dict[str, object]]
+            ] = []
+            for relative, record in resource_files.items():
+                assert isinstance(relative, str) and isinstance(record, dict)
+                member = _resource_member(
+                    members,
+                    root,
+                    str(resource_headers["archive_root"]),
+                    relative,
+                )
+                verified_resources.append((member, relative, record))
+            for member, relative, record in sorted(
+                verified_resources, key=lambda item: item[0].offset_data
+            ):
+                _verify_member_content(
+                    archive,
+                    member,
+                    record,
+                    f"LLVM resource header {relative}",
+                )
     except (tarfile.TarError, OSError) as error:
         raise VerificationError(f"invalid LLVM release archive: {error}") from error
 
@@ -299,6 +390,7 @@ def _cache_manifest(policy: dict[str, object]) -> dict[str, object]:
         "policy_sha256": _policy_digest(policy),
         "asset": policy["asset"],
         "tools": policy["tools"],
+        "resource_headers": policy["resource_headers"],
     }
 
 
@@ -441,6 +533,30 @@ def _write_tool(
     os.chmod(destination, 0o500)
 
 
+def _write_resource_header(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    destination: Path,
+    record: dict[str, object],
+    relative: str,
+) -> None:
+    source = archive.extractfile(member)
+    if source is None:
+        raise VerificationError(f"cannot read LLVM resource header: {relative}")
+    digest = hashlib.sha256()
+    size = 0
+    with destination.open("xb") as output:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            output.write(chunk)
+            digest.update(chunk)
+            size += len(chunk)
+    if size != record["size"] or digest.hexdigest() != record["sha256"]:
+        raise VerificationError(
+            f"LLVM resource header digest mismatch while materializing: {relative}"
+        )
+    os.chmod(destination, 0o400)
+
+
 def materialize(
     cache: Path, destination: Path, policy: dict[str, object]
 ) -> dict[str, str]:
@@ -462,7 +578,12 @@ def materialize(
         binary_dir.mkdir(mode=0o700)
         asset = policy["asset"]
         tools = policy["tools"]
-        assert isinstance(asset, dict) and isinstance(tools, dict)
+        resource_headers = policy["resource_headers"]
+        assert (
+            isinstance(asset, dict)
+            and isinstance(tools, dict)
+            and isinstance(resource_headers, dict)
+        )
         with tarfile.open(cache / str(asset["filename"]), "r:xz") as archive:
             members = _archive_members(archive, str(asset["archive_root"]))
             materialized_members: dict[str, Path] = {}
@@ -477,16 +598,45 @@ def materialize(
                 else:
                     _write_tool(archive, member, destination_tool, record, name)
                     materialized_members[member.name] = destination_tool
+            resource_root = stage / str(resource_headers["archive_root"])
+            resource_root.mkdir(parents=True, mode=0o700)
+            resource_files = resource_headers["files"]
+            assert isinstance(resource_files, dict)
+            materialized_resources: list[
+                tuple[tarfile.TarInfo, str, dict[str, object]]
+            ] = []
+            for relative, record in resource_files.items():
+                assert isinstance(relative, str) and isinstance(record, dict)
+                member = _resource_member(
+                    members,
+                    str(asset["archive_root"]),
+                    str(resource_headers["archive_root"]),
+                    relative,
+                )
+                materialized_resources.append((member, relative, record))
+            for member, relative, record in sorted(
+                materialized_resources, key=lambda item: item[0].offset_data
+            ):
+                destination_header = resource_root.joinpath(*PurePosixPath(relative).parts)
+                destination_header.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                _write_resource_header(
+                    archive, member, destination_header, record, relative
+                )
         manifest_document = {
-            "schema_version": 1,
+            "schema_version": 2,
             "policy_sha256": _policy_digest(policy),
             "tools": tools,
+            "resource_headers": resource_headers,
         }
         manifest = stage / TOOLCHAIN_MANIFEST
         with manifest.open("xb") as handle:
             handle.write(_canonical_bytes(manifest_document))
         os.chmod(manifest, 0o400)
         os.chmod(binary_dir, 0o500)
+        for current, directories, _files in os.walk(stage / "lib", topdown=False):
+            for directory in directories:
+                os.chmod(Path(current) / directory, 0o500)
+            os.chmod(current, 0o500)
         os.chmod(stage, 0o500)
         os.replace(stage_name, destination.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     except BaseException:
@@ -503,24 +653,53 @@ def verify_materialized(toolchain: Path, policy: dict[str, object]) -> dict[str,
     _reject_symlink_ancestors(toolchain, "LLVM toolchain")
     _directory(toolchain, 0o500, "LLVM toolchain")
     binary_dir = toolchain / "bin"
-    _directory(binary_dir, 0o500, "LLVM toolchain bin")
-    expected_root = {"bin", TOOLCHAIN_MANIFEST}
-    if {entry.name for entry in toolchain.iterdir()} != expected_root:
-        raise VerificationError("LLVM toolchain file set mismatch")
-    observed_tools = {entry.name for entry in binary_dir.iterdir()}
-    if observed_tools != set(REQUIRED_TOOLS):
-        missing = sorted(set(REQUIRED_TOOLS) - observed_tools)
-        unexpected = sorted(observed_tools - set(REQUIRED_TOOLS))
+    tools = policy["tools"]
+    resource_headers = policy["resource_headers"]
+    assert isinstance(tools, dict) and isinstance(resource_headers, dict)
+    resource_files = resource_headers["files"]
+    assert isinstance(resource_files, dict)
+    expected_files = {
+        TOOLCHAIN_MANIFEST,
+        *(f"bin/{name}" for name in REQUIRED_TOOLS),
+        *(
+            f"{resource_headers['archive_root']}/{relative}"
+            for relative in resource_files
+        ),
+    }
+    expected_directories = {".", "bin"}
+    for relative in expected_files:
+        parent = PurePosixPath(relative).parent
+        while str(parent) != ".":
+            expected_directories.add(str(parent))
+            parent = parent.parent
+    observed_files: set[str] = set()
+    observed_directories = {"."}
+    for current, directories, files in os.walk(toolchain, followlinks=False):
+        current_path = Path(current)
+        relative_current = current_path.relative_to(toolchain)
+        for directory in directories:
+            relative = (relative_current / directory).as_posix()
+            observed_directories.add(relative)
+            _directory(current_path / directory, 0o500, f"LLVM toolchain directory {relative}")
+        for filename in files:
+            observed_files.add((relative_current / filename).as_posix())
+    if observed_files != expected_files or observed_directories != expected_directories:
+        missing = sorted(expected_files - observed_files)
+        unexpected = sorted(observed_files - expected_files)
+        missing_directories = sorted(expected_directories - observed_directories)
+        unexpected_directories = sorted(observed_directories - expected_directories)
         raise VerificationError(
-            f"LLVM toolchain binary set mismatch: missing={missing}, unexpected={unexpected}"
+            "LLVM toolchain file set mismatch: "
+            f"missing={missing}, unexpected={unexpected}, "
+            f"missing_directories={missing_directories}, "
+            f"unexpected_directories={unexpected_directories}"
         )
     _regular_file(toolchain / TOOLCHAIN_MANIFEST, 0o400, "LLVM toolchain manifest")
-    tools = policy["tools"]
-    assert isinstance(tools, dict)
     expected_manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_sha256": _policy_digest(policy),
         "tools": tools,
+        "resource_headers": resource_headers,
     }
     manifest_path = toolchain / TOOLCHAIN_MANIFEST
     try:
@@ -553,6 +732,13 @@ def verify_materialized(toolchain: Path, policy: dict[str, object]) -> dict[str,
         if not identity.startswith(str(record["identity_prefix"])):
             raise VerificationError(f"LLVM tool identity mismatch: {name}")
         identities[name] = identity
+    resource_root = toolchain / str(resource_headers["archive_root"])
+    for relative, record in resource_files.items():
+        assert isinstance(relative, str) and isinstance(record, dict)
+        header = resource_root.joinpath(*PurePosixPath(relative).parts)
+        info = _regular_file(header, 0o400, f"LLVM resource header {relative}")
+        if info.st_size != record["size"] or _sha256(header) != record["sha256"]:
+            raise VerificationError(f"LLVM resource header digest mismatch: {relative}")
     return identities
 
 
