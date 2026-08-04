@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "packet": "01A-baseline-inventory",
+  "captured_at": "2026-08-04T18:49:11Z",
+  "scope": "Static source inventory only. No database, runtime, service, broker, exchange, account, order, or network endpoint was queried.",
+  "repository": {
+    "head_commit": "d677b9c62a6f5c7e75cd5e7420175ef3b9c50f0e",
+    "head_tree": "4b40385d8b9fc02aa75ccdc44bd73a133bf5bc0d",
+    "head_subject": "fix: close paper release projection checks",
+    "worktree_clean_before_capture": true,
+    "git_status_command": "git status --short"
+  },
+  "component_dependency_authority": [
+    {
+      "component": "core-control-plane",
+      "runtime": "Python >=3.11,<3.12",
+      "manifest": "pyproject.toml",
+      "manifest_sha256": "af827ff417f77edc13c66f64cca088e046fa5ed75a03b127202c7f83dba6dbd0",
+      "lockfile": "uv.lock",
+      "lockfile_sha256": "6800db166a654c4a44d8ec31ea4a106c6d9341553bc01bc0b208f614f6c36a0c"
+    },
+    {
+      "component": "legacy-research-backend",
+      "runtime": "Python 3.11",
+      "manifest": "legacy/research-backend/pyproject.toml",
+      "manifest_sha256": "c48580d90a1ca82d019a79e8315f5400b0da8ef8c40ba71f32061cc1e2e49474",
+      "lockfile": "legacy/research-backend/uv.lock",
+      "lockfile_sha256": "27790f75a54120b48a8b27da915c4f55a1cb6621e02586b11139f28784e61c5d"
+    },
+    {
+      "component": "dashboard",
+      "runtime": "Node/npm (version is governed by apps/dashboard/package.json)",
+      "manifest": "apps/dashboard/package.json",
+      "manifest_sha256": "4b42dd9533519a2cc442d0dbcd28ab26f0249d14bd631295157df065ec0af67a",
+      "lockfile": "apps/dashboard/package-lock.json",
+      "lockfile_sha256": "37bb7279d11ea5453221ec0bf75d6a37415c19e606b52b4481fb5ac1b1d6225b"
+    }
+  ],
+  "alembic": {
+    "source_chain": [
+      "0001_phase3_operational_store",
+      "0002_quarantine_lineage",
+      "0003_contract_lineage_repair",
+      "0004_durable_research_jobs",
+      "0005_job_plane_role_split",
+      "0006_job_transition_database_authority",
+      "0007_job_event_chain_authority",
+      "0008_trading_domain_ledger",
+      "0009_canonical_market_data"
+    ],
+    "source_head": "0009_canonical_market_data",
+    "runtime_expected_revision": "0008_trading_domain_ledger",
+    "classification": "intentional deferred runtime activation, not a source-graph fork",
+    "evidence": [
+      "alembic/versions/0009_canonical_market_data.py",
+      "services/job_store/config.py",
+      "apps/job_api/config.py",
+      "docs/plans/track-c-p10-canonical-market-data/PACKET-3-VERDICT.md"
+    ]
+  },
+  "authoritative_contracts": {
+    "source_authority": [
+      "AGENTS.md",
+      "README.md",
+      "ops/consolidation/source-authority.json",
+      "ops/consolidation/backend-source-manifest.json",
+      "ops/consolidation/dashboard-source-manifest.json"
+    ],
+    "runtime_and_release_boundary": [
+      "docs/production/release-authority-v2.md",
+      "docs/production/promotion-status.json",
+      "docs/implementation/foundation-paper-release-exclusion.md",
+      "docs/implementation/foundation-live-boundary-evidence.md",
+      "docs/implementation/foundation-live-path-inventory.md",
+      "docs/plans/track-c-p10-canonical-market-data/PACKET-3-VERDICT.md"
+    ]
+  },
+  "execution_and_exchange_paths": {
+    "direct_execution": [
+      "legacy/research-backend/broker.py:place_order,close_position,execute",
+      "legacy/research-backend/execute_live.py:execute_signals,execute_signal",
+      "legacy/research-backend/exchange/adapter.py:ExchangeAdapter.create_order,cancel_order",
+      "legacy/research-backend/exchange/ccxt_bridge.py:place_order,cancel_order",
+      "legacy/research-backend/exchange/executor.py:OrderExecutor.execute,cancel_order",
+      "legacy/research-backend/main.py:_load_execution_dependencies"
+    ],
+    "paper_or_simulated_execution": [
+      "legacy/research-backend/paper_trader.py:execute_signal,execute_batch",
+      "legacy/research-backend/backtest_engine.py:Broker.place_order,process_orders",
+      "legacy/research-backend/backtest_runner.py",
+      "legacy/research-backend/alpha_backtest.py"
+    ],
+    "exchange_or_market_provider_edges": [
+      "legacy/research-backend/backtest_engine.py:_fetch_ccxt",
+      "legacy/research-backend/cra_tracker.py",
+      "legacy/research-backend/data_vendors.py",
+      "legacy/research-backend/exchange/adapter.py",
+      "legacy/research-backend/exchange/ccxt_bridge.py",
+      "legacy/research-backend/exchange_health.py",
+      "legacy/research-backend/orderflow_collector.py",
+      "legacy/research-backend/ws_stream.py"
+    ]
+  },
+  "portfolio_and_pnl_writers": [
+    {
+      "path": "legacy/research-backend/paper_trader.py",
+      "writers": ["save_portfolio", "_append_order", "_append_trade"],
+      "state": "JSON portfolio plus JSONL orders/trades; updates cash, positions, pnl and daily_pnl"
+    },
+    {
+      "path": "legacy/research-backend/backtest_engine.py",
+      "writers": ["Portfolio", "Broker.process_orders"],
+      "state": "in-memory backtest portfolio and trade/PnL metrics"
+    },
+    {
+      "path": "legacy/research-backend/alpha_backtest.py",
+      "writers": ["Broker.place_order", "Broker.process_orders"],
+      "state": "separate backtest portfolio and trade/PnL metrics"
+    },
+    {
+      "path": "legacy/research-backend/portfolio_manager.py",
+      "writers": ["PortfolioManager"],
+      "state": "legacy portfolio management and persisted reporting inputs"
+    }
+  ],
+  "event_transports": [
+    {
+      "path": "legacy/research-backend/event_bus.py",
+      "transport": "mutable in-process LocalEventBus and optional RedisEventBridge"
+    },
+    {
+      "path": "legacy/research-backend/event_hub.py",
+      "transport": "event hub with JSONL persistence"
+    },
+    {
+      "path": "packages/event_ledger/repository.py",
+      "transport": "typed immutable event ledger with outbox, inbox and snapshots"
+    },
+    {
+      "path": "services/job_store/repository.py",
+      "transport": "durable Job API event/state repository"
+    },
+    {
+      "path": "services/paper_runtime/integration.py",
+      "transport": "paper-runtime integration event boundary"
+    }
+  ],
+  "phase_1_implications": [
+    "The Nautilus engine must be an isolated Python 3.12 dependency graph; it cannot be imported into the root Python 3.11 process.",
+    "Legacy execution paths must remain quarantined and non-authoritative during migration.",
+    "Nautilus event ingestion must converge on the typed event ledger and job authority rather than LocalEventBus or legacy JSON files.",
+    "The 0009 source head must not cause a runtime migration or expected-revision change without a separate approved activation packet."
+  ]
+}
