@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import stat
 import subprocess
@@ -130,7 +131,7 @@ def _reject_symlinked_ancestors(path: Path, label: str) -> None:
         current = current.parent
 
 
-def _prepare_private_cache_parent(path: Path) -> None:
+def _prepare_private_cache_parent(path: Path) -> int:
     """Create a cache parent through descriptor-relative, no-follow operations."""
     parts = _absolute_parts(path, "input cache")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -157,13 +158,46 @@ def _prepare_private_cache_parent(path: Path) -> None:
                     child_fd = os.open(part, flags, dir_fd=current_fd)
                 except OSError as exc:
                     raise VerificationError("input cache has an unsafe ancestor") from exc
-                if created:
-                    os.fchmod(child_fd, 0o700)
+                try:
+                    if created:
+                        os.fchmod(child_fd, 0o700)
+                except OSError:
+                    os.close(child_fd)
+                    raise
                 break
             os.close(current_fd)
             current_fd = child_fd
-    finally:
+        return current_fd
+    except BaseException:
         os.close(current_fd)
+        raise
+
+
+def _create_private_staging(parent_fd: int) -> tuple[str, int]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    for _ in range(32):
+        name = f".nautilus-input-cache-{secrets.token_hex(16)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        try:
+            return name, os.open(name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            try:
+                os.rmdir(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise VerificationError("unable to open private input cache staging directory") from exc
+    raise VerificationError("unable to create private input cache staging directory")
+
+
+def _discard_private_staging(parent_fd: int, name: str, staging: Path) -> None:
+    for current, directories, _names in os.walk(staging, topdown=False, followlinks=False):
+        for directory in directories:
+            os.chmod(Path(current) / directory, 0o700)
+    os.chmod(staging, 0o700)
+    shutil.rmtree(name, dir_fd=parent_fd)
 
 
 def _validate_policy(document: object) -> dict[str, object]:
@@ -274,7 +308,7 @@ def _copy_derived_input(source: Path, target: Path, expected_sha256: object, lab
     os.chmod(target, 0o600)
 
 
-def _run_cargo_fetch(cargo: Path, rustc: Path, source: Path, cargo_home: Path) -> None:
+def _run_cargo_fetch(cargo: Path, rustc: Path, source: Path, cargo_home: Path, staging_fd: int) -> None:
     cargo_home.mkdir(mode=0o700)
     environment = os.environ.copy()
     environment["CARGO_HOME"] = str(cargo_home)
@@ -284,7 +318,12 @@ def _run_cargo_fetch(cargo: Path, rustc: Path, source: Path, cargo_home: Path) -
     environment["PATH"] = "/usr/bin:/bin"
     try:
         subprocess.run(
-            [str(cargo), "fetch", "--locked"], cwd=source, env=environment, check=True, timeout=900
+            [str(cargo), "fetch", "--locked"],
+            cwd=source,
+            env=environment,
+            check=True,
+            pass_fds=(staging_fd,),
+            timeout=900,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise VerificationError("private cargo could not fetch the locked dependency closure") from exc
@@ -344,53 +383,70 @@ def _freeze_cache(cache: Path) -> None:
 def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, object]:
     """Create one immutable external cache from the pinned source and Cargo lockfile."""
     policy = _validate_policy(policy)
-    _prepare_private_cache_parent(cache.parent)
+    _absolute_parts(cache, "input cache")
+    parent_fd = _prepare_private_cache_parent(cache.parent)
     try:
-        cache.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        raise VerificationError("input cache destination must not already exist")
-    cargo_version = validate_private_cargo(cargo, str(policy["required_cargo_version"]))
-    rustc_version = validate_private_rustc(cargo.parent / "rustc", str(policy["required_cargo_version"]))
-    with tempfile.TemporaryDirectory(prefix="nautilus-input-cache-", dir=cache.parent) as staging_text:
-        staging = Path(staging_text)
-        os.chmod(staging, 0o700)
-        source_dir = staging / _SOURCE_PREFIX
-        source_dir.mkdir(mode=0o700)
-        source_archive = source_dir / f"nautilus_trader-{policy['upstream_commit']}.tar.gz"
-        with urllib.request.urlopen(str(policy["source_url"]), timeout=120) as response, source_archive.open("wb") as target:
-            shutil.copyfileobj(response, target)
-        os.chmod(source_archive, 0o600)
-        if _sha256(source_archive) != policy["source_sha256"]:
-            raise VerificationError("Nautilus source archive digest does not match the input cache policy")
-        with tempfile.TemporaryDirectory(dir=staging) as extraction_text:
-            extracted = _safe_extract_source(source_archive, Path(extraction_text), str(policy["upstream_commit"]))
-            derived = staging / _DERIVED_PREFIX
-            _copy_derived_input(extracted / "Cargo.lock", derived / "Cargo.lock", policy["cargo_lock_sha256"], "Cargo.lock")
-            _copy_derived_input(extracted / "pyproject.toml", derived / "pyproject.toml", policy["pyproject_sha256"], "pyproject.toml")
-            _run_cargo_fetch(cargo, cargo.parent / "rustc", extracted, staging / _CARGO_PREFIX)
-        cargo_files = _collect_files(staging / _CARGO_PREFIX)
-        if not cargo_files:
-            raise VerificationError("private cargo did not cache a dependency closure")
-        source_path = source_archive.relative_to(staging).as_posix()
-        artifacts = [
-            _artifact(source_path, "downloaded-source", staging),
-            _artifact("derived/Cargo.lock", "derived-cargo-lock", staging),
-            _artifact("derived/pyproject.toml", "derived-pyproject", staging),
-            *[_artifact(f"{_CARGO_PREFIX}/{path}", "cargo-closure", staging) for path in cargo_files],
-        ]
-        manifest: dict[str, object] = {
-            **{key: policy[key] for key in _POLICY_FIELDS - {"required_cargo_version"}},
-            "cargo_version": cargo_version,
-            "rustc_version": rustc_version,
-            "artifacts": artifacts,
-        }
-        manifest_path = staging / _MANIFEST_NAME
-        manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
-        _freeze_cache(staging)
-        os.replace(staging, cache)
-        return manifest
+        try:
+            os.stat(cache.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise VerificationError("input cache destination must not already exist")
+        cargo_version = validate_private_cargo(cargo, str(policy["required_cargo_version"]))
+        rustc_version = validate_private_rustc(cargo.parent / "rustc", str(policy["required_cargo_version"]))
+        staging_name, staging_fd = _create_private_staging(parent_fd)
+        staging = Path(f"/proc/self/fd/{staging_fd}")
+        committed = False
+        try:
+            os.chmod(staging, 0o700)
+            source_dir = staging / _SOURCE_PREFIX
+            source_dir.mkdir(mode=0o700)
+            source_archive = source_dir / f"nautilus_trader-{policy['upstream_commit']}.tar.gz"
+            with urllib.request.urlopen(str(policy["source_url"]), timeout=120) as response, source_archive.open("wb") as target:
+                shutil.copyfileobj(response, target)
+            os.chmod(source_archive, 0o600)
+            if _sha256(source_archive) != policy["source_sha256"]:
+                raise VerificationError("Nautilus source archive digest does not match the input cache policy")
+            with tempfile.TemporaryDirectory(dir=staging) as extraction_text:
+                extracted = _safe_extract_source(source_archive, Path(extraction_text), str(policy["upstream_commit"]))
+                derived = staging / _DERIVED_PREFIX
+                _copy_derived_input(extracted / "Cargo.lock", derived / "Cargo.lock", policy["cargo_lock_sha256"], "Cargo.lock")
+                _copy_derived_input(extracted / "pyproject.toml", derived / "pyproject.toml", policy["pyproject_sha256"], "pyproject.toml")
+                _run_cargo_fetch(cargo, cargo.parent / "rustc", extracted, staging / _CARGO_PREFIX, staging_fd)
+            cargo_files = _collect_files(staging / _CARGO_PREFIX)
+            if not cargo_files:
+                raise VerificationError("private cargo did not cache a dependency closure")
+            source_path = source_archive.relative_to(staging).as_posix()
+            artifacts = [
+                _artifact(source_path, "downloaded-source", staging),
+                _artifact("derived/Cargo.lock", "derived-cargo-lock", staging),
+                _artifact("derived/pyproject.toml", "derived-pyproject", staging),
+                *[_artifact(f"{_CARGO_PREFIX}/{path}", "cargo-closure", staging) for path in cargo_files],
+            ]
+            manifest: dict[str, object] = {
+                **{key: policy[key] for key in _POLICY_FIELDS - {"required_cargo_version"}},
+                "cargo_version": cargo_version,
+                "rustc_version": rustc_version,
+                "artifacts": artifacts,
+            }
+            manifest_path = staging / _MANIFEST_NAME
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            _freeze_cache(staging)
+            try:
+                os.stat(cache.name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise VerificationError("input cache destination changed during acquisition")
+            os.replace(staging_name, cache.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            committed = True
+            return manifest
+        finally:
+            if not committed:
+                _discard_private_staging(parent_fd, staging_name, staging)
+            os.close(staging_fd)
+    finally:
+        os.close(parent_fd)
 
 
 def _validate_manifest(document: object, policy: dict[str, object]) -> dict[str, object]:

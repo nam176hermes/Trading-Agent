@@ -188,6 +188,35 @@ def test_acquisition_creates_a_missing_private_cache_parent(tmp_path: Path, priv
     assert module.verify(cache, policy)["schema_version"] == 1
 
 
+def test_acquisition_uses_the_verified_parent_after_a_path_swap(
+    tmp_path: Path, private_cache_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    cargo_lock = b"version = 3\n"
+    pyproject = b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
+    parent = private_cache_root / "parent"
+    parent.mkdir()
+    cache = parent / "cache"
+    backing = private_cache_root / "parent-backing"
+    substituted = private_cache_root / "substituted"
+    substituted.mkdir()
+    original = module._prepare_private_cache_parent
+
+    def swap_after_prepare(path: Path):
+        parent_fd = original(path)
+        parent.rename(backing)
+        os.symlink(substituted, parent)
+        return parent_fd
+
+    monkeypatch.setattr(module, "_prepare_private_cache_parent", swap_after_prepare)
+    module.acquire(cache, policy, _private_cargo(tmp_path))
+
+    assert (backing / "cache").is_dir()
+    assert not (substituted / "cache").exists()
+
+
 def test_source_extraction_rejects_an_absolute_symlink_target(tmp_path: Path) -> None:
     module = _module()
     cargo_lock = b"version = 3\n"
