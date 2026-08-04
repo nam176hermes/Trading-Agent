@@ -69,7 +69,9 @@ def _policy(source_url: str, source_sha256: str, cargo_lock: bytes, pyproject: b
     }
 
 
-def _source_archive(tmp_path: Path, cargo_lock: bytes, pyproject: bytes) -> Path:
+def _source_archive(
+    tmp_path: Path, cargo_lock: bytes, pyproject: bytes, *, symlink_target: str | None = None
+) -> Path:
     archive = tmp_path / "source.tar.gz"
     root = "nautilus_trader-280ae1762df51a492a4ce71506a40b5c8706def5"
     source = tmp_path / "source-files"
@@ -80,6 +82,11 @@ def _source_archive(tmp_path: Path, cargo_lock: bytes, pyproject: bytes) -> Path
     with tarfile.open(archive, "w:gz") as output:
         for name in ("Cargo.lock", "pyproject.toml", "Cargo.toml"):
             output.add(source / name, arcname=f"{root}/{name}")
+        if symlink_target is not None:
+            symlink = tarfile.TarInfo(f"{root}/unsafe-link")
+            symlink.type = tarfile.SYMTYPE
+            symlink.linkname = symlink_target
+            output.addfile(symlink)
     return archive
 
 
@@ -102,8 +109,8 @@ def _private_cargo(tmp_path: Path, version: str = "1.95.0") -> Path:
     )
     cargo.chmod(0o500)
     rustc.chmod(0o500)
-    cargo.parent.chmod(0o500)
-    cargo.parent.parent.chmod(0o500)
+    cargo.parent.chmod(0o700)
+    cargo.parent.parent.chmod(0o700)
     return cargo
 
 
@@ -164,6 +171,16 @@ def test_acquisition_rejects_source_digest_drift(tmp_path: Path, private_cache_r
 
     with pytest.raises(module.VerificationError, match="source archive digest"):
         module.acquire(private_cache_root / "digest-drift-cache", policy, _private_cargo(tmp_path))
+
+
+def test_source_extraction_rejects_an_absolute_symlink_target(tmp_path: Path) -> None:
+    module = _module()
+    cargo_lock = b"version = 3\n"
+    pyproject = b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject, symlink_target="/tmp/escape")
+
+    with pytest.raises(module.VerificationError, match="symlink escapes"):
+        module._safe_extract_source(archive, tmp_path / "extracted", "280ae1762df51a492a4ce71506a40b5c8706def5")
 
 
 def test_verifier_rejects_missing_hash_drifted_mutable_and_symlinked_inputs(
@@ -227,8 +244,40 @@ def test_acquisition_rejects_a_non_private_or_wrong_version_cargo(tmp_path: Path
     cargo.rename(backing)
     os.symlink(backing, cargo)
 
-    with pytest.raises(module.VerificationError, match="regular non-symlink"):
+    with pytest.raises(module.VerificationError, match="symlinked ancestor|regular non-symlink"):
         module.validate_private_cargo(cargo, "1.95.0")
+
+
+@pytest.mark.parametrize("tool, validator", [("cargo", "validate_private_cargo"), ("rustc", "validate_private_rustc")])
+def test_private_toolchain_rejects_a_symlinked_ancestor(
+    tmp_path: Path, tool: str, validator: str
+) -> None:
+    module = _module()
+    cargo = _private_cargo(tmp_path / "backing")
+    alias = tmp_path / "alias"
+    os.symlink(cargo.parent.parent, alias)
+
+    with pytest.raises(module.VerificationError, match="symlinked ancestor"):
+        getattr(module, validator)(alias / "bin" / tool, "1.95.0")
+
+
+def test_cache_verification_rejects_a_symlinked_ancestor(
+    tmp_path: Path, private_cache_root: Path
+) -> None:
+    module = _module()
+    cargo_lock = b"version = 3\n"
+    pyproject = b"[project]\nname = 'fixture'\n"
+    archive = _source_archive(tmp_path, cargo_lock, pyproject)
+    policy = _policy(archive.as_uri(), _sha256(archive.read_bytes()), cargo_lock, pyproject)
+    backing = private_cache_root / "backing"
+    backing.mkdir()
+    cache = backing / "cache"
+    module.acquire(cache, policy, _private_cargo(tmp_path))
+    alias = private_cache_root / "alias"
+    os.symlink(backing, alias)
+
+    with pytest.raises(module.VerificationError, match="symlinked ancestor"):
+        module.verify(alias / "cache", policy)
 
 
 def test_acquisition_rejects_a_wrong_cargo_version(tmp_path: Path) -> None:

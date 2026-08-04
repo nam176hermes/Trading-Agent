@@ -14,7 +14,6 @@ import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path, PurePosixPath
-from typing import Any
 
 
 _SHA256_LENGTH = 64
@@ -106,6 +105,23 @@ def _safe_directory(path: Path, label: str) -> os.stat_result:
     return info
 
 
+def _reject_symlinked_ancestors(path: Path, label: str) -> None:
+    """Reject a lexical path that traverses any symlink, including a parent."""
+    if not path.is_absolute():
+        raise VerificationError(f"{label} must be supplied as an absolute private path")
+    current = path
+    while True:
+        try:
+            info = current.lstat()
+        except OSError as exc:
+            raise VerificationError(f"{label} has a missing ancestor") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise VerificationError(f"{label} has a symlinked ancestor")
+        if current == current.parent:
+            return
+        current = current.parent
+
+
 def _validate_policy(document: object) -> dict[str, object]:
     if not isinstance(document, dict) or set(document) != _POLICY_FIELDS:
         raise VerificationError("input cache policy fields are missing or unknown")
@@ -133,8 +149,7 @@ def load_policy(path: Path) -> dict[str, object]:
 
 
 def _validate_private_path(path: Path, label: str) -> None:
-    if not path.is_absolute():
-        raise VerificationError(f"{label} must be supplied as an absolute private path")
+    _reject_symlinked_ancestors(path, label)
     info = _regular_file(path, label)
     if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
         raise VerificationError(f"{label} is not a private toolchain executable")
@@ -184,6 +199,8 @@ def _safe_extract_source(archive: Path, destination: Path, commit: str) -> Path:
             ):
                 raise VerificationError("Nautilus source archive has an unsafe entry")
             if member.issym():
+                if PurePosixPath(member.linkname).is_absolute():
+                    raise VerificationError("Nautilus source archive symlink escapes its root")
                 resolved: list[str] = []
                 for part in (*member_path.parent.parts, *PurePosixPath(member.linkname).parts):
                     if part in {"", "."}:
@@ -283,11 +300,11 @@ def _freeze_cache(cache: Path) -> None:
 def acquire(cache: Path, policy: dict[str, object], cargo: Path) -> dict[str, object]:
     """Create one immutable external cache from the pinned source and Cargo lockfile."""
     policy = _validate_policy(policy)
+    _reject_symlinked_ancestors(cache.parent, "input cache")
     if cache.exists() or cache.is_symlink():
         raise VerificationError("input cache destination must not already exist")
     cargo_version = validate_private_cargo(cargo, str(policy["required_cargo_version"]))
     rustc_version = validate_private_rustc(cargo.parent / "rustc", str(policy["required_cargo_version"]))
-    cache.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="nautilus-input-cache-", dir=cache.parent) as staging_text:
         staging = Path(staging_text)
         os.chmod(staging, 0o700)
@@ -373,6 +390,7 @@ def _validate_manifest(document: object, policy: dict[str, object]) -> dict[str,
 def verify(cache: Path, policy: dict[str, object]) -> dict[str, object]:
     """Verify an immutable cache without invoking Cargo or using the network."""
     policy = _validate_policy(policy)
+    _reject_symlinked_ancestors(cache, "input cache")
     _directory(cache, "input cache", 0o500)
     manifest_path = cache / _MANIFEST_NAME
     manifest_info = _regular_file(manifest_path, "input cache manifest")
