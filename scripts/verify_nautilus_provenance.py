@@ -72,6 +72,16 @@ def _regular_file(path: Path) -> os.stat_result:
     return info
 
 
+def _directory(path: Path, label: str) -> os.stat_result:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise VerificationError(f"{label} is missing or unsafe") from exc
+    if not stat.S_ISDIR(info.st_mode) or path.is_symlink():
+        raise VerificationError(f"{label} is missing or unsafe")
+    return info
+
+
 def _verify_upstream(document: dict[str, Any], license_path: Path) -> None:
     if set(document) != _UPSTREAM_FIELDS or document.get("schema_version") != 1:
         raise VerificationError("UPSTREAM.json fields are missing or unknown")
@@ -151,13 +161,17 @@ def _verify_no_unapproved_derived_source(root: Path) -> None:
 
 def verify(root: Path, *, verify_upstream: bool = False) -> None:
     root = root.resolve(strict=True)
-    vendor = root / "third_party/nautilus_trader"
+    third_party = root / "third_party"
+    legal = root / "legal"
+    _directory(third_party, "third_party directory")
+    _directory(legal, "legal directory")
+    vendor = third_party / "nautilus_trader"
     upstream_path = vendor / "UPSTREAM.json"
     manifest_path = vendor / "FILE_MANIFEST.json"
     modifications = vendor / "MODIFICATIONS.md"
     vendor_license = vendor / "LICENSE"
-    legal_license = root / "legal/LGPL-3.0-or-later.txt"
-    notices = root / "legal/THIRD_PARTY_NOTICES.md"
+    legal_license = legal / "LGPL-3.0-or-later.txt"
+    notices = legal / "THIRD_PARTY_NOTICES.md"
     for path in (upstream_path, manifest_path, modifications, vendor_license, legal_license, notices):
         _regular_file(path)
     _verify_external_vendor_layout(vendor)
