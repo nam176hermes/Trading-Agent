@@ -68,10 +68,10 @@ Evidence:
 
 The current paper artifact already classifies the following legacy surfaces as
 `ARCHIVE_ONLY`; WS-01 must preserve that exclusion: `trading_agent.py`,
-`live_execution_policy.py`, `exchange/secrets.py`, `runtime_paths.py`,
-`asset_registry.py`, broker mode APIs, and every direct CCXT adapter method,
-including `ExchangeAdapter.create_oco_order`. The complete structured list is
-in the JSON inventory and is derived from
+`live_execution_policy.py`, `kill_switch.py`, `exchange/secrets.py`,
+`runtime_paths.py`, `asset_registry.py`, broker mode APIs, and every direct
+CCXT adapter method, including `ExchangeAdapter.create_oco_order`. The complete
+structured list is in the JSON inventory and is derived from
 [foundation-live-path-inventory.md](../implementation/foundation-live-path-inventory.md).
 
 The primary execution import fan-in is
@@ -99,7 +99,7 @@ All of them preserve paper-only operation and keep both live approvals false.
 ## Phase 1 decisions recorded
 
 1. Create the engine as an isolated Python 3.12 dependency graph; do not mix
-   it with the root or legacy Python 3.11 locks.
+   it with the root, legacy, or sealed-paper-release Python 3.11 locks.
 2. Treat legacy broker/CCXT modules and JSON portfolio state as non-authority
    inputs during migration.
 3. Build the later process bridge on typed contracts, worker fencing and the

@@ -90,6 +90,7 @@ def test_inventory_covers_the_required_legacy_live_capable_archive_surface() -> 
     }
     required = {
         "legacy/research-backend/live_execution_policy.py",
+        "legacy/research-backend/kill_switch.py",
         "legacy/research-backend/execute_live.py",
         "legacy/research-backend/trading_agent.py",
         "legacy/research-backend/exchange/adapter.py",

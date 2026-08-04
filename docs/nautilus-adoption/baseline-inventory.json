@@ -152,7 +152,8 @@
       "paths": [
         "legacy/research-backend/live_execution_policy.py",
         "legacy/research-backend/risk_engine.py",
-        "legacy/research-backend/strategy_risk_manager.py"
+        "legacy/research-backend/strategy_risk_manager.py",
+        "legacy/research-backend/kill_switch.py"
       ]
     },
     {
