@@ -34,6 +34,14 @@
       "manifest_sha256": "4b42dd9533519a2cc442d0dbcd28ab26f0249d14bd631295157df065ec0af67a",
       "lockfile": "apps/dashboard/package-lock.json",
       "lockfile_sha256": "37bb7279d11ea5453221ec0bf75d6a37415c19e606b52b4481fb5ac1b1d6225b"
+    },
+    {
+      "component": "sealed-paper-release",
+      "runtime": "Python >=3.11,<3.12; isolated, release-specific application environment",
+      "manifest": "packages/runtime_release/paper_application/pyproject.toml",
+      "manifest_sha256": "4530d19d1d100f79b123e179f4aafad7be67b12e0aaae032fdb25a91a53398b9",
+      "lockfile": "packages/runtime_release/paper_application/uv.lock",
+      "lockfile_sha256": "a4fac2d6f0587c534555e6d8c3ca9c22460ba18b09e5eb684c7b38409ce2d759"
     }
   ],
   "alembic": {
@@ -49,14 +57,50 @@
       "0009_canonical_market_data"
     ],
     "source_head": "0009_canonical_market_data",
-    "runtime_expected_revision": "0008_trading_domain_ledger",
-    "classification": "intentional deferred runtime activation, not a source-graph fork",
-    "evidence": [
-      "alembic/versions/0009_canonical_market_data.py",
-      "services/job_store/config.py",
-      "apps/job_api/config.py",
-      "docs/plans/track-c-p10-canonical-market-data/PACKET-3-VERDICT.md"
-    ]
+    "authority_matrix": [
+      {
+        "revision": "0009_canonical_market_data",
+        "classification": "sole additive source head; source-only",
+        "references": [
+          "alembic/versions/0009_canonical_market_data.py",
+          "docs/plans/track-c-p10-canonical-market-data/PACKET-3-VERDICT.md"
+        ]
+      },
+      {
+        "revision": "0008_trading_domain_ledger",
+        "classification": "current source-code expected revision; runtime activation deferred",
+        "references": [
+          "services/job_store/config.py",
+          "apps/job_api/config.py",
+          "packages/runtime_release/v2.py",
+          "ops/release-v2/verify-stage.py",
+          "ops/systemd/job-api.env.example"
+        ]
+      },
+      {
+        "revision": "0007_job_event_chain_authority",
+        "classification": "frozen historical job-plane authority; not the current source head or an activation target",
+        "references": [
+          "packages/job_authority/verifier.py",
+          "ops/postgres/job-plane-authority/authority-manifest-v1.json"
+        ]
+      },
+      {
+        "revision": "0006_job_transition_database_authority",
+        "classification": "stale Release Authority v2 document boundary and explicit NO_GO integration blocker",
+        "references": [
+          "docs/production/release-authority-v2.md"
+        ]
+      },
+      {
+        "revision": "0004_durable_research_jobs",
+        "classification": "historical Phase 4B provisioning pin; not current runtime authority",
+        "references": [
+          "ops/phase4b/provision-root.sh"
+        ]
+      }
+    ],
+    "deployed_database_state": "not asserted by this source-only inventory"
   },
   "authoritative_contracts": {
     "source_authority": [
@@ -101,6 +145,55 @@
       "legacy/research-backend/ws_stream.py"
     ]
   },
+  "legacy_live_capable_archive_surfaces": [
+    {
+      "classification": "ARCHIVE_ONLY",
+      "capability": "live policy and risk preflight",
+      "paths": [
+        "legacy/research-backend/live_execution_policy.py",
+        "legacy/research-backend/risk_engine.py",
+        "legacy/research-backend/strategy_risk_manager.py"
+      ]
+    },
+    {
+      "classification": "ARCHIVE_ONLY",
+      "capability": "live orchestration and CLI",
+      "paths": [
+        "legacy/research-backend/execute_live.py",
+        "legacy/research-backend/trading_agent.py",
+        "legacy/research-backend/main.py"
+      ]
+    },
+    {
+      "classification": "ARCHIVE_ONLY",
+      "capability": "direct exchange execution including OCO",
+      "paths": [
+        "legacy/research-backend/exchange/__init__.py",
+        "legacy/research-backend/exchange/adapter.py:ExchangeAdapter.create_order,cancel_order,create_oco_order",
+        "legacy/research-backend/exchange/executor.py",
+        "legacy/research-backend/exchange/ccxt_bridge.py"
+      ]
+    },
+    {
+      "classification": "ARCHIVE_ONLY",
+      "capability": "broker routing, credentials and mode mutation",
+      "paths": [
+        "legacy/research-backend/broker.py",
+        "legacy/research-backend/asset_registry.py",
+        "legacy/research-backend/exchange/secrets.py",
+        "legacy/research-backend/runtime_paths.py",
+        "legacy/research-backend/trading_agent.py:_check_mode_switch"
+      ]
+    },
+    {
+      "classification": "ARCHIVE_ONLY",
+      "capability": "other direct CCXT edges",
+      "paths": [
+        "legacy/research-backend/backtest_engine.py",
+        "legacy/research-backend/exchange_health.py"
+      ]
+    }
+  ],
   "portfolio_and_pnl_writers": [
     {
       "path": "legacy/research-backend/paper_trader.py",
@@ -146,9 +239,9 @@
     }
   ],
   "phase_1_implications": [
-    "The Nautilus engine must be an isolated Python 3.12 dependency graph; it cannot be imported into the root Python 3.11 process.",
-    "Legacy execution paths must remain quarantined and non-authoritative during migration.",
+    "The Nautilus engine must be an isolated Python 3.12 dependency graph; it cannot be imported into or share a lockfile with the root, legacy, or sealed-paper-release Python 3.11 graphs.",
+    "Legacy execution, credential, mode and OCO paths must remain ARCHIVE_ONLY and non-authoritative during migration.",
     "Nautilus event ingestion must converge on the typed event ledger and job authority rather than LocalEventBus or legacy JSON files.",
-    "The 0009 source head must not cause a runtime migration or expected-revision change without a separate approved activation packet."
+    "No listed source-code pin, frozen historical authority, stale v2 document, or historical provisioning pin asserts deployed database state or authorizes an activation, migration, or revision change."
   ]
 }
