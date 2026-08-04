@@ -23,10 +23,13 @@ linker on Linux. Those host build tools must already be installed in
 present on the implementation host, so they are a second execution-time host
 precondition after the approved wheel cache.
 
-The approved build-wheel cache is an external precondition. No approved cache
-was available while this contract was implemented, so the repository does not
-claim that a real Nautilus wheel was produced. The build fails closed rather
-than downloading a missing wheel. The cache must contain only regular,
+The approved build-wheel cache is produced separately by
+`scripts/prepare_nautilus_wheel_cache.py` from the exact versions in
+`wheel-cache-policy.json`. The acquisition command requires an explicit
+CPython 3.12 executable, uses only the public PyPI index, downloads wheels
+without dependencies into private staging and a private temporary pip cache,
+and never installs them. The build itself still fails closed rather than
+downloading a missing wheel. The cache must contain only regular,
 single-link `0400` wheel files and `wheel-cache-manifest.json`; its directory
 must be `0500`. The manifest itself must be `0400`, its SHA-256 must be supplied
 out of band, and it has this schema:
@@ -54,6 +57,30 @@ pinned Cython 3.2.4 and poetry-core 2.3.1 inputs plus approved `numpy`,
 `packaging`, `pip`, and `setuptools` wheels compatible with CPython 3.12. The
 operator-reviewed manifest digest is the approval boundary for the otherwise
 unpinned upstream `numpy`, `packaging`, `pip`, and `setuptools` constraints.
+
+Create the cache under an existing operator-owned `0700` parent outside this
+checkout, then save the printed manifest digest out of band:
+
+```bash
+/usr/bin/python3.12 -I scripts/prepare_nautilus_wheel_cache.py \
+  --policy engines/nautilus/wheel-cache-policy.json \
+  --engine-policy engines/nautilus/engine-build-policy.json \
+  --cache /absolute/private/nautilus-wheel-cache \
+  --python /usr/bin/python3.12 \
+  --acquire
+
+/usr/bin/python3.12 -I scripts/prepare_nautilus_wheel_cache.py \
+  --policy engines/nautilus/wheel-cache-policy.json \
+  --engine-policy engines/nautilus/engine-build-policy.json \
+  --cache /absolute/private/nautilus-wheel-cache \
+  --manifest-sha256 <reviewed-sha256> \
+  --verify
+```
+
+Verification is offline: it does not invoke Python package tooling or access
+an index. It rechecks the manifest digest, the exact file set, modes, regular
+single-link status, wheel metadata and CPython 3.12 tags, and every wheel's
+recorded SHA-256 and size.
 
 ## Build and verification
 

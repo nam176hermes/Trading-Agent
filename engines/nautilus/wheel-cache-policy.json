@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "python_implementation": "CPython",
+  "python_minor": "3.12",
+  "index_url": "https://pypi.org/simple",
+  "engine_policy_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+  "packages": {
+    "cython": "3.2.4",
+    "numpy": "2.4.3",
+    "packaging": "26.0",
+    "pip": "26.1",
+    "poetry-core": "2.3.1",
+    "setuptools": "82.0.1"
+  }
+}

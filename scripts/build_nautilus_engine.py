@@ -416,7 +416,11 @@ def verify_artifacts(artifacts: Path, policy: dict[str, object], *, python: Path
 def _wheel_metadata(path: Path) -> tuple[str, str]:
     try:
         with zipfile.ZipFile(path) as archive:
-            names = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+            names = [
+                name
+                for name in archive.namelist()
+                if name.count("/") == 1 and name.endswith(".dist-info/METADATA")
+            ]
             if len(names) != 1:
                 raise VerificationError("cached wheel metadata layout is invalid")
             metadata = BytesParser().parsebytes(archive.read(names[0]))
