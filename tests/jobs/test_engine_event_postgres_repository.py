@@ -31,6 +31,25 @@ class Cursor:
         return self._rows
 
 
+class Transaction:
+    def __init__(self, connection: "Connection") -> None:
+        self._connection = connection
+
+    def __enter__(self):
+        assert not self._connection.transaction_active
+        self._connection.transaction_active = True
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:
+        assert self._connection.transaction_active
+        self._connection.transaction_active = False
+        if exc_type is None:
+            self._connection.commit_count += 1
+        else:
+            self._connection.rollback_count += 1
+        return False
+
+
 class Connection:
     def __init__(
         self,
@@ -41,10 +60,13 @@ class Connection:
         self.error = error
         self.executions: list[tuple[str, dict[str, object]]] = []
         self.transaction_count = 0
+        self.commit_count = 0
+        self.rollback_count = 0
+        self.transaction_active = False
 
     def transaction(self):
         self.transaction_count += 1
-        return nullcontext()
+        return Transaction(self)
 
     def execute(self, statement: str, params: dict[str, object]) -> Cursor:
         self.executions.append((statement, params))
@@ -85,6 +107,8 @@ def test_postgres_ingest_uses_one_transaction_and_one_function_statement() -> No
 
     assert receipt == expected
     assert connection.transaction_count == 1
+    assert connection.commit_count == 1
+    assert connection.rollback_count == 0
     assert len(connection.executions) == 1
     statement, params = connection.executions[0]
     assert statement == PostgresEngineEventLedgerSql.INGEST_BATCH
@@ -103,10 +127,25 @@ def test_postgres_ingest_rejects_receipt_that_differs_from_validated_batch() -> 
     expected = InMemoryEngineEventLedger().ingest(batch)
     row = _receipt_row(expected)
     row["last_digest"] = "f" * 64
-    repository = PostgresEngineEventLedger(Pool(Connection([[row]])))
+    connection = Connection([[row]])
+    repository = PostgresEngineEventLedger(Pool(connection))
 
     with pytest.raises(EngineEventConflictError, match="differs"):
         repository.ingest(batch)
+
+    assert connection.commit_count == 0
+    assert connection.rollback_count == 1
+
+
+def test_postgres_ingest_rolls_back_when_write_authority_returns_no_receipt() -> None:
+    batch = _batch(_event(2, "BacktestStarted"))
+    connection = Connection([[]])
+
+    with pytest.raises(EngineEventConflictError, match="no receipt"):
+        PostgresEngineEventLedger(Pool(connection)).ingest(batch)
+
+    assert connection.commit_count == 0
+    assert connection.rollback_count == 1
 
 
 def test_postgres_ingest_maps_database_identity_conflict_without_leaking_details() -> None:
@@ -188,6 +227,27 @@ def test_postgres_reads_strict_receipt_events_and_projection_rows() -> None:
     assert repository.load_projection(RUN_ID) == projection
     assert repository.recover_projections() == (projection,)
     assert connection.transaction_count == 1
+    assert connection.commit_count == 1
+    assert connection.rollback_count == 0
+
+
+def test_projection_recovery_rolls_back_if_rows_are_not_strict_and_unique() -> None:
+    projection_row = {
+        "engine_run_id": RUN_ID,
+        "event_count": 1,
+        "event_type_counts": [
+            {"event_type": "BacktestStarted", "count": 1}
+        ],
+        "last_sequence": 2,
+        "last_digest": "a" * 64,
+    }
+    connection = Connection([[projection_row, projection_row]])
+
+    with pytest.raises(EngineEventConflictError, match="duplicate engine runs"):
+        PostgresEngineEventLedger(Pool(connection)).recover_projections()
+
+    assert connection.commit_count == 0
+    assert connection.rollback_count == 1
 
 
 def test_postgres_replay_is_derived_from_immutable_event_rows() -> None:

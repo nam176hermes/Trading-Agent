@@ -356,6 +356,18 @@ def upgrade() -> None:
               USING ERRCODE = 'P2D01';
           END IF;
 
+          -- Globally identical message IDs can arrive on different run locks.
+          -- Acquire their transaction locks in UUID order before checking any
+          -- identity so cross-run races cannot escape as a raw unique error.
+          FOR v_message_id IN
+            SELECT (item ->> 'message_id')::uuid
+            FROM jsonb_array_elements(v_document -> 'events') AS entries(item)
+            ORDER BY (item ->> 'message_id')::uuid
+          LOOP
+            PERFORM pg_advisory_xact_lock(
+              hashtextextended(v_message_id::text, 23)
+            );
+          END LOOP;
           FOR v_event IN
             SELECT item FROM jsonb_array_elements(v_document -> 'events') AS entries(item)
           LOOP
@@ -401,21 +413,26 @@ def upgrade() -> None:
             SELECT item FROM jsonb_array_elements(v_document -> 'events') AS entries(item)
           LOOP
             v_canonical_json_text := v_event ->> 'canonical_json';
-            INSERT INTO public.engine_events (
-              message_id, engine_run_id, stream_sequence, event_type,
-              event_family, canonical_json, canonical_json_text, digest,
-              batch_sha256
-            ) VALUES (
-              (v_event ->> 'message_id')::uuid,
-              v_engine_run_id,
-              (v_event ->> 'stream_sequence')::bigint,
-              v_event ->> 'event_type',
-              v_event ->> 'event_family',
-              v_canonical_json_text::jsonb,
-              v_canonical_json_text,
-              v_event ->> 'digest',
-              v_batch_sha256
-            );
+            BEGIN
+              INSERT INTO public.engine_events (
+                message_id, engine_run_id, stream_sequence, event_type,
+                event_family, canonical_json, canonical_json_text, digest,
+                batch_sha256
+              ) VALUES (
+                (v_event ->> 'message_id')::uuid,
+                v_engine_run_id,
+                (v_event ->> 'stream_sequence')::bigint,
+                v_event ->> 'event_type',
+                v_event ->> 'event_family',
+                v_canonical_json_text::jsonb,
+                v_canonical_json_text,
+                v_event ->> 'digest',
+                v_batch_sha256
+              );
+            EXCEPTION WHEN unique_violation THEN
+              RAISE EXCEPTION 'conflicting engine-event uniqueness authority'
+                USING ERRCODE = 'P2D01';
+            END;
           END LOOP;
           INSERT INTO public.engine_run_projections (
             engine_run_id, event_count, event_type_counts,
@@ -471,6 +488,10 @@ def upgrade() -> None:
         SET search_path = pg_catalog
         AS $recover_engine_run_projections$
         BEGIN
+          -- SHARE conflicts with the ROW EXCLUSIVE lock taken by event INSERT.
+          -- Recovery therefore sees all or none of every ingest transaction,
+          -- and no stale replay can overwrite a newly advanced projection.
+          LOCK TABLE public.engine_events IN SHARE MODE;
           IF EXISTS (
             SELECT 1
             FROM (

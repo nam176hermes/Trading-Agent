@@ -96,6 +96,29 @@ def test_exact_retry_and_conflict_are_checked_before_sequence_or_any_insert() ->
     )
 
 
+def test_cross_run_message_identity_is_serialized_and_always_typed_conflict() -> None:
+    source = MIGRATION.read_text()
+    body = source.split(
+        "AS $ingest_engine_event_batch$", 1
+    )[1].split("$ingest_engine_event_batch$;", 1)[0]
+    lock = body.split("Globally identical message IDs", 1)[1].split(
+        "SELECT stored.digest INTO v_existing_digest", 1
+    )[0]
+    insert = body.split("INSERT INTO public.engine_events", 1)[1].split(
+        "END LOOP;", 1
+    )[0]
+
+    assert "ORDER BY (item ->> 'message_id')::uuid" in lock
+    assert "hashtextextended(v_message_id::text, 23)" in lock
+    assert "v_engine_run_id" not in lock
+    assert body.index("hashtextextended(v_message_id::text, 23)") < body.index(
+        "SELECT stored.digest INTO v_existing_digest"
+    )
+    assert "EXCEPTION WHEN unique_violation THEN" in insert
+    assert "conflicting engine-event uniqueness authority" in insert
+    assert "USING ERRCODE = 'P2D01'" in insert
+
+
 def test_projection_recovery_replays_only_append_only_event_rows() -> None:
     source = MIGRATION.read_text()
     recovery = source.split(
@@ -103,6 +126,7 @@ def test_projection_recovery_replays_only_append_only_event_rows() -> None:
     )[1].split("$recover_engine_run_projections$;", 1)[0]
 
     for expected in (
+        "LOCK TABLE public.engine_events IN SHARE MODE",
         "FROM public.engine_events AS stored",
         "row_number() OVER",
         "durable engine-event sequence is not recoverable",
@@ -111,6 +135,26 @@ def test_projection_recovery_replays_only_append_only_event_rows() -> None:
         "ORDER BY projection.engine_run_id",
     ):
         assert expected in recovery
+    assert recovery.index("LOCK TABLE public.engine_events IN SHARE MODE") < recovery.index(
+        "IF EXISTS ("
+    ) < recovery.index("INSERT INTO public.engine_run_projections")
+
+
+def test_recovery_and_ingest_use_incompatible_relation_lock_modes() -> None:
+    source = MIGRATION.read_text()
+    ingestion = source.split(
+        "AS $ingest_engine_event_batch$", 1
+    )[1].split("$ingest_engine_event_batch$;", 1)[0]
+    recovery = source.split(
+        "AS $recover_engine_run_projections$", 1
+    )[1].split("$recover_engine_run_projections$;", 1)[0]
+
+    # PostgreSQL INSERT takes ROW EXCLUSIVE on this relation; explicit SHARE
+    # conflicts with it. This source pairing makes either operation observe the
+    # other transaction wholly before or wholly after projection replay.
+    assert "INSERT INTO public.engine_events" in ingestion
+    assert "LOCK TABLE public.engine_events IN SHARE MODE" in recovery
+    assert "sees all or none of every ingest transaction" in recovery
 
 
 def test_engine_event_relations_and_functions_have_no_public_authority() -> None:

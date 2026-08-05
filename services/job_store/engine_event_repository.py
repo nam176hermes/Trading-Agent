@@ -631,18 +631,18 @@ class PostgresEngineEventLedger:
                             )
                         },
                     ).fetchone()
+                    if row is None:
+                        raise EngineEventConflictError(
+                            "engine-event write authority returned no receipt"
+                        )
+                    receipt = self._receipt_from_row(row)
+                    if receipt != expected:
+                        raise EngineEventConflictError(
+                            "durable engine-event receipt differs from validated batch"
+                        )
         except PostgresError as exc:
             self._raise_typed_database_error(exc)
             raise AssertionError("unreachable")
-        if row is None:
-            raise EngineEventConflictError(
-                "engine-event write authority returned no receipt"
-            )
-        receipt = self._receipt_from_row(row)
-        if receipt != expected:
-            raise EngineEventConflictError(
-                "durable engine-event receipt differs from validated batch"
-            )
         return receipt
 
     def load_receipt(self, batch_sha256: str) -> EngineEventBatchReceipt | None:
@@ -699,14 +699,16 @@ class PostgresEngineEventLedger:
                         PostgresEngineEventLedgerSql.RECOVER_PROJECTIONS,
                         {},
                     ).fetchall()
+                    projections = tuple(
+                        self._projection_from_row(row) for row in rows
+                    )
+                    if len(
+                        {projection.engine_run_id for projection in projections}
+                    ) != len(projections):
+                        raise EngineEventConflictError(
+                            "projection recovery returned duplicate engine runs"
+                        )
         except PostgresError as exc:
             self._raise_typed_database_error(exc)
             raise AssertionError("unreachable")
-        projections = tuple(self._projection_from_row(row) for row in rows)
-        if len({projection.engine_run_id for projection in projections}) != len(
-            projections
-        ):
-            raise EngineEventConflictError(
-                "projection recovery returned duplicate engine runs"
-            )
         return projections
