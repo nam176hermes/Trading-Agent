@@ -19,6 +19,11 @@ from packages import engine_contracts as contracts
 
 CLI = Path(sys.executable).with_name("trading-agent-nautilus")
 BWRAP = shutil.which("bwrap")
+VENV_ROOT = Path(sys.executable).parent.parent
+VENV_INTERPRETER_ROOT = Path(os.readlink(VENV_ROOT / "bin" / "python")).parents[1]
+VENV_INTERPRETER_REAL_ROOT = Path(
+    os.path.realpath(VENV_ROOT / "bin" / "python")
+).parents[1]
 
 
 def _run(
@@ -39,22 +44,64 @@ def _run(
     )
 
 
-def _run_in_bubblewrap(
-    *arguments: str, timeout: float | None = None
-) -> subprocess.CompletedProcess[str]:
+def _bubblewrap_mount_parent_arguments() -> list[str]:
+    roots = (VENV_ROOT, VENV_INTERPRETER_ROOT, VENV_INTERPRETER_REAL_ROOT)
+    directories = {Path("/inputs")}
+    for root in roots:
+        parent = root.parent
+        while parent != Path("/"):
+            directories.add(parent)
+            parent = parent.parent
+    arguments: list[str] = []
+    for directory in sorted(directories, key=lambda value: (len(value.parts), str(value))):
+        arguments.extend(("--dir", str(directory)))
+    return arguments
+
+
+def _bubblewrap_command(
+    command: list[str],
+    *,
+    request_path: Path | None = None,
+    sidecar_path: Path | None = None,
+) -> list[str]:
     if BWRAP is None:
         pytest.fail("Bubblewrap is required for engine CLI OS-sandbox regressions")
-    assert CLI.is_file(), "the project console script must be registered"
-    return subprocess.run(
-        [
-            BWRAP,
-            "--die-with-parent",
-            "--unshare-user",
-            "--unshare-net",
-            "--new-session",
-            "--ro-bind",
-            "/",
-            "/",
+    if (request_path is None) != (sidecar_path is None):
+        raise ValueError("Bubblewrap requires both request inputs or neither")
+    arguments = [
+        BWRAP,
+        "--die-with-parent",
+        "--unshare-user",
+        "--unshare-net",
+        "--new-session",
+        *_bubblewrap_mount_parent_arguments(),
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "/usr/lib",
+        "/lib",
+        "--symlink",
+        "/usr/lib64",
+        "/lib64",
+    ]
+    for root in dict.fromkeys(
+        (VENV_ROOT, VENV_INTERPRETER_ROOT, VENV_INTERPRETER_REAL_ROOT)
+    ):
+        arguments.extend(("--ro-bind", str(root), str(root)))
+    if request_path is not None and sidecar_path is not None:
+        arguments.extend(
+            (
+                "--ro-bind",
+                str(request_path),
+                "/inputs/request.json",
+                "--ro-bind",
+                str(sidecar_path),
+                "/inputs/request.sha256",
+            )
+        )
+    arguments.extend(
+        (
             "--proc",
             "/proc",
             "--dev",
@@ -67,13 +114,51 @@ def _run_in_bubblewrap(
             "1",
             "--chdir",
             "/",
-            str(CLI),
-            *arguments,
-        ],
+            *command,
+        )
+    )
+    return arguments
+
+
+def _run_in_bubblewrap(
+    *arguments: str, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    assert CLI.is_file(), "the project console script must be registered"
+    request_path: Path | None = None
+    sidecar_path: Path | None = None
+    command = [str(CLI), arguments[0]]
+    if len(arguments) == 3:
+        request_path = Path(arguments[1])
+        sidecar_path = Path(arguments[2])
+        command.extend(("/inputs/request.json", "/inputs/request.sha256"))
+    elif len(arguments) != 1:
+        raise ValueError("CLI command must have no request inputs or exactly two")
+    return subprocess.run(
+        _bubblewrap_command(
+            command,
+            request_path=request_path,
+            sidecar_path=sidecar_path,
+        ),
         capture_output=True,
         check=False,
         text=True,
         timeout=timeout,
+    )
+
+
+def _run_python_in_bubblewrap(
+    program: str, request_path: Path, sidecar_path: Path, *program_arguments: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        _bubblewrap_command(
+            [str(Path(sys.executable)), "-c", program, *program_arguments],
+            request_path=request_path,
+            sidecar_path=sidecar_path,
+        ),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=5,
     )
 
 
@@ -557,6 +642,98 @@ def test_request_cli_rejections_run_in_bubblewrap_read_only_network_namespace(
             timeout=5,
         )
     )
+
+
+def test_bubblewrap_mount_allowlist_exposes_only_private_writable_mounts(
+    tmp_path: Path,
+) -> None:
+    request_path, sidecar_path = _request_files(tmp_path, _request())
+    command = _bubblewrap_command([str(Path(sys.executable)), "-c", "pass"])
+    assert not any(
+        command[index : index + 3] == ["--ro-bind", "/", "/"]
+        for index in range(len(command) - 2)
+    )
+    probe = """
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+records = []
+for line in Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines():
+    fields = line.split()
+    separator = fields.index("-")
+    records.append(
+        {
+            "mount_point": fields[4],
+            "options": fields[5].split(","),
+            "filesystem": fields[separator + 1],
+            "source": fields[separator + 2],
+        }
+    )
+leak_paths = (
+    "/run/user",
+    "/mnt/c",
+    "/var/lib/docker",
+    "/var/lib/containerd",
+    "/usr/lib/wsl/lib",
+)
+print(
+    json.dumps(
+        {
+            "mounts": records,
+            "cli_readable": Path(sys.argv[1]).is_file(),
+            "request_digest": hashlib.sha256(
+                Path("/inputs/request.json").read_bytes()
+            ).hexdigest(),
+            "sidecar_digest": hashlib.sha256(
+                Path("/inputs/request.sha256").read_bytes()
+            ).hexdigest(),
+            "leak_writable": {
+                path: Path(path).exists() and os.access(path, os.W_OK)
+                for path in leak_paths
+            },
+        },
+        sort_keys=True,
+    )
+)
+"""
+    completed = _run_python_in_bubblewrap(
+        probe, request_path, sidecar_path, str(CLI)
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    topology = json.loads(completed.stdout)
+    mounts = topology["mounts"]
+    assert isinstance(mounts, list)
+    root_mounts = [
+        mount
+        for mount in mounts
+        if isinstance(mount, dict) and mount["mount_point"] == "/"
+    ]
+    assert len(root_mounts) == 1
+    assert root_mounts[0]["filesystem"] == "tmpfs"
+    assert root_mounts[0]["source"] == "tmpfs"
+    assert "rw" in root_mounts[0]["options"]
+    for mount in mounts:
+        assert isinstance(mount, dict)
+        if "rw" not in mount["options"]:
+            continue
+        mount_point = mount["mount_point"]
+        assert (
+            mount_point == "/" and mount["filesystem"] == "tmpfs"
+        ) or mount_point == "/tmp" or mount_point.startswith(("/proc", "/dev"))
+    assert topology["cli_readable"] is True
+    assert topology["request_digest"] == hashlib.sha256(request_path.read_bytes()).hexdigest()
+    assert topology["sidecar_digest"] == hashlib.sha256(sidecar_path.read_bytes()).hexdigest()
+    assert topology["leak_writable"] == {
+        "/run/user": False,
+        "/mnt/c": False,
+        "/var/lib/docker": False,
+        "/var/lib/containerd": False,
+        "/usr/lib/wsl/lib": False,
+    }
 
 
 @pytest.mark.parametrize(
