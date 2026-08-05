@@ -29,7 +29,10 @@ _UUID_NAME_PREFIX = "trading-agent:engine-command:v1"
 def _attempt_uuid(claimed: ClaimedJob, purpose: str) -> UUID:
     return uuid5(
         NAMESPACE_URL,
-        f"{_UUID_NAME_PREFIX}:{claimed.job_id}:{claimed.attempt_id}:{purpose}",
+        (
+            f"{_UUID_NAME_PREFIX}:{claimed.job_id}:{claimed.attempt_id}:"
+            f"{claimed.attempt_number}:{purpose}"
+        ),
     )
 
 
@@ -41,6 +44,16 @@ def _canonical_worker_time(value: object, *, error: str) -> datetime:
     ):
         raise ValueError(error)
     return value.astimezone(UTC)
+
+
+def _configuration_projection(command: RunBacktest) -> dict[str, object]:
+    """Project exactly engine, instrument, and strategy configuration refs."""
+
+    return {
+        "engine_configuration": command.engine_configuration,
+        "instrument_catalog": command.instrument_catalog,
+        "strategy_configuration": command.strategy_configuration,
+    }
 
 
 class BacktestEngineAuthorityFactory:
@@ -56,8 +69,8 @@ class BacktestEngineAuthorityFactory:
         self._clock = clock
 
     def from_claim(self, claimed: ClaimedJob) -> EngineCommandEnvelope:
-        if not isinstance(claimed, ClaimedJob):
-            raise TypeError("engine authority requires a ClaimedJob")
+        if type(claimed) is not ClaimedJob:
+            raise TypeError("engine authority requires the exact ClaimedJob type")
         if claimed.job_type is not JobType.BACKTEST:
             raise ValueError("claimed BACKTEST job is required")
         if type(claimed.payload) is not EngineBacktestPayload:
@@ -105,6 +118,7 @@ class BacktestEngineAuthorityFactory:
             end_time=engine_input.end_time,
         )
         command_digest = payload_digest(command)
+        config_digest = payload_digest(_configuration_projection(command))
         return EngineCommandEnvelope(
             message_id=_attempt_uuid(claimed, "message"),
             correlation_id=_attempt_uuid(claimed, "correlation"),
@@ -114,9 +128,11 @@ class BacktestEngineAuthorityFactory:
             event_time=now,
             initialization_time=now,
             schema_version=CURRENT_SCHEMA_VERSION,
-            producer_identity=ENGINE_COMMAND_PRODUCER_IDENTITY,
+            producer_identity=(
+                f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:{claimed.worker_id}"
+            ),
             source_commit=self._code_commit,
-            config_digest=command_digest,
+            config_digest=config_digest,
             payload_digest=command_digest,
             payload=command,
         )

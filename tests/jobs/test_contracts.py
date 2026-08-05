@@ -87,6 +87,48 @@ def _engine_backtest_wire_payload() -> dict[str, object]:
     }
 
 
+def _job_payload_wire_forms() -> tuple[tuple[JobType, dict[str, object]], ...]:
+    return (
+        (
+            JobType.SNAPSHOT,
+            {"scope": "default", "requested_as_of": None},
+        ),
+        (JobType.DEBATE, {"asset": "BTC", "horizon": "1d"}),
+        (JobType.REPLAY, {"session_id": "session-1"}),
+        (
+            JobType.BACKTEST,
+            {
+                "asset": "AAPL",
+                "strategy_id": "legacy-binary-report-v1",
+                "date_from": None,
+                "date_to": None,
+            },
+        ),
+        (JobType.BACKTEST, _engine_backtest_wire_payload()),
+    )
+
+
+def _job_metadata_wire(
+    job_type: JobType, payload: dict[str, object]
+) -> dict[str, object]:
+    _, job, *_ = _api_metadata_models()
+    value = job.model_dump(mode="json")
+    value["job_type"] = job_type.value
+    value["payload"] = payload
+    return value
+
+
+def _job_metadata_schema_samples() -> list[dict[str, object]]:
+    return [
+        {
+            "expected": job_type is payload_job_type,
+            "value": _job_metadata_wire(job_type, payload),
+        }
+        for job_type in JobType
+        for payload_job_type, payload in _job_payload_wire_forms()
+    ]
+
+
 def test_payload_fingerprint_is_order_independent():
     left = parse_payload(
         JobType.SNAPSHOT,
@@ -636,6 +678,87 @@ def test_enqueue_request_json_schema_enforces_exact_job_payload_pairs_and_assets
     assert results == [
         {"expected": expected, "actual": expected} for expected, _ in cases
     ]
+
+
+def test_job_metadata_and_detail_runtime_enforce_every_job_payload_pair() -> None:
+    for sample in _job_metadata_schema_samples():
+        detail = {
+            "job": sample["value"],
+            "attempts": [],
+            "events": [],
+            "artifacts": [],
+        }
+        if sample["expected"]:
+            JobMetadata.model_validate(sample["value"])
+            JobDetail.model_validate(detail)
+        else:
+            with pytest.raises(ValidationError):
+                JobMetadata.model_validate(sample["value"])
+            with pytest.raises(ValidationError):
+                JobDetail.model_validate(detail)
+
+
+def test_job_metadata_and_detail_json_schemas_enforce_every_job_payload_pair() -> None:
+    metadata_samples = _job_metadata_schema_samples()
+    detail_samples = [
+        {
+            "expected": sample["expected"],
+            "value": {
+                "job": sample["value"],
+                "attempts": [],
+                "events": [],
+                "artifacts": [],
+            },
+        }
+        for sample in metadata_samples
+    ]
+
+    for schema, samples in (
+        (JobMetadata.model_json_schema(mode="validation"), metadata_samples),
+        (JobMetadata.model_json_schema(mode="serialization"), metadata_samples),
+        (JobDetail.model_json_schema(mode="validation"), detail_samples),
+        (JobDetail.model_json_schema(mode="serialization"), detail_samples),
+    ):
+        assert _ajv_schema_results(schema, samples) == [
+            {"expected": sample["expected"], "actual": sample["expected"]}
+            for sample in samples
+        ]
+
+
+def test_generated_openapi_responses_enforce_every_job_payload_pair() -> None:
+    openapi = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "generated/job-api/openapi/openapi.json"
+        ).read_text(encoding="utf-8")
+    )
+    schemas = openapi["components"]["schemas"]
+    metadata_samples = _job_metadata_schema_samples()
+    detail_samples = [
+        {
+            "expected": sample["expected"],
+            "value": {
+                "job": sample["value"],
+                "attempts": [],
+                "events": [],
+                "artifacts": [],
+            },
+        }
+        for sample in metadata_samples
+    ]
+
+    for component, samples in (
+        ("JobMetadata", metadata_samples),
+        ("JobDetail", detail_samples),
+    ):
+        root_schema = {
+            "components": {"schemas": schemas},
+            "$ref": f"#/components/schemas/{component}",
+        }
+        assert _ajv_schema_results(root_schema, samples) == [
+            {"expected": sample["expected"], "actual": sample["expected"]}
+            for sample in samples
+        ]
 
 
 @pytest.mark.parametrize(

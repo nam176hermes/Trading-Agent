@@ -14,7 +14,6 @@ from pydantic import (
     Field,
     TypeAdapter,
     WithJsonSchema,
-    model_serializer,
     model_validator,
 )
 
@@ -103,14 +102,10 @@ class StrictPayload(BaseModel):
 class SnapshotPayload(StrictPayload):
     scope: Literal["default"]
     requested_as_of: None
-    market_data: "MarketDataSnapshotRequest | None" = None
-
-    @model_serializer(mode="wrap")
-    def _legacy_compatible_serialization(self, handler: Any) -> Any:
-        serialized = handler(self)
-        if self.market_data is None:
-            serialized.pop("market_data", None)
-        return serialized
+    market_data: "MarketDataSnapshotRequest | None" = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
 
 class MarketDataSnapshotRequest(StrictPayload):

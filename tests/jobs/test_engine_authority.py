@@ -186,16 +186,18 @@ def test_factory_derives_the_closed_command_and_full_attempt_authority() -> None
         start_time=datetime(2026, 7, 1, tzinfo=UTC),
         end_time=datetime(2026, 8, 1, tzinfo=UTC),
     )
-    assert envelope.message_id == UUID("c534b270-5e91-5024-8817-967cf3710b9c")
-    assert envelope.correlation_id == UUID("fa18a7cf-1e0b-5b6e-b6f3-e71cc4711830")
-    assert envelope.causation_id == UUID("092a5fc7-b606-55cc-a302-20f0fd830496")
-    assert envelope.engine_run_id == UUID("501c2988-8398-5c27-a05c-816e0f713e85")
+    assert envelope.message_id == UUID("864e910f-8e0a-54e2-adb4-64eb8f2c3c25")
+    assert envelope.correlation_id == UUID("09224f0c-7596-5af1-9e23-3d01644f46c2")
+    assert envelope.causation_id == UUID("9149303b-040e-5076-8d42-3a75fd790a62")
+    assert envelope.engine_run_id == UUID("a1a533d8-52a3-5633-a6e9-16e77bc84e30")
     assert envelope.stream_sequence == 1
     assert envelope.event_time == NOW
     assert envelope.initialization_time == NOW
     assert envelope.schema_version == "1.0.0"
-    assert envelope.producer_identity == ENGINE_COMMAND_PRODUCER_IDENTITY
-    assert envelope.producer_identity == "trading-job-worker"
+    assert envelope.producer_identity == (
+        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:worker-authority-1"
+    )
+    assert envelope.producer_identity == "trading-job-worker:worker-authority-1"
     assert envelope.source_commit == CODE_COMMIT
 
     canonical_command = json.dumps(
@@ -206,8 +208,26 @@ def test_factory_derives_the_closed_command_and_full_attempt_authority() -> None
         sort_keys=True,
     ).encode("utf-8")
     expected_digest = hashlib.sha256(canonical_command).hexdigest()
-    assert envelope.config_digest == expected_digest
     assert envelope.payload_digest == expected_digest
+    canonical_config = json.dumps(
+        {
+            "engine_configuration": envelope.payload.engine_configuration.model_dump(
+                mode="json"
+            ),
+            "instrument_catalog": envelope.payload.instrument_catalog.model_dump(
+                mode="json"
+            ),
+            "strategy_configuration": (
+                envelope.payload.strategy_configuration.model_dump(mode="json")
+            ),
+        },
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    assert envelope.config_digest == hashlib.sha256(canonical_config).hexdigest()
+    assert envelope.config_digest != envelope.payload_digest
     assert "provider" not in canonical_command.decode("utf-8").lower()
     assert "nautilus" not in canonical_command.decode("utf-8").lower()
 
@@ -230,6 +250,70 @@ def test_factory_ids_vary_by_attempt_while_the_closed_command_stays_identical() 
     assert retry.correlation_id != first.correlation_id
     assert retry.causation_id != first.causation_id
     assert retry.engine_run_id != first.engine_run_id
+
+
+def test_factory_binds_attempt_number_independently_of_attempt_id() -> None:
+    first = _factory().from_claim(_claim(attempt_number=1))
+    inconsistent = _factory().from_claim(_claim(attempt_number=2))
+
+    assert inconsistent.payload == first.payload
+    assert inconsistent.message_id != first.message_id
+    assert inconsistent.correlation_id != first.correlation_id
+    assert inconsistent.causation_id != first.causation_id
+    assert inconsistent.engine_run_id != first.engine_run_id
+
+
+def test_factory_attributes_the_exact_claimed_worker_in_the_producer() -> None:
+    first = _factory().from_claim(_claim(worker_id="worker-authority-1"))
+    second = _factory().from_claim(_claim(worker_id="worker-authority-2"))
+
+    assert first.producer_identity == (
+        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:worker-authority-1"
+    )
+    assert second.producer_identity == (
+        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:worker-authority-2"
+    )
+    assert first != second
+
+
+def test_factory_producer_remains_safe_for_the_largest_claimed_worker_id() -> None:
+    worker_id = "w" * 128
+
+    envelope = _factory().from_claim(_claim(worker_id=worker_id))
+
+    assert envelope.producer_identity == (
+        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:{worker_id}"
+    )
+
+
+def test_config_digest_projects_only_configuration_references() -> None:
+    baseline_payload = _engine_payload()
+    baseline = _factory().from_claim(_claim(payload=baseline_payload))
+
+    market_wire = baseline_payload.model_dump(mode="json")
+    market_wire["engine_backtest"]["market_data"]["sha256"] = "5" * 64
+    market_changed = _factory().from_claim(
+        _claim(payload=parse_payload(JobType.BACKTEST, market_wire))
+    )
+
+    window_wire = baseline_payload.model_dump(mode="json")
+    window_wire["engine_backtest"]["start_time"] = "2026-07-02T00:00:00Z"
+    window_changed = _factory().from_claim(
+        _claim(payload=parse_payload(JobType.BACKTEST, window_wire))
+    )
+
+    config_wire = baseline_payload.model_dump(mode="json")
+    config_wire["engine_backtest"]["engine_configuration"]["sha256"] = "6" * 64
+    config_changed = _factory().from_claim(
+        _claim(payload=parse_payload(JobType.BACKTEST, config_wire))
+    )
+
+    assert market_changed.config_digest == baseline.config_digest
+    assert market_changed.payload_digest != baseline.payload_digest
+    assert window_changed.config_digest == baseline.config_digest
+    assert window_changed.payload_digest != baseline.payload_digest
+    assert config_changed.config_digest != baseline.config_digest
+    assert config_changed.payload_digest != baseline.payload_digest
 
 
 def test_factory_refuses_the_accepted_legacy_backtest_payload() -> None:
@@ -309,3 +393,24 @@ def test_factory_rejects_non_claim_objects_including_client_envelopes() -> None:
 
     with pytest.raises(TypeError, match="ClaimedJob"):
         _factory().from_claim(envelope)  # type: ignore[arg-type]
+
+
+def test_factory_rejects_claimed_job_subclasses() -> None:
+    class ExtendedClaimedJob(ClaimedJob):
+        pass
+
+    base = _claim()
+    extended = ExtendedClaimedJob(
+        job_id=base.job_id,
+        job_type=base.job_type,
+        payload=base.payload,
+        attempt_id=base.attempt_id,
+        attempt_number=base.attempt_number,
+        worker_id=base.worker_id,
+        lease_token=base.lease_token,
+        lease_expires_at=base.lease_expires_at,
+        max_attempts=base.max_attempts,
+    )
+
+    with pytest.raises(TypeError, match="exact ClaimedJob"):
+        _factory().from_claim(extended)

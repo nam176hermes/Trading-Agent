@@ -317,7 +317,7 @@
         "title": "DebatePayload",
         "type": "object"
       },
-      "EngineBacktestInput-Input": {
+      "EngineBacktestInput": {
         "additionalProperties": false,
         "description": "Closed engine-neutral input from which a worker may derive RunBacktest.",
         "properties": {
@@ -357,62 +357,12 @@
         "title": "EngineBacktestInput",
         "type": "object"
       },
-      "EngineBacktestInput-Output": {
-        "additionalProperties": false,
-        "description": "Closed engine-neutral input from which a worker may derive RunBacktest.",
-        "properties": {
-          "end_time": {
-            "title": "End Time",
-            "type": "string"
-          },
-          "engine_configuration": {
-            "$ref": "#/components/schemas/ArtifactReference"
-          },
-          "instrument_catalog": {
-            "$ref": "#/components/schemas/ArtifactReference"
-          },
-          "market_data": {
-            "$ref": "#/components/schemas/ArtifactReference"
-          },
-          "start_time": {
-            "title": "Start Time",
-            "type": "string"
-          },
-          "strategy_configuration": {
-            "$ref": "#/components/schemas/ArtifactReference"
-          }
-        },
-        "required": [
-          "engine_configuration",
-          "instrument_catalog",
-          "strategy_configuration",
-          "market_data",
-          "start_time",
-          "end_time"
-        ],
-        "title": "EngineBacktestInput",
-        "type": "object"
-      },
-      "EngineBacktestPayload-Input": {
+      "EngineBacktestPayload": {
         "additionalProperties": false,
         "description": "Explicit engine-authority form kept separate from the legacy payload.",
         "properties": {
           "engine_backtest": {
-            "$ref": "#/components/schemas/EngineBacktestInput-Input"
-          }
-        },
-        "required": [
-          "engine_backtest"
-        ],
-        "title": "EngineBacktestPayload",
-        "type": "object"
-      },
-      "EngineBacktestPayload-Output": {
-        "additionalProperties": false,
-        "description": "Explicit engine-authority form kept separate from the legacy payload.",
-        "properties": {
-          "engine_backtest": {
-            "$ref": "#/components/schemas/EngineBacktestInput-Output"
+            "$ref": "#/components/schemas/EngineBacktestInput"
           }
         },
         "required": [
@@ -442,7 +392,7 @@
                 "type": "string"
               },
               "payload": {
-                "$ref": "#/components/schemas/SnapshotPayload-Input"
+                "$ref": "#/components/schemas/SnapshotPayload"
               },
               "priority": {
                 "default": 0,
@@ -555,7 +505,7 @@
                     "$ref": "#/components/schemas/BacktestPayload"
                   },
                   {
-                    "$ref": "#/components/schemas/EngineBacktestPayload-Input"
+                    "$ref": "#/components/schemas/EngineBacktestPayload"
                   }
                 ]
               },
@@ -1074,109 +1024,372 @@
         "type": "object"
       },
       "JobMetadata": {
-        "additionalProperties": false,
-        "properties": {
-          "actor": {
-            "$ref": "#/components/schemas/ActorIdentity"
-          },
-          "attempt_count": {
-            "minimum": 0.0,
-            "title": "Attempt Count",
-            "type": "integer"
-          },
-          "job_id": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Job Id",
-            "type": "string"
-          },
-          "job_type": {
-            "$ref": "#/components/schemas/JobType"
-          },
-          "payload": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SnapshotPayload-Output"
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "$ref": "#/components/schemas/ActorIdentity"
               },
-              {
+              "attempt_count": {
+                "minimum": 0.0,
+                "title": "Attempt Count",
+                "type": "integer"
+              },
+              "job_id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Job Id",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "SNAPSHOT",
+                "type": "string"
+              },
+              "payload": {
+                "$ref": "#/components/schemas/SnapshotPayload"
+              },
+              "payload_fingerprint": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Payload Fingerprint",
+                "type": "string"
+              },
+              "priority": {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              },
+              "reason_code": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reason Code"
+              },
+              "requested_at": {
+                "format": "date-time",
+                "title": "Requested At",
+                "type": "string"
+              },
+              "result_hash": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Result Hash"
+              },
+              "state": {
+                "$ref": "#/components/schemas/JobState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "title": "Updated At",
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "job_id",
+              "state",
+              "payload_fingerprint",
+              "actor",
+              "priority",
+              "requested_at",
+              "updated_at",
+              "attempt_count"
+            ],
+            "title": "SnapshotJobMetadata",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "$ref": "#/components/schemas/ActorIdentity"
+              },
+              "attempt_count": {
+                "minimum": 0.0,
+                "title": "Attempt Count",
+                "type": "integer"
+              },
+              "job_id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Job Id",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "DEBATE",
+                "type": "string"
+              },
+              "payload": {
                 "$ref": "#/components/schemas/DebatePayload"
               },
-              {
+              "payload_fingerprint": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Payload Fingerprint",
+                "type": "string"
+              },
+              "priority": {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              },
+              "reason_code": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reason Code"
+              },
+              "requested_at": {
+                "format": "date-time",
+                "title": "Requested At",
+                "type": "string"
+              },
+              "result_hash": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Result Hash"
+              },
+              "state": {
+                "$ref": "#/components/schemas/JobState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "title": "Updated At",
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "job_id",
+              "state",
+              "payload_fingerprint",
+              "actor",
+              "priority",
+              "requested_at",
+              "updated_at",
+              "attempt_count"
+            ],
+            "title": "DebateJobMetadata",
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "$ref": "#/components/schemas/ActorIdentity"
+              },
+              "attempt_count": {
+                "minimum": 0.0,
+                "title": "Attempt Count",
+                "type": "integer"
+              },
+              "job_id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Job Id",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "REPLAY",
+                "type": "string"
+              },
+              "payload": {
                 "$ref": "#/components/schemas/ReplayPayload"
               },
-              {
-                "$ref": "#/components/schemas/BacktestPayload"
-              },
-              {
-                "$ref": "#/components/schemas/EngineBacktestPayload-Output"
-              }
-            ],
-            "title": "Payload"
-          },
-          "payload_fingerprint": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Payload Fingerprint",
-            "type": "string"
-          },
-          "priority": {
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Priority",
-            "type": "integer"
-          },
-          "reason_code": {
-            "anyOf": [
-              {
-                "maxLength": 128,
-                "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason Code"
-          },
-          "requested_at": {
-            "format": "date-time",
-            "title": "Requested At",
-            "type": "string"
-          },
-          "result_hash": {
-            "anyOf": [
-              {
+              "payload_fingerprint": {
                 "pattern": "^[0-9a-f]{64}$",
+                "title": "Payload Fingerprint",
                 "type": "string"
               },
-              {
-                "type": "null"
+              "priority": {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              },
+              "reason_code": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reason Code"
+              },
+              "requested_at": {
+                "format": "date-time",
+                "title": "Requested At",
+                "type": "string"
+              },
+              "result_hash": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Result Hash"
+              },
+              "state": {
+                "$ref": "#/components/schemas/JobState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "title": "Updated At",
+                "type": "string"
               }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "job_id",
+              "state",
+              "payload_fingerprint",
+              "actor",
+              "priority",
+              "requested_at",
+              "updated_at",
+              "attempt_count"
             ],
-            "title": "Result Hash"
+            "title": "ReplayJobMetadata",
+            "type": "object"
           },
-          "state": {
-            "$ref": "#/components/schemas/JobState"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "title": "Updated At",
-            "type": "string"
+          {
+            "additionalProperties": false,
+            "properties": {
+              "actor": {
+                "$ref": "#/components/schemas/ActorIdentity"
+              },
+              "attempt_count": {
+                "minimum": 0.0,
+                "title": "Attempt Count",
+                "type": "integer"
+              },
+              "job_id": {
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "Job Id",
+                "type": "string"
+              },
+              "job_type": {
+                "const": "BACKTEST",
+                "type": "string"
+              },
+              "payload": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BacktestPayload"
+                  },
+                  {
+                    "$ref": "#/components/schemas/EngineBacktestPayload"
+                  }
+                ]
+              },
+              "payload_fingerprint": {
+                "pattern": "^[0-9a-f]{64}$",
+                "title": "Payload Fingerprint",
+                "type": "string"
+              },
+              "priority": {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "title": "Priority",
+                "type": "integer"
+              },
+              "reason_code": {
+                "anyOf": [
+                  {
+                    "maxLength": 128,
+                    "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Reason Code"
+              },
+              "requested_at": {
+                "format": "date-time",
+                "title": "Requested At",
+                "type": "string"
+              },
+              "result_hash": {
+                "anyOf": [
+                  {
+                    "pattern": "^[0-9a-f]{64}$",
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Result Hash"
+              },
+              "state": {
+                "$ref": "#/components/schemas/JobState"
+              },
+              "updated_at": {
+                "format": "date-time",
+                "title": "Updated At",
+                "type": "string"
+              }
+            },
+            "required": [
+              "job_type",
+              "payload",
+              "job_id",
+              "state",
+              "payload_fingerprint",
+              "actor",
+              "priority",
+              "requested_at",
+              "updated_at",
+              "attempt_count"
+            ],
+            "title": "BacktestJobMetadata",
+            "type": "object"
           }
-        },
-        "required": [
-          "job_id",
-          "job_type",
-          "state",
-          "payload",
-          "payload_fingerprint",
-          "actor",
-          "priority",
-          "requested_at",
-          "updated_at",
-          "attempt_count"
         ],
-        "title": "JobMetadata",
-        "type": "object"
+        "title": "JobMetadata"
       },
       "JobState": {
         "enum": [
@@ -1267,7 +1480,7 @@
         "title": "ReplayPayload",
         "type": "object"
       },
-      "SnapshotPayload-Input": {
+      "SnapshotPayload": {
         "additionalProperties": false,
         "properties": {
           "market_data": {
@@ -1296,8 +1509,7 @@
         ],
         "title": "SnapshotPayload",
         "type": "object"
-      },
-      "SnapshotPayload-Output": {}
+      }
     },
     "securitySchemes": {
       "ServiceBearerAuth": {

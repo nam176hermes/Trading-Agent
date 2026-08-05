@@ -72,6 +72,23 @@ def test_generated_contracts_are_present_and_current() -> None:
     assert job_openapi["components"]["securitySchemes"] == {
         "ServiceBearerAuth": {"type": "http", "scheme": "bearer"}
     }
+    engine_schema_names = [
+        name
+        for name in job_openapi["components"]["schemas"]
+        if name.startswith("EngineBacktestInput")
+    ]
+    assert engine_schema_names == ["EngineBacktestInput"]
+    engine_input = job_openapi["components"]["schemas"]["EngineBacktestInput"]
+    for field in ("start_time", "end_time"):
+        assert engine_input["properties"][field] == {
+            "format": "date-time",
+            "pattern": (
+                r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+                r"(?:\.\d{1,6})?Z$"
+            ),
+            "title": field.replace("_", " ").title(),
+            "type": "string",
+        }
     for path, methods in job_openapi["paths"].items():
         for operation in methods.values():
             if path.startswith("/v1/"):

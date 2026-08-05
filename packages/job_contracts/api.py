@@ -292,6 +292,47 @@ class JobMetadata(StrictApiModel):
     def parse_typed_payload(cls, value: Any) -> Any:
         return _parse_typed_payload(value)
 
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: Any, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Publish the runtime-enforced job-type/payload response pairing."""
+
+        schema = handler(core_schema)
+        properties = schema["properties"]
+        payload_schemas = _job_payload_json_schemas(
+            properties["payload"]["anyOf"]
+        )
+        shared = {
+            name: value
+            for name, value in properties.items()
+            if name not in {"job_type", "payload"}
+        }
+        shared_required = [
+            name
+            for name in schema.get("required", ())
+            if name not in {"job_type", "payload"}
+        ]
+        variants = [
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "job_type": {"type": "string", "const": job_type.value},
+                    "payload": payload_schemas[job_type],
+                    **shared,
+                },
+                "required": ["job_type", "payload", *shared_required],
+                "title": f"{job_type.value.title()}JobMetadata",
+            }
+            for job_type in JobType
+        ]
+        return {
+            key: value
+            for key, value in schema.items()
+            if key not in {"properties", "required", "additionalProperties", "type"}
+        } | {"oneOf": variants}
+
 
 class AttemptMetadata(StrictApiModel):
     attempt_id: OpaqueId = Field(min_length=1, max_length=128)

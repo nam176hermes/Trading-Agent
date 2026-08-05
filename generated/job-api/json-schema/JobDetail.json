@@ -434,111 +434,380 @@
       "type": "object"
     },
     "JobMetadata": {
-      "additionalProperties": false,
-      "properties": {
-        "actor": {
-          "$ref": "#/$defs/ActorIdentity"
-        },
-        "attempt_count": {
-          "minimum": 0,
-          "title": "Attempt Count",
-          "type": "integer"
-        },
-        "job_id": {
-          "maxLength": 128,
-          "minLength": 1,
-          "title": "Job Id",
-          "type": "string"
-        },
-        "job_type": {
-          "$ref": "#/$defs/JobType"
-        },
-        "payload": {
-          "anyOf": [
-            {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "$ref": "#/$defs/ActorIdentity"
+            },
+            "attempt_count": {
+              "minimum": 0,
+              "title": "Attempt Count",
+              "type": "integer"
+            },
+            "job_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Job Id",
+              "type": "string"
+            },
+            "job_type": {
+              "const": "SNAPSHOT",
+              "type": "string"
+            },
+            "payload": {
               "$ref": "#/$defs/SnapshotPayload"
             },
-            {
+            "payload_fingerprint": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Payload Fingerprint",
+              "type": "string"
+            },
+            "priority": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Priority",
+              "type": "integer"
+            },
+            "reason_code": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason Code"
+            },
+            "requested_at": {
+              "format": "date-time",
+              "title": "Requested At",
+              "type": "string"
+            },
+            "result_hash": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Hash"
+            },
+            "state": {
+              "$ref": "#/$defs/JobState"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_type",
+            "payload",
+            "job_id",
+            "state",
+            "payload_fingerprint",
+            "actor",
+            "priority",
+            "requested_at",
+            "updated_at",
+            "attempt_count"
+          ],
+          "title": "SnapshotJobMetadata",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "$ref": "#/$defs/ActorIdentity"
+            },
+            "attempt_count": {
+              "minimum": 0,
+              "title": "Attempt Count",
+              "type": "integer"
+            },
+            "job_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Job Id",
+              "type": "string"
+            },
+            "job_type": {
+              "const": "DEBATE",
+              "type": "string"
+            },
+            "payload": {
               "$ref": "#/$defs/DebatePayload"
             },
-            {
+            "payload_fingerprint": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Payload Fingerprint",
+              "type": "string"
+            },
+            "priority": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Priority",
+              "type": "integer"
+            },
+            "reason_code": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason Code"
+            },
+            "requested_at": {
+              "format": "date-time",
+              "title": "Requested At",
+              "type": "string"
+            },
+            "result_hash": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Hash"
+            },
+            "state": {
+              "$ref": "#/$defs/JobState"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_type",
+            "payload",
+            "job_id",
+            "state",
+            "payload_fingerprint",
+            "actor",
+            "priority",
+            "requested_at",
+            "updated_at",
+            "attempt_count"
+          ],
+          "title": "DebateJobMetadata",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "$ref": "#/$defs/ActorIdentity"
+            },
+            "attempt_count": {
+              "minimum": 0,
+              "title": "Attempt Count",
+              "type": "integer"
+            },
+            "job_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Job Id",
+              "type": "string"
+            },
+            "job_type": {
+              "const": "REPLAY",
+              "type": "string"
+            },
+            "payload": {
               "$ref": "#/$defs/ReplayPayload"
             },
-            {
-              "$ref": "#/$defs/BacktestPayload"
-            },
-            {
-              "$ref": "#/$defs/EngineBacktestPayload"
-            }
-          ],
-          "title": "Payload"
-        },
-        "payload_fingerprint": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Payload Fingerprint",
-          "type": "string"
-        },
-        "priority": {
-          "maximum": 100,
-          "minimum": 0,
-          "title": "Priority",
-          "type": "integer"
-        },
-        "reason_code": {
-          "anyOf": [
-            {
-              "maxLength": 128,
-              "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reason Code"
-        },
-        "requested_at": {
-          "format": "date-time",
-          "title": "Requested At",
-          "type": "string"
-        },
-        "result_hash": {
-          "anyOf": [
-            {
+            "payload_fingerprint": {
               "pattern": "^[0-9a-f]{64}$",
+              "title": "Payload Fingerprint",
               "type": "string"
             },
-            {
-              "type": "null"
+            "priority": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Priority",
+              "type": "integer"
+            },
+            "reason_code": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason Code"
+            },
+            "requested_at": {
+              "format": "date-time",
+              "title": "Requested At",
+              "type": "string"
+            },
+            "result_hash": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Hash"
+            },
+            "state": {
+              "$ref": "#/$defs/JobState"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
             }
+          },
+          "required": [
+            "job_type",
+            "payload",
+            "job_id",
+            "state",
+            "payload_fingerprint",
+            "actor",
+            "priority",
+            "requested_at",
+            "updated_at",
+            "attempt_count"
           ],
-          "default": null,
-          "title": "Result Hash"
+          "title": "ReplayJobMetadata",
+          "type": "object"
         },
-        "state": {
-          "$ref": "#/$defs/JobState"
-        },
-        "updated_at": {
-          "format": "date-time",
-          "title": "Updated At",
-          "type": "string"
+        {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "$ref": "#/$defs/ActorIdentity"
+            },
+            "attempt_count": {
+              "minimum": 0,
+              "title": "Attempt Count",
+              "type": "integer"
+            },
+            "job_id": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Job Id",
+              "type": "string"
+            },
+            "job_type": {
+              "const": "BACKTEST",
+              "type": "string"
+            },
+            "payload": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BacktestPayload"
+                },
+                {
+                  "$ref": "#/$defs/EngineBacktestPayload"
+                }
+              ]
+            },
+            "payload_fingerprint": {
+              "pattern": "^[0-9a-f]{64}$",
+              "title": "Payload Fingerprint",
+              "type": "string"
+            },
+            "priority": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Priority",
+              "type": "integer"
+            },
+            "reason_code": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "pattern": "^[A-Z][A-Z0-9_]{0,127}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Reason Code"
+            },
+            "requested_at": {
+              "format": "date-time",
+              "title": "Requested At",
+              "type": "string"
+            },
+            "result_hash": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Result Hash"
+            },
+            "state": {
+              "$ref": "#/$defs/JobState"
+            },
+            "updated_at": {
+              "format": "date-time",
+              "title": "Updated At",
+              "type": "string"
+            }
+          },
+          "required": [
+            "job_type",
+            "payload",
+            "job_id",
+            "state",
+            "payload_fingerprint",
+            "actor",
+            "priority",
+            "requested_at",
+            "updated_at",
+            "attempt_count"
+          ],
+          "title": "BacktestJobMetadata",
+          "type": "object"
         }
-      },
-      "required": [
-        "job_id",
-        "job_type",
-        "state",
-        "payload",
-        "payload_fingerprint",
-        "actor",
-        "priority",
-        "requested_at",
-        "updated_at",
-        "attempt_count"
       ],
-      "title": "JobMetadata",
-      "type": "object"
+      "title": "JobMetadata"
     },
     "JobState": {
       "enum": [
@@ -553,16 +822,6 @@
         "CANCELLED"
       ],
       "title": "JobState",
-      "type": "string"
-    },
-    "JobType": {
-      "enum": [
-        "SNAPSHOT",
-        "DEBATE",
-        "REPLAY",
-        "BACKTEST"
-      ],
-      "title": "JobType",
       "type": "string"
     },
     "MarketDataSnapshotRequest": {

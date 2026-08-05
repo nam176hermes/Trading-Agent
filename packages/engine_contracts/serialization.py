@@ -22,6 +22,11 @@ _CANONICAL_UTC_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$",
     re.ASCII,
 )
+_CANONICAL_UTC_JSON_SCHEMA = {
+    "type": "string",
+    "format": "date-time",
+    "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$",
+}
 
 
 def _canonical_utc(value: Any) -> datetime:
@@ -49,14 +54,8 @@ CanonicalUtcDateTime = Annotated[
     datetime,
     BeforeValidator(_canonical_utc),
     PlainSerializer(_serialize_utc, return_type=str, when_used="json"),
-    WithJsonSchema(
-        {
-            "type": "string",
-            "format": "date-time",
-            "pattern": r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$",
-        },
-        mode="validation",
-    ),
+    WithJsonSchema(_CANONICAL_UTC_JSON_SCHEMA, mode="validation"),
+    WithJsonSchema(_CANONICAL_UTC_JSON_SCHEMA, mode="serialization"),
 ]
 Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 SourceCommit = Annotated[
@@ -67,8 +66,8 @@ ProducerIdentity = Annotated[
     str,
     Field(
         min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+        max_length=256,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$",
     ),
 ]
 
