@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import hashlib
 from dataclasses import replace
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
+from packages.engine_contracts import canonical_json_bytes
+from packages.engine_event_ledger import (
+    EngineEventBatchReceipt,
+    EngineEventConflictError,
+    EngineEventSequenceBlockedError,
+    InvalidEngineEventBatchError,
+)
 from packages.job_contracts import (
     EngineBacktestPayload,
     JobState,
@@ -29,6 +37,9 @@ from .process_runner import (
 )
 from .results import ResultValidationError, ResultValidator
 from .safety_state import SafetyEvidence
+
+if TYPE_CHECKING:
+    from .engine_results import ValidatedEngineEventBatch
 
 
 class WorkerControl(StrEnum):
@@ -61,6 +72,12 @@ class _ValidationSafetyDrift(ResultValidationError):
         self.reason_code = HeartbeatInstruction.safety_drift(reason_code).reason_code
 
 
+class _EngineEventIngestionBlocked(ResultValidationError):
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
+
 class JobWorker:
     def __init__(
         self,
@@ -77,6 +94,7 @@ class JobWorker:
         engine_authority_factory: object | None = None,
         engine_spawn_provider: object | None = None,
         engine_result_validator: object | None = None,
+        engine_event_ingestor: object | None = None,
         lease_seconds: int = WORKER_LEASE_SECONDS,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -94,13 +112,21 @@ class JobWorker:
         self._engine_authority_factory = engine_authority_factory
         self._engine_spawn_provider = engine_spawn_provider
         self._engine_result_validator = engine_result_validator
-        self._engine_backtest_enabled = all(
-            component is not None
-            for component in (
-                engine_authority_factory,
-                engine_spawn_provider,
-                engine_result_validator,
+        self._engine_event_ingestor = engine_event_ingestor
+        engine_components = (
+            engine_authority_factory,
+            engine_spawn_provider,
+            engine_result_validator,
+            engine_event_ingestor,
+        )
+        if any(component is not None for component in engine_components) and not all(
+            component is not None for component in engine_components
+        ):
+            raise ValueError(
+                "complete engine execution and durable-ingestion authority is required"
             )
+        self._engine_backtest_enabled = all(
+            component is not None for component in engine_components
         )
         self._lease_seconds = lease_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -346,6 +372,46 @@ class JobWorker:
                         claimed, safety_preflight
                     ),
                 )
+                from .engine_results import ValidatedEngineEventBatch
+
+                if (
+                    type(result) is not ValidatedEngineEventBatch
+                    or type(result.validation_metadata) is not dict
+                ):
+                    raise _EngineEventIngestionBlocked(
+                        "ENGINE_EVENT_BATCH_INVALID",
+                        "engine result validator returned an invalid batch",
+                    )
+                sealed_validation_metadata = dict(result.validation_metadata)
+                self._validation_progress(claimed, safety_preflight)
+                try:
+                    receipt = self._engine_event_ingestor.ingest(result)
+                except EngineEventConflictError as exc:
+                    raise _EngineEventIngestionBlocked(
+                        "ENGINE_EVENT_IDENTITY_CONFLICT",
+                        "durable engine-event identity conflicts with accepted state",
+                    ) from exc
+                except EngineEventSequenceBlockedError as exc:
+                    raise _EngineEventIngestionBlocked(
+                        f"ENGINE_EVENT_{exc.reason.value}",
+                        "durable engine-event sequence cannot advance",
+                    ) from exc
+                except InvalidEngineEventBatchError as exc:
+                    raise _EngineEventIngestionBlocked(
+                        "ENGINE_EVENT_BATCH_INVALID",
+                        "validated engine-event batch was rejected",
+                    ) from exc
+                except Exception as exc:
+                    raise ResultValidationError(
+                        "durable engine-event ingestion failed"
+                    ) from exc
+                self._validation_progress(claimed, safety_preflight)
+                if result.validation_metadata != sealed_validation_metadata:
+                    raise _EngineEventIngestionBlocked(
+                        "ENGINE_EVENT_BATCH_INVALID",
+                        "validated engine-event authority changed during ingestion",
+                    )
+                result = self._with_engine_event_receipt(result, receipt)
             else:
                 result = self._validator.validate(
                     outcome.result_validator_id, claimed,
@@ -403,6 +469,14 @@ class JobWorker:
                     outcome=outcome, result=None,
                     stream_artifacts=(outcome.stdout, outcome.stderr),
                 )
+            elif isinstance(exc, _EngineEventIngestionBlocked):
+                finalized = self._repository.finalize_execution(
+                    claimed, expected_state=JobState.RUNNING,
+                    expected_attempt_outcome="RUNNING", final_state=JobState.BLOCKED,
+                    reason_code=exc.reason_code, trace_id=trace_id,
+                    outcome=outcome, result=None,
+                    stream_artifacts=(outcome.stdout, outcome.stderr),
+                )
             elif exc.reconciliation_required:
                 finalized = self._repository.finalize_execution(
                     claimed, expected_state=JobState.RUNNING,
@@ -436,6 +510,68 @@ class JobWorker:
             )
         self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
         return True
+
+    @staticmethod
+    def _with_engine_event_receipt(
+        result: ValidatedEngineEventBatch,
+        receipt: object,
+    ) -> ValidatedEngineEventBatch:
+        from .engine_results import ValidatedEngineEventBatch
+
+        if (
+            type(result) is not ValidatedEngineEventBatch
+            or type(receipt) is not EngineEventBatchReceipt
+            or not result.events
+        ):
+            raise _EngineEventIngestionBlocked(
+                "ENGINE_EVENT_RECEIPT_INVALID",
+                "durable engine-event ingestion returned an invalid receipt",
+            )
+        try:
+            first = result.events[0]
+            last = result.events[-1]
+            identity_bytes = canonical_json_bytes(
+                {
+                    "artifact_type": result.artifact_type,
+                    "media_type": result.media_type,
+                    "relative_ref": result.relative_ref,
+                    "sha256": result.sha256,
+                    "size_bytes": result.size_bytes,
+                    "truncated": result.truncated,
+                    "validation_metadata": result.validation_metadata,
+                    "validator_id": result.validator_id,
+                }
+            )
+            expected = {
+                "batch_sha256": result.sha256,
+                "ingestion_digest": hashlib.sha256(identity_bytes).hexdigest(),
+                "job_id": result.validation_metadata.get("job_id"),
+                "attempt_id": result.validation_metadata.get("attempt_id"),
+                "engine_run_id": first.engine_run_id,
+                "event_count": len(result.events),
+                "first_sequence": first.stream_sequence,
+                "last_sequence": last.stream_sequence,
+                "last_digest": hashlib.sha256(
+                    canonical_json_bytes(last)
+                ).hexdigest(),
+            }
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            raise _EngineEventIngestionBlocked(
+                "ENGINE_EVENT_RECEIPT_INVALID",
+                "durable engine-event receipt could not be verified",
+            ) from exc
+        if receipt.model_dump(mode="python") != expected:
+            raise _EngineEventIngestionBlocked(
+                "ENGINE_EVENT_RECEIPT_INVALID",
+                "durable engine-event receipt differs from the validated batch",
+            )
+        return replace(
+            result,
+            validation_metadata={
+                **result.validation_metadata,
+                "engine_event_receipt": receipt.model_dump(mode="json"),
+            },
+        )
 
     @staticmethod
     def _market_data_payload(claimed: object) -> SnapshotPayload | None:

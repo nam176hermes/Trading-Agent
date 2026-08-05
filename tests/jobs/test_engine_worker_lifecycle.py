@@ -18,13 +18,19 @@ from packages.engine_contracts import (
     canonical_json_bytes,
     payload_digest,
 )
+from packages.engine_event_ledger import (
+    EngineEventConflictError,
+    EngineEventSequenceBlockedError,
+)
 from packages.job_contracts import (
     BacktestPayload,
     EngineBacktestPayload,
     JobState,
     JobType,
+    SnapshotPayload,
     parse_payload,
 )
+from services.job_store.engine_event_repository import InMemoryEngineEventLedger
 from services.job_store.worker_repository import ClaimedJob
 from services.job_worker.artifacts import ArtifactMetadata, ArtifactWriter
 from services.job_worker.engine_authority import BacktestEngineAuthorityFactory
@@ -48,6 +54,7 @@ from services.job_worker.process_runner import (
     ProcessRunner,
 )
 from services.job_worker.recovery import ProcessIdentity
+from services.job_worker.results import ValidatedResult
 from services.job_worker.safety import KillSwitchState, SafetyMode
 from services.job_worker.safety_state import SafetyEvidence
 from services.job_worker.worker import JobWorker, WORKER_LEASE_SECONDS, WorkerControl
@@ -117,6 +124,14 @@ def _claim(*, legacy: bool = False) -> ClaimedJob:
         lease_token="lease-token_0123456789abcdefghijklmnopqrstuvwxyz",
         lease_expires_at=NOW + timedelta(seconds=30),
         max_attempts=2,
+    )
+
+
+def _snapshot_claim() -> ClaimedJob:
+    return replace(
+        _claim(),
+        job_type=JobType.SNAPSHOT,
+        payload=SnapshotPayload(scope="default", requested_as_of=None),
     )
 
 
@@ -319,23 +334,62 @@ class Validator:
     def __init__(self, *, call_progress: bool = False) -> None:
         self.call_progress = call_progress
         self.calls = []
-        self.result = ValidatedEngineEventBatch(
-            "engine_event_batch",
-            f"engine-results/{JOB_ID}/{ATTEMPT_ID}/{'9' * 64}.jsonl",
-            "9" * 64,
-            10,
-            "application/x-ndjson",
-            False,
-            "engine-event-v1",
-            {"event_count": 1},
-            (),
-        )
+        self.result = None
 
     def validate(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         if self.call_progress:
             kwargs["progress"]()
+        job = args[1]
+        request = kwargs["request"]
+        event = _fixture_event(request)
+        raw = canonical_json_bytes(event) + b"\n"
+        digest = hashlib.sha256(raw).hexdigest()
+        self.result = ValidatedEngineEventBatch(
+            "engine_event_batch",
+            f"engine-results/{job.job_id}/{job.attempt_id}/{digest}.jsonl",
+            digest,
+            len(raw),
+            "application/x-ndjson",
+            False,
+            "engine-event-v1",
+            {
+                "attempt_id": job.attempt_id,
+                "config_digest": request.config_digest,
+                "engine_run_id": str(request.engine_run_id),
+                "event_count": 1,
+                "first_sequence": event.stream_sequence,
+                "job_id": job.job_id,
+                "last_sequence": event.stream_sequence,
+                "request_message_id": str(request.message_id),
+                "source_commit": request.source_commit,
+                "validator_id": "engine-event-v1",
+            },
+            (event,),
+        )
         return self.result
+
+
+class Ingestor:
+    def __init__(
+        self,
+        repository: InMemoryEngineEventLedger | None = None,
+        *,
+        error: Exception | None = None,
+        during=None,
+    ) -> None:
+        self.repository = repository or InMemoryEngineEventLedger()
+        self.error = error
+        self.during = during
+        self.calls = []
+
+    def ingest(self, batch):
+        self.calls.append(batch)
+        if self.during is not None:
+            self.during()
+        if self.error is not None:
+            raise self.error
+        return self.repository.ingest(batch)
 
 
 def _worker(
@@ -345,6 +399,7 @@ def _worker(
     validator: Validator,
     *,
     safety=lambda: _safety(),
+    ingestor: Ingestor | None = None,
 ) -> JobWorker:
     return JobWorker(
         repository,
@@ -359,6 +414,7 @@ def _worker(
         ),
         engine_spawn_provider=provider,
         engine_result_validator=validator,
+        engine_event_ingestor=ingestor or Ingestor(),
         lease_seconds=WORKER_LEASE_SECONDS,
         clock=lambda: NOW,
     )
@@ -382,7 +438,73 @@ def test_authorized_backtest_uses_worker_owned_engine_path_and_validated_handoff
     assert validator.calls[0][1]["request"] is provider.requests[0]
     assert validator.calls[0][1]["stdout"] == runner.result.stdout
     assert _final(repository)["final_state"] is JobState.SUCCEEDED
-    assert _final(repository)["result"] is validator.result
+    result = _final(repository)["result"]
+    assert result.events == validator.result.events
+    assert result.validation_metadata["engine_event_receipt"]["batch_sha256"] == (
+        validator.result.sha256
+    )
+
+
+def test_opted_in_engine_ingestor_is_unreachable_from_snapshot_path() -> None:
+    snapshot_outcome = replace(
+        _outcome(),
+        lineage=ProcessLineage(
+            {"semantic_input_fingerprint": "8" * 64}, {}, {}
+        ),
+    )
+
+    class SnapshotRunner:
+        def run(self, prepare, environment, timeout_seconds, heartbeat, **kwargs):
+            prepare()
+            assert timeout_seconds is not None
+            assert heartbeat(snapshot_outcome.identity) is HeartbeatDecision.CONTINUE
+            return snapshot_outcome
+
+    class SnapshotValidator:
+        result = ValidatedResult(
+            "result",
+            "reports/snapshot.json",
+            "7" * 64,
+            10,
+            "application/json",
+            False,
+            "legacy-report-v1",
+            {},
+        )
+
+        def validate(self, *args, **kwargs):
+            return self.result
+
+    repository = Repository(_snapshot_claim())
+    provider = Provider()
+    ingestor = Ingestor()
+    snapshot_validator = SnapshotValidator()
+    worker = JobWorker(
+        repository,
+        SnapshotRunner(),
+        snapshot_validator,
+        worker_id="worker-authority-1",
+        code_commit=CODE_COMMIT,
+        environment=object(),
+        safety_preflight=lambda: _safety(),
+        prepare_spawn=lambda claimed: object(),
+        engine_authority_factory=BacktestEngineAuthorityFactory(
+            code_commit=CODE_COMMIT, clock=lambda: NOW
+        ),
+        engine_spawn_provider=provider,
+        engine_result_validator=Validator(),
+        engine_event_ingestor=ingestor,
+        lease_seconds=WORKER_LEASE_SECONDS,
+        clock=lambda: NOW,
+    )
+
+    assert worker.run_once()
+
+    assert provider.requests == []
+    assert ingestor.calls == []
+    final = _final(repository)
+    assert final["final_state"] is JobState.SUCCEEDED
+    assert final["result"] is snapshot_validator.result
 
 
 def test_authorized_fixture_runs_through_capture_validation_sealing_and_success(
@@ -443,6 +565,7 @@ def test_authorized_fixture_runs_through_capture_validation_sealing_and_success(
         engine_authority_factory=authority_factory,
         engine_spawn_provider=provider,
         engine_result_validator=EngineResultValidator(artifact_root),
+        engine_event_ingestor=InMemoryEngineEventLedger(),
         lease_seconds=WORKER_LEASE_SECONDS,
         clock=lambda: NOW,
     )
@@ -541,6 +664,233 @@ def test_engine_backtest_safety_drift_blocks_without_success() -> None:
     assert _final(repository)["reason_code"] == "SAFETY_STATE_STALE"
 
 
+def test_engine_success_waits_for_exact_durable_receipt() -> None:
+    repository = Repository(_claim())
+
+    def assert_not_finalized() -> None:
+        assert not any(name == "finalize" for name, _ in repository.calls)
+
+    ingestor = Ingestor(during=assert_not_finalized)
+    validator = Validator()
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), validator, ingestor=ingestor
+    ).run_once()
+
+    final = _final(repository)
+    assert len(ingestor.calls) == 1
+    assert final["final_state"] is JobState.SUCCEEDED
+    receipt = final["result"].validation_metadata["engine_event_receipt"]
+    assert receipt["batch_sha256"] == validator.result.sha256
+    assert receipt["job_id"] == JOB_ID
+    assert receipt["attempt_id"] == ATTEMPT_ID
+
+
+def test_engine_mismatched_receipt_blocks_success() -> None:
+    class MismatchedReceiptIngestor(Ingestor):
+        def ingest(self, batch):
+            receipt = super().ingest(batch)
+            return receipt.model_copy(update={"batch_sha256": "0" * 64})
+
+    repository = Repository(_claim())
+
+    assert _worker(
+        repository,
+        Runner(_outcome()),
+        Provider(),
+        Validator(),
+        ingestor=MismatchedReceiptIngestor(),
+    ).run_once()
+
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == "ENGINE_EVENT_RECEIPT_INVALID"
+    assert final["result"] is None
+
+
+def test_engine_exact_duplicate_retry_reuses_receipt_without_duplicate_effects() -> None:
+    ledger = InMemoryEngineEventLedger()
+    ingestor = Ingestor(ledger)
+    receipts = []
+
+    for _ in range(2):
+        repository = Repository(_claim())
+        assert _worker(
+            repository,
+            Runner(_outcome()),
+            Provider(),
+            Validator(),
+            ingestor=ingestor,
+        ).run_once()
+        final = _final(repository)
+        assert final["final_state"] is JobState.SUCCEEDED
+        receipts.append(final["result"].validation_metadata["engine_event_receipt"])
+
+    assert receipts[0] == receipts[1]
+    engine_run_id = ingestor.calls[0].events[0].engine_run_id
+    assert len(ledger.load_events(engine_run_id)) == 1
+
+
+def test_engine_identity_conflict_blocks_without_success() -> None:
+    repository = Repository(_claim())
+    ingestor = Ingestor(error=EngineEventConflictError("conflict"))
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == "ENGINE_EVENT_IDENTITY_CONFLICT"
+    assert final["result"] is None
+
+
+@pytest.mark.parametrize(
+    ("expected_sequence", "actual_sequence", "reason_code"),
+    (
+        (2, 3, "ENGINE_EVENT_SEQUENCE_GAP"),
+        (3, 2, "ENGINE_EVENT_SEQUENCE_REGRESSION"),
+    ),
+)
+def test_engine_sequence_refusal_blocks_with_durable_reason(
+    expected_sequence: int,
+    actual_sequence: int,
+    reason_code: str,
+) -> None:
+    repository = Repository(_claim())
+    ingestor = Ingestor(
+        error=EngineEventSequenceBlockedError(
+            engine_run_id=_fixture_event(
+                BacktestEngineAuthorityFactory(
+                    code_commit=CODE_COMMIT, clock=lambda: NOW
+                ).from_claim(_claim())
+            ).engine_run_id,
+            expected_sequence=expected_sequence,
+            actual_sequence=actual_sequence,
+        )
+    )
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == reason_code
+
+
+def test_engine_cancellation_before_ingest_never_opens_transaction() -> None:
+    repository = Repository(
+        _claim(),
+        controls=(
+            WorkerControl.CONTINUE,
+            WorkerControl.CONTINUE,
+            WorkerControl.CANCEL,
+        ),
+    )
+    ingestor = Ingestor()
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    assert ingestor.calls == []
+    assert _final(repository)["final_state"] is JobState.CANCELLED
+
+
+def test_engine_cancellation_during_ingest_keeps_receipt_but_cannot_succeed() -> None:
+    repository = Repository(
+        _claim(),
+        controls=(
+            WorkerControl.CONTINUE,
+            WorkerControl.CONTINUE,
+            WorkerControl.CONTINUE,
+            WorkerControl.CANCEL,
+        ),
+    )
+    ingestor = Ingestor()
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    batch = ingestor.calls[0]
+    assert ingestor.repository.load_receipt(batch.sha256) is not None
+    final = _final(repository)
+    assert final["final_state"] is JobState.CANCELLED
+    assert final["result"] is None
+
+
+def test_engine_stale_lease_after_ingest_never_finalizes() -> None:
+    repository = Repository(
+        _claim(),
+        controls=(
+            WorkerControl.CONTINUE,
+            WorkerControl.CONTINUE,
+            WorkerControl.CONTINUE,
+            WorkerControl.STALE,
+        ),
+    )
+    ingestor = Ingestor()
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    assert len(ingestor.calls) == 1
+    assert not any(name in {"finalize", "retry"} for name, _ in repository.calls)
+
+
+def test_engine_safety_drift_after_ingest_blocks_durable_batch() -> None:
+    checks = iter(
+        (
+            _safety(),
+            _safety(),
+            _safety(),
+            _safety(),
+            _safety(),
+            SafetyBlockedError("SAFETY_STATE_STALE", "stale"),
+        )
+    )
+
+    def safety():
+        value = next(checks)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    repository = Repository(_claim())
+    ingestor = Ingestor()
+
+    assert _worker(
+        repository,
+        Runner(_outcome()),
+        Provider(),
+        Validator(),
+        safety=safety,
+        ingestor=ingestor,
+    ).run_once()
+
+    assert len(ingestor.calls) == 1
+    final = _final(repository)
+    assert final["final_state"] is JobState.BLOCKED
+    assert final["reason_code"] == "SAFETY_STATE_STALE"
+
+
+def test_engine_transient_ingest_failure_uses_existing_retry_policy() -> None:
+    repository = Repository(_claim())
+    ingestor = Ingestor(error=RuntimeError("database unavailable"))
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    retry = [value for name, value in repository.calls if name == "retry"]
+    assert len(retry) == 1
+    assert retry[0]["reason_code"] == "RESULT_VALIDATION_FAILED"
+    assert not any(name == "finalize" for name, _ in repository.calls)
+
+
 @pytest.mark.parametrize(
     "reason",
     ("ENGINE_CLOSURE_UNAVAILABLE", "ENGINE_TRANSPORT_UNSAFE"),
@@ -595,6 +945,7 @@ def test_worker_composition_requires_an_explicit_engine_provider_injection(
         safety_source_fingerprint="b" * 64,
     )
     provider = Provider()
+    ingestor = InMemoryEngineEventLedger()
 
     monkeypatch.setattr(
         main.ResearchEnvironmentSettings,
@@ -621,12 +972,25 @@ def test_worker_composition_requires_an_explicit_engine_provider_injection(
         {},
         authority=authority,
         engine_spawn_provider=provider,
+        engine_event_ingestor=ingestor,
     )
 
     assert isinstance(
         captured["engine_authority_factory"], BacktestEngineAuthorityFactory
     )
     assert captured["engine_spawn_provider"] is provider
+    assert captured["engine_event_ingestor"] is ingestor
     assert captured["engine_result_validator"].__class__.__name__ == (
         "EngineResultValidator"
     )
+
+    with pytest.raises(
+        ValueError,
+        match="engine spawn and durable-ingestion authority must be injected together",
+    ):
+        main.build_worker(
+            object(),
+            {},
+            authority=authority,
+            engine_spawn_provider=provider,
+        )

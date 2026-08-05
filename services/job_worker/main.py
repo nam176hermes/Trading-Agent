@@ -41,12 +41,17 @@ def build_worker(
     *,
     authority: WorkerRuntimeAuthority | None = None,
     engine_spawn_provider: object | None = None,
+    engine_event_ingestor: object | None = None,
 ) -> JobWorker:
     values = os.environ if source is None else source
     if _FORBIDDEN_AUTHORITY_KEYS.intersection(values):
         raise ValueError("runtime authority cannot be supplied through environment digests")
     if "TRADING_WORKER_LEASE_SECONDS" in values:
         raise ValueError("worker lease is code-owned and cannot be overridden")
+    if (engine_spawn_provider is None) != (engine_event_ingestor is None):
+        raise ValueError(
+            "engine spawn and durable-ingestion authority must be injected together"
+        )
     selected_authority = authority or attest_worker_runtime_authority()
     runtime_authority = selected_authority.runtime_authority
     safety_authority = getattr(runtime_authority, "safety", None)
@@ -79,6 +84,7 @@ def build_worker(
             "engine_result_validator": EngineResultValidator(
                 runtime_paths.artifact_root
             ),
+            "engine_event_ingestor": engine_event_ingestor,
         }
     return JobWorker(
         repository,
