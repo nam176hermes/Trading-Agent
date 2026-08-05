@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from typing import Annotated, Any, Literal, Mapping, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, BeforeValidator, WithJsonSchema, model_serializer
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    WithJsonSchema,
+    model_serializer,
+    model_validator,
+)
 
 from packages.domain.clock import require_utc
+from packages.engine_contracts import ArtifactReference, CanonicalUtcDateTime
 
 from .asset_registry import APPROVED_ASSET_SYMBOLS
 from .enums import JobType
@@ -129,14 +140,41 @@ class BacktestPayload(StrictPayload):
     date_to: None
 
 
-JobPayload: TypeAlias = SnapshotPayload | DebatePayload | ReplayPayload | BacktestPayload
+class EngineBacktestInput(StrictPayload):
+    """Closed engine-neutral input from which a worker may derive RunBacktest."""
 
-_PAYLOAD_MODELS: dict[JobType, type[JobPayload]] = {
+    engine_configuration: ArtifactReference
+    instrument_catalog: ArtifactReference
+    strategy_configuration: ArtifactReference
+    market_data: ArtifactReference
+    start_time: CanonicalUtcDateTime
+    end_time: CanonicalUtcDateTime
+
+    @model_validator(mode="after")
+    def _validate_window(self) -> "EngineBacktestInput":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self
+
+
+class EngineBacktestPayload(StrictPayload):
+    """Explicit engine-authority form kept separate from the legacy payload."""
+
+    engine_backtest: EngineBacktestInput
+
+
+BacktestJobPayload: TypeAlias = BacktestPayload | EngineBacktestPayload
+JobPayload: TypeAlias = (
+    SnapshotPayload | DebatePayload | ReplayPayload | BacktestJobPayload
+)
+
+_PAYLOAD_MODELS: dict[JobType, type[StrictPayload]] = {
     JobType.SNAPSHOT: SnapshotPayload,
     JobType.DEBATE: DebatePayload,
     JobType.REPLAY: ReplayPayload,
     JobType.BACKTEST: BacktestPayload,
 }
+_BACKTEST_PAYLOAD_ADAPTER = TypeAdapter(BacktestJobPayload)
 
 
 def parse_payload(job_type: JobType | str, value: Mapping[str, Any]) -> JobPayload:
@@ -150,4 +188,8 @@ def parse_payload(job_type: JobType | str, value: Mapping[str, Any]) -> JobPaylo
         raise ValueError("payload must be an object")
     plain_value = dict(value)
     validate_canonical_input_size(plain_value)
+    if selected_type is JobType.BACKTEST:
+        return _BACKTEST_PAYLOAD_ADAPTER.validate_json(
+            json.dumps(plain_value, allow_nan=False, separators=(",", ":"))
+        )
     return _PAYLOAD_MODELS[selected_type].model_validate(plain_value)

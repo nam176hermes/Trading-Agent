@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "ArtifactReference": {
+      "additionalProperties": false,
+      "description": "Content-addressed, engine-neutral input to a command.",
+      "properties": {
+        "artifact_id": {
+          "format": "uuid",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "media_type": {
+          "enum": [
+            "application/json",
+            "application/jsonl"
+          ],
+          "title": "Media Type",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "sha256",
+        "media_type"
+      ],
+      "title": "ArtifactReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Closed engine-neutral input from which a worker may derive RunBacktest.",
+  "properties": {
+    "end_time": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "End Time",
+      "type": "string"
+    },
+    "engine_configuration": {
+      "$ref": "#/$defs/ArtifactReference"
+    },
+    "instrument_catalog": {
+      "$ref": "#/$defs/ArtifactReference"
+    },
+    "market_data": {
+      "$ref": "#/$defs/ArtifactReference"
+    },
+    "start_time": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Start Time",
+      "type": "string"
+    },
+    "strategy_configuration": {
+      "$ref": "#/$defs/ArtifactReference"
+    }
+  },
+  "required": [
+    "engine_configuration",
+    "instrument_catalog",
+    "strategy_configuration",
+    "market_data",
+    "start_time",
+    "end_time"
+  ],
+  "title": "EngineBacktestInput",
+  "type": "object"
+}

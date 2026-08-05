@@ -58,6 +58,35 @@ process.stdout.write(JSON.stringify(results));
     return json.loads(completed.stdout)
 
 
+def _engine_backtest_wire_payload() -> dict[str, object]:
+    return {
+        "engine_backtest": {
+            "engine_configuration": {
+                "artifact_id": "11111111-1111-4111-8111-111111111111",
+                "sha256": "1" * 64,
+                "media_type": "application/json",
+            },
+            "instrument_catalog": {
+                "artifact_id": "22222222-2222-4222-8222-222222222222",
+                "sha256": "2" * 64,
+                "media_type": "application/json",
+            },
+            "strategy_configuration": {
+                "artifact_id": "33333333-3333-4333-8333-333333333333",
+                "sha256": "3" * 64,
+                "media_type": "application/json",
+            },
+            "market_data": {
+                "artifact_id": "44444444-4444-4444-8444-444444444444",
+                "sha256": "4" * 64,
+                "media_type": "application/jsonl",
+            },
+            "start_time": "2026-07-01T00:00:00Z",
+            "end_time": "2026-08-01T00:00:00Z",
+        }
+    }
+
+
 def test_payload_fingerprint_is_order_independent():
     left = parse_payload(
         JobType.SNAPSHOT,
@@ -169,6 +198,41 @@ def test_backtest_date_ranges_are_rejected(field):
     value[field] = "2026-01-01"
     with pytest.raises(ValidationError):
         parse_payload(JobType.BACKTEST, value)
+
+
+def test_backtest_payload_accepts_a_distinct_strict_engine_authority_form():
+    payload = parse_payload(
+        JobType.BACKTEST,
+        {
+            "engine_backtest": {
+                "engine_configuration": {
+                    "artifact_id": "11111111-1111-4111-8111-111111111111",
+                    "sha256": "1" * 64,
+                    "media_type": "application/json",
+                },
+                "instrument_catalog": {
+                    "artifact_id": "22222222-2222-4222-8222-222222222222",
+                    "sha256": "2" * 64,
+                    "media_type": "application/json",
+                },
+                "strategy_configuration": {
+                    "artifact_id": "33333333-3333-4333-8333-333333333333",
+                    "sha256": "3" * 64,
+                    "media_type": "application/json",
+                },
+                "market_data": {
+                    "artifact_id": "44444444-4444-4444-8444-444444444444",
+                    "sha256": "4" * 64,
+                    "media_type": "application/jsonl",
+                },
+                "start_time": "2026-07-01T00:00:00Z",
+                "end_time": "2026-08-01T00:00:00Z",
+            }
+        },
+    )
+
+    assert type(payload).__name__ == "EngineBacktestPayload"
+    assert set(payload.model_dump(mode="json")) == {"engine_backtest"}
 
 
 def test_payload_models_are_strict_frozen_and_selected_by_type():
@@ -526,6 +590,13 @@ def test_enqueue_request_json_schema_enforces_exact_job_payload_pairs_and_assets
             },
         ),
         (
+            True,
+            {
+                "job_type": "BACKTEST",
+                "payload": _engine_backtest_wire_payload(),
+            },
+        ),
+        (
             False,
             {"job_type": "SNAPSHOT", "payload": {"asset": "BTC", "horizon": "1d"}},
         ),
@@ -540,6 +611,16 @@ def test_enqueue_request_json_schema_enforces_exact_job_payload_pairs_and_assets
         (
             False,
             {"job_type": "BACKTEST", "payload": {"asset": "BTC;rm", "strategy_id": "legacy-binary-report-v1", "date_from": None, "date_to": None}},
+        ),
+        (
+            False,
+            {
+                "job_type": "BACKTEST",
+                "payload": {
+                    **_engine_backtest_wire_payload(),
+                    "asset": "BTC",
+                },
+            },
         ),
     ]
     actor_and_identity = {

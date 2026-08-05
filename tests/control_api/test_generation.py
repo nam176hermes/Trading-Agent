@@ -84,5 +84,19 @@ def test_generated_contracts_are_present_and_current() -> None:
     assert (
         ROOT / "generated" / "job-api" / "json-schema" / "JobDetail.json"
     ).is_file()
+    assert (
+        ROOT
+        / "generated"
+        / "job-api"
+        / "json-schema"
+        / "EngineBacktestInput.json"
+    ).is_file()
+    assert (
+        ROOT
+        / "generated"
+        / "job-api"
+        / "json-schema"
+        / "EngineBacktestPayload.json"
+    ).is_file()
     assert (ROOT / "generated" / "dashboard" / "api-types.ts").is_file()
     assert (ROOT / "generated" / "dashboard" / "api-schemas.ts").is_file()

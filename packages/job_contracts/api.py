@@ -36,6 +36,13 @@ _SCHEDULE_KEY_PATTERN = (
     r"(?:[01][0-9]|2[0-3]):[0-5][0-9]Z$"
 )
 _SCHEDULE_KEY = re.compile(_SCHEDULE_KEY_PATTERN, re.ASCII)
+_PAYLOAD_SCHEMA_JOB_TYPES = (
+    JobType.SNAPSHOT,
+    JobType.DEBATE,
+    JobType.REPLAY,
+    JobType.BACKTEST,
+    JobType.BACKTEST,
+)
 
 
 def _valid_schedule_key(value: str) -> bool:
@@ -48,6 +55,24 @@ def _valid_schedule_key(value: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _job_payload_json_schemas(
+    payload_options: list[JsonSchemaValue],
+) -> dict[JobType, JsonSchemaValue]:
+    grouped: dict[JobType, list[JsonSchemaValue]] = {
+        job_type: [] for job_type in JobType
+    }
+    for job_type, option in zip(
+        _PAYLOAD_SCHEMA_JOB_TYPES, payload_options, strict=True
+    ):
+        grouped[job_type].append(option)
+    if any(not options for options in grouped.values()):
+        raise ValueError("job payload schema registry is incomplete")
+    return {
+        job_type: options[0] if len(options) == 1 else {"anyOf": options}
+        for job_type, options in grouped.items()
+    }
 
 
 class StrictApiModel(BaseModel):
@@ -63,7 +88,7 @@ def _parse_typed_payload(value: Any) -> Any:
     if "job_type" in data and "payload" in data:
         payload = data["payload"]
         if isinstance(payload, BaseModel):
-            payload = payload.model_dump()
+            payload = payload.model_dump(mode="json")
         data["payload"] = parse_payload(data["job_type"], payload)
     return data
 
@@ -103,6 +128,7 @@ class EnqueueJobBody(StrictApiModel):
         schema = handler(core_schema)
         properties = schema["properties"]
         payload_options = properties["payload"]["anyOf"]
+        payload_schemas = _job_payload_json_schemas(payload_options)
         shared = {
             "idempotency_key": {
                 **properties["idempotency_key"],
@@ -111,14 +137,14 @@ class EnqueueJobBody(StrictApiModel):
             "priority": properties["priority"],
         }
         variants = []
-        for job_type, payload_schema in zip(JobType, payload_options, strict=True):
+        for job_type in JobType:
             variants.append(
                 {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "job_type": {"type": "string", "const": job_type.value},
-                        "payload": payload_schema,
+                        "payload": payload_schemas[job_type],
                         **shared,
                     },
                     "required": ["job_type", "payload", "idempotency_key"],
@@ -209,19 +235,20 @@ class EnqueueJobRequest(StrictApiModel):
         schema = handler(core_schema)
         properties = schema["properties"]
         payload_options = properties["payload"]["anyOf"]
+        payload_schemas = _job_payload_json_schemas(payload_options)
         shared = {
             name: properties[name]
             for name in ("idempotency_key", "actor", "priority")
         }
         variants = []
-        for job_type, payload_schema in zip(JobType, payload_options, strict=True):
+        for job_type in JobType:
             variants.append(
                 {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
                         "job_type": {"type": "string", "const": job_type.value},
-                        "payload": payload_schema,
+                        "payload": payload_schemas[job_type],
                         **shared,
                     },
                     "required": ["job_type", "payload", "idempotency_key", "actor"],
