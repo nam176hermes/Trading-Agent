@@ -17,6 +17,9 @@ dependencies = [
   "uvicorn==0.51.0",
 ]
 
+[project.scripts]
+trading-agent-nautilus = "packages.nautilus_engine_cli.cli:main"
+
 [dependency-groups]
 dev = [
   "httpx==0.28.1",
