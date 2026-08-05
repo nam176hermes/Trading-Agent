@@ -1,0 +1,35 @@
+# PostgreSQL 16
+# Frozen from the pg_proc declaration in PostgreSQL 16 postgres.bki.
+create pg_proc 1255 bootstrap rowtype_oid 81
+ (
+ oid = oid ,
+ proname = name ,
+ pronamespace = oid ,
+ proowner = oid ,
+ prolang = oid ,
+ procost = float4 ,
+ prorows = float4 ,
+ provariadic = oid ,
+ prosupport = regproc ,
+ prokind = char ,
+ prosecdef = bool ,
+ proleakproof = bool ,
+ proisstrict = bool ,
+ proretset = bool ,
+ provolatile = char ,
+ proparallel = char ,
+ pronargs = int2 ,
+ pronargdefaults = int2 ,
+ prorettype = oid ,
+ proargtypes = oidvector FORCE NOT NULL ,
+ proallargtypes = _oid ,
+ proargmodes = _char ,
+ proargnames = _text ,
+ proargdefaults = pg_node_tree ,
+ protrftypes = _oid ,
+ prosrc = text FORCE NOT NULL ,
+ probin = text ,
+ prosqlbody = pg_node_tree ,
+ proconfig = _text ,
+ proacl = _aclitem
+ )

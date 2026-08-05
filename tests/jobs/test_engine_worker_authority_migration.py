@@ -15,6 +15,9 @@ TRANSITION_AUTHORITY = Path(
 TRANSITION_CATALOG = Path(
     "ops/postgres/job-plane-authority/catalog-0006-v1.snapshot"
 )
+PG16_PROC_CATALOG = Path(
+    "tests/jobs/fixtures/postgresql-16-pg-proc.catalog"
+)
 
 
 def test_engine_worker_authority_is_forward_chained_and_fail_closed() -> None:
@@ -47,6 +50,44 @@ def test_engine_worker_authority_is_forward_chained_and_fail_closed() -> None:
         "RuntimeError",
     ):
         assert expected in source
+
+
+def test_every_pg_proc_reference_exists_in_frozen_postgresql_16_catalog() -> None:
+    migration = MIGRATION.read_text()
+    catalog_source = PG16_PROC_CATALOG.read_text()
+    assert hashlib.sha256(catalog_source.encode()).hexdigest() == (
+        "7643e5ba362fd5aad9f26190f19657e002c04d4e886cca42598f56544d838a5a"
+    )
+    assert catalog_source.startswith("# PostgreSQL 16\n")
+    declaration = re.search(
+        r"create pg_proc 1255 bootstrap rowtype_oid 81\n \((.*?)\n \)",
+        catalog_source,
+        flags=re.DOTALL,
+    )
+    assert declaration is not None
+    allowed_columns = frozenset(
+        re.findall(r"^ ([a-z][a-z0-9_]*) = ", declaration.group(1), re.MULTILINE)
+    )
+    assert len(allowed_columns) == 30
+    assert "protrftypes" in allowed_columns
+    assert "protransform" not in allowed_columns
+
+    referenced_columns = frozenset(
+        re.findall(r"procedure_row\.([a-z][a-z0-9_]*)", migration)
+    )
+    assert referenced_columns
+    assert referenced_columns <= allowed_columns
+    assert referenced_columns - allowed_columns == frozenset()
+    assert "procedure_row.protransform" not in migration
+    assert migration.count("procedure_row.protrftypes IS NULL") == 3
+    assert migration.count("procedure_row.protrftypes IS NOT NULL") == 1
+
+    transition_authority = TRANSITION_AUTHORITY.read_text()
+    assert (
+        "current_setting('server_version_num')::integer / 10000 <> 16"
+        in transition_authority
+    )
+    assert "0006 requires PostgreSQL 16" in transition_authority
 
 
 def test_paper_worker_capabilities_derive_only_from_pinned_reviewed_bodies() -> None:

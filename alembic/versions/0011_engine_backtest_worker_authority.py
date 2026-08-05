@@ -387,7 +387,7 @@ def upgrade() -> None:
               AND procedure_row.procost = 100
               AND procedure_row.prorows = expected_rows[function_index]
               AND procedure_row.prosupport = 0
-              AND procedure_row.protransform = 0
+              AND procedure_row.protrftypes IS NULL
               AND procedure_row.probin IS NULL
               AND procedure_row.prosqlbody IS NULL
               AND pg_get_function_result(procedure_row.oid)
@@ -495,6 +495,7 @@ def upgrade() -> None:
                      OR procedure_row.pronargdefaults IS DISTINCT FROM 0
                      OR procedure_row.proargdefaults IS NOT NULL
                      OR procedure_row.provariadic IS DISTINCT FROM 0
+                     OR procedure_row.protrftypes IS NOT NULL
                      OR array_to_string(procedure_row.proargnames, ',')
                           IS DISTINCT FROM
                           expected_argument_names[function_index]
@@ -671,7 +672,7 @@ def upgrade() -> None:
                 AND NOT procedure_row.proisstrict
                 AND procedure_row.procost = 100
                 AND procedure_row.prosupport = 0
-                AND procedure_row.protransform = 0
+                AND procedure_row.protrftypes IS NULL
                 AND procedure_row.probin IS NULL
                 AND procedure_row.prosqlbody IS NULL
             ),
@@ -755,7 +756,7 @@ def upgrade() -> None:
                 AND NOT procedure_row.proisstrict
                 AND procedure_row.procost = 100
                 AND procedure_row.prosupport = 0
-                AND procedure_row.protransform = 0
+                AND procedure_row.protrftypes IS NULL
                 AND procedure_row.probin IS NULL
                 AND procedure_row.prosqlbody IS NULL
             ),
