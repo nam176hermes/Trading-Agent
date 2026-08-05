@@ -453,17 +453,26 @@ def _assert_only_private_writable_mounts(mounts: list[dict[str, object]]) -> Non
         assert mount["source"] == source
         assert "rw" in mount["options"]
 
+    allowed_descendant_filesystems = {
+        "/proc": {("binfmt_misc", "binfmt_misc")},
+        "/dev": {("devtmpfs", "none"), ("devpts", "devpts")},
+    }
     for mount in mounts:
         if "rw" not in mount["options"]:
             continue
         mount_point = mount["mount_point"]
         assert isinstance(mount_point, str)
-        assert (
-            mount_point == "/"
-            or mount_point == "/tmp"
-            or _is_mount_path_or_descendant(mount_point, "/proc")
-            or _is_mount_path_or_descendant(mount_point, "/dev")
-        )
+        if mount_point in expected_private_mounts:
+            continue
+        for parent, allowed_filesystems in allowed_descendant_filesystems.items():
+            if _is_mount_path_or_descendant(mount_point, parent):
+                assert (
+                    mount["filesystem"],
+                    mount["source"],
+                ) in allowed_filesystems
+                break
+        else:
+            raise AssertionError(f"unexpected writable mount: {mount_point}")
 
 
 def test_resolved_cpython_root_uses_relative_alias_target_not_raw_link_text(
@@ -592,6 +601,104 @@ def test_mountinfo_proof_rejects_host_tmp_and_prefix_collision_mounts(
         private_mounts[1] = mount
     else:
         private_mounts.append(mount)
+
+    with pytest.raises(AssertionError):
+        _assert_only_private_writable_mounts(private_mounts)
+
+
+@pytest.mark.parametrize(
+    "mount",
+    [
+        {
+            "mount_point": "/proc/sys/fs/binfmt_misc",
+            "options": ["rw"],
+            "filesystem": "binfmt_misc",
+            "source": "binfmt_misc",
+        },
+        {
+            "mount_point": "/dev/null",
+            "options": ["rw"],
+            "filesystem": "devtmpfs",
+            "source": "none",
+        },
+        {
+            "mount_point": "/dev/pts",
+            "options": ["rw"],
+            "filesystem": "devpts",
+            "source": "devpts",
+        },
+    ],
+)
+def test_mountinfo_proof_accepts_observed_private_proc_and_dev_descendants(
+    mount: dict[str, object],
+) -> None:
+    private_mounts: list[dict[str, object]] = [
+        {
+            "mount_point": "/",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": "/tmp",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": "/proc",
+            "options": ["rw"],
+            "filesystem": "proc",
+            "source": "proc",
+        },
+        {
+            "mount_point": "/dev",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        mount,
+    ]
+
+    _assert_only_private_writable_mounts(private_mounts)
+
+
+@pytest.mark.parametrize("mount_point", ["/dev/host-data", "/proc/host-data"])
+def test_mountinfo_proof_rejects_host_backed_proc_and_dev_descendants(
+    mount_point: str,
+) -> None:
+    private_mounts: list[dict[str, object]] = [
+        {
+            "mount_point": "/",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": "/tmp",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": "/proc",
+            "options": ["rw"],
+            "filesystem": "proc",
+            "source": "proc",
+        },
+        {
+            "mount_point": "/dev",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": mount_point,
+            "options": ["rw"],
+            "filesystem": "ext4",
+            "source": "/dev/sda1",
+        },
+    ]
 
     with pytest.raises(AssertionError):
         _assert_only_private_writable_mounts(private_mounts)
