@@ -6,7 +6,7 @@ umask 077
 
 # Independently reviewed source pin. A digest declared only by the candidate
 # authority is never sufficient to select code for privileged verification.
-PINNED_VERIFIER_SHA256='80b7d12ecbb736747db8073d6b57a9e5ed3a64be9249b3c3066580a02367373f'
+PINNED_VERIFIER_SHA256='460d131d28085bd0fd4f32e20d59d78e143629a6a89f385487c345c773154be2'
 
 fail() {
   printf '%s\n' 'release authority v2 provisioning rejected' >&2

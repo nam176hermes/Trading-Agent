@@ -27,6 +27,7 @@ from packages.engine_contracts import (
     RunBacktest,
     canonical_json_bytes,
 )
+from .engine_spawn_interface import EnginePreparedSpawnMarker, EngineSpawnError
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
@@ -67,14 +68,6 @@ _MEMFD_CREATE_SYSCALLS = {
     "aarch64": 279,
     "arm64": 279,
 }
-
-
-class EngineSpawnError(RuntimeError):
-    """A closed reason code for an engine spawn authority refusal."""
-
-    def __init__(self, reason: str, message: str) -> None:
-        self.reason = reason
-        super().__init__(f"{reason}: {message}")
 
 
 def _blocked(reason: str, message: str) -> None:
@@ -188,7 +181,7 @@ class _PreparedRecord:
     repr=False,
     weakref_slot=True,
 )
-class PreparedEngineSpawn:
+class PreparedEngineSpawn(EnginePreparedSpawnMarker):
     """Opaque, provider-bound, one-use engine process authority."""
 
     _provider: EngineSpawnProvider

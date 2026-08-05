@@ -13,8 +13,6 @@ from services.job_store.worker_repository import WorkerRepository
 from .artifacts import ArtifactWriter
 from .command_registry import attest_worker_runtime_authority
 from .environment import ResearchEnvironmentSettings
-from .engine_authority import BacktestEngineAuthorityFactory
-from .engine_results import EngineResultValidator
 from .process_runner import ProcessRunner
 from .recovery import ProcProcessInspector
 from .results import ResultValidator
@@ -75,6 +73,11 @@ def build_worker(
     code_commit = selected_authority.application_revision
     engine_dependencies: dict[str, object] = {}
     if engine_spawn_provider is not None:
+        # Resolve engine-only types solely for an explicitly injected complete
+        # engine composition. The paper projection never enters this branch.
+        from .engine_authority import BacktestEngineAuthorityFactory
+        from .engine_results import EngineResultValidator
+
         engine_dependencies = {
             "engine_authority_factory": BacktestEngineAuthorityFactory(
                 code_commit=code_commit,

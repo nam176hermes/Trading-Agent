@@ -9,15 +9,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
-from packages.engine_contracts import canonical_json_bytes
-from packages.engine_event_ledger import (
-    EngineEventBatchReceipt,
-    EngineEventConflictError,
-    EngineEventSequenceBlockedError,
-    InvalidEngineEventBatchError,
-)
 from packages.job_contracts import (
-    EngineBacktestPayload,
     JobState,
     JobType,
     SnapshotPayload,
@@ -28,7 +20,7 @@ from .command_registry import (
     prepare_immediate_spawn,
 )
 from .errors import WorkerBlockedError
-from .engine_spawn import EngineSpawnError
+from .engine_spawn_interface import EngineSpawnError
 from .process_runner import (
     HeartbeatDecision,
     HeartbeatInstruction,
@@ -125,8 +117,10 @@ class JobWorker:
             raise ValueError(
                 "complete engine execution and durable-ingestion authority is required"
             )
-        self._engine_backtest_enabled = all(
-            component is not None for component in engine_components
+        self._engine_backtest_job_type = getattr(JobType, "BACKTEST", None)
+        self._engine_backtest_enabled = (
+            self._engine_backtest_job_type is not None
+            and all(component is not None for component in engine_components)
         )
         self._lease_seconds = lease_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -172,7 +166,7 @@ class JobWorker:
             self._lease_seconds,
             trace_id,
             allowed_job_types=(
-                (JobType.SNAPSHOT, JobType.BACKTEST)
+                (JobType.SNAPSHOT, self._engine_backtest_job_type)
                 if self._engine_backtest_enabled
                 else (JobType.SNAPSHOT,)
             ),
@@ -214,7 +208,13 @@ class JobWorker:
             return True
 
         engine_request = None
-        if claimed.job_type is JobType.BACKTEST:
+        if (
+            self._engine_backtest_job_type is not None
+            and claimed.job_type is self._engine_backtest_job_type
+        ):
+            from packages.engine_event_ledger import EngineEventConflictError
+            from packages.job_contracts import EngineBacktestPayload
+
             if (
                 type(claimed.payload) is not EngineBacktestPayload
                 or not self._engine_backtest_enabled
@@ -391,6 +391,12 @@ class JobWorker:
         try:
             self._validation_progress(claimed, safety_preflight)
             if engine_request is not None:
+                from packages.engine_event_ledger import (
+                    EngineEventConflictError,
+                    EngineEventSequenceBlockedError,
+                    InvalidEngineEventBatchError,
+                )
+
                 result = self._engine_result_validator.validate(
                     outcome.result_validator_id,
                     claimed,
@@ -564,6 +570,8 @@ class JobWorker:
         result: ValidatedEngineEventBatch,
         receipt: object,
     ) -> ValidatedEngineEventBatch:
+        from packages.engine_contracts import canonical_json_bytes
+        from packages.engine_event_ledger import EngineEventBatchReceipt
         from .engine_results import ValidatedEngineEventBatch
 
         if (

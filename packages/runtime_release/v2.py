@@ -91,48 +91,6 @@ PAPER_APPLICATION_SOURCE_MAPPING = (
     ("apps/job_api/main.py", "apps/job_api/main.py"),
     ("packages/__init__.py", "packages/__init__.py"),
     (
-        "packages/domain/__init__.py",
-        "packages/runtime_release/paper_application/domain_init.py",
-    ),
-    ("packages/domain/clock.py", "packages/domain/clock.py"),
-    ("packages/domain/instruments.py", "packages/domain/instruments.py"),
-    ("packages/domain/orders.py", "packages/domain/orders.py"),
-    ("packages/domain/primitives.py", "packages/domain/primitives.py"),
-    (
-        "packages/engine_contracts/__init__.py",
-        "packages/runtime_release/paper_application/engine_contracts_init.py",
-    ),
-    ("packages/engine_contracts/commands.py", "packages/engine_contracts/commands.py"),
-    (
-        "packages/engine_contracts/envelopes.py",
-        "packages/engine_contracts/envelopes.py",
-    ),
-    ("packages/engine_contracts/events.py", "packages/engine_contracts/events.py"),
-    (
-        "packages/engine_contracts/serialization.py",
-        "packages/engine_contracts/serialization.py",
-    ),
-    (
-        "packages/engine_contracts/versions.py",
-        "packages/engine_contracts/versions.py",
-    ),
-    (
-        "packages/engine_event_ledger/__init__.py",
-        "packages/engine_event_ledger/__init__.py",
-    ),
-    (
-        "packages/engine_event_ledger/errors.py",
-        "packages/engine_event_ledger/errors.py",
-    ),
-    (
-        "packages/engine_event_ledger/models.py",
-        "packages/engine_event_ledger/models.py",
-    ),
-    (
-        "packages/engine_event_ledger/replay.py",
-        "packages/engine_event_ledger/replay.py",
-    ),
-    (
         "packages/job_contracts/__init__.py",
         "packages/runtime_release/paper_application/job_contracts_init.py",
     ),
@@ -175,10 +133,6 @@ PAPER_APPLICATION_SOURCE_MAPPING = (
     ("services/__init__.py", "services/__init__.py"),
     ("services/job_store/__init__.py", "services/job_store/__init__.py"),
     ("services/job_store/config.py", "services/job_store/config.py"),
-    (
-        "services/job_store/engine_event_repository.py",
-        "services/job_store/engine_event_repository.py",
-    ),
     ("services/job_store/errors.py", "services/job_store/errors.py"),
     ("services/job_store/records.py", "services/job_store/records.py"),
     ("services/job_store/repository.py", "services/job_store/repository.py"),
@@ -193,14 +147,9 @@ PAPER_APPLICATION_SOURCE_MAPPING = (
         "packages/runtime_release/paper_application/command_registry.py",
     ),
     (
-        "services/job_worker/engine_authority.py",
-        "services/job_worker/engine_authority.py",
+        "services/job_worker/engine_spawn_interface.py",
+        "services/job_worker/engine_spawn_interface.py",
     ),
-    (
-        "services/job_worker/engine_results.py",
-        "services/job_worker/engine_results.py",
-    ),
-    ("services/job_worker/engine_spawn.py", "services/job_worker/engine_spawn.py"),
     (
         "services/job_worker/environment.py",
         "packages/runtime_release/paper_application/environment.py",

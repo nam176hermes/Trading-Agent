@@ -19,6 +19,7 @@ from services.job_worker.engine_spawn import (
     EngineSpawnLineage,
     PreparedEngineSpawn,
 )
+from services.job_worker.engine_spawn_interface import EnginePreparedSpawnMarker
 from services.job_worker.process_runner import (
     HeartbeatDecision,
     HeartbeatInstruction,
@@ -242,6 +243,30 @@ def engine_spawn(*descriptors: int) -> EngineBuiltSpawn:
 
 def prepared_engine_spawn() -> PreparedEngineSpawn:
     return object.__new__(PreparedEngineSpawn)
+
+
+def test_engine_routing_marker_cannot_authorize_a_forged_spawn(
+    monkeypatch, tmp_path
+) -> None:
+    class ForgedPreparedEngineSpawn(EnginePreparedSpawnMarker):
+        pass
+
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.consume_prepared_engine_spawn",
+        lambda _item: pytest.fail("a marker subclass must not reach consumption"),
+    )
+
+    with pytest.raises(ValueError, match="attested spawn authority type is invalid"):
+        runner(
+            tmp_path, FakeProcess([0]), Inspector([identity()]), []
+        ).run(
+            ForgedPreparedEngineSpawn,
+            object(),
+            None,
+            lambda _: HeartbeatDecision.CONTINUE,
+            job_id=JOB_ID,
+            attempt_id=ATTEMPT_ID,
+        )
 
 
 def test_runner_consumes_engine_authority_once_and_remains_popen_owner(

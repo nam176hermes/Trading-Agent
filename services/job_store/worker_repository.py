@@ -172,16 +172,20 @@ class WorkerRepository:
         self._validate_lease_seconds(lease_seconds)
         self._validate_trace(trace_id)
         selected_types = tuple(JobType(item) for item in allowed_job_types)
-        if selected_types not in {
-            (JobType.SNAPSHOT,),
-            (JobType.SNAPSHOT, JobType.BACKTEST),
-        }:
+        backtest_job_type = getattr(JobType, "BACKTEST", None)
+        permitted_type_sets = {(JobType.SNAPSHOT,)}
+        if backtest_job_type is not None:
+            permitted_type_sets.add((JobType.SNAPSHOT, backtest_job_type))
+        if selected_types not in permitted_type_sets:
             raise ValueError("worker job-type authority is invalid")
         attempt_id = self._new_id("attempt")
         lease_token = secrets.token_urlsafe(48)
         claim_capability = (
             "worker_claim_paper"
-            if selected_types == (JobType.SNAPSHOT, JobType.BACKTEST)
+            if (
+                backtest_job_type is not None
+                and selected_types == (JobType.SNAPSHOT, backtest_job_type)
+            )
             else "worker_claim_snapshot"
         )
         with self._pool.connection() as connection:

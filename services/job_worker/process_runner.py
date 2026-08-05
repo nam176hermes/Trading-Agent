@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import BinaryIO, Callable, Protocol, Sequence, cast
+from typing import TYPE_CHECKING, BinaryIO, Callable, Protocol, Sequence, cast
 
 from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata, ArtifactWriter
 from .command_registry import (
@@ -32,14 +32,20 @@ from .environment import (
     ResearchEnvironmentSettings,
     build_child_environment,
 )
-from .engine_spawn import (
-    EngineBuiltSpawn,
-    EngineSpawnLineage,
-    PreparedEngineSpawn,
-    consume_prepared_engine_spawn,
-)
+from .engine_spawn_interface import EnginePreparedSpawnMarker
 from .recovery import ProcProcessInspector, ProcessIdentity, ProcessInspector
 from .safety_state import SafetyEvidence, validate_current_safety_evidence
+
+if TYPE_CHECKING:
+    from .engine_spawn import PreparedEngineSpawn
+
+
+def consume_prepared_engine_spawn(prepared: PreparedEngineSpawn):
+    """Resolve the engine consumer only after an engine token reaches Popen."""
+
+    from .engine_spawn import consume_prepared_engine_spawn as consume
+
+    return consume(prepared)
 
 
 _JOB_ID = re.compile(r"job_[0-9a-f]{32}")
@@ -397,7 +403,20 @@ class ProcessRunner:
         )
         initial_safety_metadata = _safety_metadata(initial_safety)
         prepared = prepare_spawn()
-        engine_authority = type(prepared) is PreparedEngineSpawn
+        # This marker only selects the lazy engine branch. It carries no
+        # authority: that branch still requires the exact provider token type.
+        engine_authority = isinstance(prepared, EnginePreparedSpawnMarker)
+        if engine_authority:
+            # Engine provider code is deliberately absent from the paper
+            # projection. Resolve exact types only at engine consumption.
+            from .engine_spawn import (
+                EngineBuiltSpawn,
+                EngineSpawnLineage,
+                PreparedEngineSpawn,
+            )
+
+            if type(prepared) is not PreparedEngineSpawn:
+                raise ValueError("attested spawn authority type is invalid")
         # Legacy root and credential policy validation remains in its original
         # position. Engine authority has no ambient/legacy environment path.
         child_environment = (

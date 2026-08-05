@@ -244,6 +244,8 @@ def test_package6_job_contract_projection_matches_snapshot_database_authority() 
             {"assets": ["BTC"], "include_debate": True}
         )
     assert list(enums.JobType) == [enums.JobType.SNAPSHOT]
+    assert not hasattr(payloads, "EngineBacktestInput")
+    assert not hasattr(payloads, "EngineBacktestPayload")
     with pytest.raises(ValueError, match="job type is not allowlisted"):
         payloads.parse_payload("BACKTEST", {})
 
@@ -610,15 +612,19 @@ def test_paper_application_mapping_is_a_positive_allowlist_without_live_surfaces
     assert "uv.lock" in stage_paths
     assert "services/job_worker/main.py" in stage_paths
     assert "services/job_worker/command_registry.py" in stage_paths
-    assert "services/job_worker/engine_spawn.py" in stage_paths
-    assert "services/job_store/engine_event_repository.py" in stage_paths
+    assert "services/job_worker/engine_spawn.py" not in stage_paths
+    assert "services/job_worker/engine_spawn_interface.py" in stage_paths
+    assert "services/job_store/engine_event_repository.py" not in stage_paths
     assert not any(path.startswith("apps/dashboard/") for path in source_paths)
     assert not any(path.startswith("apps/control_api/") for path in source_paths)
     assert not any("migrate" in path for path in source_paths)
     assert not any("asset_registry" in path for path in source_paths)
+    assert not any(path.startswith("packages/engine_contracts/") for path in source_paths)
+    assert not any(path.startswith("packages/engine_event_ledger/") for path in source_paths)
     assert not any(path.startswith("packages/nautilus_engine_cli/") for path in source_paths)
-    assert not any("engine_toolchain" in path for path in source_paths)
-    assert not any("engine_provider" in path for path in source_paths)
+    assert [path for path in source_paths if "engine_" in path] == [
+        "services/job_worker/engine_spawn_interface.py"
+    ]
 
 
 def test_paper_application_dependency_closure_excludes_migration_packages() -> None:
@@ -668,24 +674,52 @@ def test_paper_application_projection_has_a_closed_import_graph(tmp_path: Path) 
     destination = tmp_path / "paper-application"
     construct_paper_application_artifact(REPOSITORY_SOURCE, destination)
     modules = (
-        "packages.engine_contracts",
-        "packages.engine_event_ledger",
         "packages.job_contracts.transitions",
         "apps.job_api.app",
-        "services.job_store.engine_event_repository",
         "services.job_store.worker_repository",
-        "services.job_worker.engine_authority",
-        "services.job_worker.engine_results",
-        "services.job_worker.engine_spawn",
         "services.job_worker.main",
         "services.job_worker.process_runner",
         "services.job_worker.worker",
     )
-    probe = (
-        "import importlib, pathlib, sys; "
-        "sys.path.insert(0, str(pathlib.Path.cwd())); "
-        f"[importlib.import_module(name) for name in {modules!r}]"
+    forbidden_modules = (
+        "packages.engine_contracts",
+        "packages.engine_event_ledger",
+        "services.job_store.engine_event_repository",
+        "services.job_worker.engine_authority",
+        "services.job_worker.engine_results",
+        "services.job_worker.engine_spawn",
     )
+    probe = f"""
+import importlib
+import importlib.util
+import pathlib
+import sys
+sys.path.insert(0, str(pathlib.Path.cwd()))
+for name in {modules!r}:
+    importlib.import_module(name)
+for name in {forbidden_modules!r}:
+    assert importlib.util.find_spec(name) is None, name
+    try:
+        importlib.import_module(name)
+    except ModuleNotFoundError:
+        pass
+    else:
+        raise AssertionError(name)
+contracts = importlib.import_module("packages.job_contracts")
+assert not hasattr(contracts, "EngineBacktestPayload")
+runner = importlib.import_module("services.job_worker.process_runner")
+store = importlib.import_module("services.job_store.worker_repository")
+assert not hasattr(runner, "EngineSpawnProvider")
+assert not hasattr(store, "PostgresEngineEventLedger")
+assert "services.job_worker.engine_spawn" not in sys.modules
+assert "services.job_store.engine_event_repository" not in sys.modules
+try:
+    contracts.parse_payload("BACKTEST", {{}})
+except ValueError:
+    pass
+else:
+    raise AssertionError("BACKTEST parse authority is present")
+"""
 
     completed = subprocess.run(
         [sys.executable, "-I", "-B", "-c", probe],
