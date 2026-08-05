@@ -287,14 +287,53 @@ def upgrade() -> None:
             '4a19cdf22297ee97dc7e31f354f42c020075e9a61e3cd411fb9dc8b160c88181',
             '90d7cda5361ccc9e2364821baad7a8a5c4ce56f5d3552b7ba835e980eb175b82'
           ];
+          source_definition_hashes text[] := ARRAY[
+            'fb08db2e2dfb7e1f796fda9217a97ea0c5a1716d4d0d94fac5a3eef4e3ce96bd',
+            'fe83bcf5d045cc540f7f2c22e23116bf878b035fedfb1c94feead2360f3938b6',
+            '3624b4b8934a496362a6ded5410b1f72353317ed36788e8852da25ea06256b74',
+            '4ce0b71a3fefc88d390f6f3ffcd8d6ba3f7db997627ed2d11c268d2e99e7efd8',
+            '899203b3cef59a7de5067613e77e184585a9d3ed28006d8038ede04ae01a9450'
+          ];
+          target_definition_hashes text[] := ARRAY[
+            'f032ba72968d7b729ca6af4627a167089413a92f9813b4f945815f52ed9bd5ac',
+            '21c8c57d2aa4836f2c83800d63f5b72e72fa8bc9ca2ee859994cc3b89e04afff',
+            '67cf73d64efe4173fb6e01c699eb32ed8ce8c49137f12f6e7991702d093b4ab5',
+            '3086de5117abf87c2dc0cdbced27cc928423786b3c1664cf10d89244dad5aab5',
+            'a9a4560d441bce351dd7bff140f3a02cf263c3d160462096811e174c2eae112b'
+          ];
           expected_results text[] := ARRAY[
             'TABLE(job_id text, job_type text, payload jsonb, attempt_number integer, max_attempts smallint, lease_expires_at timestamp with time zone)',
             'boolean', 'text', 'boolean', 'text'
           ];
+          expected_argument_declarations text[] := ARRAY[
+            'p_attempt_id text, p_worker_id text, p_lease_token text, p_lease_seconds integer, p_trace_id text, p_event_id text',
+            'p_job_id text, p_attempt_id text, p_worker_id text, p_lease_token text, p_child_pid bigint, p_process_group_id bigint, p_process_start_ticks bigint, p_command_fingerprint text, p_trace_id text, p_event_id text',
+            'p_job_id text, p_attempt_id text, p_worker_id text, p_lease_token text, p_lease_seconds integer, p_phase text',
+            'p_job_id text, p_attempt_id text, p_worker_id text, p_lease_token text, p_expected_state text, p_expected_attempt_outcome text, p_final_state text, p_reason_code text, p_trace_id text, p_event_id text, p_exit_code integer, p_termination_reason text, p_result_hash text, p_result_metadata jsonb, p_error_code text, p_error_message text, p_retry boolean, p_retry_event_id text, p_event_metadata jsonb',
+            'p_job_id text, p_attempt_id text, p_expected_state text, p_expected_attempt_outcome text, p_expected_lease_owner text, p_expected_lease_token text, p_expected_child_pid bigint, p_expected_process_group_id bigint, p_expected_process_start_ticks bigint, p_expected_command_fingerprint text, p_observation text, p_trace_id text, p_recovery_id text, p_event_id text, p_retry_event_id text'
+          ];
+          expected_argument_names text[] := ARRAY[
+            'p_attempt_id,p_worker_id,p_lease_token,p_lease_seconds,p_trace_id,p_event_id,job_id,job_type,payload,attempt_number,max_attempts,lease_expires_at',
+            'p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_child_pid,p_process_group_id,p_process_start_ticks,p_command_fingerprint,p_trace_id,p_event_id',
+            'p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_lease_seconds,p_phase',
+            'p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_expected_state,p_expected_attempt_outcome,p_final_state,p_reason_code,p_trace_id,p_event_id,p_exit_code,p_termination_reason,p_result_hash,p_result_metadata,p_error_code,p_error_message,p_retry,p_retry_event_id,p_event_metadata',
+            'p_job_id,p_attempt_id,p_expected_state,p_expected_attempt_outcome,p_expected_lease_owner,p_expected_lease_token,p_expected_child_pid,p_expected_process_group_id,p_expected_process_start_ticks,p_expected_command_fingerprint,p_observation,p_trace_id,p_recovery_id,p_event_id,p_retry_event_id'
+          ];
+          expected_argument_modes text[] := ARRAY[
+            'i,i,i,i,i,i,t,t,t,t,t,t', '', '', '', ''
+          ];
+          expected_argument_counts integer[] := ARRAY[6, 10, 6, 19, 15];
+          expected_returns_set boolean[] := ARRAY[true, false, false, false, false];
+          expected_rows real[] := ARRAY[
+            1000::real, 0::real, 0::real, 0::real, 0::real
+          ];
           source_oid oid;
+          target_oid oid;
           source_body text;
           promoted_body text;
           source_definition text;
+          target_definition text;
+          expected_target_definition text;
           promoted_definition text;
           reviewed_predicate text := 'job_row.job_type = ''SNAPSHOT''';
           paper_predicate text :=
@@ -328,14 +367,39 @@ def upgrade() -> None:
               AND language_row.lanname = 'plpgsql'
               AND procedure_row.prosecdef
               AND NOT procedure_row.proleakproof
+              AND procedure_row.prokind = 'f'
               AND procedure_row.provolatile = 'v'
               AND procedure_row.proparallel = 'u'
               AND procedure_row.proconfig = ARRAY['search_path=pg_catalog']
+              AND procedure_row.pronargs =
+                    expected_argument_counts[function_index]
+              AND procedure_row.pronargdefaults = 0
+              AND procedure_row.proargdefaults IS NULL
+              AND procedure_row.provariadic = 0
+              AND array_to_string(procedure_row.proargnames, ',') =
+                    expected_argument_names[function_index]
+              AND coalesce(
+                    array_to_string(procedure_row.proargmodes, ','), ''
+                  ) = expected_argument_modes[function_index]
+              AND NOT procedure_row.proisstrict
+              AND procedure_row.proretset =
+                    expected_returns_set[function_index]
+              AND procedure_row.procost = 100
+              AND procedure_row.prorows = expected_rows[function_index]
+              AND procedure_row.prosupport = 0
+              AND procedure_row.protransform = 0
+              AND procedure_row.probin IS NULL
+              AND procedure_row.prosqlbody IS NULL
               AND pg_get_function_result(procedure_row.oid)
                     = expected_results[function_index]
               AND encode(public.digest(
                     convert_to(procedure_row.prosrc, 'UTF8'), 'sha256'
                   ), 'hex') = source_hashes[function_index]
+              AND encode(public.digest(
+                    convert_to(
+                      pg_get_functiondef(procedure_row.oid), 'UTF8'
+                    ), 'sha256'
+                  ), 'hex') = source_definition_hashes[function_index]
               AND has_function_privilege(
                     'trading_job_worker', procedure_row.oid, 'EXECUTE'
                   )
@@ -381,7 +445,7 @@ def upgrade() -> None:
               RAISE EXCEPTION 'paper worker source predicate drifted: %',
                 source_names[function_index];
             END IF;
-            promoted_definition := replace(
+            expected_target_definition := replace(
               source_definition,
               source_names[function_index],
               target_names[function_index]
@@ -389,18 +453,36 @@ def upgrade() -> None:
             promoted_body := replace(
               source_body, reviewed_predicate, paper_predicate
             );
-            promoted_definition := replace(
-              promoted_definition,
+            expected_target_definition := replace(
+              expected_target_definition,
               reviewed_predicate,
               paper_predicate
             );
-            IF promoted_definition = source_definition
+            promoted_definition := format(
+              'CREATE FUNCTION job_plane.%I(%s) RETURNS %s '
+              'LANGUAGE plpgsql SECURITY DEFINER VOLATILE PARALLEL UNSAFE '
+              'SET search_path = pg_catalog AS %L',
+              target_names[function_index],
+              expected_argument_declarations[function_index],
+              expected_results[function_index],
+              promoted_body
+            );
+            IF expected_target_definition = source_definition
                OR position(target_names[function_index] IN promoted_definition) = 0
                OR position(paper_predicate IN promoted_definition) = 0 THEN
                 RAISE EXCEPTION 'paper worker promotion failed closed: %',
                 source_names[function_index];
             END IF;
             EXECUTE promoted_definition;
+            target_oid := replace(
+              source_signatures[function_index],
+              source_names[function_index],
+              target_names[function_index]
+            )::regprocedure;
+            SELECT pg_get_functiondef(procedure_row.oid)
+            INTO target_definition
+            FROM pg_catalog.pg_proc AS procedure_row
+            WHERE procedure_row.oid = target_oid;
             IF (
               SELECT procedure_row.prosrc IS DISTINCT FROM promoted_body
                      OR encode(public.digest(
@@ -408,14 +490,35 @@ def upgrade() -> None:
                         ), 'hex') IS DISTINCT FROM encode(public.digest(
                           convert_to(promoted_body, 'UTF8'), 'sha256'
                         ), 'hex')
+                     OR procedure_row.pronargs IS DISTINCT FROM
+                          expected_argument_counts[function_index]
+                     OR procedure_row.pronargdefaults IS DISTINCT FROM 0
+                     OR procedure_row.proargdefaults IS NOT NULL
+                     OR procedure_row.provariadic IS DISTINCT FROM 0
+                     OR array_to_string(procedure_row.proargnames, ',')
+                          IS DISTINCT FROM
+                          expected_argument_names[function_index]
+                     OR coalesce(
+                          array_to_string(procedure_row.proargmodes, ','), ''
+                        ) IS DISTINCT FROM
+                          expected_argument_modes[function_index]
+                     OR target_definition IS DISTINCT FROM
+                          expected_target_definition
+                     OR encode(public.digest(
+                          convert_to(target_definition, 'UTF8'), 'sha256'
+                        ), 'hex') IS DISTINCT FROM encode(public.digest(
+                          convert_to(
+                            expected_target_definition, 'UTF8'
+                          ), 'sha256'
+                        ), 'hex')
+                     OR encode(public.digest(
+                          convert_to(target_definition, 'UTF8'), 'sha256'
+                        ), 'hex') IS DISTINCT FROM
+                          target_definition_hashes[function_index]
               FROM pg_catalog.pg_proc AS procedure_row
-              WHERE procedure_row.oid = replace(
-                source_signatures[function_index],
-                source_names[function_index],
-                target_names[function_index]
-              )::regprocedure
+              WHERE procedure_row.oid = target_oid
             ) IS DISTINCT FROM false THEN
-              RAISE EXCEPTION 'paper worker promoted body postflight failed: %',
+              RAISE EXCEPTION 'paper worker promoted definition postflight failed: %',
                 target_names[function_index];
             END IF;
           END LOOP;
@@ -482,27 +585,70 @@ def upgrade() -> None:
         DO $paper_worker_postflight$
         BEGIN
           IF EXISTS (
-            WITH expected(procedure_name, identity_types, result_type) AS (
+            WITH expected(
+              procedure_name, identity_types, result_type, argument_names,
+              argument_modes, argument_count, returns_set, expected_rows,
+              body_sha256, definition_sha256
+            ) AS (
               VALUES
                 ('worker_claim_paper',
                  'text, text, text, integer, text, text',
-                 'TABLE(job_id text, job_type text, payload jsonb, attempt_number integer, max_attempts smallint, lease_expires_at timestamp with time zone)'),
+                 'TABLE(job_id text, job_type text, payload jsonb, attempt_number integer, max_attempts smallint, lease_expires_at timestamp with time zone)',
+                 'p_attempt_id,p_worker_id,p_lease_token,p_lease_seconds,p_trace_id,p_event_id,job_id,job_type,payload,attempt_number,max_attempts,lease_expires_at',
+                 'i,i,i,i,i,i,t,t,t,t,t,t', 6, true, 1000::real,
+                 '813007621b82e3b8abf168641e512309d16d2fdbf85c14fcb4fd9058f2a35a59',
+                 'f032ba72968d7b729ca6af4627a167089413a92f9813b4f945815f52ed9bd5ac'),
                 ('worker_start_paper',
                  'text, text, text, text, bigint, bigint, bigint, text, text, text',
-                 'boolean'),
+                 'boolean',
+                 'p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_child_pid,p_process_group_id,p_process_start_ticks,p_command_fingerprint,p_trace_id,p_event_id',
+                 '', 10, false, 0::real,
+                 '561169daa1d7699a1636575da0f0db99852ae440b861765fcbd9e4820ce4c1a0',
+                 '21c8c57d2aa4836f2c83800d63f5b72e72fa8bc9ca2ee859994cc3b89e04afff'),
                 ('worker_control_paper_lease',
-                 'text, text, text, text, integer, text', 'text'),
+                 'text, text, text, text, integer, text', 'text',
+                 'p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_lease_seconds,p_phase',
+                 '', 6, false, 0::real,
+                 '233f8ba48fe8299b4b2e31a3086b99d08d87389c367d9f955659ba9ea725dbe6',
+                 '67cf73d64efe4173fb6e01c699eb32ed8ce8c49137f12f6e7991702d093b4ab5'),
                 ('worker_finalize_paper',
                  'text, text, text, text, text, text, text, text, text, text, integer, text, text, jsonb, text, text, boolean, text, jsonb',
-                 'boolean'),
+                 'boolean',
+                 'p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_expected_state,p_expected_attempt_outcome,p_final_state,p_reason_code,p_trace_id,p_event_id,p_exit_code,p_termination_reason,p_result_hash,p_result_metadata,p_error_code,p_error_message,p_retry,p_retry_event_id,p_event_metadata',
+                 '', 19, false, 0::real,
+                 '004bb49c1cca92356caac48879ffeaa18c0934291b4b13a25f278caf4c53639c',
+                 '3086de5117abf87c2dc0cdbced27cc928423786b3c1664cf10d89244dad5aab5'),
                 ('worker_recover_expired_paper',
                  'text, text, text, text, text, text, bigint, bigint, bigint, text, text, text, text, text, text',
-                 'text')
+                 'text',
+                 'p_job_id,p_attempt_id,p_expected_state,p_expected_attempt_outcome,p_expected_lease_owner,p_expected_lease_token,p_expected_child_pid,p_expected_process_group_id,p_expected_process_start_ticks,p_expected_command_fingerprint,p_observation,p_trace_id,p_recovery_id,p_event_id,p_retry_event_id',
+                 '', 15, false, 0::real,
+                 'b084073af25fa0fb5d06506815a9496cb56c8620e10e0997ede767eb90e592f2',
+                 'a9a4560d441bce351dd7bff140f3a02cf263c3d160462096811e174c2eae112b')
             ),
-            actual(procedure_name, identity_types, result_type) AS (
+            actual(
+              procedure_name, identity_types, result_type, argument_names,
+              argument_modes, argument_count, returns_set, expected_rows,
+              body_sha256, definition_sha256
+            ) AS (
               SELECT procedure_row.proname,
                      oidvectortypes(procedure_row.proargtypes),
-                     pg_get_function_result(procedure_row.oid)
+                     pg_get_function_result(procedure_row.oid),
+                     array_to_string(procedure_row.proargnames, ','),
+                     coalesce(
+                       array_to_string(procedure_row.proargmodes, ','), ''
+                     ),
+                     procedure_row.pronargs::integer,
+                     procedure_row.proretset,
+                     procedure_row.prorows,
+                     encode(public.digest(
+                       convert_to(procedure_row.prosrc, 'UTF8'), 'sha256'
+                     ), 'hex'),
+                     encode(public.digest(
+                       convert_to(
+                         pg_get_functiondef(procedure_row.oid), 'UTF8'
+                       ), 'sha256'
+                     ), 'hex')
               FROM pg_catalog.pg_proc AS procedure_row
               JOIN pg_catalog.pg_language AS language_row
                 ON language_row.oid = procedure_row.prolang
@@ -515,15 +661,21 @@ def upgrade() -> None:
                 AND language_row.lanname = 'plpgsql'
                 AND procedure_row.prosecdef
                 AND NOT procedure_row.proleakproof
+                AND procedure_row.prokind = 'f'
                 AND procedure_row.provolatile = 'v'
                 AND procedure_row.proparallel = 'u'
                 AND procedure_row.proconfig = ARRAY['search_path=pg_catalog']
-                AND position(
-                      'job_plane.paper_worker_job_allowed(job_row.job_type, job_row.payload)'
-                      IN procedure_row.prosrc
-                    ) > 0
+                AND procedure_row.pronargdefaults = 0
+                AND procedure_row.proargdefaults IS NULL
+                AND procedure_row.provariadic = 0
+                AND NOT procedure_row.proisstrict
+                AND procedure_row.procost = 100
+                AND procedure_row.prosupport = 0
+                AND procedure_row.protransform = 0
+                AND procedure_row.probin IS NULL
+                AND procedure_row.prosqlbody IS NULL
             ),
-            differences(procedure_name, identity_types, result_type) AS (
+            differences AS (
               (SELECT * FROM expected EXCEPT SELECT * FROM actual)
               UNION ALL
               (SELECT * FROM actual EXCEPT SELECT * FROM expected)
@@ -545,19 +697,28 @@ def upgrade() -> None:
           IF EXISTS (
             WITH expected(
               procedure_name, identity_types, result_type, language_name,
-              security_definer, volatility, parallel_safety
+              security_definer, volatility, parallel_safety, argument_names,
+              argument_modes, argument_count, returns_set, expected_rows,
+              body_sha256
             ) AS (
               VALUES
                 ('paper_worker_job_allowed', 'text, jsonb', 'boolean',
-                 'sql', false, 'i'::"char", 's'::"char"),
+                 'sql', false, 'i'::"char", 's'::"char",
+                 'p_job_type,p_payload', '', 2, false, 0::real,
+                 '342200fa9e9feefd84031d758232273aef8aa00c05880b5ee16f42fa5b967253'),
                 ('ingest_engine_job_result',
                  'text, text, text, text, text',
                  'TABLE(batch_sha256 character, ingestion_digest character, job_id character varying, attempt_id character varying, engine_run_id uuid, event_count bigint, first_sequence bigint, last_sequence bigint, last_digest character)',
-                 'plpgsql', true, 'v'::"char", 'u'::"char")
+                 'plpgsql', true, 'v'::"char", 'u'::"char",
+                 'p_job_id,p_attempt_id,p_worker_id,p_lease_token,p_batch_document,batch_sha256,ingestion_digest,job_id,attempt_id,engine_run_id,event_count,first_sequence,last_sequence,last_digest',
+                 'i,i,i,i,i,t,t,t,t,t,t,t,t,t', 5, true, 1000::real,
+                 '10e24e84094478e5b4994dab8ffdb22dec021ca235cfe51a05e94ae49e62fd34')
             ),
             actual(
               procedure_name, identity_types, result_type, language_name,
-              security_definer, volatility, parallel_safety
+              security_definer, volatility, parallel_safety, argument_names,
+              argument_modes, argument_count, returns_set, expected_rows,
+              body_sha256
             ) AS (
               SELECT procedure_row.proname,
                      oidvectortypes(procedure_row.proargtypes),
@@ -565,7 +726,17 @@ def upgrade() -> None:
                      language_row.lanname,
                      procedure_row.prosecdef,
                      procedure_row.provolatile,
-                     procedure_row.proparallel
+                     procedure_row.proparallel,
+                     array_to_string(procedure_row.proargnames, ','),
+                     coalesce(
+                       array_to_string(procedure_row.proargmodes, ','), ''
+                     ),
+                     procedure_row.pronargs::integer,
+                     procedure_row.proretset,
+                     procedure_row.prorows,
+                     encode(public.digest(
+                       convert_to(procedure_row.prosrc, 'UTF8'), 'sha256'
+                     ), 'hex')
               FROM pg_catalog.pg_proc AS procedure_row
               JOIN pg_catalog.pg_language AS language_row
                 ON language_row.oid = procedure_row.prolang
@@ -577,6 +748,16 @@ def upgrade() -> None:
                 AND pg_get_userbyid(procedure_row.proowner) = 'trading_owner'
                 AND NOT procedure_row.proleakproof
                 AND procedure_row.proconfig = ARRAY['search_path=pg_catalog']
+                AND procedure_row.prokind = 'f'
+                AND procedure_row.pronargdefaults = 0
+                AND procedure_row.proargdefaults IS NULL
+                AND procedure_row.provariadic = 0
+                AND NOT procedure_row.proisstrict
+                AND procedure_row.procost = 100
+                AND procedure_row.prosupport = 0
+                AND procedure_row.protransform = 0
+                AND procedure_row.probin IS NULL
+                AND procedure_row.prosqlbody IS NULL
             ),
             differences AS (
               (SELECT * FROM expected EXCEPT SELECT * FROM actual)
