@@ -517,6 +517,7 @@ def test_worker_repository_finalizes_without_optional_outcome_metadata() -> None
     repository = object.__new__(WorkerRepository)
     captured = {}
     repository.finalize = lambda *args, **kwargs: captured.update(kwargs) or True
+    reason_code = "ENGINE_BACKTEST_AUTHORITY_REQUIRED"
     claimed = SimpleNamespace(
         job_id="job_" + "1" * 32,
         attempt_id="attempt_" + "2" * 32,
@@ -529,13 +530,18 @@ def test_worker_repository_finalizes_without_optional_outcome_metadata() -> None
         expected_state=worker_repository_module.JobState.CLAIMED,
         expected_attempt_outcome="CLAIMED",
         final_state=worker_repository_module.JobState.BLOCKED,
-        reason_code="ENGINE_BACKTEST_AUTHORITY_REQUIRED",
+        reason_code=reason_code,
         trace_id="coverage:outcome-absent",
         outcome=None,
         result=None,
         stream_artifacts=(),
     )
     assert captured["result_metadata"] == {"artifacts": []}
+    assert captured["final_state"] is worker_repository_module.JobState.BLOCKED
+    assert captured["reason_code"] == reason_code
+    assert captured["error_code"] == reason_code
+    assert captured["result_hash"] is None
+    assert captured["artifacts"] == ()
     assert captured["exit_code"] is None
     assert captured["termination_reason"] is None
 
