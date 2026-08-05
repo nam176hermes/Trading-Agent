@@ -505,6 +505,12 @@ scripts/import_component_snapshot.py|393|BaseException|TOOLING_MIGRATION|RAISE
 scripts/import_component_snapshot.py|403|BaseException|TOOLING_MIGRATION|RAISE
 scripts/import_component_snapshot.py|703|BaseException|TOOLING_MIGRATION|RAISE
 scripts/import_component_snapshot.py|755|BaseException|TOOLING_MIGRATION|RETURN
+scripts/prepare_nautilus_input_cache.py|171|BaseException|TOOLING_MIGRATION|RAISE
+scripts/prepare_nautilus_input_cache.py|450|BaseException|TOOLING_MIGRATION|OTHER
+scripts/prepare_nautilus_input_cache.py|454|BaseException|TOOLING_MIGRATION|OTHER
+scripts/prepare_nautilus_input_cache.py|463|BaseException|TOOLING_MIGRATION|RAISE
+scripts/prepare_nautilus_llvm_toolchain.py|458|BaseException|TOOLING_MIGRATION|RAISE
+scripts/prepare_nautilus_llvm_toolchain.py|642|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_runtime_release_wheelhouse.py|230|Exception|TOOLING_MIGRATION|RAISE
 scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
 scripts/validate_package6_runtime_approval.py|1070|Exception|TOOLING_MIGRATION|OTHER
