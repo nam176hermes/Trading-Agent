@@ -31,6 +31,7 @@ The source migration graph is linear:
 
 ```text
 0001 -> 0002 -> 0003 -> 0004 -> 0005 -> 0006 -> 0007 -> 0008 -> 0009
+     -> 0010 -> 0011
 ```
 
 The source graph has a sole additive head, but several deliberately frozen or
@@ -53,6 +54,8 @@ outside this packet and needs separate review and operator authority.
 
 Evidence:
 
+- [0011_engine_backtest_worker_authority.py](../../alembic/versions/0011_engine_backtest_worker_authority.py)
+- [0010_engine_event_ledger.py](../../alembic/versions/0010_engine_event_ledger.py)
 - [0009_canonical_market_data.py](../../alembic/versions/0009_canonical_market_data.py)
 - [config.py](../../services/job_store/config.py)
 - [config.py](../../apps/job_api/config.py)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import fields, replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -25,6 +26,15 @@ CODE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 CONFIG_DIGEST = "4" * 64
 JOB_ID = "job_0123456789abcdef0123456789abcdef"
 ATTEMPT_ID = "attempt_fedcba9876543210fedcba9876543210"
+
+
+def _claim_for(batch: ValidatedEngineEventBatch) -> SimpleNamespace:
+    return SimpleNamespace(
+        job_id=batch.validation_metadata["job_id"],
+        attempt_id=batch.validation_metadata["attempt_id"],
+        worker_id="worker-authority-1",
+        lease_token="lease-token_0123456789abcdefghijklmnopqrstuvwxyz",
+    )
 
 
 def _event(
@@ -343,6 +353,20 @@ def test_restart_recovers_receipts_and_projection_by_replaying_authoritative_eve
     assert restarted.load_projection(RUN_ID) == projection
 
 
+def test_generic_receipt_never_becomes_a_job_result_binding_after_restart() -> None:
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    batch = _batch(_event(2, "BacktestStarted"))
+    repository = InMemoryEngineEventLedger()
+    receipt = repository.ingest(batch)
+
+    assert repository.load_receipt(batch.sha256) == receipt
+    assert repository.load_job_receipt(JOB_ID) is None
+    restarted = InMemoryEngineEventLedger(repository.export_state())
+    assert restarted.load_receipt(batch.sha256) == receipt
+    assert restarted.load_job_receipt(JOB_ID) is None
+
+
 def test_restart_replay_blocks_a_gap_in_authoritative_event_state() -> None:
     from packages.engine_event_ledger import EngineEventSequenceBlockedError
     from services.job_store.engine_event_repository import InMemoryEngineEventLedger
@@ -520,9 +544,10 @@ def test_job_result_ingestion_binds_one_durable_batch_without_narrowing_ledger()
     first = _batch(_event(2, "BacktestStarted"))
     second = _batch(_event(3, "BacktestCompleted"))
 
-    receipt = repository.ingest_for_job(first)
+    claim = _claim_for(first)
+    receipt = repository.ingest_for_job(first, claimed=claim)
 
-    assert repository.ingest_for_job(first) == receipt
+    assert repository.ingest_for_job(first, claimed=claim) == receipt
     assert repository.load_job_receipt(JOB_ID) == receipt
     changed_attempt = "attempt_11111111111111111111111111111111"
     changed_authority = replace(
@@ -536,7 +561,9 @@ def test_job_result_ingestion_binds_one_durable_batch_without_narrowing_ledger()
         },
     )
     with pytest.raises(EngineEventConflictError, match="receipt authority"):
-        repository.ingest_for_job(changed_authority)
+        repository.ingest_for_job(
+            changed_authority, claimed=_claim_for(changed_authority)
+        )
     with pytest.raises(EngineEventConflictError, match="different durable"):
-        repository.ingest_for_job(second)
+        repository.ingest_for_job(second, claimed=claim)
     assert repository.ingest(second).batch_sha256 == second.sha256

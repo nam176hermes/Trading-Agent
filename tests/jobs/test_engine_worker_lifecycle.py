@@ -396,13 +396,13 @@ class Ingestor:
             raise self.after_commit_error
         return receipt
 
-    def ingest_for_job(self, batch):
+    def ingest_for_job(self, batch, *, claimed):
         self.calls.append(batch)
         if self.during is not None:
             self.during()
         if self.error is not None:
             raise self.error
-        receipt = self.repository.ingest_for_job(batch)
+        receipt = self.repository.ingest_for_job(batch, claimed=claimed)
         if self.after_commit_error is not None:
             raise self.after_commit_error
         return receipt
@@ -710,8 +710,8 @@ def test_engine_success_waits_for_exact_durable_receipt() -> None:
 
 def test_engine_mismatched_receipt_blocks_success() -> None:
     class MismatchedReceiptIngestor(Ingestor):
-        def ingest_for_job(self, batch):
-            receipt = super().ingest_for_job(batch)
+        def ingest_for_job(self, batch, *, claimed):
+            receipt = super().ingest_for_job(batch, claimed=claimed)
             return receipt.model_copy(update={"batch_sha256": "0" * 64})
 
     repository = Repository(_claim())
@@ -788,6 +788,29 @@ def test_commit_then_response_loss_reconciles_exact_receipt_before_success() -> 
         receipt.model_dump(mode="json")
     )
     assert len(ingestor.repository.load_events(batch.events[0].engine_run_id)) == 1
+
+
+def test_unbound_generic_receipt_cannot_reconcile_job_result_success() -> None:
+    class GenericReceiptThenFailure(Ingestor):
+        def ingest_for_job(self, batch, *, claimed):
+            self.calls.append(batch)
+            self.repository.ingest(batch)
+            raise RuntimeError("protected job binding was never committed")
+
+    repository = Repository(_claim())
+    ingestor = GenericReceiptThenFailure()
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    batch = ingestor.calls[0]
+    assert ingestor.repository.load_receipt(batch.sha256) is not None
+    assert ingestor.repository.load_job_receipt(JOB_ID) is None
+    retry = [value for name, value in repository.calls if name == "retry"]
+    assert len(retry) == 1
+    assert retry[0]["reason_code"] == "RESULT_VALIDATION_FAILED"
+    assert not any(name == "finalize" for name, _ in repository.calls)
 
 
 def test_engine_identity_conflict_blocks_without_success() -> None:

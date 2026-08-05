@@ -11,6 +11,7 @@ from .models import (
     EngineEventBatchReceipt,
     EngineEventLedgerState,
     EngineEventTypeCount,
+    EngineJobResultBinding,
     EngineRunProjection,
     StoredEngineEvent,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "EngineEventSequenceBlockReason",
     "InvalidEngineEventBatchError",
     "EngineEventTypeCount",
+    "EngineJobResultBinding",
     "EngineRunProjection",
     "StoredEngineEvent",
     "project_engine_run",

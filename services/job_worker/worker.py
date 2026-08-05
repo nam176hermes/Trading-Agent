@@ -416,7 +416,9 @@ class JobWorker:
                 sealed_validation_metadata = dict(result.validation_metadata)
                 self._validation_progress(claimed, safety_preflight)
                 try:
-                    receipt = self._engine_event_ingestor.ingest_for_job(result)
+                    receipt = self._engine_event_ingestor.ingest_for_job(
+                        result, claimed=claimed
+                    )
                 except EngineEventConflictError as exc:
                     raise _EngineEventIngestionBlocked(
                         "ENGINE_EVENT_IDENTITY_CONFLICT",
@@ -434,8 +436,8 @@ class JobWorker:
                     ) from exc
                 except Exception as ingest_error:
                     try:
-                        receipt = self._engine_event_ingestor.load_receipt(
-                            result.sha256
+                        receipt = self._engine_event_ingestor.load_job_receipt(
+                            claimed.job_id
                         )
                     except EngineEventConflictError as exc:
                         raise _EngineEventIngestionBlocked(

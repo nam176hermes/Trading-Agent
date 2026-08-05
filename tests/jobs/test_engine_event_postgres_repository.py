@@ -18,7 +18,7 @@ from services.job_store.engine_event_repository import (
     PostgresEngineEventLedgerSql,
 )
 from services.job_store.worker_repository import WorkerRepository
-from tests.jobs.test_engine_event_ledger import RUN_ID, _batch, _event
+from tests.jobs.test_engine_event_ledger import RUN_ID, _batch, _claim_for, _event
 
 
 class Cursor:
@@ -125,22 +125,31 @@ def test_postgres_ingest_uses_one_transaction_and_one_function_statement() -> No
 
 def test_postgres_job_result_uses_only_protected_binding_function() -> None:
     batch = _batch(_event(2, "BacktestStarted"))
-    expected = InMemoryEngineEventLedger().ingest_for_job(batch)
+    claim = _claim_for(batch)
+    expected = InMemoryEngineEventLedger().ingest_for_job(batch, claimed=claim)
     connection = Connection([[_receipt_row(expected)]])
 
-    receipt = PostgresEngineEventLedger(Pool(connection)).ingest_for_job(batch)
+    receipt = PostgresEngineEventLedger(Pool(connection)).ingest_for_job(
+        batch, claimed=claim
+    )
 
     assert receipt == expected
     assert connection.executions[0][0] == (
         PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
     )
     assert "job_plane.ingest_engine_job_result" in connection.executions[0][0]
+    assert connection.executions[0][1]["job_id"] == claim.job_id
+    assert connection.executions[0][1]["attempt_id"] == claim.attempt_id
+    assert connection.executions[0][1]["worker_id"] == claim.worker_id
+    assert connection.executions[0][1]["lease_token"] == claim.lease_token
     assert connection.commit_count == 1
 
 
 def test_postgres_load_job_receipt_uses_binding_not_unbound_receipt_scan() -> None:
     batch = _batch(_event(2, "BacktestStarted"))
-    expected = InMemoryEngineEventLedger().ingest_for_job(batch)
+    expected = InMemoryEngineEventLedger().ingest_for_job(
+        batch, claimed=_claim_for(batch)
+    )
     connection = Connection([[_receipt_row(expected)]])
 
     receipt = PostgresEngineEventLedger(Pool(connection)).load_job_receipt(

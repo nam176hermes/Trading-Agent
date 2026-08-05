@@ -16,6 +16,7 @@ from packages.engine_event_ledger import (
     EngineEventBatchReceipt,
     EngineEventConflictError,
     EngineEventLedgerState,
+    EngineJobResultBinding,
     EngineEventSequenceBlockedError,
     EngineRunProjection,
     InvalidEngineEventBatchError,
@@ -229,7 +230,7 @@ class EngineEventLedgerRepository(Protocol):
     def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt: ...
 
     def ingest_for_job(
-        self, batch: ValidatedEngineEventBatch
+        self, batch: ValidatedEngineEventBatch, *, claimed: object
     ) -> EngineEventBatchReceipt: ...
 
     def load_receipt(self, batch_sha256: str) -> EngineEventBatchReceipt | None: ...
@@ -252,6 +253,7 @@ class InMemoryEngineEventLedger:
         self._events: dict[UUID, StoredEngineEvent] = {}
         self._receipts: dict[str, EngineEventBatchReceipt] = {}
         self._projections: dict[UUID, EngineRunProjection] = {}
+        self._job_results: dict[str, EngineJobResultBinding] = {}
         if state is not None:
             if type(state) is not EngineEventLedgerState:
                 raise TypeError("restart state must be an exact EngineEventLedgerState")
@@ -268,8 +270,18 @@ class InMemoryEngineEventLedger:
             self._receipts = {
                 receipt.batch_sha256: receipt for receipt in normalized.receipts
             }
+            if len({binding.job_id for binding in normalized.job_results}) != len(
+                normalized.job_results
+            ):
+                raise EngineEventConflictError(
+                    "restart state contains duplicate engine job results"
+                )
+            self._job_results = {
+                binding.job_id: binding for binding in normalized.job_results
+            }
             self.recover_projections()
             self._validate_recovered_receipts()
+            self._validate_recovered_job_results()
 
     def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt:
         records, ingestion_digest = _validated_records(batch)
@@ -307,20 +319,41 @@ class InMemoryEngineEventLedger:
         return receipt
 
     def ingest_for_job(
-        self, batch: ValidatedEngineEventBatch
+        self, batch: ValidatedEngineEventBatch, *, claimed: object
     ) -> EngineEventBatchReceipt:
         records, _ingestion_digest = _validated_records(batch)
         job_id = batch.validation_metadata["job_id"]
+        attempt_id = batch.validation_metadata["attempt_id"]
+        if (
+            getattr(claimed, "job_id", None) != job_id
+            or getattr(claimed, "attempt_id", None) != attempt_id
+        ):
+            raise EngineEventConflictError(
+                "engine job result differs from the current claim"
+            )
         prior = self.load_job_receipt(job_id)
         if prior is not None:
-            if prior.batch_sha256 == batch.sha256:
+            if (
+                prior.batch_sha256 == batch.sha256
+                and prior.job_id == job_id
+                and prior.attempt_id == attempt_id
+            ):
                 return self.ingest(batch)
+            if prior.batch_sha256 == batch.sha256:
+                raise EngineEventConflictError(
+                    "job result receipt authority differs from the current claim"
+                )
             raise EngineEventConflictError(
                 f"job already has a different durable engine-event result: {job_id}"
             )
         receipt = self.ingest(batch)
         if receipt.engine_run_id != records[0].engine_run_id:
             raise EngineEventConflictError("job result receipt authority is invalid")
+        self._job_results[job_id] = EngineJobResultBinding(
+            job_id=job_id,
+            attempt_id=attempt_id,
+            batch_sha256=receipt.batch_sha256,
+        )
         return receipt
 
     def load_receipt(self, batch_sha256: str) -> EngineEventBatchReceipt | None:
@@ -328,14 +361,27 @@ class InMemoryEngineEventLedger:
 
     def load_job_receipt(self, job_id: str) -> EngineEventBatchReceipt | None:
         _validate_job_identity(job_id)
-        receipts = tuple(
-            receipt for receipt in self._receipts.values() if receipt.job_id == job_id
-        )
-        if len(receipts) > 1:
+        binding = self._job_results.get(job_id)
+        if binding is None:
+            return None
+        receipt = self._receipts.get(binding.batch_sha256)
+        if receipt is None:
             raise EngineEventConflictError(
-                f"job has conflicting engine-event receipts: {job_id}"
+                f"engine job result has no receipt: {job_id}"
             )
-        return receipts[0] if receipts else None
+        return receipt
+
+    def _validate_recovered_job_results(self) -> None:
+        for job_id, binding in self._job_results.items():
+            receipt = self._receipts.get(binding.batch_sha256)
+            if (
+                receipt is None
+                or receipt.job_id != job_id
+                or receipt.attempt_id != binding.attempt_id
+            ):
+                raise EngineEventConflictError(
+                    f"restart engine job result is inconsistent: {job_id}"
+                )
 
     def load_events(self, engine_run_id: UUID) -> tuple[StoredEngineEvent, ...]:
         return tuple(
@@ -473,6 +519,9 @@ class InMemoryEngineEventLedger:
             receipts=tuple(
                 self._receipts[digest] for digest in sorted(self._receipts)
             ),
+            job_results=tuple(
+                self._job_results[job_id] for job_id in sorted(self._job_results)
+            ),
         )
 
 
@@ -500,7 +549,10 @@ class PostgresEngineEventLedgerSql:
 FROM public.ingest_engine_event_batch(%(batch_document)s);"""
     INGEST_JOB_RESULT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
        engine_run_id, event_count, first_sequence, last_sequence, last_digest
-FROM job_plane.ingest_engine_job_result(%(batch_document)s);"""
+FROM job_plane.ingest_engine_job_result(
+  %(job_id)s, %(attempt_id)s, %(worker_id)s, %(lease_token)s,
+  %(batch_document)s
+);"""
     LOAD_RECEIPT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
        engine_run_id, event_count, first_sequence, last_sequence, last_digest
 FROM public.engine_event_batch_receipts
@@ -674,16 +726,33 @@ class PostgresEngineEventLedger:
         )
 
     def ingest_for_job(
-        self, batch: ValidatedEngineEventBatch
+        self, batch: ValidatedEngineEventBatch, *, claimed: object
     ) -> EngineEventBatchReceipt:
+        if (
+            getattr(claimed, "job_id", None)
+            != batch.validation_metadata.get("job_id")
+            or getattr(claimed, "attempt_id", None)
+            != batch.validation_metadata.get("attempt_id")
+        ):
+            raise EngineEventConflictError(
+                "engine job result differs from the current claim"
+            )
         return self._ingest_with_statement(
-            batch, PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
+            batch,
+            PostgresEngineEventLedgerSql.INGEST_JOB_RESULT,
+            extra_params={
+                "job_id": claimed.job_id,
+                "attempt_id": claimed.attempt_id,
+                "worker_id": claimed.worker_id,
+                "lease_token": claimed.lease_token,
+            },
         )
 
     def _ingest_with_statement(
         self,
         batch: ValidatedEngineEventBatch,
         statement: str,
+        extra_params: Mapping[str, object] | None = None,
     ) -> EngineEventBatchReceipt:
         records, ingestion_digest = _validated_records(batch)
         expected = _receipt_for(batch, records, ingestion_digest)
@@ -695,7 +764,8 @@ class PostgresEngineEventLedger:
                         {
                             "batch_document": self._batch_document(
                                 batch, records, ingestion_digest
-                            )
+                            ),
+                            **(extra_params or {}),
                         },
                     ).fetchone()
                     if row is None:

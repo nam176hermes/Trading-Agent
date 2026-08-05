@@ -87,8 +87,15 @@ class EngineEventBatchReceipt(EngineEventLedgerModel):
     last_digest: Sha256Hex
 
 
+class EngineJobResultBinding(EngineEventLedgerModel):
+    job_id: Annotated[str, Field(pattern=r"^job_[0-9a-f]{32}$")]
+    attempt_id: Annotated[str, Field(pattern=r"^attempt_[0-9a-f]{32}$")]
+    batch_sha256: Sha256Hex
+
+
 class EngineEventLedgerState(EngineEventLedgerModel):
     """Authoritative fake persistence retained across process restarts."""
 
     events: tuple[StoredEngineEvent, ...]
     receipts: tuple[EngineEventBatchReceipt, ...]
+    job_results: tuple[EngineJobResultBinding, ...] = ()
