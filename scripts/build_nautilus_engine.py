@@ -139,6 +139,12 @@ def _build_tool_environment(
     }
 
 
+def _toolchain_root_for_cargo(cargo: Path) -> Path:
+    if cargo.name != "cargo" or cargo.parent.name != "bin":
+        raise VerificationError("private Cargo must be the bin/cargo entrypoint of a toolchain")
+    return cargo.parent.parent
+
+
 def _stage_compiler_temp_environment(stage: Path) -> dict[str, str]:
     compiler_tmp = stage / "compiler-tmp"
     compiler_tmp.mkdir(mode=0o700)
@@ -661,7 +667,7 @@ def build_engine(
     rust_tool = _load_rust_toolchain_tool()
     try:
         rust_manifest = rust_tool.load_manifest(_RUST_TOOLCHAIN_POLICY)
-        rust_tool.verify_materialized_toolchain(cargo.parent, rust_manifest)
+        rust_tool.verify_materialized_toolchain(_toolchain_root_for_cargo(cargo), rust_manifest)
     except (OSError, ValueError) as exc:
         raise VerificationError(f"private Rust toolchain verification failed: {exc}") from exc
     llvm_tool = _load_llvm_toolchain_tool()

@@ -461,6 +461,16 @@ def test_build_environment_selects_only_absolute_private_compilers(tmp_path: Pat
     ]
 
 
+def test_cargo_must_be_the_explicit_private_toolchain_entrypoint(tmp_path: Path) -> None:
+    module = _module()
+    cargo = tmp_path / "rust" / "bin" / "cargo"
+
+    assert module._toolchain_root_for_cargo(cargo) == tmp_path / "rust"
+
+    with pytest.raises(module.VerificationError, match="bin/cargo"):
+        module._toolchain_root_for_cargo(tmp_path / "cargo")
+
+
 def test_build_rejects_an_ambient_compiler_fallback(tmp_path: Path) -> None:
     module = _module()
     ambient_bin = tmp_path / "ambient-bin"
