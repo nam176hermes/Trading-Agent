@@ -33,21 +33,28 @@ def _event(
     *,
     message_id: UUID | None = None,
     family: EventFamily = EventFamily.ENGINE_LIFECYCLE,
+    engine_run_id: UUID = RUN_ID,
+    correlation_id: UUID = CORRELATION_ID,
+    causation_id: UUID = REQUEST_ID,
+    initialization_time: datetime = NOW,
+    producer_identity: str = "engine-fixture",
+    source_commit: str = CODE_COMMIT,
+    config_digest: str = CONFIG_DIGEST,
 ) -> EngineEventEnvelope:
     payload = EngineEvent(event_type=event_type, family=family)
     return EngineEventEnvelope(
         message_id=message_id
         or UUID(f"40000000-0000-4000-8000-{sequence:012d}"),
-        correlation_id=CORRELATION_ID,
-        causation_id=REQUEST_ID,
-        engine_run_id=RUN_ID,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        engine_run_id=engine_run_id,
         stream_sequence=sequence,
         event_time=NOW,
-        initialization_time=NOW,
+        initialization_time=initialization_time,
         schema_version="1.0.0",
-        producer_identity="engine-fixture",
-        source_commit=CODE_COMMIT,
-        config_digest=CONFIG_DIGEST,
+        producer_identity=producer_identity,
+        source_commit=source_commit,
+        config_digest=config_digest,
         payload_digest=payload_digest(payload),
         payload=payload,
     )
@@ -66,18 +73,56 @@ def _batch(*events: EngineEventEnvelope) -> ValidatedEngineEventBatch:
         validator_id="engine-event-v1",
         validation_metadata={
             "attempt_id": ATTEMPT_ID,
-            "config_digest": CONFIG_DIGEST,
-            "engine_run_id": str(RUN_ID),
+            "config_digest": events[0].config_digest,
+            "engine_run_id": str(events[0].engine_run_id),
             "event_count": len(events),
             "first_sequence": events[0].stream_sequence,
             "job_id": JOB_ID,
             "last_sequence": events[-1].stream_sequence,
-            "request_message_id": str(REQUEST_ID),
-            "source_commit": CODE_COMMIT,
+            "request_message_id": str(events[0].causation_id),
+            "source_commit": events[0].source_commit,
             "validator_id": "engine-event-v1",
         },
         events=tuple(events),
     )
+
+
+def _reconstructed_state(*events: EngineEventEnvelope):
+    from packages.engine_event_ledger import (
+        EngineEventBatchReceipt,
+        EngineEventLedgerState,
+        StoredEngineEvent,
+    )
+
+    batch = _batch(*events)
+    records = tuple(
+        StoredEngineEvent.from_envelope(event, batch_sha256=batch.sha256)
+        for event in events
+    )
+    identity = canonical_json_bytes(
+        {
+            "artifact_type": batch.artifact_type,
+            "media_type": batch.media_type,
+            "relative_ref": batch.relative_ref,
+            "sha256": batch.sha256,
+            "size_bytes": batch.size_bytes,
+            "truncated": batch.truncated,
+            "validation_metadata": batch.validation_metadata,
+            "validator_id": batch.validator_id,
+        }
+    )
+    receipt = EngineEventBatchReceipt(
+        batch_sha256=batch.sha256,
+        ingestion_digest=hashlib.sha256(identity).hexdigest(),
+        job_id=JOB_ID,
+        attempt_id=ATTEMPT_ID,
+        engine_run_id=events[0].engine_run_id,
+        event_count=len(events),
+        first_sequence=events[0].stream_sequence,
+        last_sequence=events[-1].stream_sequence,
+        last_digest=records[-1].digest,
+    )
+    return EngineEventLedgerState(events=records, receipts=(receipt,))
 
 
 def test_ingest_records_canonical_events_receipt_and_deterministic_projection() -> None:
@@ -326,6 +371,60 @@ def test_restart_rejects_nonatomic_receipt_event_state(missing: str) -> None:
 
     with pytest.raises(EngineEventConflictError):
         InMemoryEngineEventLedger(broken)
+
+
+def test_restart_rejects_one_receipt_spanning_multiple_engine_runs() -> None:
+    from packages.engine_event_ledger import EngineEventConflictError
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    other_run = UUID("10000000-0000-4000-8000-000000000002")
+    state = _reconstructed_state(
+        _event(2, "BacktestStarted"),
+        _event(
+            2,
+            "BacktestStarted",
+            message_id=UUID("40000000-0000-4000-8000-000000000102"),
+            engine_run_id=other_run,
+        ),
+    )
+
+    with pytest.raises(EngineEventConflictError):
+        InMemoryEngineEventLedger(state)
+
+
+@pytest.mark.parametrize(
+    "authority_override",
+    (
+        {
+            "correlation_id": UUID(
+                "20000000-0000-4000-8000-000000000002"
+            )
+        },
+        {"causation_id": UUID("30000000-0000-4000-8000-000000000002")},
+        {"initialization_time": datetime(2026, 8, 5, 12, 29, tzinfo=UTC)},
+        {"producer_identity": "other-engine-fixture"},
+        {"source_commit": "f" * 40},
+        {"config_digest": "5" * 64},
+    ),
+)
+def test_restart_rejects_same_run_batch_with_mixed_authority(
+    authority_override: dict[str, object],
+) -> None:
+    from packages.engine_event_ledger import EngineEventConflictError
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    state = _reconstructed_state(
+        _event(2, "BacktestStarted"),
+        _event(
+            3,
+            "BacktestCompleted",
+            message_id=UUID("40000000-0000-4000-8000-000000000103"),
+            **authority_override,
+        ),
+    )
+
+    with pytest.raises(EngineEventConflictError):
+        InMemoryEngineEventLedger(state)
 
 
 def test_public_ledger_boundary_excludes_domain_and_provider_types() -> None:

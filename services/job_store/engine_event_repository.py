@@ -30,6 +30,44 @@ _JOB_ID = re.compile(r"^job_[0-9a-f]{32}$", re.ASCII)
 _ATTEMPT_ID = re.compile(r"^attempt_[0-9a-f]{32}$", re.ASCII)
 
 
+def _validate_batch_envelopes(
+    events: object,
+) -> tuple[EngineEventEnvelope, EngineEventEnvelope]:
+    if (
+        type(events) is not tuple
+        or not 1 <= len(events) <= 4_096
+        or any(type(event) is not EngineEventEnvelope for event in events)
+    ):
+        raise ValueError("engine event batch members are invalid")
+    first = events[0]
+    authority = (
+        first.engine_run_id,
+        first.correlation_id,
+        first.causation_id,
+        first.initialization_time,
+        first.schema_version,
+        first.producer_identity,
+        first.source_commit,
+        first.config_digest,
+    )
+    if any(
+        (
+            event.engine_run_id,
+            event.correlation_id,
+            event.causation_id,
+            event.initialization_time,
+            event.schema_version,
+            event.producer_identity,
+            event.source_commit,
+            event.config_digest,
+        )
+        != authority
+        for event in events
+    ) or len({event.message_id for event in events}) != len(events):
+        raise ValueError("engine event batch authority is inconsistent")
+    return first, events[-1]
+
+
 def _validated_records(
     batch: ValidatedEngineEventBatch,
 ) -> tuple[tuple[StoredEngineEvent, ...], str]:
@@ -43,9 +81,6 @@ def _validated_records(
             or batch.media_type != "application/x-ndjson"
             or batch.truncated is not False
             or batch.validator_id != "engine-event-v1"
-            or type(batch.events) is not tuple
-            or not 1 <= len(batch.events) <= 4_096
-            or any(type(event) is not EngineEventEnvelope for event in batch.events)
             or type(batch.size_bytes) is not int
             or batch.size_bytes <= 0
             or type(batch.sha256) is not str
@@ -53,6 +88,7 @@ def _validated_records(
             or type(batch.validation_metadata) is not dict
         ):
             raise ValueError
+        first, last = _validate_batch_envelopes(batch.events)
         raw = b"".join(
             canonical_json_bytes(event) + b"\n" for event in batch.events
         )
@@ -61,35 +97,6 @@ def _validated_records(
             or hashlib.sha256(raw).hexdigest() != batch.sha256
         ):
             raise ValueError
-
-        first = batch.events[0]
-        last = batch.events[-1]
-        authority = (
-            first.engine_run_id,
-            first.correlation_id,
-            first.causation_id,
-            first.initialization_time,
-            first.schema_version,
-            first.producer_identity,
-            first.source_commit,
-            first.config_digest,
-        )
-        if any(
-            (
-                event.engine_run_id,
-                event.correlation_id,
-                event.causation_id,
-                event.initialization_time,
-                event.schema_version,
-                event.producer_identity,
-                event.source_commit,
-                event.config_digest,
-            )
-            != authority
-            for event in batch.events
-        ) or len({event.message_id for event in batch.events}) != len(batch.events):
-            raise ValueError
-
         metadata = batch.validation_metadata
         job_id = metadata.get("job_id")
         attempt_id = metadata.get("attempt_id")
@@ -293,7 +300,16 @@ class InMemoryEngineEventLedger:
             )
             first = records[0]
             last = records[-1]
-            envelope = EngineEventEnvelope.model_validate_json(first.canonical_json)
+            try:
+                envelopes = tuple(
+                    EngineEventEnvelope.model_validate_json(record.canonical_json)
+                    for record in records
+                )
+                envelope, _last_envelope = _validate_batch_envelopes(envelopes)
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise EngineEventConflictError(
+                    f"restart batch authority is inconsistent for {batch_sha256}"
+                ) from exc
             metadata = {
                 "attempt_id": receipt.attempt_id,
                 "config_digest": envelope.config_digest,
