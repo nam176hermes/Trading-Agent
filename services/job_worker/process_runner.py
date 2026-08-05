@@ -408,6 +408,9 @@ class ProcessRunner:
                 engine_built = consume_prepared_engine_spawn(
                     cast(PreparedEngineSpawn, prepared)
                 )
+                # The provider has transferred ownership. Claim every
+                # descriptor before any validation branch can raise.
+                close_after_spawn_fds = engine_built.close_after_spawn_fds
                 if (
                     type(engine_built) is not EngineBuiltSpawn
                     or not isinstance(engine_built.argv, tuple)
@@ -439,7 +442,6 @@ class ProcessRunner:
                 cwd = engine_built.cwd
                 child_environment = engine_built.environment
                 pass_fds = engine_built.pass_fds
-                close_after_spawn_fds = engine_built.close_after_spawn_fds
                 capability_fingerprint = engine_built.capability_fingerprint
                 result_validator_id = engine_built.result_validator_id
                 source_revision = engine_built.source_revision

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-import hashlib
+import fcntl
 import gc
+import hashlib
 import os
 import shutil
 import tempfile
+import threading
+import time
 import weakref
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -35,6 +38,11 @@ SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 SANDBOX_PROFILE_SHA256 = (
     "21d08b1c58f18318008495604ab2eac04885805c638029483c93a160ce146a8a"
 )
+F_GET_SEALS = 1034
+F_SEAL_SEAL = 0x0001
+F_SEAL_SHRINK = 0x0002
+F_SEAL_GROW = 0x0004
+F_SEAL_WRITE = 0x0008
 
 
 @pytest.fixture
@@ -157,6 +165,29 @@ def _close_spawn_fds(spawn) -> None:
         os.close(descriptor)
 
 
+def _fd_targets() -> dict[int, str]:
+    observed: dict[int, str] = {}
+    for entry in Path("/proc/self/fd").iterdir():
+        try:
+            observed[int(entry.name)] = os.readlink(entry)
+        except FileNotFoundError:
+            pass
+    return observed
+
+
+def _bound_source(argv: tuple[str, ...] | list[str], target: str) -> str:
+    for index in range(len(argv) - 2):
+        if argv[index] == "--ro-bind" and argv[index + 2] == target:
+            return argv[index + 1]
+    raise AssertionError(f"missing read-only bind target: {target}")
+
+
+def _descriptor_source(value: str) -> int:
+    prefix = "/proc/self/fd/"
+    assert value.startswith(prefix)
+    return int(value.removeprefix(prefix))
+
+
 def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
     secure_tmp_path: Path,
 ) -> None:
@@ -168,13 +199,13 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
     prepared = provider.prepare(envelope)
     spawn = consume_prepared_engine_spawn(prepared)
     try:
-        request_fd, sidecar_fd = spawn.pass_fds
+        request_fd, sidecar_fd, sandbox_fd, mount_fd = spawn.pass_fds
         request_bytes = os.pread(request_fd, 1_000_000, 0)
         sidecar_bytes = os.pread(sidecar_fd, 1_000_000, 0)
         assert request_bytes == canonical_json_bytes(envelope)
         assert sidecar_bytes == hashlib.sha256(request_bytes).hexdigest().encode() + b"\n"
         assert spawn.argv == (
-            str(closure.sandbox.executable),
+            f"/proc/self/fd/{sandbox_fd}",
             "--die-with-parent",
             "--unshare-user",
             "--unshare-pid",
@@ -184,7 +215,7 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
             "--dir",
             "/inputs",
             "--ro-bind",
-            str(closure.mounts[0].source),
+            f"/proc/self/fd/{mount_fd}",
             "/engine",
             "--ro-bind",
             f"/proc/self/fd/{request_fd}",
@@ -221,6 +252,258 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
     run_root = tmp_path / "transport" / f"run-{envelope.engine_run_id.hex}"
     assert (run_root / "request.json").stat().st_mode & 0o777 == 0o400
     assert (run_root / "request.sha256").stat().st_mode & 0o777 == 0o400
+
+
+def test_consumed_request_is_a_sealed_snapshot_not_the_mutable_transport_inode(
+    secure_tmp_path: Path,
+) -> None:
+    envelope = _envelope()
+    closure = _closure(secure_tmp_path)
+    spawn = consume_prepared_engine_spawn(
+        _provider(secure_tmp_path, lambda: closure).prepare(envelope)
+    )
+    try:
+        request_fd = _descriptor_source(
+            _bound_source(spawn.argv, "/inputs/request.json")
+        )
+        sidecar_fd = _descriptor_source(
+            _bound_source(spawn.argv, "/inputs/request.sha256")
+        )
+        required_seals = (
+            F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL
+        )
+        assert fcntl.fcntl(request_fd, F_GET_SEALS) == required_seals
+        assert fcntl.fcntl(sidecar_fd, F_GET_SEALS) == required_seals
+        os.fchmod(request_fd, 0o600)
+        writable = os.open(f"/proc/self/fd/{request_fd}", os.O_RDWR)
+        try:
+            with pytest.raises(OSError):
+                os.pwrite(writable, b"{}", 0)
+        finally:
+            os.close(writable)
+
+        run_root = (
+            secure_tmp_path / "transport" / f"run-{envelope.engine_run_id.hex}"
+        )
+        request_path = run_root / "request.json"
+        sidecar_path = run_root / "request.sha256"
+        request_path.chmod(0o600)
+        sidecar_path.chmod(0o600)
+        request_path.write_bytes(b"{}")
+        sidecar_path.write_bytes(hashlib.sha256(b"{}").hexdigest().encode() + b"\n")
+
+        expected_request = canonical_json_bytes(envelope)
+        assert os.pread(request_fd, 1_000_000, 0) == expected_request
+        assert os.pread(sidecar_fd, 1_000_000, 0) == (
+            hashlib.sha256(expected_request).hexdigest().encode() + b"\n"
+        )
+    finally:
+        _close_spawn_fds(spawn)
+
+
+def test_consumed_sandbox_and_closure_mounts_remain_descriptor_pinned_after_swap(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(secure_tmp_path)
+    spawn = consume_prepared_engine_spawn(
+        _provider(secure_tmp_path, lambda: closure).prepare(_envelope())
+    )
+    try:
+        sandbox_fd = _descriptor_source(spawn.argv[0])
+        mount_fd = _descriptor_source(_bound_source(spawn.argv, "/engine"))
+        closure.sandbox.executable.rename(
+            closure.sandbox.executable.with_name("sandbox.replaced")
+        )
+        closure.mounts[0].source.rename(
+            closure.mounts[0].source.with_name("engine-release.replaced")
+        )
+
+        assert os.pread(sandbox_fd, 1_000_000, 0) == b"reviewed-os-sandbox-v1"
+        mounted = os.fstat(mount_fd)
+        assert (mounted.st_dev, mounted.st_ino) == closure.mounts[0].identity
+        assert sandbox_fd in spawn.pass_fds
+        assert mount_fd in spawn.pass_fds
+    finally:
+        _close_spawn_fds(spawn)
+
+
+def test_concurrent_consumers_obtain_exactly_one_real_provider_launch(
+    secure_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closure = _closure(secure_tmp_path)
+    prepared = _provider(secure_tmp_path, lambda: closure).prepare(_envelope())
+    original_contains = weakref.WeakSet.__contains__
+
+    def slow_contains(issued, candidate):
+        present = original_contains(issued, candidate)
+        time.sleep(0.05)
+        return present
+
+    monkeypatch.setattr(weakref.WeakSet, "__contains__", slow_contains)
+    start = threading.Barrier(3)
+    successes = []
+    errors = []
+
+    def consume() -> None:
+        start.wait()
+        try:
+            successes.append(consume_prepared_engine_spawn(prepared))
+        except EngineSpawnError as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=consume) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    start.wait()
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    try:
+        assert len(successes) == 1
+        assert [error.reason for error in errors] == [
+            "ENGINE_PREPARED_SPAWN_INVALID"
+        ]
+        for descriptor in successes[0].pass_fds:
+            os.fstat(descriptor)
+    finally:
+        for descriptor in {
+            fd for spawn in successes for fd in spawn.close_after_spawn_fds
+        }:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def test_real_provider_authority_stays_pinned_through_runner_popen_boundary(
+    secure_tmp_path: Path,
+) -> None:
+    from services.job_worker.process_runner import HeartbeatDecision
+    from tests.jobs.test_process_runner import (
+        FakeProcess,
+        Inspector,
+        identity,
+        runner,
+    )
+
+    envelope = _envelope()
+    closure = _closure(secure_tmp_path)
+    provider = _provider(secure_tmp_path, lambda: closure)
+    process = FakeProcess([None, 0])
+    inherited: tuple[int, ...] = ()
+
+    def popen(argv, **kwargs):
+        nonlocal inherited
+        inherited = kwargs["pass_fds"]
+        sandbox_fd = _descriptor_source(argv[0])
+        mount_fd = _descriptor_source(_bound_source(argv, "/engine"))
+        request_fd = _descriptor_source(
+            _bound_source(argv, "/inputs/request.json")
+        )
+        sidecar_fd = _descriptor_source(
+            _bound_source(argv, "/inputs/request.sha256")
+        )
+        assert set(inherited) == {sandbox_fd, mount_fd, request_fd, sidecar_fd}
+
+        run_root = (
+            secure_tmp_path / "transport" / f"run-{envelope.engine_run_id.hex}"
+        )
+        request_path = run_root / "request.json"
+        sidecar_path = run_root / "request.sha256"
+        request_path.chmod(0o600)
+        sidecar_path.chmod(0o600)
+        request_path.write_bytes(b"{}")
+        sidecar_path.write_bytes(hashlib.sha256(b"{}").hexdigest().encode() + b"\n")
+        closure.sandbox.executable.rename(
+            closure.sandbox.executable.with_name("sandbox.after-consume")
+        )
+        closure.mounts[0].source.rename(
+            closure.mounts[0].source.with_name("release.after-consume")
+        )
+
+        expected_request = canonical_json_bytes(envelope)
+        assert os.pread(request_fd, 1_000_000, 0) == expected_request
+        assert os.pread(sidecar_fd, 1_000_000, 0) == (
+            hashlib.sha256(expected_request).hexdigest().encode() + b"\n"
+        )
+        assert os.pread(sandbox_fd, 1_000_000, 0) == b"reviewed-os-sandbox-v1"
+        mounted = os.fstat(mount_fd)
+        assert (mounted.st_dev, mounted.st_ino) == closure.mounts[0].identity
+        return process
+
+    instance = runner(
+        secure_tmp_path, process, Inspector([identity()]), [],
+    )
+    instance._popen = popen
+    outcome = instance.run(
+        lambda: provider.prepare(envelope),
+        object(),
+        10,
+        lambda _identity: HeartbeatDecision.CONTINUE,
+        job_id="job_0123456789abcdef0123456789abcdef",
+        attempt_id="attempt_fedcba9876543210fedcba9876543210",
+    )
+
+    assert outcome.exit_code == 0
+    assert len(inherited) == 4
+    for descriptor in inherited:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+@pytest.mark.parametrize("failure_stage", ("validation", "safety", "popen"))
+def test_runner_closes_every_real_provider_fd_after_post_consume_failure(
+    secure_tmp_path: Path, failure_stage: str
+) -> None:
+    from services.job_worker.errors import SafetyBlockedError
+    from services.job_worker.process_runner import HeartbeatDecision
+    from tests.jobs.test_process_runner import (
+        FakeProcess,
+        Inspector,
+        identity,
+        runner,
+        safety_evidence,
+    )
+
+    closure = _closure(secure_tmp_path)
+    provider = _provider(secure_tmp_path, lambda: closure)
+    process = FakeProcess([None, 0])
+    instance = runner(
+        secure_tmp_path, process, Inspector([identity()]), [],
+    )
+    timeout = 11 if failure_stage == "validation" else 10
+    preflight = None
+    expected: type[BaseException] = ValueError
+    if failure_stage == "safety":
+        good = safety_evidence("3" * 64)
+        expired = replace(
+            good,
+            expires_at=datetime(2026, 7, 16, 12, 0, tzinfo=UTC),
+        )
+        evidence = iter((good, expired))
+        preflight = lambda: next(evidence)
+        expected = SafetyBlockedError
+    elif failure_stage == "popen":
+        def fail_popen(*_args, **_kwargs):
+            raise OSError("controlled Popen failure")
+
+        instance._popen = fail_popen
+        expected = OSError
+
+    before = _fd_targets()
+    with pytest.raises(expected):
+        instance.run(
+            lambda: provider.prepare(_envelope()),
+            object(),
+            timeout,
+            lambda _identity: HeartbeatDecision.CONTINUE,
+            preflight=preflight,
+            job_id="job_0123456789abcdef0123456789abcdef",
+            attempt_id="attempt_fedcba9876543210fedcba9876543210",
+        )
+
+    assert _fd_targets() == before
 
 
 @pytest.mark.parametrize("unavailable", (None, object()))
@@ -396,6 +679,19 @@ def test_closure_mounts_cannot_shadow_sandbox_owned_targets(
     closure = _closure(secure_tmp_path)
     shadow = replace(closure.mounts[0], target=PurePosixPath("/proc/engine-shadow"))
     unsafe = replace(closure, mounts=(*closure.mounts, shadow))
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(secure_tmp_path, lambda: unsafe).prepare(_envelope())
+
+
+def test_closure_mount_targets_cannot_overlap_each_other(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(secure_tmp_path)
+    overlap = replace(
+        closure.mounts[0], target=PurePosixPath("/engine/nested-shadow")
+    )
+    unsafe = replace(closure, mounts=(*closure.mounts, overlap))
 
     with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
         _provider(secure_tmp_path, lambda: unsafe).prepare(_envelope())

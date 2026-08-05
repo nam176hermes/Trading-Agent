@@ -7,11 +7,15 @@ release closure and OS-sandbox proof as one typed attestation.
 
 from __future__ import annotations
 
+import ctypes
+import fcntl
 import hashlib
 import hmac
 import os
+import platform
 import re
 import stat
+import threading
 import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -41,6 +45,23 @@ _REQUIRED_SANDBOX_PROFILE_SHA256 = hashlib.sha256(
 _SANDBOX_OWNED_TARGETS = tuple(
     PurePosixPath(value) for value in ("/inputs", "/proc", "/dev", "/tmp")
 )
+_F_ADD_SEALS = 1033
+_F_GET_SEALS = 1034
+_F_SEAL_SEAL = 0x0001
+_F_SEAL_SHRINK = 0x0002
+_F_SEAL_GROW = 0x0004
+_F_SEAL_WRITE = 0x0008
+_REQUIRED_MEMFD_SEALS = (
+    _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL
+)
+_MFD_CLOEXEC = 0x0001
+_MFD_ALLOW_SEALING = 0x0002
+_MEMFD_CREATE_SYSCALLS = {
+    "x86_64": 319,
+    "amd64": 319,
+    "aarch64": 279,
+    "arm64": 279,
+}
 
 
 class EngineSpawnError(RuntimeError):
@@ -182,6 +203,181 @@ def _read_fd(descriptor: int, size: int) -> bytes:
         chunks.append(chunk)
         offset += len(chunk)
     return b"".join(chunks)
+
+
+def _write_fd(descriptor: int, value: bytes) -> None:
+    remaining = memoryview(value)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("short immutable snapshot write")
+        remaining = remaining[written:]
+
+
+def _memfd_create(name: str) -> int:
+    creator = getattr(os, "memfd_create", None)
+    if callable(creator):
+        return creator(name, _MFD_CLOEXEC | _MFD_ALLOW_SEALING)
+    syscall_number = _MEMFD_CREATE_SYSCALLS.get(platform.machine().lower())
+    if platform.system() != "Linux" or syscall_number is None:
+        _blocked(
+            "ENGINE_IMMUTABLE_SNAPSHOT_UNAVAILABLE",
+            "sealed memory files are unavailable",
+        )
+    encoded = name.encode("ascii")
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.syscall.restype = ctypes.c_long
+    ctypes.set_errno(0)
+    result = int(
+        libc.syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_char_p(encoded),
+            ctypes.c_uint(_MFD_CLOEXEC | _MFD_ALLOW_SEALING),
+        )
+    )
+    if result < 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+    return result
+
+
+def _sealed_memfd(name: str, value: bytes, *, mode: int) -> int:
+    writer_fd = reader_fd = -1
+    try:
+        writer_fd = _memfd_create(name)
+        _write_fd(writer_fd, value)
+        os.fchmod(writer_fd, mode)
+        fcntl.fcntl(writer_fd, _F_ADD_SEALS, _REQUIRED_MEMFD_SEALS)
+        if fcntl.fcntl(writer_fd, _F_GET_SEALS) != _REQUIRED_MEMFD_SEALS:
+            _blocked(
+                "ENGINE_IMMUTABLE_SNAPSHOT_UNAVAILABLE",
+                "memory file seals are incomplete",
+            )
+        reader_fd = os.open(
+            f"/proc/self/fd/{writer_fd}",
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(reader_fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size != len(value)
+            or stat.S_IMODE(opened.st_mode) != mode
+            or fcntl.fcntl(reader_fd, _F_GET_SEALS) != _REQUIRED_MEMFD_SEALS
+            or _read_fd(reader_fd, len(value)) != value
+        ):
+            _blocked(
+                "ENGINE_IMMUTABLE_SNAPSHOT_UNAVAILABLE",
+                "sealed memory file cannot be proven",
+            )
+        os.close(writer_fd)
+        writer_fd = -1
+        result = reader_fd
+        reader_fd = -1
+        return result
+    except EngineSpawnError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise EngineSpawnError(
+            "ENGINE_IMMUTABLE_SNAPSHOT_UNAVAILABLE",
+            "sealed memory file creation failed",
+        ) from exc
+    finally:
+        for descriptor in (reader_fd, writer_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _sealed_sandbox_snapshot(proof: OsSandboxProof) -> int:
+    source_fd = -1
+    try:
+        source_fd = os.open(
+            proof.executable,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        opened = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != proof.identity
+            or not opened.st_mode & 0o111
+            or opened.st_mode & 0o222
+        ):
+            _blocked(
+                "ENGINE_SANDBOX_PROOF_INVALID",
+                "sandbox executable identity changed before pinning",
+            )
+        value = _read_fd(source_fd, opened.st_size)
+        if len(value) != opened.st_size or not hmac.compare_digest(
+            hashlib.sha256(value).hexdigest(), proof.executable_sha256
+        ):
+            _blocked(
+                "ENGINE_SANDBOX_PROOF_INVALID",
+                "sandbox executable bytes changed before pinning",
+            )
+        return _sealed_memfd("engine-sandbox", value, mode=0o500)
+    except EngineSpawnError:
+        raise
+    except OSError as exc:
+        raise EngineSpawnError(
+            "ENGINE_SANDBOX_PROOF_INVALID",
+            "sandbox executable cannot be pinned",
+        ) from exc
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+
+
+def _pinned_mount_source(mount: ReadOnlyClosureMount) -> int:
+    source_fd = -1
+    try:
+        observed = mount.source.lstat()
+        if stat.S_ISLNK(observed.st_mode):
+            _blocked("ENGINE_CLOSURE_STALE", "closure mount became a symlink")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        if stat.S_ISDIR(observed.st_mode):
+            flags |= getattr(os, "O_DIRECTORY", 0)
+        source_fd = os.open(mount.source, flags)
+        opened = os.fstat(source_fd)
+        if (
+            (opened.st_dev, opened.st_ino) != mount.identity
+            or not (stat.S_ISDIR(opened.st_mode) or stat.S_ISREG(opened.st_mode))
+            or opened.st_mode & 0o222
+        ):
+            _blocked(
+                "ENGINE_CLOSURE_STALE",
+                "closure mount identity changed before pinning",
+            )
+        if stat.S_ISREG(opened.st_mode):
+            value = _read_fd(source_fd, opened.st_size)
+            if len(value) != opened.st_size:
+                _blocked("ENGINE_CLOSURE_STALE", "closure file cannot be snapshotted")
+            mode = stat.S_IMODE(opened.st_mode) & 0o555
+            snapshot_fd = _sealed_memfd("engine-closure-file", value, mode=mode)
+            os.close(source_fd)
+            source_fd = -1
+            return snapshot_fd
+        result = source_fd
+        source_fd = -1
+        return result
+    except EngineSpawnError:
+        raise
+    except OSError as exc:
+        raise EngineSpawnError(
+            "ENGINE_CLOSURE_STALE", "closure mount cannot be descriptor-pinned"
+        ) from exc
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
 
 
 def _sha256_path(path: Path) -> str:
@@ -338,7 +534,12 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
                 or component < 0
                 for component in mount.identity
             )
-            or mount.target in targets
+            or any(
+                mount.target == existing
+                or mount.target.is_relative_to(existing)
+                or existing.is_relative_to(mount.target)
+                for existing in targets
+            )
         ):
             _blocked("ENGINE_CLOSURE_INVALID", "closure mount is invalid")
         observed, identity = _observed_identity(
@@ -375,12 +576,14 @@ class EngineSpawnProvider:
         self._attest_closure = attest_closure
         self._monotonic_ns = monotonic_ns
         self._issued: weakref.WeakSet[PreparedEngineSpawn] = weakref.WeakSet()
+        self._issue_lock = threading.Lock()
 
     def _abandon(self, prepared: PreparedEngineSpawn) -> None:
-        if prepared not in self._issued:
-            return
-        self._issued.discard(prepared)
-        record = prepared._record
+        with self._issue_lock:
+            if prepared not in self._issued:
+                return
+            self._issued.discard(prepared)
+            record = prepared._record
         for descriptor in (
             record.sidecar_fd,
             record.request_fd,
@@ -553,7 +756,8 @@ class EngineSpawnProvider:
             prepared = PreparedEngineSpawn()
             object.__setattr__(prepared, "_provider", self)
             object.__setattr__(prepared, "_record", record)
-            self._issued.add(prepared)
+            with self._issue_lock:
+                self._issued.add(prepared)
             return prepared
         except BaseException:
             for descriptor in (sidecar_fd, request_fd, run_fd, root_fd):
@@ -600,10 +804,15 @@ class EngineSpawnProvider:
         return value
 
     def _consume(self, prepared: PreparedEngineSpawn) -> EngineBuiltSpawn:
-        if type(prepared) is not PreparedEngineSpawn or prepared not in self._issued:
-            _blocked("ENGINE_PREPARED_SPAWN_INVALID", "current prepared engine spawn is required")
-        self._issued.discard(prepared)
-        record = prepared._record
+        with self._issue_lock:
+            if type(prepared) is not PreparedEngineSpawn or prepared not in self._issued:
+                _blocked(
+                    "ENGINE_PREPARED_SPAWN_INVALID",
+                    "current prepared engine spawn is required",
+                )
+            self._issued.discard(prepared)
+            record = prepared._record
+        launch_fds: list[int] = []
         transfer_fds = False
         try:
             now = self._monotonic_ns()
@@ -646,15 +855,36 @@ class EngineSpawnProvider:
                     "prepared engine spawn expired during final attestation",
                 )
 
-            request_source = f"/proc/self/fd/{record.request_fd}"
-            sidecar_source = f"/proc/self/fd/{record.sidecar_fd}"
+            request_snapshot_fd = _sealed_memfd(
+                "engine-request", request, mode=0o400
+            )
+            launch_fds.append(request_snapshot_fd)
+            sidecar_snapshot_fd = _sealed_memfd(
+                "engine-request-sha256", sidecar, mode=0o400
+            )
+            launch_fds.append(sidecar_snapshot_fd)
+            sandbox_snapshot_fd = _sealed_sandbox_snapshot(closure.sandbox)
+            launch_fds.append(sandbox_snapshot_fd)
+            mutable_mount_fds: list[int] = []
+            for mount in closure.mounts:
+                descriptor = _pinned_mount_source(mount)
+                mutable_mount_fds.append(descriptor)
+                launch_fds.append(descriptor)
+            mount_fds = tuple(mutable_mount_fds)
+
+            request_source = f"/proc/self/fd/{request_snapshot_fd}"
+            sidecar_source = f"/proc/self/fd/{sidecar_snapshot_fd}"
             mount_arguments = tuple(
                 argument
-                for mount in closure.mounts
-                for argument in ("--ro-bind", str(mount.source), str(mount.target))
+                for mount, descriptor in zip(closure.mounts, mount_fds, strict=True)
+                for argument in (
+                    "--ro-bind",
+                    f"/proc/self/fd/{descriptor}",
+                    str(mount.target),
+                )
             )
             argv = (
-                str(closure.sandbox.executable),
+                f"/proc/self/fd/{sandbox_snapshot_fd}",
                 "--die-with-parent",
                 "--unshare-user",
                 "--unshare-pid",
@@ -683,7 +913,7 @@ class EngineSpawnProvider:
                 str(_INPUT_TARGET),
                 str(_SIDECAR_TARGET),
             )
-            inherited = (record.request_fd, record.sidecar_fd)
+            inherited = tuple(launch_fds)
             transfer_fds = True
             return EngineBuiltSpawn(
                 argv=argv,
@@ -706,13 +936,18 @@ class EngineSpawnProvider:
                 "ENGINE_INPUT_STALE", "engine spawn authority cannot be revalidated"
             ) from exc
         finally:
-            for descriptor in (record.run_fd, record.root_fd):
+            for descriptor in (
+                record.sidecar_fd,
+                record.request_fd,
+                record.run_fd,
+                record.root_fd,
+            ):
                 try:
                     os.close(descriptor)
                 except OSError:
                     pass
             if not transfer_fds:
-                for descriptor in (record.request_fd, record.sidecar_fd):
+                for descriptor in launch_fds:
                     try:
                         os.close(descriptor)
                     except OSError:
