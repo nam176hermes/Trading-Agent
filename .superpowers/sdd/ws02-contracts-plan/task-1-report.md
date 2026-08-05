@@ -246,3 +246,93 @@ rg -ni "nautilus|binance|coinbase|kraken|provider_payload|startlive|liveengine" 
 - Confirmed the discriminator mapping and ordered `oneOf` refs match exactly the
   requested 17-command family, with no live command.
 - No blocking or known residual concern remains for fix round 1/5.
+
+## Final-review fix wave — wire parser and quantity parity
+
+Status: **DONE**
+
+Fix implementation commit: `86b7fd9` (`fix(engine): parse wire commands and bound quantities`)
+
+### Findings addressed and rationale
+
+1. `parse_command` now canonicalizes a JSON-serializable mapping and sends those
+   bytes through Pydantic's `model_validate_json`, which is the correct JSON-mode
+   boundary for decoded wire data. UUID, enum, and canonical decimal strings now
+   parse as their strict model types. The closed command registry, strict model
+   configuration, and unknown-field rejection remain unchanged. A narrowly
+   scoped fallback retains the prior native-Python behavior only for mappings
+   containing values that cannot be canonical JSON encoded (for example a
+   `UUID` or `Decimal` object); it validates those with the existing strict
+   Python-mode model.
+2. `EngineQuantity` now ports the canonical domain `Quantity` normalization and
+   expanded-coefficient limit exactly: it trims insignificant trailing zeros,
+   checks fractional precision, rejects expanded coefficient counts above 128,
+   and stores the normalized value at the declared precision. Zero values retain
+   the canonical declared scale. The engine quantity wire schema adds a useful
+   lexical `maxLength: 129` bound (the maximum signed 128-digit canonical
+   spelling); the semantic validator remains the authority for the exact
+   coefficient rule.
+
+Only the canonically generated
+`generated/engine/json-schema/EngineCommandEnvelope.json` changed; it was not
+hand-edited.
+
+### TDD evidence for the final fixes
+
+- JSON-decoded command RED: a realistic `CancelBacktest` mapping failed because
+  a UUID string was rejected in Python mode; a realistic nested
+  `SubmitOrderIntent` mapping failed for UUID, enum, and decimal strings.
+  Both parse successfully in JSON mode after the fix.
+- Quantity RED: a 129-digit Decimal was accepted by `EngineQuantity`; after the
+  ported invariant, 128 digits are accepted and 129 digits raise the explicit
+  maximum-magnitude validation error.
+- Generated schema RED: the engine quantity value schema lacked `maxLength`.
+  Canonical regeneration now emits `maxLength: 129` and the schema regression
+  passes.
+
+### Files amended
+
+- `packages/engine_contracts/commands.py`
+- `tests/engine_contracts/test_commands.py`
+- `tests/engine_contracts/test_contract_generation.py`
+- generated `EngineCommandEnvelope.json` via `make generate-contracts`
+- this report appendix
+
+### Fresh final-fix validation
+
+All commands ran from repository root and exited 0:
+
+```text
+uv run pytest -q tests/engine_contracts/test_commands.py tests/engine_contracts/test_contract_generation.py
+  25 passed in 16.71s
+
+uv run pytest -q tests/engine_contracts
+  51 passed in 11.22s
+
+make generate-contracts
+  canonical generation completed
+
+make check-contracts
+  canonical temporary render byte-compared cleanly; no stale output
+
+uv run python -m compileall -q packages/engine_contracts tests/engine_contracts
+  exit 0, no output
+
+git diff --check
+  exit 0, no output
+
+rg -ni "nautilus|binance|coinbase|kraken|provider_payload|startlive|liveengine" packages/engine_contracts generated/engine
+  no matches
+```
+
+### Final-fix self-review and known concerns
+
+- Verified JSON-decoded command mappings use Pydantic JSON mode while native
+  non-JSON values retain strict Python-mode compatibility.
+- Verified canonical JSON mappings still reject unknown fields through the
+  selected strict command model.
+- Verified quantity normalization and the expanded 128-digit limit match the
+  canonical domain implementation for nonzero values and preserve zero scale.
+- Verified no CLI, worker, transport, database, network, broker, or live path
+  was introduced.
+- No blocking or known residual concern remains for this final-review wave.
