@@ -336,3 +336,64 @@ rg -ni "nautilus|binance|coinbase|kraken|provider_payload|startlive|liveengine" 
 - Verified no CLI, worker, transport, database, network, broker, or live path
   was introduced.
 - No blocking or known residual concern remains for this final-review wave.
+
+## Approved residual boundary exception — EngineQuantity lexical length
+
+Status: **DONE**
+
+Fix implementation commit: `2153504` (`fix(engine): admit valid signed quantity wire values`)
+
+### Rationale
+
+The public `EngineQuantity.value` JSON Schema advertised `maxLength: 129`,
+which was one character too short for a valid signed, precision-18 quantity at
+the semantic 128-coefficient-digit boundary. The valid canonical spelling is
+`-` plus 110 integral digits, `.` and 18 fractional digits: 130 characters in
+total. The corresponding spelling with 111 integral digits has 129 coefficient
+digits and remains invalid under the authoritative semantic validator.
+
+The schema cap is now `130`; the existing expanded-coefficient validation still
+enforces the actual 128-digit magnitude limit. No command parsing, transport,
+worker, provider, database, broker, or live path changed.
+
+### Regression coverage and TDD evidence
+
+- Runtime-model and JSON-mode parsing both accept the signed 128-coefficient,
+  precision-18 value and normalize it at precision 18.
+- Runtime-model and JSON-mode parsing both reject the corresponding
+  129-coefficient value with the existing maximum-magnitude validation error.
+- The existing integer 128/129 coefficient test remains unchanged.
+- Schema RED: the amended generated-schema assertion failed before the source
+  fix with `assert 129 == 130`. After changing the schema declaration and
+  regenerating, it passes and the emitted command-envelope definition contains
+  `maxLength: 130`.
+
+### Fresh validation
+
+All commands ran from repository root and exited 0 unless explicitly noted as
+the expected RED assertion:
+
+```text
+uv run pytest -q tests/engine_contracts/test_contract_generation.py::test_generated_submission_dtos_are_recursively_strict_and_v1_canonical
+  expected RED before implementation: assert 129 == 130
+
+make generate-contracts
+  canonical generation completed
+
+uv run pytest -q tests/engine_contracts/test_commands.py tests/engine_contracts/test_contract_generation.py
+  26 passed in 17.78s
+
+make check-contracts
+  canonical temporary render byte-compared cleanly; no stale output
+
+git diff --check
+  exit 0, no output
+```
+
+### Self-review
+
+- Verified the 130-character cap is the exact lexical maximum for the accepted
+  signed fractional boundary case, while semantic validation rejects 129
+  coefficient digits regardless of spelling length.
+- Verified the generated schema was updated only through `make generate-contracts`.
+- No blocking or known residual concern remains for this approved exception.
