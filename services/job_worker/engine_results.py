@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 import stat
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from .results import (
 
 
 MAX_ENGINE_EVENTS = 4_096
+_SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 
 
 class EngineResultValidationError(ResultValidationError):
@@ -98,13 +100,19 @@ class EngineResultValidator:
                 "engine request authority was not derived from this claim"
             )
         if (
-            not isinstance(stdout, ArtifactMetadata)
+            type(stdout) is not ArtifactMetadata
             or stdout.artifact_type != "stdout"
             or stdout.relative_ref
             != f"{job.job_id}/{job.attempt_id}/stdout.log"
-            or stdout.truncated
+            or stdout.media_type != "application/octet-stream"
+            or stdout.validator_id != "bounded-stream-v1"
+            or stdout.truncated is not False
+            or isinstance(stdout.size_bytes, bool)
+            or not isinstance(stdout.size_bytes, int)
             or stdout.size_bytes <= 0
             or stdout.size_bytes > MAX_STREAM_BYTES
+            or not isinstance(stdout.sha256, str)
+            or _SHA256.fullmatch(stdout.sha256) is None
         ):
             raise EngineResultValidationError(
                 "engine stdout capture metadata is invalid"

@@ -217,6 +217,77 @@ def test_engine_stdout_metadata_must_match_the_worker_captured_bytes(
         )
 
 
+class _UntrustedArtifactMetadata(ArtifactMetadata):
+    pass
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "subclass",
+        "artifact_type",
+        "relative_ref",
+        "media_type",
+        "validator_id",
+        "truncated",
+        "boolean_size",
+        "zero_size",
+        "oversize",
+        "malformed_digest",
+    ),
+)
+def test_engine_stdout_requires_the_exact_bounded_capture_descriptor(
+    tmp_path: Path, mutation: str,
+) -> None:
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
+
+    raw = canonical_json_bytes(_event()) + b"\n"
+    metadata = _stdout(tmp_path, raw)
+    if mutation == "subclass":
+        metadata = _UntrustedArtifactMetadata(
+            metadata.artifact_type,
+            metadata.relative_ref,
+            metadata.sha256,
+            metadata.size_bytes,
+            metadata.media_type,
+            metadata.truncated,
+            metadata.validator_id,
+        )
+    elif mutation == "artifact_type":
+        metadata = replace(metadata, artifact_type="stderr")
+    elif mutation == "relative_ref":
+        metadata = replace(metadata, relative_ref="other/stdout.log")
+    elif mutation == "media_type":
+        metadata = replace(metadata, media_type="text/plain")
+    elif mutation == "validator_id":
+        metadata = replace(metadata, validator_id="untrusted-validator")
+    elif mutation == "truncated":
+        metadata = replace(metadata, truncated=True)
+    elif mutation == "boolean_size":
+        metadata = replace(metadata, size_bytes=True)
+    elif mutation == "zero_size":
+        metadata = replace(metadata, size_bytes=0)
+    elif mutation == "oversize":
+        metadata = replace(metadata, size_bytes=1024 * 1024 + 1)
+    elif mutation == "malformed_digest":
+        metadata = replace(metadata, sha256="not-a-sha256")
+    # Every mutation must be rejected from descriptor metadata alone. Removing
+    # the file proves validation did not reach the captured-byte read.
+    (tmp_path / JOB_ID / ATTEMPT_ID / "stdout.log").unlink()
+
+    with pytest.raises(EngineResultValidationError, match="capture metadata"):
+        EngineResultValidator(tmp_path).validate(
+            "engine-event-v1",
+            _claim(),
+            request=_request(),
+            stdout=metadata,
+            exit_code=0,
+        )
+
+
 def test_engine_result_refuses_a_request_not_derived_from_the_claim(
     tmp_path: Path,
 ) -> None:

@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import sys
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from uuid import uuid5
 
 import pytest
 
+from packages.engine_contracts import (
+    EngineEvent,
+    EngineEventEnvelope,
+    EventFamily,
+    canonical_json_bytes,
+    payload_digest,
+)
 from packages.job_contracts import (
     BacktestPayload,
     EngineBacktestPayload,
@@ -15,16 +26,26 @@ from packages.job_contracts import (
     parse_payload,
 )
 from services.job_store.worker_repository import ClaimedJob
-from services.job_worker.artifacts import ArtifactMetadata
+from services.job_worker.artifacts import ArtifactMetadata, ArtifactWriter
 from services.job_worker.engine_authority import BacktestEngineAuthorityFactory
-from services.job_worker.engine_results import ValidatedEngineEventBatch
-from services.job_worker.engine_spawn import EngineSpawnError
+from services.job_worker.engine_results import (
+    EngineResultValidator,
+    ValidatedEngineEventBatch,
+)
+from services.job_worker.engine_spawn import (
+    CompleteEngineClosureAttestation,
+    EngineSpawnError,
+    EngineSpawnProvider,
+    OsSandboxProof,
+    ReadOnlyClosureMount,
+)
 from services.job_worker.errors import SafetyBlockedError
 from services.job_worker.process_runner import (
     HeartbeatDecision,
     HeartbeatInstruction,
     ProcessLineage,
     ProcessOutcome,
+    ProcessRunner,
 )
 from services.job_worker.recovery import ProcessIdentity
 from services.job_worker.safety import KillSwitchState, SafetyMode
@@ -36,6 +57,9 @@ NOW = datetime(2026, 8, 5, 12, 30, 15, 123456, tzinfo=UTC)
 CODE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 JOB_ID = "job_0123456789abcdef0123456789abcdef"
 ATTEMPT_ID = "attempt_fedcba9876543210fedcba9876543210"
+SANDBOX_PROFILE_SHA256 = (
+    "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
+)
 
 
 def _engine_payload() -> EngineBacktestPayload:
@@ -139,6 +163,74 @@ def _safety(digest: str = "4" * 64) -> SafetyEvidence:
         snapshot_sha256=digest,
         generated_at=NOW - timedelta(seconds=1),
         expires_at=NOW + timedelta(minutes=5),
+    )
+
+
+def _fixture_event(request) -> EngineEventEnvelope:
+    payload = EngineEvent(
+        event_type="BacktestFixtureCompleted",
+        family=EventFamily.ENGINE_LIFECYCLE,
+    )
+    return EngineEventEnvelope(
+        message_id=uuid5(request.message_id, "BacktestFixtureCompleted"),
+        correlation_id=request.correlation_id,
+        causation_id=request.message_id,
+        engine_run_id=request.engine_run_id,
+        stream_sequence=2,
+        event_time=request.event_time,
+        initialization_time=request.initialization_time,
+        schema_version=request.schema_version,
+        producer_identity=request.producer_identity,
+        source_commit=request.source_commit,
+        config_digest=request.config_digest,
+        payload_digest=payload_digest(payload),
+        payload=payload,
+    )
+
+
+def _real_provider(tmp_path: Path) -> EngineSpawnProvider:
+    sandbox = tmp_path / "sandbox"
+    sandbox.write_bytes(b"reviewed-inert-sandbox-fixture-v1")
+    sandbox.chmod(0o500)
+    entrypoint = tmp_path / "engine-entrypoint"
+    entrypoint.write_bytes(b"reviewed-inert-engine-fixture-v1")
+    entrypoint.chmod(0o500)
+
+    sandbox_info = sandbox.stat(follow_symlinks=False)
+    entrypoint_info = entrypoint.stat(follow_symlinks=False)
+    entrypoint_raw = entrypoint.read_bytes()
+    closure = CompleteEngineClosureAttestation(
+        source_commit=CODE_COMMIT,
+        closure_sha256="c" * 64,
+        mounts=(
+            ReadOnlyClosureMount(
+                source=entrypoint,
+                target=PurePosixPath("/engine/bin/engine"),
+                identity=(entrypoint_info.st_dev, entrypoint_info.st_ino),
+                size=len(entrypoint_raw),
+                mode=0o500,
+                sha256=hashlib.sha256(entrypoint_raw).hexdigest(),
+            ),
+        ),
+        entrypoint=PurePosixPath("/engine/bin/engine"),
+        argv_prefix=("backtest-fixture",),
+        timeout_seconds=5,
+        result_validator_id="engine-event-v1",
+        sandbox=OsSandboxProof(
+            executable=sandbox,
+            identity=(sandbox_info.st_dev, sandbox_info.st_ino),
+            executable_sha256=hashlib.sha256(sandbox.read_bytes()).hexdigest(),
+            profile_sha256=SANDBOX_PROFILE_SHA256,
+            version="bubblewrap 0.9.0",
+            capabilities=("--perms", "--ro-bind-data"),
+        ),
+    )
+    transport = tmp_path / "transport"
+    transport.mkdir(mode=0o700)
+    return EngineSpawnProvider(
+        transport_root=transport,
+        attest_closure=lambda: closure,
+        monotonic_ns=time.monotonic_ns,
     )
 
 
@@ -291,6 +383,92 @@ def test_authorized_backtest_uses_worker_owned_engine_path_and_validated_handoff
     assert validator.calls[0][1]["stdout"] == runner.result.stdout
     assert _final(repository)["final_state"] is JobState.SUCCEEDED
     assert _final(repository)["result"] is validator.result
+
+
+def test_authorized_fixture_runs_through_capture_validation_sealing_and_success(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from services.job_worker import process_runner as process_runner_module
+    from services.job_worker.engine_spawn import consume_prepared_engine_spawn
+
+    claim = _claim()
+    authority_factory = BacktestEngineAuthorityFactory(
+        code_commit=CODE_COMMIT, clock=lambda: NOW
+    )
+    request = authority_factory.from_claim(claim)
+    event = _fixture_event(request)
+    raw = canonical_json_bytes(event) + b"\n"
+    fixture_code = (
+        "import os,time;"
+        f"os.write(1,{raw!r});"
+        "time.sleep(0.2)"
+    )
+
+    def consume_with_isolated_fixture(prepared):
+        # Consume the provider authority exactly as production does, including
+        # closure revalidation and descriptor transfer. Replace only the
+        # host-dependent sandbox command with an isolated child process so this
+        # lifecycle proof does not require bubblewrap on the test host.
+        built = consume_prepared_engine_spawn(prepared)
+        return replace(
+            built,
+            argv=(sys.executable, "-I", "-c", fixture_code),
+        )
+
+    monkeypatch.setattr(
+        process_runner_module,
+        "consume_prepared_engine_spawn",
+        consume_with_isolated_fixture,
+    )
+    artifact_root = tmp_path / "artifacts"
+    provider = _real_provider(tmp_path)
+    current_safety = replace(
+        _safety(), expires_at=NOW + timedelta(seconds=5)
+    )
+    runner = ProcessRunner(
+        ArtifactWriter(artifact_root),
+        safety_clock=lambda: NOW,
+        poll_interval=0.01,
+        terminate_grace_seconds=1.0,
+    )
+    repository = Repository(claim)
+    worker = JobWorker(
+        repository,
+        runner,
+        object(),
+        worker_id="worker-authority-1",
+        code_commit=CODE_COMMIT,
+        environment=object(),
+        safety_preflight=lambda: current_safety,
+        engine_authority_factory=authority_factory,
+        engine_spawn_provider=provider,
+        engine_result_validator=EngineResultValidator(artifact_root),
+        lease_seconds=WORKER_LEASE_SECONDS,
+        clock=lambda: NOW,
+    )
+
+    assert worker.run_once()
+
+    final = _final(repository)
+    result = final["result"]
+    assert final["final_state"] is JobState.SUCCEEDED, final
+    assert type(result) is ValidatedEngineEventBatch
+    assert result.events == (event,)
+    assert result.sha256 == hashlib.sha256(raw).hexdigest()
+    assert (artifact_root / result.relative_ref).read_bytes() == raw
+    stdout, stderr = final["stream_artifacts"]
+    assert stdout == ArtifactMetadata(
+        "stdout",
+        f"{JOB_ID}/{ATTEMPT_ID}/stdout.log",
+        hashlib.sha256(raw).hexdigest(),
+        len(raw),
+        "application/octet-stream",
+        False,
+        "bounded-stream-v1",
+    )
+    assert stderr.artifact_type == "stderr"
+    assert stderr.size_bytes == 0
+    assert final["outcome"].identity.pid > 1
 
 
 def test_engine_backtest_cancel_before_spawn_never_prepares_or_runs_child() -> None:

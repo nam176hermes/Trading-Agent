@@ -36,9 +36,12 @@ closure, sandbox, transport root, or environment from ambient state.
   re-attestation, process-group cleanup, result-validation progress checks,
   retry/reconciliation policy, final safety check, and atomic finalization.
 - Added `EngineResultValidator`, which reads only the worker-captured stdout
-  artifact through no-follow descriptor-relative traversal, verifies exact
-  metadata/digest/size and the one-MiB capture bound, and rejects truncated or
-  empty output.
+  artifact through no-follow descriptor-relative traversal. Before opening the
+  artifact, it requires the exact base `ArtifactMetadata` type and the exact
+  stdout type, relative reference, binary media type, `bounded-stream-v1`
+  validator identity, non-truncated flag, bounded integer size, and lowercase
+  SHA-256 shape. It then verifies the captured bytes against the declared
+  digest and size and rejects truncated or empty output.
 - Stdout must be canonical newline-delimited `EngineEventEnvelope` bytes. The
   validator rejects malformed/noncanonical JSON, duplicate identities,
   non-contiguous sequences, and every event whose correlation, causation,
@@ -81,13 +84,26 @@ closure, sandbox, transport root, or environment from ambient state.
    rejected before the existing database capability call. Only the exact
    `(SNAPSHOT, BACKTEST)` set was added; BACKTEST-only and every other inactive
    combination remain rejected.
+7. Independent captured-stdout descriptor mutations first showed that a
+   metadata subclass, wrong media type, wrong validator identity, boolean size,
+   and malformed digest could pass the descriptor gate or reach the artifact
+   read. The validator now rejects each field from metadata alone before
+   opening or sealing any captured bytes.
+8. A composed lifecycle fixture exercises a real `EngineSpawnProvider`
+   authority consume and descriptor transfer, production `ProcessRunner`
+   subprocess capture, real `EngineResultValidator` validation and sealing,
+   and `JobWorker` SUCCEEDED finalization in one flow. The harness replaces only
+   the host-dependent bubblewrap command after the real provider consume with
+   an isolated Python child that emits the canonical fixture event.
 
 ## Validation
 
+- Result and engine lifecycle suites: `29 passed`.
 - Focused authority/spawn/process/lifecycle/result/CLI suites:
-  `316 passed`.
+  `310 passed`.
 - `make check-contracts`: passed; generated contracts are unchanged.
-- `make test-core`: `2589 passed, 229 skipped, 16 deselected`.
+- `TMPDIR=/tmp TEMP=/tmp TMP=/tmp make test-core`:
+  `2600 passed, 229 skipped, 16 deselected`.
 - `make audit`: passed in strict authority mode for core, backend, and
   dashboard at the required dirty Task 3 tree.
 - `git diff --check`: passed.
