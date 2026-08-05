@@ -46,18 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _read_regular_file(path: Path) -> bytes:
-    """Read one regular non-symlink file without following a substituted link."""
+    """Read a regular file through a descriptor acquired without link following."""
 
-    try:
-        initial = path.lstat()
-    except OSError as exc:
-        raise ValueError(f"unable to inspect {path}") from exc
-    if stat.S_ISLNK(initial.st_mode) or not stat.S_ISREG(initial.st_mode):
-        raise ValueError(f"{path} must be a regular non-symlink file")
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    non_blocking = getattr(os, "O_NONBLOCK", None)
+    if not isinstance(no_follow, int) or no_follow == 0:
+        raise ValueError("secure no-follow file opening is unavailable")
+    if not isinstance(non_blocking, int) or non_blocking == 0:
+        raise ValueError("secure nonblocking file opening is unavailable")
 
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags = os.O_RDONLY | no_follow | non_blocking
     try:
         descriptor = os.open(path, flags)
     except OSError as exc:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -22,6 +23,7 @@ def _run(
     *arguments: str,
     environment: dict[str, str] | None = None,
     cwd: Path | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     assert CLI.is_file(), "the project console script must be registered"
     return subprocess.run(
@@ -31,6 +33,7 @@ def _run(
         cwd=cwd,
         text=True,
         env=environment,
+        timeout=timeout,
     )
 
 
@@ -116,15 +119,47 @@ def _valid_arguments(tmp_path: Path, subcommand: str) -> tuple[str, ...]:
 
 
 def _restricted_environment(
-    tmp_path: Path, *, forbid_imports: bool = False, forbid_json_parsing: bool = False
+    tmp_path: Path,
+    *,
+    forbid_imports: bool = False,
+    forbid_json_parsing: bool = False,
+    remove_no_follow: bool = False,
+    allow_socket_construction: bool = False,
 ) -> dict[str, str]:
     source = [
         "import socket",
-        "def blocked_network(*args, **kwargs):",
-        "    raise AssertionError('network access is forbidden')",
-        "socket.socket = blocked_network",
-        "socket.create_connection = blocked_network",
+        "import sys",
+        "def audit_policy(event, arguments):",
+        "    if event.startswith('socket.') and not (",
+        f"        {allow_socket_construction!r} and event == 'socket.__new__'",
+        "    ):",
+        "        raise RuntimeError(f'audit policy blocked {event}')",
+        "    if event in {",
+        "        'subprocess.Popen', 'os.exec', 'os.fork', 'os.posix_spawn',",
+        "        'os.spawn', 'os.system',",
+        "    }:",
+        "        raise RuntimeError(f'audit policy blocked {event}')",
+        "    if event == 'open':",
+        "        _, mode, flags = arguments",
+        "        write_flags = (",
+        "            getattr(__import__('os'), 'O_WRONLY', 0)",
+        "            | getattr(__import__('os'), 'O_RDWR', 0)",
+        "            | getattr(__import__('os'), 'O_CREAT', 0)",
+        "            | getattr(__import__('os'), 'O_TRUNC', 0)",
+        "            | getattr(__import__('os'), 'O_APPEND', 0)",
+        "        )",
+        "        if (isinstance(mode, str) and any(flag in mode for flag in 'wax+')) or flags & write_flags:",
+        "            raise RuntimeError('audit policy blocked write-capable open')",
+        "    if event in {",
+        "        'os.chdir', 'os.chmod', 'os.chown', 'os.link', 'os.mkdir',",
+        "        'os.remove', 'os.rename', 'os.replace', 'os.rmdir', 'os.symlink',",
+        "        'os.setxattr', 'os.removexattr', 'os.truncate', 'os.utime',",
+        "    }:",
+        "        raise RuntimeError(f'audit policy blocked {event}')",
+        "sys.addaudithook(audit_policy)",
     ]
+    if remove_no_follow:
+        source.extend(["import os", "del os.O_NOFOLLOW"])
     if forbid_json_parsing:
         source.extend(
             [
@@ -151,7 +186,6 @@ def _restricted_environment(
                 "    return original_import(name, globals, locals, fromlist, level)",
                 "builtins.__import__ = guarded_import",
                 "import importlib.abc",
-                "import sys",
                 "class ForbiddenImportFinder(importlib.abc.MetaPathFinder):",
                 "    def find_spec(self, fullname, path=None, target=None):",
                 "        if any(item in fullname.casefold() for item in forbidden):",
@@ -246,6 +280,44 @@ def test_request_inputs_must_be_regular_non_symlink_files(
     )
 
     _assert_rejected(completed)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO regression is POSIX-only")
+@pytest.mark.parametrize("input_name", ["request", "sidecar"])
+def test_request_inputs_reject_fifo_without_hanging(tmp_path: Path, input_name: str) -> None:
+    request_path, sidecar_path = _request_files(tmp_path, _request())
+    fifo_path = tmp_path / f"{input_name}.fifo"
+    try:
+        os.mkfifo(fifo_path)
+    except OSError as exc:
+        if exc.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+            pytest.skip("the temporary filesystem does not support FIFOs")
+        raise
+
+    completed = _run(
+        "validate-request",
+        str(fifo_path if input_name == "request" else request_path),
+        str(fifo_path if input_name == "sidecar" else sidecar_path),
+        timeout=2,
+    )
+
+    _assert_rejected(completed)
+
+
+def test_request_rejects_when_secure_no_follow_opening_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    request_path, sidecar_path = _request_files(tmp_path, _request())
+
+    completed = _run(
+        "validate-request",
+        str(request_path),
+        str(sidecar_path),
+        environment=_restricted_environment(tmp_path, remove_no_follow=True),
+    )
+
+    _assert_rejected(completed)
+    assert "no-follow" in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -392,3 +464,100 @@ def test_every_cli_path_uses_no_forbidden_engine_or_runtime_imports(
             environment=_restricted_environment(tmp_path, forbid_imports=True),
         )
     )
+
+
+@pytest.mark.parametrize(
+    "subcommand",
+    ["validate-request", "backtest-fixture", "paper-fixture"],
+)
+def test_request_cli_rejections_run_under_audit_guard(
+    tmp_path: Path, subcommand: str
+) -> None:
+    command_type = "RunBacktest"
+    if subcommand == "validate-request":
+        request_path, sidecar_path = _request_files(tmp_path, _request(command_type))
+        sidecar_path.write_text("0" * 64, encoding="ascii")
+    else:
+        wrong_command = (
+            "StartPaperEngine" if subcommand == "backtest-fixture" else "RunBacktest"
+        )
+        request_path, sidecar_path = _request_files(tmp_path, _request(wrong_command))
+
+    _assert_rejected(
+        _run(
+            subcommand,
+            str(request_path),
+            str(sidecar_path),
+            environment=_restricted_environment(tmp_path),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        "import socket; socket.socket()",
+        "import _socket; _socket.socket()",
+        "import socket; socket.getaddrinfo('localhost', 80)",
+    ],
+)
+def test_audit_guard_blocks_network_operations(tmp_path: Path, program: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_restricted_environment(tmp_path),
+    )
+
+    assert completed.returncode != 0
+    assert "audit policy blocked socket." in completed.stderr
+
+
+def test_audit_guard_blocks_socket_connect_after_construction(tmp_path: Path) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import socket; socket.socket().connect(('127.0.0.1', 9))",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_restricted_environment(tmp_path, allow_socket_construction=True),
+    )
+
+    assert completed.returncode != 0
+    assert "audit policy blocked socket.connect" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        "open('blocked.txt', 'wb').write(b'x')",
+        "import os; os.mkdir('blocked-directory')",
+        "import subprocess; subprocess.run(['true'], check=True)",
+        "import os; os.system('true')",
+    ],
+)
+def test_audit_guard_blocks_writes_and_process_spawning(
+    tmp_path: Path, program: str
+) -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        text=True,
+        env=_restricted_environment(tmp_path),
+    )
+
+    assert completed.returncode != 0
+    assert "audit policy blocked" in completed.stderr
+    assert not (tmp_path / "blocked.txt").exists()
+    assert not (tmp_path / "blocked-directory").exists()
+
+
+@pytest.mark.parametrize("subcommand", ["live", "unknown-subcommand"])
+def test_cli_rejects_live_and_unknown_subcommands(subcommand: str) -> None:
+    _assert_rejected(_run(subcommand))
