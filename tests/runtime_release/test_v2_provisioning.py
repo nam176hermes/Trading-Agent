@@ -77,8 +77,13 @@ def test_production_verifier_has_one_runtime_digest_and_exact_provision_pin() ->
     verifier_raw = verifier.read_bytes()
     verifier_sha256 = hashlib.sha256(verifier_raw).hexdigest()
     provision_source = PROVISION.read_text(encoding="utf-8")
+    pin_lines = [
+        line
+        for line in provision_source.splitlines()
+        if line.startswith("PINNED_VERIFIER_SHA256=")
+    ]
 
-    assert f"PINNED_VERIFIER_SHA256='{verifier_sha256}'" in provision_source
+    assert pin_lines == [f"PINNED_VERIFIER_SHA256='{verifier_sha256}'"]
     assert "--test-fake-python-runtime" not in verifier_raw.decode("utf-8")
     assert "--test-fake-python-runtime" not in provision_source
 

@@ -244,6 +244,8 @@ def test_package6_job_contract_projection_matches_snapshot_database_authority() 
             {"assets": ["BTC"], "include_debate": True}
         )
     assert list(enums.JobType) == [enums.JobType.SNAPSHOT]
+    with pytest.raises(ValueError, match="job type is not allowlisted"):
+        payloads.parse_payload("BACKTEST", {})
 
 
 def test_projected_result_validator_matches_canonical_report_path() -> None:
@@ -608,10 +610,15 @@ def test_paper_application_mapping_is_a_positive_allowlist_without_live_surfaces
     assert "uv.lock" in stage_paths
     assert "services/job_worker/main.py" in stage_paths
     assert "services/job_worker/command_registry.py" in stage_paths
+    assert "services/job_worker/engine_spawn.py" in stage_paths
+    assert "services/job_store/engine_event_repository.py" in stage_paths
     assert not any(path.startswith("apps/dashboard/") for path in source_paths)
     assert not any(path.startswith("apps/control_api/") for path in source_paths)
     assert not any("migrate" in path for path in source_paths)
     assert not any("asset_registry" in path for path in source_paths)
+    assert not any(path.startswith("packages/nautilus_engine_cli/") for path in source_paths)
+    assert not any("engine_toolchain" in path for path in source_paths)
+    assert not any("engine_provider" in path for path in source_paths)
 
 
 def test_paper_application_dependency_closure_excludes_migration_packages() -> None:
@@ -661,9 +668,16 @@ def test_paper_application_projection_has_a_closed_import_graph(tmp_path: Path) 
     destination = tmp_path / "paper-application"
     construct_paper_application_artifact(REPOSITORY_SOURCE, destination)
     modules = (
+        "packages.engine_contracts",
+        "packages.engine_event_ledger",
         "packages.job_contracts.transitions",
         "apps.job_api.app",
+        "services.job_store.engine_event_repository",
         "services.job_store.worker_repository",
+        "services.job_worker.engine_authority",
+        "services.job_worker.engine_results",
+        "services.job_worker.engine_spawn",
+        "services.job_worker.main",
         "services.job_worker.process_runner",
         "services.job_worker.worker",
     )
