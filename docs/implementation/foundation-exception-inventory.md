@@ -604,7 +604,7 @@ services/semantic_input_refresher/main.py|212|Exception|PRODUCTION_CRITICAL|RETU
 tests/foundation/test_package6_controller_closure.py|632|BaseException|TESTS|OTHER
 tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
-tests/jobs/test_repository_queries.py|338|BaseException|TESTS|OTHER
+tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->
