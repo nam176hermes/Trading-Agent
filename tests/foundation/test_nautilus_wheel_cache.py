@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import hashlib
 import importlib.util
@@ -7,6 +8,7 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+import tempfile
 import textwrap
 
 import pytest
@@ -16,6 +18,12 @@ ROOT = Path(__file__).resolve().parents[2]
 ENGINE_POLICY = ROOT / "engines/nautilus/engine-build-policy.json"
 WHEEL_POLICY = ROOT / "engines/nautilus/wheel-cache-policy.json"
 SCRIPT = ROOT / "scripts/prepare_nautilus_wheel_cache.py"
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="nautilus-wheel-test-", dir="/tmp") as directory:
+        yield Path(directory)
 
 
 def _module():

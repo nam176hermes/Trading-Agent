@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import importlib.util
 import io
@@ -7,6 +8,7 @@ import json
 import os
 import stat
 import tarfile
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "scripts" / "prepare_nautilus_llvm_toolchain.py"
 POLICY = ROOT / "engines" / "nautilus" / "llvm-toolchain-policy.json"
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="nautilus-llvm-test-", dir="/tmp") as directory:
+        yield Path(directory)
 
 
 def _load_tool():

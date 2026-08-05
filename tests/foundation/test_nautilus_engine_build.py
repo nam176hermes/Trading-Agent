@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import importlib.util
 import json
@@ -17,6 +18,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "engines/nautilus/engine-build-policy.json"
 SCRIPT = ROOT / "scripts/build_nautilus_engine.py"
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="nautilus-engine-test-", dir="/tmp") as directory:
+        yield Path(directory)
 
 
 def _module():
@@ -442,6 +449,11 @@ def test_build_environment_selects_only_absolute_private_compilers(tmp_path: Pat
     assert environment["CC"] == str(llvm_bin / "clang")
     assert environment["CXX"] == str(llvm_bin / "clang++")
     assert environment["LD"] == str(llvm_bin / "ld.lld")
+    assert environment["CARGO_BUILD_TARGET"] == "x86_64-unknown-linux-gnu"
+    assert environment["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"] == str(
+        llvm_bin / "clang"
+    )
+    assert environment["RUSTFLAGS"] == f"-C linker={llvm_bin / 'clang'}"
     assert environment["PATH"].split(":")[:3] == [
         str(llvm_bin),
         str(cargo_bin),

@@ -22,6 +22,8 @@ import zipfile
 _ROOT = Path(__file__).resolve().parents[1]
 _INPUT_CACHE_TOOL = _ROOT / "scripts/prepare_nautilus_input_cache.py"
 _INPUT_CACHE_POLICY = _ROOT / "engines/nautilus/input-cache-policy.json"
+_RUST_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_toolchain.py"
+_RUST_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/toolchain-inputs.json"
 _LLVM_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_llvm_toolchain.py"
 _LLVM_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/llvm-toolchain-policy.json"
 _AMBIENT_BUILD_PATH = (Path("/usr/bin"), Path("/bin"))
@@ -112,6 +114,17 @@ def _load_llvm_toolchain_tool():
     return module
 
 
+def _load_rust_toolchain_tool():
+    spec = importlib.util.spec_from_file_location(
+        "prepare_nautilus_toolchain", _RUST_TOOLCHAIN_TOOL
+    )
+    if spec is None or spec.loader is None:
+        raise VerificationError("private Rust toolchain verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _build_tool_environment(
     llvm_bin: Path, cargo_bin: Path, venv_bin: Path
 ) -> dict[str, str]:
@@ -119,6 +132,9 @@ def _build_tool_environment(
         "CC": str(llvm_bin / "clang"),
         "CXX": str(llvm_bin / "clang++"),
         "LD": str(llvm_bin / "ld.lld"),
+        "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": str(llvm_bin / "clang"),
+        "RUSTFLAGS": f"-C linker={llvm_bin / 'clang'}",
         "PATH": f"{llvm_bin}:{cargo_bin}:{venv_bin}:/usr/bin:/bin",
     }
 
@@ -642,6 +658,12 @@ def build_engine(
         rustc_identity = input_tool.validate_private_rustc(cargo.parent / "rustc", str(policy["required_rust_version"]))
     except (OSError, ValueError) as exc:
         raise VerificationError(f"Nautilus source/Cargo input verification failed: {exc}") from exc
+    rust_tool = _load_rust_toolchain_tool()
+    try:
+        rust_manifest = rust_tool.load_manifest(_RUST_TOOLCHAIN_POLICY)
+        rust_tool.verify_materialized_toolchain(cargo.parent, rust_manifest)
+    except (OSError, ValueError) as exc:
+        raise VerificationError(f"private Rust toolchain verification failed: {exc}") from exc
     llvm_tool = _load_llvm_toolchain_tool()
     try:
         llvm_policy = llvm_tool.load_policy(_LLVM_TOOLCHAIN_POLICY)

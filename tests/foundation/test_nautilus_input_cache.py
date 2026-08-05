@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import json
 import hashlib
 import importlib.util
@@ -15,6 +16,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 POLICY = ROOT / "engines/nautilus/input-cache-policy.json"
 SCRIPT = ROOT / "scripts/prepare_nautilus_input_cache.py"
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="nautilus-input-test-", dir="/tmp") as directory:
+        yield Path(directory)
 
 
 def test_committed_input_cache_policy_binds_the_01b_upstream_and_lockfile() -> None:
