@@ -217,6 +217,32 @@ test('list and detail accept the strict engine BACKTEST response form', async ()
   assert.deepEqual(detailed.data.job.payload, engineBacktestPayload);
 });
 
+test('list and detail accept an engine BACKTEST window increasing within one millisecond', async () => {
+  const payload = {
+    engine_backtest: {
+      ...engineBacktestPayload.engine_backtest,
+      start_time: '2026-07-01T00:00:00.000001Z',
+      end_time: '2026-07-01T00:00:00.000002Z',
+    },
+  };
+  const job = { ...engineBacktestJob, payload };
+  const { getJob, listJobs } = await import('../src/lib/trading/job-api.ts');
+
+  globalThis.fetch = async () => jsonResponse(envelope({
+    items: [job], limit: 50, offset: 0,
+  }));
+  const listed = await listJobs('');
+  assert.equal(listed.response.status, 200);
+  assert.deepEqual(listed.data.items[0].payload, payload);
+
+  globalThis.fetch = async () => jsonResponse(envelope({
+    job, attempts: [], events: [], artifacts: [],
+  }));
+  const detailed = await getJob('job_123');
+  assert.equal(detailed.response.status, 200);
+  assert.deepEqual(detailed.data.job.payload, payload);
+});
+
 test('list and detail reject engine BACKTEST mismatches mixtures and invalid boundaries', async () => {
   const legacy = {
     asset: 'BTC', strategy_id: 'legacy-binary-report-v1',
@@ -288,6 +314,16 @@ test('list and detail reject engine BACKTEST mismatches mixtures and invalid bou
     {
       ...engineBacktestJob,
       payload: { engine_backtest: { ...input, end_time: '2026-06-30T23:59:59Z' } },
+    },
+    {
+      ...engineBacktestJob,
+      payload: {
+        engine_backtest: {
+          ...input,
+          start_time: '2026-07-01T00:00:00.000002Z',
+          end_time: '2026-07-01T00:00:00.000001Z',
+        },
+      },
     },
   ];
   const { getJob, listJobs } = await import('../src/lib/trading/job-api.ts');

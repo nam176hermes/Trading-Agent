@@ -167,19 +167,20 @@ function hasExactKeys(value: JsonObject, keys: string[]): boolean {
   return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index]);
 }
 
-function isCanonicalEngineTime(value: unknown): value is string {
-  if (typeof value !== 'string') return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/.exec(value);
-  if (match === null || match[1] === '0000') return false;
+function canonicalEngineTimeKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?Z$/.exec(value);
+  if (match === null || match[1] === '0000') return null;
   const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return false;
+  if (!Number.isFinite(timestamp)) return null;
   const parsed = new Date(timestamp);
-  return parsed.getUTCFullYear() === Number(match[1])
+  if (!(parsed.getUTCFullYear() === Number(match[1])
     && parsed.getUTCMonth() + 1 === Number(match[2])
     && parsed.getUTCDate() === Number(match[3])
     && parsed.getUTCHours() === Number(match[4])
     && parsed.getUTCMinutes() === Number(match[5])
-    && parsed.getUTCSeconds() === Number(match[6]);
+    && parsed.getUTCSeconds() === Number(match[6]))) return null;
+  return `${value.slice(0, 19)}.${(match[7] ?? '').padEnd(6, '0')}Z`;
 }
 
 function isEngineArtifactReference(value: unknown): value is EngineArtifactReference {
@@ -202,13 +203,13 @@ function isEngineBacktestPayload(
       'market_data', 'start_time', 'end_time',
     ]))) return false;
   const input = value.engine_backtest;
-  return isEngineArtifactReference(input.engine_configuration)
+  if (!(isEngineArtifactReference(input.engine_configuration)
     && isEngineArtifactReference(input.instrument_catalog)
     && isEngineArtifactReference(input.strategy_configuration)
-    && isEngineArtifactReference(input.market_data)
-    && isCanonicalEngineTime(input.start_time)
-    && isCanonicalEngineTime(input.end_time)
-    && Date.parse(input.end_time) > Date.parse(input.start_time);
+    && isEngineArtifactReference(input.market_data))) return false;
+  const startTime = canonicalEngineTimeKey(input.start_time);
+  const endTime = canonicalEngineTimeKey(input.end_time);
+  return startTime !== null && endTime !== null && endTime > startTime;
 }
 
 function isPayload(value: unknown, jobType: JobType): value is JobPayload {
