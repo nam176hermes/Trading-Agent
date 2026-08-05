@@ -19,11 +19,56 @@ from packages import engine_contracts as contracts
 
 CLI = Path(sys.executable).with_name("trading-agent-nautilus")
 BWRAP = shutil.which("bwrap")
-VENV_ROOT = Path(sys.executable).parent.parent
-VENV_INTERPRETER_ROOT = Path(os.readlink(VENV_ROOT / "bin" / "python")).parents[1]
-VENV_INTERPRETER_REAL_ROOT = Path(
-    os.path.realpath(VENV_ROOT / "bin" / "python")
-).parents[1]
+VENV_ROOT = Path(sys.executable).parent.parent.resolve(strict=True)
+CLI_SOURCE = CLI.resolve(strict=True)
+RESOLVED_INTERPRETER = Path(sys.executable).resolve(strict=True)
+VENV_SITE_PACKAGES = (
+    VENV_ROOT / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
+).resolve(strict=True)
+FORBIDDEN_BWRAP_BIND_ROOTS = frozenset(
+    {
+        Path("/"),
+        Path("/home"),
+        Path("/etc"),
+        Path("/tmp"),
+        Path("/var"),
+        Path("/run"),
+        Path("/mnt"),
+    }
+)
+
+
+def _resolved_cpython_install_root(executable: Path) -> Path:
+    resolved = executable.resolve(strict=True)
+    if not resolved.is_file() or resolved.parent.name != "bin":
+        raise ValueError(f"resolved interpreter is not in a CPython bin directory: {resolved}")
+    root = resolved.parent.parent
+    if not (root / "lib").is_dir():
+        raise ValueError(f"resolved interpreter has no CPython lib root: {resolved}")
+    return root
+
+
+def _validated_bwrap_bind(source: Path, target: Path) -> tuple[Path, Path]:
+    resolved_source = source.resolve(strict=True)
+    if resolved_source in FORBIDDEN_BWRAP_BIND_ROOTS:
+        raise ValueError(f"forbidden Bubblewrap bind source: {resolved_source}")
+    if target in FORBIDDEN_BWRAP_BIND_ROOTS:
+        raise ValueError(f"forbidden Bubblewrap bind target: {target}")
+    if not target.is_absolute() or ".." in target.parts:
+        raise ValueError(f"invalid Bubblewrap bind target: {target}")
+    return resolved_source, target
+
+
+def _additional_cpython_bind_root(root: Path) -> Path | None:
+    if root in FORBIDDEN_BWRAP_BIND_ROOTS:
+        raise ValueError(f"forbidden CPython install root: {root}")
+    if root.is_relative_to(Path("/usr")):
+        return None
+    return root
+
+
+CPYTHON_INSTALL_ROOT = _resolved_cpython_install_root(RESOLVED_INTERPRETER)
+ADDITIONAL_CPYTHON_BIND_ROOT = _additional_cpython_bind_root(CPYTHON_INSTALL_ROOT)
 
 
 def _run(
@@ -45,10 +90,16 @@ def _run(
 
 
 def _bubblewrap_mount_parent_arguments() -> list[str]:
-    roots = (VENV_ROOT, VENV_INTERPRETER_ROOT, VENV_INTERPRETER_REAL_ROOT)
+    targets = [
+        CLI,
+        VENV_ROOT / "bin" / "python3",
+        VENV_ROOT / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages",
+    ]
+    if ADDITIONAL_CPYTHON_BIND_ROOT is not None:
+        targets.append(ADDITIONAL_CPYTHON_BIND_ROOT)
     directories = {Path("/inputs")}
-    for root in roots:
-        parent = root.parent
+    for target in targets:
+        parent = target.parent
         while parent != Path("/"):
             directories.add(parent)
             parent = parent.parent
@@ -68,6 +119,24 @@ def _bubblewrap_command(
         pytest.fail("Bubblewrap is required for engine CLI OS-sandbox regressions")
     if (request_path is None) != (sidecar_path is None):
         raise ValueError("Bubblewrap requires both request inputs or neither")
+    bind_pairs = [
+        _validated_bwrap_bind(Path("/usr"), Path("/usr")),
+        _validated_bwrap_bind(CLI_SOURCE, CLI),
+        _validated_bwrap_bind(RESOLVED_INTERPRETER, VENV_ROOT / "bin" / "python3"),
+        _validated_bwrap_bind(
+            VENV_SITE_PACKAGES,
+            VENV_ROOT
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages",
+        ),
+    ]
+    if ADDITIONAL_CPYTHON_BIND_ROOT is not None:
+        bind_pairs.append(
+            _validated_bwrap_bind(
+                ADDITIONAL_CPYTHON_BIND_ROOT, ADDITIONAL_CPYTHON_BIND_ROOT
+            )
+        )
     arguments = [
         BWRAP,
         "--die-with-parent",
@@ -76,8 +145,8 @@ def _bubblewrap_command(
         "--new-session",
         *_bubblewrap_mount_parent_arguments(),
         "--ro-bind",
-        "/usr",
-        "/usr",
+        str(bind_pairs[0][0]),
+        str(bind_pairs[0][1]),
         "--symlink",
         "/usr/lib",
         "/lib",
@@ -85,19 +154,23 @@ def _bubblewrap_command(
         "/usr/lib64",
         "/lib64",
     ]
-    for root in dict.fromkeys(
-        (VENV_ROOT, VENV_INTERPRETER_ROOT, VENV_INTERPRETER_REAL_ROOT)
-    ):
-        arguments.extend(("--ro-bind", str(root), str(root)))
+    for source, target in bind_pairs[1:]:
+        arguments.extend(("--ro-bind", str(source), str(target)))
     if request_path is not None and sidecar_path is not None:
+        request_source, request_target = _validated_bwrap_bind(
+            request_path, Path("/inputs/request.json")
+        )
+        sidecar_source, sidecar_target = _validated_bwrap_bind(
+            sidecar_path, Path("/inputs/request.sha256")
+        )
         arguments.extend(
             (
                 "--ro-bind",
-                str(request_path),
-                "/inputs/request.json",
+                str(request_source),
+                str(request_target),
                 "--ro-bind",
-                str(sidecar_path),
-                "/inputs/request.sha256",
+                str(sidecar_source),
+                str(sidecar_target),
             )
         )
     arguments.extend(
@@ -112,6 +185,17 @@ def _bubblewrap_command(
             "--setenv",
             "PYTHONDONTWRITEBYTECODE",
             "1",
+            "--setenv",
+            "PYTHONHOME",
+            str(CPYTHON_INSTALL_ROOT),
+            "--setenv",
+            "PYTHONPATH",
+            str(
+                VENV_ROOT
+                / "lib"
+                / f"python{sys.version_info.major}.{sys.version_info.minor}"
+                / "site-packages"
+            ),
             "--chdir",
             "/",
             *command,
@@ -151,7 +235,7 @@ def _run_python_in_bubblewrap(
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         _bubblewrap_command(
-            [str(Path(sys.executable)), "-c", program, *program_arguments],
+            [str(VENV_ROOT / "bin" / "python3"), "-c", program, *program_arguments],
             request_path=request_path,
             sidecar_path=sidecar_path,
         ),
@@ -346,6 +430,171 @@ def _filesystem_snapshot(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def _is_mount_path_or_descendant(path: str, parent: str) -> bool:
+    return path == parent or path.startswith(f"{parent}/")
+
+
+def _assert_only_private_writable_mounts(mounts: list[dict[str, object]]) -> None:
+    expected_private_mounts = {
+        "/": ("tmpfs", "tmpfs"),
+        "/tmp": ("tmpfs", "tmpfs"),
+        "/proc": ("proc", "proc"),
+        "/dev": ("tmpfs", "tmpfs"),
+    }
+    for mount_point, (filesystem, source) in expected_private_mounts.items():
+        matching = [
+            mount for mount in mounts if mount["mount_point"] == mount_point
+        ]
+        assert len(matching) == 1
+        mount = matching[0]
+        assert mount["filesystem"] == filesystem
+        assert mount["source"] == source
+        assert "rw" in mount["options"]
+
+    for mount in mounts:
+        if "rw" not in mount["options"]:
+            continue
+        mount_point = mount["mount_point"]
+        assert isinstance(mount_point, str)
+        assert (
+            mount_point == "/"
+            or mount_point == "/tmp"
+            or _is_mount_path_or_descendant(mount_point, "/proc")
+            or _is_mount_path_or_descendant(mount_point, "/dev")
+        )
+
+
+def test_resolved_cpython_root_uses_relative_alias_target_not_raw_link_text(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime_bin = runtime / "bin"
+    runtime_bin.mkdir(parents=True)
+    (runtime / "lib").mkdir()
+    copied_interpreter = runtime_bin / "python3.11"
+    shutil.copyfile(RESOLVED_INTERPRETER, copied_interpreter)
+    relative_alias = tmp_path / "python"
+    relative_alias.symlink_to(Path("runtime") / "bin" / "python3.11")
+
+    root = _resolved_cpython_install_root(
+        Path(os.path.relpath(relative_alias, Path.cwd()))
+    )
+
+    assert root == runtime.resolve(strict=True)
+    assert _additional_cpython_bind_root(root) == runtime.resolve(strict=True)
+
+
+def test_resolved_bin_interpreter_uses_existing_usr_mount() -> None:
+    assert _additional_cpython_bind_root(Path("/usr")) is None
+
+
+@pytest.mark.parametrize(
+    ("interpreter", "resolved_root"),
+    [
+        (Path("/bin/python3.11"), Path("/usr")),
+        (Path("/home/bin/python3.11"), Path("/home")),
+        (Path("/etc/bin/python3.11"), Path("/etc")),
+    ],
+)
+def test_interpreter_bind_selection_uses_only_resolved_install_roots(
+    interpreter: Path, resolved_root: Path
+) -> None:
+    if resolved_root == Path("/usr"):
+        assert _additional_cpython_bind_root(resolved_root) is None
+    else:
+        with pytest.raises(ValueError, match="forbidden"):
+            _additional_cpython_bind_root(resolved_root)
+    assert interpreter.name == "python3.11"
+
+
+@pytest.mark.parametrize(
+    "root",
+    [Path("/"), Path("/home"), Path("/etc"), Path("/tmp"), Path("/var"), Path("/run")],
+)
+def test_bubblewrap_rejects_forbidden_broad_bind_roots(root: Path) -> None:
+    with pytest.raises(ValueError, match="forbidden"):
+        _additional_cpython_bind_root(root)
+    with pytest.raises(ValueError, match="forbidden"):
+        _validated_bwrap_bind(Path("/usr"), root)
+
+
+def test_bubblewrap_builder_emits_only_validated_narrow_bind_pairs() -> None:
+    command = _bubblewrap_command([str(Path(sys.executable)), "-c", "pass"])
+    pairs = [
+        (Path(command[index + 1]), Path(command[index + 2]))
+        for index, argument in enumerate(command)
+        if argument == "--ro-bind"
+    ]
+
+    assert pairs
+    assert all(
+        source not in FORBIDDEN_BWRAP_BIND_ROOTS
+        and target not in FORBIDDEN_BWRAP_BIND_ROOTS
+        for source, target in pairs
+    )
+
+
+@pytest.mark.parametrize(
+    "mount",
+    [
+        {
+            "mount_point": "/tmp",
+            "options": ["rw"],
+            "filesystem": "ext4",
+            "source": "/dev/sda",
+        },
+        {
+            "mount_point": "/development",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": "/device",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+    ],
+)
+def test_mountinfo_proof_rejects_host_tmp_and_prefix_collision_mounts(
+    mount: dict[str, object],
+) -> None:
+    private_mounts: list[dict[str, object]] = [
+        {
+            "mount_point": "/",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": "/tmp",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+        {
+            "mount_point": "/proc",
+            "options": ["rw"],
+            "filesystem": "proc",
+            "source": "proc",
+        },
+        {
+            "mount_point": "/dev",
+            "options": ["rw"],
+            "filesystem": "tmpfs",
+            "source": "tmpfs",
+        },
+    ]
+    if mount["mount_point"] == "/tmp":
+        private_mounts[1] = mount
+    else:
+        private_mounts.append(mount)
+
+    with pytest.raises(AssertionError):
+        _assert_only_private_writable_mounts(private_mounts)
 
 
 def test_capabilities_are_closed_and_canonical() -> None:
@@ -707,23 +956,8 @@ print(
     topology = json.loads(completed.stdout)
     mounts = topology["mounts"]
     assert isinstance(mounts, list)
-    root_mounts = [
-        mount
-        for mount in mounts
-        if isinstance(mount, dict) and mount["mount_point"] == "/"
-    ]
-    assert len(root_mounts) == 1
-    assert root_mounts[0]["filesystem"] == "tmpfs"
-    assert root_mounts[0]["source"] == "tmpfs"
-    assert "rw" in root_mounts[0]["options"]
-    for mount in mounts:
-        assert isinstance(mount, dict)
-        if "rw" not in mount["options"]:
-            continue
-        mount_point = mount["mount_point"]
-        assert (
-            mount_point == "/" and mount["filesystem"] == "tmpfs"
-        ) or mount_point == "/tmp" or mount_point.startswith(("/proc", "/dev"))
+    assert all(isinstance(mount, dict) for mount in mounts)
+    _assert_only_private_writable_mounts(mounts)
     assert topology["cli_readable"] is True
     assert topology["request_digest"] == hashlib.sha256(request_path.read_bytes()).hexdigest()
     assert topology["sidecar_digest"] == hashlib.sha256(sidecar_path.read_bytes()).hexdigest()
