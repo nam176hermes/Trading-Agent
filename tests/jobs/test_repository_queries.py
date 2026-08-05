@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
+from enum import StrEnum
 from threading import Event, Thread
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import psycopg
 import pytest
@@ -23,6 +24,7 @@ from services.job_store import (
 )
 from services.job_store.worker_repository import WorkerRepository
 from services.job_store import repository as repository_module
+from services.job_store import worker_repository as worker_repository_module
 from services.job_worker.recovery import ProcessIdentity
 from tests.jobs._postgres import (
     disposable_database,
@@ -468,6 +470,74 @@ class _MatrixPool:
 
     def close(self):
         self.closed = True
+
+
+def test_worker_repository_engine_ingestor_binds_the_existing_protected_pool(
+    monkeypatch,
+) -> None:
+    from services.job_store import engine_event_repository
+
+    pool = _MatrixPool()
+    repository = object.__new__(WorkerRepository)
+    repository._pool = pool
+    observed = []
+    sentinel = object()
+    monkeypatch.setattr(
+        engine_event_repository,
+        "PostgresEngineEventLedger",
+        lambda selected_pool: observed.append(selected_pool) or sentinel,
+    )
+
+    assert repository.engine_event_ingestor() is sentinel
+    assert observed == [pool]
+
+
+def test_worker_repository_snapshot_only_contract_uses_snapshot_capability(
+    monkeypatch,
+) -> None:
+    class SnapshotOnlyJobType(StrEnum):
+        SNAPSHOT = "SNAPSHOT"
+
+    connection = _MatrixConnection([_MatrixResult(one=None)])
+    repository = object.__new__(WorkerRepository)
+    repository._pool = _MatrixPool(connection)
+    monkeypatch.setattr(worker_repository_module, "JobType", SnapshotOnlyJobType)
+
+    assert repository.claim_next(
+        "worker-coverage",
+        30,
+        "coverage:snapshot-only",
+        allowed_job_types=(SnapshotOnlyJobType.SNAPSHOT,),
+    ) is None
+    assert "worker_claim_snapshot" in connection.calls[0][0]
+    assert "worker_claim_paper" not in connection.calls[0][0]
+
+
+def test_worker_repository_finalizes_without_optional_outcome_metadata() -> None:
+    repository = object.__new__(WorkerRepository)
+    captured = {}
+    repository.finalize = lambda *args, **kwargs: captured.update(kwargs) or True
+    claimed = SimpleNamespace(
+        job_id="job_" + "1" * 32,
+        attempt_id="attempt_" + "2" * 32,
+        worker_id="worker-coverage",
+        lease_token="t" * 32,
+    )
+
+    assert repository.finalize_execution(
+        claimed,
+        expected_state=worker_repository_module.JobState.CLAIMED,
+        expected_attempt_outcome="CLAIMED",
+        final_state=worker_repository_module.JobState.BLOCKED,
+        reason_code="ENGINE_BACKTEST_AUTHORITY_REQUIRED",
+        trace_id="coverage:outcome-absent",
+        outcome=None,
+        result=None,
+        stream_artifacts=(),
+    )
+    assert captured["result_metadata"] == {"artifacts": []}
+    assert captured["exit_code"] is None
+    assert captured["termination_reason"] is None
 
 
 def test_repository_coverage_matrix_lifecycle_wrappers_and_authority(monkeypatch):
