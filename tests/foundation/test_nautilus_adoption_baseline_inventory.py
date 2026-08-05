@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +49,25 @@ def test_inventory_covers_each_component_dependency_authority() -> None:
         assert lockfile_path.is_file(), entry["lockfile"]
         assert entry["manifest_sha256"] == _sha256(manifest_path)
         assert entry["lockfile_sha256"] == _sha256(lockfile_path)
+
+
+def test_root_manifest_inventory_covers_engine_cli_console_script() -> None:
+    inventory = _load_inventory()
+    components = inventory["component_dependency_authority"]
+    assert isinstance(components, list)
+    root_entries = [entry for entry in components if entry["manifest"] == "pyproject.toml"]
+    assert len(root_entries) == 1
+    root_entry = root_entries[0]
+    assert isinstance(root_entry, dict)
+
+    manifest_path = ROOT / "pyproject.toml"
+    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["project"]["scripts"]["trading-agent-nautilus"] == (
+        "packages.nautilus_engine_cli.cli:main"
+    )
+    assert root_entry["manifest_sha256"] == _sha256(manifest_path)
+    assert root_entry["lockfile"] == "uv.lock"
+    assert root_entry["lockfile_sha256"] == _sha256(ROOT / "uv.lock")
 
 
 def test_inventory_distinguishes_source_and_historical_migration_authorities() -> None:

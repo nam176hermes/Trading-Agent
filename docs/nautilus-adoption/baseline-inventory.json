@@ -15,7 +15,7 @@
       "component": "core-control-plane",
       "runtime": "Python >=3.11,<3.12",
       "manifest": "pyproject.toml",
-      "manifest_sha256": "af827ff417f77edc13c66f64cca088e046fa5ed75a03b127202c7f83dba6dbd0",
+      "manifest_sha256": "c653b651900eeb5e6aa4979a729b6d25725100b2d75f98720c06ba910081cb8b",
       "lockfile": "uv.lock",
       "lockfile_sha256": "6800db166a654c4a44d8ec31ea4a106c6d9341553bc01bc0b208f614f6c36a0c"
     },
