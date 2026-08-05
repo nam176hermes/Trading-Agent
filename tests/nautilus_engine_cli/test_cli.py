@@ -18,12 +18,17 @@ from packages import engine_contracts as contracts
 CLI = Path(sys.executable).with_name("trading-agent-nautilus")
 
 
-def _run(*arguments: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run(
+    *arguments: str,
+    environment: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     assert CLI.is_file(), "the project console script must be registered"
     return subprocess.run(
         [str(CLI), *arguments],
         capture_output=True,
         check=False,
+        cwd=cwd,
         text=True,
         env=environment,
     )
@@ -96,6 +101,79 @@ def _canonical_output(completed: subprocess.CompletedProcess[str]) -> dict[str, 
     return result
 
 
+def _assert_rejected(completed: subprocess.CompletedProcess[str]) -> None:
+    assert completed.returncode != 0
+    assert completed.stdout == ""
+    assert completed.stderr
+
+
+def _valid_arguments(tmp_path: Path, subcommand: str) -> tuple[str, ...]:
+    if subcommand == "capabilities":
+        return (subcommand,)
+    command_type = "StartPaperEngine" if subcommand == "paper-fixture" else "RunBacktest"
+    request_path, sidecar_path = _request_files(tmp_path, _request(command_type))
+    return (subcommand, str(request_path), str(sidecar_path))
+
+
+def _restricted_environment(
+    tmp_path: Path, *, forbid_imports: bool = False, forbid_json_parsing: bool = False
+) -> dict[str, str]:
+    source = [
+        "import socket",
+        "def blocked_network(*args, **kwargs):",
+        "    raise AssertionError('network access is forbidden')",
+        "socket.socket = blocked_network",
+        "socket.create_connection = blocked_network",
+    ]
+    if forbid_json_parsing:
+        source.extend(
+            [
+                "import json",
+                "def blocked_json(*args, **kwargs):",
+                "    raise AssertionError('request JSON parsed before hash verification')",
+                "json.loads = blocked_json",
+            ]
+        )
+    if forbid_imports:
+        source.extend(
+            [
+                "import builtins",
+                "forbidden = (",
+                "    'nautilus_trader', 'nautilustrader', 'provider', 'worker',",
+                "    'transport', 'ingestion', 'database', 'sqlalchemy', 'psycopg',",
+                "    'alembic', 'asyncpg', 'broker', 'exchange', 'ccxt', 'alpaca',",
+                "    'ib_insync', 'service', 'redis',",
+                ")",
+                "original_import = builtins.__import__",
+                "def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):",
+                "    if any(item in name.casefold() for item in forbidden):",
+                "        raise AssertionError(f'forbidden import: {name}')",
+                "    return original_import(name, globals, locals, fromlist, level)",
+                "builtins.__import__ = guarded_import",
+                "import importlib.abc",
+                "import sys",
+                "class ForbiddenImportFinder(importlib.abc.MetaPathFinder):",
+                "    def find_spec(self, fullname, path=None, target=None):",
+                "        if any(item in fullname.casefold() for item in forbidden):",
+                "            raise AssertionError(f'forbidden import: {fullname}')",
+                "        return None",
+                "sys.meta_path.insert(0, ForbiddenImportFinder())",
+            ]
+        )
+    (tmp_path / "sitecustomize.py").write_text("\n".join(source) + "\n", encoding="utf-8")
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(tmp_path)
+    return environment
+
+
+def _filesystem_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def test_capabilities_are_closed_and_canonical() -> None:
     result = _canonical_output(_run("capabilities"))
 
@@ -125,9 +203,7 @@ def test_validate_request_requires_hash_before_parsing_and_emits_canonical_envel
     ).model_dump(mode="json")
 
     bad_hash = _run("validate-request", str(request_path), str(sidecar_path) + ".missing")
-    assert bad_hash.returncode != 0
-    assert bad_hash.stdout == ""
-    assert bad_hash.stderr
+    _assert_rejected(bad_hash)
 
 
 @pytest.mark.parametrize(
@@ -146,9 +222,65 @@ def test_validate_request_rejects_bad_hash_or_invalid_envelope_without_result(
 
     completed = _run("validate-request", str(request_path), str(sidecar_path))
 
-    assert completed.returncode != 0
-    assert completed.stdout == ""
-    assert completed.stderr
+    _assert_rejected(completed)
+
+
+@pytest.mark.parametrize("input_name", ["request", "sidecar"])
+@pytest.mark.parametrize("input_kind", ["symlink", "directory"])
+def test_request_inputs_must_be_regular_non_symlink_files(
+    tmp_path: Path, input_name: str, input_kind: str
+) -> None:
+    request_path, sidecar_path = _request_files(tmp_path, _request())
+    invalid_path = tmp_path / f"invalid-{input_name}"
+    if input_kind == "symlink":
+        invalid_path.symlink_to(
+            request_path if input_name == "request" else sidecar_path
+        )
+    else:
+        invalid_path.mkdir()
+
+    completed = _run(
+        "validate-request",
+        str(invalid_path if input_name == "request" else request_path),
+        str(invalid_path if input_name == "sidecar" else sidecar_path),
+    )
+
+    _assert_rejected(completed)
+
+
+@pytest.mark.parametrize(
+    "sidecar_bytes",
+    [
+        ("a" * 64).upper().encode("ascii"),
+        (("a" * 64) + " " + ("b" * 64)).encode("ascii"),
+        b"\xff" * 64,
+    ],
+)
+def test_request_sidecar_requires_one_lowercase_ascii_hash_token(
+    tmp_path: Path, sidecar_bytes: bytes
+) -> None:
+    request_path, sidecar_path = _request_files(tmp_path, _request())
+    sidecar_path.write_bytes(sidecar_bytes)
+
+    _assert_rejected(_run("validate-request", str(request_path), str(sidecar_path)))
+
+
+def test_hash_mismatch_rejects_malformed_request_before_json_parsing(tmp_path: Path) -> None:
+    request_path = tmp_path / "request.json"
+    request_path.write_bytes(b"{ not valid JSON")
+    sidecar_path = tmp_path / "request.sha256"
+    sidecar_path.write_text("0" * 64, encoding="ascii")
+
+    completed = _run(
+        "validate-request",
+        str(request_path),
+        str(sidecar_path),
+        environment=_restricted_environment(tmp_path, forbid_json_parsing=True),
+    )
+
+    _assert_rejected(completed)
+    assert "request SHA-256 does not match request bytes" in completed.stderr
+    assert "request JSON parsed before hash verification" not in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -217,30 +349,46 @@ def test_fixture_commands_reject_a_different_command_type(
 
     completed = _run(subcommand, str(request_path), str(sidecar_path))
 
-    assert completed.returncode != 0
-    assert completed.stdout == ""
-    assert completed.stderr
+    _assert_rejected(completed)
 
 
-def test_capabilities_path_does_not_open_a_network_connection(tmp_path: Path) -> None:
-    (tmp_path / "sitecustomize.py").write_text(
-        "import socket\n"
-        "def blocked(*args, **kwargs):\n"
-        "    raise AssertionError('network access is forbidden')\n"
-        "socket.socket = blocked\n"
-        "socket.create_connection = blocked\n",
-        encoding="utf-8",
+@pytest.mark.parametrize(
+    "subcommand",
+    ["capabilities", "validate-request", "backtest-fixture", "paper-fixture"],
+)
+def test_every_cli_path_runs_without_network_access(tmp_path: Path, subcommand: str) -> None:
+    arguments = _valid_arguments(tmp_path, subcommand)
+
+    _canonical_output(
+        _run(*arguments, environment=_restricted_environment(tmp_path))
     )
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = str(tmp_path)
-
-    _canonical_output(_run("capabilities", environment=environment))
 
 
-def test_cli_source_has_no_nautilus_or_provider_import_leakage() -> None:
-    source_root = Path(__file__).parents[2] / "packages" / "nautilus_engine_cli"
-    source = "\n".join(path.read_text(encoding="utf-8") for path in source_root.glob("*.py"))
+@pytest.mark.parametrize(
+    "subcommand",
+    ["capabilities", "validate-request", "backtest-fixture", "paper-fixture"],
+)
+def test_every_cli_path_writes_no_files(tmp_path: Path, subcommand: str) -> None:
+    arguments = _valid_arguments(tmp_path, subcommand)
+    before = _filesystem_snapshot(tmp_path)
 
-    assert "nautilustrader" not in source.casefold()
-    assert "nautilus_trader" not in source.casefold()
-    assert "provider" not in source.casefold()
+    _canonical_output(_run(*arguments, cwd=tmp_path))
+
+    assert _filesystem_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "subcommand",
+    ["capabilities", "validate-request", "backtest-fixture", "paper-fixture"],
+)
+def test_every_cli_path_uses_no_forbidden_engine_or_runtime_imports(
+    tmp_path: Path, subcommand: str
+) -> None:
+    arguments = _valid_arguments(tmp_path, subcommand)
+
+    _canonical_output(
+        _run(
+            *arguments,
+            environment=_restricted_environment(tmp_path, forbid_imports=True),
+        )
+    )
