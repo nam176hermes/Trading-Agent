@@ -81,6 +81,12 @@ from packages.event_ledger import (
     StoredEvent,
     StreamProjection,
 )
+from packages.engine_contracts import (
+    EngineCapabilities,
+    EngineCommandEnvelope,
+    EngineEventEnvelope,
+    EngineRunManifest,
+)
 from packages.runtime_release import (
     RuntimeAuthority,
     ValidatedJobPlaneAuthority,
@@ -147,6 +153,12 @@ DOMAIN_SCHEMA_MODELS = (
     SnapshotRecord,
     OutboxIntent,
     AppendOutcome,
+)
+ENGINE_SCHEMA_MODELS = (
+    EngineCapabilities,
+    EngineCommandEnvelope,
+    EngineEventEnvelope,
+    EngineRunManifest,
 )
 HTTP_METHODS = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
@@ -236,6 +248,12 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
     for model in DOMAIN_SCHEMA_MODELS:
         write_json(
             destination / "generated/domain/json-schema" / schema_filename(model),
+            model.model_json_schema(),
+        )
+
+    for model in ENGINE_SCHEMA_MODELS:
+        write_json(
+            destination / "generated/engine/json-schema" / schema_filename(model),
             model.model_json_schema(),
         )
 

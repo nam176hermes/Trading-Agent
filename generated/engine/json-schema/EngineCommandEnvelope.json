@@ -1,0 +1,804 @@
+{
+  "$defs": {
+    "ArtifactReference": {
+      "additionalProperties": false,
+      "description": "Content-addressed, engine-neutral input to a command.",
+      "properties": {
+        "artifact_id": {
+          "format": "uuid",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "media_type": {
+          "enum": [
+            "application/json",
+            "application/jsonl"
+          ],
+          "title": "Media Type",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "sha256",
+        "media_type"
+      ],
+      "title": "ArtifactReference",
+      "type": "object"
+    },
+    "CancelAllOrders": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "CancelAllOrders",
+          "title": "Command Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type"
+      ],
+      "title": "CancelAllOrders",
+      "type": "object"
+    },
+    "CancelBacktest": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "CancelBacktest",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "target_engine_run_id": {
+          "format": "uuid",
+          "title": "Target Engine Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type",
+        "target_engine_run_id"
+      ],
+      "title": "CancelBacktest",
+      "type": "object"
+    },
+    "CancelOrderIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "CancelOrderIntent",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "order_id": {
+          "format": "uuid",
+          "title": "Order Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type",
+        "order_id"
+      ],
+      "title": "CancelOrderIntent",
+      "type": "object"
+    },
+    "ClosePositionIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "ClosePositionIntent",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "position_id": {
+          "format": "uuid",
+          "title": "Position Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type",
+        "position_id"
+      ],
+      "title": "ClosePositionIntent",
+      "type": "object"
+    },
+    "Currency": {
+      "description": "Currencies approved for canonical spot and equity assets.",
+      "enum": [
+        "USD",
+        "USDT"
+      ],
+      "title": "Currency",
+      "type": "string"
+    },
+    "DescribeEngineCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "DescribeEngineCapabilities",
+          "title": "Command Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type"
+      ],
+      "title": "DescribeEngineCapabilities",
+      "type": "object"
+    },
+    "ExportBacktestReport": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "ExportBacktestReport",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "report_format": {
+          "const": "json",
+          "title": "Report Format",
+          "type": "string"
+        },
+        "target_engine_run_id": {
+          "format": "uuid",
+          "title": "Target Engine Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type",
+        "target_engine_run_id",
+        "report_format"
+      ],
+      "title": "ExportBacktestReport",
+      "type": "object"
+    },
+    "InspectEngineRun": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "InspectEngineRun",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "target_engine_run_id": {
+          "format": "uuid",
+          "title": "Target Engine Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type",
+        "target_engine_run_id"
+      ],
+      "title": "InspectEngineRun",
+      "type": "object"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "ModifyOrderIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "ModifyOrderIntent",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "order_id": {
+          "format": "uuid",
+          "title": "Order Id",
+          "type": "string"
+        },
+        "replacement_order_intent": {
+          "$ref": "#/$defs/OrderIntent"
+        }
+      },
+      "required": [
+        "command_type",
+        "order_id",
+        "replacement_order_intent"
+      ],
+      "title": "ModifyOrderIntent",
+      "type": "object"
+    },
+    "OrderIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "intent_id": {
+          "format": "uuid",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "limit_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "order_type": {
+          "$ref": "#/$defs/OrderType"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "requested_at": {
+          "format": "date-time",
+          "title": "Requested At",
+          "type": "string"
+        },
+        "risk_decision_id": {
+          "format": "uuid",
+          "title": "Risk Decision Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "side": {
+          "$ref": "#/$defs/OrderSide"
+        },
+        "time_in_force": {
+          "$ref": "#/$defs/TimeInForce"
+        }
+      },
+      "required": [
+        "instrument",
+        "side",
+        "order_type",
+        "time_in_force",
+        "quantity",
+        "schema_version",
+        "intent_id",
+        "risk_decision_id",
+        "requested_at"
+      ],
+      "title": "OrderIntent",
+      "type": "object"
+    },
+    "OrderSide": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "OrderSide",
+      "type": "string"
+    },
+    "OrderType": {
+      "enum": [
+        "market",
+        "limit"
+      ],
+      "title": "OrderType",
+      "type": "string"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    },
+    "Quantity": {
+      "description": "An exact signed quantity with declared fractional precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "Quantity",
+      "type": "object"
+    },
+    "RequestExecutionReconciliation": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "RequestExecutionReconciliation",
+          "title": "Command Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type"
+      ],
+      "title": "RequestExecutionReconciliation",
+      "type": "object"
+    },
+    "RunBacktest": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "RunBacktest",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "end_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "End Time",
+          "type": "string"
+        },
+        "engine_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "instrument_catalog": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "market_data": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "start_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Start Time",
+          "type": "string"
+        },
+        "strategy_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "command_type",
+        "engine_configuration",
+        "instrument_catalog",
+        "strategy_configuration",
+        "market_data",
+        "start_time",
+        "end_time"
+      ],
+      "title": "RunBacktest",
+      "type": "object"
+    },
+    "StartPaperEngine": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "StartPaperEngine",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "engine_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "instrument_catalog": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "strategy_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "command_type",
+        "engine_configuration",
+        "instrument_catalog",
+        "strategy_configuration"
+      ],
+      "title": "StartPaperEngine",
+      "type": "object"
+    },
+    "StopPaperEngine": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "StopPaperEngine",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "target_engine_run_id": {
+          "format": "uuid",
+          "title": "Target Engine Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "command_type",
+        "target_engine_run_id"
+      ],
+      "title": "StopPaperEngine",
+      "type": "object"
+    },
+    "SubmitOrderIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "SubmitOrderIntent",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "order_intent": {
+          "$ref": "#/$defs/OrderIntent"
+        }
+      },
+      "required": [
+        "command_type",
+        "order_intent"
+      ],
+      "title": "SubmitOrderIntent",
+      "type": "object"
+    },
+    "SubmitTargetPortfolio": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "SubmitTargetPortfolio",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "target_portfolio": {
+          "$ref": "#/$defs/TargetPortfolio"
+        }
+      },
+      "required": [
+        "command_type",
+        "target_portfolio"
+      ],
+      "title": "SubmitTargetPortfolio",
+      "type": "object"
+    },
+    "TargetPortfolio": {
+      "additionalProperties": false,
+      "properties": {
+        "effective_at": {
+          "format": "date-time",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/TargetPosition"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_signal_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Signal Ids",
+          "type": "array"
+        },
+        "target_id": {
+          "format": "uuid",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "positions",
+        "source_signal_ids",
+        "effective_at",
+        "schema_version"
+      ],
+      "title": "TargetPortfolio",
+      "type": "object"
+    },
+    "TargetPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "target_weight": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Target Weight",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "instrument",
+        "target_weight"
+      ],
+      "title": "TargetPosition",
+      "type": "object"
+    },
+    "TimeInForce": {
+      "enum": [
+        "day",
+        "gtc",
+        "ioc",
+        "fok"
+      ],
+      "title": "TimeInForce",
+      "type": "string"
+    },
+    "ValidateEngineConfiguration": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "ValidateEngineConfiguration",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "engine_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "command_type",
+        "engine_configuration"
+      ],
+      "title": "ValidateEngineConfiguration",
+      "type": "object"
+    },
+    "ValidateInstrumentCatalog": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "ValidateInstrumentCatalog",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "instrument_catalog": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "command_type",
+        "instrument_catalog"
+      ],
+      "title": "ValidateInstrumentCatalog",
+      "type": "object"
+    },
+    "ValidateStrategyConfiguration": {
+      "additionalProperties": false,
+      "properties": {
+        "command_type": {
+          "const": "ValidateStrategyConfiguration",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "strategy_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "command_type",
+        "strategy_configuration"
+      ],
+      "title": "ValidateStrategyConfiguration",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A validated command plus complete execution authority metadata.",
+  "properties": {
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
+      "type": "string"
+    },
+    "config_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Digest",
+      "type": "string"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "engine_run_id": {
+      "format": "uuid",
+      "title": "Engine Run Id",
+      "type": "string"
+    },
+    "event_time": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Event Time",
+      "type": "string"
+    },
+    "initialization_time": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Initialization Time",
+      "type": "string"
+    },
+    "message_id": {
+      "format": "uuid",
+      "title": "Message Id",
+      "type": "string"
+    },
+    "payload": {
+      "discriminator": {
+        "mapping": {
+          "CancelAllOrders": "#/$defs/CancelAllOrders",
+          "CancelBacktest": "#/$defs/CancelBacktest",
+          "CancelOrderIntent": "#/$defs/CancelOrderIntent",
+          "ClosePositionIntent": "#/$defs/ClosePositionIntent",
+          "DescribeEngineCapabilities": "#/$defs/DescribeEngineCapabilities",
+          "ExportBacktestReport": "#/$defs/ExportBacktestReport",
+          "InspectEngineRun": "#/$defs/InspectEngineRun",
+          "ModifyOrderIntent": "#/$defs/ModifyOrderIntent",
+          "RequestExecutionReconciliation": "#/$defs/RequestExecutionReconciliation",
+          "RunBacktest": "#/$defs/RunBacktest",
+          "StartPaperEngine": "#/$defs/StartPaperEngine",
+          "StopPaperEngine": "#/$defs/StopPaperEngine",
+          "SubmitOrderIntent": "#/$defs/SubmitOrderIntent",
+          "SubmitTargetPortfolio": "#/$defs/SubmitTargetPortfolio",
+          "ValidateEngineConfiguration": "#/$defs/ValidateEngineConfiguration",
+          "ValidateInstrumentCatalog": "#/$defs/ValidateInstrumentCatalog",
+          "ValidateStrategyConfiguration": "#/$defs/ValidateStrategyConfiguration"
+        },
+        "propertyName": "command_type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DescribeEngineCapabilities"
+        },
+        {
+          "$ref": "#/$defs/ValidateEngineConfiguration"
+        },
+        {
+          "$ref": "#/$defs/ValidateInstrumentCatalog"
+        },
+        {
+          "$ref": "#/$defs/ValidateStrategyConfiguration"
+        },
+        {
+          "$ref": "#/$defs/InspectEngineRun"
+        },
+        {
+          "$ref": "#/$defs/RunBacktest"
+        },
+        {
+          "$ref": "#/$defs/CancelBacktest"
+        },
+        {
+          "$ref": "#/$defs/ExportBacktestReport"
+        },
+        {
+          "$ref": "#/$defs/StartPaperEngine"
+        },
+        {
+          "$ref": "#/$defs/StopPaperEngine"
+        },
+        {
+          "$ref": "#/$defs/SubmitTargetPortfolio"
+        },
+        {
+          "$ref": "#/$defs/SubmitOrderIntent"
+        },
+        {
+          "$ref": "#/$defs/ModifyOrderIntent"
+        },
+        {
+          "$ref": "#/$defs/CancelOrderIntent"
+        },
+        {
+          "$ref": "#/$defs/CancelAllOrders"
+        },
+        {
+          "$ref": "#/$defs/ClosePositionIntent"
+        },
+        {
+          "$ref": "#/$defs/RequestExecutionReconciliation"
+        }
+      ],
+      "title": "Payload"
+    },
+    "payload_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Payload Digest",
+      "type": "string"
+    },
+    "producer_identity": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "title": "Producer Identity",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_commit": {
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "title": "Source Commit",
+      "type": "string"
+    },
+    "stream_sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Stream Sequence",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "message_id",
+    "correlation_id",
+    "causation_id",
+    "engine_run_id",
+    "stream_sequence",
+    "event_time",
+    "initialization_time",
+    "schema_version",
+    "producer_identity",
+    "source_commit",
+    "config_digest",
+    "payload_digest",
+    "payload"
+  ],
+  "title": "EngineCommandEnvelope",
+  "type": "object"
+}

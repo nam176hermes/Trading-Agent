@@ -1,0 +1,175 @@
+{
+  "$defs": {
+    "EngineEvent": {
+      "additionalProperties": false,
+      "description": "Classified, implementation-neutral engine event payload.",
+      "properties": {
+        "attributes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/EventAttribute"
+          },
+          "maxItems": 256,
+          "title": "Attributes",
+          "type": "array"
+        },
+        "event_type": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "family": {
+          "$ref": "#/$defs/EventFamily"
+        }
+      },
+      "required": [
+        "event_type",
+        "family"
+      ],
+      "title": "EngineEvent",
+      "type": "object"
+    },
+    "EventAttribute": {
+      "additionalProperties": false,
+      "description": "One bounded scalar event fact with no implementation-specific object.",
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "maxLength": 4096,
+              "type": "string"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "EventAttribute",
+      "type": "object"
+    },
+    "EventFamily": {
+      "description": "Closed protocol-v1 classification for engine output events.",
+      "enum": [
+        "ENGINE_LIFECYCLE",
+        "MARKET_DATA_CONTINUITY",
+        "STRATEGY_LIFECYCLE",
+        "ORDER_LIFECYCLE",
+        "FILLS",
+        "POSITIONS",
+        "ACCOUNT_STATE",
+        "RUNTIME_RISK",
+        "RECONCILIATION",
+        "HEALTH",
+        "HALT"
+      ],
+      "title": "EventFamily",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A classified event plus complete execution authority metadata.",
+  "properties": {
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
+      "type": "string"
+    },
+    "config_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Digest",
+      "type": "string"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "engine_run_id": {
+      "format": "uuid",
+      "title": "Engine Run Id",
+      "type": "string"
+    },
+    "event_time": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Event Time",
+      "type": "string"
+    },
+    "initialization_time": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Initialization Time",
+      "type": "string"
+    },
+    "message_id": {
+      "format": "uuid",
+      "title": "Message Id",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/EngineEvent"
+    },
+    "payload_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Payload Digest",
+      "type": "string"
+    },
+    "producer_identity": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "title": "Producer Identity",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_commit": {
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "title": "Source Commit",
+      "type": "string"
+    },
+    "stream_sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Stream Sequence",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "message_id",
+    "correlation_id",
+    "causation_id",
+    "engine_run_id",
+    "stream_sequence",
+    "event_time",
+    "initialization_time",
+    "schema_version",
+    "producer_identity",
+    "source_commit",
+    "config_digest",
+    "payload_digest",
+    "payload"
+  ],
+  "title": "EngineEventEnvelope",
+  "type": "object"
+}

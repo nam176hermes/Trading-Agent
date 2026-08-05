@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "EngineMode": {
+      "description": "The only execution modes authorized by contract version 1.",
+      "enum": [
+        "BACKTEST",
+        "PAPER"
+      ],
+      "title": "EngineMode",
+      "type": "string"
+    },
+    "EventFamily": {
+      "description": "Closed protocol-v1 classification for engine output events.",
+      "enum": [
+        "ENGINE_LIFECYCLE",
+        "MARKET_DATA_CONTINUITY",
+        "STRATEGY_LIFECYCLE",
+        "ORDER_LIFECYCLE",
+        "FILLS",
+        "POSITIONS",
+        "ACCOUNT_STATE",
+        "RUNTIME_RISK",
+        "RECONCILIATION",
+        "HEALTH",
+        "HALT"
+      ],
+      "title": "EventFamily",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Closed, immutable declaration returned by an engine implementation.",
+  "properties": {
+    "engine_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "title": "Engine Id",
+      "type": "string"
+    },
+    "engine_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$",
+      "title": "Engine Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "supported_commands": {
+      "items": {
+        "enum": [
+          "DescribeEngineCapabilities",
+          "ValidateEngineConfiguration",
+          "ValidateInstrumentCatalog",
+          "ValidateStrategyConfiguration",
+          "InspectEngineRun",
+          "RunBacktest",
+          "CancelBacktest",
+          "ExportBacktestReport",
+          "StartPaperEngine",
+          "StopPaperEngine",
+          "SubmitTargetPortfolio",
+          "SubmitOrderIntent",
+          "ModifyOrderIntent",
+          "CancelOrderIntent",
+          "CancelAllOrders",
+          "ClosePositionIntent",
+          "RequestExecutionReconciliation"
+        ],
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Supported Commands",
+      "type": "array"
+    },
+    "supported_event_families": {
+      "items": {
+        "$ref": "#/$defs/EventFamily"
+      },
+      "minItems": 1,
+      "title": "Supported Event Families",
+      "type": "array"
+    },
+    "supported_modes": {
+      "items": {
+        "$ref": "#/$defs/EngineMode"
+      },
+      "minItems": 1,
+      "title": "Supported Modes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "engine_id",
+    "engine_version",
+    "supported_commands",
+    "supported_event_families",
+    "supported_modes"
+  ],
+  "title": "EngineCapabilities",
+  "type": "object"
+}

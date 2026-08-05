@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "ManifestArtifact": {
+      "additionalProperties": false,
+      "description": "Digest and size for one bounded run artifact.",
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/TransportArtifact"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 1073741824,
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "ManifestArtifact",
+      "type": "object"
+    },
+    "TransportArtifact": {
+      "description": "Closed filenames used by the immutable file transport.",
+      "enum": [
+        "request.json",
+        "request.sha256",
+        "events.jsonl",
+        "result.json",
+        "manifest.json",
+        "stdout.log",
+        "stderr.log"
+      ],
+      "title": "TransportArtifact",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Final, canonical inventory of a completed engine run.",
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ManifestArtifact"
+      },
+      "maxItems": 7,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "command_type": {
+      "enum": [
+        "DescribeEngineCapabilities",
+        "ValidateEngineConfiguration",
+        "ValidateInstrumentCatalog",
+        "ValidateStrategyConfiguration",
+        "InspectEngineRun",
+        "RunBacktest",
+        "CancelBacktest",
+        "ExportBacktestReport",
+        "StartPaperEngine",
+        "StopPaperEngine",
+        "SubmitTargetPortfolio",
+        "SubmitOrderIntent",
+        "ModifyOrderIntent",
+        "CancelOrderIntent",
+        "CancelAllOrders",
+        "ClosePositionIntent",
+        "RequestExecutionReconciliation"
+      ],
+      "title": "Command Type",
+      "type": "string"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "config_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Config Digest",
+      "type": "string"
+    },
+    "engine_run_id": {
+      "format": "uuid",
+      "title": "Engine Run Id",
+      "type": "string"
+    },
+    "producer_identity": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      "title": "Producer Identity",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_commit": {
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
+      "title": "Source Commit",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+      "title": "Started At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "engine_run_id",
+    "command_type",
+    "started_at",
+    "completed_at",
+    "producer_identity",
+    "source_commit",
+    "config_digest",
+    "artifacts"
+  ],
+  "title": "EngineRunManifest",
+  "type": "object"
+}
