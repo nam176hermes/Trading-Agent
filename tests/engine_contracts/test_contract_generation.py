@@ -126,4 +126,4 @@ def test_generated_submission_dtos_are_recursively_strict_and_v1_canonical() -> 
     assert order["requested_at"]["pattern"].endswith("Z$")
     assert order["schema_version"]["const"] == "1.0.0"
     quantity_value = definitions["EngineQuantity"]["properties"]["value"]
-    assert quantity_value["maxLength"] == 129
+    assert quantity_value["maxLength"] == 130

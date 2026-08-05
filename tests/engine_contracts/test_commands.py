@@ -162,6 +162,26 @@ def test_engine_quantity_accepts_128_coefficient_digits_and_rejects_129() -> Non
         contracts.EngineQuantity(value=Decimal("9" * 129), precision=0)
 
 
+def test_engine_quantity_accepts_signed_precision_18_wire_value_at_magnitude_limit() -> None:
+    contracts = import_module("packages.engine_contracts")
+    accepted = "-" + ("9" * 110) + "." + ("9" * 18)
+    rejected = "-" + ("9" * 111) + "." + ("9" * 18)
+
+    assert contracts.EngineQuantity(value=Decimal(accepted), precision=18).value == Decimal(
+        accepted
+    )
+    assert contracts.EngineQuantity.model_validate_json(
+        json.dumps({"value": accepted, "precision": 18})
+    ).value == Decimal(accepted)
+
+    with pytest.raises(ValidationError, match="maximum quantity magnitude"):
+        contracts.EngineQuantity(value=Decimal(rejected), precision=18)
+    with pytest.raises(ValidationError, match="maximum quantity magnitude"):
+        contracts.EngineQuantity.model_validate_json(
+            json.dumps({"value": rejected, "precision": 18})
+        )
+
+
 def test_public_command_schemas_do_not_leak_provider_or_nautilus_types() -> None:
     contracts = import_module("packages.engine_contracts")
     schemas = json.dumps(

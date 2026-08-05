@@ -59,7 +59,7 @@ EngineQuantityValue = Annotated[
         {
             "type": "string",
             "pattern": _CANONICAL_DECIMAL_PATTERN,
-            "maxLength": 129,
+            "maxLength": 130,
             "x-canonical-decimal-policy": CANONICAL_DECIMAL_POLICY_VERSION,
         },
         mode="validation",
