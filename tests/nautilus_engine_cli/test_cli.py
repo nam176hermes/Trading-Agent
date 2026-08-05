@@ -6,6 +6,7 @@ import errno
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from packages import engine_contracts as contracts
 
 
 CLI = Path(sys.executable).with_name("trading-agent-nautilus")
+BWRAP = shutil.which("bwrap")
 
 
 def _run(
@@ -33,6 +35,44 @@ def _run(
         cwd=cwd,
         text=True,
         env=environment,
+        timeout=timeout,
+    )
+
+
+def _run_in_bubblewrap(
+    *arguments: str, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    if BWRAP is None:
+        pytest.fail("Bubblewrap is required for engine CLI OS-sandbox regressions")
+    assert CLI.is_file(), "the project console script must be registered"
+    return subprocess.run(
+        [
+            BWRAP,
+            "--die-with-parent",
+            "--unshare-user",
+            "--unshare-net",
+            "--new-session",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--clearenv",
+            "--setenv",
+            "PYTHONDONTWRITEBYTECODE",
+            "1",
+            "--chdir",
+            "/",
+            str(CLI),
+            *arguments,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
         timeout=timeout,
     )
 
@@ -157,6 +197,21 @@ def _restricted_environment(
         "    }:",
         "        raise RuntimeError(f'audit policy blocked {event}')",
         "sys.addaudithook(audit_policy)",
+        "import os",
+        "def blocked_api(name):",
+        "    def blocked(*args, **kwargs):",
+        "        raise RuntimeError(f'audit policy blocked {name}')",
+        "    return blocked",
+        "for api in (",
+        "    'execv', 'execve', 'execl', 'execle', 'execlp', 'execlpe',",
+        "    'execvp', 'execvpe', 'fork', 'forkpty', 'mkfifo', 'posix_spawn',",
+        "    'posix_spawnp', 'spawnl', 'spawnle', 'spawnlp', 'spawnlpe',",
+        "    'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'system',",
+        "):",
+        "    if hasattr(os, api):",
+        "        setattr(os, api, blocked_api(f'os.{api}'))",
+        "import subprocess",
+        "subprocess.Popen = blocked_api('subprocess.Popen')",
     ]
     if remove_no_follow:
         source.extend(["import os", "del os.O_NOFOLLOW"])
@@ -468,6 +523,44 @@ def test_every_cli_path_uses_no_forbidden_engine_or_runtime_imports(
 
 @pytest.mark.parametrize(
     "subcommand",
+    ["capabilities", "validate-request", "backtest-fixture", "paper-fixture"],
+)
+def test_every_cli_path_runs_in_bubblewrap_read_only_network_namespace(
+    tmp_path: Path, subcommand: str
+) -> None:
+    arguments = _valid_arguments(tmp_path, subcommand)
+
+    _canonical_output(_run_in_bubblewrap(*arguments, timeout=5))
+
+
+@pytest.mark.parametrize(
+    "subcommand",
+    ["validate-request", "backtest-fixture", "paper-fixture"],
+)
+def test_request_cli_rejections_run_in_bubblewrap_read_only_network_namespace(
+    tmp_path: Path, subcommand: str
+) -> None:
+    if subcommand == "validate-request":
+        request_path, sidecar_path = _request_files(tmp_path, _request())
+        sidecar_path.write_text("0" * 64, encoding="ascii")
+    else:
+        wrong_command = (
+            "StartPaperEngine" if subcommand == "backtest-fixture" else "RunBacktest"
+        )
+        request_path, sidecar_path = _request_files(tmp_path, _request(wrong_command))
+
+    _assert_rejected(
+        _run_in_bubblewrap(
+            subcommand,
+            str(request_path),
+            str(sidecar_path),
+            timeout=5,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "subcommand",
     ["validate-request", "backtest-fixture", "paper-fixture"],
 )
 def test_request_cli_rejections_run_under_audit_guard(
@@ -532,10 +625,63 @@ def test_audit_guard_blocks_socket_connect_after_construction(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
+    ("api", "program", "output_name"),
+    [
+        ("forkpty", "import os; os.forkpty()", None),
+        ("mkfifo", "import os; os.mkfifo('blocked-fifo')", "blocked-fifo"),
+    ],
+)
+def test_python_guard_blocks_unaudited_process_and_filesystem_bypasses(
+    tmp_path: Path, api: str, program: str, output_name: str | None
+) -> None:
+    if not hasattr(os, api):
+        pytest.skip(f"os.{api} is unavailable on this host")
+
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        text=True,
+        env=_restricted_environment(tmp_path),
+    )
+
+    assert completed.returncode != 0
+    assert f"audit policy blocked os.{api}" in completed.stderr
+    if output_name is not None:
+        assert not (tmp_path / output_name).exists()
+
+
+def test_audit_guard_blocks_absolute_path_write_attempt(tmp_path: Path) -> None:
+    target = tmp_path / "outside-current-directory" / "blocked.txt"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; import sys; "
+                "Path(sys.argv[1]).write_bytes(b'x')"
+            ),
+            str(target),
+        ],
+        capture_output=True,
+        check=False,
+        cwd=tmp_path,
+        text=True,
+        env=_restricted_environment(tmp_path),
+    )
+
+    assert completed.returncode != 0
+    assert "audit policy blocked write-capable open" in completed.stderr
+    assert not target.exists()
+
+
+@pytest.mark.parametrize(
     "program",
     [
         "open('blocked.txt', 'wb').write(b'x')",
         "import os; os.mkdir('blocked-directory')",
+        "import os; os.remove('preexisting')",
         "import subprocess; subprocess.run(['true'], check=True)",
         "import os; os.system('true')",
     ],
@@ -543,6 +689,8 @@ def test_audit_guard_blocks_socket_connect_after_construction(tmp_path: Path) ->
 def test_audit_guard_blocks_writes_and_process_spawning(
     tmp_path: Path, program: str
 ) -> None:
+    existing_file = tmp_path / "preexisting"
+    existing_file.write_bytes(b"unchanged")
     completed = subprocess.run(
         [sys.executable, "-c", program],
         capture_output=True,
@@ -556,6 +704,7 @@ def test_audit_guard_blocks_writes_and_process_spawning(
     assert "audit policy blocked" in completed.stderr
     assert not (tmp_path / "blocked.txt").exists()
     assert not (tmp_path / "blocked-directory").exists()
+    assert existing_file.read_bytes() == b"unchanged"
 
 
 @pytest.mark.parametrize("subcommand", ["live", "unknown-subcommand"])
