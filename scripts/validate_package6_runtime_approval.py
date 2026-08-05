@@ -276,6 +276,7 @@ PACKAGE6_SOURCE_BINDING_PATHS = (
     "services/job_store/worker_repository.py",
     "services/job_worker/__init__.py",
     "services/job_worker/artifacts.py",
+    "services/job_worker/engine_spawn_interface.py",
     "services/job_worker/environment.py",
     "services/job_worker/errors.py",
     "services/job_worker/main.py",

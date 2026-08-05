@@ -683,6 +683,10 @@ def test_source_binding_set_is_canonical_complete_and_ordered(tmp_path: Path) ->
         )
     }
     assert release_sources <= set(PACKAGE6_SOURCE_BINDING_PATHS)
+    assert "services/job_worker/engine_spawn_interface.py" in release_sources
+    assert tuple(
+        path for path in PACKAGE6_SOURCE_BINDING_PATHS if path in release_sources
+    ) == tuple(sorted(release_sources, key=os.fsencode))
 
     _objects(document, "source_bindings").reverse()
     _resign(document)
@@ -708,7 +712,7 @@ def test_package6_behavior_sources_are_bound_at_exact_reviewed_cardinality() -> 
         binding_schema["minItems"]
         == binding_schema["maxItems"]
         == len(PACKAGE6_SOURCE_BINDING_PATHS)
-        == 77
+        == 78
     )
 
 
