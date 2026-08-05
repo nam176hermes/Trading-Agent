@@ -21,7 +21,6 @@ from packages.job_contracts import (
 )
 from services.job_store.worker_repository import ClaimedJob
 from services.job_worker.engine_authority import (
-    ENGINE_COMMAND_PRODUCER_IDENTITY,
     BacktestEngineAuthorityFactory,
 )
 
@@ -194,10 +193,7 @@ def test_factory_derives_the_closed_command_and_full_attempt_authority() -> None
     assert envelope.event_time == NOW
     assert envelope.initialization_time == NOW
     assert envelope.schema_version == "1.0.0"
-    assert envelope.producer_identity == (
-        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:worker-authority-1"
-    )
-    assert envelope.producer_identity == "trading-job-worker:worker-authority-1"
+    assert envelope.producer_identity == "worker-authority-1"
     assert envelope.source_commit == CODE_COMMIT
 
     canonical_command = json.dumps(
@@ -267,12 +263,8 @@ def test_factory_attributes_the_exact_claimed_worker_in_the_producer() -> None:
     first = _factory().from_claim(_claim(worker_id="worker-authority-1"))
     second = _factory().from_claim(_claim(worker_id="worker-authority-2"))
 
-    assert first.producer_identity == (
-        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:worker-authority-1"
-    )
-    assert second.producer_identity == (
-        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:worker-authority-2"
-    )
+    assert first.producer_identity == "worker-authority-1"
+    assert second.producer_identity == "worker-authority-2"
     assert first != second
 
 
@@ -281,9 +273,7 @@ def test_factory_producer_remains_safe_for_the_largest_claimed_worker_id() -> No
 
     envelope = _factory().from_claim(_claim(worker_id=worker_id))
 
-    assert envelope.producer_identity == (
-        f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:{worker_id}"
-    )
+    assert envelope.producer_identity == worker_id
 
 
 def test_config_digest_projects_only_configuration_references() -> None:

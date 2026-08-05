@@ -66,8 +66,8 @@ ProducerIdentity = Annotated[
     str,
     Field(
         min_length=1,
-        max_length=256,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$",
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
     ),
 ]
 

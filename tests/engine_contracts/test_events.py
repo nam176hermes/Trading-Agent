@@ -101,6 +101,10 @@ def test_event_envelope_validates_payload_digest_and_round_trips_json() -> None:
                 + timedelta(microseconds=1),  # type: ignore[operator]
             }
         )
+    with pytest.raises(ValidationError, match="128|string_too_long"):
+        contracts.EngineEventEnvelope.model_validate(
+            {**values, "producer_identity": "p" * 129}
+        )
 
 
 def test_public_event_schema_has_no_engine_implementation_or_provider_leakage() -> None:

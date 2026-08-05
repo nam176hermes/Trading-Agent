@@ -101,6 +101,10 @@ def test_run_manifest_is_strict_immutable_and_canonical() -> None:
         contracts.EngineRunManifest.model_validate(
             {**manifest_values(), "stdout": "raw output"}
         )
+    with pytest.raises(ValidationError, match="128|string_too_long"):
+        contracts.EngineRunManifest.model_validate(
+            {**manifest_values(), "producer_identity": "p" * 129}
+        )
 
 
 def test_run_manifest_rejects_duplicate_artifact_name_and_invalid_timeline() -> None:

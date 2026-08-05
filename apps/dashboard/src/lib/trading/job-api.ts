@@ -23,6 +23,33 @@ export type JobState =
   | 'TIMED_OUT' | 'CANCEL_REQUESTED' | 'CANCELLED';
 export type JobType = 'SNAPSHOT' | 'DEBATE' | 'REPLAY' | 'BACKTEST';
 
+export interface EngineArtifactReference {
+  artifact_id: string;
+  sha256: string;
+  media_type: 'application/json' | 'application/jsonl';
+}
+
+export interface EngineBacktestInput {
+  engine_configuration: EngineArtifactReference;
+  instrument_catalog: EngineArtifactReference;
+  strategy_configuration: EngineArtifactReference;
+  market_data: EngineArtifactReference;
+  start_time: string;
+  end_time: string;
+}
+
+export type JobPayload =
+  | { scope: 'default'; requested_as_of: null }
+  | { asset: string; horizon: '1d' }
+  | { session_id: string }
+  | {
+    asset: string;
+    strategy_id: 'legacy-binary-report-v1';
+    date_from: null;
+    date_to: null;
+  }
+  | { engine_backtest: EngineBacktestInput };
+
 export interface JobActor {
   actor_type: 'OPERATOR' | 'SCHEDULER' | 'WORKER' | 'RECOVERY' | 'SYSTEM';
   actor_id: string;
@@ -32,7 +59,7 @@ export interface JobMetadata {
   job_id: string;
   job_type: JobType;
   state: JobState;
-  payload: Record<string, unknown>;
+  payload: JobPayload;
   payload_fingerprint: string;
   actor: JobActor;
   priority: number;
@@ -140,7 +167,51 @@ function hasExactKeys(value: JsonObject, keys: string[]): boolean {
   return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index]);
 }
 
-function isPayload(value: unknown, jobType: JobType): value is Record<string, unknown> {
+function isCanonicalEngineTime(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?Z$/.exec(value);
+  if (match === null || match[1] === '0000') return false;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return false;
+  const parsed = new Date(timestamp);
+  return parsed.getUTCFullYear() === Number(match[1])
+    && parsed.getUTCMonth() + 1 === Number(match[2])
+    && parsed.getUTCDate() === Number(match[3])
+    && parsed.getUTCHours() === Number(match[4])
+    && parsed.getUTCMinutes() === Number(match[5])
+    && parsed.getUTCSeconds() === Number(match[6]);
+}
+
+function isEngineArtifactReference(value: unknown): value is EngineArtifactReference {
+  return isObject(value)
+    && hasExactKeys(value, ['artifact_id', 'sha256', 'media_type'])
+    && typeof value.artifact_id === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.artifact_id)
+    && typeof value.sha256 === 'string'
+    && /^[0-9a-f]{64}$/.test(value.sha256)
+    && (value.media_type === 'application/json' || value.media_type === 'application/jsonl');
+}
+
+function isEngineBacktestPayload(
+  value: JsonObject,
+): value is { engine_backtest: EngineBacktestInput } {
+  if (!(hasExactKeys(value, ['engine_backtest'])
+    && isObject(value.engine_backtest)
+    && hasExactKeys(value.engine_backtest, [
+      'engine_configuration', 'instrument_catalog', 'strategy_configuration',
+      'market_data', 'start_time', 'end_time',
+    ]))) return false;
+  const input = value.engine_backtest;
+  return isEngineArtifactReference(input.engine_configuration)
+    && isEngineArtifactReference(input.instrument_catalog)
+    && isEngineArtifactReference(input.strategy_configuration)
+    && isEngineArtifactReference(input.market_data)
+    && isCanonicalEngineTime(input.start_time)
+    && isCanonicalEngineTime(input.end_time)
+    && Date.parse(input.end_time) > Date.parse(input.start_time);
+}
+
+function isPayload(value: unknown, jobType: JobType): value is JobPayload {
   if (!isObject(value)) return false;
   if (jobType === 'SNAPSHOT') {
     return hasExactKeys(value, ['requested_as_of', 'scope'])
@@ -156,10 +227,11 @@ function isPayload(value: unknown, jobType: JobType): value is Record<string, un
       && typeof value.session_id === 'string'
       && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.session_id);
   }
-  return hasExactKeys(value, ['asset', 'date_from', 'date_to', 'strategy_id'])
+  const legacy = hasExactKeys(value, ['asset', 'date_from', 'date_to', 'strategy_id'])
     && typeof value.asset === 'string' && APPROVED_ASSETS.has(value.asset)
     && value.strategy_id === 'legacy-binary-report-v1'
     && value.date_from === null && value.date_to === null;
+  return legacy || isEngineBacktestPayload(value);
 }
 
 function parseJob(value: unknown): JobMetadata | null {
@@ -183,7 +255,8 @@ function parseJob(value: unknown): JobMetadata | null {
     && (value.result_hash === null || (typeof value.result_hash === 'string' && /^[0-9a-f]{64}$/.test(value.result_hash))))) return null;
   return {
     job_id: value.job_id, job_type: jobType, state: value.state as JobState,
-    payload: { ...value.payload }, payload_fingerprint: value.payload_fingerprint,
+    payload: { ...value.payload } as JobPayload,
+    payload_fingerprint: value.payload_fingerprint,
     actor, priority: value.priority as number, requested_at: value.requested_at,
     updated_at: value.updated_at, attempt_count: value.attempt_count as number,
     reason_code: value.reason_code as string | null, result_hash: value.result_hash as string | null,

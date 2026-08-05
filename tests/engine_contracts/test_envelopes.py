@@ -58,6 +58,10 @@ def test_command_envelope_requires_all_authority_metadata_and_is_immutable() -> 
         contracts.EngineCommandEnvelope.model_validate({**values, "unknown": True})
     with pytest.raises(ValidationError, match="frozen"):
         envelope.stream_sequence = 2
+    with pytest.raises(ValidationError, match="128|string_too_long"):
+        contracts.EngineCommandEnvelope.model_validate(
+            {**values, "producer_identity": "p" * 129}
+        )
 
 
 def test_command_envelope_rejects_unknown_version() -> None:

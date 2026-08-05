@@ -17,7 +17,6 @@ from packages.job_contracts import EngineBacktestPayload, JobType
 from services.job_store.worker_repository import ClaimedJob
 
 
-ENGINE_COMMAND_PRODUCER_IDENTITY = "trading-job-worker"
 _SOURCE_COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", re.ASCII)
 _JOB_ID = re.compile(r"^job_[0-9a-f]{32}$", re.ASCII)
 _ATTEMPT_ID = re.compile(r"^attempt_[0-9a-f]{32}$", re.ASCII)
@@ -128,9 +127,7 @@ class BacktestEngineAuthorityFactory:
             event_time=now,
             initialization_time=now,
             schema_version=CURRENT_SCHEMA_VERSION,
-            producer_identity=(
-                f"{ENGINE_COMMAND_PRODUCER_IDENTITY}:{claimed.worker_id}"
-            ),
+            producer_identity=claimed.worker_id,
             source_commit=self._code_commit,
             config_digest=config_digest,
             payload_digest=command_digest,

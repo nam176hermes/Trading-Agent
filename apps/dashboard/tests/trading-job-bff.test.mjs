@@ -55,6 +55,39 @@ const canonicalJob = {
   result_hash: null,
 };
 
+const engineBacktestPayload = {
+  engine_backtest: {
+    engine_configuration: {
+      artifact_id: '11111111-1111-4111-8111-111111111111',
+      sha256: '1'.repeat(64),
+      media_type: 'application/json',
+    },
+    instrument_catalog: {
+      artifact_id: '22222222-2222-4222-8222-222222222222',
+      sha256: '2'.repeat(64),
+      media_type: 'application/json',
+    },
+    strategy_configuration: {
+      artifact_id: '33333333-3333-4333-8333-333333333333',
+      sha256: '3'.repeat(64),
+      media_type: 'application/json',
+    },
+    market_data: {
+      artifact_id: '44444444-4444-4444-8444-444444444444',
+      sha256: '4'.repeat(64),
+      media_type: 'application/jsonl',
+    },
+    start_time: '2026-07-01T00:00:00Z',
+    end_time: '2026-08-01T00:00:00.123456Z',
+  },
+};
+
+const engineBacktestJob = {
+  ...canonicalJob,
+  job_type: 'BACKTEST',
+  payload: engineBacktestPayload,
+};
+
 function envelope(data, traceId = 'trace_upstream') {
   return { schema_version: '1.0.0', trace_id: traceId, generated_at: NOW, data };
 }
@@ -163,6 +196,112 @@ test('missing token, transport failures, oversized bodies, and invalid schemas a
     const response = (await listJobs('')).response;
     assert.equal(response.status, 503);
     assert.equal((await response.json()).code, 'JOB_API_UNAVAILABLE');
+  }
+});
+
+test('list and detail accept the strict engine BACKTEST response form', async () => {
+  const { getJob, listJobs } = await import('../src/lib/trading/job-api.ts');
+
+  globalThis.fetch = async () => jsonResponse(envelope({
+    items: [engineBacktestJob], limit: 50, offset: 0,
+  }));
+  const listed = await listJobs('');
+  assert.equal(listed.response.status, 200);
+  assert.deepEqual(listed.data.items[0].payload, engineBacktestPayload);
+
+  globalThis.fetch = async () => jsonResponse(envelope({
+    job: engineBacktestJob, attempts: [], events: [], artifacts: [],
+  }));
+  const detailed = await getJob('job_123');
+  assert.equal(detailed.response.status, 200);
+  assert.deepEqual(detailed.data.job.payload, engineBacktestPayload);
+});
+
+test('list and detail reject engine BACKTEST mismatches mixtures and invalid boundaries', async () => {
+  const legacy = {
+    asset: 'BTC', strategy_id: 'legacy-binary-report-v1',
+    date_from: null, date_to: null,
+  };
+  const input = engineBacktestPayload.engine_backtest;
+  const invalidJobs = [
+    ...['SNAPSHOT', 'DEBATE', 'REPLAY'].map((job_type) => ({
+      ...engineBacktestJob, job_type,
+    })),
+    { ...engineBacktestJob, payload: { ...engineBacktestPayload, asset: 'BTC' } },
+    { ...engineBacktestJob, payload: { ...legacy, engine_backtest: input } },
+    {
+      ...engineBacktestJob,
+      payload: { engine_backtest: { ...input, provider: 'nautilus' } },
+    },
+    {
+      ...engineBacktestJob,
+      payload: {
+        engine_backtest: {
+          ...input,
+          market_data: { ...input.market_data, path: '/tmp/data.jsonl' },
+        },
+      },
+    },
+    {
+      ...engineBacktestJob,
+      payload: {
+        engine_backtest: {
+          ...input,
+          market_data: { ...input.market_data, artifact_id: 'not-a-uuid' },
+        },
+      },
+    },
+    {
+      ...engineBacktestJob,
+      payload: {
+        engine_backtest: {
+          ...input,
+          market_data: { ...input.market_data, sha256: 'A'.repeat(64) },
+        },
+      },
+    },
+    {
+      ...engineBacktestJob,
+      payload: {
+        engine_backtest: {
+          ...input,
+          market_data: { ...input.market_data, media_type: 'application/octet-stream' },
+        },
+      },
+    },
+    {
+      ...engineBacktestJob,
+      payload: { engine_backtest: { ...input, start_time: '2026-07-01T00:00:00+00:00' } },
+    },
+    {
+      ...engineBacktestJob,
+      payload: { engine_backtest: { ...input, start_time: '2026-07-01T00:00:00.1234567Z' } },
+    },
+    {
+      ...engineBacktestJob,
+      payload: { engine_backtest: { ...input, start_time: '2026-02-30T00:00:00Z' } },
+    },
+    {
+      ...engineBacktestJob,
+      payload: { engine_backtest: { ...input, end_time: input.start_time } },
+    },
+    {
+      ...engineBacktestJob,
+      payload: { engine_backtest: { ...input, end_time: '2026-06-30T23:59:59Z' } },
+    },
+  ];
+  const { getJob, listJobs } = await import('../src/lib/trading/job-api.ts');
+
+  for (const job of invalidJobs) {
+    globalThis.fetch = async () => jsonResponse(envelope({
+      items: [job], limit: 50, offset: 0,
+    }));
+    assert.equal((await listJobs('')).response.status, 503);
+
+    globalThis.fetch = async () => jsonResponse(envelope({
+      job, attempts: [], events: [], artifacts: [],
+    }));
+    assert.equal((await getJob('job_123')).response.status, 503);
   }
 });
 

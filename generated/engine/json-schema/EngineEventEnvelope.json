@@ -133,9 +133,9 @@
       "type": "string"
     },
     "producer_identity": {
-      "maxLength": 256,
+      "maxLength": 128,
       "minLength": 1,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
       "title": "Producer Identity",
       "type": "string"
     },
