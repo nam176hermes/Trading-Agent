@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from importlib import import_module
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -110,6 +111,55 @@ def test_parse_command_rejects_an_unsupported_command() -> None:
 
     with pytest.raises(ValueError, match="unsupported engine command"):
         contracts.parse_command({"command_type": "StartLiveEngine"})
+
+
+def test_parse_command_accepts_a_decoded_uuid_bearing_wire_mapping() -> None:
+    contracts = import_module("packages.engine_contracts")
+    engine_run_id = uuid4()
+    wire = json.loads(
+        json.dumps(
+            {
+                "command_type": "CancelBacktest",
+                "target_engine_run_id": str(engine_run_id),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+    command = contracts.parse_command(wire)
+
+    assert isinstance(command, contracts.CancelBacktest)
+    assert command.target_engine_run_id == engine_run_id
+
+
+def test_parse_command_accepts_a_decoded_nested_order_wire_mapping() -> None:
+    contracts = import_module("packages.engine_contracts")
+    wire = json.loads(
+        json.dumps(
+            order_intent_command_json(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+    command = contracts.parse_command(wire)
+
+    assert isinstance(command, contracts.SubmitOrderIntent)
+    assert isinstance(command.order_intent.intent_id, UUID)
+    assert command.order_intent.quantity.value == Decimal("1.25")
+    assert command.order_intent.side.value == "buy"
+
+
+def test_engine_quantity_accepts_128_coefficient_digits_and_rejects_129() -> None:
+    contracts = import_module("packages.engine_contracts")
+    maximum = Decimal("9" * 128)
+
+    quantity = contracts.EngineQuantity(value=maximum, precision=0)
+
+    assert quantity.value == maximum
+    with pytest.raises(ValidationError, match="maximum quantity magnitude"):
+        contracts.EngineQuantity(value=Decimal("9" * 129), precision=0)
 
 
 def test_public_command_schemas_do_not_leak_provider_or_nautilus_types() -> None:

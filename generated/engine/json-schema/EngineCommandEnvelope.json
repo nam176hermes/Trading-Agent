@@ -261,6 +261,7 @@
           "type": "integer"
         },
         "value": {
+          "maxLength": 129,
           "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
           "title": "Value",
           "type": "string",

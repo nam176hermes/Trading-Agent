@@ -8,9 +8,17 @@ from types import MappingProxyType
 from typing import Annotated, Any, Literal, TypeAlias
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    WithJsonSchema,
+    model_validator,
+)
 
 from packages.domain import (
+    CANONICAL_DECIMAL_POLICY_VERSION,
     Currency,
     FiniteDecimal,
     OrderSide,
@@ -19,9 +27,12 @@ from packages.domain import (
     TimeInForce,
 )
 
-from .serialization import CanonicalUtcDateTime, Sha256Hex
+from .serialization import CanonicalUtcDateTime, Sha256Hex, canonical_json
 from .versions import SchemaVersion
 
+
+_MAX_ENGINE_QUANTITY_COEFFICIENT_DIGITS = 128
+_CANONICAL_DECIMAL_PATTERN = r"^(?:0|-?[1-9]\d*|-?(?:0|[1-9]\d*)\.\d*[1-9])$"
 
 CommandName: TypeAlias = Literal[
     "DescribeEngineCapabilities",
@@ -41,6 +52,18 @@ CommandName: TypeAlias = Literal[
     "CancelAllOrders",
     "ClosePositionIntent",
     "RequestExecutionReconciliation",
+]
+EngineQuantityValue = Annotated[
+    FiniteDecimal,
+    WithJsonSchema(
+        {
+            "type": "string",
+            "pattern": _CANONICAL_DECIMAL_PATTERN,
+            "maxLength": 129,
+            "x-canonical-decimal-policy": CANONICAL_DECIMAL_POLICY_VERSION,
+        },
+        mode="validation",
+    ),
 ]
 
 
@@ -89,21 +112,46 @@ class EngineInstrumentId(EngineModel):
 class EngineQuantity(EngineModel):
     """Exact engine-facing quantity with bounded fractional precision."""
 
-    value: FiniteDecimal
+    value: EngineQuantityValue
     precision: Annotated[StrictInt, Field(ge=0, le=18)]
 
     @model_validator(mode="after")
     def _validate_precision(self) -> "EngineQuantity":
-        _, digits, raw_exponent = self.value.as_tuple()
+        target_exponent = -self.precision
+        if self.value.is_zero():
+            object.__setattr__(
+                self,
+                "value",
+                Decimal((0, (0,), target_exponent)),
+            )
+            return self
+
+        sign, raw_digits, raw_exponent = self.value.as_tuple()
+        digits = raw_digits
         exponent = int(raw_exponent)
-        trailing_zeros = 0
+        trailing_zero_count = 0
         for index in range(len(digits) - 1, 0, -1):
             if digits[index] != 0:
                 break
-            trailing_zeros += 1
-        exponent += trailing_zeros
-        if max(0, -exponent) > self.precision:
+            trailing_zero_count += 1
+        if trailing_zero_count:
+            digits = digits[:-trailing_zero_count]
+            exponent += trailing_zero_count
+
+        fractional_digits = max(0, -exponent)
+        if fractional_digits > self.precision:
             raise ValueError("value has more fractional digits than precision")
+
+        expanded_digit_count = len(digits) + (exponent - target_exponent)
+        if expanded_digit_count > _MAX_ENGINE_QUANTITY_COEFFICIENT_DIGITS:
+            raise ValueError("value exceeds maximum quantity magnitude")
+
+        canonical_digits = digits + ((0,) * (exponent - target_exponent))
+        object.__setattr__(
+            self,
+            "value",
+            Decimal((sign, canonical_digits, target_exponent)),
+        )
         return self
 
 
@@ -325,11 +373,18 @@ COMMAND_TYPES = tuple(COMMAND_MODELS)
 
 
 def parse_command(value: Mapping[str, Any]) -> EngineCommand:
-    """Parse a command through the closed v1 registry."""
+    """Parse native values or a JSON-decoded command through the closed registry."""
 
     if not isinstance(value, Mapping):
         raise ValueError("engine command must be an object")
     command_type = value.get("command_type")
     if not isinstance(command_type, str) or command_type not in COMMAND_MODELS:
         raise ValueError(f"unsupported engine command: {command_type!r}")
-    return COMMAND_MODELS[command_type].model_validate(dict(value))
+    model = COMMAND_MODELS[command_type]
+    try:
+        wire_json = canonical_json(value)
+    except ValueError as exc:
+        if "unsupported canonical engine JSON value" not in str(exc):
+            raise
+        return model.model_validate(dict(value))
+    return model.model_validate_json(wire_json)
