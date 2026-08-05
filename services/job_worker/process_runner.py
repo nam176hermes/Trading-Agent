@@ -32,6 +32,12 @@ from .environment import (
     ResearchEnvironmentSettings,
     build_child_environment,
 )
+from .engine_spawn import (
+    EngineBuiltSpawn,
+    EngineSpawnLineage,
+    PreparedEngineSpawn,
+    consume_prepared_engine_spawn,
+)
 from .recovery import ProcProcessInspector, ProcessIdentity, ProcessInspector
 from .safety_state import SafetyEvidence, validate_current_safety_evidence
 
@@ -39,6 +45,7 @@ from .safety_state import SafetyEvidence, validate_current_safety_evidence
 _JOB_ID = re.compile(r"job_[0-9a-f]{32}")
 _ATTEMPT_ID = re.compile(r"attempt_[0-9a-f]{32}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+_SOURCE_REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _PIDFD_SYSCALLS = {
     "x86_64": (434, 424),
     "amd64": (434, 424),
@@ -361,7 +368,7 @@ class ProcessRunner:
 
     def run(
         self,
-        prepare_spawn: Callable[[], PreparedSpawn],
+        prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn],
         environment: ResearchEnvironmentSettings,
         timeout_seconds: int,
         heartbeat: Callable[
@@ -386,57 +393,109 @@ class ProcessRunner:
         )
         initial_safety_metadata = _safety_metadata(initial_safety)
         prepared = prepare_spawn()
-        # Root and credential policy validation is side-effect free. Do it
-        # before the final safety + immutable authority sandwich so those two
-        # checks sit directly against the process-creation boundary.
-        child_environment = build_child_environment(environment)
+        engine_authority = type(prepared) is PreparedEngineSpawn
+        # Legacy root and credential policy validation remains in its original
+        # position. Engine authority has no ambient/legacy environment path.
+        child_environment = (
+            None if engine_authority else build_child_environment(environment)
+        )
         reserve_fd = os.open(
             "/dev/null", os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
         )
+        close_after_spawn_fds: tuple[int, ...] = ()
         try:
-            built = consume_prepared_spawn(prepared)
-            expected_argv = (str(built.executable), *PAPER_COMMAND_ARGV_PREFIX)
-            if (
-                built.shell
-                or not isinstance(built.argv, tuple)
-                or built.argv != expected_argv
-                or not isinstance(built.lineage, CommandLineage)
-            ):
-                raise ValueError("attested command shape is unsafe")
-            if timeout_seconds != built.timeout_seconds:
-                raise ValueError("timeout must equal the attested command timeout")
-            if _COMMIT.fullmatch(built.backend_revision) is None:
-                raise ValueError("attested backend revision is invalid")
-            fixture_path = child_environment.get(
-                "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH"
-            )
-            fixture_approval = child_environment.get(
-                "TRADING_PACKAGE6_APPROVAL_SHA256"
-            )
-            if fixture_path is not None or fixture_approval is not None:
-                from packages.runtime_release.paper_backend.provider_free_fixture import (
-                    load_provider_free_fixture,
+            if engine_authority:
+                engine_built = consume_prepared_engine_spawn(
+                    cast(PreparedEngineSpawn, prepared)
                 )
-
-                load_provider_free_fixture(
-                    Path(fixture_path or ""),
-                    expected_backend_commit=built.backend_revision,
-                    expected_package6_approval_sha256=fixture_approval or "",
-                )
-            child_environment.update({
-                "TRADING_JOB_ID": job_id,
-                "TRADING_JOB_ATTEMPT_ID": attempt_id,
-                "TRADING_RESEARCH_BACKEND_COMMIT": built.backend_revision,
-                "TRADING_RESEARCH_SCRATCHPAD_ROOT": str(
-                    Path(
-                        child_environment.get(
-                            "HOME",
-                            str(APPROVED_SCRATCH_HOME),
-                        )
+                if (
+                    type(engine_built) is not EngineBuiltSpawn
+                    or not isinstance(engine_built.argv, tuple)
+                    or not engine_built.argv
+                    or any(
+                        not isinstance(argument, str) or not argument or "\x00" in argument
+                        for argument in engine_built.argv
                     )
-                    / "scratchpad"
-                ),
-            })
+                    or engine_built.cwd != Path("/")
+                    or dict(engine_built.environment) != {}
+                    or not isinstance(engine_built.pass_fds, tuple)
+                    or not engine_built.pass_fds
+                    or len(set(engine_built.pass_fds)) != len(engine_built.pass_fds)
+                    or any(
+                        isinstance(descriptor, bool)
+                        or not isinstance(descriptor, int)
+                        or descriptor < 0
+                        for descriptor in engine_built.pass_fds
+                    )
+                    or engine_built.close_after_spawn_fds != engine_built.pass_fds
+                    or not isinstance(engine_built.lineage, EngineSpawnLineage)
+                ):
+                    raise ValueError("attested engine spawn shape is unsafe")
+                if timeout_seconds != engine_built.timeout_seconds:
+                    raise ValueError("timeout must equal the attested command timeout")
+                if _SOURCE_REVISION.fullmatch(engine_built.source_revision) is None:
+                    raise ValueError("attested engine source revision is invalid")
+                argv = engine_built.argv
+                cwd = engine_built.cwd
+                child_environment = engine_built.environment
+                pass_fds = engine_built.pass_fds
+                close_after_spawn_fds = engine_built.close_after_spawn_fds
+                capability_fingerprint = engine_built.capability_fingerprint
+                result_validator_id = engine_built.result_validator_id
+                source_revision = engine_built.source_revision
+                command_lineage = engine_built.lineage.as_metadata()
+            else:
+                built = consume_prepared_spawn(cast(PreparedSpawn, prepared))
+                expected_argv = (str(built.executable), *PAPER_COMMAND_ARGV_PREFIX)
+                if (
+                    built.shell
+                    or not isinstance(built.argv, tuple)
+                    or built.argv != expected_argv
+                    or not isinstance(built.lineage, CommandLineage)
+                ):
+                    raise ValueError("attested command shape is unsafe")
+                if timeout_seconds != built.timeout_seconds:
+                    raise ValueError("timeout must equal the attested command timeout")
+                if _COMMIT.fullmatch(built.backend_revision) is None:
+                    raise ValueError("attested backend revision is invalid")
+                assert child_environment is not None
+                fixture_path = child_environment.get(
+                    "TRADING_PACKAGE6_FIXTURE_AUTHORITY_PATH"
+                )
+                fixture_approval = child_environment.get(
+                    "TRADING_PACKAGE6_APPROVAL_SHA256"
+                )
+                if fixture_path is not None or fixture_approval is not None:
+                    from packages.runtime_release.paper_backend.provider_free_fixture import (
+                        load_provider_free_fixture,
+                    )
+
+                    load_provider_free_fixture(
+                        Path(fixture_path or ""),
+                        expected_backend_commit=built.backend_revision,
+                        expected_package6_approval_sha256=fixture_approval or "",
+                    )
+                child_environment.update({
+                    "TRADING_JOB_ID": job_id,
+                    "TRADING_JOB_ATTEMPT_ID": attempt_id,
+                    "TRADING_RESEARCH_BACKEND_COMMIT": built.backend_revision,
+                    "TRADING_RESEARCH_SCRATCHPAD_ROOT": str(
+                        Path(
+                            child_environment.get(
+                                "HOME",
+                                str(APPROVED_SCRATCH_HOME),
+                            )
+                        )
+                        / "scratchpad"
+                    ),
+                })
+                argv = built.argv
+                cwd = built.cwd
+                pass_fds = ()
+                capability_fingerprint = built.capability_fingerprint
+                result_validator_id = built.result_validator_id
+                source_revision = built.backend_revision
+                command_lineage = built.lineage.as_metadata()
             # Current safety is the final authority read. Immutable/semantic
             # attestation and all local command validation have already
             # completed, so no potentially slow operation can age this proof
@@ -445,12 +504,32 @@ class ProcessRunner:
                 preflight(), self._safety_clock()
             )
             final_safety_metadata = _safety_metadata(final_safety)
-            process = self._popen(
-                list(built.argv), cwd=str(built.cwd), env=child_environment,
-                shell=False, start_new_session=True, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
+            popen_options: dict[str, object] = {
+                "cwd": str(cwd),
+                "env": child_environment,
+                "shell": False,
+                "start_new_session": True,
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+            }
+            if pass_fds:
+                popen_options["pass_fds"] = pass_fds
+            try:
+                process = self._popen(list(argv), **popen_options)
+            finally:
+                for descriptor in close_after_spawn_fds:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                close_after_spawn_fds = ()
         except BaseException:
+            for descriptor in close_after_spawn_fds:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             os.close(reserve_fd)
             raise
         original_streams = (getattr(process, "stdout", None), getattr(process, "stderr", None))
@@ -627,10 +706,10 @@ class ProcessRunner:
             }
             return ProcessOutcome(
                 exit_code, reason, identity, captured["stdout"], captured["stderr"],
-                built.capability_fingerprint, built.result_validator_id,
-                built.backend_revision,
+                capability_fingerprint, result_validator_id,
+                source_revision,
                 ProcessLineage(
-                    built.lineage.as_metadata(),
+                    command_lineage,
                     initial_safety_metadata,
                     final_safety_metadata,
                 ),

@@ -14,6 +14,11 @@ import pytest
 from services.job_worker.artifacts import ArtifactWriter
 from services.job_worker.command_registry import BuiltCommand, CommandLineage
 from services.job_worker.errors import SafetyBlockedError
+from services.job_worker.engine_spawn import (
+    EngineBuiltSpawn,
+    EngineSpawnLineage,
+    PreparedEngineSpawn,
+)
 from services.job_worker.process_runner import (
     HeartbeatDecision,
     HeartbeatInstruction,
@@ -212,11 +217,142 @@ def runner(tmp_path, process, inspector, calls, clock_values=None):
     )
 
 
+def engine_spawn(*descriptors: int) -> EngineBuiltSpawn:
+    return EngineBuiltSpawn(
+        argv=(
+            "/sealed/sandbox",
+            "--unshare-net",
+            "--clearenv",
+            "/engine/bin/engine",
+            "run-backtest",
+            "/inputs/request.json",
+            "/inputs/request.sha256",
+        ),
+        cwd=Path("/"),
+        environment={},
+        pass_fds=descriptors,
+        close_after_spawn_fds=descriptors,
+        timeout_seconds=10,
+        result_validator_id="engine-event-v1",
+        capability_fingerprint="9" * 64,
+        source_revision=BACKEND_COMMIT,
+        lineage=EngineSpawnLineage("a" * 64, "b" * 64, "c" * 64),
+    )
+
+
+def prepared_engine_spawn() -> PreparedEngineSpawn:
+    return object.__new__(PreparedEngineSpawn)
+
+
+def test_runner_consumes_engine_authority_once_and_remains_popen_owner(
+    monkeypatch, tmp_path
+) -> None:
+    calls = []
+    consumed = []
+    request_read, request_write = os.pipe()
+    sidecar_read, sidecar_write = os.pipe()
+    os.close(request_write)
+    os.close(sidecar_write)
+    built = engine_spawn(request_read, sidecar_read)
+    prepared = prepared_engine_spawn()
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.consume_prepared_engine_spawn",
+        lambda item: consumed.append(item) or built,
+    )
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.build_child_environment",
+        lambda _settings: pytest.fail("engine spawn must not use legacy environment"),
+    )
+
+    outcome = runner(
+        tmp_path, FakeProcess([None, 0]), Inspector([identity()]), calls
+    ).run(
+        lambda: prepared,
+        object(),
+        10,
+        lambda _: HeartbeatDecision.CONTINUE,
+        job_id=JOB_ID,
+        attempt_id=ATTEMPT_ID,
+    )
+
+    assert consumed == [prepared]
+    argv, kwargs = calls[0]
+    assert argv == list(built.argv)
+    assert kwargs == {
+        "cwd": "/",
+        "env": {},
+        "shell": False,
+        "start_new_session": True,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "pass_fds": (request_read, sidecar_read),
+    }
+    for descriptor in (request_read, sidecar_read):
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert outcome.capability_fingerprint == "9" * 64
+    assert outcome.result_validator_id == "engine-event-v1"
+    assert outcome.backend_revision == BACKEND_COMMIT
+    assert outcome.lineage.command == {
+        "engine_closure_sha256": "a" * 64,
+        "os_sandbox_profile_sha256": "b" * 64,
+        "engine_request_sha256": "c" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_reason"),
+    (
+        (HeartbeatDecision.CANCEL, "CANCELLED"),
+        (HeartbeatDecision.STALE_LEASE, "STALE_LEASE"),
+        (HeartbeatDecision.SAFETY_DRIFT, "SAFETY_DRIFT"),
+    ),
+)
+def test_engine_spawn_preserves_cancel_lease_and_safety_termination(
+    monkeypatch, tmp_path, decision, expected_reason
+) -> None:
+    calls = []
+    consumed = []
+    read_descriptor, write_descriptor = os.pipe()
+    os.close(write_descriptor)
+    built = engine_spawn(read_descriptor)
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.consume_prepared_engine_spawn",
+        lambda item: consumed.append(item) or built,
+    )
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.build_child_environment",
+        lambda _settings: pytest.fail("engine spawn must not use legacy environment"),
+    )
+    process = FakeProcess([None] * 3 + [-signal.SIGKILL])
+    observed = identity()
+
+    outcome = runner(
+        tmp_path, process, Inspector([observed, observed]), calls
+    ).run(
+        lambda: prepared_engine_spawn(),
+        object(),
+        10,
+        lambda _: decision,
+        job_id=JOB_ID,
+        attempt_id=ATTEMPT_ID,
+    )
+
+    assert len(consumed) == 1
+    assert outcome.termination_reason == expected_reason
+    assert (417, signal.SIGTERM) in calls
+
+
 def test_runner_consumes_once_at_spawn_and_uses_hardened_popen(monkeypatch, tmp_path) -> None:
     calls = []
     consumed = []
     prepared = Prepared(command())
     monkeypatch.setattr("services.job_worker.process_runner.consume_prepared_spawn", lambda item: consumed.append(item) or item.value)
+    monkeypatch.setattr(
+        "services.job_worker.process_runner.consume_prepared_engine_spawn",
+        lambda _item: pytest.fail("legacy spawn must retain its legacy consumer"),
+    )
     monkeypatch.setattr(
         "services.job_worker.process_runner.build_child_environment",
         lambda settings: {
