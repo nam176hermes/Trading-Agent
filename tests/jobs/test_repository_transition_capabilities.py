@@ -81,6 +81,35 @@ def _worker(connection: _Connection) -> WorkerRepository:
     return repository
 
 
+def _engine_payload_wire() -> dict[str, object]:
+    def artifact(value: str, media_type: str) -> dict[str, str]:
+        return {
+            "artifact_id": value,
+            "sha256": value.replace("-", "")[:1] * 64,
+            "media_type": media_type,
+        }
+
+    return {
+        "engine_backtest": {
+            "engine_configuration": artifact(
+                "11111111-1111-4111-8111-111111111111", "application/json"
+            ),
+            "instrument_catalog": artifact(
+                "22222222-2222-4222-8222-222222222222", "application/json"
+            ),
+            "strategy_configuration": artifact(
+                "33333333-3333-4333-8333-333333333333", "application/json"
+            ),
+            "market_data": artifact(
+                "44444444-4444-4444-8444-444444444444",
+                "application/jsonl",
+            ),
+            "start_time": "2026-07-01T00:00:00Z",
+            "end_time": "2026-08-01T00:00:00Z",
+        }
+    }
+
+
 def _repository(connection: _Connection) -> JobRepository:
     repository = object.__new__(JobRepository)
     repository._pool = _Pool(connection)
@@ -139,11 +168,12 @@ def test_runtime_repositories_use_only_fixed_transition_capabilities() -> None:
     assert "job_plane.api_enqueue_snapshot" in api_source
     assert "job_plane.api_cancel_snapshot" in api_source
     assert "job_plane.scheduler_enqueue_snapshot" in api_source
-    assert "job_plane.worker_claim_snapshot" in worker_source
-    assert "job_plane.worker_start_snapshot" in worker_source
-    assert "job_plane.worker_control_snapshot_lease" in worker_source
-    assert "job_plane.worker_finalize_snapshot" in worker_source
-    assert "job_plane.worker_recover_expired_snapshot" in worker_source
+    assert '"worker_claim_snapshot"' in worker_source
+    assert '"worker_claim_paper"' in worker_source
+    assert "job_plane.worker_start_paper" in worker_source
+    assert "job_plane.worker_control_paper_lease" in worker_source
+    assert "job_plane.worker_finalize_paper" in worker_source
+    assert "job_plane.worker_recover_expired_paper" in worker_source
 
     forbidden_api_sql = (
         "INSERT INTO jobs",
@@ -422,7 +452,7 @@ def test_worker_claim_and_start_bind_exact_fixed_capability_arguments() -> None:
         "trace-start",
     )
     start_sql, start_parameters = start_connection.calls[0]
-    assert "job_plane.worker_start_snapshot" in start_sql
+    assert "job_plane.worker_start_paper" in start_sql
     assert start_parameters == (
         "job_1",
         "attempt_fixed",
@@ -465,20 +495,33 @@ def test_worker_claim_empty_result_preserves_exact_fence_arguments(
 
 
 def test_worker_repository_accepts_only_the_opt_in_engine_claim_set() -> None:
-    connection = _Connection(None)
+    expires = datetime(2026, 8, 5, 13, 0, tzinfo=UTC)
+    connection = _Connection(
+        {
+            "job_id": "job_0123456789abcdef0123456789abcdef",
+            "job_type": "BACKTEST",
+            "payload": _engine_payload_wire(),
+            "attempt_number": 1,
+            "max_attempts": 2,
+            "lease_expires_at": expires,
+        }
+    )
     repository = _worker(connection)
     generated = iter(("attempt_engine", "event_engine"))
     repository._new_id = lambda prefix: next(generated)
 
-    assert repository.claim_next(
+    claimed = repository.claim_next(
         "worker-engine",
         30,
         "trace-engine",
         allowed_job_types=(JobType.SNAPSHOT, JobType.BACKTEST),
-    ) is None
+    )
 
     assert len(connection.calls) == 1
-    assert "job_plane.worker_claim_snapshot" in connection.calls[0][0]
+    assert "job_plane.worker_claim_paper" in connection.calls[0][0]
+    assert claimed is not None
+    assert claimed.job_type is JobType.BACKTEST
+    assert claimed.payload.__class__.__name__ == "EngineBacktestPayload"
 
 
 def test_worker_claim_rejects_invalid_authority_inputs_before_database_access() -> None:
@@ -512,7 +555,7 @@ def test_worker_lease_control_fails_closed_on_invalid_authority_result(authority
         repository.heartbeat_control("job", "attempt", "worker", "token", 30)
 
     assert connection.transaction_events == [("enter", None), ("exit", None)]
-    assert "job_plane.worker_control_snapshot_lease" in connection.calls[0][0]
+    assert "job_plane.worker_control_paper_lease" in connection.calls[0][0]
     assert connection.calls[0][1] == (
         "job",
         "attempt",
@@ -600,7 +643,7 @@ def test_worker_lease_controls_use_only_fixed_phases() -> None:
     phases = [parameters[-1] for _, parameters in connection.calls]
     assert phases == ["PRE_SPAWN", "RUNNING", "RUNNING"]
     assert all(
-        "job_plane.worker_control_snapshot_lease" in sql
+        "job_plane.worker_control_paper_lease" in sql
         for sql, _ in connection.calls
     )
 
@@ -681,9 +724,9 @@ def test_worker_lifecycle_calls_fail_closed_when_the_lease_fence_is_stale() -> N
 
     statements = [statement for statement, _ in connection.calls]
     assert len(statements) == 3
-    assert "job_plane.worker_start_snapshot" in statements[0]
-    assert "job_plane.worker_control_snapshot_lease" in statements[1]
-    assert "job_plane.worker_finalize_snapshot" in statements[2]
+    assert "job_plane.worker_start_paper" in statements[0]
+    assert "job_plane.worker_control_paper_lease" in statements[1]
+    assert "job_plane.worker_finalize_paper" in statements[2]
     assert all(
         parameters is not None
         and parameters[:4] == ("job", "attempt", "worker", "stale-lease-token")
@@ -744,7 +787,7 @@ def test_worker_finalize_retry_binds_retry_fence_and_sanitized_metadata() -> Non
     )
 
     finalize_sql, parameters = connection.calls[0]
-    assert "job_plane.worker_finalize_snapshot" in finalize_sql
+    assert "job_plane.worker_finalize_paper" in finalize_sql
     assert parameters[:13] == (
         "job",
         "attempt",
@@ -858,7 +901,7 @@ def test_worker_finalize_keeps_artifact_and_transition_in_one_transaction() -> N
     )
 
     finalize_sql, parameters = connection.calls[0]
-    assert "job_plane.worker_finalize_snapshot" in finalize_sql
+    assert "job_plane.worker_finalize_paper" in finalize_sql
     assert len(parameters) == 19
     assert parameters[:10] == (
         "job",
@@ -901,7 +944,7 @@ def test_worker_recovery_passes_the_complete_observed_fence() -> None:
     ) == "LEASE_EXPIRED_RETRY_SCHEDULED"
 
     sql, parameters = connection.calls[0]
-    assert "job_plane.worker_recover_expired_snapshot" in sql
+    assert "job_plane.worker_recover_expired_paper" in sql
     assert parameters == (
         "job",
         "attempt",
@@ -1031,5 +1074,5 @@ def test_worker_recovery_fails_closed_on_invalid_authority_result(authority) -> 
             "recovery-1",
         )
 
-    assert "job_plane.worker_recover_expired_snapshot" in connection.calls[0][0]
+    assert "job_plane.worker_recover_expired_paper" in connection.calls[0][0]
     assert connection.transaction_events == [("enter", None), ("exit", None)]

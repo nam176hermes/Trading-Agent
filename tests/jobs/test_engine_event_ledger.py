@@ -510,3 +510,33 @@ def test_public_ledger_boundary_excludes_domain_and_provider_types() -> None:
     for name in ledger_api.__all__:
         module = getattr(ledger_api, name).__module__
         assert module.startswith("packages.engine_event_ledger")
+
+
+def test_job_result_ingestion_binds_one_durable_batch_without_narrowing_ledger() -> None:
+    from packages.engine_event_ledger import EngineEventConflictError
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    repository = InMemoryEngineEventLedger()
+    first = _batch(_event(2, "BacktestStarted"))
+    second = _batch(_event(3, "BacktestCompleted"))
+
+    receipt = repository.ingest_for_job(first)
+
+    assert repository.ingest_for_job(first) == receipt
+    assert repository.load_job_receipt(JOB_ID) == receipt
+    changed_attempt = "attempt_11111111111111111111111111111111"
+    changed_authority = replace(
+        first,
+        relative_ref=(
+            f"engine-results/{JOB_ID}/{changed_attempt}/{first.sha256}.jsonl"
+        ),
+        validation_metadata={
+            **first.validation_metadata,
+            "attempt_id": changed_attempt,
+        },
+    )
+    with pytest.raises(EngineEventConflictError, match="receipt authority"):
+        repository.ingest_for_job(changed_authority)
+    with pytest.raises(EngineEventConflictError, match="different durable"):
+        repository.ingest_for_job(second)
+    assert repository.ingest(second).batch_sha256 == second.sha256

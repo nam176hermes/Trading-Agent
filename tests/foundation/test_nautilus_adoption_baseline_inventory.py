@@ -74,7 +74,7 @@ def test_inventory_distinguishes_source_and_historical_migration_authorities() -
     inventory = _load_inventory()
     alembic = inventory["alembic"]
     assert isinstance(alembic, dict)
-    assert alembic["source_head"] == "0009_canonical_market_data"
+    assert alembic["source_head"] == "0011_engine_backtest_worker_authority"
     assert alembic["deployed_database_state"] == "not asserted by this source-only inventory"
     rows = alembic["authority_matrix"]
     assert isinstance(rows, list)
@@ -85,6 +85,8 @@ def test_inventory_distinguishes_source_and_historical_migration_authorities() -
         "0007_job_event_chain_authority",
         "0008_trading_domain_ledger",
         "0009_canonical_market_data",
+        "0010_engine_event_ledger",
+        "0011_engine_backtest_worker_authority",
     }
     assert "NO_GO" in by_revision["0006_job_transition_database_authority"]["classification"]
 

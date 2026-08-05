@@ -128,8 +128,8 @@ The D0 source foundation currently includes:
 - D0.2 strict domain events, signals, portfolios, risk decisions, and order
   contracts with generated-schema drift checks;
 - D0.3 deterministic immutable-set replay, aggregate snapshots, durable
-  outbox/inbox idempotency contracts, and migration source head
-  `0008_trading_domain_ledger`.
+  outbox/inbox idempotency contracts, with the activated protected database
+  source head `0011_engine_backtest_worker_authority`.
 
 The executable [D0 closure matrix](docs/implementation/d0-closure-matrix.json)
 has no unresolved source requirement. `make check-d0-closure` validates every

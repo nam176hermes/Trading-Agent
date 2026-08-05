@@ -106,6 +106,12 @@ def _validate_job_attempt_identity(
     return job_id, attempt_id
 
 
+def _validate_job_identity(job_id: object) -> str:
+    if type(job_id) is not str or _JOB_ID.fullmatch(job_id) is None:
+        raise ValueError("engine event job identity is invalid")
+    return job_id
+
+
 def _validate_contiguous_records(
     records: tuple[StoredEngineEvent, ...],
     *,
@@ -222,7 +228,13 @@ def _receipt_for(
 class EngineEventLedgerRepository(Protocol):
     def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt: ...
 
+    def ingest_for_job(
+        self, batch: ValidatedEngineEventBatch
+    ) -> EngineEventBatchReceipt: ...
+
     def load_receipt(self, batch_sha256: str) -> EngineEventBatchReceipt | None: ...
+
+    def load_job_receipt(self, job_id: str) -> EngineEventBatchReceipt | None: ...
 
     def load_events(self, engine_run_id: UUID) -> tuple[StoredEngineEvent, ...]: ...
 
@@ -294,8 +306,36 @@ class InMemoryEngineEventLedger:
         self._projections[run_id] = projection
         return receipt
 
+    def ingest_for_job(
+        self, batch: ValidatedEngineEventBatch
+    ) -> EngineEventBatchReceipt:
+        records, _ingestion_digest = _validated_records(batch)
+        job_id = batch.validation_metadata["job_id"]
+        prior = self.load_job_receipt(job_id)
+        if prior is not None:
+            if prior.batch_sha256 == batch.sha256:
+                return self.ingest(batch)
+            raise EngineEventConflictError(
+                f"job already has a different durable engine-event result: {job_id}"
+            )
+        receipt = self.ingest(batch)
+        if receipt.engine_run_id != records[0].engine_run_id:
+            raise EngineEventConflictError("job result receipt authority is invalid")
+        return receipt
+
     def load_receipt(self, batch_sha256: str) -> EngineEventBatchReceipt | None:
         return self._receipts.get(batch_sha256)
+
+    def load_job_receipt(self, job_id: str) -> EngineEventBatchReceipt | None:
+        _validate_job_identity(job_id)
+        receipts = tuple(
+            receipt for receipt in self._receipts.values() if receipt.job_id == job_id
+        )
+        if len(receipts) > 1:
+            raise EngineEventConflictError(
+                f"job has conflicting engine-event receipts: {job_id}"
+            )
+        return receipts[0] if receipts else None
 
     def load_events(self, engine_run_id: UUID) -> tuple[StoredEngineEvent, ...]:
         return tuple(
@@ -458,10 +498,21 @@ class PostgresEngineEventLedgerSql:
     INGEST_BATCH = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
        engine_run_id, event_count, first_sequence, last_sequence, last_digest
 FROM public.ingest_engine_event_batch(%(batch_document)s);"""
+    INGEST_JOB_RESULT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
+       engine_run_id, event_count, first_sequence, last_sequence, last_digest
+FROM job_plane.ingest_engine_job_result(%(batch_document)s);"""
     LOAD_RECEIPT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
        engine_run_id, event_count, first_sequence, last_sequence, last_digest
 FROM public.engine_event_batch_receipts
 WHERE batch_sha256 = %(batch_sha256)s;"""
+    LOAD_JOB_RECEIPT = """SELECT receipt.batch_sha256, receipt.ingestion_digest,
+       receipt.job_id, receipt.attempt_id, receipt.engine_run_id,
+       receipt.event_count, receipt.first_sequence, receipt.last_sequence,
+       receipt.last_digest
+FROM public.engine_job_results AS result
+JOIN public.engine_event_batch_receipts AS receipt
+  ON receipt.batch_sha256 = result.batch_sha256
+WHERE result.job_id = %(job_id)s;"""
     LOAD_EVENTS = """SELECT message_id, engine_run_id, stream_sequence, event_type,
        event_family, canonical_json_text, digest, batch_sha256
 FROM public.engine_events
@@ -618,13 +669,29 @@ class PostgresEngineEventLedger:
         )
 
     def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt:
+        return self._ingest_with_statement(
+            batch, PostgresEngineEventLedgerSql.INGEST_BATCH
+        )
+
+    def ingest_for_job(
+        self, batch: ValidatedEngineEventBatch
+    ) -> EngineEventBatchReceipt:
+        return self._ingest_with_statement(
+            batch, PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
+        )
+
+    def _ingest_with_statement(
+        self,
+        batch: ValidatedEngineEventBatch,
+        statement: str,
+    ) -> EngineEventBatchReceipt:
         records, ingestion_digest = _validated_records(batch)
         expected = _receipt_for(batch, records, ingestion_digest)
         try:
             with self._pool.connection() as connection:
                 with connection.transaction():
                     row = connection.execute(
-                        PostgresEngineEventLedgerSql.INGEST_BATCH,
+                        statement,
                         {
                             "batch_document": self._batch_document(
                                 batch, records, ingestion_digest
@@ -654,6 +721,19 @@ class PostgresEngineEventLedger:
                 {"batch_sha256": batch_sha256},
             ).fetchone()
         return None if row is None else self._receipt_from_row(row)
+
+    def load_job_receipt(self, job_id: str) -> EngineEventBatchReceipt | None:
+        _validate_job_identity(job_id)
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                PostgresEngineEventLedgerSql.LOAD_JOB_RECEIPT,
+                {"job_id": job_id},
+            ).fetchall()
+        if len(rows) > 1:
+            raise EngineEventConflictError(
+                f"job has conflicting durable engine-event receipts: {job_id}"
+            )
+        return None if not rows else self._receipt_from_row(rows[0])
 
     def load_events(self, engine_run_id: UUID) -> tuple[StoredEngineEvent, ...]:
         if type(engine_run_id) is not UUID:

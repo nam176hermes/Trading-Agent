@@ -49,7 +49,9 @@ class _ReadyResult:
 class _ReadyConnection:
     def execute(self, query):
         if "version_num" in query:
-            return _ReadyResult({"version_num": "0008_trading_domain_ledger"})
+            return _ReadyResult(
+                {"version_num": "0011_engine_backtest_worker_authority"}
+            )
         return _ReadyResult({"?column?": 1})
 
 

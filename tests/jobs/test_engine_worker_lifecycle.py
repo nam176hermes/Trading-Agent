@@ -376,10 +376,12 @@ class Ingestor:
         repository: InMemoryEngineEventLedger | None = None,
         *,
         error: Exception | None = None,
+        after_commit_error: Exception | None = None,
         during=None,
     ) -> None:
         self.repository = repository or InMemoryEngineEventLedger()
         self.error = error
+        self.after_commit_error = after_commit_error
         self.during = during
         self.calls = []
 
@@ -389,7 +391,27 @@ class Ingestor:
             self.during()
         if self.error is not None:
             raise self.error
-        return self.repository.ingest(batch)
+        receipt = self.repository.ingest(batch)
+        if self.after_commit_error is not None:
+            raise self.after_commit_error
+        return receipt
+
+    def ingest_for_job(self, batch):
+        self.calls.append(batch)
+        if self.during is not None:
+            self.during()
+        if self.error is not None:
+            raise self.error
+        receipt = self.repository.ingest_for_job(batch)
+        if self.after_commit_error is not None:
+            raise self.after_commit_error
+        return receipt
+
+    def load_receipt(self, batch_sha256):
+        return self.repository.load_receipt(batch_sha256)
+
+    def load_job_receipt(self, job_id):
+        return self.repository.load_job_receipt(job_id)
 
 
 def _worker(
@@ -688,8 +710,8 @@ def test_engine_success_waits_for_exact_durable_receipt() -> None:
 
 def test_engine_mismatched_receipt_blocks_success() -> None:
     class MismatchedReceiptIngestor(Ingestor):
-        def ingest(self, batch):
-            receipt = super().ingest(batch)
+        def ingest_for_job(self, batch):
+            receipt = super().ingest_for_job(batch)
             return receipt.model_copy(update={"batch_sha256": "0" * 64})
 
     repository = Repository(_claim())
@@ -708,27 +730,64 @@ def test_engine_mismatched_receipt_blocks_success() -> None:
     assert final["result"] is None
 
 
-def test_engine_exact_duplicate_retry_reuses_receipt_without_duplicate_effects() -> None:
+def test_new_attempt_cannot_rerun_after_prior_durable_receipt() -> None:
     ledger = InMemoryEngineEventLedger()
     ingestor = Ingestor(ledger)
-    receipts = []
+    first_repository = Repository(_claim())
+    assert _worker(
+        first_repository,
+        Runner(_outcome()),
+        Provider(),
+        Validator(),
+        ingestor=ingestor,
+    ).run_once()
+    assert _final(first_repository)["final_state"] is JobState.SUCCEEDED
 
-    for _ in range(2):
-        repository = Repository(_claim())
-        assert _worker(
-            repository,
-            Runner(_outcome()),
-            Provider(),
-            Validator(),
-            ingestor=ingestor,
-        ).run_once()
-        final = _final(repository)
-        assert final["final_state"] is JobState.SUCCEEDED
-        receipts.append(final["result"].validation_metadata["engine_event_receipt"])
+    second_claim = replace(
+        _claim(),
+        attempt_id="attempt_11111111111111111111111111111111",
+        attempt_number=2,
+    )
+    second_repository = Repository(second_claim)
+    second_runner = Runner(_outcome())
+    second_provider = Provider()
+    assert _worker(
+        second_repository,
+        second_runner,
+        second_provider,
+        Validator(),
+        ingestor=ingestor,
+    ).run_once()
 
-    assert receipts[0] == receipts[1]
+    second_final = _final(second_repository)
+    assert second_final["expected_state"] is JobState.CLAIMED
+    assert second_final["final_state"] is JobState.BLOCKED
+    assert second_final["reason_code"] == "ENGINE_EVENT_RECONCILIATION_REQUIRED"
+    assert second_runner.calls == 0
+    assert second_provider.requests == []
+    assert len(ingestor.calls) == 1
     engine_run_id = ingestor.calls[0].events[0].engine_run_id
     assert len(ledger.load_events(engine_run_id)) == 1
+
+
+def test_commit_then_response_loss_reconciles_exact_receipt_before_success() -> None:
+    repository = Repository(_claim())
+    ingestor = Ingestor(
+        after_commit_error=RuntimeError("receipt response lost after commit")
+    )
+
+    assert _worker(
+        repository, Runner(_outcome()), Provider(), Validator(), ingestor=ingestor
+    ).run_once()
+
+    final = _final(repository)
+    assert final["final_state"] is JobState.SUCCEEDED
+    batch = ingestor.calls[0]
+    receipt = ingestor.repository.load_receipt(batch.sha256)
+    assert final["result"].validation_metadata["engine_event_receipt"] == (
+        receipt.model_dump(mode="json")
+    )
+    assert len(ingestor.repository.load_events(batch.events[0].engine_run_id)) == 1
 
 
 def test_engine_identity_conflict_blocks_without_success() -> None:
@@ -839,6 +898,27 @@ def test_engine_stale_lease_after_ingest_never_finalizes() -> None:
 
     assert len(ingestor.calls) == 1
     assert not any(name in {"finalize", "retry"} for name, _ in repository.calls)
+
+    recovered_claim = replace(
+        _claim(),
+        attempt_id="attempt_22222222222222222222222222222222",
+        attempt_number=2,
+    )
+    recovered_repository = Repository(recovered_claim)
+    recovered_runner = Runner(_outcome())
+    assert _worker(
+        recovered_repository,
+        recovered_runner,
+        Provider(),
+        Validator(),
+        ingestor=ingestor,
+    ).run_once()
+    assert recovered_runner.calls == 0
+    recovered_final = _final(recovered_repository)
+    assert recovered_final["final_state"] is JobState.BLOCKED
+    assert recovered_final["reason_code"] == (
+        "ENGINE_EVENT_RECONCILIATION_REQUIRED"
+    )
 
 
 def test_engine_safety_drift_after_ingest_blocks_durable_batch() -> None:
@@ -994,3 +1074,41 @@ def test_worker_composition_requires_an_explicit_engine_provider_injection(
             authority=authority,
             engine_spawn_provider=provider,
         )
+
+
+def test_service_opt_in_binds_durable_ingestor_from_worker_repository(
+    monkeypatch,
+) -> None:
+    from services.job_worker import main
+
+    provider = Provider()
+    durable_ingestor = object()
+    captured = {}
+
+    class RepositoryWithEngineAuthority:
+        def engine_event_ingestor(self):
+            return durable_ingestor
+
+        def recover_expired_leases(self, inspector, *, recovery_id):
+            raise RuntimeError("stop after composition proof")
+
+    class Worker:
+        pass
+
+    def build(repository, **kwargs):
+        captured.update(kwargs)
+        return Worker()
+
+    monkeypatch.setattr(main, "build_worker", build)
+    monkeypatch.setattr(main, "ProcProcessInspector", type("Inspector", (), {}))
+
+    with pytest.raises(RuntimeError, match="composition proof"):
+        main.serve(
+            RepositoryWithEngineAuthority(),
+            idle_seconds=0,
+            authority=object(),
+            engine_spawn_provider=provider,
+        )
+
+    assert captured["engine_spawn_provider"] is provider
+    assert captured["engine_event_ingestor"] is durable_ingestor

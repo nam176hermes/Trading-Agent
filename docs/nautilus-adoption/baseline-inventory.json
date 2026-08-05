@@ -54,13 +54,35 @@
       "0006_job_transition_database_authority",
       "0007_job_event_chain_authority",
       "0008_trading_domain_ledger",
-      "0009_canonical_market_data"
+      "0009_canonical_market_data",
+      "0010_engine_event_ledger",
+      "0011_engine_backtest_worker_authority"
     ],
-    "source_head": "0009_canonical_market_data",
+    "source_head": "0011_engine_backtest_worker_authority",
     "authority_matrix": [
       {
+        "revision": "0011_engine_backtest_worker_authority",
+        "classification": "sole additive source head and current source-code expected revision",
+        "references": [
+          "alembic/versions/0011_engine_backtest_worker_authority.py",
+          "services/job_store/config.py",
+          "apps/job_api/config.py",
+          "packages/runtime_release/v2.py",
+          "ops/release-v2/verify-stage.py",
+          "ops/systemd/job-api.env.example"
+        ]
+      },
+      {
+        "revision": "0010_engine_event_ledger",
+        "classification": "additive engine-event storage parent; superseded by 0011 activation",
+        "references": [
+          "alembic/versions/0010_engine_event_ledger.py",
+          "alembic/versions/0011_engine_backtest_worker_authority.py"
+        ]
+      },
+      {
         "revision": "0009_canonical_market_data",
-        "classification": "sole additive source head; source-only",
+        "classification": "additive source parent; superseded by 0010 and 0011",
         "references": [
           "alembic/versions/0009_canonical_market_data.py",
           "docs/plans/track-c-p10-canonical-market-data/PACKET-3-VERDICT.md"
@@ -68,13 +90,10 @@
       },
       {
         "revision": "0008_trading_domain_ledger",
-        "classification": "current source-code expected revision; runtime activation deferred",
+        "classification": "historical activated domain-ledger parent",
         "references": [
-          "services/job_store/config.py",
-          "apps/job_api/config.py",
-          "packages/runtime_release/v2.py",
-          "ops/release-v2/verify-stage.py",
-          "ops/systemd/job-api.env.example"
+          "alembic/versions/0008_trading_domain_ledger.py",
+          "alembic/versions/0009_canonical_market_data.py"
         ]
       },
       {

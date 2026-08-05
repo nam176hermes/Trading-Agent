@@ -254,6 +254,37 @@ class JobWorker:
                     None if finalized else claimed,
                 )
                 return True
+            try:
+                prior_receipt = self._engine_event_ingestor.load_job_receipt(
+                    claimed.job_id
+                )
+            except EngineEventConflictError:
+                reason_code = "ENGINE_EVENT_IDENTITY_CONFLICT"
+            except Exception:
+                reason_code = "ENGINE_EVENT_RECONCILIATION_UNAVAILABLE"
+            else:
+                reason_code = (
+                    "ENGINE_EVENT_RECONCILIATION_REQUIRED"
+                    if prior_receipt is not None
+                    else None
+                )
+            if reason_code is not None:
+                finalized = self._repository.finalize_execution(
+                    claimed,
+                    expected_state=JobState.CLAIMED,
+                    expected_attempt_outcome="CLAIMED",
+                    final_state=JobState.BLOCKED,
+                    reason_code=reason_code,
+                    trace_id=trace_id,
+                    outcome=None,
+                    result=None,
+                    stream_artifacts=(),
+                )
+                self._worker_heartbeat(
+                    "IDLE" if finalized else "UNHEALTHY",
+                    None if finalized else claimed,
+                )
+                return True
 
         market_data_payload = self._market_data_payload(claimed)
         if market_data_payload is not None and self._market_data_ingestor is None:
@@ -385,7 +416,7 @@ class JobWorker:
                 sealed_validation_metadata = dict(result.validation_metadata)
                 self._validation_progress(claimed, safety_preflight)
                 try:
-                    receipt = self._engine_event_ingestor.ingest(result)
+                    receipt = self._engine_event_ingestor.ingest_for_job(result)
                 except EngineEventConflictError as exc:
                     raise _EngineEventIngestionBlocked(
                         "ENGINE_EVENT_IDENTITY_CONFLICT",
@@ -401,10 +432,25 @@ class JobWorker:
                         "ENGINE_EVENT_BATCH_INVALID",
                         "validated engine-event batch was rejected",
                     ) from exc
-                except Exception as exc:
-                    raise ResultValidationError(
-                        "durable engine-event ingestion failed"
-                    ) from exc
+                except Exception as ingest_error:
+                    try:
+                        receipt = self._engine_event_ingestor.load_receipt(
+                            result.sha256
+                        )
+                    except EngineEventConflictError as exc:
+                        raise _EngineEventIngestionBlocked(
+                            "ENGINE_EVENT_IDENTITY_CONFLICT",
+                            "durable engine-event reconciliation conflicted",
+                        ) from exc
+                    except Exception:
+                        raise ResultValidationError(
+                            "durable engine-event ingestion failed and could not "
+                            "be reconciled"
+                        ) from ingest_error
+                    if receipt is None:
+                        raise ResultValidationError(
+                            "durable engine-event ingestion failed without a receipt"
+                        ) from ingest_error
                 self._validation_progress(claimed, safety_preflight)
                 if result.validation_metadata != sealed_validation_metadata:
                     raise _EngineEventIngestionBlocked(

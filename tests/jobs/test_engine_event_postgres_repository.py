@@ -17,6 +17,7 @@ from services.job_store.engine_event_repository import (
     PostgresEngineEventLedger,
     PostgresEngineEventLedgerSql,
 )
+from services.job_store.worker_repository import WorkerRepository
 from tests.jobs.test_engine_event_ledger import RUN_ID, _batch, _event
 
 
@@ -120,6 +121,48 @@ def test_postgres_ingest_uses_one_transaction_and_one_function_statement() -> No
         batch.events[0]
     )
     assert tuple(event["stream_sequence"] for event in document["events"]) == (2, 3)
+
+
+def test_postgres_job_result_uses_only_protected_binding_function() -> None:
+    batch = _batch(_event(2, "BacktestStarted"))
+    expected = InMemoryEngineEventLedger().ingest_for_job(batch)
+    connection = Connection([[_receipt_row(expected)]])
+
+    receipt = PostgresEngineEventLedger(Pool(connection)).ingest_for_job(batch)
+
+    assert receipt == expected
+    assert connection.executions[0][0] == (
+        PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
+    )
+    assert "job_plane.ingest_engine_job_result" in connection.executions[0][0]
+    assert connection.commit_count == 1
+
+
+def test_postgres_load_job_receipt_uses_binding_not_unbound_receipt_scan() -> None:
+    batch = _batch(_event(2, "BacktestStarted"))
+    expected = InMemoryEngineEventLedger().ingest_for_job(batch)
+    connection = Connection([[_receipt_row(expected)]])
+
+    receipt = PostgresEngineEventLedger(Pool(connection)).load_job_receipt(
+        expected.job_id
+    )
+
+    assert receipt == expected
+    statement, params = connection.executions[0]
+    assert statement == PostgresEngineEventLedgerSql.LOAD_JOB_RECEIPT
+    assert "public.engine_job_results" in statement
+    assert params == {"job_id": expected.job_id}
+
+
+def test_worker_repository_binds_engine_ingestor_to_its_protected_pool() -> None:
+    protected_pool = object()
+    worker_repository = object.__new__(WorkerRepository)
+    worker_repository._pool = protected_pool
+
+    ingestor = worker_repository.engine_event_ingestor()
+
+    assert type(ingestor) is PostgresEngineEventLedger
+    assert ingestor._pool is protected_pool
 
 
 def test_postgres_ingest_rejects_receipt_that_differs_from_validated_batch() -> None:

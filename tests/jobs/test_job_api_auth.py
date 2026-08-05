@@ -413,7 +413,7 @@ def test_readiness_is_200_only_with_exact_valid_authority() -> None:
     class Connection:
         def execute(self, query):
             return Result(
-                {"version_num": "0008_trading_domain_ledger"}
+                {"version_num": "0011_engine_backtest_worker_authority"}
                 if "version_num" in query
                 else {"?column?": 1}
             )
@@ -466,7 +466,7 @@ def test_environment_cannot_supply_independent_digest_or_manifest_authority() ->
 @pytest.mark.parametrize(
     ("database_revision", "expected_status", "expected_readiness"),
     [
-        ("0008_trading_domain_ledger", 200, "READY"),
+        ("0011_engine_backtest_worker_authority", 200, "READY"),
         ("0006_job_transition_database_authority", 503, "NOT_READY"),
         ("unexpected_revision", 503, "NOT_READY"),
     ],

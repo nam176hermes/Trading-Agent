@@ -354,15 +354,15 @@ def test_settings_reject_mismatched_fixed_port_and_revision() -> None:
     assert getattr(job_api_config, "JOB_API_PORT", None) == 8401
     assert (
         getattr(job_api_config, "EXPECTED_REVISION", None)
-        == "0008_trading_domain_ledger"
+        == "0011_engine_backtest_worker_authority"
     )
     with pytest.raises(ValueError, match="8401"):
         settings(port=8402)
-    with pytest.raises(ValueError, match="0008_trading_domain_ledger"):
+    with pytest.raises(ValueError, match="0011_engine_backtest_worker_authority"):
         settings(expected_revision="0006_wrong")
     with pytest.raises(ValueError, match="8401"):
         JobApiSettings.from_env({"TRADING_JOB_API_PORT": "8402"})
-    with pytest.raises(ValueError, match="0008_trading_domain_ledger"):
+    with pytest.raises(ValueError, match="0011_engine_backtest_worker_authority"):
         JobApiSettings.from_env({"TRADING_JOB_API_EXPECTED_REVISION": "0006_wrong"})
 
 

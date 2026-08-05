@@ -1178,7 +1178,7 @@ def test_worker_main_checks_server_role_and_exact_head_before_recovery(
         (
             "identity",
             "trading_job_worker",
-            "0008_trading_domain_ledger",
+            "0011_engine_backtest_worker_authority",
         ),
         ("serve", authority),
         "exit",

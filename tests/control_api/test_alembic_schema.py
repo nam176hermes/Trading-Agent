@@ -57,8 +57,9 @@ EXPECTED_TABLES = {
     "engine_event_batch_receipts",
     "engine_events",
     "engine_run_projections",
+    "engine_job_results",
 }
-EXACT_HEAD = "0010_engine_event_ledger"
+EXACT_HEAD = "0011_engine_backtest_worker_authority"
 
 
 def alembic_config() -> Config:

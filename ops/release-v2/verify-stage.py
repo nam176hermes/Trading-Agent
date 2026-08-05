@@ -162,7 +162,7 @@ _PAPER_RUNTIME_MANIFEST = {
 }
 _UNITS = {"trading-job-api.service", "trading-job-worker.service"}
 # Standalone-verifier pin. Tests require parity with the runtime canonical head.
-_EXPECTED_DATABASE_REVISION = "0008_trading_domain_ledger"
+_EXPECTED_DATABASE_REVISION = "0011_engine_backtest_worker_authority"
 _EXPECTED_DB_ROLES = {
     "api_role": "trading_job_api",
     "worker_role": "trading_job_worker",

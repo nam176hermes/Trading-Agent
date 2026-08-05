@@ -129,6 +129,7 @@ def serve(
     *,
     idle_seconds: float,
     authority: WorkerRuntimeAuthority | None = None,
+    engine_spawn_provider: object | None = None,
 ) -> NoReturn:
     """Recover crash leftovers once, then enter the single-worker claim loop.
 
@@ -137,11 +138,20 @@ def serve(
     duplicate research process after a restart.
     """
 
-    worker = (
-        build_worker(repository)
-        if authority is None
-        else build_worker(repository, authority=authority)
+    engine_event_ingestor = (
+        repository.engine_event_ingestor()
+        if engine_spawn_provider is not None
+        else None
     )
+    if authority is None and engine_spawn_provider is None:
+        worker = build_worker(repository)
+    else:
+        worker = build_worker(
+            repository,
+            authority=authority,
+            engine_spawn_provider=engine_spawn_provider,
+            engine_event_ingestor=engine_event_ingestor,
+        )
     repository.recover_expired_leases(
         ProcProcessInspector(), recovery_id="worker-startup-recovery"
     )

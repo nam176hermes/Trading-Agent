@@ -180,8 +180,20 @@ def test_track_c_source_head_defers_runtime_activation() -> None:
     assert 'down_revision = "0007_job_event_chain_authority"' in migration_0008
     assert 'revision = "0009_canonical_market_data"' in migration_0009
     assert 'down_revision = "0008_trading_domain_ledger"' in migration_0009
-    assert 'CANONICAL_DATABASE_REVISION = "0008_trading_domain_ledger"' in job_store_config
+    assert (
+        'CANONICAL_DATABASE_REVISION = "0011_engine_backtest_worker_authority"'
+        in job_store_config
+    )
     assert "EXPECTED_REVISION = CANONICAL_DATABASE_REVISION" in job_api_config
-    assert 'EXPECTED_DATABASE_REVISION = "0008_trading_domain_ledger"' in release_v2
-    assert '_EXPECTED_DATABASE_REVISION = "0008_trading_domain_ledger"' in stage_verifier
-    assert "TRADING_JOB_API_EXPECTED_REVISION=0008_trading_domain_ledger" in systemd_example
+    assert (
+        'EXPECTED_DATABASE_REVISION = "0011_engine_backtest_worker_authority"'
+        in release_v2
+    )
+    assert (
+        '_EXPECTED_DATABASE_REVISION = "0011_engine_backtest_worker_authority"'
+        in stage_verifier
+    )
+    assert (
+        "TRADING_JOB_API_EXPECTED_REVISION=0011_engine_backtest_worker_authority"
+        in systemd_example
+    )

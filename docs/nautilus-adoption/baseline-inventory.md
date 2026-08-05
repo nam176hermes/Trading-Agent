@@ -39,8 +39,10 @@ flattened into one runtime claim.
 
 | Revision | Authority classification | Effect on Nautilus work |
 | --- | --- | --- |
-| `0009_canonical_market_data` | Sole additive source head | Source only; it does not assert deployed state. |
-| `0008_trading_domain_ledger` | Current expected revision in Job API and static release code | Runtime activation is deferred; do not change the pin here. |
+| `0011_engine_backtest_worker_authority` | Sole additive source head and current source-code expected revision | Activates only protected paper BACKTEST worker authority. |
+| `0010_engine_event_ledger` | Additive engine-event storage parent | Storage source authority consumed by `0011`. |
+| `0009_canonical_market_data` | Additive source parent | Historical parent of the activated head. |
+| `0008_trading_domain_ledger` | Historical activated domain-ledger parent | Historical evidence, no longer the current revision pin. |
 | `0007_job_event_chain_authority` | Frozen job-plane authority manifest | Historical evidence, not the current source head or an activation target. |
 | `0006_job_transition_database_authority` | Older Release Authority v2 document boundary | Explicit `NO_GO` integration blocker; it cannot be reinterpreted or activated. |
 | `0004_durable_research_jobs` | Historical Phase 4B provisioning pin | Historical only; it is not current runtime authority. |

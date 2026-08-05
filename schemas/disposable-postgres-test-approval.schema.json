@@ -81,8 +81,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 12,
-      "maxItems": 12,
+      "minItems": 13,
+      "maxItems": 13,
       "prefixItems": [
         {"$ref": "#/$defs/sourceBinding0001"},
         {"$ref": "#/$defs/sourceBinding0002"},
@@ -94,6 +94,7 @@
         {"$ref": "#/$defs/sourceBinding0008"},
         {"$ref": "#/$defs/sourceBinding0009"},
         {"$ref": "#/$defs/sourceBinding0010"},
+        {"$ref": "#/$defs/sourceBinding0011"},
         {"$ref": "#/$defs/sourceBindingJobRoles"},
         {"$ref": "#/$defs/sourceBindingRoles"}
       ],
@@ -253,6 +254,12 @@
       "allOf": [
         {"$ref": "#/$defs/sourceBindingBase"},
         {"properties": {"path": {"const": "alembic/versions/0010_engine_event_ledger.py"}}}
+      ]
+    },
+    "sourceBinding0011": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0011_engine_backtest_worker_authority.py"}}}
       ]
     },
     "sourceBindingJobRoles": {

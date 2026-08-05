@@ -338,7 +338,7 @@ def test_static_authority_binds_one_source_complete_components_and_snapshot_only
     }
     assert document["database"] == {
         "api_role": "trading_job_api",
-        "expected_revision": "0008_trading_domain_ledger",
+        "expected_revision": "0011_engine_backtest_worker_authority",
         "worker_role": "trading_job_worker",
     }
     command = document["command_manifest"]["commands"]

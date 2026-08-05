@@ -104,6 +104,13 @@ class WorkerRepository:
     def close(self) -> None:
         self._pool.close()
 
+    def engine_event_ingestor(self):
+        """Bind engine-result ingestion to this worker's protected DB pool."""
+
+        from .engine_event_repository import PostgresEngineEventLedger
+
+        return PostgresEngineEventLedger(self._pool)
+
     def assert_runtime_identity(
         self, *, expected_user: str, expected_revision: str,
     ) -> None:
@@ -172,13 +179,18 @@ class WorkerRepository:
             raise ValueError("worker job-type authority is invalid")
         attempt_id = self._new_id("attempt")
         lease_token = secrets.token_urlsafe(48)
+        claim_capability = (
+            "worker_claim_paper"
+            if selected_types == (JobType.SNAPSHOT, JobType.BACKTEST)
+            else "worker_claim_snapshot"
+        )
         with self._pool.connection() as connection:
             with connection.transaction():
                 row = connection.execute(
-                    """
+                    f"""
                     SELECT job_id, job_type, payload, attempt_number,
                            max_attempts, lease_expires_at
-                    FROM job_plane.worker_claim_snapshot(%s, %s, %s, %s, %s, %s)
+                    FROM job_plane.{claim_capability}(%s, %s, %s, %s, %s, %s)
                     """,
                     (
                         attempt_id,
@@ -209,7 +221,7 @@ class WorkerRepository:
             with connection.transaction():
                 row = connection.execute(
                     """
-                    SELECT job_plane.worker_start_snapshot(
+                    SELECT job_plane.worker_start_paper(
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     ) AS started
                     """,
@@ -301,7 +313,7 @@ class WorkerRepository:
             with connection.transaction():
                 row = connection.execute(
                     """
-                    SELECT job_plane.worker_control_snapshot_lease(
+                    SELECT job_plane.worker_control_paper_lease(
                         %s, %s, %s, %s, %s, %s
                     ) AS control
                     """,
@@ -386,7 +398,7 @@ class WorkerRepository:
             with connection.transaction():
                 authority = connection.execute(
                     """
-                    SELECT job_plane.worker_finalize_snapshot(
+                    SELECT job_plane.worker_finalize_paper(
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
                     ) AS finalized
@@ -567,6 +579,7 @@ class WorkerRepository:
                 FROM jobs j JOIN job_attempts a
                   ON a.job_id = j.job_id AND a.attempt_number = j.attempt_count
                 WHERE j.state IN ('CLAIMED','RUNNING','CANCEL_REQUESTED')
+                  AND j.job_type IN ('SNAPSHOT','BACKTEST')
                   AND j.lease_expires_at <= now()
                   AND (
                     (j.state = 'CLAIMED' AND a.outcome = 'CLAIMED')
@@ -618,7 +631,7 @@ class WorkerRepository:
             with connection.transaction():
                 row = connection.execute(
                     """
-                    SELECT job_plane.worker_recover_expired_snapshot(
+                    SELECT job_plane.worker_recover_expired_paper(
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s
                     ) AS outcome
