@@ -1,0 +1,366 @@
+"""Worker-owned validation and sealing of canonical engine event stdout."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import secrets
+import stat
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from pydantic import ValidationError
+
+from packages.engine_contracts import (
+    EngineCommandEnvelope,
+    EngineEventEnvelope,
+    canonical_json_bytes,
+    validate_envelope_batch,
+)
+from packages.job_contracts import EngineBacktestPayload, JobType
+from services.job_store.worker_repository import ClaimedJob
+
+from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata
+from .engine_authority import BacktestEngineAuthorityFactory
+from .results import (
+    ResultValidationError,
+    _cleanup_temp,
+    _close_descriptors,
+    _directory_flags,
+    _open_directory_chain,
+)
+
+
+MAX_ENGINE_EVENTS = 4_096
+
+
+class EngineResultValidationError(ResultValidationError):
+    """Engine stdout could not be proven canonical and request-attributed."""
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedEngineEventBatch:
+    """Sealed event bytes plus an in-memory handoff for WS-02D."""
+
+    artifact_type: str
+    relative_ref: str
+    sha256: str
+    size_bytes: int
+    media_type: str
+    truncated: bool
+    validator_id: str
+    validation_metadata: dict[str, object]
+    events: tuple[EngineEventEnvelope, ...]
+
+
+class EngineResultValidator:
+    """Validate captured stdout and seal the exact accepted JSONL bytes."""
+
+    def __init__(self, artifact_root: Path) -> None:
+        self._artifact_root = Path(artifact_root).absolute()
+        self._results_root = self._artifact_root / "engine-results"
+
+    def validate(
+        self,
+        validator_id: str,
+        job: object,
+        *,
+        request: EngineCommandEnvelope,
+        stdout: ArtifactMetadata,
+        exit_code: int,
+        progress: Callable[[], None] | None = None,
+    ) -> ValidatedEngineEventBatch:
+        if validator_id != "engine-event-v1":
+            raise EngineResultValidationError(
+                "engine result validator is not allowlisted"
+            )
+        if exit_code != 0:
+            raise EngineResultValidationError("engine child exit code was not zero")
+        if (
+            type(job) is not ClaimedJob
+            or job.job_type is not JobType.BACKTEST
+            or type(job.payload) is not EngineBacktestPayload
+            or type(request) is not EngineCommandEnvelope
+        ):
+            raise EngineResultValidationError("engine result authority is invalid")
+        try:
+            expected_request = BacktestEngineAuthorityFactory(
+                code_commit=request.source_commit,
+                clock=lambda: request.event_time,
+            ).from_claim(job)
+        except (TypeError, ValueError) as exc:
+            raise EngineResultValidationError(
+                "engine request authority is invalid"
+            ) from exc
+        if request != expected_request:
+            raise EngineResultValidationError(
+                "engine request authority was not derived from this claim"
+            )
+        if (
+            not isinstance(stdout, ArtifactMetadata)
+            or stdout.artifact_type != "stdout"
+            or stdout.relative_ref
+            != f"{job.job_id}/{job.attempt_id}/stdout.log"
+            or stdout.truncated
+            or stdout.size_bytes <= 0
+            or stdout.size_bytes > MAX_STREAM_BYTES
+        ):
+            raise EngineResultValidationError(
+                "engine stdout capture metadata is invalid"
+            )
+
+        check = progress or (lambda: None)
+        check()
+        raw = self._read_captured_stdout(job, stdout, check)
+        events = self._parse_canonical_batch(raw, request, check)
+        check()
+        return self._seal(job, request, raw, events)
+
+    def _read_captured_stdout(
+        self,
+        job: ClaimedJob,
+        stdout: ArtifactMetadata,
+        progress: Callable[[], None],
+    ) -> bytes:
+        root_fd = job_fd = attempt_fd = file_fd = -1
+        try:
+            root_fd = _open_directory_chain(self._artifact_root)
+            job_fd = os.open(job.job_id, _directory_flags(), dir_fd=root_fd)
+            attempt_fd = os.open(job.attempt_id, _directory_flags(), dir_fd=job_fd)
+            file_fd = os.open(
+                "stdout.log",
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=attempt_fd,
+            )
+            observed = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(observed.st_mode)
+                or observed.st_uid != os.geteuid()
+                or observed.st_nlink != 1
+                or observed.st_size != stdout.size_bytes
+                or observed.st_size > MAX_STREAM_BYTES
+            ):
+                raise OSError("captured stdout identity is unsafe")
+            chunks: list[bytes] = []
+            remaining = MAX_STREAM_BYTES + 1
+            while remaining:
+                progress()
+                chunk = os.read(file_fd, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+        except (OSError, ValueError) as exc:
+            raise EngineResultValidationError(
+                "engine stdout capture could not be read safely"
+            ) from exc
+        finally:
+            try:
+                _close_descriptors(file_fd, attempt_fd, job_fd, root_fd)
+            except OSError as exc:
+                raise EngineResultValidationError(
+                    "engine stdout descriptors could not be closed safely"
+                ) from exc
+        if (
+            len(raw) != stdout.size_bytes
+            or hashlib.sha256(raw).hexdigest() != stdout.sha256
+        ):
+            raise EngineResultValidationError(
+                "engine stdout capture metadata does not match bytes"
+            )
+        return raw
+
+    @staticmethod
+    def _parse_canonical_batch(
+        raw: bytes,
+        request: EngineCommandEnvelope,
+        progress: Callable[[], None],
+    ) -> tuple[EngineEventEnvelope, ...]:
+        if not raw.endswith(b"\n"):
+            raise EngineResultValidationError(
+                "engine stdout must be canonical newline-delimited JSON"
+            )
+        lines = raw[:-1].split(b"\n")
+        if not lines or any(not line for line in lines) or len(lines) > MAX_ENGINE_EVENTS:
+            raise EngineResultValidationError("engine event batch size is invalid")
+        events: list[EngineEventEnvelope] = []
+        try:
+            for line in lines:
+                progress()
+                event = EngineEventEnvelope.model_validate_json(line)
+                if canonical_json_bytes(event) != line:
+                    raise EngineResultValidationError(
+                        "engine event bytes are not canonical"
+                    )
+                events.append(event)
+            batch = validate_envelope_batch(events)
+        except EngineResultValidationError:
+            raise
+        except (ValidationError, TypeError, ValueError) as exc:
+            reconciliation = "duplicate" in str(exc)
+            raise EngineResultValidationError(
+                "engine event batch is malformed or ambiguous",
+                reconciliation_required=reconciliation,
+            ) from exc
+
+        for offset, event in enumerate(batch, start=1):
+            if (
+                event.engine_run_id != request.engine_run_id
+                or event.correlation_id != request.correlation_id
+                or event.causation_id != request.message_id
+                or event.stream_sequence != request.stream_sequence + offset
+                or event.event_time < request.event_time
+                or event.initialization_time != request.initialization_time
+                or event.schema_version != request.schema_version
+                or event.producer_identity != request.producer_identity
+                or event.source_commit != request.source_commit
+                or event.config_digest != request.config_digest
+            ):
+                raise EngineResultValidationError(
+                    "engine event authority does not match the derived request"
+                )
+        return batch
+
+    def _seal(
+        self,
+        job: ClaimedJob,
+        request: EngineCommandEnvelope,
+        raw: bytes,
+        events: tuple[EngineEventEnvelope, ...],
+    ) -> ValidatedEngineEventBatch:
+        digest = hashlib.sha256(raw).hexdigest()
+        components = (job.job_id, job.attempt_id)
+        root_fd = current = -1
+        try:
+            root_fd = _open_directory_chain(self._results_root, create=True)
+            root_info = os.fstat(root_fd)
+            if root_info.st_uid != os.geteuid():
+                raise OSError("sealed engine result root owner is unsafe")
+            os.fchmod(root_fd, 0o700)
+            current = root_fd
+            for component in components:
+                try:
+                    os.mkdir(component, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                os.fsync(current)
+                child = os.open(component, _directory_flags(), dir_fd=current)
+                if current != root_fd:
+                    os.close(current)
+                current = child
+                info = os.fstat(current)
+                if info.st_uid != os.geteuid():
+                    raise OSError("sealed engine result directory owner is unsafe")
+                os.fchmod(current, 0o700)
+
+            filename = f"{digest}.jsonl"
+            tempname = f".{digest}.{secrets.token_hex(12)}.tmp"
+            descriptor = -1
+            try:
+                try:
+                    existing = os.open(
+                        filename,
+                        os.O_RDONLY
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=current,
+                    )
+                except FileNotFoundError:
+                    existing = -1
+                if existing >= 0:
+                    try:
+                        observed = os.fstat(existing)
+                        existing_raw = os.read(existing, MAX_STREAM_BYTES + 1)
+                        if (
+                            not stat.S_ISREG(observed.st_mode)
+                            or observed.st_uid != os.geteuid()
+                            or existing_raw != raw
+                        ):
+                            raise OSError("sealed engine result collision")
+                    finally:
+                        os.close(existing)
+                else:
+                    descriptor = os.open(
+                        tempname,
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                        0o600,
+                        dir_fd=current,
+                    )
+                    view = memoryview(raw)
+                    while view:
+                        written = os.write(descriptor, view)
+                        if written <= 0:
+                            raise OSError("sealed engine result write made no progress")
+                        view = view[written:]
+                    os.fsync(descriptor)
+                    os.close(descriptor)
+                    descriptor = -1
+                    os.rename(
+                        tempname,
+                        filename,
+                        src_dir_fd=current,
+                        dst_dir_fd=current,
+                    )
+                    os.fsync(current)
+            finally:
+                _cleanup_temp(current, tempname, descriptor)
+        except (OSError, ValueError) as exc:
+            raise EngineResultValidationError(
+                "validated engine event batch could not be sealed"
+            ) from exc
+        finally:
+            try:
+                _close_descriptors(
+                    current if current != root_fd else -1,
+                    root_fd,
+                )
+            except OSError as exc:
+                raise EngineResultValidationError(
+                    "sealed engine result descriptors could not be closed safely"
+                ) from exc
+
+        first = events[0]
+        last = events[-1]
+        relative = "/".join(
+            ("engine-results", *components, f"{digest}.jsonl")
+        )
+        metadata: dict[str, object] = {
+            "attempt_id": job.attempt_id,
+            "config_digest": request.config_digest,
+            "engine_run_id": str(request.engine_run_id),
+            "event_count": len(events),
+            "first_sequence": first.stream_sequence,
+            "job_id": job.job_id,
+            "last_sequence": last.stream_sequence,
+            "request_message_id": str(request.message_id),
+            "source_commit": request.source_commit,
+            "validator_id": "engine-event-v1",
+        }
+        return ValidatedEngineEventBatch(
+            "engine_event_batch",
+            relative,
+            digest,
+            len(raw),
+            "application/x-ndjson",
+            False,
+            "engine-event-v1",
+            metadata,
+            events,
+        )
+
+
+__all__ = [
+    "EngineResultValidationError",
+    "EngineResultValidator",
+    "MAX_ENGINE_EVENTS",
+    "ValidatedEngineEventBatch",
+]

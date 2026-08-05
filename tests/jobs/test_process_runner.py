@@ -269,7 +269,7 @@ def test_runner_consumes_engine_authority_once_and_remains_popen_owner(
     ).run(
         lambda: prepared,
         object(),
-        10,
+        None,
         lambda _: HeartbeatDecision.CONTINUE,
         job_id=JOB_ID,
         attempt_id=ATTEMPT_ID,

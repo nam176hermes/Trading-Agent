@@ -464,6 +464,23 @@ def test_worker_claim_empty_result_preserves_exact_fence_arguments(
     )
 
 
+def test_worker_repository_accepts_only_the_opt_in_engine_claim_set() -> None:
+    connection = _Connection(None)
+    repository = _worker(connection)
+    generated = iter(("attempt_engine", "event_engine"))
+    repository._new_id = lambda prefix: next(generated)
+
+    assert repository.claim_next(
+        "worker-engine",
+        30,
+        "trace-engine",
+        allowed_job_types=(JobType.SNAPSHOT, JobType.BACKTEST),
+    ) is None
+
+    assert len(connection.calls) == 1
+    assert "job_plane.worker_claim_snapshot" in connection.calls[0][0]
+
+
 def test_worker_claim_rejects_invalid_authority_inputs_before_database_access() -> None:
     connection = _Connection()
     repository = _worker(connection)

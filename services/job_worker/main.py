@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Mapping, NoReturn
 
 from services.job_store.config import CANONICAL_DATABASE_REVISION, JobStoreSettings
@@ -12,6 +13,8 @@ from services.job_store.worker_repository import WorkerRepository
 from .artifacts import ArtifactWriter
 from .command_registry import attest_worker_runtime_authority
 from .environment import ResearchEnvironmentSettings
+from .engine_authority import BacktestEngineAuthorityFactory
+from .engine_results import EngineResultValidator
 from .process_runner import ProcessRunner
 from .recovery import ProcProcessInspector
 from .results import ResultValidator
@@ -37,6 +40,7 @@ def build_worker(
     source: Mapping[str, str] | None = None,
     *,
     authority: WorkerRuntimeAuthority | None = None,
+    engine_spawn_provider: object | None = None,
 ) -> JobWorker:
     values = os.environ if source is None else source
     if _FORBIDDEN_AUTHORITY_KEYS.intersection(values):
@@ -64,6 +68,18 @@ def build_worker(
     safety_preflight()
     worker_id = values.get("TRADING_WORKER_ID") or f"worker-{socket.gethostname()}"
     code_commit = selected_authority.application_revision
+    engine_dependencies: dict[str, object] = {}
+    if engine_spawn_provider is not None:
+        engine_dependencies = {
+            "engine_authority_factory": BacktestEngineAuthorityFactory(
+                code_commit=code_commit,
+                clock=lambda: datetime.now(UTC),
+            ),
+            "engine_spawn_provider": engine_spawn_provider,
+            "engine_result_validator": EngineResultValidator(
+                runtime_paths.artifact_root
+            ),
+        }
     return JobWorker(
         repository,
         ProcessRunner(ArtifactWriter(runtime_paths.artifact_root)),
@@ -77,6 +93,7 @@ def build_worker(
         environment=environment,
         safety_preflight=safety_preflight,
         lease_seconds=WORKER_LEASE_SECONDS,
+        **engine_dependencies,
     )
 
 

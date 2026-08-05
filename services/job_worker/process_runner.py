@@ -370,7 +370,7 @@ class ProcessRunner:
         self,
         prepare_spawn: Callable[[], PreparedSpawn | PreparedEngineSpawn],
         environment: ResearchEnvironmentSettings,
-        timeout_seconds: int,
+        timeout_seconds: int | None,
         heartbeat: Callable[
             [ProcessIdentity], HeartbeatDecision | HeartbeatInstruction
         ],
@@ -379,7 +379,11 @@ class ProcessRunner:
         attempt_id: str,
         preflight: Callable[[], SafetyEvidence],
     ) -> ProcessOutcome:
-        if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or timeout_seconds <= 0:
+        if timeout_seconds is not None and (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or timeout_seconds <= 0
+        ):
             raise ValueError("timeout must be a positive integer")
         if not callable(prepare_spawn):
             raise TypeError("spawn preparation must be a last-moment callable")
@@ -434,8 +438,12 @@ class ProcessRunner:
                     or not isinstance(engine_built.lineage, EngineSpawnLineage)
                 ):
                     raise ValueError("attested engine spawn shape is unsafe")
-                if timeout_seconds != engine_built.timeout_seconds:
+                if (
+                    timeout_seconds is not None
+                    and timeout_seconds != engine_built.timeout_seconds
+                ):
                     raise ValueError("timeout must equal the attested command timeout")
+                timeout_seconds = engine_built.timeout_seconds
                 if _SOURCE_REVISION.fullmatch(engine_built.source_revision) is None:
                     raise ValueError("attested engine source revision is invalid")
                 argv = engine_built.argv
@@ -456,7 +464,7 @@ class ProcessRunner:
                     or not isinstance(built.lineage, CommandLineage)
                 ):
                     raise ValueError("attested command shape is unsafe")
-                if timeout_seconds != built.timeout_seconds:
+                if timeout_seconds is None or timeout_seconds != built.timeout_seconds:
                     raise ValueError("timeout must equal the attested command timeout")
                 if _COMMIT.fullmatch(built.backend_revision) is None:
                     raise ValueError("attested backend revision is invalid")
@@ -498,6 +506,7 @@ class ProcessRunner:
                 result_validator_id = built.result_validator_id
                 source_revision = built.backend_revision
                 command_lineage = built.lineage.as_metadata()
+            assert timeout_seconds is not None
             # Current safety is the final authority read. Immutable/semantic
             # attestation and all local command validation have already
             # completed, so no potentially slow operation can age this proof

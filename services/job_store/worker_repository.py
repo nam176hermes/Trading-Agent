@@ -165,7 +165,10 @@ class WorkerRepository:
         self._validate_lease_seconds(lease_seconds)
         self._validate_trace(trace_id)
         selected_types = tuple(JobType(item) for item in allowed_job_types)
-        if selected_types != (JobType.SNAPSHOT,):
+        if selected_types not in {
+            (JobType.SNAPSHOT,),
+            (JobType.SNAPSHOT, JobType.BACKTEST),
+        }:
             raise ValueError("worker job-type authority is invalid")
         attempt_id = self._new_id("attempt")
         lease_token = secrets.token_urlsafe(48)

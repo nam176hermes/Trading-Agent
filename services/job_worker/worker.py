@@ -8,13 +8,19 @@ from enum import StrEnum
 from typing import Callable
 from uuid import uuid4
 
-from packages.job_contracts import JobState, JobType, SnapshotPayload
+from packages.job_contracts import (
+    EngineBacktestPayload,
+    JobState,
+    JobType,
+    SnapshotPayload,
+)
 from .command_registry import (
     FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS,
     PRESPAWN_FULL_REATTESTATION_COUNT,
     prepare_immediate_spawn,
 )
 from .errors import WorkerBlockedError
+from .engine_spawn import EngineSpawnError
 from .process_runner import (
     HeartbeatDecision,
     HeartbeatInstruction,
@@ -68,6 +74,9 @@ class JobWorker:
         safety_preflight: Callable[[], SafetyEvidence],
         prepare_spawn: Callable[[object], object] = prepare_immediate_spawn,
         market_data_ingestor: object | None = None,
+        engine_authority_factory: object | None = None,
+        engine_spawn_provider: object | None = None,
+        engine_result_validator: object | None = None,
         lease_seconds: int = WORKER_LEASE_SECONDS,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -82,6 +91,17 @@ class JobWorker:
         self._safety_preflight = safety_preflight
         self._prepare_spawn = prepare_spawn
         self._market_data_ingestor = market_data_ingestor
+        self._engine_authority_factory = engine_authority_factory
+        self._engine_spawn_provider = engine_spawn_provider
+        self._engine_result_validator = engine_result_validator
+        self._engine_backtest_enabled = all(
+            component is not None
+            for component in (
+                engine_authority_factory,
+                engine_spawn_provider,
+                engine_result_validator,
+            )
+        )
         self._lease_seconds = lease_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
 
@@ -125,7 +145,11 @@ class JobWorker:
             self._worker_id,
             self._lease_seconds,
             trace_id,
-            allowed_job_types=(JobType.SNAPSHOT,),
+            allowed_job_types=(
+                (JobType.SNAPSHOT, JobType.BACKTEST)
+                if self._engine_backtest_enabled
+                else (JobType.SNAPSHOT,)
+            ),
         )
         if claimed is None:
             self._worker_heartbeat("IDLE")
@@ -162,6 +186,48 @@ class JobWorker:
             )
             self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
             return True
+
+        engine_request = None
+        if claimed.job_type is JobType.BACKTEST:
+            if (
+                type(claimed.payload) is not EngineBacktestPayload
+                or not self._engine_backtest_enabled
+            ):
+                finalized = self._repository.finalize_execution(
+                    claimed,
+                    expected_state=JobState.CLAIMED,
+                    expected_attempt_outcome="CLAIMED",
+                    final_state=JobState.BLOCKED,
+                    reason_code="ENGINE_BACKTEST_AUTHORITY_REQUIRED",
+                    trace_id=trace_id,
+                    outcome=None,
+                    result=None,
+                    stream_artifacts=(),
+                )
+                self._worker_heartbeat(
+                    "IDLE" if finalized else "UNHEALTHY",
+                    None if finalized else claimed,
+                )
+                return True
+            try:
+                engine_request = self._engine_authority_factory.from_claim(claimed)
+            except (TypeError, ValueError):
+                finalized = self._repository.finalize_execution(
+                    claimed,
+                    expected_state=JobState.CLAIMED,
+                    expected_attempt_outcome="CLAIMED",
+                    final_state=JobState.BLOCKED,
+                    reason_code="ENGINE_BACKTEST_AUTHORITY_INVALID",
+                    trace_id=trace_id,
+                    outcome=None,
+                    result=None,
+                    stream_artifacts=(),
+                )
+                self._worker_heartbeat(
+                    "IDLE" if finalized else "UNHEALTHY",
+                    None if finalized else claimed,
+                )
+                return True
 
         market_data_payload = self._market_data_payload(claimed)
         if market_data_payload is not None and self._market_data_ingestor is None:
@@ -209,9 +275,20 @@ class JobWorker:
             return HeartbeatDecision.CONTINUE
 
         try:
+            prepare_spawn = (
+                (lambda: self._engine_spawn_provider.prepare(engine_request))
+                if engine_request is not None
+                else (lambda: self._prepare_spawn(claimed))
+            )
             outcome = self._runner.run(
-                lambda: self._prepare_spawn(claimed), self._environment,
-                self._command_timeout(claimed.job_type), heartbeat,
+                prepare_spawn,
+                self._environment,
+                (
+                    None
+                    if engine_request is not None
+                    else self._command_timeout(claimed.job_type)
+                ),
+                heartbeat,
                 preflight=safety_preflight,
                 job_id=claimed.job_id, attempt_id=claimed.attempt_id,
             )
@@ -226,6 +303,26 @@ class JobWorker:
             )
             self._worker_heartbeat("IDLE" if finalized else "UNHEALTHY", None if finalized else claimed)
             return True
+        except EngineSpawnError as exc:
+            # Engine authority is consumed before Popen.  A closure, sandbox,
+            # or protected transport refusal therefore leaves the attempt in
+            # CLAIMED and is safe to finalize without process artifacts.
+            finalized = self._repository.finalize_execution(
+                claimed,
+                expected_state=JobState.CLAIMED,
+                expected_attempt_outcome="CLAIMED",
+                final_state=JobState.BLOCKED,
+                reason_code=exc.reason,
+                trace_id=trace_id,
+                outcome=None,
+                result=None,
+                stream_artifacts=(),
+            )
+            self._worker_heartbeat(
+                "IDLE" if finalized else "UNHEALTHY",
+                None if finalized else claimed,
+            )
+            return True
         outcome = bind_latest_safety(outcome)
         if outcome.termination_reason == "STALE_LEASE":
             self._worker_heartbeat("UNHEALTHY", claimed)
@@ -236,16 +333,30 @@ class JobWorker:
             return True
         try:
             self._validation_progress(claimed, safety_preflight)
-            result = self._validator.validate(
-                outcome.result_validator_id, claimed,
-                exit_code=outcome.exit_code if outcome.exit_code is not None else -1,
-                attempt_started_at=started_at,
-                backend_commit=outcome.backend_revision,
-                semantic_input_fingerprint=(
-                    outcome.lineage.command["semantic_input_fingerprint"]
-                ),
-                progress=lambda: self._validation_progress(claimed, safety_preflight),
-            )
+            if engine_request is not None:
+                result = self._engine_result_validator.validate(
+                    outcome.result_validator_id,
+                    claimed,
+                    request=engine_request,
+                    stdout=outcome.stdout,
+                    exit_code=(
+                        outcome.exit_code if outcome.exit_code is not None else -1
+                    ),
+                    progress=lambda: self._validation_progress(
+                        claimed, safety_preflight
+                    ),
+                )
+            else:
+                result = self._validator.validate(
+                    outcome.result_validator_id, claimed,
+                    exit_code=outcome.exit_code if outcome.exit_code is not None else -1,
+                    attempt_started_at=started_at,
+                    backend_commit=outcome.backend_revision,
+                    semantic_input_fingerprint=(
+                        outcome.lineage.command["semantic_input_fingerprint"]
+                    ),
+                    progress=lambda: self._validation_progress(claimed, safety_preflight),
+                )
             if market_data_payload is not None:
                 self._validation_progress(claimed, safety_preflight)
                 try:
