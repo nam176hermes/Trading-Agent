@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from contextlib import AbstractContextManager
 import hashlib
+import json
 import re
 from typing import Protocol
 from uuid import UUID
+
+from psycopg import Error as PostgresError
 
 from packages.engine_event_ledger import (
     EngineEventBatchReceipt,
@@ -18,16 +23,35 @@ from packages.engine_event_ledger import (
     project_engine_run,
 )
 from packages.engine_event_ledger.models import FIRST_ENGINE_EVENT_SEQUENCE
-from packages.engine_contracts import EngineEventEnvelope, canonical_json_bytes
+from packages.engine_contracts import (
+    EngineEventEnvelope,
+    EventFamily,
+    canonical_json_bytes,
+)
 from services.job_worker.engine_results import ValidatedEngineEventBatch
 
 
-__all__ = ["EngineEventLedgerRepository", "InMemoryEngineEventLedger"]
+__all__ = [
+    "EngineEventLedgerRepository",
+    "InMemoryEngineEventLedger",
+    "PostgresEngineEventLedger",
+    "PostgresEngineEventLedgerSql",
+]
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _JOB_ID = re.compile(r"^job_[0-9a-f]{32}$", re.ASCII)
 _ATTEMPT_ID = re.compile(r"^attempt_[0-9a-f]{32}$", re.ASCII)
+_SEQUENCE_DETAIL = re.compile(
+    r"^engine_run_id=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12});expected=([1-9][0-9]*);"
+    r"actual=([1-9][0-9]*)$",
+    re.ASCII,
+)
+_CONFLICT_SQLSTATE = "P2D01"
+_SEQUENCE_GAP_SQLSTATE = "P2D02"
+_SEQUENCE_REGRESSION_SQLSTATE = "P2D03"
+_INVALID_BATCH_SQLSTATE = "P2D04"
 
 
 def _validate_batch_envelopes(
@@ -176,6 +200,25 @@ def _validated_records(
     return records, ingestion_digest
 
 
+def _receipt_for(
+    batch: ValidatedEngineEventBatch,
+    records: tuple[StoredEngineEvent, ...],
+    ingestion_digest: str,
+) -> EngineEventBatchReceipt:
+    metadata = batch.validation_metadata
+    return EngineEventBatchReceipt(
+        batch_sha256=batch.sha256,
+        ingestion_digest=ingestion_digest,
+        job_id=metadata["job_id"],
+        attempt_id=metadata["attempt_id"],
+        engine_run_id=records[0].engine_run_id,
+        event_count=len(records),
+        first_sequence=records[0].stream_sequence,
+        last_sequence=records[-1].stream_sequence,
+        last_digest=records[-1].digest,
+    )
+
+
 class EngineEventLedgerRepository(Protocol):
     def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt: ...
 
@@ -244,18 +287,7 @@ class InMemoryEngineEventLedger:
         )
         combined = self.load_events(run_id) + records
         projection = project_engine_run(combined)
-        metadata = batch.validation_metadata
-        receipt = EngineEventBatchReceipt(
-            batch_sha256=batch.sha256,
-            ingestion_digest=ingestion_digest,
-            job_id=metadata["job_id"],
-            attempt_id=metadata["attempt_id"],
-            engine_run_id=run_id,
-            event_count=len(records),
-            first_sequence=records[0].stream_sequence,
-            last_sequence=records[-1].stream_sequence,
-            last_digest=records[-1].digest,
-        )
+        receipt = _receipt_for(batch, records, ingestion_digest)
         for record in records:
             self._events[record.message_id] = record
         self._receipts[batch.sha256] = receipt
@@ -402,3 +434,279 @@ class InMemoryEngineEventLedger:
                 self._receipts[digest] for digest in sorted(self._receipts)
             ),
         )
+
+
+class _Cursor(Protocol):
+    def fetchone(self) -> object: ...
+
+    def fetchall(self) -> list[object]: ...
+
+
+class _Connection(Protocol):
+    def transaction(self) -> AbstractContextManager[object]: ...
+
+    def execute(self, statement: str, params: Mapping[str, object]) -> _Cursor: ...
+
+
+class _Pool(Protocol):
+    def connection(self) -> AbstractContextManager[_Connection]: ...
+
+
+class PostgresEngineEventLedgerSql:
+    """Single-statement write authority plus protected ledger reads."""
+
+    INGEST_BATCH = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
+       engine_run_id, event_count, first_sequence, last_sequence, last_digest
+FROM public.ingest_engine_event_batch(%(batch_document)s);"""
+    LOAD_RECEIPT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
+       engine_run_id, event_count, first_sequence, last_sequence, last_digest
+FROM public.engine_event_batch_receipts
+WHERE batch_sha256 = %(batch_sha256)s;"""
+    LOAD_EVENTS = """SELECT message_id, engine_run_id, stream_sequence, event_type,
+       event_family, canonical_json_text, digest, batch_sha256
+FROM public.engine_events
+WHERE engine_run_id = %(engine_run_id)s
+ORDER BY stream_sequence, message_id;"""
+    LOAD_PROJECTION = """SELECT engine_run_id, event_count, event_type_counts,
+       last_sequence, last_digest
+FROM public.engine_run_projections
+WHERE engine_run_id = %(engine_run_id)s;"""
+    RECOVER_PROJECTIONS = """SELECT engine_run_id, event_count, event_type_counts,
+       last_sequence, last_digest
+FROM public.recover_engine_run_projections()
+ORDER BY engine_run_id;"""
+
+
+class PostgresEngineEventLedger:
+    """Durable ledger using database-owned atomic batch ingestion."""
+
+    def __init__(self, pool: _Pool) -> None:
+        self._pool = pool
+
+    @staticmethod
+    def _row_value(row: object, name: str, index: int) -> object:
+        if isinstance(row, Mapping):
+            return row[name]
+        if isinstance(row, tuple):
+            return row[index]
+        raise EngineEventConflictError("database returned an unsupported row shape")
+
+    @classmethod
+    def _receipt_from_row(cls, row: object) -> EngineEventBatchReceipt:
+        try:
+            return EngineEventBatchReceipt(
+                batch_sha256=cls._row_value(row, "batch_sha256", 0),
+                ingestion_digest=cls._row_value(row, "ingestion_digest", 1),
+                job_id=cls._row_value(row, "job_id", 2),
+                attempt_id=cls._row_value(row, "attempt_id", 3),
+                engine_run_id=cls._row_value(row, "engine_run_id", 4),
+                event_count=cls._row_value(row, "event_count", 5),
+                first_sequence=cls._row_value(row, "first_sequence", 6),
+                last_sequence=cls._row_value(row, "last_sequence", 7),
+                last_digest=cls._row_value(row, "last_digest", 8),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EngineEventConflictError(
+                "database returned an invalid engine-event receipt"
+            ) from exc
+
+    @classmethod
+    def _event_from_row(cls, row: object) -> StoredEngineEvent:
+        try:
+            return StoredEngineEvent(
+                message_id=cls._row_value(row, "message_id", 0),
+                engine_run_id=cls._row_value(row, "engine_run_id", 1),
+                stream_sequence=cls._row_value(row, "stream_sequence", 2),
+                event_type=cls._row_value(row, "event_type", 3),
+                event_family=EventFamily(cls._row_value(row, "event_family", 4)),
+                canonical_json=cls._row_value(row, "canonical_json_text", 5),
+                digest=cls._row_value(row, "digest", 6),
+                batch_sha256=cls._row_value(row, "batch_sha256", 7),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EngineEventConflictError(
+                "database returned an invalid stored engine event"
+            ) from exc
+
+    @classmethod
+    def _projection_from_row(cls, row: object) -> EngineRunProjection:
+        try:
+            type_counts = cls._row_value(row, "event_type_counts", 2)
+            if type(type_counts) is not list:
+                raise TypeError
+            return EngineRunProjection(
+                engine_run_id=cls._row_value(row, "engine_run_id", 0),
+                event_count=cls._row_value(row, "event_count", 1),
+                event_type_counts=tuple(type_counts),
+                last_sequence=cls._row_value(row, "last_sequence", 3),
+                last_digest=cls._row_value(row, "last_digest", 4),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EngineEventConflictError(
+                "database returned an invalid engine-run projection"
+            ) from exc
+
+    @staticmethod
+    def _raise_typed_database_error(exc: PostgresError) -> None:
+        sqlstate = getattr(exc, "sqlstate", None)
+        if sqlstate == _CONFLICT_SQLSTATE:
+            raise EngineEventConflictError("durable engine-event identity conflict") from exc
+        if sqlstate == _INVALID_BATCH_SQLSTATE:
+            raise InvalidEngineEventBatchError(
+                "database rejected the validated engine-event batch"
+            ) from exc
+        if sqlstate in {_SEQUENCE_GAP_SQLSTATE, _SEQUENCE_REGRESSION_SQLSTATE}:
+            detail = getattr(getattr(exc, "diag", None), "message_detail", None)
+            match = _SEQUENCE_DETAIL.fullmatch(detail or "")
+            if match is None:
+                raise EngineEventConflictError(
+                    "database returned invalid engine-event sequence authority"
+                ) from exc
+            blocked = EngineEventSequenceBlockedError(
+                engine_run_id=UUID(match.group(1)),
+                expected_sequence=int(match.group(2)),
+                actual_sequence=int(match.group(3)),
+            )
+            expected_sqlstate = (
+                _SEQUENCE_GAP_SQLSTATE
+                if blocked.actual_sequence > blocked.expected_sequence
+                else _SEQUENCE_REGRESSION_SQLSTATE
+            )
+            if sqlstate != expected_sqlstate:
+                raise EngineEventConflictError(
+                    "database returned inconsistent engine-event sequence authority"
+                ) from exc
+            raise blocked from exc
+        raise exc
+
+    @staticmethod
+    def _batch_document(
+        batch: ValidatedEngineEventBatch,
+        records: tuple[StoredEngineEvent, ...],
+        ingestion_digest: str,
+    ) -> str:
+        receipt = _receipt_for(batch, records, ingestion_digest)
+        document = {
+            "attempt_id": receipt.attempt_id,
+            "batch_sha256": receipt.batch_sha256,
+            "engine_run_id": str(receipt.engine_run_id),
+            "event_count": receipt.event_count,
+            "events": [
+                {
+                    "batch_sha256": record.batch_sha256,
+                    "canonical_json": record.canonical_json,
+                    "digest": record.digest,
+                    "engine_run_id": str(record.engine_run_id),
+                    "event_family": record.event_family.value,
+                    "event_type": record.event_type,
+                    "message_id": str(record.message_id),
+                    "stream_sequence": record.stream_sequence,
+                }
+                for record in records
+            ],
+            "first_sequence": receipt.first_sequence,
+            "ingestion_digest": receipt.ingestion_digest,
+            "job_id": receipt.job_id,
+            "last_digest": receipt.last_digest,
+            "last_sequence": receipt.last_sequence,
+        }
+        return json.dumps(
+            document,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def ingest(self, batch: ValidatedEngineEventBatch) -> EngineEventBatchReceipt:
+        records, ingestion_digest = _validated_records(batch)
+        expected = _receipt_for(batch, records, ingestion_digest)
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    row = connection.execute(
+                        PostgresEngineEventLedgerSql.INGEST_BATCH,
+                        {
+                            "batch_document": self._batch_document(
+                                batch, records, ingestion_digest
+                            )
+                        },
+                    ).fetchone()
+        except PostgresError as exc:
+            self._raise_typed_database_error(exc)
+            raise AssertionError("unreachable")
+        if row is None:
+            raise EngineEventConflictError(
+                "engine-event write authority returned no receipt"
+            )
+        receipt = self._receipt_from_row(row)
+        if receipt != expected:
+            raise EngineEventConflictError(
+                "durable engine-event receipt differs from validated batch"
+            )
+        return receipt
+
+    def load_receipt(self, batch_sha256: str) -> EngineEventBatchReceipt | None:
+        if type(batch_sha256) is not str or _SHA256.fullmatch(batch_sha256) is None:
+            raise ValueError("batch_sha256 must be lowercase sha256 hex")
+        with self._pool.connection() as connection:
+            row = connection.execute(
+                PostgresEngineEventLedgerSql.LOAD_RECEIPT,
+                {"batch_sha256": batch_sha256},
+            ).fetchone()
+        return None if row is None else self._receipt_from_row(row)
+
+    def load_events(self, engine_run_id: UUID) -> tuple[StoredEngineEvent, ...]:
+        if type(engine_run_id) is not UUID:
+            raise TypeError("engine_run_id must be an exact UUID")
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                PostgresEngineEventLedgerSql.LOAD_EVENTS,
+                {"engine_run_id": engine_run_id},
+            ).fetchall()
+        events = tuple(self._event_from_row(row) for row in rows)
+        if any(event.engine_run_id != engine_run_id for event in events):
+            raise EngineEventConflictError(
+                "stored engine events differ from requested run"
+            )
+        return events
+
+    def load_projection(self, engine_run_id: UUID) -> EngineRunProjection | None:
+        if type(engine_run_id) is not UUID:
+            raise TypeError("engine_run_id must be an exact UUID")
+        with self._pool.connection() as connection:
+            row = connection.execute(
+                PostgresEngineEventLedgerSql.LOAD_PROJECTION,
+                {"engine_run_id": engine_run_id},
+            ).fetchone()
+        if row is None:
+            return None
+        projection = self._projection_from_row(row)
+        if projection.engine_run_id != engine_run_id:
+            raise EngineEventConflictError(
+                "stored projection differs from requested run"
+            )
+        return projection
+
+    def replay_projection(self, engine_run_id: UUID) -> EngineRunProjection | None:
+        events = self.load_events(engine_run_id)
+        return project_engine_run(events) if events else None
+
+    def recover_projections(self) -> tuple[EngineRunProjection, ...]:
+        try:
+            with self._pool.connection() as connection:
+                with connection.transaction():
+                    rows = connection.execute(
+                        PostgresEngineEventLedgerSql.RECOVER_PROJECTIONS,
+                        {},
+                    ).fetchall()
+        except PostgresError as exc:
+            self._raise_typed_database_error(exc)
+            raise AssertionError("unreachable")
+        projections = tuple(self._projection_from_row(row) for row in rows)
+        if len({projection.engine_run_id for projection in projections}) != len(
+            projections
+        ):
+            raise EngineEventConflictError(
+                "projection recovery returned duplicate engine runs"
+            )
+        return projections

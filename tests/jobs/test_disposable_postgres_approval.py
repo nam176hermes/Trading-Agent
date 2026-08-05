@@ -43,6 +43,7 @@ SOURCE_BINDING_PATHS = (
     "alembic/versions/0007_job_event_chain_authority.py",
     "alembic/versions/0008_trading_domain_ledger.py",
     "alembic/versions/0009_canonical_market_data.py",
+    "alembic/versions/0010_engine_event_ledger.py",
     "ops/postgres/provision-job-roles.sql",
     "ops/postgres/provision-roles.sql",
 )

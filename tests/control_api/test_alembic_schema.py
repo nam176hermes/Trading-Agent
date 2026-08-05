@@ -54,8 +54,11 @@ EXPECTED_TABLES = {
     "aggregate_snapshots",
     "market_data_snapshots",
     "market_data_candles",
+    "engine_event_batch_receipts",
+    "engine_events",
+    "engine_run_projections",
 }
-EXACT_HEAD = "0009_canonical_market_data"
+EXACT_HEAD = "0010_engine_event_ledger"
 
 
 def alembic_config() -> Config:
@@ -89,6 +92,9 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "market_data_snapshots_lookup_idx",
                 "market_data_snapshots_digest_idx",
                 "market_data_candles_snapshot_sequence_idx",
+                "engine_event_receipts_run_sequence_idx",
+                "engine_events_run_sequence_idx",
+                "engine_events_batch_idx",
             }
             actual_indexes = {
                 index["name"]
@@ -272,11 +278,11 @@ def test_prior_0008_revision_upgrades_to_exact_0009() -> None:
                 "SELECT to_regclass('public.market_data_snapshots')"
             ).fetchone()[0] is None
 
-        _upgrade_to_revision(owner, EXACT_HEAD)
+        _upgrade_to_revision(owner, "0009_canonical_market_data")
         with psycopg.connect(owner.conninfo()) as connection:
             assert connection.execute(
                 "SELECT version_num FROM alembic_version"
-            ).fetchone()[0] == EXACT_HEAD
+            ).fetchone()[0] == "0009_canonical_market_data"
             assert connection.execute(
                 "SELECT to_regclass('public.market_data_snapshots')"
             ).fetchone()[0] == "market_data_snapshots"

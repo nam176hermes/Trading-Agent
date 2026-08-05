@@ -81,8 +81,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 11,
-      "maxItems": 11,
+      "minItems": 12,
+      "maxItems": 12,
       "prefixItems": [
         {"$ref": "#/$defs/sourceBinding0001"},
         {"$ref": "#/$defs/sourceBinding0002"},
@@ -93,6 +93,7 @@
         {"$ref": "#/$defs/sourceBinding0007"},
         {"$ref": "#/$defs/sourceBinding0008"},
         {"$ref": "#/$defs/sourceBinding0009"},
+        {"$ref": "#/$defs/sourceBinding0010"},
         {"$ref": "#/$defs/sourceBindingJobRoles"},
         {"$ref": "#/$defs/sourceBindingRoles"}
       ],
@@ -246,6 +247,12 @@
       "allOf": [
         {"$ref": "#/$defs/sourceBindingBase"},
         {"properties": {"path": {"const": "alembic/versions/0009_canonical_market_data.py"}}}
+      ]
+    },
+    "sourceBinding0010": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0010_engine_event_ledger.py"}}}
       ]
     },
     "sourceBindingJobRoles": {

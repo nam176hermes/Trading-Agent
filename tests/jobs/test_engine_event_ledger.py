@@ -497,6 +497,8 @@ def test_public_ledger_boundary_excludes_domain_and_provider_types() -> None:
     assert repository_api.__all__ == [
         "EngineEventLedgerRepository",
         "InMemoryEngineEventLedger",
+        "PostgresEngineEventLedger",
+        "PostgresEngineEventLedgerSql",
     ]
     assert "ValidatedEngineEventBatch" not in repository_api.__all__
     assert {
