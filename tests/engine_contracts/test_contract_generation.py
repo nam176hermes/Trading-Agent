@@ -14,6 +14,25 @@ EXPECTED_SCHEMAS = {
     "EngineEventEnvelope.json",
     "EngineRunManifest.json",
 }
+EXPECTED_COMMAND_NAMES = (
+    "DescribeEngineCapabilities",
+    "ValidateEngineConfiguration",
+    "ValidateInstrumentCatalog",
+    "ValidateStrategyConfiguration",
+    "InspectEngineRun",
+    "RunBacktest",
+    "CancelBacktest",
+    "ExportBacktestReport",
+    "StartPaperEngine",
+    "StopPaperEngine",
+    "SubmitTargetPortfolio",
+    "SubmitOrderIntent",
+    "ModifyOrderIntent",
+    "CancelOrderIntent",
+    "CancelAllOrders",
+    "ClosePositionIntent",
+    "RequestExecutionReconciliation",
+)
 REQUIRED_ENVELOPE_FIELDS = {
     "message_id",
     "correlation_id",
@@ -63,29 +82,46 @@ def test_generated_command_envelope_contains_the_closed_v1_union() -> None:
     schema = json.loads(
         (SCHEMA_ROOT / "EngineCommandEnvelope.json").read_text(encoding="utf-8")
     )
-    command_names = {
-        name
-        for name in schema["$defs"]
-        if name
-        in {
-            "DescribeEngineCapabilities",
-            "ValidateEngineConfiguration",
-            "ValidateInstrumentCatalog",
-            "ValidateStrategyConfiguration",
-            "InspectEngineRun",
-            "RunBacktest",
-            "CancelBacktest",
-            "ExportBacktestReport",
-            "StartPaperEngine",
-            "StopPaperEngine",
-            "SubmitTargetPortfolio",
-            "SubmitOrderIntent",
-            "ModifyOrderIntent",
-            "CancelOrderIntent",
-            "CancelAllOrders",
-            "ClosePositionIntent",
-            "RequestExecutionReconciliation",
-        }
+    payload = schema["properties"]["payload"]
+    assert payload["discriminator"] == {
+        "mapping": {
+            name: f"#/$defs/{name}" for name in EXPECTED_COMMAND_NAMES
+        },
+        "propertyName": "command_type",
     }
-    assert len(command_names) == 17
-    assert all("Live" not in name for name in schema["$defs"])
+    assert payload["oneOf"] == [
+        {"$ref": f"#/$defs/{name}"} for name in EXPECTED_COMMAND_NAMES
+    ]
+
+
+def test_generated_submission_dtos_are_recursively_strict_and_v1_canonical() -> None:
+    schema = json.loads(
+        (SCHEMA_ROOT / "EngineCommandEnvelope.json").read_text(encoding="utf-8")
+    )
+    definitions = schema["$defs"]
+    expected_engine_dtos = {
+        "EngineInstrumentId",
+        "EngineOrderIntent",
+        "EnginePrice",
+        "EngineQuantity",
+        "EngineTargetPortfolio",
+        "EngineTargetPosition",
+    }
+
+    for name in expected_engine_dtos:
+        assert definitions[name]["additionalProperties"] is False
+    assert not {
+        "InstrumentId",
+        "OrderIntent",
+        "Price",
+        "Quantity",
+        "TargetPortfolio",
+        "TargetPosition",
+    } & set(definitions)
+
+    target = definitions["EngineTargetPortfolio"]["properties"]
+    assert target["effective_at"]["pattern"].endswith("Z$")
+    assert target["schema_version"]["const"] == "1.0.0"
+    order = definitions["EngineOrderIntent"]["properties"]
+    assert order["requested_at"]["pattern"].endswith("Z$")
+    assert order["schema_version"]["const"] == "1.0.0"

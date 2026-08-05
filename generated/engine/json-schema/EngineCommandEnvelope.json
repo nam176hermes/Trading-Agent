@@ -133,6 +133,214 @@
       "title": "DescribeEngineCapabilities",
       "type": "object"
     },
+    "EngineInstrumentId": {
+      "additionalProperties": false,
+      "description": "Canonical engine-facing instrument identity.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[A-Z0-9][A-Z0-9._-]{0,31}$",
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[A-Z0-9][A-Z0-9._-]{0,31}$",
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "EngineInstrumentId",
+      "type": "object"
+    },
+    "EngineOrderIntent": {
+      "additionalProperties": false,
+      "description": "Canonical v1 order intent accepted by the engine boundary.",
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/EngineInstrumentId"
+        },
+        "intent_id": {
+          "format": "uuid",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "limit_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnginePrice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "order_type": {
+          "$ref": "#/$defs/OrderType"
+        },
+        "quantity": {
+          "$ref": "#/$defs/EngineQuantity"
+        },
+        "requested_at": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Requested At",
+          "type": "string"
+        },
+        "risk_decision_id": {
+          "format": "uuid",
+          "title": "Risk Decision Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "side": {
+          "$ref": "#/$defs/OrderSide"
+        },
+        "time_in_force": {
+          "$ref": "#/$defs/TimeInForce"
+        }
+      },
+      "required": [
+        "intent_id",
+        "risk_decision_id",
+        "instrument",
+        "side",
+        "order_type",
+        "time_in_force",
+        "quantity",
+        "requested_at",
+        "schema_version"
+      ],
+      "title": "EngineOrderIntent",
+      "type": "object"
+    },
+    "EnginePrice": {
+      "additionalProperties": false,
+      "description": "Exact strictly positive engine-facing price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "EnginePrice",
+      "type": "object"
+    },
+    "EngineQuantity": {
+      "additionalProperties": false,
+      "description": "Exact engine-facing quantity with bounded fractional precision.",
+      "properties": {
+        "precision": {
+          "maximum": 18,
+          "minimum": 0,
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "EngineQuantity",
+      "type": "object"
+    },
+    "EngineTargetPortfolio": {
+      "additionalProperties": false,
+      "description": "Canonical v1 target portfolio accepted by the engine boundary.",
+      "properties": {
+        "effective_at": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/EngineTargetPosition"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "1.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_signal_ids": {
+          "items": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Signal Ids",
+          "type": "array"
+        },
+        "target_id": {
+          "format": "uuid",
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id",
+        "positions",
+        "source_signal_ids",
+        "effective_at",
+        "schema_version"
+      ],
+      "title": "EngineTargetPortfolio",
+      "type": "object"
+    },
+    "EngineTargetPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "instrument": {
+          "$ref": "#/$defs/EngineInstrumentId"
+        },
+        "target_weight": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Target Weight",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "instrument",
+        "target_weight"
+      ],
+      "title": "EngineTargetPosition",
+      "type": "object"
+    },
     "ExportBacktestReport": {
       "additionalProperties": false,
       "properties": {
@@ -181,29 +389,6 @@
       "title": "InspectEngineRun",
       "type": "object"
     },
-    "InstrumentId": {
-      "description": "A normalized identity whose canonical form includes type and venue.",
-      "properties": {
-        "product_type": {
-          "$ref": "#/$defs/ProductType"
-        },
-        "symbol": {
-          "title": "Symbol",
-          "type": "string"
-        },
-        "venue": {
-          "title": "Venue",
-          "type": "string"
-        }
-      },
-      "required": [
-        "symbol",
-        "product_type",
-        "venue"
-      ],
-      "title": "InstrumentId",
-      "type": "object"
-    },
     "ModifyOrderIntent": {
       "additionalProperties": false,
       "properties": {
@@ -218,7 +403,7 @@
           "type": "string"
         },
         "replacement_order_intent": {
-          "$ref": "#/$defs/OrderIntent"
+          "$ref": "#/$defs/EngineOrderIntent"
         }
       },
       "required": [
@@ -227,70 +412,6 @@
         "replacement_order_intent"
       ],
       "title": "ModifyOrderIntent",
-      "type": "object"
-    },
-    "OrderIntent": {
-      "additionalProperties": false,
-      "properties": {
-        "instrument": {
-          "$ref": "#/$defs/InstrumentId"
-        },
-        "intent_id": {
-          "format": "uuid",
-          "title": "Intent Id",
-          "type": "string"
-        },
-        "limit_price": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Price"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
-        },
-        "order_type": {
-          "$ref": "#/$defs/OrderType"
-        },
-        "quantity": {
-          "$ref": "#/$defs/Quantity"
-        },
-        "requested_at": {
-          "format": "date-time",
-          "title": "Requested At",
-          "type": "string"
-        },
-        "risk_decision_id": {
-          "format": "uuid",
-          "title": "Risk Decision Id",
-          "type": "string"
-        },
-        "schema_version": {
-          "minLength": 1,
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "side": {
-          "$ref": "#/$defs/OrderSide"
-        },
-        "time_in_force": {
-          "$ref": "#/$defs/TimeInForce"
-        }
-      },
-      "required": [
-        "instrument",
-        "side",
-        "order_type",
-        "time_in_force",
-        "quantity",
-        "schema_version",
-        "intent_id",
-        "risk_decision_id",
-        "requested_at"
-      ],
-      "title": "OrderIntent",
       "type": "object"
     },
     "OrderSide": {
@@ -309,26 +430,6 @@
       "title": "OrderType",
       "type": "string"
     },
-    "Price": {
-      "description": "An exact strictly positive monetary price.",
-      "properties": {
-        "amount": {
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
-          "title": "Amount",
-          "type": "string",
-          "x-canonical-decimal-policy": "decimal-v1"
-        },
-        "currency": {
-          "$ref": "#/$defs/Currency"
-        }
-      },
-      "required": [
-        "amount",
-        "currency"
-      ],
-      "title": "Price",
-      "type": "object"
-    },
     "ProductType": {
       "description": "Product classes supported by the canonical domain model.",
       "enum": [
@@ -337,27 +438,6 @@
       ],
       "title": "ProductType",
       "type": "string"
-    },
-    "Quantity": {
-      "description": "An exact signed quantity with declared fractional precision.",
-      "properties": {
-        "precision": {
-          "title": "Precision",
-          "type": "integer"
-        },
-        "value": {
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
-          "title": "Value",
-          "type": "string",
-          "x-canonical-decimal-policy": "decimal-v1"
-        }
-      },
-      "required": [
-        "value",
-        "precision"
-      ],
-      "title": "Quantity",
-      "type": "object"
     },
     "RequestExecutionReconciliation": {
       "additionalProperties": false,
@@ -476,7 +556,7 @@
           "type": "string"
         },
         "order_intent": {
-          "$ref": "#/$defs/OrderIntent"
+          "$ref": "#/$defs/EngineOrderIntent"
         }
       },
       "required": [
@@ -495,7 +575,7 @@
           "type": "string"
         },
         "target_portfolio": {
-          "$ref": "#/$defs/TargetPortfolio"
+          "$ref": "#/$defs/EngineTargetPortfolio"
         }
       },
       "required": [
@@ -503,71 +583,6 @@
         "target_portfolio"
       ],
       "title": "SubmitTargetPortfolio",
-      "type": "object"
-    },
-    "TargetPortfolio": {
-      "additionalProperties": false,
-      "properties": {
-        "effective_at": {
-          "format": "date-time",
-          "title": "Effective At",
-          "type": "string"
-        },
-        "positions": {
-          "items": {
-            "$ref": "#/$defs/TargetPosition"
-          },
-          "title": "Positions",
-          "type": "array"
-        },
-        "schema_version": {
-          "minLength": 1,
-          "title": "Schema Version",
-          "type": "string"
-        },
-        "source_signal_ids": {
-          "items": {
-            "format": "uuid",
-            "type": "string"
-          },
-          "minItems": 1,
-          "title": "Source Signal Ids",
-          "type": "array"
-        },
-        "target_id": {
-          "format": "uuid",
-          "title": "Target Id",
-          "type": "string"
-        }
-      },
-      "required": [
-        "target_id",
-        "positions",
-        "source_signal_ids",
-        "effective_at",
-        "schema_version"
-      ],
-      "title": "TargetPortfolio",
-      "type": "object"
-    },
-    "TargetPosition": {
-      "additionalProperties": false,
-      "properties": {
-        "instrument": {
-          "$ref": "#/$defs/InstrumentId"
-        },
-        "target_weight": {
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
-          "title": "Target Weight",
-          "type": "string",
-          "x-canonical-decimal-policy": "decimal-v1"
-        }
-      },
-      "required": [
-        "instrument",
-        "target_weight"
-      ],
-      "title": "TargetPosition",
       "type": "object"
     },
     "TimeInForce": {
