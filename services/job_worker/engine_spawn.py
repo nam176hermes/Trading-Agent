@@ -32,12 +32,16 @@ from packages.engine_contracts import (
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _SOURCE_COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", re.ASCII)
 _VALIDATOR_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", re.ASCII)
+_BWRAP_VERSION = re.compile(
+    r"^bubblewrap (?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$",
+    re.ASCII,
+)
 _PREPARED_TTL_NS = 5 * 60 * 1_000_000_000
 _INPUT_TARGET = PurePosixPath("/inputs/request.json")
 _SIDECAR_TARGET = PurePosixPath("/inputs/request.sha256")
 _SANDBOX_PROFILE_DOCUMENT = (
-    b"trading-agent-engine-bwrap-v1:die-with-parent,user,pid,net,new-session,"
-    b"clearenv,ro-closure,fd-ro-inputs,proc,dev,tmpfs"
+    b"trading-agent-engine-bwrap-v2:die-with-parent,user,pid,net,new-session,"
+    b"clearenv,sealed-file-closure,fd-ro-bind-data-inputs,proc,dev,tmpfs"
 )
 _REQUIRED_SANDBOX_PROFILE_SHA256 = hashlib.sha256(
     _SANDBOX_PROFILE_DOCUMENT
@@ -45,6 +49,7 @@ _REQUIRED_SANDBOX_PROFILE_SHA256 = hashlib.sha256(
 _SANDBOX_OWNED_TARGETS = tuple(
     PurePosixPath(value) for value in ("/inputs", "/proc", "/dev", "/tmp")
 )
+_REQUIRED_SANDBOX_CAPABILITIES = ("--perms", "--ro-bind-data")
 _F_ADD_SEALS = 1033
 _F_GET_SEALS = 1034
 _F_SEAL_SEAL = 0x0001
@@ -84,15 +89,20 @@ class OsSandboxProof:
     identity: tuple[int, int]
     executable_sha256: str
     profile_sha256: str
+    version: str
+    capabilities: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class ReadOnlyClosureMount:
-    """One identity-bound member of the fully attested runtime closure."""
+    """One exact file in the fully attested runtime closure inventory."""
 
     source: Path
     target: PurePosixPath
     identity: tuple[int, int]
+    size: int
+    mode: int
+    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,8 +110,9 @@ class CompleteEngineClosureAttestation:
     """Complete immutable engine release plus mandatory sandbox authority.
 
     The closure digest is produced by the external release verifier.  It must
-    cover every byte reachable through ``mounts`` and the reviewed command
-    specification; this provider re-runs that verifier at consumption.
+    cover the exact file inventory in ``mounts`` and the reviewed command
+    specification; this provider re-runs that verifier at consumption and
+    independently seals every listed file.
     """
 
     source_commit: str
@@ -332,52 +343,51 @@ def _sealed_sandbox_snapshot(proof: OsSandboxProof) -> int:
             os.close(source_fd)
 
 
-def _pinned_mount_source(mount: ReadOnlyClosureMount) -> int:
+def _verified_closure_file(mount: ReadOnlyClosureMount) -> bytes:
     source_fd = -1
     try:
-        observed = mount.source.lstat()
-        if stat.S_ISLNK(observed.st_mode):
-            _blocked("ENGINE_CLOSURE_STALE", "closure mount became a symlink")
-        flags = (
+        source_fd = os.open(
+            mount.source,
             os.O_RDONLY
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NONBLOCK", 0),
         )
-        if stat.S_ISDIR(observed.st_mode):
-            flags |= getattr(os, "O_DIRECTORY", 0)
-        source_fd = os.open(mount.source, flags)
         opened = os.fstat(source_fd)
         if (
             (opened.st_dev, opened.st_ino) != mount.identity
-            or not (stat.S_ISDIR(opened.st_mode) or stat.S_ISREG(opened.st_mode))
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_size != mount.size
+            or stat.S_IMODE(opened.st_mode) != mount.mode
             or opened.st_mode & 0o222
         ):
             _blocked(
                 "ENGINE_CLOSURE_STALE",
-                "closure mount identity changed before pinning",
+                "closure file identity changed before snapshotting",
             )
-        if stat.S_ISREG(opened.st_mode):
-            value = _read_fd(source_fd, opened.st_size)
-            if len(value) != opened.st_size:
-                _blocked("ENGINE_CLOSURE_STALE", "closure file cannot be snapshotted")
-            mode = stat.S_IMODE(opened.st_mode) & 0o555
-            snapshot_fd = _sealed_memfd("engine-closure-file", value, mode=mode)
-            os.close(source_fd)
-            source_fd = -1
-            return snapshot_fd
-        result = source_fd
-        source_fd = -1
-        return result
+        value = _read_fd(source_fd, mount.size)
+        if len(value) != mount.size or not hmac.compare_digest(
+            hashlib.sha256(value).hexdigest(), mount.sha256
+        ):
+            _blocked("ENGINE_CLOSURE_STALE", "closure file bytes changed")
+        return value
     except EngineSpawnError:
         raise
     except OSError as exc:
         raise EngineSpawnError(
-            "ENGINE_CLOSURE_STALE", "closure mount cannot be descriptor-pinned"
+            "ENGINE_CLOSURE_STALE", "closure file cannot be snapshotted"
         ) from exc
     finally:
         if source_fd >= 0:
             os.close(source_fd)
+
+
+def _sealed_closure_file_snapshot(mount: ReadOnlyClosureMount) -> int:
+    return _sealed_memfd(
+        "engine-closure-file",
+        _verified_closure_file(mount),
+        mode=mount.mode,
+    )
 
 
 def _sha256_path(path: Path) -> str:
@@ -431,30 +441,28 @@ def _observed_identity(path: Path, *, reason: str) -> tuple[os.stat_result, tupl
 
 
 def _validate_entrypoint(attestation: CompleteEngineClosureAttestation) -> None:
-    matching: list[tuple[Path, PurePosixPath]] = []
-    for mount in attestation.mounts:
-        if (
-            attestation.entrypoint != mount.target
-            and attestation.entrypoint.is_relative_to(mount.target)
-        ):
-            matching.append((mount.source, mount.target))
-    if len(matching) != 1:
-        _blocked("ENGINE_CLOSURE_INVALID", "entrypoint is not uniquely inside the closure")
-    source, target = matching[0]
-    relative = attestation.entrypoint.relative_to(target)
-    candidate = source
-    for component in relative.parts:
-        candidate /= component
-        observed, _ = _observed_identity(candidate, reason="ENGINE_CLOSURE_STALE")
-        if component != relative.parts[-1] and not stat.S_ISDIR(observed.st_mode):
-            _blocked("ENGINE_CLOSURE_INVALID", "entrypoint ancestor is not a directory")
-    observed, _ = _observed_identity(candidate, reason="ENGINE_CLOSURE_STALE")
-    if (
-        not stat.S_ISREG(observed.st_mode)
-        or not observed.st_mode & 0o111
-        or observed.st_mode & 0o222
-    ):
-        _blocked("ENGINE_CLOSURE_INVALID", "entrypoint is not sealed and executable")
+    matching = [
+        mount for mount in attestation.mounts if mount.target == attestation.entrypoint
+    ]
+    if len(matching) != 1 or not matching[0].mode & 0o111:
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "entrypoint is not one exact executable closure file",
+        )
+
+
+def _closure_target_directories(
+    mounts: tuple[ReadOnlyClosureMount, ...],
+) -> tuple[PurePosixPath, ...]:
+    directories = {_INPUT_TARGET.parent}
+    for mount in mounts:
+        candidate = mount.target.parent
+        while candidate != PurePosixPath("/"):
+            directories.add(candidate)
+            candidate = candidate.parent
+    return tuple(
+        sorted(directories, key=lambda value: (len(value.parts), str(value)))
+    )
 
 
 def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
@@ -504,10 +512,19 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
         or _SHA256.fullmatch(proof.executable_sha256) is None
         or not isinstance(proof.profile_sha256, str)
         or _SHA256.fullmatch(proof.profile_sha256) is None
+        or not isinstance(proof.version, str)
+        or type(proof.capabilities) is not tuple
     ):
         _blocked("ENGINE_SANDBOX_PROOF_UNAVAILABLE", "typed OS sandbox proof is required")
-    if proof.profile_sha256 != _REQUIRED_SANDBOX_PROFILE_SHA256:
-        _blocked("ENGINE_SANDBOX_PROOF_INVALID", "OS sandbox profile is not reviewed")
+    if (
+        proof.profile_sha256 != _REQUIRED_SANDBOX_PROFILE_SHA256
+        or _BWRAP_VERSION.fullmatch(proof.version) is None
+        or proof.capabilities != _REQUIRED_SANDBOX_CAPABILITIES
+    ):
+        _blocked(
+            "ENGINE_SANDBOX_PROOF_INVALID",
+            "OS sandbox profile or FD-data capability is not reviewed",
+        )
     observed, identity = _observed_identity(
         proof.executable, reason="ENGINE_SANDBOX_PROOF_INVALID"
     )
@@ -534,6 +551,17 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
                 or component < 0
                 for component in mount.identity
             )
+            or isinstance(mount.size, bool)
+            or not isinstance(mount.size, int)
+            or mount.size < 0
+            or isinstance(mount.mode, bool)
+            or not isinstance(mount.mode, int)
+            or mount.mode < 0
+            or mount.mode > 0o777
+            or not mount.mode & 0o400
+            or mount.mode & 0o222
+            or not isinstance(mount.sha256, str)
+            or _SHA256.fullmatch(mount.sha256) is None
             or any(
                 mount.target == existing
                 or mount.target.is_relative_to(existing)
@@ -547,10 +575,13 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
         )
         if (
             identity != mount.identity
-            or not (stat.S_ISDIR(observed.st_mode) or stat.S_ISREG(observed.st_mode))
+            or not stat.S_ISREG(observed.st_mode)
+            or observed.st_size != mount.size
+            or stat.S_IMODE(observed.st_mode) != mount.mode
             or observed.st_mode & 0o222
         ):
-            _blocked("ENGINE_CLOSURE_STALE", "closure mount identity changed")
+            _blocked("ENGINE_CLOSURE_STALE", "closure file identity changed")
+        _verified_closure_file(mount)
         targets.add(mount.target)
     _validate_entrypoint(attestation)
     return attestation
@@ -865,21 +896,26 @@ class EngineSpawnProvider:
             launch_fds.append(sidecar_snapshot_fd)
             sandbox_snapshot_fd = _sealed_sandbox_snapshot(closure.sandbox)
             launch_fds.append(sandbox_snapshot_fd)
-            mutable_mount_fds: list[int] = []
+            closure_snapshot_fds: list[int] = []
             for mount in closure.mounts:
-                descriptor = _pinned_mount_source(mount)
-                mutable_mount_fds.append(descriptor)
+                descriptor = _sealed_closure_file_snapshot(mount)
+                closure_snapshot_fds.append(descriptor)
                 launch_fds.append(descriptor)
-            mount_fds = tuple(mutable_mount_fds)
+            mount_fds = tuple(closure_snapshot_fds)
 
-            request_source = f"/proc/self/fd/{request_snapshot_fd}"
-            sidecar_source = f"/proc/self/fd/{sidecar_snapshot_fd}"
+            directory_arguments = tuple(
+                argument
+                for directory in _closure_target_directories(closure.mounts)
+                for argument in ("--dir", str(directory))
+            )
             mount_arguments = tuple(
                 argument
                 for mount, descriptor in zip(closure.mounts, mount_fds, strict=True)
                 for argument in (
-                    "--ro-bind",
-                    f"/proc/self/fd/{descriptor}",
+                    "--perms",
+                    f"{mount.mode:04o}",
+                    "--ro-bind-data",
+                    str(descriptor),
                     str(mount.target),
                 )
             )
@@ -891,14 +927,17 @@ class EngineSpawnProvider:
                 "--unshare-net",
                 "--new-session",
                 "--clearenv",
-                "--dir",
-                "/inputs",
+                *directory_arguments,
                 *mount_arguments,
-                "--ro-bind",
-                request_source,
+                "--perms",
+                "0400",
+                "--ro-bind-data",
+                str(request_snapshot_fd),
                 str(_INPUT_TARGET),
-                "--ro-bind",
-                sidecar_source,
+                "--perms",
+                "0400",
+                "--ro-bind-data",
+                str(sidecar_snapshot_fd),
                 str(_SIDECAR_TARGET),
                 "--proc",
                 "/proc",

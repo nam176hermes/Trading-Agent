@@ -5,6 +5,7 @@ import gc
 import hashlib
 import os
 import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -36,7 +37,7 @@ from services.job_worker.engine_spawn import (
 
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 SANDBOX_PROFILE_SHA256 = (
-    "21d08b1c58f18318008495604ab2eac04885805c638029483c93a160ce146a8a"
+    "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
 )
 F_GET_SEALS = 1034
 F_SEAL_SEAL = 0x0001
@@ -111,6 +112,19 @@ def _identity(path: Path) -> tuple[int, int]:
     return observed.st_dev, observed.st_ino
 
 
+def _closure_file(source: Path, target: str) -> ReadOnlyClosureMount:
+    observed = source.stat(follow_symlinks=False)
+    value = source.read_bytes()
+    return ReadOnlyClosureMount(
+        source=source,
+        target=PurePosixPath(target),
+        identity=(observed.st_dev, observed.st_ino),
+        size=len(value),
+        mode=observed.st_mode & 0o777,
+        sha256=hashlib.sha256(value).hexdigest(),
+    )
+
+
 def _closure(tmp_path: Path) -> CompleteEngineClosureAttestation:
     sandbox = tmp_path / "sealed" / "bin" / "sandbox"
     sandbox.parent.mkdir(parents=True)
@@ -128,11 +142,7 @@ def _closure(tmp_path: Path) -> CompleteEngineClosureAttestation:
         source_commit=SOURCE_COMMIT,
         closure_sha256="a" * 64,
         mounts=(
-            ReadOnlyClosureMount(
-                source=release,
-                target=PurePosixPath("/engine"),
-                identity=_identity(release),
-            ),
+            _closure_file(entrypoint, "/engine/bin/engine"),
         ),
         entrypoint=PurePosixPath("/engine/bin/engine"),
         argv_prefix=("run-backtest",),
@@ -143,6 +153,8 @@ def _closure(tmp_path: Path) -> CompleteEngineClosureAttestation:
             identity=_identity(sandbox),
             executable_sha256=hashlib.sha256(sandbox.read_bytes()).hexdigest(),
             profile_sha256=SANDBOX_PROFILE_SHA256,
+            version="bubblewrap 0.9.0",
+            capabilities=("--perms", "--ro-bind-data"),
         ),
     )
 
@@ -160,6 +172,113 @@ def _provider(
     )
 
 
+def _real_bwrap_closure(
+    tmp_path: Path,
+) -> tuple[CompleteEngineClosureAttestation, Path, Path]:
+    required = (
+        Path("/usr/bin/bwrap"),
+        Path("/bin/dash"),
+        Path("/lib/x86_64-linux-gnu/libc.so.6"),
+        Path("/lib64/ld-linux-x86-64.so.2"),
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        pytest.fail(f"real Bubblewrap closure dependencies are missing: {missing}")
+
+    sealed = tmp_path / "real-bwrap-sealed"
+    sandbox = sealed / "sandbox" / "bwrap"
+    sandbox.parent.mkdir(parents=True)
+    shutil.copyfile(required[0], sandbox)
+    sandbox.chmod(0o500)
+    version_probe = subprocess.run(
+        [str(sandbox), "--version"],
+        check=False,
+        env={},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+    )
+    capability_probe = subprocess.run(
+        [str(sandbox), "--help"],
+        check=False,
+        env={},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+    )
+    assert version_probe.returncode == 0, version_probe.stderr
+    assert capability_probe.returncode == 0, capability_probe.stderr
+    for required_option in (b"--perms", b"--ro-bind-data"):
+        assert required_option in capability_probe.stdout
+    sandbox_version = version_probe.stdout.decode("ascii").strip()
+
+    roots = {
+        "bin": sealed / "closure-bin",
+        "lib": sealed / "closure-lib",
+        "lib64": sealed / "closure-lib64",
+        "engine": sealed / "closure-engine",
+    }
+    files = (
+        (required[1], roots["bin"] / "dash", "/bin/dash", 0o500),
+        (
+            required[2],
+            roots["lib"] / "libc.so.6",
+            "/lib/x86_64-linux-gnu/libc.so.6",
+            0o500,
+        ),
+        (
+            required[3],
+            roots["lib64"] / "ld-linux-x86-64.so.2",
+            "/lib64/ld-linux-x86-64.so.2",
+            0o500,
+        ),
+    )
+    for source, destination, _target, mode in files:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        destination.chmod(mode)
+    script = roots["engine"] / "run.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_bytes(
+        b'IFS= read -r request < "$1"\n'
+        b'IFS= read -r sidecar < "$2"\n'
+        b'IFS= read -r runtime < /engine/runtime.txt\n'
+        b'printf "%s\\n%s\\n%s\\n" "$request" "$sidecar" "$runtime"\n'
+    )
+    script.chmod(0o500)
+    runtime = script.with_name("runtime.txt")
+    runtime.write_bytes(b"attested-runtime\n")
+    runtime.chmod(0o400)
+    for root in roots.values():
+        root.chmod(0o500)
+
+    closure = CompleteEngineClosureAttestation(
+        source_commit=SOURCE_COMMIT,
+        closure_sha256="b" * 64,
+        mounts=(
+            *tuple(
+                _closure_file(destination, target)
+                for _source, destination, target, _mode in files
+            ),
+            _closure_file(script, "/engine/run.sh"),
+            _closure_file(runtime, "/engine/runtime.txt"),
+        ),
+        entrypoint=PurePosixPath("/bin/dash"),
+        argv_prefix=("/engine/run.sh",),
+        timeout_seconds=10,
+        result_validator_id="engine-event-v1",
+        sandbox=OsSandboxProof(
+            executable=sandbox,
+            identity=_identity(sandbox),
+            executable_sha256=hashlib.sha256(sandbox.read_bytes()).hexdigest(),
+            profile_sha256=SANDBOX_PROFILE_SHA256,
+            version=sandbox_version,
+            capabilities=("--perms", "--ro-bind-data"),
+        ),
+    )
+    return closure, roots["bin"] / "dash", script
+
+
 def _close_spawn_fds(spawn) -> None:
     for descriptor in spawn.close_after_spawn_fds:
         os.close(descriptor)
@@ -175,11 +294,12 @@ def _fd_targets() -> dict[int, str]:
     return observed
 
 
-def _bound_source(argv: tuple[str, ...] | list[str], target: str) -> str:
+def _data_fd(argv: tuple[str, ...] | list[str], target: str) -> int:
     for index in range(len(argv) - 2):
-        if argv[index] == "--ro-bind" and argv[index + 2] == target:
-            return argv[index + 1]
-    raise AssertionError(f"missing read-only bind target: {target}")
+        if argv[index] == "--ro-bind-data" and argv[index + 2] == target:
+            assert argv[index - 2] == "--perms"
+            return int(argv[index + 1])
+    raise AssertionError(f"missing read-only FD-data target: {target}")
 
 
 def _descriptor_source(value: str) -> int:
@@ -213,15 +333,25 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
             "--new-session",
             "--clearenv",
             "--dir",
-            "/inputs",
-            "--ro-bind",
-            f"/proc/self/fd/{mount_fd}",
             "/engine",
-            "--ro-bind",
-            f"/proc/self/fd/{request_fd}",
+            "--dir",
+            "/inputs",
+            "--dir",
+            "/engine/bin",
+            "--perms",
+            "0500",
+            "--ro-bind-data",
+            str(mount_fd),
+            "/engine/bin/engine",
+            "--perms",
+            "0400",
+            "--ro-bind-data",
+            str(request_fd),
             "/inputs/request.json",
-            "--ro-bind",
-            f"/proc/self/fd/{sidecar_fd}",
+            "--perms",
+            "0400",
+            "--ro-bind-data",
+            str(sidecar_fd),
             "/inputs/request.sha256",
             "--proc",
             "/proc",
@@ -263,12 +393,8 @@ def test_consumed_request_is_a_sealed_snapshot_not_the_mutable_transport_inode(
         _provider(secure_tmp_path, lambda: closure).prepare(envelope)
     )
     try:
-        request_fd = _descriptor_source(
-            _bound_source(spawn.argv, "/inputs/request.json")
-        )
-        sidecar_fd = _descriptor_source(
-            _bound_source(spawn.argv, "/inputs/request.sha256")
-        )
+        request_fd = _data_fd(spawn.argv, "/inputs/request.json")
+        sidecar_fd = _data_fd(spawn.argv, "/inputs/request.sha256")
         required_seals = (
             F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL
         )
@@ -301,7 +427,7 @@ def test_consumed_request_is_a_sealed_snapshot_not_the_mutable_transport_inode(
         _close_spawn_fds(spawn)
 
 
-def test_consumed_sandbox_and_closure_mounts_remain_descriptor_pinned_after_swap(
+def test_consumed_sandbox_and_closure_files_remain_sealed_after_source_swap(
     secure_tmp_path: Path,
 ) -> None:
     closure = _closure(secure_tmp_path)
@@ -310,21 +436,91 @@ def test_consumed_sandbox_and_closure_mounts_remain_descriptor_pinned_after_swap
     )
     try:
         sandbox_fd = _descriptor_source(spawn.argv[0])
-        mount_fd = _descriptor_source(_bound_source(spawn.argv, "/engine"))
+        mount_fd = _data_fd(spawn.argv, "/engine/bin/engine")
         closure.sandbox.executable.rename(
             closure.sandbox.executable.with_name("sandbox.replaced")
         )
+        closure.mounts[0].source.parent.chmod(0o700)
         closure.mounts[0].source.rename(
-            closure.mounts[0].source.with_name("engine-release.replaced")
+            closure.mounts[0].source.with_name("engine.replaced")
         )
 
         assert os.pread(sandbox_fd, 1_000_000, 0) == b"reviewed-os-sandbox-v1"
-        mounted = os.fstat(mount_fd)
-        assert (mounted.st_dev, mounted.st_ino) == closure.mounts[0].identity
+        assert os.pread(mount_fd, 1_000_000, 0) == b"reviewed-engine-entrypoint-v1"
+        assert fcntl.fcntl(mount_fd, F_GET_SEALS) == (
+            F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL
+        )
         assert sandbox_fd in spawn.pass_fds
         assert mount_fd in spawn.pass_fds
     finally:
         _close_spawn_fds(spawn)
+
+
+def _run_real_bwrap_spawn(spawn):
+    return subprocess.run(
+        list(spawn.argv),
+        cwd=spawn.cwd,
+        env=dict(spawn.environment),
+        pass_fds=spawn.pass_fds,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=10,
+    )
+
+
+def _assert_real_bwrap_output(result, envelope: EngineCommandEnvelope) -> None:
+    request = canonical_json_bytes(envelope)
+    sidecar = hashlib.sha256(request).hexdigest().encode("ascii") + b"\n"
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    assert result.stdout == request + b"\n" + sidecar + b"attested-runtime\n"
+    assert result.stderr == b""
+
+
+def test_generated_spawn_executes_real_bwrap_with_sealed_input_data_fds(
+    secure_tmp_path: Path,
+) -> None:
+    envelope = _envelope()
+    closure, _copied_dash, _script = _real_bwrap_closure(secure_tmp_path)
+    spawn = consume_prepared_engine_spawn(
+        _provider(secure_tmp_path, lambda: closure).prepare(envelope)
+    )
+    try:
+        run_root = (
+            secure_tmp_path / "transport" / f"run-{envelope.engine_run_id.hex}"
+        )
+        (run_root / "request.json").chmod(0o600)
+        (run_root / "request.json").write_bytes(b"{}")
+        (run_root / "request.sha256").chmod(0o600)
+        (run_root / "request.sha256").write_bytes(b"0" * 64 + b"\n")
+        result = _run_real_bwrap_spawn(spawn)
+    finally:
+        _close_spawn_fds(spawn)
+
+    _assert_real_bwrap_output(result, envelope)
+
+
+def test_generated_spawn_executes_real_bwrap_after_closure_source_mutation(
+    secure_tmp_path: Path,
+) -> None:
+    envelope = _envelope()
+    closure, copied_dash, script = _real_bwrap_closure(secure_tmp_path)
+    spawn = consume_prepared_engine_spawn(
+        _provider(secure_tmp_path, lambda: closure).prepare(envelope)
+    )
+    try:
+        copied_dash.chmod(0o700)
+        copied_dash.write_bytes(b"same-uid-entrypoint-replacement")
+        copied_dash.chmod(0o500)
+        script.chmod(0o700)
+        script.write_bytes(b"exit 97\n")
+        script.chmod(0o500)
+        result = _run_real_bwrap_spawn(spawn)
+    finally:
+        _close_spawn_fds(spawn)
+
+    _assert_real_bwrap_output(result, envelope)
 
 
 def test_concurrent_consumers_obtain_exactly_one_real_provider_launch(
@@ -397,13 +593,9 @@ def test_real_provider_authority_stays_pinned_through_runner_popen_boundary(
         nonlocal inherited
         inherited = kwargs["pass_fds"]
         sandbox_fd = _descriptor_source(argv[0])
-        mount_fd = _descriptor_source(_bound_source(argv, "/engine"))
-        request_fd = _descriptor_source(
-            _bound_source(argv, "/inputs/request.json")
-        )
-        sidecar_fd = _descriptor_source(
-            _bound_source(argv, "/inputs/request.sha256")
-        )
+        mount_fd = _data_fd(argv, "/engine/bin/engine")
+        request_fd = _data_fd(argv, "/inputs/request.json")
+        sidecar_fd = _data_fd(argv, "/inputs/request.sha256")
         assert set(inherited) == {sandbox_fd, mount_fd, request_fd, sidecar_fd}
 
         run_root = (
@@ -418,8 +610,9 @@ def test_real_provider_authority_stays_pinned_through_runner_popen_boundary(
         closure.sandbox.executable.rename(
             closure.sandbox.executable.with_name("sandbox.after-consume")
         )
+        closure.mounts[0].source.parent.chmod(0o700)
         closure.mounts[0].source.rename(
-            closure.mounts[0].source.with_name("release.after-consume")
+            closure.mounts[0].source.with_name("engine.after-consume")
         )
 
         expected_request = canonical_json_bytes(envelope)
@@ -428,8 +621,9 @@ def test_real_provider_authority_stays_pinned_through_runner_popen_boundary(
             hashlib.sha256(expected_request).hexdigest().encode() + b"\n"
         )
         assert os.pread(sandbox_fd, 1_000_000, 0) == b"reviewed-os-sandbox-v1"
-        mounted = os.fstat(mount_fd)
-        assert (mounted.st_dev, mounted.st_ino) == closure.mounts[0].identity
+        assert os.pread(mount_fd, 1_000_000, 0) == (
+            b"reviewed-engine-entrypoint-v1"
+        )
         return process
 
     instance = runner(
@@ -638,13 +832,15 @@ def test_sandbox_or_mounted_release_identity_swap_is_rejected_at_consumption(
             else closure.mounts[0].source
         )
         original = target.with_name(target.name + ".original")
+        target.parent.chmod(0o700)
         target.rename(original)
         if swapped_path == "sandbox":
             target.write_bytes(b"replacement-sandbox")
             target.chmod(0o500)
             reason = "ENGINE_SANDBOX_PROOF_INVALID"
         else:
-            target.mkdir(mode=0o500)
+            target.write_bytes(b"replacement-engine")
+            target.chmod(0o500)
             reason = "ENGINE_CLOSURE_STALE"
 
         with pytest.raises(EngineSpawnError, match=reason):
@@ -673,6 +869,26 @@ def test_unreviewed_os_sandbox_profile_proof_is_rejected(
         _provider(secure_tmp_path, lambda: unreviewed).prepare(_envelope())
 
 
+@pytest.mark.parametrize(
+    "proof_change",
+    (
+        {"version": ""},
+        {"capabilities": ("--perms",)},
+    ),
+)
+def test_sandbox_proof_requires_versioned_ro_bind_data_capability(
+    secure_tmp_path: Path, proof_change: dict[str, object]
+) -> None:
+    closure = _closure(secure_tmp_path)
+    unsupported = replace(
+        closure,
+        sandbox=replace(closure.sandbox, **proof_change),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_SANDBOX_PROOF_INVALID"):
+        _provider(secure_tmp_path, lambda: unsupported).prepare(_envelope())
+
+
 def test_closure_mounts_cannot_shadow_sandbox_owned_targets(
     secure_tmp_path: Path,
 ) -> None:
@@ -689,11 +905,37 @@ def test_closure_mount_targets_cannot_overlap_each_other(
 ) -> None:
     closure = _closure(secure_tmp_path)
     overlap = replace(
-        closure.mounts[0], target=PurePosixPath("/engine/nested-shadow")
+        closure.mounts[0],
+        target=PurePosixPath("/engine/bin/engine/nested-shadow"),
     )
     unsafe = replace(closure, mounts=(*closure.mounts, overlap))
 
     with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(secure_tmp_path, lambda: unsafe).prepare(_envelope())
+
+
+def test_closure_inventory_rejects_a_host_directory_source(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(secure_tmp_path)
+    directory = closure.mounts[0].source.parent
+    observed = directory.stat(follow_symlinks=False)
+    directory_entry = replace(
+        closure.mounts[0],
+        source=directory,
+        target=PurePosixPath("/engine/bin"),
+        identity=(observed.st_dev, observed.st_ino),
+        size=0,
+        mode=observed.st_mode & 0o777,
+        sha256=hashlib.sha256(b"").hexdigest(),
+    )
+    unsafe = replace(
+        closure,
+        mounts=(directory_entry,),
+        entrypoint=PurePosixPath("/engine/bin"),
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_STALE"):
         _provider(secure_tmp_path, lambda: unsafe).prepare(_envelope())
 
 
