@@ -68,6 +68,36 @@ def _validate_batch_envelopes(
     return first, events[-1]
 
 
+def _validate_job_attempt_identity(
+    job_id: object,
+    attempt_id: object,
+) -> tuple[str, str]:
+    if (
+        type(job_id) is not str
+        or _JOB_ID.fullmatch(job_id) is None
+        or type(attempt_id) is not str
+        or _ATTEMPT_ID.fullmatch(attempt_id) is None
+    ):
+        raise ValueError("engine event job or attempt identity is invalid")
+    return job_id, attempt_id
+
+
+def _validate_contiguous_records(
+    records: tuple[StoredEngineEvent, ...],
+    *,
+    expected_sequence: int,
+) -> None:
+    run_id = records[0].engine_run_id
+    for record in records:
+        if record.stream_sequence != expected_sequence:
+            raise EngineEventSequenceBlockedError(
+                engine_run_id=run_id,
+                expected_sequence=expected_sequence,
+                actual_sequence=record.stream_sequence,
+            )
+        expected_sequence += 1
+
+
 def _validated_records(
     batch: ValidatedEngineEventBatch,
 ) -> tuple[tuple[StoredEngineEvent, ...], str]:
@@ -98,15 +128,10 @@ def _validated_records(
         ):
             raise ValueError
         metadata = batch.validation_metadata
-        job_id = metadata.get("job_id")
-        attempt_id = metadata.get("attempt_id")
-        if (
-            type(job_id) is not str
-            or _JOB_ID.fullmatch(job_id) is None
-            or type(attempt_id) is not str
-            or _ATTEMPT_ID.fullmatch(attempt_id) is None
-        ):
-            raise ValueError
+        job_id, attempt_id = _validate_job_attempt_identity(
+            metadata.get("job_id"),
+            metadata.get("attempt_id"),
+        )
         expected_metadata = {
             "attempt_id": attempt_id,
             "config_digest": first.config_digest,
@@ -213,14 +238,10 @@ class InMemoryEngineEventLedger:
             if prior_projection is None
             else prior_projection.last_sequence + 1
         )
-        for record in records:
-            if record.stream_sequence != expected_sequence:
-                raise EngineEventSequenceBlockedError(
-                    engine_run_id=run_id,
-                    expected_sequence=expected_sequence,
-                    actual_sequence=record.stream_sequence,
-                )
-            expected_sequence += 1
+        _validate_contiguous_records(
+            records,
+            expected_sequence=expected_sequence,
+        )
         combined = self.load_events(run_id) + records
         projection = project_engine_run(combined)
         metadata = batch.validation_metadata
@@ -301,12 +322,25 @@ class InMemoryEngineEventLedger:
             first = records[0]
             last = records[-1]
             try:
+                _validate_job_attempt_identity(
+                    receipt.job_id,
+                    receipt.attempt_id,
+                )
+                _validate_contiguous_records(
+                    records,
+                    expected_sequence=first.stream_sequence,
+                )
                 envelopes = tuple(
                     EngineEventEnvelope.model_validate_json(record.canonical_json)
                     for record in records
                 )
                 envelope, _last_envelope = _validate_batch_envelopes(envelopes)
-            except (AttributeError, TypeError, ValueError) as exc:
+            except (
+                AttributeError,
+                EngineEventSequenceBlockedError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 raise EngineEventConflictError(
                     f"restart batch authority is inconsistent for {batch_sha256}"
                 ) from exc

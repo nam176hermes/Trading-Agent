@@ -60,24 +60,28 @@ def _event(
     )
 
 
-def _batch(*events: EngineEventEnvelope) -> ValidatedEngineEventBatch:
+def _batch(
+    *events: EngineEventEnvelope,
+    job_id: str = JOB_ID,
+    attempt_id: str = ATTEMPT_ID,
+) -> ValidatedEngineEventBatch:
     raw = b"".join(canonical_json_bytes(event) + b"\n" for event in events)
     digest = hashlib.sha256(raw).hexdigest()
     return ValidatedEngineEventBatch(
         artifact_type="engine_event_batch",
-        relative_ref=f"engine-results/{JOB_ID}/{ATTEMPT_ID}/{digest}.jsonl",
+        relative_ref=f"engine-results/{job_id}/{attempt_id}/{digest}.jsonl",
         sha256=digest,
         size_bytes=len(raw),
         media_type="application/x-ndjson",
         truncated=False,
         validator_id="engine-event-v1",
         validation_metadata={
-            "attempt_id": ATTEMPT_ID,
+            "attempt_id": attempt_id,
             "config_digest": events[0].config_digest,
             "engine_run_id": str(events[0].engine_run_id),
             "event_count": len(events),
             "first_sequence": events[0].stream_sequence,
-            "job_id": JOB_ID,
+            "job_id": job_id,
             "last_sequence": events[-1].stream_sequence,
             "request_message_id": str(events[0].causation_id),
             "source_commit": events[0].source_commit,
@@ -87,14 +91,18 @@ def _batch(*events: EngineEventEnvelope) -> ValidatedEngineEventBatch:
     )
 
 
-def _reconstructed_state(*events: EngineEventEnvelope):
+def _reconstructed_state(
+    *events: EngineEventEnvelope,
+    job_id: str = JOB_ID,
+    attempt_id: str = ATTEMPT_ID,
+):
     from packages.engine_event_ledger import (
         EngineEventBatchReceipt,
         EngineEventLedgerState,
         StoredEngineEvent,
     )
 
-    batch = _batch(*events)
+    batch = _batch(*events, job_id=job_id, attempt_id=attempt_id)
     records = tuple(
         StoredEngineEvent.from_envelope(event, batch_sha256=batch.sha256)
         for event in events
@@ -114,8 +122,8 @@ def _reconstructed_state(*events: EngineEventEnvelope):
     receipt = EngineEventBatchReceipt(
         batch_sha256=batch.sha256,
         ingestion_digest=hashlib.sha256(identity).hexdigest(),
-        job_id=JOB_ID,
-        attempt_id=ATTEMPT_ID,
+        job_id=job_id,
+        attempt_id=attempt_id,
         engine_run_id=events[0].engine_run_id,
         event_count=len(events),
         first_sequence=events[0].stream_sequence,
@@ -425,6 +433,61 @@ def test_restart_rejects_same_run_batch_with_mixed_authority(
 
     with pytest.raises(EngineEventConflictError):
         InMemoryEngineEventLedger(state)
+
+
+def test_restart_rejects_interleaved_batch_membership_in_run_history() -> None:
+    from packages.engine_event_ledger import (
+        EngineEventConflictError,
+        EngineEventLedgerState,
+    )
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    outer = _reconstructed_state(
+        _event(2, "BacktestStarted"),
+        _event(
+            4,
+            "BacktestCompleted",
+            message_id=UUID("40000000-0000-4000-8000-000000000104"),
+        ),
+    )
+    inner = _reconstructed_state(
+        _event(
+            3,
+            "OrderAccepted",
+            message_id=UUID("40000000-0000-4000-8000-000000000103"),
+        )
+    )
+    interleaved = EngineEventLedgerState(
+        events=(outer.events[0], inner.events[0], outer.events[1]),
+        receipts=(outer.receipts[0], inner.receipts[0]),
+    )
+
+    with pytest.raises(EngineEventConflictError):
+        InMemoryEngineEventLedger(interleaved)
+
+
+@pytest.mark.parametrize(
+    ("job_id", "attempt_id"),
+    (
+        ("not_a_job_id", ATTEMPT_ID),
+        (JOB_ID, "not_an_attempt_id"),
+    ),
+)
+def test_restart_rejects_malformed_receipt_job_or_attempt_identity(
+    job_id: str,
+    attempt_id: str,
+) -> None:
+    from packages.engine_event_ledger import EngineEventConflictError
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    malformed = _reconstructed_state(
+        _event(2, "BacktestStarted"),
+        job_id=job_id,
+        attempt_id=attempt_id,
+    )
+
+    with pytest.raises(EngineEventConflictError):
+        InMemoryEngineEventLedger(malformed)
 
 
 def test_public_ledger_boundary_excludes_domain_and_provider_types() -> None:
