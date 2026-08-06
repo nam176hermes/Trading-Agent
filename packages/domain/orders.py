@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, Mapping, Self
+from typing import Annotated, Any, Iterable, Literal, Mapping, Self
 from uuid import UUID
 
 from pydantic import (
@@ -890,3 +890,37 @@ def _quantity_scaled(quantity: OrderQuantity, precision: int) -> int:
     from .primitives import decimal_to_scaled_integer
 
     return decimal_to_scaled_integer(quantity.value, precision)
+
+
+def validate_fill_report_batch(reports: Iterable[FillEvent]) -> tuple[FillEvent, ...]:
+    """Fail closed for duplicate executions and per-order report regressions.
+
+    This is deliberately a pure collection validator, not a fill reducer: it
+    neither derives balances nor stores state.  Callers define report order by
+    their supplied immutable sequence.
+    """
+
+    canonical_reports: list[FillEvent] = []
+    execution_ids: set[UUID] = set()
+    last_sequence_by_order: dict[UUID, int] = {}
+    for report in reports:
+        try:
+            canonical = FillEvent.model_validate(report)
+        except (AttributeError, TypeError, ValidationError) as exc:
+            raise ValueError("invalid execution report") from exc
+        if canonical.execution_id in execution_ids:
+            raise ValueError(f"duplicate execution_id: {canonical.execution_id}")
+        previous_sequence = last_sequence_by_order.get(canonical.order_id)
+        if (
+            previous_sequence is not None
+            and canonical.report_sequence <= previous_sequence
+        ):
+            raise ValueError(
+                "non-increasing report_sequence for order_id "
+                f"{canonical.order_id}: {canonical.report_sequence} after "
+                f"{previous_sequence}"
+            )
+        execution_ids.add(canonical.execution_id)
+        last_sequence_by_order[canonical.order_id] = canonical.report_sequence
+        canonical_reports.append(canonical)
+    return tuple(canonical_reports)

@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Generic, Iterable, TypeVar
+from typing import Annotated, Any, Generic, Iterable, Self, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from .clock import require_utc
-from .orders import FillEvent, OrderEvent, OrderIntent
+from .orders import FillEvent, OrderEvent, OrderIntent, validate_fill_report_batch
 from .portfolio import TargetPortfolio
 from .risk import RiskDecision
 from .signals import SignalProposal
@@ -32,6 +40,15 @@ def _registered_event_type(payload_type: object) -> str:
     if not isinstance(payload_type, type) or payload_type not in EVENT_TYPE_BY_PAYLOAD:
         raise ValueError("payload type is not registered for an event envelope")
     return EVENT_TYPE_BY_PAYLOAD[payload_type]
+
+
+def _registered_payload_type(event_type: object) -> type[object]:
+    if not isinstance(event_type, str):
+        raise ValueError("event_type must be a registered string")
+    for payload_type, registered_type in EVENT_TYPE_BY_PAYLOAD.items():
+        if registered_type == event_type:
+            return payload_type
+    raise ValueError(f"event_type is not registered: {event_type!r}")
 
 
 class EventEnvelope(BaseModel, Generic[PayloadT]):
@@ -80,6 +97,51 @@ class EventEnvelope(BaseModel, Generic[PayloadT]):
         return self
 
     @classmethod
+    def model_validate(
+        cls,
+        obj: object,
+        *,
+        strict: bool | None = None,
+        from_attributes: bool | None = None,
+        context: Any | None = None,
+        by_alias: bool | None = None,
+        by_name: bool | None = None,
+    ) -> Self:
+        """Rebuild model-copy and model-construct envelopes before validation."""
+
+        if isinstance(obj, EventEnvelope):
+            try:
+                obj = {name: getattr(obj, name) for name in EventEnvelope.model_fields}
+            except AttributeError as exc:
+                raise ValidationError.from_exception_data(
+                    cls.__name__,
+                    [{"type": "missing", "loc": ("event_envelope",), "input": obj}],
+                ) from exc
+        return super().model_validate(
+            obj,
+            strict=strict,
+            from_attributes=from_attributes,
+            context=context,
+            by_alias=by_alias,
+            by_name=by_name,
+        )
+
+    def _canonical_public_instance(self) -> "EventEnvelope[object]":
+        return _canonical_event_envelope(self)
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Serialize only a complete, registered, freshly validated envelope."""
+
+        canonical = self._canonical_public_instance()
+        return BaseModel.model_dump(canonical, *args, **kwargs)
+
+    def model_dump_json(self, *args: Any, **kwargs: Any) -> str:
+        """Serialize only a complete, registered, freshly validated envelope."""
+
+        canonical = self._canonical_public_instance()
+        return BaseModel.model_dump_json(canonical, *args, **kwargs)
+
+    @classmethod
     def __get_pydantic_json_schema__(
         cls, core_schema: Any, handler: Any
     ) -> dict[str, Any]:
@@ -94,10 +156,62 @@ class EventEnvelope(BaseModel, Generic[PayloadT]):
         return schema
 
 
+def _concrete_payload_type(event: EventEnvelope[object]) -> type[object]:
+    generic_args = event.__class__.__pydantic_generic_metadata__.get("args", ())
+    declared = generic_args[0] if generic_args else object
+    if declared in EVENT_TYPE_BY_PAYLOAD:
+        return declared
+    return _registered_payload_type(event.event_type)
+
+
+def _canonical_event_envelope(event: object) -> EventEnvelope[object]:
+    """Rebuild against the registered concrete payload model before egress."""
+
+    if not isinstance(event, EventEnvelope):
+        raise ValueError("event must be an EventEnvelope")
+    try:
+        payload_type = _concrete_payload_type(event)
+        fields = {
+            name: getattr(event, name)
+            for name in EventEnvelope.model_fields
+        }
+        return EventEnvelope[payload_type].model_validate(fields)
+    except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+        raise ValueError("invalid event envelope") from exc
+
+
+def validate_execution_report_events(
+    events: Iterable[EventEnvelope[object]],
+) -> tuple[EventEnvelope[object], ...]:
+    """Validate execution-report identity and ordering without reducing fills."""
+
+    batch = tuple(events)
+    reports: list[FillEvent] = []
+    seen_event_ids: set[UUID] = set()
+    for event in batch:
+        if not isinstance(event, EventEnvelope):
+            continue
+        if event.event_type != "FillEvent" and type(event.payload) is not FillEvent:
+            continue
+        canonical = _canonical_event_envelope(event)
+        if canonical.event_id in seen_event_ids:
+            # The ledger resolves same-ID duplicate/conflict semantics after
+            # this pure report-collection validation.  Do not turn an exact
+            # delivery retry into a false duplicate execution identity.
+            continue
+        seen_event_ids.add(canonical.event_id)
+        if type(canonical.payload) is not FillEvent:
+            raise ValueError("FillEvent envelope must carry a concrete FillEvent")
+        reports.append(canonical.payload)
+    validate_fill_report_batch(reports)
+    return batch
+
+
 def validate_event_batch(events: Iterable[EventEnvelope[object]]) -> tuple[EventEnvelope[object], ...]:
     """Validate deterministic input order for duplicate IDs and per-stream sequence."""
 
-    batch = tuple(events)
+    batch = tuple(_canonical_event_envelope(event) for event in events)
+    validate_execution_report_events(batch)
     event_ids: set[UUID] = set()
     last_sequence: dict[UUID, int] = {}
     for event in batch:

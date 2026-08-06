@@ -38,6 +38,7 @@ from .orders import (
     ReconciliationSource,
     TimeInForce,
     reduce_order,
+    validate_fill_report_batch,
 )
 from .portfolio import PortfolioSnapshot, PositionSnapshot, TargetPortfolio, TargetPosition
 from .primitives import (
@@ -127,6 +128,7 @@ __all__ = [
     "decimal_to_scaled_integer",
     "require_utc",
     "validate_event_batch",
+    "validate_fill_report_batch",
     "normalize_market_symbol",
     "reduce_order",
 ]

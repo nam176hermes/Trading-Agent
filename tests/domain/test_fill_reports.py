@@ -24,8 +24,10 @@ from packages.domain import (
     ReconciliationSource,
     LiquiditySide,
     EventEnvelope,
+    validate_event_batch,
+    validate_fill_report_batch,
 )
-from packages.event_ledger import ReplayError, serialize_event
+from packages.event_ledger import ReplayError, replay, serialize_event
 
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
@@ -258,3 +260,104 @@ def test_execution_report_revalidates_forged_payloads_at_envelope_and_ledger_ing
     valid = EventEnvelope[FillEvent](**envelope_values, payload=original)
     with pytest.raises(ReplayError):
         serialize_event(valid.model_copy(update={"payload": forged}))
+
+
+def test_typed_envelope_revalidates_forged_execution_reports_at_every_public_ingress() -> None:
+    valid = fill_envelope(report(), event_id=uid(20), stream_id=uid(21), sequence=1)
+    forged_payload = valid.payload.model_copy(
+        update={"commission": Money(Decimal("-0.01"), Currency.USD)}
+    )
+    forged_copy = valid.model_copy(update={"payload": forged_payload})
+    forged_values = {
+        name: getattr(valid, name)
+        for name in EventEnvelope[FillEvent].model_fields
+    }
+    forged_values["payload"] = forged_payload
+    forged_construct = EventEnvelope[FillEvent].model_construct(**forged_values)
+
+    for forged in (forged_copy, forged_construct):
+        with pytest.raises(ValidationError):
+            EventEnvelope[FillEvent].model_validate(forged)
+        with pytest.raises(ValueError):
+            forged.model_dump()
+        with pytest.raises(ValueError):
+            forged.model_dump_json()
+        with pytest.raises(ReplayError):
+            serialize_event(forged)
+        with pytest.raises(ReplayError):
+            replay((forged,))
+
+
+def test_execution_report_batch_rejects_duplicate_identity_and_non_increasing_per_order_sequence() -> None:
+    first = report()
+    second = report(
+        execution_id=uid(30),
+        report_sequence=2,
+        quantity=OrderQuantity(Decimal("1"), 2),
+        cumulative_fill_quantity=OrderQuantity(Decimal("2"), 2),
+        leaves_quantity=OrderQuantity(Decimal("0.5"), 2),
+    )
+
+    assert validate_fill_report_batch((first, second)) == (first, second)
+    with pytest.raises(ValueError, match="duplicate execution_id"):
+        validate_fill_report_batch((first, report(order_id=uid(99))))
+    with pytest.raises(ValueError, match="non-increasing report_sequence"):
+        validate_fill_report_batch((first, report(execution_id=uid(31))))
+    with pytest.raises(ValueError, match="non-increasing report_sequence"):
+        validate_fill_report_batch((second, first))
+
+
+def test_event_batch_and_replay_reject_per_order_execution_report_sequence_across_streams() -> None:
+    first = fill_envelope(report(), event_id=uid(40), stream_id=uid(41), sequence=1)
+    duplicate_sequence = fill_envelope(
+        report(execution_id=uid(42)), event_id=uid(43), stream_id=uid(44), sequence=1
+    )
+
+    for events in ((first, duplicate_sequence), (duplicate_sequence, first)):
+        with pytest.raises(ValueError, match="non-increasing report_sequence"):
+            validate_event_batch(events)
+        with pytest.raises(ReplayError, match="execution report"):
+            replay(events)
+
+    duplicate_execution = fill_envelope(
+        report(order_id=uid(45)), event_id=uid(46), stream_id=uid(47), sequence=1
+    )
+    with pytest.raises(ValueError, match="duplicate execution_id"):
+        validate_event_batch((first, duplicate_execution))
+    with pytest.raises(ReplayError, match="execution report"):
+        replay((first, duplicate_execution))
+
+
+def test_cross_order_execution_reports_retain_deterministic_ledger_replay() -> None:
+    first = fill_envelope(report(), event_id=uid(50), stream_id=uid(51), sequence=1)
+    other_order = fill_envelope(
+        report(execution_id=uid(52), order_id=uid(53)),
+        event_id=uid(54),
+        stream_id=uid(55),
+        sequence=1,
+    )
+
+    assert validate_event_batch((first, other_order)) == (first, other_order)
+    assert replay((first, other_order)) == replay((other_order, first))
+
+
+def fill_envelope(
+    payload: FillEvent, *, event_id: UUID, stream_id: UUID, sequence: int
+) -> EventEnvelope[FillEvent]:
+    return EventEnvelope[FillEvent](
+        event_id=event_id,
+        event_type="FillEvent",
+        schema_version="1.0",
+        source="domain-test",
+        stream_id=stream_id,
+        sequence=sequence,
+        observed_at=NOW,
+        ingested_at=NOW + timedelta(seconds=1),
+        produced_at=NOW + timedelta(seconds=2),
+        effective_at=NOW + timedelta(seconds=2),
+        expires_at=NOW + timedelta(minutes=5),
+        correlation_id=uid(56),
+        causation_id=uid(57),
+        trace_id=uid(58),
+        payload=payload,
+    )

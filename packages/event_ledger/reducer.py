@@ -6,7 +6,7 @@ from enum import Enum
 from typing import TypeAlias
 from uuid import UUID
 
-from packages.domain.events import EventEnvelope
+from packages.domain.events import EventEnvelope, validate_execution_report_events
 
 from .models import (
     REDUCER_VERSION, REPLAY_SCHEMA_VERSION, AggregateReplayState, AppliedEvent, EventTypeCount, ReplayIssue, ReplayIssueCode,
@@ -50,7 +50,12 @@ def reduce_events(events: Iterable[EventInput], *, policy: ReducerPolicy = Reduc
         raise ReplayError("policy must be an exact ReducerPolicy member")
     if initial is not None:
         initial = _validate_snapshot(initial)
-    incoming = tuple(StoredEvent.from_envelope(event) for event in events)
+    event_batch = tuple(events)
+    try:
+        validate_execution_report_events(event_batch)
+    except ValueError as exc:
+        raise ReplayError("invalid execution report batch") from exc
+    incoming = tuple(StoredEvent.from_envelope(event) for event in event_batch)
     _, expected, type_counts, applied, starting_count = _initial_maps(initial)
     unique: list[StoredEvent] = []
     seen_incoming: dict[UUID, str] = {}

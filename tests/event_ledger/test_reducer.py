@@ -134,6 +134,17 @@ def fill() -> FillEvent:
 
 
 def envelope(payload: object, *, event_number: int, stream_number: int = 100, sequence: int = 1) -> EventEnvelope[object]:
+    if type(payload) is FillEvent:
+        fill_values = {
+            name: getattr(payload, name)
+            for name in FillEvent.model_fields
+        }
+        fill_values.update(
+            execution_id=uid(1_000 + event_number),
+            order_id=uid(2_000 + event_number),
+            venue_trade_id=f"trade-{event_number}",
+        )
+        payload = FillEvent(**fill_values)
     return EventEnvelope[object](event_id=uid(event_number), event_type=type(payload).__name__, schema_version="1", source="test", stream_id=uid(stream_number), sequence=sequence, observed_at=NOW, ingested_at=NOW + timedelta(seconds=1), produced_at=NOW + timedelta(seconds=2), effective_at=NOW + timedelta(seconds=2), expires_at=NOW + timedelta(minutes=5), correlation_id=uid(30), causation_id=uid(31), trace_id=uid(32), payload=payload)
 
 

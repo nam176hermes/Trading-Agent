@@ -9,7 +9,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from packages.domain.events import EVENT_TYPE_BY_PAYLOAD, EventEnvelope
+from packages.domain.events import (
+    EVENT_TYPE_BY_PAYLOAD,
+    EventEnvelope,
+    validate_execution_report_events,
+)
 
 from .models import (
     REDUCER_VERSION,
@@ -66,7 +70,8 @@ def serialize_event(event: object) -> str:
             for field_name in event.__class__.model_fields
         }
         validated = EventEnvelope[payload_type].model_validate(raw_fields)
-    except ValidationError as exc:
+        validate_execution_report_events((validated,))
+    except (ValidationError, ValueError) as exc:
         raise ReplayError("invalid event envelope") from exc
     document = validated.model_dump(mode="json")
     _require_canonical_utc(document)
