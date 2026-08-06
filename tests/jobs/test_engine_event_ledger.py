@@ -74,6 +74,7 @@ def _batch(
     *events: EngineEventEnvelope,
     job_id: str = JOB_ID,
     attempt_id: str = ATTEMPT_ID,
+    validator_id: str = "engine-event-v1",
 ) -> ValidatedEngineEventBatch:
     raw = b"".join(canonical_json_bytes(event) + b"\n" for event in events)
     digest = hashlib.sha256(raw).hexdigest()
@@ -84,7 +85,7 @@ def _batch(
         size_bytes=len(raw),
         media_type="application/x-ndjson",
         truncated=False,
-        validator_id="engine-event-v1",
+        validator_id=validator_id,
         validation_metadata={
             "attempt_id": attempt_id,
             "config_digest": events[0].config_digest,
@@ -95,7 +96,7 @@ def _batch(
             "last_sequence": events[-1].stream_sequence,
             "request_message_id": str(events[0].causation_id),
             "source_commit": events[0].source_commit,
-            "validator_id": "engine-event-v1",
+            "validator_id": validator_id,
         },
         events=tuple(events),
     )
@@ -306,6 +307,32 @@ def test_ingest_accepts_only_an_exact_authentic_validated_batch() -> None:
 
     assert repository.load_events(RUN_ID) == ()
     assert repository.load_projection(RUN_ID) is None
+
+
+def test_generic_validator_cannot_seal_a_nautilus_completion_into_the_ledger() -> None:
+    from packages.engine_event_ledger import InvalidEngineEventBatchError
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    batch = _batch(_event(2, "NautilusBacktestCompleted"))
+
+    with pytest.raises(InvalidEngineEventBatchError):
+        InMemoryEngineEventLedger().ingest(batch)
+
+
+def test_dedicated_nautilus_validator_survives_ledger_restart() -> None:
+    from services.job_store.engine_event_repository import InMemoryEngineEventLedger
+
+    batch = _batch(
+        _event(2, "NautilusBacktestCompleted"),
+        validator_id="nautilus-backtest-result-v1",
+    )
+    repository = InMemoryEngineEventLedger()
+    receipt = repository.ingest(batch)
+
+    restarted = InMemoryEngineEventLedger(repository.export_state())
+
+    assert restarted.load_receipt(batch.sha256) == receipt
+    assert restarted.ingest(batch) == receipt
 
 
 def test_same_canonical_batch_with_changed_receipt_authority_is_a_conflict() -> None:

@@ -10,6 +10,7 @@ import pytest
 
 from packages.engine_contracts import (
     EngineEvent,
+    EventAttribute,
     EngineEventEnvelope,
     EventFamily,
     canonical_json_bytes,
@@ -105,6 +106,45 @@ def _event(
     )
 
 
+def _nautilus_event(*, request=None) -> EngineEventEnvelope:
+    request = request or _request()
+    assert request.payload.command_type == "RunBacktest"
+    inputs_digest = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "engine_configuration": request.payload.engine_configuration.sha256,
+                "instrument_catalog": request.payload.instrument_catalog.sha256,
+                "strategy_configuration": request.payload.strategy_configuration.sha256,
+                "market_data": request.payload.market_data.sha256,
+            }
+        )
+    ).hexdigest()
+    payload = EngineEvent(
+        event_type="NautilusBacktestCompleted",
+        family=EventFamily.ENGINE_LIFECYCLE,
+        attributes=(
+            EventAttribute(name="input_artifacts_sha256", value=inputs_digest),
+            EventAttribute(name="iterations", value=1),
+            EventAttribute(name="total_events", value=0),
+            EventAttribute(name="total_orders", value=0),
+            EventAttribute(name="total_positions", value=0),
+        ),
+    )
+    return EngineEventEnvelope(
+        message_id=uuid5(request.message_id, "NautilusBacktestCompleted"),
+        correlation_id=request.correlation_id,
+        causation_id=request.message_id,
+        engine_run_id=request.engine_run_id,
+        stream_sequence=2,
+        event_time=request.event_time,
+        initialization_time=request.initialization_time,
+        schema_version=request.schema_version,
+        producer_identity=request.producer_identity,
+        source_commit=request.source_commit,
+        config_digest=request.config_digest,
+        payload_digest=payload_digest(payload),
+        payload=payload,
+    )
 def _stdout(root: Path, raw: bytes) -> ArtifactMetadata:
     path = root / JOB_ID / ATTEMPT_ID / "stdout.log"
     path.parent.mkdir(parents=True, mode=0o700)
@@ -157,6 +197,61 @@ def test_engine_stdout_is_canonical_authority_validated_and_sealed(
         "validator_id": "engine-event-v1",
     }
     assert progress
+
+
+def test_nautilus_validator_requires_the_hash_bound_zero_order_completion(
+    tmp_path: Path,
+) -> None:
+    from services.job_worker.engine_results import EngineResultValidator
+
+    event = _nautilus_event()
+    result = EngineResultValidator(tmp_path).validate(
+        "nautilus-backtest-result-v1",
+        _claim(),
+        request=_request(),
+        stdout=_stdout(tmp_path, canonical_json_bytes(event) + b"\n"),
+        exit_code=0,
+    )
+
+    assert result.validator_id == "nautilus-backtest-result-v1"
+    assert result.events == (event,)
+
+
+def test_nautilus_validator_rejects_a_generic_engine_event(
+    tmp_path: Path,
+) -> None:
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
+
+    with pytest.raises(EngineResultValidationError, match="Nautilus backtest result"):
+        EngineResultValidator(tmp_path).validate(
+            "nautilus-backtest-result-v1",
+            _claim(),
+            request=_request(),
+            stdout=_stdout(tmp_path, canonical_json_bytes(_event()) + b"\n"),
+            exit_code=0,
+        )
+
+
+def test_generic_validator_cannot_claim_a_nautilus_completion_event(
+    tmp_path: Path,
+) -> None:
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
+
+    event = _nautilus_event()
+    with pytest.raises(EngineResultValidationError, match="dedicated validator"):
+        EngineResultValidator(tmp_path).validate(
+            "engine-event-v1",
+            _claim(),
+            request=_request(),
+            stdout=_stdout(tmp_path, canonical_json_bytes(event) + b"\n"),
+            exit_code=0,
+        )
 
 
 @pytest.mark.parametrize(
