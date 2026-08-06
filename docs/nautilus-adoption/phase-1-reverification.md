@@ -8,7 +8,7 @@ or rebuild the engine. The root Python 3.11 dependency graph remains separate
 from the isolated CPython 3.12 engine runtime.
 
 **Date:** 2026-08-06
-**Checkout:** `f25dbe49f6f5f32dce2b2d070e444936db24dc2c`
+**Checkout:** `53b78e8f561746612f7993b1144c74c44b6b1ef7`
 
 ## Policy identities
 
@@ -27,7 +27,7 @@ from the isolated CPython 3.12 engine runtime.
 | Rust 1.95.0 | Sealed private input cache and materialized toolchain | PASS |
 | LLVM | Sealed cache and materialized LLVM toolchain | PASS |
 | Wheel cache | Hash-bound wheel manifest and engine-policy binding | PASS |
-| Engine artifacts | Offline CPython 3.12 runtime, wheel/cache inputs, Rust, LLVM, and sandbox bindings | PASS |
+| Engine artifact and sealed-input bindings | Offline CPython 3.12 artifact plus wheel/cache, Rust, LLVM, and sandbox bindings | FAIL — input-cache manifest binding drift |
 | Negative wheel digest | Deliberately incorrect wheel-manifest digest is rejected | PASS |
 
 The verified wheel-cache manifest digest was
@@ -45,7 +45,7 @@ uv run python scripts/verify_nautilus_provenance.py --root .
 python3.11 -I scripts/prepare_nautilus_toolchain.py \
   --manifest engines/nautilus/toolchain-inputs.json \
   --cache <sealed-rust-input-cache> \
-  --destination <sealed-rust-1.95.0-toolchain>
+  --destination <sealed-rust-1.95.0-toolchain> --verify-materialized
 
 python3.11 -I scripts/prepare_nautilus_llvm_toolchain.py \
   --policy engines/nautilus/llvm-toolchain-policy.json \
@@ -66,7 +66,7 @@ python3.11 -I scripts/prepare_nautilus_wheel_cache.py \
 python3.11 -I scripts/build_nautilus_engine.py \
   --policy engines/nautilus/engine-build-policy.json \
   --python <sealed-cpython-3.12> --artifacts <sealed-engine-artifacts> \
-  --verify --offline --input-cache <sealed-engine-input-cache> \
+  --verify --verify-input-bindings --offline --input-cache <sealed-engine-input-cache> \
   --wheel-cache <sealed-wheel-cache> \
   --wheel-cache-manifest-sha256 0a7693f27a384925698dde2818abd70b894524bae341a62de0ef8f17500d108b \
   --cargo <sealed-rust-1.95.0-cargo> \
@@ -76,6 +76,13 @@ python3.11 -I scripts/build_nautilus_engine.py \
 The provenance command intentionally omits `--verify-upstream`. Refreshing an
 upstream reference is a separate reviewed dependency change, not part of this
 offline reproducibility gate.
+
+The artifact and input-binding command fails closed for the current external
+cache because the sealed artifact references a different input-cache manifest.
+This document does not treat artifact-only verification as evidence that the
+current sealed inputs are bound to that artifact. Re-materializing an external
+input cache or rebuilding an artifact is outside this read-only packet and
+requires a separately authorized remediation.
 
 ## Re-run conditions
 
