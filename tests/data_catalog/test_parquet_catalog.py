@@ -5,7 +5,9 @@ import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import pyarrow.parquet as pq
 import pytest
 
 from packages.data_catalog import (
@@ -115,6 +117,64 @@ def test_catalog_round_trip_preserves_source_schema_versions(tmp_path: Path) -> 
     )
 
     assert verify_materialized_catalog(artifact) == source
+
+
+def test_catalog_uses_a_utc_timestamp_parquet_column(tmp_path: Path) -> None:
+    artifact = materialize_fixture_catalog(
+        snapshot(), RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+    )
+
+    assert str(pq.read_schema(artifact.parquet_path).field("open_time").type) == "timestamp[us, tz=UTC]"
+
+
+def test_catalog_accepts_zero_offset_zoneinfo_utc_snapshot(tmp_path: Path) -> None:
+    source = snapshot().model_copy(
+        update={
+            "candles": tuple(
+                candle.model_copy(update={"open_time": candle.open_time.replace(tzinfo=ZoneInfo("Etc/UTC"))})
+                for candle in snapshot().candles
+            ),
+            "provenance": snapshot().provenance.model_copy(
+                update={
+                    "observed_at": snapshot().provenance.observed_at.replace(tzinfo=ZoneInfo("Etc/UTC")),
+                    "fetched_at": snapshot().provenance.fetched_at.replace(tzinfo=ZoneInfo("Etc/UTC")),
+                }
+            ),
+            "known_at": snapshot().known_at.replace(tzinfo=ZoneInfo("Etc/UTC")),
+        }
+    )
+
+    artifact = materialize_fixture_catalog(
+        source, RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+    )
+
+    assert verify_materialized_catalog(artifact) == source
+
+
+def test_catalog_rejects_destination_with_an_intermediate_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    via = tmp_path / "via"
+    via.symlink_to(outside, target_is_directory=True)
+    requested = via / "nested"
+    (outside / "nested").mkdir()
+
+    with pytest.raises(CatalogMaterializationError, match="symlink"):
+        materialize_fixture_catalog(
+            snapshot(), RAW_EVIDENCE, destination=requested, importer_version="fixture-catalog-v1"
+        )
+
+    assert list(outside.joinpath("nested").iterdir()) == []
+
+
+def test_catalog_verifier_rejects_oversized_artifact_before_parquet_loading(tmp_path: Path) -> None:
+    artifact = materialize_fixture_catalog(
+        snapshot(), RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+    )
+    artifact.parquet_path.write_bytes(b"x" * (8 * 1024 * 1024 + 1))
+
+    with pytest.raises(CatalogMaterializationError, match="bounded regular-file policy"):
+        verify_materialized_catalog(artifact)
 
 
 def test_data_catalog_source_has_no_runtime_or_provider_imports() -> None:

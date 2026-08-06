@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from packages.data_catalog import MarketDatasetManifestV1
+from packages.data_catalog import MarketDatasetContinuityV1, MarketDatasetManifestV1
 from packages.domain import (
     InstrumentId,
     MarketCandle,
@@ -96,9 +96,13 @@ def test_manifest_rejects_unsorted_or_unknown_integrity_metadata() -> None:
         importer_version="fixture-catalog-v1",
     ).model_dump()
     values["instrument"] = source.instrument
-    values["gap_report"] = (
-        datetime(2026, 8, 6, 12, 2, tzinfo=UTC),
-        datetime(2026, 8, 6, 12, 1, tzinfo=UTC),
+    values["continuity"] = MarketDatasetContinuityV1.model_construct(
+        timeframe=MarketTimeframe.ONE_MINUTE,
+        gap_report=(
+            datetime(2026, 8, 6, 12, 2, tzinfo=UTC),
+            datetime(2026, 8, 6, 12, 1, tzinfo=UTC),
+        ),
+        duplicate_report=(),
     )
 
     with pytest.raises(ValidationError, match="sorted and unique"):
@@ -106,3 +110,22 @@ def test_manifest_rejects_unsorted_or_unknown_integrity_metadata() -> None:
 
     with pytest.raises(ValidationError):
         MarketDatasetManifestV1(**{**values, "unexpected": "forbidden"})
+
+
+def test_dataset_continuity_is_a_strict_public_value_object() -> None:
+    continuity = MarketDatasetContinuityV1(
+        timeframe=MarketTimeframe.ONE_MINUTE,
+        gap_report=(datetime(2026, 8, 6, 12, 1, tzinfo=UTC),),
+        duplicate_report=(),
+    )
+
+    assert continuity.gap_report == (datetime(2026, 8, 6, 12, 1, tzinfo=UTC),)
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        MarketDatasetContinuityV1(
+            timeframe=MarketTimeframe.ONE_MINUTE,
+            gap_report=(
+                datetime(2026, 8, 6, 12, 2, tzinfo=UTC),
+                datetime(2026, 8, 6, 12, 1, tzinfo=UTC),
+            ),
+            duplicate_report=(),
+        )

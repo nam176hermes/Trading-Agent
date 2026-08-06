@@ -25,6 +25,32 @@ class _CatalogModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, revalidate_instances="always")
 
 
+class MarketDatasetContinuityV1(_CatalogModel):
+    """Recorded continuity observations; gaps and duplicates are never repaired."""
+
+    timeframe: MarketTimeframe
+    gap_report: tuple[datetime, ...] = Field(max_length=4096)
+    duplicate_report: tuple[datetime, ...] = Field(max_length=4096)
+
+    @field_validator("gap_report", "duplicate_report")
+    @classmethod
+    def _utc_report_times(cls, values: tuple[datetime, ...]) -> tuple[datetime, ...]:
+        return tuple(require_utc(value) for value in values)
+
+    @model_validator(mode="after")
+    def _canonical_reports(self) -> "MarketDatasetContinuityV1":
+        interval = self.timeframe.interval_seconds
+        for field_name in ("gap_report", "duplicate_report"):
+            values = getattr(self, field_name)
+            if values != tuple(sorted(set(values))):
+                raise ValueError(f"{field_name} must be sorted and unique")
+            for value in values:
+                delta = value - _EPOCH
+                if value.microsecond or (delta.days * 86_400 + delta.seconds) % interval:
+                    raise ValueError(f"{field_name} values must align to the timeframe")
+        return self
+
+
 class MarketDatasetManifestV1(_CatalogModel):
     """Content-addressed metadata for one local normalized candle dataset."""
 
@@ -51,19 +77,13 @@ class MarketDatasetManifestV1(_CatalogModel):
     raw_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     canonical_rows_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     parquet_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    gap_report: tuple[datetime, ...] = Field(max_length=4096)
-    duplicate_report: tuple[datetime, ...] = Field(max_length=4096)
+    continuity: MarketDatasetContinuityV1
     importer_version: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
     @field_validator("first_event_at", "last_event_at", "observed_at", "fetched_at", "known_at")
     @classmethod
     def _utc_event_time(cls, value: datetime) -> datetime:
         return require_utc(value)
-
-    @field_validator("gap_report", "duplicate_report")
-    @classmethod
-    def _utc_report_times(cls, values: tuple[datetime, ...]) -> tuple[datetime, ...]:
-        return tuple(require_utc(value) for value in values)
 
     @model_validator(mode="after")
     def _complete_and_canonical(self) -> "MarketDatasetManifestV1":
@@ -81,16 +101,17 @@ class MarketDatasetManifestV1(_CatalogModel):
                 raise ValueError("catalog digests must be lowercase sha256 hex")
         if _SAFE_VERSION.fullmatch(self.importer_version) is None:
             raise ValueError("importer_version must be a safe bounded version")
-        interval = self.timeframe.interval_seconds
-        for field_name in ("gap_report", "duplicate_report"):
-            values = getattr(self, field_name)
-            if values != tuple(sorted(set(values))):
-                raise ValueError(f"{field_name} must be sorted and unique")
-            for value in values:
-                delta = value - _EPOCH
-                if value.microsecond or (delta.days * 86_400 + delta.seconds) % interval:
-                    raise ValueError(f"{field_name} values must align to the timeframe")
+        if self.continuity.timeframe is not self.timeframe:
+            raise ValueError("continuity timeframe must match manifest timeframe")
         return self
+
+    @property
+    def gap_report(self) -> tuple[datetime, ...]:
+        return self.continuity.gap_report
+
+    @property
+    def duplicate_report(self) -> tuple[datetime, ...]:
+        return self.continuity.duplicate_report
 
     @classmethod
     def from_snapshot(
@@ -124,7 +145,10 @@ class MarketDatasetManifestV1(_CatalogModel):
             raw_evidence_sha256=raw_evidence_sha256,
             canonical_rows_sha256=canonical_rows_sha256,
             parquet_sha256=parquet_sha256,
-            gap_report=continuity.missing_open_times,
-            duplicate_report=continuity.duplicate_open_times,
+            continuity=MarketDatasetContinuityV1(
+                timeframe=snapshot.timeframe,
+                gap_report=continuity.missing_open_times,
+                duplicate_report=continuity.duplicate_open_times,
+            ),
             importer_version=importer_version,
         )
