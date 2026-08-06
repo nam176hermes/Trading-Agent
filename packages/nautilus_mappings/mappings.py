@@ -46,6 +46,7 @@ from packages.domain.primitives import DEFAULT_CURRENCY_REGISTRY
 _ADAPTER_VERSION = "nautilus-adapter-v1"
 _SCHEMA_VERSION = "2.0"
 AdapterT = TypeVar("AdapterT", bound="_AdapterModel")
+CanonicalT = TypeVar("CanonicalT", OrderIntent, OrderEvent, FillEvent)
 
 
 class NautilusMappingError(ValueError):
@@ -460,6 +461,31 @@ def _rebuild_adapter(value: object, expected: type[AdapterT]) -> AdapterT:
     return expected.model_validate(raw)
 
 
+def _canonical_model_fields(
+    value: object, expected: type[CanonicalT]
+) -> dict[str, object]:
+    """Reject forged Pydantic state before rebuilding an outbound value."""
+
+    if not isinstance(value, expected):
+        raise ValueError(f"canonical value must be {expected.__name__}")
+    supplied = getattr(value, "__dict__", None)
+    if not isinstance(supplied, dict):
+        raise ValueError("canonical value has no complete model fields")
+    unexpected = set(supplied).difference(expected.model_fields)
+    if unexpected:
+        raise ValueError("canonical value contains an unsupported Nautilus concept")
+    extra = getattr(value, "__pydantic_extra__", None)
+    if extra:
+        raise ValueError("canonical value contains an unsupported Nautilus concept")
+    return {name: getattr(value, name) for name in expected.model_fields}
+
+
+def _supported_schema_version(value: object) -> str:
+    if value != _SCHEMA_VERSION:
+        raise ValueError("canonical schema_version is not supported by this adapter")
+    return _SCHEMA_VERSION
+
+
 def _fresh_currency(value: object) -> Currency:
     if not isinstance(value, Currency) or not DEFAULT_CURRENCY_REGISTRY.is_registered(value):
         raise ValueError("currency must be a registered canonical identity")
@@ -528,77 +554,81 @@ def _fresh_definition(value: object) -> InstrumentDefinition:
 
 
 def _fresh_intent(value: object) -> OrderIntent:
-    if not isinstance(value, OrderIntent):
-        raise ValueError("value must be OrderIntent")
+    fields = _canonical_model_fields(value, OrderIntent)
+    schema_version = _supported_schema_version(fields["schema_version"])
     return OrderIntent(
-        intent_id=value.intent_id,
-        risk_decision_id=value.risk_decision_id,
-        client_order_id=value.client_order_id,
-        venue_order_id=value.venue_order_id,
-        strategy_id=value.strategy_id,
-        trader_id=value.trader_id,
-        account_id=value.account_id,
-        execution_client_id=value.execution_client_id,
-        order_list_id=value.order_list_id,
-        instrument=_fresh_instrument_id(value.instrument),
-        side=value.side,
-        order_type=value.order_type,
-        time_in_force=value.time_in_force,
-        quantity=_fresh_quantity(value.quantity),
-        limit_price=None if value.limit_price is None else _fresh_price(value.limit_price),
-        trigger_price=None if value.trigger_price is None else _fresh_price(value.trigger_price),
+        intent_id=fields["intent_id"],
+        risk_decision_id=fields["risk_decision_id"],
+        client_order_id=fields["client_order_id"],
+        venue_order_id=fields["venue_order_id"],
+        strategy_id=fields["strategy_id"],
+        trader_id=fields["trader_id"],
+        account_id=fields["account_id"],
+        execution_client_id=fields["execution_client_id"],
+        order_list_id=fields["order_list_id"],
+        instrument=_fresh_instrument_id(fields["instrument"]),
+        side=fields["side"],
+        order_type=fields["order_type"],
+        time_in_force=fields["time_in_force"],
+        quantity=_fresh_quantity(fields["quantity"]),
+        limit_price=None
+        if fields["limit_price"] is None
+        else _fresh_price(fields["limit_price"]),
+        trigger_price=None
+        if fields["trigger_price"] is None
+        else _fresh_price(fields["trigger_price"]),
         trailing_offset=None
-        if value.trailing_offset is None
-        else _fresh_price(value.trailing_offset),
-        gtd_expiry=value.gtd_expiry,
-        post_only=value.post_only,
-        reduce_only=value.reduce_only,
-        requested_at=value.requested_at,
-        schema_version=value.schema_version,
+        if fields["trailing_offset"] is None
+        else _fresh_price(fields["trailing_offset"]),
+        gtd_expiry=fields["gtd_expiry"],
+        post_only=fields["post_only"],
+        reduce_only=fields["reduce_only"],
+        requested_at=fields["requested_at"],
+        schema_version=schema_version,
     )
 
 
 def _fresh_event(value: object) -> OrderEvent:
-    if not isinstance(value, OrderEvent):
-        raise ValueError("value must be OrderEvent")
+    fields = _canonical_model_fields(value, OrderEvent)
+    schema_version = _supported_schema_version(fields["schema_version"])
     return OrderEvent(
-        event_id=value.event_id,
-        order_id=value.order_id,
-        sequence=value.sequence,
-        target_status=value.target_status,
-        occurred_at=value.occurred_at,
-        reason=value.reason,
-        cancel_resolution=value.cancel_resolution,
-        schema_version=value.schema_version,
-        event_fingerprint=value.event_fingerprint,
+        event_id=fields["event_id"],
+        order_id=fields["order_id"],
+        sequence=fields["sequence"],
+        target_status=fields["target_status"],
+        occurred_at=fields["occurred_at"],
+        reason=fields["reason"],
+        cancel_resolution=fields["cancel_resolution"],
+        schema_version=schema_version,
+        event_fingerprint=fields["event_fingerprint"],
     )
 
 
 def _fresh_fill(value: object) -> FillEvent:
-    if not isinstance(value, FillEvent):
-        raise ValueError("value must be FillEvent")
+    fields = _canonical_model_fields(value, FillEvent)
+    schema_version = _supported_schema_version(fields["schema_version"])
     return FillEvent(
-        execution_id=value.execution_id,
-        order_id=value.order_id,
-        report_sequence=value.report_sequence,
-        venue_trade_id=value.venue_trade_id,
-        instrument_definition=_fresh_definition(value.instrument_definition),
-        side=value.side,
-        liquidity_side=value.liquidity_side,
-        status=value.status,
-        quantity=_fresh_quantity(value.quantity),
-        cumulative_fill_quantity=_fresh_quantity(value.cumulative_fill_quantity),
-        leaves_quantity=_fresh_quantity(value.leaves_quantity),
-        order_quantity=_fresh_quantity(value.order_quantity),
-        last_fill_price=_fresh_price(value.last_fill_price),
-        average_fill_price=_fresh_price(value.average_fill_price),
-        commission=_fresh_money(value.commission),
-        reconciliation_source=value.reconciliation_source,
-        duplicate_of_execution_id=value.duplicate_of_execution_id,
-        correction_of_execution_id=value.correction_of_execution_id,
-        bust_of_execution_id=value.bust_of_execution_id,
-        filled_at=value.filled_at,
-        schema_version=value.schema_version,
+        execution_id=fields["execution_id"],
+        order_id=fields["order_id"],
+        report_sequence=fields["report_sequence"],
+        venue_trade_id=fields["venue_trade_id"],
+        instrument_definition=_fresh_definition(fields["instrument_definition"]),
+        side=fields["side"],
+        liquidity_side=fields["liquidity_side"],
+        status=fields["status"],
+        quantity=_fresh_quantity(fields["quantity"]),
+        cumulative_fill_quantity=_fresh_quantity(fields["cumulative_fill_quantity"]),
+        leaves_quantity=_fresh_quantity(fields["leaves_quantity"]),
+        order_quantity=_fresh_quantity(fields["order_quantity"]),
+        last_fill_price=_fresh_price(fields["last_fill_price"]),
+        average_fill_price=_fresh_price(fields["average_fill_price"]),
+        commission=_fresh_money(fields["commission"]),
+        reconciliation_source=fields["reconciliation_source"],
+        duplicate_of_execution_id=fields["duplicate_of_execution_id"],
+        correction_of_execution_id=fields["correction_of_execution_id"],
+        bust_of_execution_id=fields["bust_of_execution_id"],
+        filled_at=fields["filled_at"],
+        schema_version=schema_version,
     )
 
 
@@ -742,7 +772,7 @@ def canonical_to_nautilus_order_intent(value: OrderIntent) -> NautilusOrderInten
         canonical = _fresh_intent(value)
         return NautilusOrderIntentV1(
             adapter_version=_ADAPTER_VERSION,
-            schema_version=_SCHEMA_VERSION,
+            schema_version=canonical.schema_version,
             intent_id=canonical.intent_id,
             risk_decision_id=canonical.risk_decision_id,
             client_order_id=canonical.client_order_id,
@@ -821,7 +851,7 @@ def canonical_to_nautilus_order_event(value: OrderEvent) -> NautilusOrderEventV1
         canonical = _fresh_event(value)
         return NautilusOrderEventV1(
             adapter_version=_ADAPTER_VERSION,
-            schema_version=_SCHEMA_VERSION,
+            schema_version=canonical.schema_version,
             event_id=canonical.event_id,
             order_id=canonical.order_id,
             sequence=canonical.sequence,
@@ -866,7 +896,7 @@ def canonical_to_nautilus_fill_event(value: FillEvent) -> NautilusFillEventV1:
         canonical = _fresh_fill(value)
         return NautilusFillEventV1(
             adapter_version=_ADAPTER_VERSION,
-            schema_version=_SCHEMA_VERSION,
+            schema_version=canonical.schema_version,
             execution_id=canonical.execution_id,
             order_id=canonical.order_id,
             report_sequence=canonical.report_sequence,

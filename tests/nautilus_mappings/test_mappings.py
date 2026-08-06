@@ -230,6 +230,16 @@ def equity_definition() -> InstrumentDefinition:
     )
 
 
+def model_construct_with_unmodeled_field(value: object) -> object:
+    model_type = type(value)
+    fields = getattr(model_type, "model_fields")
+    forged = model_type.model_construct(
+        **{name: getattr(value, name) for name in fields}
+    )
+    forged.__dict__["unsupported_nautilus_concept"] = "drop-me"
+    return forged
+
+
 @pytest.mark.parametrize(
     ("order_type", "expected"),
     [
@@ -498,6 +508,102 @@ def test_canonical_mapping_rejects_forged_pydantic_models(
         mapping(forged)  # type: ignore[operator]
 
 
+@pytest.mark.parametrize(
+    ("mapping", "forged"),
+    [
+        (
+            canonical_to_nautilus_order_intent,
+            intent().model_copy(update={"schema_version": "1.0"}),
+        ),
+        (
+            canonical_to_nautilus_order_intent,
+            OrderIntent.model_construct(
+                **{
+                    **{
+                        name: getattr(intent(), name)
+                        for name in OrderIntent.model_fields
+                    },
+                    "schema_version": "1.0",
+                }
+            ),
+        ),
+        (
+            canonical_to_nautilus_order_event,
+            order_event().model_copy(update={"schema_version": "1.0"}),
+        ),
+        (
+            canonical_to_nautilus_order_event,
+            OrderEvent.model_construct(
+                **{
+                    **{
+                        name: getattr(order_event(), name)
+                        for name in OrderEvent.model_fields
+                    },
+                    "schema_version": "1.0",
+                }
+            ),
+        ),
+        (
+            canonical_to_nautilus_fill_event,
+            fill_event().model_copy(update={"schema_version": "1.0"}),
+        ),
+        (
+            canonical_to_nautilus_fill_event,
+            FillEvent.model_construct(
+                **{
+                    **{
+                        name: getattr(fill_event(), name)
+                        for name in FillEvent.model_fields
+                    },
+                    "schema_version": "1.0",
+                }
+            ),
+        ),
+    ],
+)
+def test_canonical_mapping_rejects_unsupported_source_versions(
+    mapping: object, forged: object
+) -> None:
+    with pytest.raises(NautilusMappingError):
+        mapping(forged)  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    ("mapping", "forged"),
+    [
+        (
+            canonical_to_nautilus_order_intent,
+            intent().model_copy(update={"unsupported_nautilus_concept": "drop-me"}),
+        ),
+        (
+            canonical_to_nautilus_order_intent,
+            model_construct_with_unmodeled_field(intent()),
+        ),
+        (
+            canonical_to_nautilus_order_event,
+            order_event().model_copy(update={"unsupported_nautilus_concept": "drop-me"}),
+        ),
+        (
+            canonical_to_nautilus_order_event,
+            model_construct_with_unmodeled_field(order_event()),
+        ),
+        (
+            canonical_to_nautilus_fill_event,
+            fill_event().model_copy(update={"unsupported_nautilus_concept": "drop-me"}),
+        ),
+        (
+            canonical_to_nautilus_fill_event,
+            model_construct_with_unmodeled_field(fill_event()),
+        ),
+    ],
+)
+def test_canonical_mapping_rejects_unmodeled_pydantic_fields(
+    mapping: object, forged: object
+) -> None:
+    with pytest.raises(NautilusMappingError):
+        mapping(forged)  # type: ignore[operator]
+
+
 def test_adapter_mapping_rejects_forged_unknown_legacy_and_inconsistent_values() -> None:
     invalid_version = canonical_to_nautilus_order_intent(intent()).model_copy(
         update={"adapter_version": "nautilus-adapter-v0"}
@@ -546,29 +652,76 @@ def test_adapter_mapping_rejects_forged_unknown_legacy_and_inconsistent_values()
             mapping(forged)
 
 
-def test_mapping_boundary_is_the_only_canonical_nautilus_conversion_site() -> None:
-    root = Path(__file__).resolve().parents[2]
-    package_root = root / "packages"
-    central_root = package_root / "nautilus_mappings"
+_PRODUCTION_SOURCE_ROOTS = ("packages", "apps", "services", "scripts")
+# The isolated wheel is never importable in the root graph, including build
+# tooling. Tests and the external engine wheel are not production roots.
+_DIRECT_NAUTILUS_IMPORT_ALLOWLIST: frozenset[Path] = frozenset()
+
+
+def _mapping_boundary_violations(root: Path) -> list[str]:
+    central_root = root / "packages" / "nautilus_mappings"
     violations: list[str] = []
 
-    for source_path in package_root.rglob("*.py"):
-        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
-        relative = source_path.relative_to(root)
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                imported = (
-                    [alias.name for alias in node.names]
-                    if isinstance(node, ast.Import)
-                    else [node.module or ""]
-                )
-                if any(name == "nautilus_trader" or name.startswith("nautilus_trader.") for name in imported):
-                    violations.append(f"{relative}: direct nautilus runtime import")
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-                node.name.startswith("canonical_to_nautilus_")
-                or node.name.startswith("nautilus_to_canonical_")
-            ):
-                if central_root not in source_path.parents:
-                    violations.append(f"{relative}: ad-hoc mapping function {node.name}")
+    for source_root_name in _PRODUCTION_SOURCE_ROOTS:
+        source_root = root / source_root_name
+        if not source_root.is_dir():
+            continue
+        for source_path in source_root.rglob("*.py"):
+            relative = source_path.relative_to(root)
+            if relative in _DIRECT_NAUTILUS_IMPORT_ALLOWLIST:
+                continue
+            tree = ast.parse(
+                source_path.read_text(encoding="utf-8"), filename=str(source_path)
+            )
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    imported = (
+                        [alias.name for alias in node.names]
+                        if isinstance(node, ast.Import)
+                        else [node.module or ""]
+                    )
+                    if any(
+                        name == "nautilus_trader"
+                        or name.startswith("nautilus_trader.")
+                        for name in imported
+                    ):
+                        violations.append(
+                            f"{relative}: direct nautilus runtime import"
+                        )
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                    node.name.startswith("canonical_to_nautilus_")
+                    or node.name.startswith("nautilus_to_canonical_")
+                ):
+                    if central_root not in source_path.parents:
+                        violations.append(
+                            f"{relative}: ad-hoc mapping function {node.name}"
+                        )
 
-    assert violations == []
+    return violations
+
+
+def test_mapping_boundary_is_the_only_canonical_nautilus_conversion_site() -> None:
+    root = Path(__file__).resolve().parents[2]
+
+    assert _mapping_boundary_violations(root) == []
+
+
+def test_mapping_architecture_scan_detects_a_prohibited_outside_central_source(
+    tmp_path: Path,
+) -> None:
+    unsafe_source = tmp_path / "services" / "forbidden_mapping.py"
+    unsafe_source.parent.mkdir()
+    unsafe_source.write_text(
+        "import nautilus_trader\n"
+        "def canonical_to_nautilus_leak():\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+
+    violations = _mapping_boundary_violations(tmp_path)
+
+    assert "services/forbidden_mapping.py: direct nautilus runtime import" in violations
+    assert (
+        "services/forbidden_mapping.py: ad-hoc mapping function "
+        "canonical_to_nautilus_leak"
+    ) in violations
