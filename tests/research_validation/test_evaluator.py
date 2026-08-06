@@ -22,6 +22,7 @@ def test_complete_evidence_passes_with_stable_digest() -> None:
 
     assert first.passed is True
     assert first.report_sha256 == second.report_sha256
+    assert first.evidence_sha256 == second.evidence_sha256
     assert all(result.passed for result in first.results)
 
 

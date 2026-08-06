@@ -160,4 +160,3 @@ Expected: PASS. Also verify `git status --short` is clean apart from intended ch
 **Step 3: Local merge only after PASS**
 
 Merge the reviewed branch into local `main` with a non-fast-forward merge commit. Do not push or change remotes.
-

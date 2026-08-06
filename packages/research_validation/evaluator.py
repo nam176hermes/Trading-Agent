@@ -48,6 +48,7 @@ class ResearchGateResultV1(ResearchValidationModel):
 
 class ResearchGateReportV1(ResearchValidationModel):
     schema_version: Literal["research-gate-report-v1"] = "research-gate-report-v1"
+    evidence_sha256: Sha256Hex
     results: tuple[ResearchGateResultV1, ...] = Field(min_length=6, max_length=6)
     report_sha256: Sha256Hex | None = None
 
@@ -58,6 +59,7 @@ class ResearchGateReportV1(ResearchValidationModel):
         digest = hashlib.sha256(
             canonical_json_bytes(
                 {"schema_version": self.schema_version, "results": self.results}
+                | {"evidence_sha256": self.evidence_sha256}
             )
         ).hexdigest()
         if self.report_sha256 is not None and self.report_sha256 != digest:
@@ -193,6 +195,7 @@ def evaluate_research_gates(evidence: ResearchGateEvidenceV1) -> ResearchGateRep
     if type(evidence) is not ResearchGateEvidenceV1:
         raise TypeError("ResearchGateEvidenceV1 is required")
     return ResearchGateReportV1(
+        evidence_sha256=hashlib.sha256(canonical_json_bytes(evidence)).hexdigest(),
         results=(
             _lookahead(evidence),
             _recursive_indicator_stability(evidence),
