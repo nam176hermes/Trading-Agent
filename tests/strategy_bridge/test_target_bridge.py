@@ -59,6 +59,19 @@ def test_bridge_rejects_non_target_input() -> None:
         bridge_target_portfolio({})  # type: ignore[arg-type]
 
 
+def test_bridge_rejects_a_forged_unvalidated_target_model() -> None:
+    forged = TargetPortfolio.model_construct(
+        target_id=TARGET_ID,
+        positions="not-canonical-positions",
+        source_signal_ids=(),
+        effective_at="not-a-utc-datetime",
+        schema_version="1.0.0",
+    )
+
+    with pytest.raises(TargetStrategyBridgeError, match="invalid canonical target"):
+        bridge_target_portfolio(forged)
+
+
 def test_strategy_bridge_has_no_provider_runtime_or_execution_imports() -> None:
     root = Path(__file__).resolve().parents[2] / "packages" / "strategy_bridge"
     forbidden = {"httpx", "nautilus_trader", "psycopg", "requests", "services", "socket", "sqlalchemy", "subprocess", "urllib"}

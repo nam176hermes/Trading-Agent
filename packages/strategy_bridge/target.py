@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from packages.domain import TargetPortfolio
 from packages.engine_contracts import (
     EngineInstrumentId,
@@ -20,6 +22,7 @@ def bridge_target_portfolio(value: TargetPortfolio) -> EngineTargetPortfolio:
     if not isinstance(value, TargetPortfolio):
         raise TargetStrategyBridgeError("value must be a TargetPortfolio")
     try:
+        validated = TargetPortfolio.model_validate(value)
         positions = tuple(
             EngineTargetPosition(
                 instrument=EngineInstrumentId(
@@ -29,14 +32,14 @@ def bridge_target_portfolio(value: TargetPortfolio) -> EngineTargetPortfolio:
                 ),
                 target_weight=position.target_weight,
             )
-            for position in sorted(value.positions, key=lambda item: item.instrument.canonical)
+            for position in sorted(validated.positions, key=lambda item: item.instrument.canonical)
         )
         return EngineTargetPortfolio(
-            target_id=value.target_id,
+            target_id=validated.target_id,
             positions=positions,
-            source_signal_ids=tuple(sorted(value.source_signal_ids, key=str)),
-            effective_at=value.effective_at,
-            schema_version=value.schema_version,
+            source_signal_ids=tuple(sorted(validated.source_signal_ids, key=str)),
+            effective_at=validated.effective_at,
+            schema_version=validated.schema_version,
         )
-    except ValueError as exc:
-        raise TargetStrategyBridgeError("target cannot cross the strategy boundary") from exc
+    except (ValidationError, ValueError) as exc:
+        raise TargetStrategyBridgeError("invalid canonical target") from exc
