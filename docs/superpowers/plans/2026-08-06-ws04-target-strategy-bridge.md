@@ -110,6 +110,6 @@ git commit -m "test(strategy): lock target bridge boundaries"
 
 ## Self-review
 
-- Coverage: target portfolio bridge, typed signal provenance through `source_signal_ids`, deterministic intent generation, strict input rejection, paper/source-only boundaries, and 04C separation are covered.
+- Coverage: target portfolio bridge, typed signal provenance through `source_signal_ids`, deterministic engine-target ordering, strict input rejection, paper/source-only boundaries, and 04C separation are covered.
 - No placeholders: every task names files, interfaces, tests, commands, and commit boundaries.
 - Type consistency: Task 1 defines the exact mapping Task 2 constrains; the bridge returns `EngineTargetPortfolio` for the 04C adapter handoff.
