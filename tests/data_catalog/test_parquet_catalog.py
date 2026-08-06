@@ -29,6 +29,11 @@ OPEN = datetime(2026, 8, 6, 12, 0, tzinfo=UTC)
 RAW_EVIDENCE = b'{"fixture":"market-catalog-v1"}'
 
 
+@pytest.fixture(autouse=True)
+def private_catalog_directory(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+
+
 def snapshot() -> MarketSnapshot:
     instrument = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "ALPACA")
     return MarketSnapshot(

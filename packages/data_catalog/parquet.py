@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import uuid
+from ctypes import CDLL, c_char_p, c_int, get_errno
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -44,6 +45,10 @@ _MAX_MANIFEST_BYTES = 64 * 1024
 _MAX_PARQUET_BYTES = 8 * 1024 * 1024
 _MAX_ROWS = 4096
 _OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_AT_EMPTY_PATH = 0x1000
+_LIBC = CDLL(None, use_errno=True)
+_LIBC.linkat.argtypes = (c_int, c_char_p, c_int, c_char_p, c_int)
+_LIBC.linkat.restype = c_int
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -125,6 +130,24 @@ def _sha256_at(directory_fd: int, name: str, *, maximum_bytes: int) -> str:
         os.close(fd)
 
 
+def _sha256_fd(fd: int) -> str:
+    os.lseek(fd, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    while block := os.read(fd, 64 * 1024):
+        digest.update(block)
+    os.lseek(fd, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def _link_fd_into_directory(source_fd: int, destination_fd: int, name: str) -> None:
+    result = _LIBC.linkat(source_fd, b"", destination_fd, os.fsencode(name), _AT_EMPTY_PATH)
+    if result != 0:
+        error = get_errno()
+        if error == 17:
+            raise CatalogMaterializationError("catalog artifact already exists")
+        raise CatalogMaterializationError(f"cannot publish catalog artifact: errno {error}")
+
+
 def _artifact_names(content_digest: str) -> tuple[str, str]:
     return (f"market-{content_digest}.parquet", f"market-{content_digest}.manifest.json")
 
@@ -134,29 +157,31 @@ def _write_new_parquet(directory_fd: int, name: str, rows: list[dict[str, str]])
     temporary_fd = os.open(
         temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory_fd
     )
-    os.close(temporary_fd)
     try:
         schema = pa.schema([
             pa.field("open_time", pa.timestamp("us", tz="UTC"), nullable=False),
             *(pa.field(column, pa.string(), nullable=False) for column in _ROW_COLUMNS[1:]),
         ])
         parquet_rows = [{**row, "open_time": _parse_utc(row["open_time"])} for row in rows]
-        pq.write_table(
-            pa.Table.from_pylist(parquet_rows, schema=schema),
-            f"/proc/self/fd/{directory_fd}/{temporary}",
-            compression="NONE", use_dictionary=False, write_statistics=False,
-        )
-        source = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+        with os.fdopen(os.dup(temporary_fd), "wb") as stream:
+            pq.write_table(
+                pa.Table.from_pylist(parquet_rows, schema=schema), stream,
+                compression="NONE", use_dictionary=False, write_statistics=False,
+            )
+        os.fsync(temporary_fd)
+        source = os.fstat(temporary_fd)
         if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
             raise CatalogMaterializationError("temporary parquet artifact changed unexpectedly")
-        os.link(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False)
-    except FileExistsError as exc:
-        raise CatalogMaterializationError("catalog artifact already exists") from exc
+        _link_fd_into_directory(temporary_fd, directory_fd, name)
     finally:
         try:
-            os.unlink(temporary, dir_fd=directory_fd)
+            source = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+            held = os.fstat(temporary_fd)
+            if source.st_dev == held.st_dev and source.st_ino == held.st_ino:
+                os.unlink(temporary, dir_fd=directory_fd)
         except FileNotFoundError:
             pass
+        os.close(temporary_fd)
 
 
 def _write_new_manifest(directory_fd: int, name: str, manifest: MarketDatasetManifestV1) -> None:
@@ -221,14 +246,13 @@ def _read_manifest(directory_fd: int, name: str) -> MarketDatasetManifestV1:
         raise CatalogMaterializationError("manifest is invalid") from exc
 
 
-def _read_rows(directory_fd: int, name: str) -> list[dict[str, object]]:
-    fd = _regular_fd_at(directory_fd, name, maximum_bytes=_MAX_PARQUET_BYTES)
-    os.close(fd)
+def _read_rows_from_fd(fd: int) -> list[dict[str, object]]:
     try:
-        reader = pq.ParquetFile(f"/proc/self/fd/{directory_fd}/{name}")
-        if reader.metadata.num_rows > _MAX_ROWS or reader.metadata.num_row_groups > _MAX_ROWS:
-            raise CatalogMaterializationError("parquet exceeds the catalog row bound")
-        table = reader.read()
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            reader = pq.ParquetFile(stream)
+            if reader.metadata.num_rows > _MAX_ROWS or reader.metadata.num_row_groups > _MAX_ROWS:
+                raise CatalogMaterializationError("parquet exceeds the catalog row bound")
+            table = reader.read()
     except CatalogMaterializationError:
         raise
     except Exception as exc:
@@ -295,9 +319,13 @@ def verify_materialized_catalog(artifact: MaterializedMarketDatasetV1) -> Market
         parquet_name, expected_manifest_name = _artifact_names(manifest.content_digest)
         if manifest_name != expected_manifest_name or artifact.parquet_path.name != parquet_name or manifest != artifact.manifest:
             raise CatalogMaterializationError("artifact paths do not match manifest identity")
-        if _sha256_at(directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES) != manifest.parquet_sha256:
-            raise CatalogMaterializationError("parquet digest does not match manifest")
-        rows = _read_rows(directory_fd, parquet_name)
+        parquet_fd = _regular_fd_at(directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES)
+        try:
+            if _sha256_fd(parquet_fd) != manifest.parquet_sha256:
+                raise CatalogMaterializationError("parquet digest does not match manifest")
+            rows = _read_rows_from_fd(parquet_fd)
+        finally:
+            os.close(parquet_fd)
         if _sha256_bytes(_canonical_rows_from_parquet(rows)) != manifest.canonical_rows_sha256:
             raise CatalogMaterializationError("canonical rows digest does not match manifest")
         snapshot = _snapshot_from_rows(rows, manifest)
