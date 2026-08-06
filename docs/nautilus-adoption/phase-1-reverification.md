@@ -8,7 +8,7 @@ or rebuild the engine. The root Python 3.11 dependency graph remains separate
 from the isolated CPython 3.12 engine runtime.
 
 **Date:** 2026-08-06
-**Checkout:** `53b78e8f561746612f7993b1144c74c44b6b1ef7`
+**Checkout:** `a78d0a72332476edbbe00ba40d12cdc8ba9b7566`
 
 ## Policy identities
 
@@ -27,11 +27,28 @@ from the isolated CPython 3.12 engine runtime.
 | Rust 1.95.0 | Sealed private input cache and materialized toolchain | PASS |
 | LLVM | Sealed cache and materialized LLVM toolchain | PASS |
 | Wheel cache | Hash-bound wheel manifest and engine-policy binding | PASS |
-| Engine artifact and sealed-input bindings | Offline CPython 3.12 artifact plus wheel/cache, Rust, LLVM, and sandbox bindings | FAIL — input-cache manifest binding drift |
+| Engine artifact and sealed-input bindings | Offline CPython 3.12 artifact plus wheel/cache, Rust, LLVM, and sandbox bindings | PASS |
 | Negative wheel digest | Deliberately incorrect wheel-manifest digest is rejected | PASS |
 
 The verified wheel-cache manifest digest was
 `0a7693f27a384925698dde2818abd70b894524bae341a62de0ef8f17500d108b`.
+
+## Selected external artifact generation
+
+The selected sealed generation is
+`nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c`.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Artifact manifest | `105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2` |
+| Bound input-cache manifest | `ff2e7753974c7b163bd890f9913dbfbb630f80195708ab67d537d72939e0c56b` |
+| Bound wheel-cache manifest | `0a7693f27a384925698dde2818abd70b894524bae341a62de0ef8f17500d108b` |
+| Sealed engine wheel | `7d3cc69b340536ee6c0e74f4c6954c8a6ed19121df1836a1fab0aad4e43c4f79` |
+
+This generation was built strictly offline from already sealed inputs, then
+verified using `--verify --verify-input-bindings --offline`. The prior
+`nautilus-1.227.0-cp312-rust-bound` generation remains sealed and unmodified
+as the rollback generation; it is not selected by the command template below.
 
 ## Offline command template
 
@@ -65,7 +82,8 @@ python3.11 -I scripts/prepare_nautilus_wheel_cache.py \
 
 python3.11 -I scripts/build_nautilus_engine.py \
   --policy engines/nautilus/engine-build-policy.json \
-  --python <sealed-cpython-3.12> --artifacts <sealed-engine-artifacts> \
+  --python <sealed-cpython-3.12> \
+  --artifacts <selected-generation:nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c> \
   --verify --verify-input-bindings --offline --input-cache <sealed-engine-input-cache> \
   --wheel-cache <sealed-wheel-cache> \
   --wheel-cache-manifest-sha256 0a7693f27a384925698dde2818abd70b894524bae341a62de0ef8f17500d108b \
@@ -77,12 +95,9 @@ The provenance command intentionally omits `--verify-upstream`. Refreshing an
 upstream reference is a separate reviewed dependency change, not part of this
 offline reproducibility gate.
 
-The artifact and input-binding command fails closed for the current external
-cache because the sealed artifact references a different input-cache manifest.
-This document does not treat artifact-only verification as evidence that the
-current sealed inputs are bound to that artifact. Re-materializing an external
-input cache or rebuilding an artifact is outside this read-only packet and
-requires a separately authorized remediation.
+Artifact-only verification is not evidence that the current sealed inputs are
+bound to an artifact. The explicit input-binding flag is required for this
+gate and fails closed on any cache digest or compiler-identity drift.
 
 ## Re-run conditions
 
