@@ -4,7 +4,7 @@
 
 **Goal:** Materialize validated provider-free candle fixtures into a local Parquet catalog whose manifest binds every data, provenance, continuity, and file digest.
 
-**Architecture:** Keep the existing immutable `MarketSnapshot` as the sole normalized ingress. A new `packages.data_catalog` boundary creates canonical Parquet rows and a strict manifest, writes only to an explicit caller-owned directory, then re-reads and verifies the artifact before it is returned. The catalog is local/offline and carries no provider, credential, broker, engine, or runtime authority.
+**Architecture:** Keep the existing immutable `MarketSnapshot` as the sole normalized ingress. A new `packages.data_catalog` boundary creates canonical Parquet rows and a strict manifest inside a catalog-owned private staging workspace, then re-reads and verifies the artifact before it is returned. Callers never supply an artifact destination; later release authority can seal or promote a verified workspace. The catalog is local/offline and carries no provider, credential, broker, engine, or runtime authority.
 
 **Tech Stack:** Python 3.11, Pydantic 2, Decimal, PyArrow, pytest.
 
@@ -15,7 +15,7 @@
 - Market input must be a validated `MarketSnapshot`; do not accept dictionaries or floats.
 - Manifest, evidence, canonical rows, and Parquet bytes are SHA-256 bound; unknown/missing/tampered fields fail closed.
 - Continuity issues are recorded, never repaired or synthesized; duplicate source rows are rejected.
-- No catalog writes outside an explicit existing caller-owned destination directory; no path traversal or symlink destination.
+- No catalog writes outside a catalog-created `0700` staging child held by directory descriptor; no caller-controlled artifact destination, path traversal, or symlink destination.
 
 ---
 
@@ -89,7 +89,7 @@ Commit: `git commit -m "feat(data): add hash-bound dataset manifest"`
 - Modify: `uv.lock` (only via `uv add`)
 
 **Interfaces:**
-- Produces `materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *, destination: Path, importer_version: str) -> MaterializedMarketDatasetV1`.
+- Produces `CatalogWorkspaceV1.create(staging_parent: Path) -> CatalogWorkspaceV1` and `materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *, workspace: CatalogWorkspaceV1, importer_version: str) -> MaterializedMarketDatasetV1`.
 - `MaterializedMarketDatasetV1` contains `manifest`, `parquet_path`, and `manifest_path`.
 - Reads require `verify_materialized_catalog(materialized: MaterializedMarketDatasetV1) -> MarketSnapshot`.
 
@@ -97,11 +97,13 @@ Commit: `git commit -m "feat(data): add hash-bound dataset manifest"`
 
 ```python
 def test_materialized_fixture_catalog_round_trips_and_is_hash_bound(tmp_path: Path) -> None:
-    artifact = materialize_fixture_catalog(snapshot(), evidence(), destination=tmp_path, importer_version="fixture-catalog-v1")
+    workspace = CatalogWorkspaceV1.create(tmp_path)
+    artifact = materialize_fixture_catalog(snapshot(), evidence(), workspace=workspace, importer_version="fixture-catalog-v1")
     assert verify_materialized_catalog(artifact) == snapshot()
 
 def test_materialization_rejects_tampered_parquet(tmp_path: Path) -> None:
-    artifact = materialize_fixture_catalog(snapshot(), evidence(), destination=tmp_path, importer_version="fixture-catalog-v1")
+    workspace = CatalogWorkspaceV1.create(tmp_path)
+    artifact = materialize_fixture_catalog(snapshot(), evidence(), workspace=workspace, importer_version="fixture-catalog-v1")
     artifact.parquet_path.write_bytes(artifact.parquet_path.read_bytes() + b"tamper")
     with pytest.raises(CatalogMaterializationError):
         verify_materialized_catalog(artifact)

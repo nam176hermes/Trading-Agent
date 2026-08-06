@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from packages.data_catalog import (
+    CatalogWorkspaceV1,
     CatalogMaterializationError,
     materialize_fixture_catalog,
     verify_materialized_catalog,
@@ -33,6 +34,10 @@ RAW_EVIDENCE = b'{"fixture":"market-catalog-v1"}'
 @pytest.fixture(autouse=True)
 def private_catalog_directory(tmp_path: Path) -> None:
     tmp_path.chmod(0o700)
+
+
+def workspace(tmp_path: Path) -> CatalogWorkspaceV1:
+    return CatalogWorkspaceV1.create(tmp_path)
 
 
 def snapshot() -> MarketSnapshot:
@@ -82,7 +87,7 @@ def test_materialized_fixture_catalog_round_trips_and_is_hash_bound(tmp_path: Pa
     artifact = materialize_fixture_catalog(
         source,
         RAW_EVIDENCE,
-        destination=tmp_path,
+        workspace=workspace(tmp_path),
         importer_version="fixture-catalog-v1",
     )
 
@@ -96,7 +101,7 @@ def test_catalog_verifier_rejects_tampered_parquet(tmp_path: Path) -> None:
     artifact = materialize_fixture_catalog(
         snapshot(),
         RAW_EVIDENCE,
-        destination=tmp_path,
+        workspace=workspace(tmp_path),
         importer_version="fixture-catalog-v1",
     )
     artifact.parquet_path.write_bytes(artifact.parquet_path.read_bytes() + b"tamper")
@@ -118,7 +123,7 @@ def test_catalog_round_trip_preserves_source_schema_versions(tmp_path: Path) -> 
     artifact = materialize_fixture_catalog(
         source,
         RAW_EVIDENCE,
-        destination=tmp_path,
+        workspace=workspace(tmp_path),
         importer_version="fixture-catalog-v1",
     )
 
@@ -127,7 +132,7 @@ def test_catalog_round_trip_preserves_source_schema_versions(tmp_path: Path) -> 
 
 def test_catalog_uses_a_utc_timestamp_parquet_column(tmp_path: Path) -> None:
     artifact = materialize_fixture_catalog(
-        snapshot(), RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+        snapshot(), RAW_EVIDENCE, workspace=workspace(tmp_path), importer_version="fixture-catalog-v1"
     )
 
     assert str(pq.read_schema(artifact.parquet_path).field("open_time").type) == "timestamp[us, tz=UTC]"
@@ -151,7 +156,7 @@ def test_catalog_accepts_zero_offset_zoneinfo_utc_snapshot(tmp_path: Path) -> No
     )
 
     artifact = materialize_fixture_catalog(
-        source, RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+        source, RAW_EVIDENCE, workspace=workspace(tmp_path), importer_version="fixture-catalog-v1"
     )
 
     assert verify_materialized_catalog(artifact) == source
@@ -167,7 +172,7 @@ def test_catalog_rejects_destination_with_an_intermediate_symlink(tmp_path: Path
 
     with pytest.raises(CatalogMaterializationError, match="symlink"):
         materialize_fixture_catalog(
-            snapshot(), RAW_EVIDENCE, destination=requested, importer_version="fixture-catalog-v1"
+            snapshot(), RAW_EVIDENCE, workspace=CatalogWorkspaceV1.create(requested), importer_version="fixture-catalog-v1"
         )
 
     assert list(outside.joinpath("nested").iterdir()) == []
@@ -175,7 +180,7 @@ def test_catalog_rejects_destination_with_an_intermediate_symlink(tmp_path: Path
 
 def test_catalog_verifier_rejects_oversized_artifact_before_parquet_loading(tmp_path: Path) -> None:
     artifact = materialize_fixture_catalog(
-        snapshot(), RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+        snapshot(), RAW_EVIDENCE, workspace=workspace(tmp_path), importer_version="fixture-catalog-v1"
     )
     artifact.parquet_path.write_bytes(b"x" * (8 * 1024 * 1024 + 1))
 
@@ -189,6 +194,7 @@ def test_catalog_cleanup_never_unlinks_an_inode_replaced_by_another_writer(
     source = snapshot()
     parquet_name = f"market-{source.digest}.parquet"
     injected = b"unrelated-writer-artifact"
+    catalog_workspace = workspace(tmp_path)
 
     def replace_then_fail(directory_fd: int, _name: str, _manifest: object) -> None:
         import os
@@ -205,10 +211,19 @@ def test_catalog_cleanup_never_unlinks_an_inode_replaced_by_another_writer(
 
     with pytest.raises(RuntimeError, match="force cleanup"):
         materialize_fixture_catalog(
-            source, RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+            source, RAW_EVIDENCE, workspace=catalog_workspace, importer_version="fixture-catalog-v1"
         )
 
-    assert (tmp_path / parquet_name).read_bytes() == injected
+    assert (catalog_workspace.path / parquet_name).read_bytes() == injected
+
+
+def test_catalog_workspace_owns_a_private_child_not_the_caller_parent(tmp_path: Path) -> None:
+    catalog_workspace = workspace(tmp_path)
+
+    assert catalog_workspace.path.parent == tmp_path
+    assert catalog_workspace.path != tmp_path
+    assert catalog_workspace.path.is_dir()
+    assert catalog_workspace.path.is_symlink() is False
 
 
 def test_data_catalog_source_has_no_runtime_or_provider_imports() -> None:

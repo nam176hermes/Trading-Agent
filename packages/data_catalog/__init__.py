@@ -7,6 +7,7 @@ from .manifests import (
 )
 from .parquet import (
     CatalogMaterializationError,
+    CatalogWorkspaceV1,
     MaterializedMarketDatasetV1,
     materialize_fixture_catalog,
     verify_materialized_catalog,
@@ -15,6 +16,7 @@ from .parquet import (
 __all__ = [
     "CatalogManifestError",
     "CatalogMaterializationError",
+    "CatalogWorkspaceV1",
     "MarketDatasetContinuityV1",
     "MarketDatasetManifestV1",
     "MaterializedMarketDatasetV1",
