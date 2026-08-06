@@ -10,7 +10,7 @@
       "implementation": [
         "pyproject.toml",
         "tests/domain/test_decimal_properties.py",
-        "tests/domain/test_instruments.py",
+        "tests/domain/test_instrument_definitions.py",
         "tests/event_ledger/test_replay.py"
       ],
       "proofs": [
@@ -19,8 +19,8 @@
           "test": "test_equal_decimals_have_identical_canonical_json_bytes"
         },
         {
-          "path": "tests/domain/test_instruments.py",
-          "test": "test_tick_grid_matches_exact_integer_multiples"
+          "path": "tests/domain/test_instrument_definitions.py",
+          "test": "test_tick_grid_matches_exact_integer_multiples_across_precisions"
         },
         {
           "path": "tests/event_ledger/test_replay.py",
@@ -28,7 +28,7 @@
         }
       ],
       "commands": [
-        "uv run pytest -q tests/domain/test_decimal_properties.py tests/domain/test_instruments.py tests/event_ledger/test_replay.py",
+        "uv run pytest -q tests/domain/test_decimal_properties.py tests/domain/test_instrument_definitions.py tests/event_ledger/test_replay.py",
         "make ci"
       ]
     },
@@ -63,8 +63,8 @@
           "test": "test_money_and_price_reject_non_decimal_amounts"
         },
         {
-          "path": "tests/domain/test_instruments.py",
-          "test": "test_constraints_accept_exact_quantity_and_notional_boundaries"
+          "path": "tests/domain/test_instrument_definitions.py",
+          "test": "test_multiplier_notional_product_has_exact_inclusive_boundaries"
         },
         {
           "path": "tests/domain/test_clock.py",
@@ -72,7 +72,7 @@
         }
       ],
       "commands": [
-        "uv run pytest -q tests/domain/test_primitives.py tests/domain/test_instruments.py tests/domain/test_clock.py"
+        "uv run pytest -q tests/domain/test_primitives.py tests/domain/test_instrument_definitions.py tests/domain/test_clock.py"
       ]
     },
     {
