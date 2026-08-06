@@ -332,6 +332,31 @@ class InstrumentConstraints:
     def __post_init__(self) -> None:
         if not isinstance(self.definition, InstrumentDefinition):
             raise ValueError("definition must be an InstrumentDefinition")
+        supplied = self.definition
+        try:
+            canonical = InstrumentDefinition(
+                instrument_id=supplied.instrument_id,
+                raw_symbol=supplied.raw_symbol,
+                asset_class=supplied.asset_class,
+                base_currency=supplied.base_currency,
+                quote_currency=supplied.quote_currency,
+                settlement_currency=supplied.settlement_currency,
+                tick_size=supplied.tick_size,
+                size_increment=supplied.size_increment,
+                minimum_quantity=supplied.minimum_quantity,
+                maximum_quantity=supplied.maximum_quantity,
+                minimum_notional=supplied.minimum_notional,
+                maximum_notional=supplied.maximum_notional,
+                multiplier=supplied.multiplier,
+                margin=supplied.margin,
+                session_calendar=supplied.session_calendar,
+                provenance=supplied.provenance,
+            )
+        except AttributeError as exc:
+            raise ValueError(
+                "definition must contain every InstrumentDefinition field"
+            ) from exc
+        object.__setattr__(self, "definition", canonical)
 
     def validate_price(self, price: Price) -> Price:
         """Return a valid price or reject currency, precision, and tick-grid errors."""
@@ -388,12 +413,9 @@ class InstrumentConstraints:
                 notional, self.definition.quote_currency.precision
             )
         except ValueError as exc:
-            if "magnitude" in str(exc):
-                raise ValueError(
-                    "notional is outside the supported Decimal range"
-                ) from exc
             raise ValueError(
-                "notional cannot be represented exactly in quote currency"
+                "notional cannot be represented exactly in quote currency or is "
+                "outside the supported Decimal range"
             ) from exc
         if notional < self.definition.minimum_notional.amount:
             raise ValueError("order is below minimum notional")

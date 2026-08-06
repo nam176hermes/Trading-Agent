@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 from pydantic import TypeAdapter
 
 import packages.domain as domain
@@ -59,6 +61,18 @@ def _definition(**changes: object) -> object:
 
 def _constraints(**changes: object) -> object:
     return domain.InstrumentConstraints(definition=_definition(**changes))
+
+
+def _forged_definition(**changes: object) -> object:
+    valid = _definition()
+    forged = object.__new__(domain.InstrumentDefinition)
+    for field in fields(domain.InstrumentDefinition):
+        object.__setattr__(
+            forged,
+            field.name,
+            changes.get(field.name, getattr(valid, field.name)),
+        )
+    return forged
 
 
 def test_crypto_definition_is_canonical_immutable_and_complete() -> None:
@@ -305,6 +319,36 @@ def test_constraints_bind_definition_and_require_unsigned_order_quantity() -> No
         constraints.validate_quantity(domain.Quantity(Decimal("0.010"), 3))
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["size_increment", "minimum_quantity", "maximum_quantity"],
+)
+def test_constraints_reject_signed_quantity_in_forged_definition(field: str) -> None:
+    forged = _forged_definition(
+        **{field: domain.Quantity(Decimal("0.010"), precision=3)}
+    )
+
+    with pytest.raises(ValueError, match=rf"{field} must be an OrderQuantity"):
+        domain.InstrumentConstraints(definition=forged)
+
+
+def test_constraints_fully_revalidate_forged_definition_currency_binding() -> None:
+    forged = _forged_definition(settlement_currency=Currency.USDT)
+
+    with pytest.raises(ValueError, match="settlement currency must equal quote currency"):
+        domain.InstrumentConstraints(definition=forged)
+
+
+def test_constraints_bind_a_fresh_exact_canonical_definition() -> None:
+    supplied = _definition()
+
+    constraints = domain.InstrumentConstraints(definition=supplied)
+
+    assert constraints.definition == supplied
+    assert constraints.definition is not supplied
+    assert type(constraints.definition) is domain.InstrumentDefinition
+
+
 def test_constraints_round_trip_canonical_json() -> None:
     adapter = TypeAdapter(domain.InstrumentConstraints)
     constraints = _constraints()
@@ -396,3 +440,129 @@ def test_notional_rejects_out_of_range_exact_product() -> None:
             price=Price(Decimal("1E+125"), Currency.USD),
             quantity=OrderQuantity(Decimal("10"), 0),
         )
+
+
+@given(
+    step_coefficient=st.integers(min_value=2, max_value=1_000_000).filter(
+        lambda value: value % 10 != 0
+    ),
+    multiplier=st.integers(min_value=1, max_value=10_000),
+    precision=st.integers(min_value=0, max_value=18),
+)
+@settings(max_examples=100, deadline=None, database=None)
+def test_tick_grid_matches_exact_integer_multiples_across_precisions(
+    step_coefficient: int, multiplier: int, precision: int
+) -> None:
+    tick_amount = Decimal(step_coefficient).scaleb(-precision)
+    maximum_notional = Decimal(step_coefficient * 10_000).scaleb(-precision)
+    constraints = _constraints(
+        instrument_id=InstrumentId(
+            "BTC-ETH", ProductType.CRYPTO_SPOT, "ALPACA"
+        ),
+        quote_currency=Currency.ETH,
+        settlement_currency=Currency.ETH,
+        tick_size=Price(tick_amount, Currency.ETH),
+        size_increment=OrderQuantity(Decimal("1"), 0),
+        minimum_quantity=OrderQuantity(Decimal("1"), 0),
+        maximum_quantity=OrderQuantity(Decimal("10000"), 0),
+        minimum_notional=Money(tick_amount, Currency.ETH),
+        maximum_notional=Money(maximum_notional, Currency.ETH),
+    )
+    on_grid = Decimal(step_coefficient * multiplier).scaleb(-precision)
+    off_grid = Decimal((step_coefficient * multiplier) + 1).scaleb(-precision)
+
+    assert constraints.validate_price(Price(on_grid, Currency.ETH)).amount == on_grid
+    with pytest.raises(ValueError, match="tick grid"):
+        constraints.validate_price(Price(off_grid, Currency.ETH))
+
+
+@given(
+    step_coefficient=st.integers(min_value=2, max_value=1_000_000),
+    multiplier=st.integers(min_value=1, max_value=10_000),
+    precision=st.integers(min_value=0, max_value=18),
+)
+@settings(max_examples=100, deadline=None, database=None)
+def test_size_grid_matches_exact_integer_multiples_across_precisions(
+    step_coefficient: int, multiplier: int, precision: int
+) -> None:
+    increment_value = Decimal(step_coefficient).scaleb(-precision)
+    maximum_value = Decimal(step_coefficient * 10_000).scaleb(-precision)
+    increment = OrderQuantity(increment_value, precision)
+    constraints = _constraints(
+        instrument_id=InstrumentId(
+            "BTC-ETH", ProductType.CRYPTO_SPOT, "ALPACA"
+        ),
+        quote_currency=Currency.ETH,
+        settlement_currency=Currency.ETH,
+        tick_size=Price(Decimal("1"), Currency.ETH),
+        size_increment=increment,
+        minimum_quantity=increment,
+        maximum_quantity=OrderQuantity(maximum_value, precision),
+        minimum_notional=Money(increment_value, Currency.ETH),
+        maximum_notional=Money(maximum_value, Currency.ETH),
+    )
+    on_grid = OrderQuantity(
+        Decimal(step_coefficient * multiplier).scaleb(-precision),
+        precision,
+    )
+    off_grid = OrderQuantity(
+        Decimal((step_coefficient * multiplier) + 1).scaleb(-precision),
+        precision,
+    )
+
+    assert constraints.validate_quantity(on_grid) == on_grid
+    with pytest.raises(ValueError, match="size increment grid"):
+        constraints.validate_quantity(off_grid)
+
+
+@given(
+    price_coefficient=st.integers(min_value=2, max_value=1_000_000),
+    quantity_coefficient=st.integers(min_value=1, max_value=1_000_000),
+    multiplier_coefficient=st.integers(min_value=1, max_value=100),
+    price_precision=st.integers(min_value=0, max_value=6),
+    quantity_precision=st.integers(min_value=0, max_value=6),
+)
+@settings(max_examples=75, deadline=None, database=None)
+def test_multiplier_notional_product_has_exact_inclusive_boundaries(
+    price_coefficient: int,
+    quantity_coefficient: int,
+    multiplier_coefficient: int,
+    price_precision: int,
+    quantity_precision: int,
+) -> None:
+    price_amount = Decimal(price_coefficient).scaleb(-price_precision)
+    quantity_value = Decimal(quantity_coefficient).scaleb(-quantity_precision)
+    exact_notional = Decimal(
+        price_coefficient * quantity_coefficient * multiplier_coefficient
+    ).scaleb(-(price_precision + quantity_precision))
+    quantity = OrderQuantity(quantity_value, quantity_precision)
+    constraints = _constraints(
+        instrument_id=InstrumentId(
+            "BTC-ETH", ProductType.CRYPTO_SPOT, "ALPACA"
+        ),
+        quote_currency=Currency.ETH,
+        settlement_currency=Currency.ETH,
+        tick_size=Price(Decimal(1).scaleb(-price_precision), Currency.ETH),
+        size_increment=OrderQuantity(
+            Decimal(1).scaleb(-quantity_precision), quantity_precision
+        ),
+        minimum_quantity=quantity,
+        maximum_quantity=quantity,
+        minimum_notional=Money(exact_notional, Currency.ETH),
+        maximum_notional=Money(exact_notional, Currency.ETH),
+        multiplier=Decimal(multiplier_coefficient),
+    )
+    price = Price(price_amount, Currency.ETH)
+
+    with localcontext() as context:
+        context.prec = 1
+        assert constraints.validate_order(price=price, quantity=quantity) == (
+            price,
+            quantity,
+        )
+
+    above_boundary = Price(
+        Decimal(price_coefficient + 1).scaleb(-price_precision), Currency.ETH
+    )
+    with pytest.raises(ValueError, match="maximum notional"):
+        constraints.validate_order(price=above_boundary, quantity=quantity)
