@@ -436,6 +436,12 @@ ops/phase4b/verify-release.py|91|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|138|Exception|PRODUCTION_CRITICAL|OTHER
 ops/phase4b/verify-release.py|339|Exception|PRODUCTION_CRITICAL|RETURN
 ops/release-v2/verify-stage.py|1271|Exception|PRODUCTION_CRITICAL|RETURN
+packages/data_catalog/parquet.py|244|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/parquet.py|395|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/parquet.py|418|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/parquet.py|431|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/parquet.py|466|Exception|PRODUCTION_CRITICAL|RAISE
+packages/data_catalog/parquet.py|480|Exception|PRODUCTION_CRITICAL|RAISE
 packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
 packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
