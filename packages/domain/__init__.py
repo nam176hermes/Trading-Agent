@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from .clock import FixedUtcClock, SystemUtcClock, require_utc
-from .instruments import InstrumentConstraints, InstrumentId, ProductType
+from .instruments import (
+    AssetClass,
+    InstrumentConstraints,
+    InstrumentDefinition,
+    InstrumentId,
+    InstrumentProvenance,
+    MarginRequirements,
+    ProductType,
+)
 from .market_data import (
     MarketCandle,
     MarketContinuity,
@@ -43,6 +51,7 @@ from .signals import (
 
 __all__ = [
     "CANONICAL_DECIMAL_POLICY_VERSION",
+    "AssetClass",
     "Currency",
     "CurrencyConversion",
     "CurrencyRegistry",
@@ -57,7 +66,10 @@ __all__ = [
     "FiniteDecimal",
     "FixedUtcClock",
     "InstrumentConstraints",
+    "InstrumentDefinition",
     "InstrumentId",
+    "InstrumentProvenance",
+    "MarginRequirements",
     "Money",
     "MarketCandle",
     "MarketContinuity",
