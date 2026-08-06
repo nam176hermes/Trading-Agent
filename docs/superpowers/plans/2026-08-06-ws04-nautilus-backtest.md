@@ -108,7 +108,7 @@ def test_backtest_rejects_catalog_digest_or_target_contract_drift() -> None:
 
 Run: `uv run pytest -q tests/nautilus_backtest/test_isolated_backtest.py`
 
-- [ ] **Step 3: Run packet checks and gates**
+- [x] **Step 3: Run packet checks and gates**
 
 Run: `uv run pytest -q tests/nautilus_backtest tests/jobs/test_nautilus_closure.py tests/jobs/test_engine_spawn_provider.py tests/data_catalog tests/strategy_bridge && make check-contracts && make audit`
 
