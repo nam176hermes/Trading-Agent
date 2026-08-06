@@ -125,3 +125,32 @@ def test_materialized_toolchain_rejects_mutable_directories(tmp_path: Path) -> N
         assert "not sealed" in str(exc)
     else:
         raise AssertionError("mutable toolchain root was accepted")
+
+
+def test_cli_read_only_materialized_verification_checks_the_sealed_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module, toolchain, _binary, policy = _sealed_materialized_toolchain(tmp_path)
+    checked: list[Path] = []
+
+    monkeypatch.setattr(module, "load_manifest", lambda _path: policy)
+    monkeypatch.setattr(module, "verify_cached_components", lambda _cache, _manifest: [])
+    monkeypatch.setattr(
+        module,
+        "verify_materialized_toolchain",
+        lambda destination, _manifest: checked.append(destination),
+    )
+
+    assert module.main(
+        [
+            "--manifest",
+            str(tmp_path / "policy.json"),
+            "--cache",
+            str(tmp_path / "cache"),
+            "--destination",
+            str(toolchain),
+            "--verify-materialized",
+        ]
+    ) == 0
+
+    assert checked == [toolchain]

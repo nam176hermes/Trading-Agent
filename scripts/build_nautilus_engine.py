@@ -593,6 +593,67 @@ def _validate_sandbox(sandbox: Path) -> str:
     return identity
 
 
+def verify_sealed_input_bindings(
+    *,
+    policy: dict[str, object],
+    artifact_manifest: dict[str, object],
+    input_cache: Path,
+    wheel_cache: Path,
+    wheel_cache_manifest_sha256: str,
+    cargo: Path,
+    llvm_toolchain: Path,
+    sandbox: Path,
+    offline: bool,
+) -> None:
+    """Read-only verification of every sealed input bound to an engine artifact.
+
+    The artifact manifest records the input-cache, wheel-cache, Cargo, and
+    rustc identities.  This verifier checks those records against the supplied
+    immutable inputs; it never materializes a toolchain or invokes a build.
+    """
+    if not offline:
+        raise VerificationError("sealed input verification requires offline mode")
+    for path, label in (
+        (input_cache, "source/Cargo input cache"),
+        (wheel_cache, "wheel cache"),
+        (cargo, "private Cargo toolchain"),
+        (llvm_toolchain, "private LLVM toolchain"),
+        (sandbox, "network sandbox"),
+    ):
+        _require_external(path, label)
+    _validate_sandbox(sandbox)
+    input_tool = _load_input_cache_tool()
+    input_policy = input_tool.load_policy(_INPUT_CACHE_POLICY)
+    try:
+        input_tool.verify(input_cache, input_policy)
+        cargo_identity = input_tool.validate_private_cargo(cargo, str(policy["required_rust_version"]))
+        rustc_identity = input_tool.validate_private_rustc(cargo.parent / "rustc", str(policy["required_rust_version"]))
+    except (OSError, ValueError) as exc:
+        raise VerificationError(f"Nautilus source/Cargo input verification failed: {exc}") from exc
+    rust_tool = _load_rust_toolchain_tool()
+    try:
+        rust_manifest = rust_tool.load_manifest(_RUST_TOOLCHAIN_POLICY)
+        rust_tool.verify_materialized_toolchain(_toolchain_root_for_cargo(cargo), rust_manifest)
+    except (OSError, ValueError) as exc:
+        raise VerificationError(f"private Rust toolchain verification failed: {exc}") from exc
+    llvm_tool = _load_llvm_toolchain_tool()
+    try:
+        llvm_policy = llvm_tool.load_policy(_LLVM_TOOLCHAIN_POLICY)
+        llvm_tool.verify_materialized(llvm_toolchain, llvm_policy)
+    except (OSError, ValueError) as exc:
+        raise VerificationError(f"private LLVM toolchain verification failed: {exc}") from exc
+    verify_wheel_cache(wheel_cache, wheel_cache_manifest_sha256, policy)
+    input_manifest_digest = _sha256(input_cache / "input-cache-manifest.json")
+    if artifact_manifest["input_cache_manifest_sha256"] != input_manifest_digest:
+        raise VerificationError("artifact manifest input-cache binding drift")
+    if artifact_manifest["wheel_cache_manifest_sha256"] != wheel_cache_manifest_sha256:
+        raise VerificationError("artifact manifest wheel-cache binding drift")
+    if artifact_manifest["cargo_identity"] != cargo_identity:
+        raise VerificationError("artifact manifest Cargo identity drift")
+    if artifact_manifest["rustc_identity"] != rustc_identity:
+        raise VerificationError("artifact manifest rustc identity drift")
+
+
 def _sandbox_run(
     sandbox: Path,
     stage: Path,
@@ -830,6 +891,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cargo", type=Path)
     parser.add_argument("--llvm-toolchain", type=Path)
     parser.add_argument("--sandbox", type=Path, default=Path("/usr/bin/bwrap"))
+    parser.add_argument(
+        "--verify-input-bindings",
+        action="store_true",
+        help="verify supplied sealed inputs against the artifact manifest",
+    )
     args = parser.parse_args(argv)
     try:
         policy = load_policy(args.policy)
@@ -857,7 +923,29 @@ def main(argv: list[str] | None = None) -> int:
                 offline=args.offline,
             )
         else:
-            verify_artifacts(args.artifacts, policy, python=args.python)
+            artifact_manifest = verify_artifacts(args.artifacts, policy, python=args.python)
+            if args.verify_input_bindings:
+                if None in (
+                    args.input_cache,
+                    args.wheel_cache,
+                    args.wheel_cache_manifest_sha256,
+                    args.cargo,
+                    args.llvm_toolchain,
+                ):
+                    raise VerificationError(
+                        "sealed-input verification requires explicit input, Cargo, LLVM, and approved wheel cache paths"
+                    )
+                verify_sealed_input_bindings(
+                    policy=policy,
+                    artifact_manifest=artifact_manifest,
+                    input_cache=args.input_cache,
+                    wheel_cache=args.wheel_cache,
+                    wheel_cache_manifest_sha256=args.wheel_cache_manifest_sha256,
+                    cargo=args.cargo,
+                    llvm_toolchain=args.llvm_toolchain,
+                    sandbox=args.sandbox,
+                    offline=args.offline,
+                )
     except (OSError, VerificationError) as exc:
         print(f"nautilus engine verification failed: {exc}", file=sys.stderr)
         return 2

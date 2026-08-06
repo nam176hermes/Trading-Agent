@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -338,6 +339,140 @@ def test_wheel_cache_rejects_hash_drift(tmp_path: Path) -> None:
 
     with pytest.raises(module.VerificationError, match="digest or size drift"):
         module.verify_wheel_cache(cache, digest, policy)
+
+
+def test_sealed_input_verifier_binds_every_supplied_input_to_the_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    input_cache = tmp_path / "input-cache"
+    input_cache.mkdir()
+    (input_cache / "input-cache-manifest.json").write_bytes(b"sealed-input-manifest")
+    wheel_cache = tmp_path / "wheel-cache"
+    wheel_cache.mkdir()
+    cargo = tmp_path / "rust" / "bin" / "cargo"
+    cargo.parent.mkdir(parents=True)
+    cargo.write_bytes(b"sealed-cargo")
+    llvm_toolchain = tmp_path / "llvm"
+    llvm_toolchain.mkdir()
+    sandbox = tmp_path / "bwrap"
+    sandbox.write_bytes(b"sealed-sandbox")
+    policy = {"required_rust_version": "1.95.0"}
+    input_digest = _sha256(input_cache / "input-cache-manifest.json")
+    artifact_manifest = {
+        "input_cache_manifest_sha256": input_digest,
+        "wheel_cache_manifest_sha256": "a" * 64,
+        "cargo_identity": "cargo 1.95.0 (fixture)",
+        "rustc_identity": "rustc 1.95.0 (fixture)",
+    }
+    calls: list[str] = []
+    input_tool = SimpleNamespace(
+        load_policy=lambda _path: {"input": "policy"},
+        verify=lambda path, _policy: calls.append(f"input:{path.name}"),
+        validate_private_cargo=lambda path, _version: "cargo 1.95.0 (fixture)",
+        validate_private_rustc=lambda path, _version: "rustc 1.95.0 (fixture)",
+    )
+    rust_tool = SimpleNamespace(
+        load_manifest=lambda _path: {"rust": "policy"},
+        verify_materialized_toolchain=lambda path, _manifest: calls.append(f"rust:{path.name}"),
+    )
+    llvm_tool = SimpleNamespace(
+        load_policy=lambda _path: {"llvm": "policy"},
+        verify_materialized=lambda path, _policy: calls.append(f"llvm:{path.name}"),
+    )
+    monkeypatch.setattr(module, "_validate_sandbox", lambda path: calls.append(f"sandbox:{path.name}"))
+    monkeypatch.setattr(module, "_load_input_cache_tool", lambda: input_tool)
+    monkeypatch.setattr(module, "_load_rust_toolchain_tool", lambda: rust_tool)
+    monkeypatch.setattr(module, "_load_llvm_toolchain_tool", lambda: llvm_tool)
+    monkeypatch.setattr(
+        module,
+        "verify_wheel_cache",
+        lambda path, digest, _policy: calls.append(f"wheel:{path.name}:{digest}"),
+    )
+
+    module.verify_sealed_input_bindings(
+        policy=policy,
+        artifact_manifest=artifact_manifest,
+        input_cache=input_cache,
+        wheel_cache=wheel_cache,
+        wheel_cache_manifest_sha256="a" * 64,
+        cargo=cargo,
+        llvm_toolchain=llvm_toolchain,
+        sandbox=sandbox,
+        offline=True,
+    )
+
+    assert calls == [
+        "sandbox:bwrap",
+        "input:input-cache",
+        "rust:rust",
+        "llvm:llvm",
+        f"wheel:wheel-cache:{'a' * 64}",
+    ]
+
+    artifact_manifest["wheel_cache_manifest_sha256"] = "b" * 64
+    with pytest.raises(module.VerificationError, match="wheel-cache binding drift"):
+        module.verify_sealed_input_bindings(
+            policy=policy,
+            artifact_manifest=artifact_manifest,
+            input_cache=input_cache,
+            wheel_cache=wheel_cache,
+            wheel_cache_manifest_sha256="a" * 64,
+            cargo=cargo,
+            llvm_toolchain=llvm_toolchain,
+            sandbox=sandbox,
+            offline=True,
+        )
+
+
+def test_cli_verify_input_bindings_consumes_all_supplied_binding_options(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    captured: dict[str, object] = {}
+    policy = {"policy": "fixture"}
+    artifact_manifest = {"artifact": "fixture"}
+    monkeypatch.setattr(module, "load_policy", lambda _path: policy)
+    monkeypatch.setattr(module, "verify_artifacts", lambda _artifacts, _policy, *, python: artifact_manifest)
+    monkeypatch.setattr(module, "verify_sealed_input_bindings", lambda **kwargs: captured.update(kwargs))
+
+    assert module.main(
+        [
+            "--policy",
+            str(tmp_path / "policy.json"),
+            "--python",
+            str(tmp_path / "python3.12"),
+            "--artifacts",
+            str(tmp_path / "artifacts"),
+            "--verify",
+            "--verify-input-bindings",
+            "--offline",
+            "--input-cache",
+            str(tmp_path / "input-cache"),
+            "--wheel-cache",
+            str(tmp_path / "wheel-cache"),
+            "--wheel-cache-manifest-sha256",
+            "a" * 64,
+            "--cargo",
+            str(tmp_path / "rust" / "bin" / "cargo"),
+            "--llvm-toolchain",
+            str(tmp_path / "llvm"),
+            "--sandbox",
+            str(tmp_path / "bwrap"),
+        ]
+    ) == 0
+
+    assert captured == {
+        "policy": policy,
+        "artifact_manifest": artifact_manifest,
+        "input_cache": tmp_path / "input-cache",
+        "wheel_cache": tmp_path / "wheel-cache",
+        "wheel_cache_manifest_sha256": "a" * 64,
+        "cargo": tmp_path / "rust" / "bin" / "cargo",
+        "llvm_toolchain": tmp_path / "llvm",
+        "sandbox": tmp_path / "bwrap",
+        "offline": True,
+    }
 
 
 def test_bubblewrap_build_boundary_has_no_host_network_route(tmp_path: Path) -> None:

@@ -255,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--acquire", action="store_true")
     parser.add_argument("--materialize", action="store_true")
+    parser.add_argument(
+        "--verify-materialized",
+        action="store_true",
+        help="verify an already materialized toolchain without writing it",
+    )
     args = parser.parse_args(argv)
     manifest = load_manifest(args.manifest)
     if args.acquire:
@@ -265,9 +270,9 @@ def main(argv: list[str] | None = None) -> int:
     if invalid:
         print("invalid toolchain cache: " + ", ".join(invalid), file=sys.stderr)
         return 2
-    if args.materialize:
+    if args.materialize or args.verify_materialized:
         verify_materialized_toolchain(args.destination, manifest)
-    print("nautilus Rust toolchain cache: PASS")
+    print("nautilus Rust toolchain verification: PASS")
     return 0
 
 
