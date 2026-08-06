@@ -254,6 +254,24 @@ def test_scaled_integer_rejects_unsupported_magnitude_without_expansion() -> Non
         decimal_to_scaled_integer(Decimal("1E+129"), 0)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        Decimal((0, (0,), MAX_EMAX)),
+        Decimal((1, (0,), -MAX_EMAX)),
+    ],
+)
+def test_scaled_integer_returns_zero_for_extreme_exponent_zero(
+    value: Decimal,
+) -> None:
+    assert decimal_to_scaled_integer(value, 18) == 0
+
+
+def test_scaled_integer_rejects_extreme_negative_exponent_without_expansion() -> None:
+    with pytest.raises(ValueError, match="exactly"):
+        decimal_to_scaled_integer(Decimal((0, (1,), -MAX_EMAX)), 18)
+
+
 def test_exact_conversion_does_not_depend_on_integer_string_limits() -> None:
     amount = Decimal((0, (9,) * 5_000, 0))
 

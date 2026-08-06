@@ -247,19 +247,32 @@ def decimal_to_scaled_integer(value: Decimal, precision: int) -> int:
 
     exact_value = _require_finite_decimal(value, "value")
     exact_precision = _require_precision(precision)
-    sign, digits, _ = exact_value.as_tuple()
-    coefficient, exponent = _decimal_coefficient_and_exponent(exact_value)
+    sign, digits, raw_exponent = exact_value.as_tuple()
+    if exact_value.is_zero():
+        return 0
+
+    exponent = int(raw_exponent)
     scale_delta = exponent + exact_precision
-    scaled_digit_count = 1 if coefficient == 0 else len(digits) + scale_delta
-    if scaled_digit_count > _MAX_QUANTITY_COEFFICIENT_DIGITS:
-        raise ValueError("scaled integer exceeds maximum supported magnitude")
     if scale_delta >= 0:
-        scaled = coefficient * (10**scale_delta)
+        scaled_digit_count = len(digits) + scale_delta
+        if scaled_digit_count > _MAX_QUANTITY_COEFFICIENT_DIGITS:
+            raise ValueError("scaled integer exceeds maximum supported magnitude")
+        retained_digits = digits
     else:
-        divisor = 10 ** (-scale_delta)
-        if coefficient % divisor:
+        removed_digit_count = -scale_delta
+        if removed_digit_count > len(digits) or any(
+            digit != 0 for digit in digits[-removed_digit_count:]
+        ):
             raise ValueError("value cannot be represented exactly at precision")
-        scaled = coefficient // divisor
+        retained_digits = digits[:-removed_digit_count]
+        if len(retained_digits) > _MAX_QUANTITY_COEFFICIENT_DIGITS:
+            raise ValueError("scaled integer exceeds maximum supported magnitude")
+
+    scaled = 0
+    for digit in retained_digits:
+        scaled = (scaled * 10) + digit
+    if scale_delta > 0:
+        scaled *= 10**scale_delta
     return -scaled if sign and scaled else scaled
 
 
