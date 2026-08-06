@@ -27,7 +27,7 @@ from packages.domain import (
     validate_event_batch,
     validate_fill_report_batch,
 )
-from packages.event_ledger import ReplayError, replay, serialize_event
+from packages.event_ledger import ReplayError, reduce_events, replay, serialize_event
 
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
@@ -301,10 +301,9 @@ def test_execution_report_batch_rejects_duplicate_identity_and_non_increasing_pe
     assert validate_fill_report_batch((first, second)) == (first, second)
     with pytest.raises(ValueError, match="duplicate execution_id"):
         validate_fill_report_batch((first, report(order_id=uid(99))))
-    with pytest.raises(ValueError, match="non-increasing report_sequence"):
+    with pytest.raises(ValueError, match="duplicate report_sequence"):
         validate_fill_report_batch((first, report(execution_id=uid(31))))
-    with pytest.raises(ValueError, match="non-increasing report_sequence"):
-        validate_fill_report_batch((second, first))
+    assert validate_fill_report_batch((second, first)) == (first, second)
 
 
 def test_event_batch_and_replay_reject_per_order_execution_report_sequence_across_streams() -> None:
@@ -314,7 +313,7 @@ def test_event_batch_and_replay_reject_per_order_execution_report_sequence_acros
     )
 
     for events in ((first, duplicate_sequence), (duplicate_sequence, first)):
-        with pytest.raises(ValueError, match="non-increasing report_sequence"):
+        with pytest.raises(ValueError, match="duplicate report_sequence"):
             validate_event_batch(events)
         with pytest.raises(ReplayError, match="execution report"):
             replay(events)
@@ -339,6 +338,32 @@ def test_cross_order_execution_reports_retain_deterministic_ledger_replay() -> N
 
     assert validate_event_batch((first, other_order)) == (first, other_order)
     assert replay((first, other_order)) == replay((other_order, first))
+
+
+def test_same_order_execution_reports_have_intrinsic_sequence_chronology_across_streams() -> None:
+    first = report()
+    second = report(
+        execution_id=uid(60),
+        report_sequence=2,
+        quantity=OrderQuantity(Decimal("1"), 2),
+        cumulative_fill_quantity=OrderQuantity(Decimal("2"), 2),
+        leaves_quantity=OrderQuantity(Decimal("0.5"), 2),
+    )
+    first_envelope = fill_envelope(
+        first, event_id=uid(61), stream_id=uid(62), sequence=1
+    )
+    second_envelope = fill_envelope(
+        second, event_id=uid(63), stream_id=uid(64), sequence=1
+    )
+
+    assert validate_fill_report_batch((first, second)) == (first, second)
+    assert validate_fill_report_batch((second, first)) == (first, second)
+    assert reduce_events((first_envelope, second_envelope)) == reduce_events(
+        (second_envelope, first_envelope)
+    )
+    assert replay((first_envelope, second_envelope)) == replay(
+        (second_envelope, first_envelope)
+    )
 
 
 def fill_envelope(

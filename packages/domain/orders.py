@@ -893,16 +893,16 @@ def _quantity_scaled(quantity: OrderQuantity, precision: int) -> int:
 
 
 def validate_fill_report_batch(reports: Iterable[FillEvent]) -> tuple[FillEvent, ...]:
-    """Fail closed for duplicate executions and per-order report regressions.
+    """Fail closed for duplicate executions and per-order sequence collisions.
 
     This is deliberately a pure collection validator, not a fill reducer: it
-    neither derives balances nor stores state.  Callers define report order by
-    their supplied immutable sequence.
+    neither derives balances nor stores state.  Report sequence, rather than
+    iterable delivery order, defines the intrinsic chronology for each order.
     """
 
     canonical_reports: list[FillEvent] = []
     execution_ids: set[UUID] = set()
-    last_sequence_by_order: dict[UUID, int] = {}
+    sequences_by_order: dict[UUID, set[int]] = {}
     for report in reports:
         try:
             canonical = FillEvent.model_validate(report)
@@ -910,17 +910,22 @@ def validate_fill_report_batch(reports: Iterable[FillEvent]) -> tuple[FillEvent,
             raise ValueError("invalid execution report") from exc
         if canonical.execution_id in execution_ids:
             raise ValueError(f"duplicate execution_id: {canonical.execution_id}")
-        previous_sequence = last_sequence_by_order.get(canonical.order_id)
-        if (
-            previous_sequence is not None
-            and canonical.report_sequence <= previous_sequence
-        ):
+        order_sequences = sequences_by_order.setdefault(canonical.order_id, set())
+        if canonical.report_sequence in order_sequences:
             raise ValueError(
-                "non-increasing report_sequence for order_id "
-                f"{canonical.order_id}: {canonical.report_sequence} after "
-                f"{previous_sequence}"
+                "duplicate report_sequence for order_id "
+                f"{canonical.order_id}: {canonical.report_sequence}"
             )
         execution_ids.add(canonical.execution_id)
-        last_sequence_by_order[canonical.order_id] = canonical.report_sequence
+        order_sequences.add(canonical.report_sequence)
         canonical_reports.append(canonical)
-    return tuple(canonical_reports)
+    return tuple(
+        sorted(
+            canonical_reports,
+            key=lambda report: (
+                report.order_id.bytes,
+                report.report_sequence,
+                report.execution_id.bytes,
+            ),
+        )
+    )
