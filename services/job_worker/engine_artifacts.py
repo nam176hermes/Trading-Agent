@@ -74,6 +74,18 @@ class HashBoundArtifactResolver:
         if not source.is_absolute() or source == Path("/") or ".." in source.parts:
             raise EngineSpawnError("ENGINE_INPUT_AUTHORITY_INVALID", "artifact path is unsafe")
         try:
+            if source.resolve(strict=True) != source:
+                raise EngineSpawnError(
+                    "ENGINE_INPUT_AUTHORITY_INVALID",
+                    "artifact path contains a symlink ancestor",
+                )
+        except EngineSpawnError:
+            raise
+        except OSError as exc:
+            raise EngineSpawnError(
+                "ENGINE_INPUT_AUTHORITY_UNAVAILABLE", "artifact path is unavailable"
+            ) from exc
+        try:
             source.relative_to(_ROOT)
         except ValueError:
             pass

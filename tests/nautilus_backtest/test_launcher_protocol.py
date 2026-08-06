@@ -171,12 +171,33 @@ def test_launcher_accepts_only_a_zero_order_04a_catalog_and_04b_target(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+    market_data = (
+        b'{"close":"101.00","high":"102.00","low":"99.00","open":"100.00",'
+        b'"open_time":"2026-08-05T12:00:00Z","volume":"12.500000"}\n'
+    )
     catalog = json.dumps(
         {
-            "canonical_rows_sha256": "1" * 64,
-            "parquet_sha256": "2" * 64,
+            "canonical_rows_sha256": hashlib.sha256(
+                b"[" + market_data[:-1] + b"]"
+            ).hexdigest(),
+            "content_digest": "a" * 64,
+            "continuity": {"duplicate_report": [], "gap_report": [], "timeframe": "1m"},
+            "fetched_at": "2026-08-05T12:01:00Z",
+            "first_event_at": "2026-08-05T12:00:00Z",
+            "importer_version": "fixture-catalog-v1",
+            "instrument": {"product_type": "crypto_spot", "symbol": "BTCUSDT", "venue": "BINANCE"},
+            "known_at": "2026-08-05T12:01:00Z",
+            "last_event_at": "2026-08-05T12:00:00Z",
+            "normalization_version": "market-normalization-v1",
+            "observed_at": "2026-08-05T12:01:00Z",
+            "parquet_sha256": "b" * 64,
+            "provider": "deterministic-fixture-v1",
+            "provenance_schema_version": "market-data-v1",
+            "raw_evidence_sha256": "c" * 64,
             "row_count": 1,
             "schema_version": "market-dataset-manifest-v1",
+            "snapshot_schema_version": "market-snapshot-v1",
+            "timeframe": "1m",
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -192,7 +213,6 @@ def test_launcher_accepts_only_a_zero_order_04a_catalog_and_04b_target(
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    market_data = b'{"close":"1"}\n'
 
     launcher_module.validate_zero_order_fixture_inputs(
         (configuration, catalog, target, market_data)
@@ -201,4 +221,22 @@ def test_launcher_accepts_only_a_zero_order_04a_catalog_and_04b_target(
     with pytest.raises(ValueError, match="zero target"):
         launcher_module.validate_zero_order_fixture_inputs(
             (configuration, catalog, target.replace(b"[]", b'[{}]'), market_data)
+        )
+    with pytest.raises(ValueError, match="strategy target"):
+        launcher_module.validate_zero_order_fixture_inputs(
+            (
+                configuration,
+                catalog,
+                target.replace(b"2026-08-05T12:00:00Z", b"not-a-timestamp-Z"),
+                market_data,
+            )
+        )
+    with pytest.raises(ValueError, match="canonical rows"):
+        launcher_module.validate_zero_order_fixture_inputs(
+            (
+                configuration,
+                catalog,
+                target,
+                market_data.replace(b'"101.00"', b'"999.00"'),
+            )
         )

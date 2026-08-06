@@ -112,7 +112,7 @@ def _build_closure_config(tmp_path: Path, sandbox: Path):
         "entrypoint": "/engine/bin/python3.12",
         "argv_prefix": ["-I", "-S", "/engine/launcher/nautilus_backtest.py"],
         "timeout_seconds": 120,
-        "result_validator_id": "engine-event-v1",
+        "result_validator_id": "nautilus-backtest-result-v1",
         "files": records,
     }
     (runtime / "closure-manifest.json").write_text(

@@ -15,6 +15,7 @@ import re
 import stat
 import sys
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
@@ -60,6 +61,28 @@ _INPUT_ARTIFACT_NAMES = (
 )
 _MAX_COMMAND_BYTES = 1_048_576
 _MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+_CATALOG_FIELDS = {
+    "canonical_rows_sha256",
+    "content_digest",
+    "continuity",
+    "fetched_at",
+    "first_event_at",
+    "importer_version",
+    "instrument",
+    "known_at",
+    "last_event_at",
+    "normalization_version",
+    "observed_at",
+    "parquet_sha256",
+    "provider",
+    "provenance_schema_version",
+    "raw_evidence_sha256",
+    "row_count",
+    "schema_version",
+    "snapshot_schema_version",
+    "timeframe",
+}
+_MARKET_ROW_FIELDS = {"close", "high", "low", "open", "open_time", "volume"}
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -240,9 +263,21 @@ def _required_sha256(value: object, *, label: str) -> None:
         raise ValueError(f"{label} digest is invalid")
 
 
+def _canonical_timestamp(value: object, *, label: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError(f"{label} timestamp is invalid")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"{label} timestamp is invalid") from exc
+    if parsed.tzinfo is None or parsed.isoformat().replace("+00:00", "Z") != value:
+        raise ValueError(f"{label} timestamp is not canonical")
+    return parsed
+
+
 def validate_zero_order_fixture_inputs(
     artifacts: tuple[bytes, bytes, bytes, bytes]
-) -> None:
+) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
     """Validate the 04A catalog and 04B target data used by 04C.
 
     04C deliberately accepts only a zero target.  It runs a real Nautilus
@@ -259,13 +294,43 @@ def validate_zero_order_fixture_inputs(
     }:
         raise ValueError("engine configuration is not the fixed zero-order model")
     catalog = _canonical_object(catalog_bytes, label="catalog manifest")
-    if catalog.get("schema_version") != "market-dataset-manifest-v1":
+    if (
+        set(catalog) != _CATALOG_FIELDS
+        or catalog.get("schema_version") != "market-dataset-manifest-v1"
+        or catalog.get("timeframe") != "1m"
+    ):
         raise ValueError("catalog manifest is not the 04A schema")
     row_count = catalog.get("row_count")
     if type(row_count) is not int or row_count <= 0 or row_count > 4096:
         raise ValueError("catalog manifest row_count is invalid")
     _required_sha256(catalog.get("canonical_rows_sha256"), label="catalog rows")
     _required_sha256(catalog.get("parquet_sha256"), label="catalog parquet")
+    for name in ("content_digest", "raw_evidence_sha256"):
+        _required_sha256(catalog.get(name), label=f"catalog {name}")
+    instrument = catalog.get("instrument")
+    if instrument != {
+        "product_type": "crypto_spot",
+        "symbol": "BTCUSDT",
+        "venue": "BINANCE",
+    }:
+        raise ValueError("catalog instrument is not the supported fixture")
+    for name in (
+        "first_event_at",
+        "last_event_at",
+        "observed_at",
+        "fetched_at",
+        "known_at",
+    ):
+        _canonical_timestamp(catalog.get(name), label=f"catalog {name}")
+    continuity = catalog.get("continuity")
+    if (
+        not isinstance(continuity, dict)
+        or set(continuity) != {"timeframe", "gap_report", "duplicate_report"}
+        or continuity["timeframe"] != catalog["timeframe"]
+        or not isinstance(continuity["gap_report"], list)
+        or not isinstance(continuity["duplicate_report"], list)
+    ):
+        raise ValueError("catalog continuity is invalid")
     target = _canonical_object(target_bytes, label="strategy target")
     if set(target) != {
         "effective_at",
@@ -278,9 +343,7 @@ def validate_zero_order_fixture_inputs(
     if (
         not isinstance(target["target_id"], str)
         or _UUID.fullmatch(target["target_id"]) is None
-        or not isinstance(target["effective_at"], str)
-        or not target["effective_at"].endswith("Z")
-        or not isinstance(target["schema_version"], str)
+        or target["schema_version"] != "1.0.0"
         or not isinstance(target["source_signal_ids"], list)
         or not target["source_signal_ids"]
         or any(
@@ -292,21 +355,35 @@ def validate_zero_order_fixture_inputs(
         raise ValueError("strategy target is invalid")
     if type(target["positions"]) is not list or target["positions"]:
         raise ValueError("04C accepts only a zero target")
+    _canonical_timestamp(target["effective_at"], label="strategy target")
     if not market_bytes.endswith(b"\n"):
         raise ValueError("market fixture must use canonical JSONL")
     lines = market_bytes[:-1].split(b"\n")
     if len(lines) != row_count or any(not line for line in lines):
         raise ValueError("market fixture does not match catalog row_count")
-    for line in lines:
-        _canonical_object(line, label="market fixture row")
+    rows = tuple(_canonical_object(line, label="market fixture row") for line in lines)
+    if any(set(row) != _MARKET_ROW_FIELDS for row in rows):
+        raise ValueError("market fixture row fields are invalid")
+    for row in rows:
+        _canonical_timestamp(row["open_time"], label="market fixture")
+        if any(not isinstance(row[name], str) or not row[name] for name in _MARKET_ROW_FIELDS - {"open_time"}):
+            raise ValueError("market fixture prices and volume are invalid")
+    if not hmac.compare_digest(
+        hashlib.sha256(_canonical_json_bytes(list(rows))).hexdigest(),
+        str(catalog["canonical_rows_sha256"]),
+    ):
+        raise ValueError("market fixture does not match the 04A canonical rows")
+    return catalog, rows
 
 
-def _run_nautilus(_artifacts: tuple[bytes, bytes, bytes, bytes]) -> tuple[int, int, int, int]:
+def _run_nautilus(
+    fixture: tuple[dict[str, object], tuple[dict[str, object], ...]]
+) -> tuple[int, int, int, int]:
     """Execute a no-network, no-order Nautilus engine cycle.
 
-    Catalog-data adapters and target-position strategy installation are mounted
-    by later packets; this packet proves the isolated engine boundary with a
-    zero-order backtest rather than fabricating an execution effect.
+    04C uses the 04A canonical JSONL projection, hash-bound to the catalog's
+    verified canonical-row digest.  The fixed zero target has no sizing/order
+    strategy, so the engine receives real bar data while retaining zero orders.
     """
 
     wheels_root = Path("/engine/wheels")
@@ -339,6 +416,12 @@ def _run_nautilus(_artifacts: tuple[bytes, bytes, bytes, bytes]) -> tuple[int, i
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig
+    from nautilus_trader.model.currencies import USDT
+    from nautilus_trader.model.data import Bar, BarType
+    from nautilus_trader.model.enums import AccountType, OmsType
+    from nautilus_trader.model.identifiers import Venue
+    from nautilus_trader.model.objects import Money, Price, Quantity
+    from nautilus_trader.test_kit.providers import TestInstrumentProvider
 
     engine = BacktestEngine(
         BacktestEngineConfig(
@@ -347,6 +430,37 @@ def _run_nautilus(_artifacts: tuple[bytes, bytes, bytes, bytes]) -> tuple[int, i
         )
     )
     try:
+        catalog, rows = fixture
+        instrument = TestInstrumentProvider.btcusdt_binance()
+        if str(instrument.id) != "BTCUSDT.BINANCE":
+            raise ValueError("Nautilus fixture instrument is incompatible")
+        engine.add_venue(
+            venue=Venue("BINANCE"),
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.CASH,
+            starting_balances=[Money(1_000_000, USDT)],
+        )
+        engine.add_instrument(instrument)
+        bar_type = BarType.from_str("BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL")
+        bars = []
+        for row in rows:
+            timestamp = _canonical_timestamp(row["open_time"], label="market fixture")
+            timestamp_ns = int(timestamp.timestamp()) * 1_000_000_000 + timestamp.microsecond * 1_000
+            bars.append(
+                Bar(
+                    bar_type,
+                    Price.from_str(str(row["open"])),
+                    Price.from_str(str(row["high"])),
+                    Price.from_str(str(row["low"])),
+                    Price.from_str(str(row["close"])),
+                    Quantity.from_str(str(row["volume"])),
+                    timestamp_ns,
+                    timestamp_ns,
+                )
+            )
+        if len(bars) != int(catalog["row_count"]):
+            raise ValueError("fixture row count changed before Nautilus ingestion")
+        engine.add_data(bars)
         engine.run()
         result = engine.get_result()
         return (
@@ -405,10 +519,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     try:
         request = validated_request(Path(arguments[0]), Path(arguments[1]))
         artifacts = validated_input_artifacts(request)
-        validate_zero_order_fixture_inputs(artifacts)
+        fixture = validate_zero_order_fixture_inputs(artifacts)
         print(
             _canonical_json_bytes(
-                _event(request, artifacts, _run_nautilus(artifacts))
+                _event(request, artifacts, _run_nautilus(fixture))
             ).decode("utf-8")
         )
     except (ImportError, OSError, ValueError) as exc:

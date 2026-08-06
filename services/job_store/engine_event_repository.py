@@ -41,6 +41,12 @@ __all__ = [
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
+_GENERIC_ENGINE_EVENT_VALIDATOR = "engine-event-v1"
+_NAUTILUS_BACKTEST_VALIDATOR = "nautilus-backtest-result-v1"
+_ALLOWED_VALIDATORS = {
+    _GENERIC_ENGINE_EVENT_VALIDATOR,
+    _NAUTILUS_BACKTEST_VALIDATOR,
+}
 _JOB_ID = re.compile(r"^job_[0-9a-f]{32}$", re.ASCII)
 _ATTEMPT_ID = re.compile(r"^attempt_[0-9a-f]{32}$", re.ASCII)
 _SEQUENCE_DETAIL = re.compile(
@@ -141,7 +147,7 @@ def _validated_records(
             batch.artifact_type != "engine_event_batch"
             or batch.media_type != "application/x-ndjson"
             or batch.truncated is not False
-            or batch.validator_id != "engine-event-v1"
+            or batch.validator_id not in _ALLOWED_VALIDATORS
             or type(batch.size_bytes) is not int
             or batch.size_bytes <= 0
             or type(batch.sha256) is not str
@@ -173,7 +179,7 @@ def _validated_records(
             "last_sequence": last.stream_sequence,
             "request_message_id": str(first.causation_id),
             "source_commit": first.source_commit,
-            "validator_id": "engine-event-v1",
+            "validator_id": batch.validator_id,
         }
         if metadata != expected_metadata:
             raise ValueError
@@ -462,6 +468,12 @@ class InMemoryEngineEventLedger:
                 raise EngineEventConflictError(
                     f"restart batch authority is inconsistent for {batch_sha256}"
                 ) from exc
+            validator_id = (
+                _NAUTILUS_BACKTEST_VALIDATOR
+                if len(envelopes) == 1
+                and envelopes[0].payload.event_type == "NautilusBacktestCompleted"
+                else _GENERIC_ENGINE_EVENT_VALIDATOR
+            )
             metadata = {
                 "attempt_id": receipt.attempt_id,
                 "config_digest": envelope.config_digest,
@@ -472,7 +484,7 @@ class InMemoryEngineEventLedger:
                 "last_sequence": last.stream_sequence,
                 "request_message_id": str(envelope.causation_id),
                 "source_commit": envelope.source_commit,
-                "validator_id": "engine-event-v1",
+                "validator_id": validator_id,
             }
             relative_ref = (
                 f"engine-results/{receipt.job_id}/{receipt.attempt_id}/"
@@ -487,7 +499,7 @@ class InMemoryEngineEventLedger:
                     "size_bytes": len(raw),
                     "truncated": False,
                     "validation_metadata": metadata,
-                    "validator_id": "engine-event-v1",
+                    "validator_id": validator_id,
                 }
             )
             if (

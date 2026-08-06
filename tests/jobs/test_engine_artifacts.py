@@ -42,7 +42,8 @@ def sealed_artifacts() -> tuple[Path, tuple[ArtifactReference, ...]]:
     finally:
         root.chmod(0o700)
         for path in root.iterdir():
-            path.chmod(0o600)
+            if not path.is_symlink():
+                path.chmod(0o600)
         shutil.rmtree(root)
 
 
@@ -94,4 +95,27 @@ def test_resolver_rejects_digest_drift(sealed_artifacts) -> None:
     root.chmod(0o500)
 
     with pytest.raises(EngineSpawnError, match="digest"):
+        resolver(_request(references))
+
+
+def test_resolver_rejects_an_external_path_with_a_checkout_symlink_ancestor(
+    sealed_artifacts,
+) -> None:
+    root, references = sealed_artifacts
+    root.chmod(0o700)
+    checkout_link = root / "checkout-link"
+    checkout_link.symlink_to(Path(__file__).resolve().parents[2])
+    root.chmod(0o500)
+    forged = checkout_link / "pyproject.toml"
+    resolver = HashBoundArtifactResolver(
+        (
+            EngineArtifactBinding(references[0], forged),
+            *(
+                EngineArtifactBinding(reference, root / f"artifact-{index}")
+                for index, reference in enumerate(references[1:], start=2)
+            ),
+        )
+    )
+
+    with pytest.raises(EngineSpawnError, match="artifact path"):
         resolver(_request(references))

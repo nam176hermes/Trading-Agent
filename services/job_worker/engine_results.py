@@ -35,6 +35,8 @@ from .results import (
 
 MAX_ENGINE_EVENTS = 4_096
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
+_GENERIC_EVENT_VALIDATOR = "engine-event-v1"
+_NAUTILUS_BACKTEST_VALIDATOR = "nautilus-backtest-result-v1"
 
 
 class EngineResultValidationError(ResultValidationError):
@@ -73,7 +75,10 @@ class EngineResultValidator:
         exit_code: int,
         progress: Callable[[], None] | None = None,
     ) -> ValidatedEngineEventBatch:
-        if validator_id != "engine-event-v1":
+        if validator_id not in {
+            _GENERIC_EVENT_VALIDATOR,
+            _NAUTILUS_BACKTEST_VALIDATOR,
+        }:
             raise EngineResultValidationError(
                 "engine result validator is not allowlisted"
             )
@@ -122,8 +127,24 @@ class EngineResultValidator:
         check()
         raw = self._read_captured_stdout(job, stdout, check)
         events = self._parse_canonical_batch(raw, request, check)
+        if validator_id == _NAUTILUS_BACKTEST_VALIDATOR:
+            if len(events) != 1:
+                raise EngineResultValidationError(
+                    "Nautilus backtest must emit exactly one completion event"
+                )
+            from packages.nautilus_backtest import (
+                NautilusBacktestError,
+                validate_isolated_backtest_result,
+            )
+
+            try:
+                validate_isolated_backtest_result(request, events[0])
+            except NautilusBacktestError as exc:
+                raise EngineResultValidationError(
+                    "Nautilus backtest result is not hash-bound and zero-order"
+                ) from exc
         check()
-        return self._seal(job, request, raw, events)
+        return self._seal(job, request, raw, events, validator_id)
 
     def _read_captured_stdout(
         self,
@@ -240,6 +261,7 @@ class EngineResultValidator:
         request: EngineCommandEnvelope,
         raw: bytes,
         events: tuple[EngineEventEnvelope, ...],
+        validator_id: str,
     ) -> ValidatedEngineEventBatch:
         digest = hashlib.sha256(raw).hexdigest()
         components = (job.job_id, job.attempt_id)
@@ -351,7 +373,7 @@ class EngineResultValidator:
             "last_sequence": last.stream_sequence,
             "request_message_id": str(request.message_id),
             "source_commit": request.source_commit,
-            "validator_id": "engine-event-v1",
+            "validator_id": validator_id,
         }
         return ValidatedEngineEventBatch(
             "engine_event_batch",
@@ -360,7 +382,7 @@ class EngineResultValidator:
             len(raw),
             "application/x-ndjson",
             False,
-            "engine-event-v1",
+            validator_id,
             metadata,
             events,
         )

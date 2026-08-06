@@ -42,7 +42,7 @@ _ARTIFACT_MANIFEST_NAME = "artifact-manifest.json"
 _FILES_DIRECTORY = "files"
 _EXPECTED_ENGINE_NAME = "nautilus_trader"
 _EXPECTED_ENGINE_VERSION = "1.227.0"
-_EXPECTED_RESULT_VALIDATOR = "engine-event-v1"
+_EXPECTED_RESULT_VALIDATOR = "nautilus-backtest-result-v1"
 _MANIFEST_FIELDS = {
     "schema_version",
     "engine_name",
