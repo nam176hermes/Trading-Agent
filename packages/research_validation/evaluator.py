@@ -132,7 +132,7 @@ def _walk_forward(evidence: ResearchGateEvidenceV1) -> ResearchGateResultV1:
     folds = evidence.walk_forward_folds
     if len(folds) < 2:
         failures.add("E_WALK_FORWARD_FOLD_COUNT")
-    previous_oos_end = None
+    previous_fold_end = None
     for fold in folds:
         if fold.input_artifacts_sha256 != evidence.provenance.backtest_input_artifacts_sha256:
             failures.add("E_WALK_FORWARD_INPUT_DRIFT")
@@ -142,9 +142,11 @@ def _walk_forward(evidence: ResearchGateEvidenceV1) -> ResearchGateResultV1:
             <= fold.out_of_sample_end_at
         ):
             failures.add("E_WALK_FORWARD_WINDOW")
-        if previous_oos_end is not None and fold.out_of_sample_start_at <= previous_oos_end:
+        if previous_fold_end is not None and fold.train_start_at <= previous_fold_end:
+            failures.add("E_WALK_FORWARD_FOLD_OVERLAP")
+        if previous_fold_end is not None and fold.out_of_sample_start_at <= previous_fold_end:
             failures.add("E_WALK_FORWARD_OOS_OVERLAP")
-        previous_oos_end = fold.out_of_sample_end_at
+        previous_fold_end = fold.out_of_sample_end_at
     if sum((fold.out_of_sample_return for fold in folds), Decimal("0")) < evidence.minimum_walk_forward_return:
         failures.add("E_WALK_FORWARD_RETURN")
     return _result("walk-forward", failures)
@@ -193,8 +195,11 @@ def _benchmark_comparison(evidence: ResearchGateEvidenceV1) -> ResearchGateResul
     reference = comparisons["reference"]
     for name in ("legacy", "nautilus"):
         item = comparisons[name]
-        if item.disposition == "match" and item.result_sha256 != reference.result_sha256:
-            failures.add("E_BENCHMARK_FALSE_MATCH")
+        if item.disposition == "match":
+            if item.result_sha256 != reference.result_sha256:
+                failures.add("E_BENCHMARK_FALSE_MATCH")
+            if item.event_sha256 != reference.event_sha256:
+                failures.add("E_BENCHMARK_FALSE_MATCH_EVENT")
     if comparisons["nautilus"].result_sha256 != evidence.provenance.backtest_result_sha256:
         failures.add("E_BENCHMARK_NAUTILUS_RESULT_DRIFT")
     if comparisons["nautilus"].event_sha256 != evidence.provenance.backtest_event_sha256:

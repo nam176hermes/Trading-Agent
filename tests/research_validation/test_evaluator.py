@@ -69,6 +69,16 @@ def test_walk_forward_and_cost_fail_closed() -> None:
         item for item in report.results if item.name == "walk-forward"
     ).failure_codes
 
+    leaked_train = evidence().walk_forward_folds[1].model_copy(
+        update={"train_start_at": NOW + timedelta(minutes=5)}
+    )
+    report = evaluate_research_gates(
+        evidence(walk_forward_folds=(evidence().walk_forward_folds[0], leaked_train))
+    )
+    assert "E_WALK_FORWARD_FOLD_OVERLAP" in next(
+        item for item in report.results if item.name == "walk-forward"
+    ).failure_codes
+
     scenarios = tuple(
         CostScenario(
             name=item.name,
@@ -115,4 +125,18 @@ def test_benchmark_and_provenance_drift_block() -> None:
     report = evaluate_research_gates(evidence(comparisons=drifted_event))
     assert next(
         item for item in report.results if item.name == "benchmark-comparison"
-    ).failure_codes == ("E_BENCHMARK_NAUTILUS_EVENT_DRIFT",)
+    ).failure_codes == (
+        "E_BENCHMARK_FALSE_MATCH_EVENT",
+        "E_BENCHMARK_NAUTILUS_EVENT_DRIFT",
+    )
+
+    legacy_event_drift = tuple(
+        item.model_copy(update={"event_sha256": _digest("0")})
+        if item.comparator == "legacy"
+        else item
+        for item in evidence().comparisons
+    )
+    report = evaluate_research_gates(evidence(comparisons=legacy_event_drift))
+    assert next(
+        item for item in report.results if item.name == "benchmark-comparison"
+    ).failure_codes == ("E_BENCHMARK_FALSE_MATCH_EVENT",)

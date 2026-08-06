@@ -161,9 +161,7 @@ def _closure_evidence(request: EngineCommandEnvelope, event: EngineEventEnvelope
             update={
                 "input_artifacts_sha256": result.input_artifacts_sha256,
                 "result_sha256": result.result_sha256,
-                "event_sha256": hashlib.sha256(canonical_json_bytes(event)).hexdigest()
-                if item.comparator == "nautilus"
-                else item.event_sha256,
+                "event_sha256": hashlib.sha256(canonical_json_bytes(event)).hexdigest(),
             }
         )
         for item in base.comparisons
