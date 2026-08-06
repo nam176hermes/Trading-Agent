@@ -661,6 +661,8 @@ def _adapter_quantity(value: OrderQuantity) -> NautilusQuantityV1:
 
 def _canonical_quantity(value: object) -> OrderQuantity:
     adapter = _rebuild_adapter(value, NautilusQuantityV1)
+    if adapter.value.as_tuple().exponent != -adapter.precision:
+        raise ValueError("adapter quantity value scale does not match its precision")
     return OrderQuantity(adapter.value, adapter.precision)
 
 

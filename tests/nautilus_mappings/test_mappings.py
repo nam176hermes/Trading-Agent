@@ -652,6 +652,38 @@ def test_adapter_mapping_rejects_forged_unknown_legacy_and_inconsistent_values()
             mapping(forged)
 
 
+@pytest.mark.parametrize(
+    ("forged", "mapping"),
+    [
+        (
+            canonical_to_nautilus_order_intent(intent()).model_copy(
+                update={
+                    "quantity": NautilusQuantityV1.model_construct(
+                        value=Decimal("1.20"), precision=1
+                    )
+                }
+            ),
+            nautilus_to_canonical_order_intent,
+        ),
+        (
+            canonical_to_nautilus_fill_event(fill_event()).model_copy(
+                update={
+                    "quantity": NautilusQuantityV1.model_construct(
+                        value=Decimal("1.2"), precision=2
+                    )
+                }
+            ),
+            nautilus_to_canonical_fill_event,
+        ),
+    ],
+)
+def test_adapter_mapping_rejects_quantity_values_with_incompatible_precision(
+    forged: object, mapping: object
+) -> None:
+    with pytest.raises(NautilusMappingError):
+        mapping(forged)  # type: ignore[operator]
+
+
 _PRODUCTION_SOURCE_ROOTS = ("packages", "apps", "services", "scripts")
 # The isolated wheel is never importable in the root graph, including build
 # tooling. Tests and the external engine wheel are not production roots.
