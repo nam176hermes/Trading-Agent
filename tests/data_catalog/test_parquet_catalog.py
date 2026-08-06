@@ -15,6 +15,7 @@ from packages.data_catalog import (
     materialize_fixture_catalog,
     verify_materialized_catalog,
 )
+from packages.data_catalog import parquet as catalog_parquet
 from packages.domain import (
     InstrumentId,
     MarketCandle,
@@ -180,6 +181,34 @@ def test_catalog_verifier_rejects_oversized_artifact_before_parquet_loading(tmp_
 
     with pytest.raises(CatalogMaterializationError, match="bounded regular-file policy"):
         verify_materialized_catalog(artifact)
+
+
+def test_catalog_cleanup_never_unlinks_an_inode_replaced_by_another_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = snapshot()
+    parquet_name = f"market-{source.digest}.parquet"
+    injected = b"unrelated-writer-artifact"
+
+    def replace_then_fail(directory_fd: int, _name: str, _manifest: object) -> None:
+        import os
+
+        os.unlink(parquet_name, dir_fd=directory_fd)
+        fd = os.open(parquet_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory_fd)
+        try:
+            os.write(fd, injected)
+        finally:
+            os.close(fd)
+        raise RuntimeError("force cleanup")
+
+    monkeypatch.setattr(catalog_parquet, "_write_new_manifest", replace_then_fail)
+
+    with pytest.raises(RuntimeError, match="force cleanup"):
+        materialize_fixture_catalog(
+            source, RAW_EVIDENCE, destination=tmp_path, importer_version="fixture-catalog-v1"
+        )
+
+    assert (tmp_path / parquet_name).read_bytes() == injected
 
 
 def test_data_catalog_source_has_no_runtime_or_provider_imports() -> None:

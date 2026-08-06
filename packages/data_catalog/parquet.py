@@ -130,10 +130,14 @@ def _sha256_at(directory_fd: int, name: str, *, maximum_bytes: int) -> str:
         os.close(fd)
 
 
-def _sha256_fd(fd: int) -> str:
+def _sha256_fd(fd: int, *, maximum_bytes: int) -> str:
     os.lseek(fd, 0, os.SEEK_SET)
     digest = hashlib.sha256()
+    consumed = 0
     while block := os.read(fd, 64 * 1024):
+        consumed += len(block)
+        if consumed > maximum_bytes:
+            raise CatalogMaterializationError("catalog artifact exceeds its bounded regular-file policy")
         digest.update(block)
     os.lseek(fd, 0, os.SEEK_SET)
     return digest.hexdigest()
@@ -152,7 +156,7 @@ def _artifact_names(content_digest: str) -> tuple[str, str]:
     return (f"market-{content_digest}.parquet", f"market-{content_digest}.manifest.json")
 
 
-def _write_new_parquet(directory_fd: int, name: str, rows: list[dict[str, str]]) -> None:
+def _write_new_parquet(directory_fd: int, name: str, rows: list[dict[str, str]]) -> tuple[int, int]:
     temporary = f".catalog-{uuid.uuid4().hex}.parquet"
     temporary_fd = os.open(
         temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory_fd
@@ -173,6 +177,7 @@ def _write_new_parquet(directory_fd: int, name: str, rows: list[dict[str, str]])
         if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
             raise CatalogMaterializationError("temporary parquet artifact changed unexpectedly")
         _link_fd_into_directory(temporary_fd, directory_fd, name)
+        return (source.st_dev, source.st_ino)
     finally:
         try:
             source = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
@@ -184,7 +189,7 @@ def _write_new_parquet(directory_fd: int, name: str, rows: list[dict[str, str]])
         os.close(temporary_fd)
 
 
-def _write_new_manifest(directory_fd: int, name: str, manifest: MarketDatasetManifestV1) -> None:
+def _write_new_manifest(directory_fd: int, name: str, manifest: MarketDatasetManifestV1) -> tuple[int, int]:
     encoded = json.dumps(manifest.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > _MAX_MANIFEST_BYTES:
         raise CatalogMaterializationError("manifest exceeds its bounded size")
@@ -195,6 +200,8 @@ def _write_new_manifest(directory_fd: int, name: str, manifest: MarketDatasetMan
     try:
         os.write(fd, encoded)
         os.fsync(fd)
+        info = os.fstat(fd)
+        return (info.st_dev, info.st_ino)
     finally:
         os.close(fd)
 
@@ -212,23 +219,26 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
     rows, canonical_rows = _canonical_rows(snapshot)
     parquet_name, manifest_name = _artifact_names(snapshot.digest)
     with _opened_catalog_directory(destination) as (directory_fd, root):
-        _write_new_parquet(directory_fd, parquet_name, rows)
+        created: dict[str, tuple[int, int]] = {}
         try:
+            created[parquet_name] = _write_new_parquet(directory_fd, parquet_name, rows)
             manifest = MarketDatasetManifestV1.from_snapshot(
                 snapshot, raw_evidence_sha256=raw_evidence_sha256,
                 canonical_rows_sha256=_sha256_bytes(canonical_rows),
                 parquet_sha256=_sha256_at(directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES),
                 importer_version=importer_version,
             )
-            _write_new_manifest(directory_fd, manifest_name, manifest)
+            created[manifest_name] = _write_new_manifest(directory_fd, manifest_name, manifest)
             artifact = MaterializedMarketDatasetV1(manifest, root / parquet_name, root / manifest_name)
             if verify_materialized_catalog(artifact) != snapshot:
                 raise CatalogMaterializationError("materialized catalog does not round-trip")
             return artifact
         except Exception:
-            for name in (parquet_name, manifest_name):
+            for name, identity in created.items():
                 try:
-                    os.unlink(name, dir_fd=directory_fd)
+                    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) == identity:
+                        os.unlink(name, dir_fd=directory_fd)
                 except FileNotFoundError:
                     pass
             raise
@@ -237,7 +247,14 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
 def _read_manifest(directory_fd: int, name: str) -> MarketDatasetManifestV1:
     fd = _regular_fd_at(directory_fd, name, maximum_bytes=_MAX_MANIFEST_BYTES)
     try:
-        encoded = b"".join(iter(lambda: os.read(fd, 64 * 1024), b""))
+        blocks: list[bytes] = []
+        consumed = 0
+        while block := os.read(fd, 64 * 1024):
+            consumed += len(block)
+            if consumed > _MAX_MANIFEST_BYTES:
+                raise CatalogMaterializationError("manifest exceeds its bounded size")
+            blocks.append(block)
+        encoded = b"".join(blocks)
     finally:
         os.close(fd)
     try:
@@ -321,7 +338,7 @@ def verify_materialized_catalog(artifact: MaterializedMarketDatasetV1) -> Market
             raise CatalogMaterializationError("artifact paths do not match manifest identity")
         parquet_fd = _regular_fd_at(directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES)
         try:
-            if _sha256_fd(parquet_fd) != manifest.parquet_sha256:
+            if _sha256_fd(parquet_fd, maximum_bytes=_MAX_PARQUET_BYTES) != manifest.parquet_sha256:
                 raise CatalogMaterializationError("parquet digest does not match manifest")
             rows = _read_rows_from_fd(parquet_fd)
         finally:
