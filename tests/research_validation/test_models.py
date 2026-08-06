@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 
 from packages.data_catalog import MarketDatasetContinuityV1, MarketDatasetManifestV1
 from packages.domain import InstrumentId, MarketTimeframe, ProductType
+from packages.engine_contracts import canonical_json_bytes
 from packages.research_validation import (
     ComparisonRecord,
     CostScenario,
@@ -52,6 +54,16 @@ def _manifest() -> MarketDatasetManifestV1:
 
 
 def evidence(**updates: object) -> ResearchGateEvidenceV1:
+    input_artifacts_sha256 = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "engine_configuration": _digest("e"),
+                "instrument_catalog": _digest("f"),
+                "strategy_configuration": _digest("1"),
+                "market_data": _digest("c"),
+            }
+        )
+    ).hexdigest()
     provenance = ResearchProvenanceV1(
         dataset=_manifest(),
         dataset_content_sha256=_digest("a"),
@@ -60,7 +72,7 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
         instrument_catalog_sha256=_digest("f"),
         strategy_configuration_sha256=_digest("1"),
         market_data_sha256=_digest("c"),
-        backtest_input_artifacts_sha256=_digest("2"),
+        backtest_input_artifacts_sha256=input_artifacts_sha256,
         backtest_result_sha256=_digest("3"),
         source_commit="0" * 40,
     )
@@ -94,17 +106,44 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
                 out_of_sample_end_at=NOW + timedelta(minutes=5),
                 out_of_sample_return=Decimal("0.01"),
             ),
+            WalkForwardFold(
+                fold_id="fold-2",
+                train_start_at=NOW + timedelta(minutes=6),
+                train_end_at=NOW + timedelta(minutes=7),
+                validation_start_at=NOW + timedelta(minutes=8),
+                validation_end_at=NOW + timedelta(minutes=9),
+                out_of_sample_start_at=NOW + timedelta(minutes=10),
+                out_of_sample_end_at=NOW + timedelta(minutes=11),
+                out_of_sample_return=Decimal("0.01"),
+            ),
         ),
         "minimum_walk_forward_return": Decimal("0"),
         "cost_scenarios": (
             CostScenario(name="baseline", fee_bps=0, slippage_bps=0, net_return=Decimal("0.02")),
+            CostScenario(name="combined-stress", fee_bps=10, slippage_bps=10, net_return=Decimal("0.01")),
+            CostScenario(name="fee-stress", fee_bps=10, slippage_bps=0, net_return=Decimal("0.015")),
+            CostScenario(name="slippage-stress", fee_bps=0, slippage_bps=10, net_return=Decimal("0.015")),
         ),
         "minimum_stressed_return": Decimal("-0.01"),
         "comparisons": (
             ComparisonRecord(
                 comparator="legacy",
-                input_artifacts_sha256=_digest("2"),
-                result_sha256=_digest("6"),
+                input_artifacts_sha256=input_artifacts_sha256,
+                result_sha256=_digest("3"),
+                event_sha256=_digest("7"),
+                disposition="match",
+            ),
+            ComparisonRecord(
+                comparator="nautilus",
+                input_artifacts_sha256=input_artifacts_sha256,
+                result_sha256=_digest("3"),
+                event_sha256=_digest("7"),
+                disposition="match",
+            ),
+            ComparisonRecord(
+                comparator="reference",
+                input_artifacts_sha256=input_artifacts_sha256,
+                result_sha256=_digest("3"),
                 event_sha256=_digest("7"),
                 disposition="match",
             ),

@@ -9,6 +9,11 @@ from .models import (
     ResearchProvenanceV1,
     WalkForwardFold,
 )
+from .evaluator import (
+    ResearchGateReportV1,
+    ResearchGateResultV1,
+    evaluate_research_gates,
+)
 
 __all__ = [
     "ComparisonRecord",
@@ -16,6 +21,9 @@ __all__ = [
     "PointInTimeObservation",
     "RecursiveIndicatorReplay",
     "ResearchGateEvidenceV1",
+    "ResearchGateReportV1",
+    "ResearchGateResultV1",
     "ResearchProvenanceV1",
     "WalkForwardFold",
+    "evaluate_research_gates",
 ]
