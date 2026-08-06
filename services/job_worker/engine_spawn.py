@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
 from packages.engine_contracts import (
+    ArtifactReference,
     EngineCommandEnvelope,
     RunBacktest,
     canonical_json_bytes,
@@ -40,6 +41,12 @@ _BWRAP_VERSION = re.compile(
 _PREPARED_TTL_NS = 5 * 60 * 1_000_000_000
 _INPUT_TARGET = PurePosixPath("/inputs/request.json")
 _SIDECAR_TARGET = PurePosixPath("/inputs/request.sha256")
+_INPUT_ARTIFACT_NAMES = (
+    "engine_configuration",
+    "instrument_catalog",
+    "strategy_configuration",
+    "market_data",
+)
 _SANDBOX_PROFILE_DOCUMENT = (
     b"trading-agent-engine-bwrap-v2:die-with-parent,user,pid,net,new-session,"
     b"clearenv,sealed-file-closure,fd-ro-bind-data-inputs,proc,dev,tmpfs"
@@ -119,6 +126,19 @@ class CompleteEngineClosureAttestation:
 
 
 @dataclass(frozen=True, slots=True)
+class HashBoundEngineInput:
+    """One externally provisioned artifact bound to a `RunBacktest` field."""
+
+    name: str
+    reference: ArtifactReference
+    source: Path
+    identity: tuple[int, int]
+    size: int
+    mode: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class EngineSpawnLineage:
     closure_sha256: str
     sandbox_profile_sha256: str
@@ -160,6 +180,9 @@ class _InputIdentity:
 @dataclass(frozen=True, slots=True)
 class _PreparedRecord:
     closure: CompleteEngineClosureAttestation
+    request: RunBacktest
+    inputs: tuple[HashBoundEngineInput, ...]
+    inputs_sha256: str
     request_sha256: str
     request_fd: int
     sidecar_fd: int
@@ -580,6 +603,79 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
     return attestation
 
 
+def _input_target(name: str, reference: ArtifactReference) -> PurePosixPath:
+    extension = ".jsonl" if reference.media_type == "application/jsonl" else ".json"
+    return PurePosixPath("/inputs/artifacts") / f"{name}-{reference.sha256}{extension}"
+
+
+def _input_mount(value: HashBoundEngineInput) -> ReadOnlyClosureMount:
+    return ReadOnlyClosureMount(
+        source=value.source,
+        target=PurePosixPath("/engine/input-verification-placeholder"),
+        identity=value.identity,
+        size=value.size,
+        mode=value.mode,
+        sha256=value.sha256,
+    )
+
+
+def _validate_inputs(
+    value: object, request: RunBacktest
+) -> tuple[HashBoundEngineInput, ...]:
+    if type(value) is not tuple or len(value) != len(_INPUT_ARTIFACT_NAMES):
+        _blocked("ENGINE_INPUT_AUTHORITY_INVALID", "complete hash-bound inputs are required")
+    expected_references = tuple(
+        getattr(request, name) for name in _INPUT_ARTIFACT_NAMES
+    )
+    validated: list[HashBoundEngineInput] = []
+    for name, expected_reference, artifact in zip(
+        _INPUT_ARTIFACT_NAMES, expected_references, value, strict=True
+    ):
+        if (
+            type(artifact) is not HashBoundEngineInput
+            or artifact.name != name
+            or artifact.reference != expected_reference
+            or not _safe_absolute_path(artifact.source)
+            or type(artifact.identity) is not tuple
+            or len(artifact.identity) != 2
+            or any(
+                isinstance(component, bool)
+                or not isinstance(component, int)
+                or component < 0
+                for component in artifact.identity
+            )
+            or isinstance(artifact.size, bool)
+            or not isinstance(artifact.size, int)
+            or artifact.size <= 0
+            or artifact.size > 8 * 1024 * 1024
+            or artifact.mode != 0o400
+            or artifact.sha256 != expected_reference.sha256
+        ):
+            _blocked("ENGINE_INPUT_AUTHORITY_INVALID", "engine input authority is invalid")
+        observed, identity = _observed_identity(
+            artifact.source, reason="ENGINE_INPUT_STALE"
+        )
+        if (
+            identity != artifact.identity
+            or not stat.S_ISREG(observed.st_mode)
+            or observed.st_size != artifact.size
+            or stat.S_IMODE(observed.st_mode) != artifact.mode
+            or observed.st_mode & 0o222
+        ):
+            _blocked("ENGINE_INPUT_STALE", "engine artifact identity changed")
+        _verified_closure_file(_input_mount(artifact))
+        validated.append(artifact)
+    return tuple(validated)
+
+
+def _inputs_sha256(inputs: tuple[HashBoundEngineInput, ...]) -> str:
+    value = "".join(
+        f"{item.name}:{item.reference.artifact_id}:{item.sha256}:{item.size}:{item.mode}"
+        for item in inputs
+    )
+    return hashlib.sha256(value.encode("ascii")).hexdigest()
+
+
 class EngineSpawnProvider:
     """The only owner of engine argv/environment/cwd and input transport."""
 
@@ -588,16 +684,21 @@ class EngineSpawnProvider:
         *,
         transport_root: Path,
         attest_closure: Callable[[], CompleteEngineClosureAttestation],
+        attest_inputs: Callable[[RunBacktest], tuple[HashBoundEngineInput, ...]]
+        | None = None,
         monotonic_ns: Callable[[], int],
     ) -> None:
         if not _safe_absolute_path(transport_root):
             raise ValueError("engine transport root must be canonical and absolute")
         if not callable(attest_closure):
             raise TypeError("complete engine closure attestor is required")
+        if attest_inputs is not None and not callable(attest_inputs):
+            raise TypeError("engine input attestor must be callable")
         if not callable(monotonic_ns):
             raise TypeError("monotonic clock is required")
         self._transport_root = transport_root
         self._attest_closure = attest_closure
+        self._attest_inputs = attest_inputs
         self._monotonic_ns = monotonic_ns
         self._issued: weakref.WeakSet[PreparedEngineSpawn] = weakref.WeakSet()
         self._issue_lock = threading.Lock()
@@ -629,6 +730,22 @@ class EngineSpawnProvider:
                 "ENGINE_CLOSURE_UNAVAILABLE", "complete closure attestation failed"
             ) from exc
         return _validate_closure(value)
+
+    def _current_inputs(
+        self, request: RunBacktest
+    ) -> tuple[HashBoundEngineInput, ...]:
+        if self._attest_inputs is None:
+            return ()
+        try:
+            value = self._attest_inputs(request)
+        except EngineSpawnError:
+            raise
+        except BaseException as exc:
+            raise EngineSpawnError(
+                "ENGINE_INPUT_AUTHORITY_UNAVAILABLE",
+                "engine input authority attestation failed",
+            ) from exc
+        return _validate_inputs(value, request)
 
     def _open_transport_root(self) -> int:
         flags = (
@@ -724,6 +841,8 @@ class EngineSpawnProvider:
         if type(envelope) is not EngineCommandEnvelope or type(envelope.payload) is not RunBacktest:
             _blocked("ENGINE_REQUEST_INVALID", "exact RunBacktest envelope is required")
         closure = self._current_closure()
+        inputs = self._current_inputs(envelope.payload)
+        inputs_sha256 = _inputs_sha256(inputs)
         request = canonical_json_bytes(envelope)
         request_sha256 = hashlib.sha256(request).hexdigest()
         sidecar = request_sha256.encode("ascii") + b"\n"
@@ -760,11 +879,15 @@ class EngineSpawnProvider:
                     closure.closure_sha256
                     + closure.sandbox.profile_sha256
                     + request_sha256
+                    + inputs_sha256
                     + str(issued_at)
                 ).encode("ascii")
             ).hexdigest()
             record = _PreparedRecord(
                 closure,
+                envelope.payload,
+                inputs,
+                inputs_sha256,
                 request_sha256,
                 request_fd,
                 sidecar_fd,
@@ -847,6 +970,9 @@ class EngineSpawnProvider:
             closure = self._current_closure()
             if closure != record.closure:
                 _blocked("ENGINE_CLOSURE_STALE", "complete engine closure changed before spawn")
+            inputs = self._current_inputs(record.request)
+            if inputs != record.inputs or _inputs_sha256(inputs) != record.inputs_sha256:
+                _blocked("ENGINE_INPUT_STALE", "hash-bound engine inputs changed before spawn")
             run_named = os.stat(record.run_name, dir_fd=record.root_fd, follow_symlinks=False)
             run_opened = os.fstat(record.run_fd)
             if (
@@ -887,6 +1013,15 @@ class EngineSpawnProvider:
                 "engine-request-sha256", sidecar, mode=0o400
             )
             launch_fds.append(sidecar_snapshot_fd)
+            input_snapshot_fds: list[int] = []
+            for artifact in inputs:
+                descriptor = _sealed_memfd(
+                    f"engine-input-{artifact.name}",
+                    _verified_closure_file(_input_mount(artifact)),
+                    mode=0o400,
+                )
+                input_snapshot_fds.append(descriptor)
+                launch_fds.append(descriptor)
             sandbox_snapshot_fd = _sealed_sandbox_snapshot(closure.sandbox)
             launch_fds.append(sandbox_snapshot_fd)
             closure_snapshot_fds: list[int] = []
@@ -912,6 +1047,17 @@ class EngineSpawnProvider:
                     str(mount.target),
                 )
             )
+            input_arguments = tuple(
+                argument
+                for artifact, descriptor in zip(inputs, input_snapshot_fds, strict=True)
+                for argument in (
+                    "--perms",
+                    "0400",
+                    "--ro-bind-data",
+                    str(descriptor),
+                    str(_input_target(artifact.name, artifact.reference)),
+                )
+            )
             argv = (
                 f"/proc/self/fd/{sandbox_snapshot_fd}",
                 "--die-with-parent",
@@ -921,7 +1067,10 @@ class EngineSpawnProvider:
                 "--new-session",
                 "--clearenv",
                 *directory_arguments,
+                "--dir",
+                "/inputs/artifacts",
                 *mount_arguments,
+                *input_arguments,
                 "--perms",
                 "0400",
                 "--ro-bind-data",
@@ -1006,6 +1155,7 @@ __all__ = [
     "EngineSpawnError",
     "EngineSpawnLineage",
     "EngineSpawnProvider",
+    "HashBoundEngineInput",
     "OsSandboxProof",
     "PreparedEngineSpawn",
     "ReadOnlyClosureMount",

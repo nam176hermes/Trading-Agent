@@ -52,6 +52,14 @@ _ENVELOPE_FIELDS = {
     "payload",
 }
 _EVENT_TYPE = "NautilusBacktestCompleted"
+_INPUT_ARTIFACT_NAMES = (
+    "engine_configuration",
+    "instrument_catalog",
+    "strategy_configuration",
+    "market_data",
+)
+_MAX_COMMAND_BYTES = 1_048_576
+_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -64,7 +72,7 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _read_regular(path: Path) -> bytes:
+def _read_regular(path: Path, *, maximum_size: int = _MAX_COMMAND_BYTES) -> bytes:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -72,18 +80,16 @@ def _read_regular(path: Path) -> bytes:
             os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         observed = os.fstat(descriptor)
-        if not stat.S_ISREG(observed.st_mode):
+        if not stat.S_ISREG(observed.st_mode) or observed.st_size > maximum_size:
             raise ValueError("input must be a regular file")
         chunks: list[bytes] = []
-        remaining = 1_048_576
+        remaining = observed.st_size
         while remaining:
             block = os.read(descriptor, min(65_536, remaining))
             if not block:
                 break
             chunks.append(block)
             remaining -= len(block)
-        if remaining == 0 and os.read(descriptor, 1):
-            raise ValueError("input exceeds the bounded command size")
         return b"".join(chunks)
     except OSError as exc:
         raise ValueError("input cannot be safely read") from exc
@@ -163,7 +169,139 @@ def validated_request(request_path: Path, sidecar_path: Path) -> dict[str, objec
     return _validate_request(document, raw)
 
 
-def _run_nautilus() -> tuple[int, int, int, int]:
+def _input_artifact_path(
+    name: str, reference: object, artifact_root: Path
+) -> Path:
+    if name not in _INPUT_ARTIFACT_NAMES:
+        raise ValueError("backtest input name is invalid")
+    _artifact(reference)
+    assert isinstance(reference, dict)
+    extension = ".jsonl" if reference["media_type"] == "application/jsonl" else ".json"
+    return artifact_root / f"{name}-{reference['sha256']}{extension}"
+
+
+def validated_input_artifacts(
+    request: dict[str, object], artifact_root: Path = Path("/inputs/artifacts")
+) -> tuple[bytes, bytes, bytes, bytes]:
+    """Read exactly the request-bound artifact files from the private mount.
+
+    The path is derived solely from each command reference.  No supplied
+    filename, ambient workspace, or unbound catalog location is accepted.
+    """
+
+    if not artifact_root.is_absolute():
+        raise ValueError("engine artifact root must be absolute")
+    try:
+        root = artifact_root.lstat()
+    except OSError as exc:
+        raise ValueError("engine artifact root is unavailable") from exc
+    if stat.S_ISLNK(root.st_mode) or not stat.S_ISDIR(root.st_mode):
+        raise ValueError("engine artifact root is unsafe")
+    payload = request.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("command payload is invalid")
+    values: list[bytes] = []
+    for name in _INPUT_ARTIFACT_NAMES:
+        reference = payload.get(name)
+        path = _input_artifact_path(name, reference, artifact_root)
+        value = _read_regular(path, maximum_size=_MAX_ARTIFACT_BYTES)
+        assert isinstance(reference, dict)
+        if not hmac.compare_digest(
+            hashlib.sha256(value).hexdigest(), str(reference["sha256"])
+        ):
+            raise ValueError("engine artifact digest does not match command")
+        values.append(value)
+    return tuple(values)  # type: ignore[return-value]
+
+
+def _input_artifacts_sha256(artifacts: tuple[bytes, bytes, bytes, bytes]) -> str:
+    return hashlib.sha256(
+        _canonical_json_bytes(
+            {
+                name: hashlib.sha256(value).hexdigest()
+                for name, value in zip(_INPUT_ARTIFACT_NAMES, artifacts, strict=True)
+            }
+        )
+    ).hexdigest()
+
+
+def _canonical_object(value: bytes, *, label: str) -> dict[str, object]:
+    try:
+        decoded = json.loads(value)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{label} JSON is invalid") from exc
+    if not isinstance(decoded, dict) or _canonical_json_bytes(decoded) != value:
+        raise ValueError(f"{label} must be a canonical JSON object")
+    return decoded
+
+
+def _required_sha256(value: object, *, label: str) -> None:
+    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+        raise ValueError(f"{label} digest is invalid")
+
+
+def validate_zero_order_fixture_inputs(
+    artifacts: tuple[bytes, bytes, bytes, bytes]
+) -> None:
+    """Validate the 04A catalog and 04B target data used by 04C.
+
+    04C deliberately accepts only a zero target.  It runs a real Nautilus
+    engine cycle without creating orders; position sizing and execution-model
+    adapters belong to later packets.
+    """
+
+    configuration, catalog_bytes, target_bytes, market_bytes = artifacts
+    configuration_value = _canonical_object(configuration, label="engine configuration")
+    if configuration_value != {
+        "execution_mode": "zero-order",
+        "run_analysis": False,
+        "schema_version": "nautilus-backtest-engine-config-v1",
+    }:
+        raise ValueError("engine configuration is not the fixed zero-order model")
+    catalog = _canonical_object(catalog_bytes, label="catalog manifest")
+    if catalog.get("schema_version") != "market-dataset-manifest-v1":
+        raise ValueError("catalog manifest is not the 04A schema")
+    row_count = catalog.get("row_count")
+    if type(row_count) is not int or row_count <= 0 or row_count > 4096:
+        raise ValueError("catalog manifest row_count is invalid")
+    _required_sha256(catalog.get("canonical_rows_sha256"), label="catalog rows")
+    _required_sha256(catalog.get("parquet_sha256"), label="catalog parquet")
+    target = _canonical_object(target_bytes, label="strategy target")
+    if set(target) != {
+        "effective_at",
+        "positions",
+        "schema_version",
+        "source_signal_ids",
+        "target_id",
+    }:
+        raise ValueError("strategy target is not the 04B contract")
+    if (
+        not isinstance(target["target_id"], str)
+        or _UUID.fullmatch(target["target_id"]) is None
+        or not isinstance(target["effective_at"], str)
+        or not target["effective_at"].endswith("Z")
+        or not isinstance(target["schema_version"], str)
+        or not isinstance(target["source_signal_ids"], list)
+        or not target["source_signal_ids"]
+        or any(
+            not isinstance(signal_id, str) or _UUID.fullmatch(signal_id) is None
+            for signal_id in target["source_signal_ids"]
+        )
+        or len(set(target["source_signal_ids"])) != len(target["source_signal_ids"])
+    ):
+        raise ValueError("strategy target is invalid")
+    if type(target["positions"]) is not list or target["positions"]:
+        raise ValueError("04C accepts only a zero target")
+    if not market_bytes.endswith(b"\n"):
+        raise ValueError("market fixture must use canonical JSONL")
+    lines = market_bytes[:-1].split(b"\n")
+    if len(lines) != row_count or any(not line for line in lines):
+        raise ValueError("market fixture does not match catalog row_count")
+    for line in lines:
+        _canonical_object(line, label="market fixture row")
+
+
+def _run_nautilus(_artifacts: tuple[bytes, bytes, bytes, bytes]) -> tuple[int, int, int, int]:
     """Execute a no-network, no-order Nautilus engine cycle.
 
     Catalog-data adapters and target-position strategy installation are mounted
@@ -221,12 +359,17 @@ def _run_nautilus() -> tuple[int, int, int, int]:
         engine.dispose()
 
 
-def _event(request: dict[str, object], result: tuple[int, int, int, int]) -> dict[str, object]:
+def _event(
+    request: dict[str, object],
+    artifacts: tuple[bytes, bytes, bytes, bytes],
+    result: tuple[int, int, int, int],
+) -> dict[str, object]:
     iterations, total_orders, total_positions, total_events = result
     payload = {
         "event_type": _EVENT_TYPE,
         "family": "ENGINE_LIFECYCLE",
         "attributes": [
+            {"name": "input_artifacts_sha256", "value": _input_artifacts_sha256(artifacts)},
             {"name": "iterations", "value": iterations},
             {"name": "total_events", "value": total_events},
             {"name": "total_orders", "value": total_orders},
@@ -261,7 +404,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         _fail("expected request.json and request.sha256")
     try:
         request = validated_request(Path(arguments[0]), Path(arguments[1]))
-        print(_canonical_json_bytes(_event(request, _run_nautilus())).decode("utf-8"))
+        artifacts = validated_input_artifacts(request)
+        validate_zero_order_fixture_inputs(artifacts)
+        print(
+            _canonical_json_bytes(
+                _event(request, artifacts, _run_nautilus(artifacts))
+            ).decode("utf-8")
+        )
     except (ImportError, OSError, ValueError) as exc:
         _fail(str(exc))
 

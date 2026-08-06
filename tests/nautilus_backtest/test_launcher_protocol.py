@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
@@ -103,3 +104,101 @@ def test_launcher_rejects_request_digest_drift(launcher_module, tmp_path: Path) 
 
     with pytest.raises(ValueError, match="digest"):
         launcher_module.validated_request(request_path, sidecar_path)
+
+
+def test_launcher_reads_only_the_four_hash_bound_input_artifacts(
+    launcher_module, tmp_path: Path
+) -> None:
+    artifact_values = (
+        ("engine_configuration", b'{"mode":"zero-order"}\n', "application/json"),
+        ("instrument_catalog", b'{"schema_version":"market-dataset-manifest-v1"}\n', "application/json"),
+        ("strategy_configuration", b'{"positions":[]}\n', "application/json"),
+        ("market_data", b'{"close":"1"}\n', "application/jsonl"),
+    )
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    references: list[ArtifactReference] = []
+    for index, (name, value, media_type) in enumerate(artifact_values, start=1):
+        digest = hashlib.sha256(value).hexdigest()
+        extension = ".jsonl" if media_type == "application/jsonl" else ".json"
+        (artifact_root / f"{name}-{digest}{extension}").write_bytes(value)
+        references.append(
+            ArtifactReference(
+                artifact_id=UUID(f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"),
+                sha256=digest,
+                media_type=media_type,
+            )
+        )
+    command = RunBacktest(
+        command_type="RunBacktest",
+        engine_configuration=references[0],
+        instrument_catalog=references[1],
+        strategy_configuration=references[2],
+        market_data=references[3],
+        start_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+        end_time=datetime(2026, 8, 5, 12, 30, tzinfo=UTC),
+    )
+    envelope = _request().model_copy(
+        update={
+            "config_digest": payload_digest(
+                {
+                    "engine_configuration": command.engine_configuration,
+                    "instrument_catalog": command.instrument_catalog,
+                    "strategy_configuration": command.strategy_configuration,
+                }
+            ),
+            "payload_digest": payload_digest(command),
+            "payload": command,
+        }
+    )
+
+    loaded = launcher_module.validated_input_artifacts(
+        envelope.model_dump(mode="json"), artifact_root
+    )
+
+    assert loaded == tuple(value for _name, value, _media_type in artifact_values)
+
+
+def test_launcher_accepts_only_a_zero_order_04a_catalog_and_04b_target(
+    launcher_module,
+) -> None:
+    configuration = json.dumps(
+        {
+            "execution_mode": "zero-order",
+            "run_analysis": False,
+            "schema_version": "nautilus-backtest-engine-config-v1",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    catalog = json.dumps(
+        {
+            "canonical_rows_sha256": "1" * 64,
+            "parquet_sha256": "2" * 64,
+            "row_count": 1,
+            "schema_version": "market-dataset-manifest-v1",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    target = json.dumps(
+        {
+            "effective_at": "2026-08-05T12:00:00Z",
+            "positions": [],
+            "schema_version": "1.0.0",
+            "source_signal_ids": ["22222222-2222-4222-8222-222222222222"],
+            "target_id": "11111111-1111-4111-8111-111111111111",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    market_data = b'{"close":"1"}\n'
+
+    launcher_module.validate_zero_order_fixture_inputs(
+        (configuration, catalog, target, market_data)
+    )
+
+    with pytest.raises(ValueError, match="zero target"):
+        launcher_module.validate_zero_order_fixture_inputs(
+            (configuration, catalog, target.replace(b"[]", b'[{}]'), market_data)
+        )

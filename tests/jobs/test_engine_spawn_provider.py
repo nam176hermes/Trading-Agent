@@ -27,6 +27,7 @@ from packages.engine_contracts import (
 )
 from services.job_worker.engine_spawn import (
     CompleteEngineClosureAttestation,
+    HashBoundEngineInput,
     EngineSpawnError,
     EngineSpawnProvider,
     OsSandboxProof,
@@ -162,12 +163,15 @@ def _closure(tmp_path: Path) -> CompleteEngineClosureAttestation:
 def _provider(
     tmp_path: Path,
     attestor,
+    *,
+    attest_inputs=None,
 ) -> EngineSpawnProvider:
     transport = tmp_path / "transport"
     transport.mkdir(mode=0o700, exist_ok=True)
     return EngineSpawnProvider(
         transport_root=transport,
         attest_closure=attestor,
+        attest_inputs=attest_inputs,
         monotonic_ns=lambda: 1_000_000_000,
     )
 
@@ -338,6 +342,8 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
             "/inputs",
             "--dir",
             "/engine/bin",
+            "--dir",
+            "/inputs/artifacts",
             "--perms",
             "0500",
             "--ro-bind-data",
@@ -382,6 +388,156 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
     run_root = tmp_path / "transport" / f"run-{envelope.engine_run_id.hex}"
     assert (run_root / "request.json").stat().st_mode & 0o777 == 0o400
     assert (run_root / "request.sha256").stat().st_mode & 0o777 == 0o400
+
+
+def test_provider_mounts_each_attested_artifact_as_a_sealed_hash_bound_input(
+    secure_tmp_path: Path,
+) -> None:
+    values = (
+        ("engine_configuration", b'{"mode":"zero-order"}\n', "application/json"),
+        ("instrument_catalog", b'{"catalog":"fixture"}\n', "application/json"),
+        ("strategy_configuration", b'{"positions":[]}\n', "application/json"),
+        ("market_data", b'{"close":"1"}\n', "application/jsonl"),
+    )
+    root = secure_tmp_path / "external-artifacts"
+    root.mkdir(mode=0o700)
+    references: list[ArtifactReference] = []
+    inputs: list[HashBoundEngineInput] = []
+    for index, (name, value, media_type) in enumerate(values, start=1):
+        source = root / name
+        source.write_bytes(value)
+        source.chmod(0o400)
+        digest = hashlib.sha256(value).hexdigest()
+        reference = ArtifactReference(
+            artifact_id=UUID(f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"),
+            sha256=digest,
+            media_type=media_type,
+        )
+        references.append(reference)
+        observed = source.stat(follow_symlinks=False)
+        inputs.append(
+            HashBoundEngineInput(
+                name=name,
+                reference=reference,
+                source=source,
+                identity=(observed.st_dev, observed.st_ino),
+                size=observed.st_size,
+                mode=0o400,
+                sha256=digest,
+            )
+        )
+    command = RunBacktest(
+        command_type="RunBacktest",
+        engine_configuration=references[0],
+        instrument_catalog=references[1],
+        strategy_configuration=references[2],
+        market_data=references[3],
+        start_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+        end_time=datetime(2026, 8, 5, 12, 30, tzinfo=UTC),
+    )
+    envelope = _envelope().model_copy(
+        update={
+            "config_digest": payload_digest(
+                {
+                    "engine_configuration": command.engine_configuration,
+                    "instrument_catalog": command.instrument_catalog,
+                    "strategy_configuration": command.strategy_configuration,
+                }
+            ),
+            "payload_digest": payload_digest(command),
+            "payload": command,
+        }
+    )
+
+    closure = _closure(secure_tmp_path)
+    spawn = consume_prepared_engine_spawn(
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            attest_inputs=lambda request: tuple(inputs),
+        ).prepare(envelope)
+    )
+    try:
+        for item, (_name, value, _media_type) in zip(inputs, values, strict=True):
+            extension = ".jsonl" if item.reference.media_type == "application/jsonl" else ".json"
+            target = f"/inputs/artifacts/{item.name}-{item.sha256}{extension}"
+            descriptor = _data_fd(spawn.argv, target)
+            assert os.pread(descriptor, len(value) + 1, 0) == value
+            assert fcntl.fcntl(descriptor, F_GET_SEALS) == (
+                F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL
+            )
+    finally:
+        _close_spawn_fds(spawn)
+
+
+def test_provider_rejects_an_artifact_changed_after_prepare_before_spawn(
+    secure_tmp_path: Path,
+) -> None:
+    value = b'{"mode":"zero-order"}\n'
+    source = secure_tmp_path / "external-artifact"
+    source.write_bytes(value)
+    source.chmod(0o400)
+    reference = ArtifactReference(
+        artifact_id=UUID("11111111-1111-4111-8111-111111111111"),
+        sha256=hashlib.sha256(value).hexdigest(),
+        media_type="application/json",
+    )
+    command = RunBacktest(
+        command_type="RunBacktest",
+        engine_configuration=reference,
+        instrument_catalog=reference,
+        strategy_configuration=reference,
+        market_data=ArtifactReference(
+            artifact_id=UUID("44444444-4444-4444-8444-444444444444"),
+            sha256=reference.sha256,
+            media_type="application/jsonl",
+        ),
+        start_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+        end_time=datetime(2026, 8, 5, 12, 30, tzinfo=UTC),
+    )
+    envelope = _envelope().model_copy(
+        update={
+            "config_digest": payload_digest(
+                {
+                    "engine_configuration": command.engine_configuration,
+                    "instrument_catalog": command.instrument_catalog,
+                    "strategy_configuration": command.strategy_configuration,
+                }
+            ),
+            "payload_digest": payload_digest(command),
+            "payload": command,
+        }
+    )
+    observed = source.stat(follow_symlinks=False)
+    inputs = tuple(
+        HashBoundEngineInput(
+            name=name,
+            reference=getattr(command, name),
+            source=source,
+            identity=(observed.st_dev, observed.st_ino),
+            size=observed.st_size,
+            mode=0o400,
+            sha256=getattr(command, name).sha256,
+        )
+        for name in (
+            "engine_configuration",
+            "instrument_catalog",
+            "strategy_configuration",
+            "market_data",
+        )
+    )
+    closure = _closure(secure_tmp_path)
+    prepared = _provider(
+        secure_tmp_path,
+        lambda: closure,
+        attest_inputs=lambda request: inputs,
+    ).prepare(envelope)
+    source.chmod(0o600)
+    source.write_bytes(b'{"mode":"mutated"}\n')
+    source.chmod(0o400)
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_INPUT_STALE"):
+        consume_prepared_engine_spawn(prepared)
 
 
 def test_consumed_request_is_a_sealed_snapshot_not_the_mutable_transport_inode(
