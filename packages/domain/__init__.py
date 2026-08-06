@@ -15,7 +15,21 @@ from .market_data import (
 from .events import EventEnvelope, validate_event_batch
 from .orders import FillEvent, OrderEvent, OrderIntent, OrderSide, OrderStatus, OrderType, TimeInForce
 from .portfolio import PortfolioSnapshot, PositionSnapshot, TargetPortfolio, TargetPosition
-from .primitives import CANONICAL_DECIMAL_POLICY_VERSION, Currency, FiniteDecimal, Money, Price, Quantity
+from .primitives import (
+    CANONICAL_DECIMAL_POLICY_VERSION,
+    DEFAULT_CURRENCY_REGISTRY,
+    Currency,
+    CurrencyConversion,
+    CurrencyRegistry,
+    CurrencyType,
+    FiniteDecimal,
+    Money,
+    OrderQuantity,
+    Price,
+    Quantity,
+    convert_money_exact,
+    decimal_to_scaled_integer,
+)
 from .risk import RiskDecision, RiskOutcome, RiskReasonCode, RiskStateSnapshot
 from .signals import (
     EvidenceLocator,
@@ -30,6 +44,10 @@ from .signals import (
 __all__ = [
     "CANONICAL_DECIMAL_POLICY_VERSION",
     "Currency",
+    "CurrencyConversion",
+    "CurrencyRegistry",
+    "CurrencyType",
+    "DEFAULT_CURRENCY_REGISTRY",
     "EventEnvelope",
     "EvidenceLocator",
     "EvidenceLocatorKind",
@@ -48,6 +66,7 @@ __all__ = [
     "MarketTimeframe",
     "OrderEvent",
     "OrderIntent",
+    "OrderQuantity",
     "OrderSide",
     "OrderStatus",
     "OrderType",
@@ -67,6 +86,8 @@ __all__ = [
     "TargetPortfolio",
     "TargetPosition",
     "TimeInForce",
+    "convert_money_exact",
+    "decimal_to_scaled_integer",
     "require_utc",
     "validate_event_batch",
     "normalize_market_symbol",

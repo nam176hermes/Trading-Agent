@@ -249,12 +249,12 @@ def test_minimum_notional_uses_exact_decimal_product(
     price_precision: int,
     quantity_precision: int,
 ) -> None:
-    price = Price(Decimal(price_coefficient).scaleb(-price_precision), Currency.USD)
+    price = Price(Decimal(price_coefficient).scaleb(-price_precision), Currency.ETH)
     quantity = Quantity(
         Decimal(quantity_coefficient).scaleb(-quantity_precision),
         precision=quantity_precision,
     )
-    tick = Price(Decimal(1).scaleb(-price_precision), Currency.USD)
+    tick = Price(Decimal(1).scaleb(-price_precision), Currency.ETH)
     lot = Quantity(Decimal(1).scaleb(-quantity_precision), quantity_precision)
     product_coefficient = price_coefficient * quantity_coefficient
     product_precision = price_precision + quantity_precision
@@ -264,7 +264,7 @@ def test_minimum_notional_uses_exact_decimal_product(
         tick_size=tick,
         lot_size=lot,
         minimum_quantity=lot,
-        minimum_notional=Money(exact_notional, Currency.USD),
+        minimum_notional=Money(exact_notional, Currency.ETH),
     )
     assert exact.validate_order(price=price, quantity=quantity) == (price, quantity)
 
@@ -274,7 +274,7 @@ def test_minimum_notional_uses_exact_decimal_product(
         minimum_quantity=lot,
         minimum_notional=Money(
             Decimal(product_coefficient + 1).scaleb(-product_precision),
-            Currency.USD,
+            Currency.ETH,
         ),
     )
     with pytest.raises(ValueError, match="minimum notional"):

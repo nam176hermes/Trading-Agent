@@ -592,8 +592,9 @@ def test_nested_d01_primitives_reject_noncanonical_json_decimal_strings(invalid:
         FillEvent.model_validate_json(json.dumps(payload))
 
 
-def test_nested_d01_primitives_round_trip_high_precision_canonical_json_strings() -> None:
+def test_nested_d01_primitives_round_trip_supported_precision_canonical_json_strings() -> None:
     high_precision = Decimal("0.123456789012345678901234567890123456789")
+    monetary_precision = Decimal("0.123456789012345678")
     original = fill_event()
     fill = FillEvent(
         fill_id=original.fill_id,
@@ -602,7 +603,7 @@ def test_nested_d01_primitives_round_trip_high_precision_canonical_json_strings(
         side=original.side,
         quantity=original.quantity,
         price=Price(high_precision, Currency.USD),
-        fees=Money(high_precision, Currency.USD),
+        fees=Money(monetary_precision, Currency.ETH),
         filled_at=original.filled_at,
         schema_version=original.schema_version,
     )
@@ -610,10 +611,10 @@ def test_nested_d01_primitives_round_trip_high_precision_canonical_json_strings(
     serialized = json.loads(fill.model_dump_json())
     assert serialized["quantity"]["value"] == "1.25"
     assert serialized["price"]["amount"] == str(high_precision)
-    assert serialized["fees"]["amount"] == str(high_precision)
+    assert serialized["fees"]["amount"] == str(monetary_precision)
     restored = FillEvent.model_validate_json(json.dumps(serialized))
     assert restored.price.amount == high_precision
-    assert restored.fees.amount == high_precision
+    assert restored.fees.amount == monetary_precision
 
 
 @pytest.mark.parametrize(

@@ -72,9 +72,14 @@ def test_money_price_quantity_and_weight_share_decimal_v1_bytes(
     positive_equivalent = Decimal(
         positive_text + ("0" if "." in positive_text else ".0")
     )
+    whole_money = Decimal(int(value))
+    equivalent_whole_money = Decimal(f"{int(value)}.0")
 
     equivalent_models = (
-        (Money(value, Currency.USD), Money(equivalent, Currency.USD)),
+        (
+            Money(whole_money, Currency.USD),
+            Money(equivalent_whole_money, Currency.USD),
+        ),
         (Price(positive, Currency.USDT), Price(positive_equivalent, Currency.USDT)),
         (Quantity(value, 18), Quantity(equivalent, 18)),
         (

@@ -89,7 +89,7 @@ def order_event() -> OrderEvent:
 
 
 def fill() -> FillEvent:
-    return FillEvent(fill_id=uid(21), order_id=uid(20), instrument=INSTRUMENT, side=OrderSide.BUY, quantity=Quantity(Decimal("1.25"), 2), price=Price(Decimal("100.00000000000000000001"), Currency.USD), fees=Money(Decimal("0.00000000000000000001"), Currency.USD), filled_at=NOW, schema_version="1")
+    return FillEvent(fill_id=uid(21), order_id=uid(20), instrument=INSTRUMENT, side=OrderSide.BUY, quantity=Quantity(Decimal("1.25"), 2), price=Price(Decimal("100.00000000000000000001"), Currency.USD), fees=Money(Decimal("0.01"), Currency.USD), filled_at=NOW, schema_version="1")
 
 
 def envelope(payload: object, *, event_number: int, stream_number: int = 100, sequence: int = 1) -> EventEnvelope[object]:

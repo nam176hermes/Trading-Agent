@@ -9,9 +9,9 @@ from packages.domain import Currency, Money, Price, Quantity
 
 
 def test_money_accepts_signed_decimal_amount_and_is_immutable() -> None:
-    money = Money(amount=Decimal("-12.3400"), currency=Currency.USD)
+    money = Money(amount=Decimal("-12.34"), currency=Currency.USD)
 
-    assert money.amount == Decimal("-12.3400")
+    assert money.amount == Decimal("-12.34")
     assert money.currency is Currency.USD
     with pytest.raises(FrozenInstanceError):
         money.amount = Decimal("1")  # type: ignore[misc]

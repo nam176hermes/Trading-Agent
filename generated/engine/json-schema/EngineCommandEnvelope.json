@@ -110,13 +110,16 @@
       "type": "object"
     },
     "Currency": {
-      "description": "Currencies approved for canonical spot and equity assets.",
+      "description": "One immutable identity issued by a versioned currency registry.",
       "enum": [
         "USD",
-        "USDT"
+        "USDT",
+        "BTC",
+        "ETH"
       ],
       "title": "Currency",
-      "type": "string"
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
     },
     "DescribeEngineCapabilities": {
       "additionalProperties": false,
