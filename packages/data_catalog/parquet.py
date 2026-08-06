@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import uuid
+import fcntl
 from ctypes import CDLL, c_char_p, c_int, get_errno
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -100,9 +101,18 @@ _MAX_PARQUET_BYTES = 8 * 1024 * 1024
 _MAX_ROWS = 4096
 _OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _AT_EMPTY_PATH = 0x1000
+_MFD_CLOEXEC = 0x0001
+_MFD_ALLOW_SEALING = 0x0002
+_F_ADD_SEALS = 1033
+_F_SEAL_SEAL = 0x0001
+_F_SEAL_SHRINK = 0x0002
+_F_SEAL_GROW = 0x0004
+_F_SEAL_WRITE = 0x0008
 _LIBC = CDLL(None, use_errno=True)
 _LIBC.linkat.argtypes = (c_int, c_char_p, c_int, c_char_p, c_int)
 _LIBC.linkat.restype = c_int
+_LIBC.memfd_create.argtypes = (c_char_p, c_int)
+_LIBC.memfd_create.restype = c_int
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -195,6 +205,32 @@ def _sha256_fd(fd: int, *, maximum_bytes: int) -> str:
         digest.update(block)
     os.lseek(fd, 0, os.SEEK_SET)
     return digest.hexdigest()
+
+
+def _sealed_snapshot_fd(source_fd: int, *, maximum_bytes: int) -> int:
+    """Copy one bounded source inode into an immutable memfd before parsing."""
+
+    source_size = os.fstat(source_fd).st_size
+    if source_size > maximum_bytes:
+        raise CatalogMaterializationError("catalog artifact exceeds its bounded regular-file policy")
+    sealed_fd = _LIBC.memfd_create(b"market-catalog-snapshot", _MFD_CLOEXEC | _MFD_ALLOW_SEALING)
+    if sealed_fd < 0:
+        raise CatalogMaterializationError(f"sealed catalog snapshots require Linux memfd: errno {get_errno()}")
+    try:
+        os.lseek(source_fd, 0, os.SEEK_SET)
+        remaining = source_size
+        while remaining:
+            block = os.read(source_fd, min(64 * 1024, remaining))
+            if not block:
+                raise CatalogMaterializationError("catalog artifact shrank while snapshotting")
+            os.write(sealed_fd, block)
+            remaining -= len(block)
+        fcntl.fcntl(sealed_fd, _F_ADD_SEALS, _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL)
+        os.lseek(sealed_fd, 0, os.SEEK_SET)
+        return sealed_fd
+    except Exception:
+        os.close(sealed_fd)
+        raise
 
 
 class _BoundedFdReader(io.RawIOBase):
@@ -325,9 +361,11 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
                 directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES
             )
             try:
-                parquet_sha256 = _sha256_fd(
-                    parquet_fd, maximum_bytes=_MAX_PARQUET_BYTES
-                )
+                sealed_fd = _sealed_snapshot_fd(parquet_fd, maximum_bytes=_MAX_PARQUET_BYTES)
+                try:
+                    parquet_sha256 = _sha256_fd(sealed_fd, maximum_bytes=_MAX_PARQUET_BYTES)
+                finally:
+                    os.close(sealed_fd)
             finally:
                 os.close(parquet_fd)
             manifest = MarketDatasetManifestV1.from_snapshot(
@@ -444,9 +482,14 @@ def verify_materialized_catalog(artifact: MaterializedMarketDatasetV1) -> Market
             raise CatalogMaterializationError("artifact paths do not match manifest identity")
         parquet_fd = _regular_fd_at(directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES)
         try:
-            if _sha256_fd(parquet_fd, maximum_bytes=_MAX_PARQUET_BYTES) != manifest.parquet_sha256:
-                raise CatalogMaterializationError("parquet digest does not match manifest")
-            rows = _read_rows_from_fd(parquet_fd)
+            sealed_fd = _sealed_snapshot_fd(parquet_fd, maximum_bytes=_MAX_PARQUET_BYTES)
+            try:
+                digest = _sha256_fd(sealed_fd, maximum_bytes=_MAX_PARQUET_BYTES)
+                if digest != manifest.parquet_sha256:
+                    raise CatalogMaterializationError("parquet digest does not match manifest")
+                rows = _read_rows_from_fd(sealed_fd)
+            finally:
+                os.close(sealed_fd)
         finally:
             os.close(parquet_fd)
         if _sha256_bytes(_canonical_rows_from_parquet(rows)) != manifest.canonical_rows_sha256:
