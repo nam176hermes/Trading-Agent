@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
@@ -28,6 +29,18 @@ from packages.domain import (
     validate_fill_report_batch,
 )
 from packages.event_ledger import ReplayError, reduce_events, replay, serialize_event
+from packages.domain.events import (
+    _canonical_event_envelope,
+    _registered_event_type,
+    _registered_payload_type,
+    validate_execution_report_events,
+)
+from packages.domain.orders import (
+    _canonical_instrument_definition,
+    _canonical_money,
+    _canonical_order_quantity,
+    _canonical_price,
+)
 
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
@@ -364,6 +377,79 @@ def test_same_order_execution_reports_have_intrinsic_sequence_chronology_across_
     assert replay((first_envelope, second_envelope)) == replay(
         (second_envelope, first_envelope)
     )
+
+
+def test_execution_report_canonical_nested_helpers_fail_closed_for_wrong_and_forged_values() -> None:
+    helpers = (
+        (_canonical_instrument_definition, "instrument_definition", object()),
+        (_canonical_order_quantity, "quantity", object()),
+        (_canonical_price, "last_fill_price", object()),
+        (_canonical_money, "commission", object()),
+    )
+    for helper, field_name, invalid in helpers:
+        with pytest.raises(ValueError):
+            if helper is _canonical_instrument_definition:
+                helper(invalid)
+            else:
+                helper(invalid, field_name)
+
+    forged_values = (
+        (_canonical_instrument_definition, object.__new__(InstrumentDefinition), None),
+        (_canonical_order_quantity, object.__new__(OrderQuantity), "quantity"),
+        (_canonical_price, object.__new__(Price), "last_fill_price"),
+        (_canonical_money, object.__new__(Money), "commission"),
+    )
+    for helper, forged, field_name in forged_values:
+        with pytest.raises(ValueError):
+            if field_name is None:
+                helper(forged)
+            else:
+                helper(forged, field_name)
+
+
+def test_execution_report_rejects_grid_minimum_and_terminal_leaves_integrity_branches() -> None:
+    grid_definition = replace(
+        definition(),
+        size_increment=OrderQuantity(Decimal("0.02"), 2),
+        minimum_quantity=OrderQuantity(Decimal("0.02"), 2),
+    )
+    with pytest.raises(ValidationError, match="size increment grid"):
+        report(
+            instrument_definition=grid_definition,
+            leaves_quantity=OrderQuantity(Decimal("1.51"), 2),
+        )
+    minimum_definition = replace(
+        definition(), minimum_quantity=OrderQuantity(Decimal("0.02"), 2)
+    )
+    with pytest.raises(ValidationError, match="order_quantity is invalid"):
+        report(
+            instrument_definition=minimum_definition,
+            quantity=OrderQuantity(Decimal("0.01"), 2),
+            cumulative_fill_quantity=OrderQuantity(Decimal("0.01"), 2),
+            leaves_quantity=OrderQuantity(Decimal("0"), 2),
+            order_quantity=OrderQuantity(Decimal("0.01"), 2),
+        )
+    with pytest.raises(ValidationError, match="terminal FILLED"):
+        report(status=FillReportStatus.FILLED)
+
+
+def test_execution_report_and_envelope_runtime_integrity_helpers_reject_malformed_instances() -> None:
+    with pytest.raises(ValidationError):
+        FillEvent.model_validate(FillEvent.model_construct())
+    with pytest.raises(ValidationError):
+        EventEnvelope[FillEvent].model_validate(EventEnvelope[FillEvent].model_construct())
+    with pytest.raises(ValueError):
+        _canonical_event_envelope(object())
+    with pytest.raises(ValueError):
+        _registered_event_type(object())
+    with pytest.raises(ValueError):
+        _registered_payload_type(object())
+    with pytest.raises(ValueError):
+        _registered_payload_type("Unregistered")
+    runtime_marker = object()
+    assert validate_execution_report_events((runtime_marker,)) == (runtime_marker,)
+    schema = EventEnvelope[FillEvent].model_json_schema()
+    assert schema["properties"]["event_type"] == {"const": "FillEvent", "type": "string"}
 
 
 def fill_envelope(
