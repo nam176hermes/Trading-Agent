@@ -32,11 +32,21 @@ def test_lookahead_and_recursive_drift_block_independently() -> None:
     )
     report = evaluate_research_gates(evidence(point_in_time=(lookahead,)))
     assert next(item for item in report.results if item.name == "lookahead").failure_codes == (
+        "E_LOOKAHEAD_MANIFEST_AVAILABILITY",
         "E_LOOKAHEAD_TIME",
+    )
+
+    pre_manifest = evidence().point_in_time[0].model_copy(
+        update={"known_at": NOW + timedelta(minutes=3), "decision_at": NOW + timedelta(minutes=4)}
+    )
+    report = evaluate_research_gates(evidence(point_in_time=(pre_manifest,)))
+    assert next(item for item in report.results if item.name == "lookahead").failure_codes == (
+        "E_LOOKAHEAD_MANIFEST_AVAILABILITY",
     )
 
     unstable = RecursiveIndicatorReplay(
         indicator_name="ema-20",
+        input_artifacts_sha256=evidence().provenance.backtest_input_artifacts_sha256,
         seed_sha256=_digest("4"),
         prefix_state_sha256=_digest("5"),
         replay_state_sha256=_digest("6"),
@@ -62,6 +72,7 @@ def test_walk_forward_and_cost_fail_closed() -> None:
     scenarios = tuple(
         CostScenario(
             name=item.name,
+            input_artifacts_sha256=item.input_artifacts_sha256,
             fee_bps=5 if item.name == "baseline" else 0 if item.name == "fee-stress" else item.fee_bps,
             slippage_bps=item.slippage_bps,
             net_return=Decimal("-0.02") if item.name == "combined-stress" else item.net_return,
@@ -73,6 +84,7 @@ def test_walk_forward_and_cost_fail_closed() -> None:
         item for item in report.results if item.name == "fee-slippage-sensitivity"
     ).failure_codes
     assert "E_COST_NON_MONOTONIC" in codes
+    assert "E_COST_NO_FEE_STRESS" in codes
     assert "E_COST_STRESSED_RETURN" in codes
 
 
@@ -90,6 +102,17 @@ def test_benchmark_and_provenance_drift_block() -> None:
 
     provenance = evidence().provenance.model_copy(update={"market_data_sha256": _digest("0")})
     report = evaluate_research_gates(evidence(provenance=provenance))
-    assert "E_PROVENANCE_MARKET_DATA" in next(
+    assert "E_PROVENANCE_INPUT_DIGEST" in next(
         item for item in report.results if item.name == "provenance-verification"
     ).failure_codes
+
+    drifted_event = tuple(
+        item.model_copy(update={"event_sha256": _digest("0")})
+        if item.comparator == "nautilus"
+        else item
+        for item in evidence().comparisons
+    )
+    report = evaluate_research_gates(evidence(comparisons=drifted_event))
+    assert next(
+        item for item in report.results if item.name == "benchmark-comparison"
+    ).failure_codes == ("E_BENCHMARK_NAUTILUS_EVENT_DRIFT",)

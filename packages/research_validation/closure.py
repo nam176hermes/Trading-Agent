@@ -12,6 +12,7 @@ from packages.engine_contracts import EngineCommandEnvelope, EngineEventEnvelope
 from packages.engine_contracts.serialization import Sha256Hex, SourceCommit
 from packages.nautilus_backtest import validate_isolated_backtest_result
 
+from .artifacts import ResearchEvidenceArtifactReference, load_verified_evidence
 from .evaluator import evaluate_research_gates
 from .models import ResearchGateEvidenceV1, ResearchValidationModel
 
@@ -32,6 +33,8 @@ class Ws04ClosureV1(ResearchValidationModel):
     market_data_sha256: Sha256Hex
     backtest_result_sha256: Sha256Hex
     research_evidence_sha256: Sha256Hex
+    research_evidence_artifact_sha256: Sha256Hex
+    research_analysis_output_sha256: Sha256Hex
     research_report_sha256: Sha256Hex
     source_commit: SourceCommit
     closure_sha256: Sha256Hex | None = None
@@ -54,6 +57,7 @@ def _require_exact_bindings(
     request: EngineCommandEnvelope,
     evidence: ResearchGateEvidenceV1,
     backtest_result_sha256: str,
+    backtest_event_sha256: str,
 ) -> None:
     if type(request.payload) is not RunBacktest:
         raise ResearchClosureError("exact RunBacktest request is required")
@@ -64,7 +68,6 @@ def _require_exact_bindings(
     if (
         provenance.dataset_content_sha256 != manifest.content_digest
         or provenance.canonical_rows_sha256 != manifest.canonical_rows_sha256
-        or provenance.market_data_sha256 != manifest.canonical_rows_sha256
     ):
         raise ResearchClosureError("dataset provenance digest drifted")
     if (
@@ -76,6 +79,7 @@ def _require_exact_bindings(
         raise ResearchClosureError("request artifact binding drifted")
     if (
         provenance.backtest_result_sha256 != backtest_result_sha256
+        or provenance.backtest_event_sha256 != backtest_event_sha256
         or provenance.source_commit != request.source_commit
     ):
         raise ResearchClosureError("backtest result provenance drifted")
@@ -85,20 +89,26 @@ def close_ws04_research(
     manifest: MarketDatasetManifestV1,
     request: EngineCommandEnvelope,
     event: EngineEventEnvelope,
-    evidence: ResearchGateEvidenceV1,
+    evidence_reference: ResearchEvidenceArtifactReference,
 ) -> Ws04ClosureV1:
     """Return WS-04 source proof only if the exact 04C run and all 04D gates pass."""
 
     if type(manifest) is not MarketDatasetManifestV1:
         raise TypeError("MarketDatasetManifestV1 is required")
-    if type(evidence) is not ResearchGateEvidenceV1:
-        raise TypeError("ResearchGateEvidenceV1 is required")
+    evidence, evidence_artifact = load_verified_evidence(evidence_reference)
+    artifact_sha256 = hashlib.sha256(evidence_artifact).hexdigest()
     result = validate_isolated_backtest_result(request, event)
-    _require_exact_bindings(manifest, request, evidence, result.result_sha256)
+    event_sha256 = hashlib.sha256(canonical_json_bytes(event)).hexdigest()
+    _require_exact_bindings(
+        manifest, request, evidence, result.result_sha256, event_sha256
+    )
     report = evaluate_research_gates(evidence)
     if not report.passed:
         raise ResearchClosureError("mandatory WS-04 research gates did not pass")
     assert isinstance(report.report_sha256, str)
+    assert isinstance(report.evidence_sha256, str)
+    if report.evidence_sha256 != artifact_sha256:
+        raise ResearchClosureError("research evidence artifact hash drifted")
     assert isinstance(request.payload, RunBacktest)
     return Ws04ClosureV1(
         dataset_content_sha256=manifest.content_digest,
@@ -109,6 +119,8 @@ def close_ws04_research(
         market_data_sha256=request.payload.market_data.sha256,
         backtest_result_sha256=result.result_sha256,
         research_evidence_sha256=report.evidence_sha256,
+        research_evidence_artifact_sha256=artifact_sha256,
+        research_analysis_output_sha256=evidence.analysis_output_sha256,
         research_report_sha256=report.report_sha256,
         source_commit=request.source_commit,
     )

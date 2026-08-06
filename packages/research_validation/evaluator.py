@@ -99,8 +99,12 @@ def _lookahead(evidence: ResearchGateEvidenceV1) -> ResearchGateResultV1:
     for item in evidence.point_in_time:
         if not item.feature_event_at <= item.known_at <= item.decision_at:
             failures.add("E_LOOKAHEAD_TIME")
+        if item.known_at < evidence.provenance.dataset.known_at:
+            failures.add("E_LOOKAHEAD_MANIFEST_AVAILABILITY")
         if item.source_data_sha256 != evidence.provenance.canonical_rows_sha256:
             failures.add("E_LOOKAHEAD_SOURCE")
+        if item.input_artifacts_sha256 != evidence.provenance.backtest_input_artifacts_sha256:
+            failures.add("E_LOOKAHEAD_INPUT_DRIFT")
     return _result("lookahead", failures)
 
 
@@ -115,6 +119,11 @@ def _recursive_indicator_stability(
         for item in evidence.recursive_replays
     ):
         failures.add("E_RECURSIVE_STATE_DRIFT")
+    if any(
+        item.input_artifacts_sha256 != evidence.provenance.backtest_input_artifacts_sha256
+        for item in evidence.recursive_replays
+    ):
+        failures.add("E_RECURSIVE_INPUT_DRIFT")
     return _result("recursive-indicator-stability", failures)
 
 
@@ -125,6 +134,8 @@ def _walk_forward(evidence: ResearchGateEvidenceV1) -> ResearchGateResultV1:
         failures.add("E_WALK_FORWARD_FOLD_COUNT")
     previous_oos_end = None
     for fold in folds:
+        if fold.input_artifacts_sha256 != evidence.provenance.backtest_input_artifacts_sha256:
+            failures.add("E_WALK_FORWARD_INPUT_DRIFT")
         if not (
             fold.train_start_at <= fold.train_end_at < fold.validation_start_at
             <= fold.validation_end_at < fold.out_of_sample_start_at
@@ -147,8 +158,22 @@ def _fee_slippage_sensitivity(evidence: ResearchGateEvidenceV1) -> ResearchGateR
         failures.add("E_COST_SCENARIO_SET")
         return _result("fee-slippage-sensitivity", failures)
     baseline = scenarios["baseline"]
+    fee_stress = scenarios["fee-stress"]
+    slippage_stress = scenarios["slippage-stress"]
+    combined_stress = scenarios["combined-stress"]
+    if fee_stress.fee_bps <= baseline.fee_bps:
+        failures.add("E_COST_NO_FEE_STRESS")
+    if slippage_stress.slippage_bps <= baseline.slippage_bps:
+        failures.add("E_COST_NO_SLIPPAGE_STRESS")
+    if (
+        combined_stress.fee_bps <= baseline.fee_bps
+        or combined_stress.slippage_bps <= baseline.slippage_bps
+    ):
+        failures.add("E_COST_NO_COMBINED_STRESS")
     for name in required - {"baseline"}:
         scenario = scenarios[name]
+        if scenario.input_artifacts_sha256 != evidence.provenance.backtest_input_artifacts_sha256:
+            failures.add("E_COST_INPUT_DRIFT")
         if scenario.fee_bps < baseline.fee_bps or scenario.slippage_bps < baseline.slippage_bps:
             failures.add("E_COST_NON_MONOTONIC")
         if scenario.net_return < evidence.minimum_stressed_return:
@@ -172,6 +197,8 @@ def _benchmark_comparison(evidence: ResearchGateEvidenceV1) -> ResearchGateResul
             failures.add("E_BENCHMARK_FALSE_MATCH")
     if comparisons["nautilus"].result_sha256 != evidence.provenance.backtest_result_sha256:
         failures.add("E_BENCHMARK_NAUTILUS_RESULT_DRIFT")
+    if comparisons["nautilus"].event_sha256 != evidence.provenance.backtest_event_sha256:
+        failures.add("E_BENCHMARK_NAUTILUS_EVENT_DRIFT")
     return _result("benchmark-comparison", failures)
 
 
@@ -182,8 +209,6 @@ def _provenance_verification(evidence: ResearchGateEvidenceV1) -> ResearchGateRe
         failures.add("E_PROVENANCE_DATASET_CONTENT")
     if provenance.canonical_rows_sha256 != provenance.dataset.canonical_rows_sha256:
         failures.add("E_PROVENANCE_CANONICAL_ROWS")
-    if provenance.market_data_sha256 != provenance.canonical_rows_sha256:
-        failures.add("E_PROVENANCE_MARKET_DATA")
     if provenance.backtest_input_artifacts_sha256 != _input_artifacts_sha256(evidence):
         failures.add("E_PROVENANCE_INPUT_DIGEST")
     return _result("provenance-verification", failures)

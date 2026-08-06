@@ -36,7 +36,7 @@ Implement strict frozen Pydantic models with `schema_version="research-gate-evid
 - `CostScenario` has a closed scenario name, fee/slippage bps, and net return.
 - `ComparisonRecord` accepts only `reference`, `legacy`, or `nautilus`; it carries exact input/result/event digests and either `MATCH` or a named, non-empty explained difference.
 - `ResearchProvenanceV1` binds the 04A manifest content/canonical-row digests, the four 04C input artifact digests, the validated 04C result digest, and a source commit.
-- `ResearchGateEvidenceV1` contains canonically sorted tuples of all records and declares `promotion_authority="reference-and-nautilus"` as the only accepted authority.
+- `ResearchGateEvidenceV1` contains canonically sorted tuples of all records, binds every record to the four-input 04C digest, carries a canonical analysis-output trace digest, and declares `promotion_authority="reference-and-nautilus"` as the only accepted authority.
 
 All timestamps use the existing canonical UTC type; all hashes and commit values reuse engine-contract aliases. No file paths, provider dictionaries, live/paper execution controls, or external authority records are accepted.
 
@@ -77,7 +77,7 @@ Implement a frozen `ResearchGateReportV1` with a closed `GateName`/`GateStatus` 
 3. `walk_forward` requires two or more chronologically non-overlapping folds, no train/validation/OOS overlap, and aggregate OOS return at or above the supplied immutable threshold.
 4. `fee_slippage_sensitivity` requires baseline, fee stress, slippage stress, and combined stress scenarios; stress costs cannot be less than baseline and every stressed net return must meet the declared threshold.
 5. `benchmark_comparison` requires exactly reference, legacy, and Nautilus comparison records against one input digest; only `MATCH` or named explained differences pass, and legacy is never authority.
-6. `provenance_verification` checks the embedded `MarketDatasetManifestV1` against its bound content/canonical-row digests, matches the 04C market-data artifact to the canonical rows digest, and verifies the supplied `NautilusBacktestResult` values.
+6. `provenance_verification` checks the embedded `MarketDatasetManifestV1` against its bound content/canonical-row digests and binds the independent 04C market-data artifact hash into the exact four-input digest. The existing isolated 04C validator remains the authority that verifies that artifact's rows match the catalog projection.
 
 Any model-validation or semantic mismatch produces a failed gate report rather than a partial PASS; success requires all six explicit PASS statuses.
 
@@ -112,12 +112,13 @@ Expected: FAIL because `close_ws04_research` does not exist.
 
 **Step 3: Implement the closure boundary**
 
-Implement `close_ws04_research(manifest, request, event, evidence) -> Ws04ClosureV1`:
+Implement `close_ws04_research(manifest, request, event, evidence_reference) -> Ws04ClosureV1`:
 
 - validates the 04C envelope only through `validate_isolated_backtest_result`;
-- requires `evidence.provenance` to bind the returned result and all four request artifact hashes, including `market_data.sha256 == manifest.canonical_rows_sha256`;
+- resolves one external, sealed, no-symlink mode-0400 canonical JSON evidence artifact by declared SHA-256; arbitrary in-memory evidence is not accepted;
+- requires parsed `evidence.provenance` to bind the returned result/event, source commit, the manifest content/canonical-row hashes, and all four request artifact hashes; the market-data artifact hash remains distinct from the canonical-row projection hash;
 - evaluates all research gates and raises `ResearchClosureError` unless the report is wholly PASS;
-- returns a frozen, canonical closure record containing only the manifest content digest, canonical-row digest, target/config/catalog/market-data artifact hashes, validated backtest result digest, research report digest, source commit, and a closure SHA-256.
+- returns a frozen, canonical closure record containing only the manifest content digest, canonical-row digest, target/config/catalog/market-data artifact hashes, evidence artifact/output/report digests, validated backtest result digest, source commit, and a closure SHA-256.
 
 Do not write to a runtime filesystem, start a worker, alter a scheduler, or create a promotion API. The closure is proof for WS-04 source acceptance, not operational or trading authority.
 

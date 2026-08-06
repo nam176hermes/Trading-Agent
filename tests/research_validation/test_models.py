@@ -18,6 +18,7 @@ from packages.research_validation import (
     ResearchGateEvidenceV1,
     ResearchProvenanceV1,
     WalkForwardFold,
+    analysis_output_sha256,
 )
 
 
@@ -60,7 +61,7 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
                 "engine_configuration": _digest("e"),
                 "instrument_catalog": _digest("f"),
                 "strategy_configuration": _digest("1"),
-                "market_data": _digest("c"),
+                "market_data": _digest("d"),
             }
         )
     ).hexdigest()
@@ -71,8 +72,9 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
         engine_configuration_sha256=_digest("e"),
         instrument_catalog_sha256=_digest("f"),
         strategy_configuration_sha256=_digest("1"),
-        market_data_sha256=_digest("c"),
+        market_data_sha256=_digest("d"),
         backtest_input_artifacts_sha256=input_artifacts_sha256,
+        backtest_event_sha256=_digest("7"),
         backtest_result_sha256=_digest("3"),
         source_commit="0" * 40,
     )
@@ -80,15 +82,17 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
         "point_in_time": (
             PointInTimeObservation(
                 observation_id="bar-1",
+                input_artifacts_sha256=input_artifacts_sha256,
                 feature_event_at=NOW,
-                known_at=NOW + timedelta(minutes=1),
-                decision_at=NOW + timedelta(minutes=2),
+                known_at=NOW + timedelta(minutes=4),
+                decision_at=NOW + timedelta(minutes=5),
                 source_data_sha256=_digest("c"),
             ),
         ),
         "recursive_replays": (
             RecursiveIndicatorReplay(
                 indicator_name="ema-20",
+                input_artifacts_sha256=input_artifacts_sha256,
                 seed_sha256=_digest("4"),
                 prefix_state_sha256=_digest("5"),
                 replay_state_sha256=_digest("5"),
@@ -98,6 +102,7 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
         "walk_forward_folds": (
             WalkForwardFold(
                 fold_id="fold-1",
+                input_artifacts_sha256=input_artifacts_sha256,
                 train_start_at=NOW,
                 train_end_at=NOW + timedelta(minutes=1),
                 validation_start_at=NOW + timedelta(minutes=2),
@@ -108,6 +113,7 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
             ),
             WalkForwardFold(
                 fold_id="fold-2",
+                input_artifacts_sha256=input_artifacts_sha256,
                 train_start_at=NOW + timedelta(minutes=6),
                 train_end_at=NOW + timedelta(minutes=7),
                 validation_start_at=NOW + timedelta(minutes=8),
@@ -119,10 +125,10 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
         ),
         "minimum_walk_forward_return": Decimal("0"),
         "cost_scenarios": (
-            CostScenario(name="baseline", fee_bps=0, slippage_bps=0, net_return=Decimal("0.02")),
-            CostScenario(name="combined-stress", fee_bps=10, slippage_bps=10, net_return=Decimal("0.01")),
-            CostScenario(name="fee-stress", fee_bps=10, slippage_bps=0, net_return=Decimal("0.015")),
-            CostScenario(name="slippage-stress", fee_bps=0, slippage_bps=10, net_return=Decimal("0.015")),
+            CostScenario(name="baseline", input_artifacts_sha256=input_artifacts_sha256, fee_bps=0, slippage_bps=0, net_return=Decimal("0.02")),
+            CostScenario(name="combined-stress", input_artifacts_sha256=input_artifacts_sha256, fee_bps=10, slippage_bps=10, net_return=Decimal("0.01")),
+            CostScenario(name="fee-stress", input_artifacts_sha256=input_artifacts_sha256, fee_bps=10, slippage_bps=0, net_return=Decimal("0.015")),
+            CostScenario(name="slippage-stress", input_artifacts_sha256=input_artifacts_sha256, fee_bps=0, slippage_bps=10, net_return=Decimal("0.015")),
         ),
         "minimum_stressed_return": Decimal("-0.01"),
         "comparisons": (
@@ -152,6 +158,15 @@ def evidence(**updates: object) -> ResearchGateEvidenceV1:
         "promotion_authority": "reference-and-nautilus",
     }
     values.update(updates)
+    values["analysis_output_sha256"] = analysis_output_sha256(
+        values["point_in_time"],
+        values["recursive_replays"],
+        values["walk_forward_folds"],
+        values["minimum_walk_forward_return"],
+        values["cost_scenarios"],
+        values["minimum_stressed_return"],
+        values["comparisons"],
+    )
     return ResearchGateEvidenceV1(**values)
 
 
@@ -173,6 +188,7 @@ def test_evidence_is_strict_and_immutable() -> None:
 def test_evidence_requires_canonical_unique_records() -> None:
     replay = RecursiveIndicatorReplay(
         indicator_name="ema-20",
+        input_artifacts_sha256=evidence().provenance.backtest_input_artifacts_sha256,
         seed_sha256=_digest("4"),
         prefix_state_sha256=_digest("5"),
         replay_state_sha256=_digest("5"),
@@ -183,6 +199,7 @@ def test_evidence_requires_canonical_unique_records() -> None:
 
     later = PointInTimeObservation(
         observation_id="z-last",
+        input_artifacts_sha256=evidence().provenance.backtest_input_artifacts_sha256,
         feature_event_at=NOW,
         known_at=NOW + timedelta(minutes=1),
         decision_at=NOW + timedelta(minutes=2),
@@ -191,6 +208,10 @@ def test_evidence_requires_canonical_unique_records() -> None:
     first = evidence().point_in_time[0]
     with pytest.raises(ValidationError, match="observations must be sorted"):
         evidence(point_in_time=(later, first))
+
+    repeated_fold = evidence().walk_forward_folds[0]
+    with pytest.raises(ValidationError, match="fold identifiers must be unique"):
+        evidence(walk_forward_folds=(repeated_fold, repeated_fold))
 
 
 def test_legacy_cannot_be_promotion_authority() -> None:
