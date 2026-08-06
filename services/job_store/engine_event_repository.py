@@ -156,6 +156,19 @@ def _validated_records(
         ):
             raise ValueError
         first, last = _validate_batch_envelopes(batch.events)
+        has_nautilus_completion = any(
+            event.payload.event_type == "NautilusBacktestCompleted"
+            for event in batch.events
+        )
+        if (
+            batch.validator_id == _GENERIC_ENGINE_EVENT_VALIDATOR
+            and has_nautilus_completion
+        ):
+            raise ValueError
+        if batch.validator_id == _NAUTILUS_BACKTEST_VALIDATOR and (
+            len(batch.events) != 1 or not has_nautilus_completion
+        ):
+            raise ValueError
         raw = b"".join(
             canonical_json_bytes(event) + b"\n" for event in batch.events
         )

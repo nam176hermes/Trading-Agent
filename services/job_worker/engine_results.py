@@ -127,6 +127,13 @@ class EngineResultValidator:
         check()
         raw = self._read_captured_stdout(job, stdout, check)
         events = self._parse_canonical_batch(raw, request, check)
+        has_nautilus_completion = any(
+            event.payload.event_type == "NautilusBacktestCompleted" for event in events
+        )
+        if validator_id == _GENERIC_EVENT_VALIDATOR and has_nautilus_completion:
+            raise EngineResultValidationError(
+                "Nautilus completion requires the dedicated validator"
+            )
         if validator_id == _NAUTILUS_BACKTEST_VALIDATOR:
             if len(events) != 1:
                 raise EngineResultValidationError(

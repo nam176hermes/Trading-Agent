@@ -235,6 +235,25 @@ def test_nautilus_validator_rejects_a_generic_engine_event(
         )
 
 
+def test_generic_validator_cannot_claim_a_nautilus_completion_event(
+    tmp_path: Path,
+) -> None:
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
+
+    event = _nautilus_event()
+    with pytest.raises(EngineResultValidationError, match="dedicated validator"):
+        EngineResultValidator(tmp_path).validate(
+            "engine-event-v1",
+            _claim(),
+            request=_request(),
+            stdout=_stdout(tmp_path, canonical_json_bytes(event) + b"\n"),
+            exit_code=0,
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("malformed", "noncanonical", "duplicate", "wrong_authority", "truncated"),
