@@ -1,5 +1,14 @@
 {
   "$defs": {
+    "AssetClass": {
+      "description": "Asset classes with an exact mapping to supported product types.",
+      "enum": [
+        "crypto",
+        "equity"
+      ],
+      "title": "AssetClass",
+      "type": "string"
+    },
     "Currency": {
       "description": "One immutable identity issued by a versioned currency registry.",
       "enum": [
@@ -14,13 +23,59 @@
     },
     "FillEvent": {
       "additionalProperties": false,
+      "description": "Immutable version-2 execution report, independent of any fill reducer.\n\n``execution_id`` is the canonical execution identity.  Correction, bust,\nand duplicate reports carry a typed reference to one prior execution; the\ncontract deliberately rejects the pre-WS-03 ``FillEvent`` wire shape.",
       "properties": {
-        "fees": {
+        "average_fill_price": {
+          "$ref": "#/$defs/Price"
+        },
+        "bust_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bust Of Execution Id"
+        },
+        "commission": {
           "$ref": "#/$defs/Money"
         },
-        "fill_id": {
+        "correction_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correction Of Execution Id"
+        },
+        "cumulative_fill_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "duplicate_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Of Execution Id"
+        },
+        "execution_id": {
           "format": "uuid",
-          "title": "Fill Id",
+          "title": "Execution Id",
           "type": "string"
         },
         "filled_at": {
@@ -28,41 +83,181 @@
           "title": "Filled At",
           "type": "string"
         },
-        "instrument": {
-          "$ref": "#/$defs/InstrumentId"
+        "instrument_definition": {
+          "$ref": "#/$defs/InstrumentDefinition"
+        },
+        "last_fill_price": {
+          "$ref": "#/$defs/Price"
+        },
+        "leaves_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "liquidity_side": {
+          "$ref": "#/$defs/LiquiditySide"
         },
         "order_id": {
           "format": "uuid",
           "title": "Order Id",
           "type": "string"
         },
-        "price": {
-          "$ref": "#/$defs/Price"
+        "order_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
         },
         "quantity": {
-          "$ref": "#/$defs/Quantity"
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "reconciliation_source": {
+          "$ref": "#/$defs/ReconciliationSource"
+        },
+        "report_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Report Sequence",
+          "type": "integer"
         },
         "schema_version": {
-          "minLength": 1,
+          "const": "2.0",
           "title": "Schema Version",
           "type": "string"
         },
         "side": {
           "$ref": "#/$defs/OrderSide"
+        },
+        "status": {
+          "$ref": "#/$defs/FillReportStatus"
+        },
+        "venue_trade_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Venue Trade Id",
+          "type": "string"
         }
       },
       "required": [
-        "fill_id",
+        "execution_id",
         "order_id",
-        "instrument",
+        "report_sequence",
+        "venue_trade_id",
+        "instrument_definition",
         "side",
+        "liquidity_side",
+        "status",
         "quantity",
-        "price",
-        "fees",
+        "cumulative_fill_quantity",
+        "leaves_quantity",
+        "order_quantity",
+        "last_fill_price",
+        "average_fill_price",
+        "commission",
+        "reconciliation_source",
         "filled_at",
         "schema_version"
       ],
       "title": "FillEvent",
+      "type": "object"
+    },
+    "FillReportStatus": {
+      "description": "Explicit execution-report lifecycle or correction classification.",
+      "enum": [
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "DUPLICATE",
+        "CORRECTION",
+        "BUST"
+      ],
+      "title": "FillReportStatus",
+      "type": "string"
+    },
+    "InstrumentDefinition": {
+      "description": "Sole immutable source of one instrument's catalog trading constraints.",
+      "properties": {
+        "asset_class": {
+          "$ref": "#/$defs/AssetClass"
+        },
+        "base_currency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Currency"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instrument_id": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MarginRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maximum_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "maximum_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "minimum_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "minimum_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "multiplier": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Multiplier",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "provenance": {
+          "$ref": "#/$defs/InstrumentProvenance"
+        },
+        "quote_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "raw_symbol": {
+          "title": "Raw Symbol",
+          "type": "string"
+        },
+        "session_calendar": {
+          "title": "Session Calendar",
+          "type": "string"
+        },
+        "settlement_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "size_increment": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "tick_size": {
+          "$ref": "#/$defs/Price"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "raw_symbol",
+        "asset_class",
+        "base_currency",
+        "quote_currency",
+        "settlement_currency",
+        "tick_size",
+        "size_increment",
+        "minimum_quantity",
+        "maximum_quantity",
+        "minimum_notional",
+        "maximum_notional",
+        "multiplier",
+        "margin",
+        "session_calendar",
+        "provenance"
+      ],
+      "title": "InstrumentDefinition",
       "type": "object"
     },
     "InstrumentId": {
@@ -88,6 +283,63 @@
       "title": "InstrumentId",
       "type": "object"
     },
+    "InstrumentProvenance": {
+      "description": "Immutable catalog-source evidence with no provider authority.",
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "title": "Source Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_revision",
+        "observed_at"
+      ],
+      "title": "InstrumentProvenance",
+      "type": "object"
+    },
+    "LiquiditySide": {
+      "description": "Closed venue liquidity classification for one execution report.",
+      "enum": [
+        "maker",
+        "taker"
+      ],
+      "title": "LiquiditySide",
+      "type": "string"
+    },
+    "MarginRequirements": {
+      "description": "Optional exact initial and maintenance margin rates.",
+      "properties": {
+        "initial_margin_rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Initial Margin Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "maintenance_margin_rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Maintenance Margin Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "initial_margin_rate",
+        "maintenance_margin_rate"
+      ],
+      "title": "MarginRequirements",
+      "type": "object"
+    },
     "Money": {
       "description": "An exact signed monetary amount.",
       "properties": {
@@ -106,6 +358,27 @@
         "currency"
       ],
       "title": "Money",
+      "type": "object"
+    },
+    "OrderQuantity": {
+      "description": "An exact non-negative order quantity with declared precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|[1-9]\\d*|(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "OrderQuantity",
       "type": "object"
     },
     "OrderSide": {
@@ -145,26 +418,15 @@
       "title": "ProductType",
       "type": "string"
     },
-    "Quantity": {
-      "description": "An exact signed quantity with declared fractional precision.",
-      "properties": {
-        "precision": {
-          "title": "Precision",
-          "type": "integer"
-        },
-        "value": {
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
-          "title": "Value",
-          "type": "string",
-          "x-canonical-decimal-policy": "decimal-v1"
-        }
-      },
-      "required": [
-        "value",
-        "precision"
+    "ReconciliationSource": {
+      "description": "Closed provenance source for an execution report reconciliation.",
+      "enum": [
+        "venue",
+        "drop_copy",
+        "clearing"
       ],
-      "title": "Quantity",
-      "type": "object"
+      "title": "ReconciliationSource",
+      "type": "string"
     }
   },
   "additionalProperties": false,

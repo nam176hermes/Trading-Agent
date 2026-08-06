@@ -217,11 +217,48 @@ def test_nested_d01_decimal_wire_schemas_are_canonical_strings() -> None:
     schema = json.loads(
         (SCHEMA_ROOT / "EventEnvelope_FillEvent_.json").read_text(encoding="utf-8")
     )
-    for definition, field in (("Money", "amount"), ("Price", "amount"), ("Quantity", "value")):
+    for definition, field in (("Money", "amount"), ("Price", "amount"), ("OrderQuantity", "value")):
         property_schema = schema["$defs"][definition]["properties"][field]
         assert property_schema["type"] == "string"
         assert property_schema["pattern"]
         assert "anyOf" not in property_schema
+
+
+def test_fill_execution_report_schema_pins_v2_and_all_required_reconciliation_fields() -> None:
+    schema = json.loads((SCHEMA_ROOT / "FillEvent.json").read_text(encoding="utf-8"))
+    required = set(schema["required"])
+    assert {
+        "execution_id",
+        "order_id",
+        "report_sequence",
+        "venue_trade_id",
+        "instrument_definition",
+        "liquidity_side",
+        "status",
+        "quantity",
+        "cumulative_fill_quantity",
+        "leaves_quantity",
+        "order_quantity",
+        "last_fill_price",
+        "average_fill_price",
+        "commission",
+        "reconciliation_source",
+        "filled_at",
+        "schema_version",
+    } <= required
+    assert schema["properties"]["schema_version"] == {
+        "const": "2.0",
+        "title": "Schema Version",
+        "type": "string",
+    }
+    assert schema["$defs"]["LiquiditySide"]["enum"] == ["maker", "taker"]
+    assert schema["$defs"]["FillReportStatus"]["enum"] == [
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "DUPLICATE",
+        "CORRECTION",
+        "BUST",
+    ]
 
 
 def test_signal_evidence_schema_is_typed_bounded_and_point_in_time_explicit() -> None:

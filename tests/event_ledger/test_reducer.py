@@ -9,10 +9,10 @@ import pytest
 from hypothesis import given, strategies as st
 
 from packages.domain import (
-    Currency, EvidenceLocator, EvidenceLocatorKind, EvidenceReference, EvidenceSource,
-    EventEnvelope, FillEvent, InstrumentId, Money,
+    AssetClass, Currency, EvidenceLocator, EvidenceLocatorKind, EvidenceReference, EvidenceSource,
+    EventEnvelope, FillEvent, FillReportStatus, InstrumentDefinition, InstrumentId, InstrumentProvenance, LiquiditySide, Money,
     OrderEvent, OrderIntent, OrderQuantity, OrderSide, OrderStatus, OrderType, PortfolioSnapshot,
-    PositionSnapshot, Price, ProductType, Quantity, ResearchPacket, RiskDecision,
+    PositionSnapshot, Price, ProductType, Quantity, ReconciliationSource, ResearchPacket, RiskDecision,
     RiskOutcome, RiskReasonCode, RiskStateSnapshot, SignalDirection, SignalProposal, TargetPortfolio,
     TargetPosition, TimeInForce,
 )
@@ -26,6 +26,29 @@ from packages.event_ledger import (
 
 NOW = datetime(2026, 7, 20, 12, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "ALPACA")
+
+
+def fill_definition() -> InstrumentDefinition:
+    return InstrumentDefinition(
+        instrument_id=INSTRUMENT,
+        raw_symbol="BTCUSD",
+        asset_class=AssetClass.CRYPTO,
+        base_currency=Currency.BTC,
+        quote_currency=Currency.USD,
+        settlement_currency=Currency.USD,
+        tick_size=Price(Decimal("0.01"), Currency.USD),
+        size_increment=OrderQuantity(Decimal("0.01"), 2),
+        minimum_quantity=OrderQuantity(Decimal("0.01"), 2),
+        maximum_quantity=OrderQuantity(Decimal("100"), 2),
+        minimum_notional=Money(Decimal("1"), Currency.USD),
+        maximum_notional=Money(Decimal("100000"), Currency.USD),
+        multiplier=Decimal("1"),
+        margin=None,
+        session_calendar="24X7",
+        provenance=InstrumentProvenance(
+            source_id="catalog", source_revision="r1", observed_at=NOW
+        ),
+    )
 
 
 def uid(number: int) -> UUID:
@@ -88,7 +111,26 @@ def order_event() -> OrderEvent:
 
 
 def fill() -> FillEvent:
-    return FillEvent(fill_id=uid(21), order_id=uid(20), instrument=INSTRUMENT, side=OrderSide.BUY, quantity=Quantity(Decimal("1.25"), 2), price=Price(Decimal("100.00000000000000000001"), Currency.USD), fees=Money(Decimal("0.01"), Currency.USD), filled_at=NOW, schema_version="1")
+    return FillEvent(
+        execution_id=uid(21),
+        order_id=uid(20),
+        report_sequence=1,
+        venue_trade_id="trade-21",
+        instrument_definition=fill_definition(),
+        side=OrderSide.BUY,
+        liquidity_side=LiquiditySide.MAKER,
+        status=FillReportStatus.FILLED,
+        quantity=OrderQuantity(Decimal("1.25"), 2),
+        cumulative_fill_quantity=OrderQuantity(Decimal("1.25"), 2),
+        leaves_quantity=OrderQuantity(Decimal("0"), 2),
+        order_quantity=OrderQuantity(Decimal("1.25"), 2),
+        last_fill_price=Price(Decimal("100"), Currency.USD),
+        average_fill_price=Price(Decimal("100"), Currency.USD),
+        commission=Money(Decimal("0.01"), Currency.USD),
+        reconciliation_source=ReconciliationSource.VENUE,
+        filled_at=NOW,
+        schema_version="2.0",
+    )
 
 
 def envelope(payload: object, *, event_number: int, stream_number: int = 100, sequence: int = 1) -> EventEnvelope[object]:

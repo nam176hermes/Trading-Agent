@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.domain import (
+    AssetClass,
     Currency,
     EvidenceLocator,
     EvidenceLocatorKind,
@@ -16,7 +17,11 @@ from packages.domain import (
     EvidenceSource,
     EventEnvelope,
     FillEvent,
+    FillReportStatus,
+    InstrumentDefinition,
     InstrumentId,
+    InstrumentProvenance,
+    LiquiditySide,
     Money,
     OrderEvent,
     OrderIntent,
@@ -30,6 +35,7 @@ from packages.domain import (
     ProductType,
     Quantity,
     ResearchPacket,
+    ReconciliationSource,
     RiskDecision,
     RiskOutcome,
     RiskReasonCode,
@@ -45,6 +51,29 @@ from packages.domain import (
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "ALPACA")
+
+
+def fill_definition() -> InstrumentDefinition:
+    return InstrumentDefinition(
+        instrument_id=INSTRUMENT,
+        raw_symbol="BTCUSD",
+        asset_class=AssetClass.CRYPTO,
+        base_currency=Currency.BTC,
+        quote_currency=Currency.USD,
+        settlement_currency=Currency.USD,
+        tick_size=Price(Decimal("0.01"), Currency.USD),
+        size_increment=OrderQuantity(Decimal("0.01"), 2),
+        minimum_quantity=OrderQuantity(Decimal("0.01"), 2),
+        maximum_quantity=OrderQuantity(Decimal("100"), 2),
+        minimum_notional=Money(Decimal("1"), Currency.USD),
+        maximum_notional=Money(Decimal("100000"), Currency.USD),
+        multiplier=Decimal("1"),
+        margin=None,
+        session_calendar="24X7",
+        provenance=InstrumentProvenance(
+            source_id="catalog", source_revision="r1", observed_at=NOW
+        ),
+    )
 
 
 def evidence(*, observed_at: datetime = NOW) -> EvidenceReference:
@@ -173,18 +202,30 @@ def order_event() -> OrderEvent:
 
 def fill_event() -> FillEvent:
     order = order_event()
-    intent = order_intent()
     return FillEvent(
-        fill_id=uuid4(),
+        execution_id=uuid4(),
         order_id=order.order_id,
-        instrument=intent.instrument,
-        side=intent.side,
-        quantity=Quantity(intent.quantity.value, intent.quantity.precision),
-        price=Price(Decimal("100"), Currency.USD),
-        fees=Money(Decimal("0.01"), Currency.USD),
+        report_sequence=1,
+        venue_trade_id="trade-1",
+        instrument_definition=fill_definition(),
+        side=OrderSide.BUY,
+        liquidity_side=LiquiditySide.MAKER,
+        status=FillReportStatus.FILLED,
+        quantity=OrderQuantity(Decimal("1.25"), 2),
+        cumulative_fill_quantity=OrderQuantity(Decimal("1.25"), 2),
+        leaves_quantity=OrderQuantity(Decimal("0"), 2),
+        order_quantity=OrderQuantity(Decimal("1.25"), 2),
+        last_fill_price=Price(Decimal("100"), Currency.USD),
+        average_fill_price=Price(Decimal("100"), Currency.USD),
+        commission=Money(Decimal("0.01"), Currency.USD),
+        reconciliation_source=ReconciliationSource.VENUE,
         filled_at=NOW,
-        schema_version="1.0",
+        schema_version="2.0",
     )
+
+
+def fill_values(fill: FillEvent) -> dict[str, object]:
+    return {name: getattr(fill, name) for name in FillEvent.model_fields}
 
 
 def envelope(payload: object, *, event_id: UUID | None = None, stream_id: UUID | None = None, sequence: int = 1, **changes: object) -> EventEnvelope[object]:
@@ -566,8 +607,8 @@ def test_decimal_contracts_reject_noncanonical_json_values(invalid: object) -> N
     "field",
     [
         ("quantity", "value"),
-        ("price", "amount"),
-        ("fees", "amount"),
+        ("last_fill_price", "amount"),
+        ("commission", "amount"),
     ],
 )
 @pytest.mark.parametrize("invalid", [1, 1.0, True])
@@ -587,35 +628,30 @@ def test_nested_d01_primitives_reject_json_numeric_and_boolean_tokens(
 )
 def test_nested_d01_primitives_reject_noncanonical_json_decimal_strings(invalid: str) -> None:
     payload = json.loads(fill_event().model_dump_json())
-    payload["price"]["amount"] = invalid
+    payload["last_fill_price"]["amount"] = invalid
 
     with pytest.raises(ValidationError):
         FillEvent.model_validate_json(json.dumps(payload))
 
 
 def test_nested_d01_primitives_round_trip_supported_precision_canonical_json_strings() -> None:
-    high_precision = Decimal("0.123456789012345678901234567890123456789")
-    monetary_precision = Decimal("0.123456789012345678")
     original = fill_event()
-    fill = FillEvent(
-        fill_id=original.fill_id,
-        order_id=original.order_id,
-        instrument=original.instrument,
-        side=original.side,
-        quantity=original.quantity,
-        price=Price(high_precision, Currency.USD),
-        fees=Money(monetary_precision, Currency.ETH),
-        filled_at=original.filled_at,
-        schema_version=original.schema_version,
+    fill = FillEvent.model_validate(
+        {
+            **fill_values(original),
+            "last_fill_price": Price(Decimal("100.01"), Currency.USD),
+            "average_fill_price": Price(Decimal("100.01"), Currency.USD),
+            "commission": Money(Decimal("0.01"), Currency.ETH),
+        }
     )
 
     serialized = json.loads(fill.model_dump_json())
     assert serialized["quantity"]["value"] == "1.25"
-    assert serialized["price"]["amount"] == str(high_precision)
-    assert serialized["fees"]["amount"] == str(monetary_precision)
+    assert serialized["last_fill_price"]["amount"] == "100.01"
+    assert serialized["commission"]["amount"] == "0.01"
     restored = FillEvent.model_validate_json(json.dumps(serialized))
-    assert restored.price.amount == high_precision
-    assert restored.fees.amount == monetary_precision
+    assert restored.last_fill_price.amount == Decimal("100.01")
+    assert restored.commission.amount == Decimal("0.01")
 
 
 @pytest.mark.parametrize(
@@ -689,12 +725,12 @@ def test_contracts_revalidate_nested_d01_dataclass_instances() -> None:
         ),
         (
             FillEvent,
-            "price",
+            "last_fill_price",
             lambda: _forged_instance(Price, amount=Decimal("0"), currency=Currency.USD),
         ),
         (
             FillEvent,
-            "fees",
+            "commission",
             lambda: _forged_instance(Money, amount=Decimal("NaN"), currency=Currency.USD),
         ),
     ],
@@ -1041,16 +1077,11 @@ def test_typed_provenance_chain_links_exactly() -> None:
         occurred_at=NOW,
         schema_version="2.0",
     )
-    fill = FillEvent(
-        fill_id=uuid4(),
-        order_id=order.order_id,
-        instrument=intent.instrument,
-        side=intent.side,
-        quantity=Quantity(intent.quantity.value, intent.quantity.precision),
-        price=Price(Decimal("100"), Currency.USD),
-        fees=Money(Decimal("0.01"), Currency.USD),
-        filled_at=NOW,
-        schema_version="1.0",
+    fill = FillEvent.model_validate(
+        {
+            **fill_values(fill_event()),
+            "order_id": order.order_id,
+        }
     )
     assert proposal.research_packet_id == packet.packet_id
     assert decision.approved_target is not None
@@ -1076,7 +1107,17 @@ def test_orders_and_fills_require_enums_positive_quantities_and_correct_limit_pr
         OrderIntent.model_validate({**values, "quantity": zero_quantity})
     with pytest.raises(ValidationError, match="quantity"):
         fill = fill_event()
-        FillEvent(fill_id=fill.fill_id, order_id=fill.order_id, instrument=fill.instrument, side=fill.side, quantity=Quantity(Decimal("-1"), 0), price=fill.price, fees=fill.fees, filled_at=fill.filled_at, schema_version=fill.schema_version)
-    with pytest.raises(ValidationError, match="fees"):
+        FillEvent.model_validate(
+            {
+                **fill_values(fill),
+                "quantity": OrderQuantity(Decimal("0"), 2),
+            }
+        )
+    with pytest.raises(ValidationError, match="commission"):
         fill = fill_event()
-        FillEvent(fill_id=fill.fill_id, order_id=fill.order_id, instrument=fill.instrument, side=fill.side, quantity=fill.quantity, price=fill.price, fees=Money(Decimal("-0.01"), Currency.USD), filled_at=fill.filled_at, schema_version=fill.schema_version)
+        FillEvent.model_validate(
+            {
+                **fill_values(fill),
+                "commission": Money(Decimal("-0.01"), Currency.USD),
+            }
+        )
