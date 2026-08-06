@@ -11,7 +11,7 @@ from hypothesis import given, strategies as st
 from packages.domain import (
     Currency, EvidenceLocator, EvidenceLocatorKind, EvidenceReference, EvidenceSource,
     EventEnvelope, FillEvent, InstrumentId, Money,
-    OrderEvent, OrderIntent, OrderSide, OrderStatus, OrderType, PortfolioSnapshot,
+    OrderEvent, OrderIntent, OrderQuantity, OrderSide, OrderStatus, OrderType, PortfolioSnapshot,
     PositionSnapshot, Price, ProductType, Quantity, ResearchPacket, RiskDecision,
     RiskOutcome, RiskReasonCode, RiskStateSnapshot, SignalDirection, SignalProposal, TargetPortfolio,
     TargetPosition, TimeInForce,
@@ -80,12 +80,11 @@ def risk() -> RiskDecision:
 
 
 def order_intent() -> OrderIntent:
-    return OrderIntent(intent_id=uid(19), risk_decision_id=uid(17), instrument=INSTRUMENT, side=OrderSide.BUY, order_type=OrderType.LIMIT, time_in_force=TimeInForce.DAY, quantity=Quantity(Decimal("1.25"), 2), limit_price=Price(Decimal("100.00000000000000000001"), Currency.USD), requested_at=NOW, schema_version="1")
+    return OrderIntent(intent_id=uid(19), risk_decision_id=uid(17), client_order_id="client-19", strategy_id="strategy-1", trader_id="trader-1", account_id="account-1", execution_client_id="execution-client-1", instrument=INSTRUMENT, side=OrderSide.BUY, order_type=OrderType.LIMIT, time_in_force=TimeInForce.DAY, quantity=OrderQuantity(Decimal("1.25"), 2), limit_price=Price(Decimal("100.00000000000000000001"), Currency.USD), requested_at=NOW, schema_version="1")
 
 
 def order_event() -> OrderEvent:
-    intent = order_intent()
-    return OrderEvent(order_id=uid(20), intent_id=intent.intent_id, instrument=intent.instrument, side=intent.side, order_type=intent.order_type, time_in_force=intent.time_in_force, status=OrderStatus.ACCEPTED, quantity=intent.quantity, limit_price=intent.limit_price, occurred_at=NOW, schema_version="1")
+    return OrderEvent(event_id=uid(22), order_id=uid(20), sequence=1, target_status=OrderStatus.SUBMITTED, occurred_at=NOW, schema_version="1")
 
 
 def fill() -> FillEvent:

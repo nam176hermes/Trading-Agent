@@ -32,7 +32,7 @@ from .versions import SchemaVersion
 
 
 _MAX_ENGINE_QUANTITY_COEFFICIENT_DIGITS = 128
-_CANONICAL_DECIMAL_PATTERN = r"^(?:0|-?[1-9]\d*|-?(?:0|[1-9]\d*)\.\d*[1-9])$"
+_CANONICAL_DECIMAL_PATTERN = r"^(?:0|[1-9]\d*|(?:0|[1-9]\d*)\.\d*[1-9])$"
 
 CommandName: TypeAlias = Literal[
     "DescribeEngineCapabilities",
@@ -59,10 +59,18 @@ EngineQuantityValue = Annotated[
         {
             "type": "string",
             "pattern": _CANONICAL_DECIMAL_PATTERN,
-            "maxLength": 130,
+            "maxLength": 129,
             "x-canonical-decimal-policy": CANONICAL_DECIMAL_POLICY_VERSION,
         },
         mode="validation",
+    ),
+]
+CanonicalOrderIdentifier = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
     ),
 ]
 
@@ -110,13 +118,15 @@ class EngineInstrumentId(EngineModel):
 
 
 class EngineQuantity(EngineModel):
-    """Exact engine-facing quantity with bounded fractional precision."""
+    """Exact unsigned engine-facing order quantity."""
 
     value: EngineQuantityValue
     precision: Annotated[StrictInt, Field(ge=0, le=18)]
 
     @model_validator(mode="after")
     def _validate_precision(self) -> "EngineQuantity":
+        if self.value < 0:
+            raise ValueError("value must be non-negative")
         target_exponent = -self.precision
         if self.value.is_zero():
             object.__setattr__(
@@ -209,12 +219,24 @@ class EngineOrderIntent(EngineModel):
 
     intent_id: UUID
     risk_decision_id: UUID
+    client_order_id: CanonicalOrderIdentifier
+    venue_order_id: CanonicalOrderIdentifier | None = None
+    strategy_id: CanonicalOrderIdentifier
+    trader_id: CanonicalOrderIdentifier
+    account_id: CanonicalOrderIdentifier
+    execution_client_id: CanonicalOrderIdentifier
+    order_list_id: CanonicalOrderIdentifier | None = None
     instrument: EngineInstrumentId
     side: OrderSide
     order_type: OrderType
     time_in_force: TimeInForce
     quantity: EngineQuantity
     limit_price: EnginePrice | None = None
+    trigger_price: EnginePrice | None = None
+    trailing_offset: EnginePrice | None = None
+    gtd_expiry: CanonicalUtcDateTime | None = None
+    post_only: bool = False
+    reduce_only: bool = False
     requested_at: CanonicalUtcDateTime
     schema_version: SchemaVersion
 
@@ -222,10 +244,42 @@ class EngineOrderIntent(EngineModel):
     def _validate_order(self) -> "EngineOrderIntent":
         if self.quantity.value <= 0:
             raise ValueError("quantity must be positive")
-        if self.order_type is OrderType.LIMIT and self.limit_price is None:
-            raise ValueError("limit orders require limit_price")
-        if self.order_type is OrderType.MARKET and self.limit_price is not None:
-            raise ValueError("market orders reject limit_price")
+        limit_types = {
+            OrderType.LIMIT,
+            OrderType.STOP_LIMIT,
+            OrderType.LIMIT_IF_TOUCHED,
+        }
+        trigger_types = {
+            OrderType.STOP_MARKET,
+            OrderType.STOP_LIMIT,
+            OrderType.MARKET_IF_TOUCHED,
+            OrderType.LIMIT_IF_TOUCHED,
+        }
+        if self.order_type in limit_types and self.limit_price is None:
+            raise ValueError(f"{self.order_type.value} orders require limit_price")
+        if self.order_type not in limit_types and self.limit_price is not None:
+            raise ValueError(f"{self.order_type.value} orders forbid limit_price")
+        if self.order_type in trigger_types and self.trigger_price is None:
+            raise ValueError(f"{self.order_type.value} orders require trigger_price")
+        if self.order_type not in trigger_types and self.trigger_price is not None:
+            raise ValueError(f"{self.order_type.value} orders forbid trigger_price")
+        if self.order_type is OrderType.TRAILING_STOP and self.trailing_offset is None:
+            raise ValueError("trailing_stop orders require trailing_offset")
+        if self.order_type is not OrderType.TRAILING_STOP and self.trailing_offset is not None:
+            raise ValueError(f"{self.order_type.value} orders forbid trailing_offset")
+        if self.time_in_force is TimeInForce.GTD:
+            if self.gtd_expiry is None:
+                raise ValueError("GTD orders require gtd_expiry")
+            if self.gtd_expiry <= self.requested_at:
+                raise ValueError("gtd_expiry must be after requested_at")
+        elif self.gtd_expiry is not None:
+            raise ValueError("gtd_expiry is valid only for GTD orders")
+        if self.post_only and (
+            self.order_type not in limit_types
+            or self.time_in_force
+            not in {TimeInForce.GTC, TimeInForce.DAY, TimeInForce.GTD}
+        ):
+            raise ValueError("post_only requires a resting limit instruction")
         return self
 
 

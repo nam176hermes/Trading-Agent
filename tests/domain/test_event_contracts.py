@@ -20,6 +20,7 @@ from packages.domain import (
     Money,
     OrderEvent,
     OrderIntent,
+    OrderQuantity,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -143,11 +144,16 @@ def order_intent(order_type: OrderType = OrderType.LIMIT) -> OrderIntent:
     return OrderIntent(
         intent_id=uuid4(),
         risk_decision_id=uuid4(),
+        client_order_id="client-1",
+        strategy_id="strategy-1",
+        trader_id="trader-1",
+        account_id="account-1",
+        execution_client_id="execution-client-1",
         instrument=INSTRUMENT,
         side=OrderSide.BUY,
         order_type=order_type,
         time_in_force=TimeInForce.DAY,
-        quantity=Quantity(Decimal("1.25"), precision=2),
+        quantity=OrderQuantity(Decimal("1.25"), precision=2),
         limit_price=Price(Decimal("100"), Currency.USD) if order_type is OrderType.LIMIT else None,
         requested_at=NOW,
         schema_version="1.0",
@@ -155,17 +161,11 @@ def order_intent(order_type: OrderType = OrderType.LIMIT) -> OrderIntent:
 
 
 def order_event() -> OrderEvent:
-    intent = order_intent()
     return OrderEvent(
+        event_id=uuid4(),
         order_id=uuid4(),
-        intent_id=intent.intent_id,
-        instrument=intent.instrument,
-        side=intent.side,
-        order_type=intent.order_type,
-        time_in_force=intent.time_in_force,
-        status=OrderStatus.ACCEPTED,
-        quantity=intent.quantity,
-        limit_price=intent.limit_price,
+        sequence=1,
+        target_status=OrderStatus.SUBMITTED,
         occurred_at=NOW,
         schema_version="1.0",
     )
@@ -173,12 +173,13 @@ def order_event() -> OrderEvent:
 
 def fill_event() -> FillEvent:
     order = order_event()
+    intent = order_intent()
     return FillEvent(
         fill_id=uuid4(),
         order_id=order.order_id,
-        instrument=order.instrument,
-        side=order.side,
-        quantity=order.quantity,
+        instrument=intent.instrument,
+        side=intent.side,
+        quantity=Quantity(intent.quantity.value, intent.quantity.precision),
         price=Price(Decimal("100"), Currency.USD),
         fees=Money(Decimal("0.01"), Currency.USD),
         filled_at=NOW,
@@ -1019,33 +1020,33 @@ def test_typed_provenance_chain_links_exactly() -> None:
     intent = OrderIntent(
         intent_id=uuid4(),
         risk_decision_id=decision.decision_id,
+        client_order_id="client-provenance",
+        strategy_id="strategy-1",
+        trader_id="trader-1",
+        account_id="account-1",
+        execution_client_id="execution-client-1",
         instrument=INSTRUMENT,
         side=OrderSide.BUY,
         order_type=OrderType.MARKET,
         time_in_force=TimeInForce.DAY,
-        quantity=Quantity(Decimal("1"), 0),
+        quantity=OrderQuantity(Decimal("1"), 0),
         requested_at=NOW,
         schema_version="1.0",
     )
     order = OrderEvent(
+        event_id=uuid4(),
         order_id=uuid4(),
-        intent_id=intent.intent_id,
-        instrument=intent.instrument,
-        side=intent.side,
-        order_type=intent.order_type,
-        time_in_force=intent.time_in_force,
-        status=OrderStatus.ACCEPTED,
-        quantity=intent.quantity,
-        limit_price=intent.limit_price,
+        sequence=1,
+        target_status=OrderStatus.SUBMITTED,
         occurred_at=NOW,
         schema_version="1.0",
     )
     fill = FillEvent(
         fill_id=uuid4(),
         order_id=order.order_id,
-        instrument=order.instrument,
-        side=order.side,
-        quantity=order.quantity,
+        instrument=intent.instrument,
+        side=intent.side,
+        quantity=Quantity(intent.quantity.value, intent.quantity.precision),
         price=Price(Decimal("100"), Currency.USD),
         fees=Money(Decimal("0.01"), Currency.USD),
         filled_at=NOW,
@@ -1055,32 +1056,22 @@ def test_typed_provenance_chain_links_exactly() -> None:
     assert decision.approved_target is not None
     assert original.source_signal_ids == decision.approved_target.source_signal_ids == (proposal.signal_id,)
     assert intent.risk_decision_id == decision.decision_id
-    assert order.intent_id == intent.intent_id
+    assert intent.client_order_id == "client-provenance"
     assert fill.order_id == order.order_id
 
 
 def test_orders_and_fills_require_enums_positive_quantities_and_correct_limit_price() -> None:
     intent = order_intent()
-    values = {
-        "intent_id": intent.intent_id, "risk_decision_id": intent.risk_decision_id, "instrument": intent.instrument, "side": intent.side,
-        "order_type": intent.order_type, "time_in_force": intent.time_in_force,
-        "quantity": intent.quantity, "limit_price": intent.limit_price,
-        "requested_at": intent.requested_at, "schema_version": intent.schema_version,
-    }
+    values = {name: getattr(intent, name) for name in type(intent).model_fields}
     with pytest.raises(ValidationError):
         OrderIntent.model_validate({**values, "side": "buy"})
     with pytest.raises(ValidationError, match="limit_price"):
         OrderIntent.model_validate({**values, "limit_price": None})
     market = order_intent(OrderType.MARKET)
-    market_values = {
-        "intent_id": market.intent_id, "risk_decision_id": market.risk_decision_id, "instrument": market.instrument, "side": market.side,
-        "order_type": market.order_type, "time_in_force": market.time_in_force,
-        "quantity": market.quantity, "limit_price": market.limit_price,
-        "requested_at": market.requested_at, "schema_version": market.schema_version,
-    }
+    market_values = {name: getattr(market, name) for name in type(market).model_fields}
     with pytest.raises(ValidationError, match="limit_price"):
         OrderIntent.model_validate({**market_values, "limit_price": Price(Decimal("1"), Currency.USD)})
-    zero_quantity = Quantity(Decimal("0"), 0)
+    zero_quantity = OrderQuantity(Decimal("0"), 0)
     with pytest.raises(ValidationError, match="quantity"):
         OrderIntent.model_validate({**values, "quantity": zero_quantity})
     with pytest.raises(ValidationError, match="quantity"):

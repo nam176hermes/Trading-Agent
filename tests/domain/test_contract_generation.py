@@ -26,6 +26,7 @@ EXPECTED = {
     "RiskDecision.json",
     "OrderIntent.json",
     "OrderEvent.json",
+    "OrderState.json",
     "FillEvent.json",
     "EventEnvelope_SignalProposal_.json",
     "EventEnvelope_TargetPortfolio_.json",
@@ -84,6 +85,39 @@ def test_domain_provenance_and_risk_state_fields_are_required_in_schema(
 ) -> None:
     schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
     assert fields <= set(schema["required"])
+
+
+def test_order_contracts_publish_unsigned_identity_and_uppercase_lifecycle_data() -> None:
+    intent = json.loads((SCHEMA_ROOT / "OrderIntent.json").read_text(encoding="utf-8"))
+    assert intent["properties"]["quantity"]["$ref"] == "#/$defs/OrderQuantity"
+    assert "Quantity" not in intent["$defs"]
+    assert {
+        "client_order_id",
+        "strategy_id",
+        "trader_id",
+        "account_id",
+        "execution_client_id",
+    } <= set(intent["required"])
+
+    event = json.loads((SCHEMA_ROOT / "OrderEvent.json").read_text(encoding="utf-8"))
+    assert event["$defs"]["OrderStatus"]["enum"] == [
+        "INITIALIZED",
+        "SUBMITTED",
+        "ACCEPTED",
+        "PENDING_UPDATE",
+        "PENDING_CANCEL",
+        "TRIGGERED",
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "CANCELED",
+        "EXPIRED",
+        "REJECTED",
+        "DENIED",
+    ]
+    assert event["properties"]["event_fingerprint"]["pattern"] == "^[0-9a-f]{64}$"
+
+    state = json.loads((SCHEMA_ROOT / "OrderState.json").read_text(encoding="utf-8"))
+    assert state["properties"]["applied_events"]["items"]["$ref"] == "#/$defs/OrderEvent"
 
 
 def test_risk_decision_schema_exposes_closed_reasons_and_outcome_invariants() -> None:

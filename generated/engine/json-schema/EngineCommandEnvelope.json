@@ -170,6 +170,41 @@
       "additionalProperties": false,
       "description": "Canonical v1 order intent accepted by the engine boundary.",
       "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "client_order_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Client Order Id",
+          "type": "string"
+        },
+        "execution_client_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Execution Client Id",
+          "type": "string"
+        },
+        "gtd_expiry": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gtd Expiry"
+        },
         "instrument": {
           "$ref": "#/$defs/EngineInstrumentId"
         },
@@ -189,11 +224,36 @@
           ],
           "default": null
         },
+        "order_list_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Order List Id"
+        },
         "order_type": {
           "$ref": "#/$defs/OrderType"
         },
+        "post_only": {
+          "default": false,
+          "title": "Post Only",
+          "type": "boolean"
+        },
         "quantity": {
           "$ref": "#/$defs/EngineQuantity"
+        },
+        "reduce_only": {
+          "default": false,
+          "title": "Reduce Only",
+          "type": "boolean"
         },
         "requested_at": {
           "format": "date-time",
@@ -214,13 +274,69 @@
         "side": {
           "$ref": "#/$defs/OrderSide"
         },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        },
         "time_in_force": {
           "$ref": "#/$defs/TimeInForce"
+        },
+        "trader_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Trader Id",
+          "type": "string"
+        },
+        "trailing_offset": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnginePrice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "trigger_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnginePrice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "venue_order_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Venue Order Id"
         }
       },
       "required": [
         "intent_id",
         "risk_decision_id",
+        "client_order_id",
+        "strategy_id",
+        "trader_id",
+        "account_id",
+        "execution_client_id",
         "instrument",
         "side",
         "order_type",
@@ -255,7 +371,7 @@
     },
     "EngineQuantity": {
       "additionalProperties": false,
-      "description": "Exact engine-facing quantity with bounded fractional precision.",
+      "description": "Exact unsigned engine-facing order quantity.",
       "properties": {
         "precision": {
           "maximum": 18,
@@ -264,8 +380,8 @@
           "type": "integer"
         },
         "value": {
-          "maxLength": 130,
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "maxLength": 129,
+          "pattern": "^(?:0|[1-9]\\d*|(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
           "title": "Value",
           "type": "string",
           "x-canonical-decimal-policy": "decimal-v1"
@@ -429,7 +545,12 @@
     "OrderType": {
       "enum": [
         "market",
-        "limit"
+        "limit",
+        "stop_market",
+        "stop_limit",
+        "market_if_touched",
+        "limit_if_touched",
+        "trailing_stop"
       ],
       "title": "OrderType",
       "type": "string"
@@ -591,10 +712,11 @@
     },
     "TimeInForce": {
       "enum": [
-        "day",
         "gtc",
         "ioc",
-        "fok"
+        "fok",
+        "day",
+        "gtd"
       ],
       "title": "TimeInForce",
       "type": "string"

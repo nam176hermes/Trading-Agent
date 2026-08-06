@@ -56,6 +56,13 @@ def order_intent_command_json(*, modify: bool = False) -> dict[str, object]:
     intent = {
         "intent_id": str(uuid4()),
         "risk_decision_id": str(uuid4()),
+        "client_order_id": "client-1",
+        "venue_order_id": None,
+        "strategy_id": "strategy-1",
+        "trader_id": "trader-1",
+        "account_id": "account-1",
+        "execution_client_id": "execution-client-1",
+        "order_list_id": None,
         "instrument": {
             "symbol": "BTC-USD",
             "product_type": "crypto_spot",
@@ -66,6 +73,11 @@ def order_intent_command_json(*, modify: bool = False) -> dict[str, object]:
         "time_in_force": "day",
         "quantity": {"value": "1.25", "precision": 2},
         "limit_price": {"amount": "100", "currency": "USD"},
+        "trigger_price": None,
+        "trailing_offset": None,
+        "gtd_expiry": None,
+        "post_only": False,
+        "reduce_only": False,
         "requested_at": "2026-08-04T18:30:00Z",
         "schema_version": "1.0.0",
     }
@@ -162,10 +174,11 @@ def test_engine_quantity_accepts_128_coefficient_digits_and_rejects_129() -> Non
         contracts.EngineQuantity(value=Decimal("9" * 129), precision=0)
 
 
-def test_engine_quantity_accepts_signed_precision_18_wire_value_at_magnitude_limit() -> None:
+def test_engine_order_quantity_rejects_signed_values_at_the_wire_boundary() -> None:
     contracts = import_module("packages.engine_contracts")
-    accepted = "-" + ("9" * 110) + "." + ("9" * 18)
-    rejected = "-" + ("9" * 111) + "." + ("9" * 18)
+    accepted = ("9" * 110) + "." + ("9" * 18)
+    negative = "-" + accepted
+    oversized = ("9" * 111) + "." + ("9" * 18)
 
     assert contracts.EngineQuantity(value=Decimal(accepted), precision=18).value == Decimal(
         accepted
@@ -174,12 +187,47 @@ def test_engine_quantity_accepts_signed_precision_18_wire_value_at_magnitude_lim
         json.dumps({"value": accepted, "precision": 18})
     ).value == Decimal(accepted)
 
+    with pytest.raises(ValidationError, match="non-negative"):
+        contracts.EngineQuantity(value=Decimal(negative), precision=18)
+    with pytest.raises(ValidationError, match="non-negative"):
+        contracts.EngineQuantity.model_validate_json(
+            json.dumps({"value": negative, "precision": 18})
+        )
     with pytest.raises(ValidationError, match="maximum quantity magnitude"):
-        contracts.EngineQuantity(value=Decimal(rejected), precision=18)
+        contracts.EngineQuantity(value=Decimal(oversized), precision=18)
     with pytest.raises(ValidationError, match="maximum quantity magnitude"):
         contracts.EngineQuantity.model_validate_json(
-            json.dumps({"value": rejected, "precision": 18})
+            json.dumps({"value": oversized, "precision": 18})
         )
+
+
+def test_engine_order_instruction_mirrors_typed_trigger_gtd_flag_and_identity_data() -> None:
+    contracts = import_module("packages.engine_contracts")
+    payload = order_intent_command_json()
+    intent = payload["order_intent"]
+    assert isinstance(intent, dict)
+    intent.update(
+        {
+            "order_type": "stop_limit",
+            "time_in_force": "gtd",
+            "trigger_price": {"amount": "99", "currency": "USD"},
+            "gtd_expiry": "2026-08-05T18:30:00Z",
+            "post_only": True,
+            "reduce_only": True,
+        }
+    )
+
+    command = contracts.SubmitOrderIntent.model_validate_json(json.dumps(payload))
+
+    assert command.order_intent.client_order_id == "client-1"
+    assert command.order_intent.order_type.value == "stop_limit"
+    assert command.order_intent.gtd_expiry == datetime(2026, 8, 5, 18, 30, tzinfo=UTC)
+    assert command.order_intent.post_only is True
+    assert command.order_intent.reduce_only is True
+
+    intent["client_order_id"] = "bad/value"
+    with pytest.raises(ValidationError, match="client_order_id"):
+        contracts.SubmitOrderIntent.model_validate_json(json.dumps(payload))
 
 
 def test_public_command_schemas_do_not_leak_provider_or_nautilus_types() -> None:

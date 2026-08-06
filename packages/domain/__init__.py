@@ -21,7 +21,20 @@ from .market_data import (
     normalize_market_symbol,
 )
 from .events import EventEnvelope, validate_event_batch
-from .orders import FillEvent, OrderEvent, OrderIntent, OrderSide, OrderStatus, OrderType, TimeInForce
+from .orders import (
+    ORDER_STATUS_TRANSITIONS,
+    TERMINAL_ORDER_STATUSES,
+    FillEvent,
+    OrderEvent,
+    OrderIntent,
+    OrderReductionError,
+    OrderSide,
+    OrderState,
+    OrderStatus,
+    OrderType,
+    TimeInForce,
+    reduce_order,
+)
 from .portfolio import PortfolioSnapshot, PositionSnapshot, TargetPortfolio, TargetPosition
 from .primitives import (
     CANONICAL_DECIMAL_POLICY_VERSION,
@@ -76,10 +89,13 @@ __all__ = [
     "MarketDataProvenance",
     "MarketSnapshot",
     "MarketTimeframe",
+    "ORDER_STATUS_TRANSITIONS",
     "OrderEvent",
     "OrderIntent",
     "OrderQuantity",
+    "OrderReductionError",
     "OrderSide",
+    "OrderState",
     "OrderStatus",
     "OrderType",
     "PortfolioSnapshot",
@@ -97,10 +113,12 @@ __all__ = [
     "SystemUtcClock",
     "TargetPortfolio",
     "TargetPosition",
+    "TERMINAL_ORDER_STATUSES",
     "TimeInForce",
     "convert_money_exact",
     "decimal_to_scaled_integer",
     "require_utc",
     "validate_event_batch",
     "normalize_market_symbol",
+    "reduce_order",
 ]

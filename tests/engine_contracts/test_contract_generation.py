@@ -125,5 +125,13 @@ def test_generated_submission_dtos_are_recursively_strict_and_v1_canonical() -> 
     order = definitions["EngineOrderIntent"]["properties"]
     assert order["requested_at"]["pattern"].endswith("Z$")
     assert order["schema_version"]["const"] == "1.0.0"
+    assert {
+        "client_order_id",
+        "strategy_id",
+        "trader_id",
+        "account_id",
+        "execution_client_id",
+    } <= set(definitions["EngineOrderIntent"]["required"])
     quantity_value = definitions["EngineQuantity"]["properties"]["value"]
-    assert quantity_value["maxLength"] == 130
+    assert quantity_value["maxLength"] == 129
+    assert "-?" not in quantity_value["pattern"]
