@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -240,6 +241,7 @@ def test_catalog_workspace_is_an_opaque_unforgeable_public_capability(tmp_path: 
     assert not hasattr(issued, "path")
     assert not hasattr(issued, "_token")
     assert not hasattr(issued, "duplicate_directory_fd")
+    assert not hasattr(issued, "_duplicate_directory_fd")
     with pytest.raises(TypeError, match="created only by CatalogWorkspaceV1.create"):
         CatalogWorkspaceV1()  # type: ignore[call-arg]
 
@@ -263,6 +265,15 @@ def test_catalog_artifact_exposes_only_capability_and_artifact_names(tmp_path: P
     )
 
     assert set(artifact.__dataclass_fields__) == {"workspace", "manifest", "parquet_name", "manifest_name"}
+
+
+def test_catalog_rejects_unbound_artifact_names_before_opening_a_file(tmp_path: Path) -> None:
+    artifact = materialize_fixture_catalog(
+        snapshot(), RAW_EVIDENCE, workspace=workspace(tmp_path), importer_version="fixture-catalog-v1"
+    )
+
+    with pytest.raises(CatalogMaterializationError, match="artifact names do not match manifest identity"):
+        verify_materialized_catalog(replace(artifact, manifest_name="../outside"))
 
 
 def test_data_catalog_source_has_no_runtime_or_provider_imports() -> None:

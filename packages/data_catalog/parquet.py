@@ -70,12 +70,6 @@ class CatalogWorkspaceV1:
             _WORKSPACES[workspace] = _WorkspaceState(parent_path / name, child_fd)
             return workspace
 
-    def _duplicate_directory_fd(self) -> int:
-        try:
-            return os.dup(_workspace_state(self).directory_fd)
-        except OSError as exc:
-            raise CatalogMaterializationError("catalog workspace is unavailable") from exc
-
     def close(self) -> None:
         """Retire this capability; published evidence remains owner-managed."""
 
@@ -97,6 +91,13 @@ def _workspace_state(workspace: CatalogWorkspaceV1) -> _WorkspaceState:
         return _WORKSPACES[workspace]
     except KeyError as exc:
         raise CatalogMaterializationError("workspace is not registered by this catalog process") from exc
+
+
+def _duplicate_workspace_directory_fd(workspace: CatalogWorkspaceV1) -> int:
+    try:
+        return os.dup(_workspace_state(workspace).directory_fd)
+    except OSError as exc:
+        raise CatalogMaterializationError("catalog workspace is unavailable") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,7 +365,7 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
         raise CatalogMaterializationError("raw evidence digest does not match snapshot provenance")
     rows, canonical_rows = _canonical_rows(snapshot)
     parquet_name, manifest_name = _artifact_names(snapshot.digest)
-    directory_fd = workspace._duplicate_directory_fd()
+    directory_fd = _duplicate_workspace_directory_fd(workspace)
     try:
         created: dict[str, tuple[int, int]] = {}
         try:
@@ -485,7 +486,10 @@ def verify_materialized_catalog(artifact: MaterializedMarketDatasetV1) -> Market
 
     if not isinstance(artifact, MaterializedMarketDatasetV1):
         raise CatalogMaterializationError("artifact must be a MaterializedMarketDatasetV1")
-    directory_fd = artifact.workspace._duplicate_directory_fd()
+    expected_parquet_name, expected_manifest_name = _artifact_names(artifact.manifest.content_digest)
+    if artifact.parquet_name != expected_parquet_name or artifact.manifest_name != expected_manifest_name:
+        raise CatalogMaterializationError("artifact names do not match manifest identity")
+    directory_fd = _duplicate_workspace_directory_fd(artifact.workspace)
     try:
         manifest_name = artifact.manifest_name
         manifest = _read_manifest(directory_fd, manifest_name)
