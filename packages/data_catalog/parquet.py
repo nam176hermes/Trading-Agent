@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import stat
@@ -34,11 +35,19 @@ class CatalogMaterializationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class CatalogWorkspaceV1:
-    """A catalog-created private staging child held open by directory descriptor."""
-
+class _WorkspaceState:
     path: Path
-    _directory_fd: int
+    directory_fd: int
+
+
+_WORKSPACES: dict[str, _WorkspaceState] = {}
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogWorkspaceV1:
+    """Opaque handle for a catalog-created private staging child."""
+
+    _token: str
 
     @classmethod
     def create(cls, staging_parent: Path) -> "CatalogWorkspaceV1":
@@ -53,13 +62,28 @@ class CatalogWorkspaceV1:
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
                 os.close(child_fd)
                 raise CatalogMaterializationError("catalog staging workspace is not caller-owned")
-            return cls(path=parent_path / name, _directory_fd=child_fd)
+            token = uuid.uuid4().hex
+            _WORKSPACES[token] = _WorkspaceState(parent_path / name, child_fd)
+            return cls(token)
+
+    @property
+    def path(self) -> Path:
+        return _workspace_state(self).path
 
     def duplicate_directory_fd(self) -> int:
         try:
-            return os.dup(self._directory_fd)
+            return os.dup(_workspace_state(self).directory_fd)
         except OSError as exc:
             raise CatalogMaterializationError("catalog workspace is unavailable") from exc
+
+
+def _workspace_state(workspace: CatalogWorkspaceV1) -> _WorkspaceState:
+    if not isinstance(workspace, CatalogWorkspaceV1):
+        raise CatalogMaterializationError("workspace must be a catalog-created CatalogWorkspaceV1")
+    try:
+        return _WORKSPACES[workspace._token]
+    except KeyError as exc:
+        raise CatalogMaterializationError("workspace is not registered by this catalog process") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +197,48 @@ def _sha256_fd(fd: int, *, maximum_bytes: int) -> str:
     return digest.hexdigest()
 
 
+class _BoundedFdReader(io.RawIOBase):
+    """Seekable read facade that never exposes bytes beyond the opened inode size."""
+
+    def __init__(self, fd: int, *, maximum_bytes: int) -> None:
+        size = os.fstat(fd).st_size
+        if size > maximum_bytes:
+            raise CatalogMaterializationError("catalog artifact exceeds its bounded regular-file policy")
+        self._limit = size
+        self._stream = os.fdopen(os.dup(fd), "rb")
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._stream.tell()
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        target = self._stream.seek(offset, whence)
+        if target < 0 or target > self._limit:
+            raise CatalogMaterializationError("parquet reader exceeded its opened byte bound")
+        return target
+
+    def read(self, size: int = -1) -> bytes:
+        remaining = self._limit - self._stream.tell()
+        if remaining <= 0:
+            return b""
+        return self._stream.read(remaining if size < 0 else min(size, remaining))
+
+    def readinto(self, buffer: bytearray) -> int:
+        data = self.read(len(buffer))
+        buffer[: len(data)] = data
+        return len(data)
+
+    def close(self) -> None:
+        if not self.closed:
+            self._stream.close()
+        super().close()
+
+
 def _link_fd_into_directory(source_fd: int, destination_fd: int, name: str) -> None:
     result = _LIBC.linkat(source_fd, b"", destination_fd, os.fsencode(name), _AT_EMPTY_PATH)
     if result != 0:
@@ -255,10 +321,19 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
         created: dict[str, tuple[int, int]] = {}
         try:
             created[parquet_name] = _write_new_parquet(directory_fd, parquet_name, rows)
+            parquet_fd = _regular_fd_at(
+                directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES
+            )
+            try:
+                parquet_sha256 = _sha256_fd(
+                    parquet_fd, maximum_bytes=_MAX_PARQUET_BYTES
+                )
+            finally:
+                os.close(parquet_fd)
             manifest = MarketDatasetManifestV1.from_snapshot(
                 snapshot, raw_evidence_sha256=raw_evidence_sha256,
                 canonical_rows_sha256=_sha256_bytes(canonical_rows),
-                parquet_sha256=_sha256_at(directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES),
+                parquet_sha256=parquet_sha256,
                 importer_version=importer_version,
             )
             created[manifest_name] = _write_new_manifest(directory_fd, manifest_name, manifest)
@@ -267,13 +342,8 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
                 raise CatalogMaterializationError("materialized catalog does not round-trip")
             return artifact
         except Exception:
-            for name, identity in created.items():
-                try:
-                    current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-                    if (current.st_dev, current.st_ino) == identity:
-                        os.unlink(name, dir_fd=directory_fd)
-                except FileNotFoundError:
-                    pass
+            # Published children are immutable evidence.  Leave them in the
+            # catalog-owned workspace for a later owner-scoped garbage collector.
             raise
     finally:
         os.close(directory_fd)
@@ -300,7 +370,7 @@ def _read_manifest(directory_fd: int, name: str) -> MarketDatasetManifestV1:
 
 def _read_rows_from_fd(fd: int) -> list[dict[str, object]]:
     try:
-        with os.fdopen(os.dup(fd), "rb") as stream:
+        with _BoundedFdReader(fd, maximum_bytes=_MAX_PARQUET_BYTES) as stream:
             reader = pq.ParquetFile(stream)
             if reader.metadata.num_rows > _MAX_ROWS or reader.metadata.num_row_groups > _MAX_ROWS:
                 raise CatalogMaterializationError("parquet exceeds the catalog row bound")

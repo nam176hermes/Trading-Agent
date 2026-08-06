@@ -226,6 +226,16 @@ def test_catalog_workspace_owns_a_private_child_not_the_caller_parent(tmp_path: 
     assert catalog_workspace.path.is_symlink() is False
 
 
+def test_catalog_rejects_a_forged_workspace_handle(tmp_path: Path) -> None:
+    with pytest.raises(CatalogMaterializationError, match="not registered"):
+        materialize_fixture_catalog(
+            snapshot(),
+            RAW_EVIDENCE,
+            workspace=CatalogWorkspaceV1("forged-workspace-token"),
+            importer_version="fixture-catalog-v1",
+        )
+
+
 def test_data_catalog_source_has_no_runtime_or_provider_imports() -> None:
     root = Path(__file__).resolve().parents[2] / "packages" / "data_catalog"
     forbidden = {
