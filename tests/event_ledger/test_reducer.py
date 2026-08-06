@@ -84,7 +84,7 @@ def order_intent() -> OrderIntent:
 
 
 def order_event() -> OrderEvent:
-    return OrderEvent(event_id=uid(22), order_id=uid(20), sequence=1, target_status=OrderStatus.SUBMITTED, occurred_at=NOW, schema_version="1")
+    return OrderEvent.create(event_id=uid(22), order_id=uid(20), sequence=1, target_status=OrderStatus.SUBMITTED, occurred_at=NOW, schema_version="2.0")
 
 
 def fill() -> FillEvent:

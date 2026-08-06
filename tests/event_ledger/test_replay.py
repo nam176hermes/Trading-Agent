@@ -30,6 +30,48 @@ def test_all_registered_payload_types_round_trip_exact_concrete_type(payload: ob
     assert type(deserialize_event(serialize_event(event)).payload) is type(event.payload)
 
 
+def test_accepted_base_order_event_wire_shape_is_a_rejected_preproduction_break() -> None:
+    accepted_base_document = {
+        "causation_id": "00000000-0000-0000-0000-00000000001f",
+        "correlation_id": "00000000-0000-0000-0000-00000000001e",
+        "effective_at": "2026-07-20T12:00:02Z",
+        "event_id": "00000000-0000-0000-0000-000000000064",
+        "event_type": "OrderEvent",
+        "expires_at": "2026-07-20T12:05:00Z",
+        "ingested_at": "2026-07-20T12:00:01Z",
+        "observed_at": "2026-07-20T12:00:00Z",
+        "payload": {
+            "instrument": {
+                "product_type": "crypto_spot",
+                "symbol": "BTC-USD",
+                "venue": "ALPACA",
+            },
+            "intent_id": "00000000-0000-0000-0000-000000000013",
+            "limit_price": {"amount": "100", "currency": "USD"},
+            "occurred_at": "2026-07-20T12:00:00Z",
+            "order_id": "00000000-0000-0000-0000-000000000014",
+            "order_type": "limit",
+            "quantity": {"precision": 2, "value": "1.25"},
+            "schema_version": "1.0",
+            "side": "buy",
+            "status": "accepted",
+            "time_in_force": "day",
+        },
+        "produced_at": "2026-07-20T12:00:02Z",
+        "schema_version": "1",
+        "sequence": 1,
+        "source": "test",
+        "stream_id": "00000000-0000-0000-0000-000000000064",
+        "trace_id": "00000000-0000-0000-0000-000000000020",
+    }
+    accepted_base_json = json.dumps(
+        accepted_base_document, sort_keys=True, separators=(",", ":")
+    )
+
+    with pytest.raises(ReplayError, match="invalid canonical event JSON"):
+        deserialize_event(accepted_base_json)
+
+
 @given(order=st.permutations((0, 1, 2, 3)))
 def test_replay_treats_input_as_canonical_immutable_event_set(
     order: list[int],

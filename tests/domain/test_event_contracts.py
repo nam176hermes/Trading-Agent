@@ -161,13 +161,13 @@ def order_intent(order_type: OrderType = OrderType.LIMIT) -> OrderIntent:
 
 
 def order_event() -> OrderEvent:
-    return OrderEvent(
+    return OrderEvent.create(
         event_id=uuid4(),
         order_id=uuid4(),
         sequence=1,
         target_status=OrderStatus.SUBMITTED,
         occurred_at=NOW,
-        schema_version="1.0",
+        schema_version="2.0",
     )
 
 
@@ -1033,13 +1033,13 @@ def test_typed_provenance_chain_links_exactly() -> None:
         requested_at=NOW,
         schema_version="1.0",
     )
-    order = OrderEvent(
+    order = OrderEvent.create(
         event_id=uuid4(),
         order_id=uuid4(),
         sequence=1,
         target_status=OrderStatus.SUBMITTED,
         occurred_at=NOW,
-        schema_version="1.0",
+        schema_version="2.0",
     )
     fill = FillEvent(
         fill_id=uuid4(),

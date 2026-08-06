@@ -19,6 +19,9 @@ CANONICAL_DECIMAL_POLICY_VERSION = "decimal-v1"
 _CANONICAL_DECIMAL_PATTERN = (
     r"^(?:0|-?[1-9]\d*|-?(?:0|[1-9]\d*)\.\d*[1-9])$"
 )
+_CANONICAL_NON_NEGATIVE_DECIMAL_PATTERN = (
+    r"^(?:0|[1-9]\d*|(?:0|[1-9]\d*)\.\d*[1-9])$"
+)
 _MAX_QUANTITY_COEFFICIENT_DIGITS = 128
 _CURRENCY_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9]{0,15}$")
 _REGISTRY_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -64,6 +67,19 @@ FiniteDecimal = Annotated[
         {
             "type": "string",
             "pattern": _CANONICAL_DECIMAL_PATTERN,
+            "x-canonical-decimal-policy": CANONICAL_DECIMAL_POLICY_VERSION,
+        },
+        mode="validation",
+    ),
+]
+NonNegativeFiniteDecimal = Annotated[
+    Decimal,
+    BeforeValidator(_validate_canonical_decimal, json_schema_input_type=str),
+    PlainSerializer(_serialize_canonical_decimal, return_type=str, when_used="json"),
+    WithJsonSchema(
+        {
+            "type": "string",
+            "pattern": _CANONICAL_NON_NEGATIVE_DECIMAL_PATTERN,
             "x-canonical-decimal-policy": CANONICAL_DECIMAL_POLICY_VERSION,
         },
         mode="validation",
@@ -435,7 +451,7 @@ def _normalize_quantity(value: object, precision: object) -> Decimal:
 class OrderQuantity:
     """An exact non-negative order quantity with declared precision."""
 
-    value: FiniteDecimal
+    value: NonNegativeFiniteDecimal
     precision: int
 
     def __post_init__(self) -> None:

@@ -1,5 +1,13 @@
 {
   "$defs": {
+    "OrderCancelResolution": {
+      "description": "Explicit resolution of an outstanding cancellation request.",
+      "enum": [
+        "REJECTED"
+      ],
+      "title": "OrderCancelResolution",
+      "type": "string"
+    },
     "OrderStatus": {
       "enum": [
         "INITIALIZED",
@@ -20,10 +28,20 @@
     }
   },
   "additionalProperties": false,
-  "description": "One immutable order lifecycle observation with canonical content identity.",
+  "description": "A versioned lifecycle observation ordered solely by sequence.\n\nProducers must carry the required canonical fingerprint. ``create`` is the\nlocal construction path which validates material first and derives it.\n``occurred_at`` records an observation and may move backward under clock\nskew; it is never an ordering authority.",
   "properties": {
+    "cancel_resolution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/OrderCancelResolution"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "event_fingerprint": {
-      "default": "",
       "pattern": "^[0-9a-f]{64}$",
       "title": "Event Fingerprint",
       "type": "string"
@@ -59,7 +77,7 @@
       "title": "Reason"
     },
     "schema_version": {
-      "minLength": 1,
+      "const": "2.0",
       "title": "Schema Version",
       "type": "string"
     },
@@ -78,7 +96,8 @@
     "sequence",
     "target_status",
     "occurred_at",
-    "schema_version"
+    "schema_version",
+    "event_fingerprint"
   ],
   "title": "OrderEvent",
   "type": "object"

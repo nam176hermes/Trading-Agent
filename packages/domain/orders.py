@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Annotated, Mapping
+from typing import Annotated, Literal, Mapping
 from uuid import UUID
 
 from pydantic import (
@@ -15,6 +15,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictInt,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -84,6 +85,12 @@ class OrderStatus(str, Enum):
     DENIED = "DENIED"
 
 
+class OrderCancelResolution(str, Enum):
+    """Explicit resolution of an outstanding cancellation request."""
+
+    REJECTED = "REJECTED"
+
+
 TERMINAL_ORDER_STATUSES = frozenset(
     {
         OrderStatus.FILLED,
@@ -95,82 +102,174 @@ TERMINAL_ORDER_STATUSES = frozenset(
 )
 
 
-ORDER_STATUS_TRANSITIONS: Mapping[OrderStatus, frozenset[OrderStatus]] = (
-    MappingProxyType(
-        {
-            OrderStatus.INITIALIZED: frozenset(
-                {OrderStatus.SUBMITTED, OrderStatus.DENIED}
-            ),
-            OrderStatus.SUBMITTED: frozenset(
-                {
-                    OrderStatus.ACCEPTED,
+OrderStateKey = tuple[OrderStatus, bool]
+OrderObservationKey = tuple[OrderStatus, OrderCancelResolution | None]
+
+
+def _immutable_transitions(
+    values: Mapping[OrderObservationKey, OrderStateKey],
+) -> Mapping[OrderObservationKey, OrderStateKey]:
+    return MappingProxyType(dict(values))
+
+
+# Sequence orders observations, not causal venue messages. A venue ACK may be
+# absent or observed after a fill/terminal report, so SUBMITTED retains those
+# explicit observed-ACK race edges. Cancellation lineage is orthogonal to the
+# visible status and is therefore part of every table key and result.
+ORDER_STATUS_TRANSITIONS: Mapping[
+    OrderStateKey, Mapping[OrderObservationKey, OrderStateKey]
+] = MappingProxyType(
+    {
+        (OrderStatus.INITIALIZED, False): _immutable_transitions(
+            {
+                (OrderStatus.SUBMITTED, None): (OrderStatus.SUBMITTED, False),
+                (OrderStatus.DENIED, None): (OrderStatus.DENIED, False),
+            }
+        ),
+        (OrderStatus.SUBMITTED, False): _immutable_transitions(
+            {
+                (OrderStatus.ACCEPTED, None): (OrderStatus.ACCEPTED, False),
+                (OrderStatus.PENDING_CANCEL, None): (
                     OrderStatus.PENDING_CANCEL,
+                    True,
+                ),
+                (OrderStatus.PARTIALLY_FILLED, None): (
                     OrderStatus.PARTIALLY_FILLED,
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELED,
-                    OrderStatus.EXPIRED,
-                    OrderStatus.REJECTED,
-                }
-            ),
-            OrderStatus.ACCEPTED: frozenset(
-                {
+                    False,
+                ),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+                (OrderStatus.REJECTED, None): (OrderStatus.REJECTED, False),
+            }
+        ),
+        (OrderStatus.ACCEPTED, False): _immutable_transitions(
+            {
+                (OrderStatus.PENDING_UPDATE, None): (
                     OrderStatus.PENDING_UPDATE,
+                    False,
+                ),
+                (OrderStatus.PENDING_CANCEL, None): (
                     OrderStatus.PENDING_CANCEL,
-                    OrderStatus.TRIGGERED,
+                    True,
+                ),
+                (OrderStatus.TRIGGERED, None): (OrderStatus.TRIGGERED, False),
+                (OrderStatus.PARTIALLY_FILLED, None): (
                     OrderStatus.PARTIALLY_FILLED,
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELED,
-                    OrderStatus.EXPIRED,
-                }
-            ),
-            OrderStatus.PENDING_UPDATE: frozenset(
-                {
-                    OrderStatus.ACCEPTED,
+                    False,
+                ),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+            }
+        ),
+        (OrderStatus.PENDING_UPDATE, False): _immutable_transitions(
+            {
+                (OrderStatus.ACCEPTED, None): (OrderStatus.ACCEPTED, False),
+                (OrderStatus.PENDING_CANCEL, None): (
                     OrderStatus.PENDING_CANCEL,
-                    OrderStatus.TRIGGERED,
+                    True,
+                ),
+                (OrderStatus.TRIGGERED, None): (OrderStatus.TRIGGERED, False),
+                (OrderStatus.PARTIALLY_FILLED, None): (
                     OrderStatus.PARTIALLY_FILLED,
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELED,
-                    OrderStatus.EXPIRED,
-                }
-            ),
-            OrderStatus.PENDING_CANCEL: frozenset(
-                {
-                    OrderStatus.ACCEPTED,
-                    OrderStatus.TRIGGERED,
-                    OrderStatus.PARTIALLY_FILLED,
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELED,
-                    OrderStatus.EXPIRED,
-                }
-            ),
-            OrderStatus.TRIGGERED: frozenset(
-                {
+                    False,
+                ),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+            }
+        ),
+        (OrderStatus.TRIGGERED, False): _immutable_transitions(
+            {
+                (OrderStatus.PENDING_UPDATE, None): (
                     OrderStatus.PENDING_UPDATE,
+                    False,
+                ),
+                (OrderStatus.PENDING_CANCEL, None): (
                     OrderStatus.PENDING_CANCEL,
+                    True,
+                ),
+                (OrderStatus.PARTIALLY_FILLED, None): (
                     OrderStatus.PARTIALLY_FILLED,
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELED,
-                    OrderStatus.EXPIRED,
-                }
-            ),
-            OrderStatus.PARTIALLY_FILLED: frozenset(
-                {
+                    False,
+                ),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+            }
+        ),
+        (OrderStatus.PARTIALLY_FILLED, False): _immutable_transitions(
+            {
+                (OrderStatus.PENDING_UPDATE, None): (
                     OrderStatus.PENDING_UPDATE,
+                    False,
+                ),
+                (OrderStatus.PENDING_CANCEL, None): (
                     OrderStatus.PENDING_CANCEL,
+                    True,
+                ),
+                (OrderStatus.PARTIALLY_FILLED, None): (
                     OrderStatus.PARTIALLY_FILLED,
-                    OrderStatus.FILLED,
-                    OrderStatus.CANCELED,
-                    OrderStatus.EXPIRED,
-                }
-            ),
-            OrderStatus.FILLED: frozenset(),
-            OrderStatus.CANCELED: frozenset(),
-            OrderStatus.EXPIRED: frozenset(),
-            OrderStatus.REJECTED: frozenset(),
-            OrderStatus.DENIED: frozenset(),
-        }
-    )
+                    False,
+                ),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+            }
+        ),
+        (OrderStatus.PENDING_CANCEL, True): _immutable_transitions(
+            {
+                (OrderStatus.ACCEPTED, OrderCancelResolution.REJECTED): (
+                    OrderStatus.ACCEPTED,
+                    False,
+                ),
+                (OrderStatus.TRIGGERED, None): (OrderStatus.TRIGGERED, True),
+                (OrderStatus.PARTIALLY_FILLED, None): (
+                    OrderStatus.PARTIALLY_FILLED,
+                    True,
+                ),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+            }
+        ),
+        (OrderStatus.TRIGGERED, True): _immutable_transitions(
+            {
+                (OrderStatus.TRIGGERED, OrderCancelResolution.REJECTED): (
+                    OrderStatus.TRIGGERED,
+                    False,
+                ),
+                (OrderStatus.PARTIALLY_FILLED, None): (
+                    OrderStatus.PARTIALLY_FILLED,
+                    True,
+                ),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+            }
+        ),
+        (OrderStatus.PARTIALLY_FILLED, True): _immutable_transitions(
+            {
+                (OrderStatus.PARTIALLY_FILLED, None): (
+                    OrderStatus.PARTIALLY_FILLED,
+                    True,
+                ),
+                (
+                    OrderStatus.PARTIALLY_FILLED,
+                    OrderCancelResolution.REJECTED,
+                ): (OrderStatus.PARTIALLY_FILLED, False),
+                (OrderStatus.FILLED, None): (OrderStatus.FILLED, False),
+                (OrderStatus.CANCELED, None): (OrderStatus.CANCELED, False),
+                (OrderStatus.EXPIRED, None): (OrderStatus.EXPIRED, False),
+            }
+        ),
+        (OrderStatus.FILLED, False): _immutable_transitions({}),
+        (OrderStatus.CANCELED, False): _immutable_transitions({}),
+        (OrderStatus.EXPIRED, False): _immutable_transitions({}),
+        (OrderStatus.REJECTED, False): _immutable_transitions({}),
+        (OrderStatus.DENIED, False): _immutable_transitions({}),
+    }
 )
 
 
@@ -272,13 +371,42 @@ class OrderIntent(DomainModel):
         return self
 
 
-def _event_fingerprint(event: "OrderEvent") -> str:
+class _OrderEventMaterial(DomainModel):
+    event_id: UUID
+    order_id: UUID
+    sequence: Annotated[StrictInt, Field(gt=0)]
+    target_status: OrderStatus
+    occurred_at: datetime
+    reason: CanonicalReason | None = None
+    cancel_resolution: OrderCancelResolution | None = None
+    schema_version: Literal["2.0"]
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _utc(cls, value: datetime) -> datetime:
+        return require_utc(value)
+
+    @model_validator(mode="after")
+    def _validate_reason(self) -> "_OrderEventMaterial":
+        if self.target_status in _REASON_REQUIRED_STATUSES and self.reason is None:
+            raise ValueError(f"reason is required for {self.target_status.value}")
+        if self.cancel_resolution is not None and self.reason is None:
+            raise ValueError("reason is required for cancel_resolution")
+        return self
+
+
+def _event_fingerprint(event: _OrderEventMaterial) -> str:
     occurred_at = event.occurred_at.astimezone(UTC).isoformat(
         timespec="microseconds"
     ).replace("+00:00", "Z")
     material = json.dumps(
         {
             "event_id": str(event.event_id),
+            "cancel_resolution": (
+                None
+                if event.cancel_resolution is None
+                else event.cancel_resolution.value
+            ),
             "occurred_at": occurred_at,
             "order_id": str(event.order_id),
             "reason": event.reason,
@@ -293,109 +421,189 @@ def _event_fingerprint(event: "OrderEvent") -> str:
     return hashlib.sha256(material).hexdigest()
 
 
-class OrderEvent(DomainModel):
-    """One immutable order lifecycle observation with canonical content identity."""
+class OrderEvent(_OrderEventMaterial):
+    """A versioned lifecycle observation ordered solely by sequence.
 
-    event_id: UUID
-    order_id: UUID
-    sequence: Annotated[StrictInt, Field(gt=0)]
-    target_status: OrderStatus
-    occurred_at: datetime
-    reason: CanonicalReason | None = None
-    schema_version: NonEmptyText
-    event_fingerprint: Sha256Hex = ""
+    Producers must carry the required canonical fingerprint. ``create`` is the
+    local construction path which validates material first and derives it.
+    ``occurred_at`` records an observation and may move backward under clock
+    skew; it is never an ordering authority.
+    """
 
-    @field_validator("occurred_at")
-    @classmethod
-    def _utc(cls, value: datetime) -> datetime:
-        return require_utc(value)
+    event_fingerprint: Sha256Hex
 
     @model_validator(mode="after")
     def _validate_and_set_fingerprint(self) -> "OrderEvent":
-        if self.target_status in _REASON_REQUIRED_STATUSES and self.reason is None:
-            raise ValueError(f"reason is required for {self.target_status.value}")
         expected = _event_fingerprint(self)
-        if self.event_fingerprint and self.event_fingerprint != expected:
+        if self.event_fingerprint != expected:
             raise ValueError("event_fingerprint does not match canonical event fields")
-        object.__setattr__(self, "event_fingerprint", expected)
         return self
 
+    @classmethod
+    def create(
+        cls,
+        *,
+        event_id: UUID,
+        order_id: UUID,
+        sequence: int,
+        target_status: OrderStatus,
+        occurred_at: datetime,
+        reason: str | None = None,
+        cancel_resolution: OrderCancelResolution | None = None,
+        schema_version: Literal["2.0"] = "2.0",
+    ) -> "OrderEvent":
+        """Validate event material and attach its required canonical digest."""
 
-class OrderState(DomainModel):
-    """Frozen reducer state containing enough history to detect event-id reuse."""
-
-    order_id: UUID
-    status: OrderStatus = OrderStatus.INITIALIZED
-    last_sequence: Annotated[StrictInt, Field(ge=0)] = 0
-    applied_events: tuple[OrderEvent, ...] = ()
-    schema_version: NonEmptyText
-
-    @model_validator(mode="after")
-    def _validate_history(self) -> "OrderState":
-        if not self.applied_events:
-            return self
-        event_ids: set[UUID] = set()
-        previous_sequence = 0
-        for event in self.applied_events:
-            if event.order_id != self.order_id:
-                raise ValueError("applied event order_id does not match state order_id")
-            if event.event_id in event_ids:
-                raise ValueError("applied_events contain a duplicate event_id")
-            if event.sequence <= previous_sequence:
-                raise ValueError("applied_events contain non-increasing sequence")
-            event_ids.add(event.event_id)
-            previous_sequence = event.sequence
-        if previous_sequence != self.last_sequence:
-            raise ValueError("last_sequence does not match applied_events")
-        if self.applied_events[-1].target_status is not self.status:
-            raise ValueError("status does not match the last applied event")
-        return self
+        material = _OrderEventMaterial(
+            event_id=event_id,
+            order_id=order_id,
+            sequence=sequence,
+            target_status=target_status,
+            occurred_at=occurred_at,
+            reason=reason,
+            cancel_resolution=cancel_resolution,
+            schema_version=schema_version,
+        )
+        values = {
+            name: getattr(material, name) for name in material.__class__.model_fields
+        }
+        return cls(**values, event_fingerprint=_event_fingerprint(material))
 
 
 class OrderReductionError(ValueError):
     """A fail-closed order lifecycle reduction error."""
 
 
-def reduce_order(state: OrderState, event: OrderEvent) -> OrderState:
-    """Purely apply one validated lifecycle event to a frozen order state."""
-
-    if event.order_id != state.order_id:
+def _next_state_key(
+    current: OrderStateKey, event: OrderEvent
+) -> OrderStateKey:
+    if current[0] in TERMINAL_ORDER_STATUSES:
         raise OrderReductionError(
-            f"order id mismatch: state {state.order_id}, event {event.order_id}"
+            f"terminal order status cannot change: {current[0].value}"
+        )
+    observation = (event.target_status, event.cancel_resolution)
+    next_key = ORDER_STATUS_TRANSITIONS.get(current, {}).get(observation)
+    if next_key is None:
+        if current[1] and event.target_status is OrderStatus.PENDING_UPDATE:
+            raise OrderReductionError("pending cancel forbids order update")
+        raise OrderReductionError(
+            "forbidden order transition: "
+            f"{current[0].value}/{current[1]} -> "
+            f"{event.target_status.value}/{event.cancel_resolution}"
+        )
+    return next_key
+
+
+def _canonical_event(value: OrderEvent) -> OrderEvent:
+    raw = {name: getattr(value, name) for name in OrderEvent.model_fields}
+    return OrderEvent.model_validate(raw)
+
+
+class OrderState(DomainModel):
+    """Frozen state whose complete history is replayed on every ingress."""
+
+    order_id: UUID
+    status: OrderStatus = OrderStatus.INITIALIZED
+    cancel_pending: bool = False
+    last_sequence: Annotated[StrictInt, Field(ge=0)] = 0
+    applied_events: tuple[OrderEvent, ...] = ()
+    schema_version: Literal["2.0"] = "2.0"
+
+    @model_validator(mode="after")
+    def _validate_history(self) -> "OrderState":
+        if not self.applied_events:
+            if (
+                self.status is not OrderStatus.INITIALIZED
+                or self.cancel_pending
+                or self.last_sequence != 0
+            ):
+                raise ValueError(
+                    "empty history requires INITIALIZED status, no pending cancel, "
+                    "and sequence zero"
+                )
+            return self
+        event_ids: set[UUID] = set()
+        previous_sequence = 0
+        current: OrderStateKey = (OrderStatus.INITIALIZED, False)
+        canonical_events: list[OrderEvent] = []
+        for event in self.applied_events:
+            try:
+                canonical = _canonical_event(event)
+            except (AttributeError, TypeError, ValidationError) as exc:
+                raise ValueError("applied_events contain invalid order event") from exc
+            if canonical.order_id != self.order_id:
+                raise ValueError("applied event order_id does not match state order_id")
+            if canonical.event_id in event_ids:
+                raise ValueError("applied_events contain a duplicate event_id")
+            if canonical.sequence <= previous_sequence:
+                raise ValueError("applied_events contain non-increasing sequence")
+            try:
+                current = _next_state_key(current, canonical)
+            except OrderReductionError as exc:
+                raise ValueError(str(exc)) from exc
+            event_ids.add(canonical.event_id)
+            previous_sequence = canonical.sequence
+            canonical_events.append(canonical)
+        if previous_sequence != self.last_sequence:
+            raise ValueError("last_sequence does not match applied_events")
+        if current != (self.status, self.cancel_pending):
+            raise ValueError("status or cancel_pending does not match applied_events")
+        object.__setattr__(self, "applied_events", tuple(canonical_events))
+        return self
+
+
+def _canonical_state(value: OrderState) -> OrderState:
+    raw = {name: getattr(value, name) for name in OrderState.model_fields}
+    return OrderState.model_validate(raw)
+
+
+def reduce_order(state: OrderState, event: OrderEvent) -> OrderState:
+    """Defensively validate and purely apply one sequence-ordered observation."""
+
+    try:
+        canonical_state = _canonical_state(state)
+    except (AttributeError, TypeError, ValidationError) as exc:
+        raise OrderReductionError("invalid order state") from exc
+    try:
+        canonical_event = _canonical_event(event)
+    except (AttributeError, TypeError, ValidationError) as exc:
+        raise OrderReductionError("invalid order event") from exc
+
+    if canonical_event.order_id != canonical_state.order_id:
+        raise OrderReductionError(
+            "order id mismatch: "
+            f"state {canonical_state.order_id}, event {canonical_event.order_id}"
         )
 
     duplicate = next(
         (
             applied
-            for applied in state.applied_events
-            if applied.event_id == event.event_id
+            for applied in canonical_state.applied_events
+            if applied.event_id == canonical_event.event_id
         ),
         None,
     )
     if duplicate is not None:
-        if duplicate.event_fingerprint == event.event_fingerprint:
+        if duplicate.event_fingerprint == canonical_event.event_fingerprint:
             return state
-        raise OrderReductionError(f"event id conflict: {event.event_id}")
+        raise OrderReductionError(f"event id conflict: {canonical_event.event_id}")
 
-    if event.sequence <= state.last_sequence:
+    if canonical_event.sequence <= canonical_state.last_sequence:
         raise OrderReductionError(
             "non-increasing sequence: "
-            f"event {event.sequence}, state {state.last_sequence}"
+            f"event {canonical_event.sequence}, state {canonical_state.last_sequence}"
         )
-    if state.status in TERMINAL_ORDER_STATUSES:
-        raise OrderReductionError(f"terminal order status cannot change: {state.status.value}")
-    if event.target_status not in ORDER_STATUS_TRANSITIONS[state.status]:
-        raise OrderReductionError(
-            "forbidden order transition: "
-            f"{state.status.value} -> {event.target_status.value}"
-        )
+    next_status, next_cancel_pending = _next_state_key(
+        (canonical_state.status, canonical_state.cancel_pending), canonical_event
+    )
 
     return OrderState(
-        order_id=state.order_id,
-        status=event.target_status,
-        last_sequence=event.sequence,
-        applied_events=state.applied_events + (event,),
-        schema_version=state.schema_version,
+        order_id=canonical_state.order_id,
+        status=next_status,
+        cancel_pending=next_cancel_pending,
+        last_sequence=canonical_event.sequence,
+        applied_events=canonical_state.applied_events + (canonical_event,),
+        schema_version=canonical_state.schema_version,
     )
 
 

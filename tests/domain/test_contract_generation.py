@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -115,9 +116,33 @@ def test_order_contracts_publish_unsigned_identity_and_uppercase_lifecycle_data(
         "DENIED",
     ]
     assert event["properties"]["event_fingerprint"]["pattern"] == "^[0-9a-f]{64}$"
+    assert "event_fingerprint" in event["required"]
+    assert "default" not in event["properties"]["event_fingerprint"]
+    assert event["properties"]["schema_version"] == {
+        "const": "2.0",
+        "title": "Schema Version",
+        "type": "string",
+    }
 
     state = json.loads((SCHEMA_ROOT / "OrderState.json").read_text(encoding="utf-8"))
     assert state["properties"]["applied_events"]["items"]["$ref"] == "#/$defs/OrderEvent"
+
+
+@pytest.mark.parametrize(
+    "filename", ["OrderIntent.json", "EventEnvelope_OrderIntent_.json"]
+)
+def test_generated_order_quantity_wire_pattern_is_canonical_and_unsigned(
+    filename: str,
+) -> None:
+    schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+    pattern = schema["$defs"]["OrderQuantity"]["properties"]["value"]["pattern"]
+
+    assert re.fullmatch(pattern, "0") is not None
+    assert re.fullmatch(pattern, "1") is not None
+    assert re.fullmatch(pattern, "0.1") is not None
+    assert re.fullmatch(pattern, "10.25") is not None
+    assert re.fullmatch(pattern, "-1") is None
+    assert re.fullmatch(pattern, "-0.1") is None
 
 
 def test_risk_decision_schema_exposes_closed_reasons_and_outcome_invariants() -> None:

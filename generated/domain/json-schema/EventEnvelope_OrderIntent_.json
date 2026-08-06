@@ -223,7 +223,7 @@
           "type": "integer"
         },
         "value": {
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "pattern": "^(?:0|[1-9]\\d*|(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
           "title": "Value",
           "type": "string",
           "x-canonical-decimal-policy": "decimal-v1"

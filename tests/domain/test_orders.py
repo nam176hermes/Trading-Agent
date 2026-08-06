@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from types import MappingProxyType
 from uuid import UUID
 
 import pytest
@@ -11,6 +12,7 @@ from packages.domain import (
     ORDER_STATUS_TRANSITIONS,
     Currency,
     InstrumentId,
+    OrderCancelResolution,
     OrderEvent,
     OrderIntent,
     OrderQuantity,
@@ -75,85 +77,109 @@ def order_event_values(**changes: object) -> dict[str, object]:
         "target_status": OrderStatus.SUBMITTED,
         "occurred_at": NOW,
         "reason": None,
-        "schema_version": "1.0",
+        "cancel_resolution": None,
+        "schema_version": "2.0",
     }
+    supplied_fingerprint = changes.pop("event_fingerprint", None)
     values.update(changes)
-    return values
+    event = OrderEvent.create(**values)  # type: ignore[arg-type]
+    canonical = {
+        name: getattr(event, name) for name in OrderEvent.model_fields
+    }
+    if supplied_fingerprint is not None:
+        canonical["event_fingerprint"] = supplied_fingerprint
+    return canonical
 
 
-EXPECTED_TRANSITIONS = {
-    OrderStatus.INITIALIZED: frozenset(
-        {OrderStatus.SUBMITTED, OrderStatus.DENIED}
+def reachable_state(*targets: OrderStatus) -> OrderState:
+    state = OrderState(order_id=ORDER_ID)
+    for sequence, target in enumerate(targets, start=1):
+        reason = (
+            "OBSERVED_TERMINAL"
+            if target
+            in {
+                OrderStatus.CANCELED,
+                OrderStatus.EXPIRED,
+                OrderStatus.REJECTED,
+                OrderStatus.DENIED,
+            }
+            else None
+        )
+        state = reduce_order(
+            state,
+            OrderEvent(
+                **order_event_values(
+                    event_id=uid(200 + sequence),
+                    sequence=sequence,
+                    target_status=target,
+                    occurred_at=NOW + timedelta(seconds=sequence),
+                    reason=reason,
+                )
+            ),
+        )
+    return state
+
+
+REACHABLE_STATE_PREFIXES = {
+    (OrderStatus.INITIALIZED, False): (),
+    (OrderStatus.SUBMITTED, False): (OrderStatus.SUBMITTED,),
+    (OrderStatus.ACCEPTED, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
     ),
-    OrderStatus.SUBMITTED: frozenset(
-        {
-            OrderStatus.ACCEPTED,
-            OrderStatus.PENDING_CANCEL,
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED,
-            OrderStatus.CANCELED,
-            OrderStatus.EXPIRED,
-            OrderStatus.REJECTED,
-        }
+    (OrderStatus.PENDING_UPDATE, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_UPDATE,
     ),
-    OrderStatus.ACCEPTED: frozenset(
-        {
-            OrderStatus.PENDING_UPDATE,
-            OrderStatus.PENDING_CANCEL,
-            OrderStatus.TRIGGERED,
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED,
-            OrderStatus.CANCELED,
-            OrderStatus.EXPIRED,
-        }
+    (OrderStatus.PENDING_CANCEL, True): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_CANCEL,
     ),
-    OrderStatus.PENDING_UPDATE: frozenset(
-        {
-            OrderStatus.ACCEPTED,
-            OrderStatus.PENDING_CANCEL,
-            OrderStatus.TRIGGERED,
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED,
-            OrderStatus.CANCELED,
-            OrderStatus.EXPIRED,
-        }
+    (OrderStatus.TRIGGERED, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.TRIGGERED,
     ),
-    OrderStatus.PENDING_CANCEL: frozenset(
-        {
-            OrderStatus.ACCEPTED,
-            OrderStatus.TRIGGERED,
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED,
-            OrderStatus.CANCELED,
-            OrderStatus.EXPIRED,
-        }
+    (OrderStatus.PARTIALLY_FILLED, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.PARTIALLY_FILLED,
     ),
-    OrderStatus.TRIGGERED: frozenset(
-        {
-            OrderStatus.PENDING_UPDATE,
-            OrderStatus.PENDING_CANCEL,
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED,
-            OrderStatus.CANCELED,
-            OrderStatus.EXPIRED,
-        }
+    (OrderStatus.TRIGGERED, True): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.TRIGGERED,
     ),
-    OrderStatus.PARTIALLY_FILLED: frozenset(
-        {
-            OrderStatus.PENDING_UPDATE,
-            OrderStatus.PENDING_CANCEL,
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED,
-            OrderStatus.CANCELED,
-            OrderStatus.EXPIRED,
-        }
+    (OrderStatus.PARTIALLY_FILLED, True): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.PARTIALLY_FILLED,
     ),
-    OrderStatus.FILLED: frozenset(),
-    OrderStatus.CANCELED: frozenset(),
-    OrderStatus.EXPIRED: frozenset(),
-    OrderStatus.REJECTED: frozenset(),
-    OrderStatus.DENIED: frozenset(),
+    (OrderStatus.FILLED, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.FILLED,
+    ),
+    (OrderStatus.CANCELED, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.CANCELED,
+    ),
+    (OrderStatus.EXPIRED, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.EXPIRED,
+    ),
+    (OrderStatus.REJECTED, False): (
+        OrderStatus.SUBMITTED,
+        OrderStatus.REJECTED,
+    ),
+    (OrderStatus.DENIED, False): (OrderStatus.DENIED,),
 }
+
+
+def reachable_state_key(status: OrderStatus, cancel_pending: bool) -> OrderState:
+    return reachable_state(*REACHABLE_STATE_PREFIXES[(status, cancel_pending)])
 
 
 def test_order_statuses_are_the_complete_stable_uppercase_contract() -> None:
@@ -436,63 +462,56 @@ def test_post_only_accepts_limit_instructions_that_can_rest(
 
 
 def test_transition_table_is_complete_centralized_and_immutable() -> None:
-    assert dict(ORDER_STATUS_TRANSITIONS) == EXPECTED_TRANSITIONS
-    assert set(ORDER_STATUS_TRANSITIONS) == set(OrderStatus)
+    assert set(ORDER_STATUS_TRANSITIONS) == set(REACHABLE_STATE_PREFIXES)
     assert all(
-        isinstance(targets, frozenset)
+        isinstance(targets, MappingProxyType)
         for targets in ORDER_STATUS_TRANSITIONS.values()
     )
     with pytest.raises(TypeError):
-        ORDER_STATUS_TRANSITIONS[OrderStatus.INITIALIZED] = frozenset()  # type: ignore[index]
+        ORDER_STATUS_TRANSITIONS[(OrderStatus.INITIALIZED, False)] = {}  # type: ignore[index]
+    with pytest.raises(TypeError):
+        ORDER_STATUS_TRANSITIONS[(OrderStatus.INITIALIZED, False)][
+            (OrderStatus.SUBMITTED, None)
+        ] = (OrderStatus.SUBMITTED, False)  # type: ignore[index]
 
 
-@pytest.mark.parametrize(
-    ("source", "target"),
-    [
-        (source, target)
-        for source, targets in EXPECTED_TRANSITIONS.items()
-        for target in targets
-    ],
-)
-def test_reducer_applies_every_declared_valid_transition(
-    source: OrderStatus, target: OrderStatus
-) -> None:
-    state = OrderState(
-        order_id=ORDER_ID,
-        status=source,
-        last_sequence=7,
-        applied_events=(),
-        schema_version="1.0",
-    )
-    reason = (
-        "VENUE_TERMINATED"
-        if target
-        in {
-            OrderStatus.CANCELED,
-            OrderStatus.EXPIRED,
-            OrderStatus.REJECTED,
-            OrderStatus.DENIED,
-        }
-        else None
-    )
-    event = OrderEvent(
-        **order_event_values(
-            event_id=uid(1000 + len(target.value) + len(source.value)),
-            sequence=8,
-            target_status=target,
-            occurred_at=NOW + timedelta(seconds=8),
-            reason=reason,
-        )
-    )
+def test_reducer_applies_every_declared_transition_from_reachable_history() -> None:
+    event_number = 1000
+    for source, observations in ORDER_STATUS_TRANSITIONS.items():
+        for (target, resolution), expected in observations.items():
+            state = reachable_state_key(*source)
+            reason = (
+                "CANCEL_REJECTED"
+                if resolution is not None
+                else "VENUE_TERMINATED"
+                if target
+                in {
+                    OrderStatus.CANCELED,
+                    OrderStatus.EXPIRED,
+                    OrderStatus.REJECTED,
+                    OrderStatus.DENIED,
+                }
+                else None
+            )
+            event = OrderEvent(
+                **order_event_values(
+                    event_id=uid(event_number),
+                    sequence=state.last_sequence + 1,
+                    target_status=target,
+                    occurred_at=NOW
+                    + timedelta(seconds=state.last_sequence + 1),
+                    reason=reason,
+                    cancel_resolution=resolution,
+                )
+            )
+            event_number += 1
 
-    reduced = reduce_order(state, event)
+            reduced = reduce_order(state, event)
 
-    assert reduced.status is target
-    assert reduced.last_sequence == 8
-    assert reduced.applied_events == (event,)
-    assert state.status is source
-    assert state.last_sequence == 7
-    assert state.applied_events == ()
+            assert (reduced.status, reduced.cancel_pending) == expected
+            assert reduced.last_sequence == event.sequence
+            assert reduced.applied_events[-1] == event
+            assert (state.status, state.cancel_pending) == source
 
 
 @pytest.mark.parametrize(
@@ -510,19 +529,23 @@ def test_reducer_applies_every_declared_valid_transition(
 def test_reducer_rejects_forbidden_jumps(
     source: OrderStatus, target: OrderStatus
 ) -> None:
-    state = OrderState(
-        order_id=ORDER_ID,
-        status=source,
-        last_sequence=1,
-        applied_events=(),
-        schema_version="1.0",
-    )
+    state = reachable_state_key(source, False)
     event = OrderEvent(
         **order_event_values(
             event_id=uid(30),
-            sequence=2,
+            sequence=state.last_sequence + 1,
             target_status=target,
-            reason="INVALID_JUMP" if target is OrderStatus.FILLED else None,
+            reason=(
+                "INVALID_JUMP"
+                if target
+                in {
+                    OrderStatus.CANCELED,
+                    OrderStatus.EXPIRED,
+                    OrderStatus.REJECTED,
+                    OrderStatus.DENIED,
+                }
+                else None
+            ),
         )
     )
 
@@ -531,12 +554,10 @@ def test_reducer_rejects_forbidden_jumps(
 
 
 def test_pending_cancel_resolves_explicit_cancel_and_fill_races() -> None:
-    state = OrderState(
-        order_id=ORDER_ID,
-        status=OrderStatus.PENDING_CANCEL,
-        last_sequence=4,
-        applied_events=(),
-        schema_version="1.0",
+    state = reachable_state(
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_CANCEL,
     )
 
     for number, target, reason in (
@@ -549,7 +570,7 @@ def test_pending_cancel_resolves_explicit_cancel_and_fill_races() -> None:
             OrderEvent(
                 **order_event_values(
                     event_id=uid(number),
-                    sequence=5,
+                    sequence=4,
                     target_status=target,
                     reason=reason,
                 )
@@ -559,38 +580,36 @@ def test_pending_cancel_resolves_explicit_cancel_and_fill_races() -> None:
 
 
 def test_pending_cancel_rejects_an_update_and_terminal_states_never_escape() -> None:
-    pending_cancel = OrderState(
-        order_id=ORDER_ID,
-        status=OrderStatus.PENDING_CANCEL,
-        last_sequence=1,
-        applied_events=(),
-        schema_version="1.0",
+    pending_cancel = reachable_state(
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_CANCEL,
     )
     update = OrderEvent(
         **order_event_values(
             event_id=uid(50),
-            sequence=2,
+            sequence=4,
             target_status=OrderStatus.PENDING_UPDATE,
         )
     )
-    with pytest.raises(OrderReductionError, match="forbidden order transition"):
+    with pytest.raises(OrderReductionError, match="pending cancel"):
         reduce_order(pending_cancel, update)
 
-    for terminal in (
-        OrderStatus.FILLED,
-        OrderStatus.CANCELED,
-        OrderStatus.EXPIRED,
-        OrderStatus.REJECTED,
-        OrderStatus.DENIED,
+    for terminal, prefix in (
+        (OrderStatus.FILLED, (OrderStatus.SUBMITTED, OrderStatus.FILLED)),
+        (OrderStatus.CANCELED, (OrderStatus.SUBMITTED, OrderStatus.CANCELED)),
+        (OrderStatus.EXPIRED, (OrderStatus.SUBMITTED, OrderStatus.EXPIRED)),
+        (OrderStatus.REJECTED, (OrderStatus.SUBMITTED, OrderStatus.REJECTED)),
+        (OrderStatus.DENIED, (OrderStatus.DENIED,)),
     ):
-        state = pending_cancel.model_copy(update={"status": terminal})
+        state = reachable_state(*prefix)
         with pytest.raises(OrderReductionError, match="terminal order status"):
             reduce_order(
                 state,
                 OrderEvent(
                     **order_event_values(
                         event_id=uid(60 + len(terminal.value)),
-                        sequence=2,
+                        sequence=state.last_sequence + 1,
                         target_status=OrderStatus.SUBMITTED,
                     )
                 ),
@@ -598,13 +617,7 @@ def test_pending_cancel_rejects_an_update_and_terminal_states_never_escape() -> 
 
 
 def test_duplicate_event_is_an_idempotent_noop_and_conflicting_reuse_fails_closed() -> None:
-    initial = OrderState(
-        order_id=ORDER_ID,
-        status=OrderStatus.INITIALIZED,
-        last_sequence=0,
-        applied_events=(),
-        schema_version="1.0",
-    )
+    initial = OrderState(order_id=ORDER_ID)
     event = OrderEvent(**order_event_values(event_id=uid(70)))
     submitted = reduce_order(initial, event)
 
@@ -622,12 +635,15 @@ def test_duplicate_event_is_an_idempotent_noop_and_conflicting_reuse_fails_close
 
 
 def test_reducer_rejects_order_mismatch_and_non_increasing_sequence() -> None:
-    state = OrderState(
-        order_id=ORDER_ID,
-        status=OrderStatus.SUBMITTED,
-        last_sequence=3,
-        applied_events=(),
-        schema_version="1.0",
+    state = reduce_order(
+        OrderState(order_id=ORDER_ID),
+        OrderEvent(
+            **order_event_values(
+                event_id=uid(79),
+                sequence=3,
+                target_status=OrderStatus.SUBMITTED,
+            )
+        ),
     )
     mismatch = OrderEvent(
         **order_event_values(
@@ -655,10 +671,14 @@ def test_reducer_rejects_order_mismatch_and_non_increasing_sequence() -> None:
 def test_order_event_is_strict_frozen_utc_and_has_a_verified_canonical_fingerprint() -> None:
     event = OrderEvent(**order_event_values())
     same = OrderEvent(**order_event_values())
+    without_fingerprint = order_event_values()
+    without_fingerprint.pop("event_fingerprint")
 
     assert event.event_fingerprint == same.event_fingerprint
     assert len(event.event_fingerprint) == 64
     assert event.model_dump(mode="json")["event_fingerprint"] == event.event_fingerprint
+    with pytest.raises(ValidationError, match="event_fingerprint"):
+        OrderEvent(**without_fingerprint)
     with pytest.raises(ValidationError, match="frozen"):
         event.sequence = 2  # type: ignore[misc]
     with pytest.raises(ValidationError, match="event_fingerprint"):
@@ -701,13 +721,7 @@ def test_terminal_outcome_events_require_a_canonical_reason(
 
 
 def test_reduction_and_round_trip_serialization_are_deterministic() -> None:
-    initial = OrderState(
-        order_id=ORDER_ID,
-        status=OrderStatus.INITIALIZED,
-        last_sequence=0,
-        applied_events=(),
-        schema_version="1.0",
-    )
+    initial = OrderState(order_id=ORDER_ID)
     events = (
         OrderEvent(**order_event_values(event_id=uid(90))),
         OrderEvent(
@@ -740,3 +754,251 @@ def test_reduction_and_round_trip_serialization_are_deterministic() -> None:
     assert OrderEvent.model_validate_json(events[0].model_dump_json()) == events[0]
     assert initial.status is OrderStatus.INITIALIZED
     assert initial.applied_events == ()
+
+
+@pytest.mark.parametrize(
+    "race_status", [OrderStatus.PARTIALLY_FILLED, OrderStatus.TRIGGERED]
+)
+def test_pending_cancel_lineage_survives_non_resolving_race_observations(
+    race_status: OrderStatus,
+) -> None:
+    raced = reachable_state(
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_CANCEL,
+        race_status,
+    )
+    update = OrderEvent(
+        **order_event_values(
+            event_id=uid(230),
+            sequence=5,
+            target_status=OrderStatus.PENDING_UPDATE,
+        )
+    )
+
+    assert raced.cancel_pending is True
+    with pytest.raises(OrderReductionError, match="pending cancel|forbidden"):
+        reduce_order(raced, update)
+
+    resolved = reduce_order(
+        raced,
+        OrderEvent(
+            **order_event_values(
+                event_id=uid(231),
+                sequence=5,
+                target_status=race_status,
+                reason="CANCEL_REJECTED",
+                cancel_resolution=OrderCancelResolution.REJECTED,
+            )
+        ),
+    )
+    assert resolved.cancel_pending is False
+    assert reduce_order(
+        resolved,
+        OrderEvent(
+            **order_event_values(
+                event_id=uid(232),
+                sequence=6,
+                target_status=OrderStatus.PENDING_UPDATE,
+            )
+        ),
+    ).status is OrderStatus.PENDING_UPDATE
+
+
+@pytest.mark.parametrize(
+    ("race_status", "terminal", "reason"),
+    [
+        (OrderStatus.TRIGGERED, OrderStatus.FILLED, None),
+        (OrderStatus.TRIGGERED, OrderStatus.CANCELED, "CANCEL_CONFIRMED"),
+        (OrderStatus.TRIGGERED, OrderStatus.EXPIRED, "ORDER_EXPIRED"),
+        (OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, None),
+        (
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.CANCELED,
+            "CANCEL_CONFIRMED",
+        ),
+        (OrderStatus.PARTIALLY_FILLED, OrderStatus.EXPIRED, "ORDER_EXPIRED"),
+    ],
+)
+def test_pending_cancel_terminal_races_are_deterministic(
+    race_status: OrderStatus, terminal: OrderStatus, reason: str | None
+) -> None:
+    raced = reachable_state(
+        OrderStatus.SUBMITTED,
+        OrderStatus.ACCEPTED,
+        OrderStatus.PENDING_CANCEL,
+        race_status,
+    )
+    event = OrderEvent(
+        **order_event_values(
+            event_id=uid(235),
+            sequence=5,
+            target_status=terminal,
+            reason=reason,
+        )
+    )
+
+    first = reduce_order(raced, event)
+    second = reduce_order(raced, event)
+
+    assert first == second
+    assert first.model_dump_json() == second.model_dump_json()
+    assert (first.status, first.cancel_pending) == (terminal, False)
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    [
+        ("order_id", uid(999)),
+        ("sequence", 99),
+        ("target_status", OrderStatus.FILLED),
+        ("occurred_at", NOW + timedelta(days=1)),
+        ("reason", "CHANGED_CONTENT"),
+        ("cancel_resolution", OrderCancelResolution.REJECTED),
+        ("schema_version", "forged-version"),
+    ],
+)
+def test_reducer_revalidates_each_fingerprinted_field_before_duplicate_classification(
+    field: str, changed: object
+) -> None:
+    event = OrderEvent(**order_event_values(event_id=uid(240)))
+    submitted = reduce_order(
+        OrderState(order_id=ORDER_ID), event
+    )
+    forged = event.model_copy(update={field: changed})
+
+    with pytest.raises(OrderReductionError, match="invalid order event|event id conflict"):
+        reduce_order(submitted, forged)
+
+
+def test_reducer_revalidates_model_construct_event_before_duplicate_classification() -> None:
+    event = OrderEvent(**order_event_values(event_id=uid(241)))
+    submitted = reduce_order(
+        OrderState(order_id=ORDER_ID), event
+    )
+    values = {name: getattr(event, name) for name in type(event).model_fields}
+    values["target_status"] = OrderStatus.FILLED
+    forged = OrderEvent.model_construct(**values)
+
+    with pytest.raises(OrderReductionError, match="invalid order event|event id conflict"):
+        reduce_order(submitted, forged)
+
+
+def test_empty_order_history_is_exactly_the_initialized_zero_sequence_state() -> None:
+    with pytest.raises(ValidationError, match="empty history"):
+        OrderState(
+            order_id=ORDER_ID,
+            status=OrderStatus.PENDING_CANCEL,
+            last_sequence=9,
+            applied_events=(),
+            schema_version="2.0",
+        )
+
+
+def test_state_history_rejects_forbidden_jump_and_event_after_terminal() -> None:
+    submitted = OrderEvent(**order_event_values(event_id=uid(250)))
+    forbidden = OrderEvent(
+        **order_event_values(
+            event_id=uid(251),
+            sequence=2,
+            target_status=OrderStatus.TRIGGERED,
+        )
+    )
+    with pytest.raises(ValidationError, match="forbidden order transition"):
+        OrderState(
+            order_id=ORDER_ID,
+            status=OrderStatus.TRIGGERED,
+            last_sequence=2,
+            applied_events=(submitted, forbidden),
+            schema_version="2.0",
+        )
+
+    filled = OrderEvent(
+        **order_event_values(
+            event_id=uid(252), sequence=2, target_status=OrderStatus.FILLED
+        )
+    )
+    after_terminal = OrderEvent(
+        **order_event_values(
+            event_id=uid(253),
+            sequence=3,
+            target_status=OrderStatus.PENDING_UPDATE,
+        )
+    )
+    with pytest.raises(ValidationError, match="terminal order status"):
+        OrderState(
+            order_id=ORDER_ID,
+            status=OrderStatus.PENDING_UPDATE,
+            last_sequence=3,
+            applied_events=(submitted, filled, after_terminal),
+            schema_version="2.0",
+        )
+
+
+@pytest.mark.parametrize(
+    "forged_change",
+    [
+        {"status": OrderStatus.ACCEPTED},
+        {"last_sequence": 99},
+    ],
+)
+def test_reducer_revalidates_forged_terminal_state_before_reduction(
+    forged_change: dict[str, object],
+) -> None:
+    filled = reachable_state(OrderStatus.SUBMITTED, OrderStatus.FILLED)
+    forged = filled.model_copy(update=forged_change)
+    update = OrderEvent(
+        **order_event_values(
+            event_id=uid(260),
+            sequence=3,
+            target_status=OrderStatus.PENDING_UPDATE,
+        )
+    )
+
+    with pytest.raises(OrderReductionError, match="invalid order state"):
+        reduce_order(forged, update)
+
+
+def test_sequence_is_the_only_ordering_authority_and_accepts_observed_clock_skew() -> None:
+    submitted = reachable_state(OrderStatus.SUBMITTED)
+    skewed_ack = OrderEvent(
+        **order_event_values(
+            event_id=uid(270),
+            sequence=2,
+            target_status=OrderStatus.ACCEPTED,
+            occurred_at=NOW - timedelta(days=1),
+        )
+    )
+
+    assert reduce_order(submitted, skewed_ack).status is OrderStatus.ACCEPTED
+
+
+@pytest.mark.parametrize(
+    ("observed", "reason"),
+    [
+        (OrderStatus.PARTIALLY_FILLED, None),
+        (OrderStatus.FILLED, None),
+        (OrderStatus.CANCELED, "OBSERVED_CANCELED"),
+        (OrderStatus.EXPIRED, "OBSERVED_EXPIRED"),
+        (OrderStatus.REJECTED, "OBSERVED_REJECTED"),
+    ],
+)
+def test_submitted_state_accepts_observed_ack_races(
+    observed: OrderStatus, reason: str | None
+) -> None:
+    submitted = reachable_state(OrderStatus.SUBMITTED)
+    event = OrderEvent(
+        **order_event_values(
+            event_id=uid(280 + len(observed.value)),
+            sequence=2,
+            target_status=observed,
+            reason=reason,
+        )
+    )
+
+    assert reduce_order(submitted, event).status is observed
+
+
+def test_lifecycle_event_rejects_the_accepted_base_wire_version() -> None:
+    with pytest.raises(ValidationError, match="schema_version"):
+        OrderEvent(**order_event_values(schema_version="1.0"))
