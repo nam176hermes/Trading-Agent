@@ -40,6 +40,12 @@ def workspace(tmp_path: Path) -> CatalogWorkspaceV1:
     return CatalogWorkspaceV1.create(tmp_path)
 
 
+def catalog_path(workspace: CatalogWorkspaceV1, name: str) -> Path:
+    """White-box helper: production callers receive no catalog path."""
+
+    return catalog_parquet._workspace_state(workspace).path / name
+
+
 def snapshot() -> MarketSnapshot:
     instrument = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "ALPACA")
     return MarketSnapshot(
@@ -91,8 +97,8 @@ def test_materialized_fixture_catalog_round_trips_and_is_hash_bound(tmp_path: Pa
         importer_version="fixture-catalog-v1",
     )
 
-    assert artifact.parquet_path.is_file()
-    assert artifact.manifest_path.is_file()
+    assert catalog_path(artifact.workspace, artifact.parquet_name).is_file()
+    assert catalog_path(artifact.workspace, artifact.manifest_name).is_file()
     assert verify_materialized_catalog(artifact) == source
     assert artifact.manifest.content_digest == source.digest
 
@@ -104,7 +110,8 @@ def test_catalog_verifier_rejects_tampered_parquet(tmp_path: Path) -> None:
         workspace=workspace(tmp_path),
         importer_version="fixture-catalog-v1",
     )
-    artifact.parquet_path.write_bytes(artifact.parquet_path.read_bytes() + b"tamper")
+    parquet_path = catalog_path(artifact.workspace, artifact.parquet_name)
+    parquet_path.write_bytes(parquet_path.read_bytes() + b"tamper")
 
     with pytest.raises(CatalogMaterializationError, match="parquet digest"):
         verify_materialized_catalog(artifact)
@@ -135,7 +142,7 @@ def test_catalog_uses_a_utc_timestamp_parquet_column(tmp_path: Path) -> None:
         snapshot(), RAW_EVIDENCE, workspace=workspace(tmp_path), importer_version="fixture-catalog-v1"
     )
 
-    assert str(pq.read_schema(artifact.parquet_path).field("open_time").type) == "timestamp[us, tz=UTC]"
+    assert str(pq.read_schema(catalog_path(artifact.workspace, artifact.parquet_name)).field("open_time").type) == "timestamp[us, tz=UTC]"
 
 
 def test_catalog_accepts_zero_offset_zoneinfo_utc_snapshot(tmp_path: Path) -> None:
@@ -182,7 +189,7 @@ def test_catalog_verifier_rejects_oversized_artifact_before_parquet_loading(tmp_
     artifact = materialize_fixture_catalog(
         snapshot(), RAW_EVIDENCE, workspace=workspace(tmp_path), importer_version="fixture-catalog-v1"
     )
-    artifact.parquet_path.write_bytes(b"x" * (8 * 1024 * 1024 + 1))
+    catalog_path(artifact.workspace, artifact.parquet_name).write_bytes(b"x" * (8 * 1024 * 1024 + 1))
 
     with pytest.raises(CatalogMaterializationError, match="bounded regular-file policy"):
         verify_materialized_catalog(artifact)
@@ -214,26 +221,48 @@ def test_catalog_cleanup_never_unlinks_an_inode_replaced_by_another_writer(
             source, RAW_EVIDENCE, workspace=catalog_workspace, importer_version="fixture-catalog-v1"
         )
 
-    assert (catalog_workspace.path / parquet_name).read_bytes() == injected
+    assert catalog_path(catalog_workspace, parquet_name).read_bytes() == injected
 
 
 def test_catalog_workspace_owns_a_private_child_not_the_caller_parent(tmp_path: Path) -> None:
     catalog_workspace = workspace(tmp_path)
+    private_path = catalog_path(catalog_workspace, ".")
 
-    assert catalog_workspace.path.parent == tmp_path
-    assert catalog_workspace.path != tmp_path
-    assert catalog_workspace.path.is_dir()
-    assert catalog_workspace.path.is_symlink() is False
+    assert private_path.parent == tmp_path
+    assert private_path != tmp_path
+    assert private_path.is_dir()
+    assert private_path.is_symlink() is False
 
 
-def test_catalog_rejects_a_forged_workspace_handle(tmp_path: Path) -> None:
+def test_catalog_workspace_is_an_opaque_unforgeable_public_capability(tmp_path: Path) -> None:
+    issued = workspace(tmp_path)
+
+    assert not hasattr(issued, "path")
+    assert not hasattr(issued, "_token")
+    assert not hasattr(issued, "duplicate_directory_fd")
+    with pytest.raises(TypeError, match="created only by CatalogWorkspaceV1.create"):
+        CatalogWorkspaceV1()  # type: ignore[call-arg]
+
+
+def test_catalog_workspace_close_retires_the_capability(tmp_path: Path) -> None:
+    catalog_workspace = workspace(tmp_path)
+    artifact = materialize_fixture_catalog(
+        snapshot(), RAW_EVIDENCE, workspace=catalog_workspace, importer_version="fixture-catalog-v1"
+    )
+
+    catalog_workspace.close()
+    catalog_workspace.close()
+
     with pytest.raises(CatalogMaterializationError, match="not registered"):
-        materialize_fixture_catalog(
-            snapshot(),
-            RAW_EVIDENCE,
-            workspace=CatalogWorkspaceV1("forged-workspace-token"),
-            importer_version="fixture-catalog-v1",
-        )
+        verify_materialized_catalog(artifact)
+
+
+def test_catalog_artifact_exposes_only_capability_and_artifact_names(tmp_path: Path) -> None:
+    artifact = materialize_fixture_catalog(
+        snapshot(), RAW_EVIDENCE, workspace=workspace(tmp_path), importer_version="fixture-catalog-v1"
+    )
+
+    assert set(artifact.__dataclass_fields__) == {"workspace", "manifest", "parquet_name", "manifest_name"}
 
 
 def test_data_catalog_source_has_no_runtime_or_provider_imports() -> None:

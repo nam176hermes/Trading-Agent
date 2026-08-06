@@ -41,14 +41,17 @@ class _WorkspaceState:
     directory_fd: int
 
 
-_WORKSPACES: dict[str, _WorkspaceState] = {}
-
-
-@dataclass(frozen=True, slots=True)
 class CatalogWorkspaceV1:
-    """Opaque handle for a catalog-created private staging child."""
+    """Opaque, process-local capability for a catalog-created staging child."""
 
-    _token: str
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        raise TypeError("CatalogWorkspaceV1 instances are created only by CatalogWorkspaceV1.create")
+
+    @classmethod
+    def _issue(cls) -> "CatalogWorkspaceV1":
+        return object.__new__(cls)
 
     @classmethod
     def create(cls, staging_parent: Path) -> "CatalogWorkspaceV1":
@@ -63,26 +66,35 @@ class CatalogWorkspaceV1:
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
                 os.close(child_fd)
                 raise CatalogMaterializationError("catalog staging workspace is not caller-owned")
-            token = uuid.uuid4().hex
-            _WORKSPACES[token] = _WorkspaceState(parent_path / name, child_fd)
-            return cls(token)
+            workspace = cls._issue()
+            _WORKSPACES[workspace] = _WorkspaceState(parent_path / name, child_fd)
+            return workspace
 
-    @property
-    def path(self) -> Path:
-        return _workspace_state(self).path
-
-    def duplicate_directory_fd(self) -> int:
+    def _duplicate_directory_fd(self) -> int:
         try:
             return os.dup(_workspace_state(self).directory_fd)
         except OSError as exc:
             raise CatalogMaterializationError("catalog workspace is unavailable") from exc
+
+    def close(self) -> None:
+        """Retire this capability; published evidence remains owner-managed."""
+
+        state = _WORKSPACES.pop(self, None)
+        if state is not None:
+            try:
+                os.close(state.directory_fd)
+            except OSError as exc:
+                raise CatalogMaterializationError("cannot retire catalog workspace") from exc
+
+
+_WORKSPACES: dict[CatalogWorkspaceV1, _WorkspaceState] = {}
 
 
 def _workspace_state(workspace: CatalogWorkspaceV1) -> _WorkspaceState:
     if not isinstance(workspace, CatalogWorkspaceV1):
         raise CatalogMaterializationError("workspace must be a catalog-created CatalogWorkspaceV1")
     try:
-        return _WORKSPACES[workspace._token]
+        return _WORKSPACES[workspace]
     except KeyError as exc:
         raise CatalogMaterializationError("workspace is not registered by this catalog process") from exc
 
@@ -91,8 +103,8 @@ def _workspace_state(workspace: CatalogWorkspaceV1) -> _WorkspaceState:
 class MaterializedMarketDatasetV1:
     workspace: CatalogWorkspaceV1
     manifest: MarketDatasetManifestV1
-    parquet_path: Path
-    manifest_path: Path
+    parquet_name: str
+    manifest_name: str
 
 
 _ROW_COLUMNS = ("open_time", "open", "high", "low", "close", "volume")
@@ -352,7 +364,7 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
         raise CatalogMaterializationError("raw evidence digest does not match snapshot provenance")
     rows, canonical_rows = _canonical_rows(snapshot)
     parquet_name, manifest_name = _artifact_names(snapshot.digest)
-    directory_fd = workspace.duplicate_directory_fd()
+    directory_fd = workspace._duplicate_directory_fd()
     try:
         created: dict[str, tuple[int, int]] = {}
         try:
@@ -375,7 +387,7 @@ def materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *
                 importer_version=importer_version,
             )
             created[manifest_name] = _write_new_manifest(directory_fd, manifest_name, manifest)
-            artifact = MaterializedMarketDatasetV1(workspace, manifest, workspace.path / parquet_name, workspace.path / manifest_name)
+            artifact = MaterializedMarketDatasetV1(workspace, manifest, parquet_name, manifest_name)
             if verify_materialized_catalog(artifact) != snapshot:
                 raise CatalogMaterializationError("materialized catalog does not round-trip")
             return artifact
@@ -471,15 +483,15 @@ def _snapshot_from_rows(rows: list[dict[str, object]], manifest: MarketDatasetMa
 def verify_materialized_catalog(artifact: MaterializedMarketDatasetV1) -> MarketSnapshot:
     """Re-open exact direct children through a held directory descriptor and verify all bindings."""
 
-    if not isinstance(artifact, MaterializedMarketDatasetV1) or artifact.parquet_path.parent != artifact.workspace.path or artifact.manifest_path.parent != artifact.workspace.path:
-        raise CatalogMaterializationError("artifact has invalid paths")
-    directory_fd = artifact.workspace.duplicate_directory_fd()
+    if not isinstance(artifact, MaterializedMarketDatasetV1):
+        raise CatalogMaterializationError("artifact must be a MaterializedMarketDatasetV1")
+    directory_fd = artifact.workspace._duplicate_directory_fd()
     try:
-        manifest_name = artifact.manifest_path.name
+        manifest_name = artifact.manifest_name
         manifest = _read_manifest(directory_fd, manifest_name)
         parquet_name, expected_manifest_name = _artifact_names(manifest.content_digest)
-        if manifest_name != expected_manifest_name or artifact.parquet_path.name != parquet_name or manifest != artifact.manifest:
-            raise CatalogMaterializationError("artifact paths do not match manifest identity")
+        if manifest_name != expected_manifest_name or artifact.parquet_name != parquet_name or manifest != artifact.manifest:
+            raise CatalogMaterializationError("artifact names do not match manifest identity")
         parquet_fd = _regular_fd_at(directory_fd, parquet_name, maximum_bytes=_MAX_PARQUET_BYTES)
         try:
             sealed_fd = _sealed_snapshot_fd(parquet_fd, maximum_bytes=_MAX_PARQUET_BYTES)

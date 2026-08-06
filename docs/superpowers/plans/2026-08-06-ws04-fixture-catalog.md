@@ -90,7 +90,8 @@ Commit: `git commit -m "feat(data): add hash-bound dataset manifest"`
 
 **Interfaces:**
 - Produces `CatalogWorkspaceV1.create(staging_parent: Path) -> CatalogWorkspaceV1` and `materialize_fixture_catalog(snapshot: MarketSnapshot, raw_evidence: bytes, *, workspace: CatalogWorkspaceV1, importer_version: str) -> MaterializedMarketDatasetV1`.
-- `MaterializedMarketDatasetV1` contains `manifest`, `parquet_path`, and `manifest_path`.
+- `CatalogWorkspaceV1` is an opaque, process-local capability for a catalog-owned private staging child. It exposes `close()` to retire the capability, but no path, token, or directory descriptor.
+- `MaterializedMarketDatasetV1` contains `workspace`, `manifest`, `parquet_name`, and `manifest_name`; it exposes no artifact paths.
 - Reads require `verify_materialized_catalog(materialized: MaterializedMarketDatasetV1) -> MarketSnapshot`.
 
 - [ ] **Step 1: Add failing materialization tests**
@@ -104,7 +105,9 @@ def test_materialized_fixture_catalog_round_trips_and_is_hash_bound(tmp_path: Pa
 def test_materialization_rejects_tampered_parquet(tmp_path: Path) -> None:
     workspace = CatalogWorkspaceV1.create(tmp_path)
     artifact = materialize_fixture_catalog(snapshot(), evidence(), workspace=workspace, importer_version="fixture-catalog-v1")
-    artifact.parquet_path.write_bytes(artifact.parquet_path.read_bytes() + b"tamper")
+    # Test-only helper resolves the catalog-private path. Production callers do not receive one.
+    parquet_path = _catalog_test_path(workspace, artifact.parquet_name)
+    parquet_path.write_bytes(parquet_path.read_bytes() + b"tamper")
     with pytest.raises(CatalogMaterializationError):
         verify_materialized_catalog(artifact)
 ```
