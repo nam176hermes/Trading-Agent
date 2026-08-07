@@ -10,6 +10,8 @@ and re-attests the same inode tree at a previously absent destination.
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -87,6 +89,7 @@ _ARGV_PREFIX = (
     _PROFILE,
 )
 _VALIDATOR = "nautilus-backtest-simulation-result-v1"
+_RENAME_NOREPLACE = 1
 
 
 class RuntimeClosureMaterializationError(ValueError):
@@ -387,6 +390,107 @@ def _seal_tree(root: Path) -> None:
         current.chmod(0o500)
 
 
+def _renameat2_noreplace(
+    parent_fd: int,
+    source_name: bytes,
+    destination_name: bytes,
+) -> None:
+    if sys.platform != "linux":
+        raise OSError(errno.ENOSYS, "renameat2 is unavailable")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as exc:
+        raise OSError(errno.ENOSYS, "renameat2 is unavailable") from exc
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    if (
+        renameat2(
+            parent_fd,
+            source_name,
+            parent_fd,
+            destination_name,
+            _RENAME_NOREPLACE,
+        )
+        != 0
+    ):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _publish_noreplace(
+    staging: Path,
+    destination: Path,
+    *,
+    parent_identity: tuple[int, int],
+) -> None:
+    if (
+        staging.parent != destination.parent
+        or staging.name in {"", ".", ".."}
+        or destination.name in {"", ".", ".."}
+    ):
+        raise RuntimeClosureMaterializationError(
+            "atomic no-clobber publication paths are invalid"
+        )
+    parent_fd = -1
+    try:
+        parent_fd = os.open(
+            destination.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        observed = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or (observed.st_dev, observed.st_ino) != parent_identity
+            or observed.st_uid != os.geteuid()
+            or stat.S_IMODE(observed.st_mode) & 0o077
+        ):
+            raise RuntimeClosureMaterializationError(
+                "destination parent identity changed before atomic publish"
+            )
+        try:
+            _renameat2_noreplace(
+                parent_fd,
+                os.fsencode(staging.name),
+                os.fsencode(destination.name),
+            )
+        except OSError as exc:
+            if exc.errno == errno.EEXIST:
+                raise RuntimeClosureMaterializationError(
+                    "destination already exists at atomic publish"
+                ) from exc
+            if exc.errno in {
+                errno.ENOSYS,
+                errno.EINVAL,
+                getattr(errno, "EOPNOTSUPP", errno.ENOSYS),
+            }:
+                raise RuntimeClosureMaterializationError(
+                    "Linux renameat2 RENAME_NOREPLACE is unavailable"
+                ) from exc
+            raise RuntimeClosureMaterializationError(
+                "atomic no-clobber publish failed"
+            ) from exc
+    except RuntimeClosureMaterializationError:
+        raise
+    except OSError as exc:
+        raise RuntimeClosureMaterializationError(
+            "destination parent cannot be opened for atomic publish"
+        ) from exc
+    finally:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+
+
 def materialize_runtime_closure(
     *,
     policy_path: Path,
@@ -502,7 +606,11 @@ def materialize_runtime_closure(
             )
 
         phase = "atomic publish"
-        os.replace(staging, destination)
+        _publish_noreplace(
+            staging,
+            destination,
+            parent_identity=(parent.st_dev, parent.st_ino),
+        )
         published = True
         observed = destination.lstat()
         if (observed.st_dev, observed.st_ino) != staged_identity:

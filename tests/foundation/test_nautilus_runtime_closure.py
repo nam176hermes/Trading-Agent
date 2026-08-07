@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -443,6 +444,80 @@ def test_materializer_rejects_a_preexisting_destination_without_changing_it(
     assert set(root.iterdir()) >= {base, artifacts, policy, destination}
 
 
+def test_destination_created_after_preflight_is_never_replaced(
+    closure_inputs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _base, _artifacts, _policy, destination = closure_inputs
+    real_publish = getattr(materializer_module, "_publish_noreplace", None)
+    competitor_identity: list[tuple[int, int]] = []
+
+    def create_competitor_then_publish(
+        staging: Path,
+        selected: Path,
+        *,
+        parent_identity: tuple[int, int],
+    ) -> None:
+        selected.mkdir(mode=0o700)
+        marker = selected / "competitor-owned"
+        marker.write_text("retain", encoding="ascii")
+        observed = selected.lstat()
+        competitor_identity.append((observed.st_dev, observed.st_ino))
+        if real_publish is None:
+            raise AssertionError("no-clobber publication interface is missing")
+        real_publish(
+            staging,
+            selected,
+            parent_identity=parent_identity,
+        )
+
+    monkeypatch.setattr(
+        materializer_module,
+        "_publish_noreplace",
+        create_competitor_then_publish,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeClosureMaterializationError, match="already exists"):
+        _materialize(closure_inputs)
+
+    observed = destination.lstat()
+    assert (observed.st_dev, observed.st_ino) == competitor_identity[0]
+    assert (destination / "competitor-owned").read_text(encoding="ascii") == "retain"
+    assert not any(
+        path.name.startswith(f".{destination.name}.staging-")
+        for path in root.iterdir()
+    )
+
+
+def test_unavailable_no_clobber_syscall_fails_without_publication(
+    closure_inputs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _base, _artifacts, _policy, destination = closure_inputs
+
+    def unavailable(
+        parent_fd: int,
+        source_name: bytes,
+        destination_name: bytes,
+    ) -> None:
+        raise OSError(errno.ENOSYS, "renameat2 unavailable")
+
+    monkeypatch.setattr(
+        materializer_module,
+        "_renameat2_noreplace",
+        unavailable,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeClosureMaterializationError, match="unavailable"):
+        _materialize(closure_inputs)
+
+    assert not destination.exists()
+    assert not any(
+        path.name.startswith(f".{destination.name}.staging-")
+        for path in root.iterdir()
+    )
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -503,10 +578,20 @@ def test_atomic_publish_failure_removes_staging_and_leaves_no_generation(
 ) -> None:
     root, _base, _artifacts, _policy, destination = closure_inputs
 
-    def fail_publish(source: Path, target: Path) -> None:
+    def fail_publish(
+        source: Path,
+        target: Path,
+        *,
+        parent_identity: tuple[int, int],
+    ) -> None:
         raise OSError("injected atomic publish failure")
 
-    monkeypatch.setattr(os, "replace", fail_publish)
+    monkeypatch.setattr(
+        materializer_module,
+        "_publish_noreplace",
+        fail_publish,
+        raising=False,
+    )
 
     with pytest.raises(RuntimeClosureMaterializationError, match="publish"):
         _materialize(closure_inputs)
