@@ -52,17 +52,21 @@ as the rollback generation; it is not selected by the command template below.
 
 ## Execution-simulation runtime closure
 
-Packet 04E0 fix round 3 materialized the selected external generation
-`runtime-closure-v7-simulation` from the unchanged sealed
+Packet 04E0 fix round 4 materialized the selected external generation
+`runtime-closure-v8-simulation` from the unchanged sealed
 `runtime-closure-v3` file inventory, the selected input-bound engine artifact,
 and the repository launcher. The sealed external staging tree passed root
 attestation before publication with Linux `renameat2(RENAME_NOREPLACE)`, retained
 the same directory identity, and passed independent destination re-attestation
 afterward. The destination parent is opened and checked against its preflight
 identity, and no replace-on-exists fallback is permitted when the no-clobber
-syscall is unavailable. Destination identity is checked against the staged
-identity immediately before and after re-attestation. The materializer has no
-acquisition or build mode. Its checked-in policy SHA-256 is
+syscall is unavailable. After rename commits, the parent descriptor remains
+open while the caller records the published state, checks destination identity,
+and completes destination re-attestation; a later descriptor-close error cannot
+skip those checks or route the generation through unpublished staging cleanup.
+Destination identity is checked against the staged identity immediately before
+and after re-attestation. The materializer has no acquisition or build mode. Its
+checked-in policy SHA-256 is
 `1ea1d4aefdeb80fb4c320f0fecb0a3c87cde78a0b0ee37abc80dca062a6572c5`.
 
 | Closure | Status | Profile | Manifest SHA-256 | Attested closure SHA-256 | Validator |
@@ -71,13 +75,14 @@ acquisition or build mode. Its checked-in policy SHA-256 is
 | `runtime-closure-v4-simulation` | rejected forensic candidate | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
 | `runtime-closure-v5-simulation` | rejected forensic candidate | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
 | `runtime-closure-v6-simulation` | rejected forensic candidate | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
-| `runtime-closure-v7-simulation` | selected simulation closure | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
+| `runtime-closure-v7-simulation` | rejected forensic candidate | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
+| `runtime-closure-v8-simulation` | selected simulation closure | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
 
-V3 and v7 passed independent root attestation after v7 materialization, and the
+V3 and v8 passed independent root attestation after v8 materialization, and the
 selected 01D artifact passed the full offline input-binding verifier both before
-and after publication. The v3, v4, v5, and v6 manifest digests and directory
-identities remained unchanged. V4, v5, and v6 were not selected, overwritten,
-or deleted. The external closures are not committed and do not authorize a
+and after publication. The v3 and v4-v7 manifest digests and directory
+identities remained unchanged. V4-v7 were not selected, overwritten, or
+deleted. The external closures are not committed and do not authorize a
 service start, paper-runtime activation, broker access, or live trading.
 
 ## Offline command template

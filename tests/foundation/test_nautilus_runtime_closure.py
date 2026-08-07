@@ -448,33 +448,23 @@ def test_destination_created_after_preflight_is_never_replaced(
     closure_inputs, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, _base, _artifacts, _policy, destination = closure_inputs
-    real_publish = getattr(materializer_module, "_publish_noreplace", None)
+    real_rename = materializer_module._renameat2_noreplace
     competitor_identity: list[tuple[int, int]] = []
 
-    def create_competitor_then_publish(
-        staging: Path,
-        selected: Path,
-        *,
-        parent_identity: tuple[int, int],
+    def create_competitor_then_rename(
+        parent_fd: int,
+        source_name: bytes,
+        destination_name: bytes,
     ) -> None:
-        selected.mkdir(mode=0o700)
-        marker = selected / "competitor-owned"
-        marker.write_text("retain", encoding="ascii")
-        observed = selected.lstat()
+        destination.mkdir(mode=0o700)
+        observed = destination.lstat()
         competitor_identity.append((observed.st_dev, observed.st_ino))
-        if real_publish is None:
-            raise AssertionError("no-clobber publication interface is missing")
-        real_publish(
-            staging,
-            selected,
-            parent_identity=parent_identity,
-        )
+        real_rename(parent_fd, source_name, destination_name)
 
     monkeypatch.setattr(
         materializer_module,
-        "_publish_noreplace",
-        create_competitor_then_publish,
-        raising=False,
+        "_renameat2_noreplace",
+        create_competitor_then_rename,
     )
 
     with pytest.raises(RuntimeClosureMaterializationError, match="already exists"):
@@ -482,7 +472,55 @@ def test_destination_created_after_preflight_is_never_replaced(
 
     observed = destination.lstat()
     assert (observed.st_dev, observed.st_ino) == competitor_identity[0]
-    assert (destination / "competitor-owned").read_text(encoding="ascii") == "retain"
+    assert list(destination.iterdir()) == []
+    assert not any(
+        path.name.startswith(f".{destination.name}.staging-")
+        for path in root.iterdir()
+    )
+
+
+def test_parent_fd_close_failure_after_rename_cannot_skip_destination_attestation(
+    closure_inputs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _base, _artifacts, _policy, destination = closure_inputs
+    real_attest = materializer_module.attest_nautilus_backtest_closure
+    real_close = os.close
+    parent_observed = root.lstat()
+    parent_identity = (parent_observed.st_dev, parent_observed.st_ino)
+    attested_roots: list[Path] = []
+    failed_parent_close: list[int] = []
+
+    def record_attestation(
+        config: NautilusClosureConfig, *, expected_profile: str
+    ):
+        attested_roots.append(config.runtime_root)
+        return real_attest(config, expected_profile=expected_profile)
+
+    def close_then_fail_parent(descriptor: int) -> None:
+        observed = os.fstat(descriptor)
+        is_destination_parent = (
+            observed.st_dev,
+            observed.st_ino,
+        ) == parent_identity
+        real_close(descriptor)
+        if is_destination_parent and not failed_parent_close:
+            failed_parent_close.append(descriptor)
+            raise OSError(errno.EIO, "injected parent descriptor close failure")
+
+    monkeypatch.setattr(
+        materializer_module,
+        "attest_nautilus_backtest_closure",
+        record_attestation,
+    )
+    monkeypatch.setattr(materializer_module.os, "close", close_then_fail_parent)
+
+    with pytest.raises(RuntimeClosureMaterializationError, match="failed"):
+        _materialize(closure_inputs)
+
+    assert len(failed_parent_close) == 1
+    assert len(attested_roots) == 2
+    assert attested_roots[1] == destination
+    assert not destination.exists()
     assert not any(
         path.name.startswith(f".{destination.name}.staging-")
         for path in root.iterdir()

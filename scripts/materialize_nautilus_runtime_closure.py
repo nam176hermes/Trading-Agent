@@ -20,6 +20,8 @@ import shutil
 import stat
 import sys
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import NoReturn, Sequence
 
@@ -425,12 +427,13 @@ def _renameat2_noreplace(
         raise OSError(error, os.strerror(error))
 
 
+@contextmanager
 def _publish_noreplace(
     staging: Path,
     destination: Path,
     *,
     parent_identity: tuple[int, int],
-) -> None:
+) -> Iterator[None]:
     if (
         staging.parent != destination.parent
         or staging.name in {"", ".", ".."}
@@ -441,54 +444,62 @@ def _publish_noreplace(
         )
     parent_fd = -1
     try:
-        parent_fd = os.open(
-            destination.parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        observed = os.fstat(parent_fd)
-        if (
-            not stat.S_ISDIR(observed.st_mode)
-            or (observed.st_dev, observed.st_ino) != parent_identity
-            or observed.st_uid != os.geteuid()
-            or stat.S_IMODE(observed.st_mode) & 0o077
-        ):
-            raise RuntimeClosureMaterializationError(
-                "destination parent identity changed before atomic publish"
-            )
         try:
-            _renameat2_noreplace(
-                parent_fd,
-                os.fsencode(staging.name),
-                os.fsencode(destination.name),
+            parent_fd = os.open(
+                destination.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
             )
+            observed = os.fstat(parent_fd)
+            if (
+                not stat.S_ISDIR(observed.st_mode)
+                or (observed.st_dev, observed.st_ino) != parent_identity
+                or observed.st_uid != os.geteuid()
+                or stat.S_IMODE(observed.st_mode) & 0o077
+            ):
+                raise RuntimeClosureMaterializationError(
+                    "destination parent identity changed before atomic publish"
+                )
+            try:
+                _renameat2_noreplace(
+                    parent_fd,
+                    os.fsencode(staging.name),
+                    os.fsencode(destination.name),
+                )
+            except OSError as exc:
+                if exc.errno == errno.EEXIST:
+                    raise RuntimeClosureMaterializationError(
+                        "destination already exists at atomic publish"
+                    ) from exc
+                if exc.errno in {
+                    errno.ENOSYS,
+                    errno.EINVAL,
+                    getattr(errno, "EOPNOTSUPP", errno.ENOSYS),
+                }:
+                    raise RuntimeClosureMaterializationError(
+                        "Linux renameat2 RENAME_NOREPLACE is unavailable"
+                    ) from exc
+                raise RuntimeClosureMaterializationError(
+                    "atomic no-clobber publish failed"
+                ) from exc
+        except RuntimeClosureMaterializationError:
+            raise
         except OSError as exc:
-            if exc.errno == errno.EEXIST:
-                raise RuntimeClosureMaterializationError(
-                    "destination already exists at atomic publish"
-                ) from exc
-            if exc.errno in {
-                errno.ENOSYS,
-                errno.EINVAL,
-                getattr(errno, "EOPNOTSUPP", errno.ENOSYS),
-            }:
-                raise RuntimeClosureMaterializationError(
-                    "Linux renameat2 RENAME_NOREPLACE is unavailable"
-                ) from exc
             raise RuntimeClosureMaterializationError(
-                "atomic no-clobber publish failed"
+                "destination parent cannot be opened for atomic publish"
             ) from exc
-    except RuntimeClosureMaterializationError:
-        raise
-    except OSError as exc:
-        raise RuntimeClosureMaterializationError(
-            "destination parent cannot be opened for atomic publish"
-        ) from exc
+
+        # Publication has committed before control returns to the caller. Keep
+        # the verified parent descriptor open until the caller has recorded
+        # that state and completed destination identity checks and attestation.
+        yield
     finally:
         if parent_fd >= 0:
-            os.close(parent_fd)
+            descriptor = parent_fd
+            parent_fd = -1
+            os.close(descriptor)
 
 
 def materialize_runtime_closure(
@@ -606,53 +617,54 @@ def materialize_runtime_closure(
             )
 
         phase = "atomic publish"
-        _publish_noreplace(
+        with _publish_noreplace(
             staging,
             destination,
             parent_identity=(parent.st_dev, parent.st_ino),
-        )
-        published = True
-        observed = destination.lstat()
-        if (observed.st_dev, observed.st_ino) != staged_identity:
-            raise RuntimeClosureMaterializationError(
-                "published closure identity changed during atomic rename"
-            )
-
-        phase = "published closure re-attestation"
-        destination_before_attestation = destination.lstat()
-        if (
-            destination_before_attestation.st_dev,
-            destination_before_attestation.st_ino,
-        ) != staged_identity:
-            raise RuntimeClosureMaterializationError(
-                "destination closure identity changed before re-attestation"
-            )
-        published_attestation = attest_nautilus_backtest_closure(
-            NautilusClosureConfig(
-                runtime_root=destination,
-                artifact_directory=artifact_directory,
-                sandbox_executable=sandbox_executable,
-            ),
-            expected_profile=_PROFILE,
-        )
-        destination_after_attestation = destination.lstat()
-        if (
-            destination_after_attestation.st_dev,
-            destination_after_attestation.st_ino,
-        ) != staged_identity:
-            raise RuntimeClosureMaterializationError(
-                "destination closure identity changed after re-attestation"
-            )
-        if (
-            published_attestation.profile != staging_attestation.profile
-            or published_attestation.closure_sha256
-            != staging_attestation.closure_sha256
-            or published_attestation.result_validator_id
-            != staging_attestation.result_validator_id
         ):
-            raise RuntimeClosureMaterializationError(
-                "published closure attestation changed after atomic rename"
+            published = True
+            observed = destination.lstat()
+            if (observed.st_dev, observed.st_ino) != staged_identity:
+                raise RuntimeClosureMaterializationError(
+                    "published closure identity changed during atomic rename"
+                )
+
+            phase = "published closure re-attestation"
+            destination_before_attestation = destination.lstat()
+            if (
+                destination_before_attestation.st_dev,
+                destination_before_attestation.st_ino,
+            ) != staged_identity:
+                raise RuntimeClosureMaterializationError(
+                    "destination closure identity changed before re-attestation"
+                )
+            published_attestation = attest_nautilus_backtest_closure(
+                NautilusClosureConfig(
+                    runtime_root=destination,
+                    artifact_directory=artifact_directory,
+                    sandbox_executable=sandbox_executable,
+                ),
+                expected_profile=_PROFILE,
             )
+            destination_after_attestation = destination.lstat()
+            if (
+                destination_after_attestation.st_dev,
+                destination_after_attestation.st_ino,
+            ) != staged_identity:
+                raise RuntimeClosureMaterializationError(
+                    "destination closure identity changed after re-attestation"
+                )
+            if (
+                published_attestation.profile != staging_attestation.profile
+                or published_attestation.closure_sha256
+                != staging_attestation.closure_sha256
+                or published_attestation.result_validator_id
+                != staging_attestation.result_validator_id
+            ):
+                raise RuntimeClosureMaterializationError(
+                    "published closure attestation changed after atomic rename"
+                )
+            phase = "publication descriptor cleanup"
         return destination
     except RuntimeClosureMaterializationError:
         raise
