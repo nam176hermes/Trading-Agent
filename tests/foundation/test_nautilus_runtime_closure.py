@@ -4,6 +4,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -249,15 +250,23 @@ def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None
 
 def test_checked_in_policy_binds_the_preceding_committed_parity_source() -> None:
     policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    source_commit = policy["source_commit"]
+
+    assert isinstance(source_commit, str)
+    assert re.fullmatch(r"[0-9a-f]{40}", source_commit)
     completed = subprocess.run(
-        ["git", "cat-file", "-e", f"{policy['source_commit']}^{{commit}}"],
+        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
         cwd=ROOT,
         check=False,
         capture_output=True,
     )
 
     assert completed.returncode == 0
-    assert policy["source_commit"] == "8a49220df87be2bc9c18e3be511ae1640d972faa"
+    assert source_commit == "8080337a546576e17432dbefcda3a18c6bfdb5aa"
+    assert policy["launcher_inventory"] == [
+        {"mode": "0400", "sha256": _sha256(LAUNCHER), "source": "engines/nautilus/launcher/nautilus_backtest.py", "target": "/engine/launcher/nautilus_backtest.py"},
+        {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
+    ]
 
 
 def test_materializer_cli_bootstraps_only_the_checkout_authority() -> None:

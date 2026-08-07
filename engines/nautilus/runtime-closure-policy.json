@@ -35,6 +35,6 @@
   "result_validator_id": "nautilus-backtest-simulation-result-v1",
   "schema_version": 1,
   "semantic_profile": "nautilus-execution-simulation-v2",
-  "source_commit": "8a49220df87be2bc9c18e3be511ae1640d972faa",
+  "source_commit": "8080337a546576e17432dbefcda3a18c6bfdb5aa",
   "timeout_seconds": 120
 }
