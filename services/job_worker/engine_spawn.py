@@ -42,6 +42,7 @@ _BWRAP_VERSION = re.compile(
 _PREPARED_TTL_NS = 5 * 60 * 1_000_000_000
 _INPUT_TARGET = PurePosixPath("/inputs/request.json")
 _SIDECAR_TARGET = PurePosixPath("/inputs/request.sha256")
+_CLOSURE_MANIFEST_TARGET = PurePosixPath("/engine/closure-manifest.json")
 _ZERO_ORDER_INPUT_ARTIFACT_NAMES = (
     "engine_configuration",
     "instrument_catalog",
@@ -130,6 +131,7 @@ class CompleteEngineClosureAttestation:
     result_validator_id: str
     sandbox: OsSandboxProof
     semantic_profile: str | None = None
+    closure_manifest: ReadOnlyClosureMount | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -575,8 +577,21 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
     ):
         _blocked("ENGINE_SANDBOX_PROOF_INVALID", "OS sandbox proof is stale or unsafe")
 
+    closure_manifest = attestation.closure_manifest
+    if closure_manifest is not None and (
+        type(closure_manifest) is not ReadOnlyClosureMount
+        or closure_manifest.target != _CLOSURE_MANIFEST_TARGET
+        or closure_manifest.mode != 0o400
+    ):
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "separate closure manifest attestation is invalid",
+        )
+    validated_mounts = attestation.mounts + (
+        (closure_manifest,) if closure_manifest is not None else ()
+    )
     targets: set[PurePosixPath] = set()
-    for mount in attestation.mounts:
+    for mount in validated_mounts:
         if (
             type(mount) is not ReadOnlyClosureMount
             or not _safe_absolute_path(mount.source)
@@ -1066,8 +1081,13 @@ class EngineSpawnProvider:
                 launch_fds.append(descriptor)
             sandbox_snapshot_fd = _sealed_sandbox_snapshot(closure.sandbox)
             launch_fds.append(sandbox_snapshot_fd)
+            validated_mounts = closure.mounts + (
+                (closure.closure_manifest,)
+                if closure.closure_manifest is not None
+                else ()
+            )
             closure_snapshot_fds: list[int] = []
-            for mount in closure.mounts:
+            for mount in validated_mounts:
                 descriptor = _sealed_closure_file_snapshot(mount)
                 closure_snapshot_fds.append(descriptor)
                 launch_fds.append(descriptor)
@@ -1075,12 +1095,12 @@ class EngineSpawnProvider:
 
             directory_arguments = tuple(
                 argument
-                for directory in _closure_target_directories(closure.mounts)
+                for directory in _closure_target_directories(validated_mounts)
                 for argument in ("--dir", str(directory))
             )
             mount_arguments = tuple(
                 argument
-                for mount, descriptor in zip(closure.mounts, mount_fds, strict=True)
+                for mount, descriptor in zip(validated_mounts, mount_fds, strict=True)
                 for argument in (
                     "--perms",
                     f"{mount.mode:04o}",

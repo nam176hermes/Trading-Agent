@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import sys
 from datetime import UTC, datetime
 from decimal import Context, Decimal, localcontext
 from pathlib import Path
@@ -33,6 +34,312 @@ def launcher_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _strategy_manifest_record(strategy_path: Path) -> dict[str, object]:
+    value = strategy_path.read_bytes()
+    return {
+        "mode": "0400",
+        "path": "files/engine/launcher/target_portfolio_strategy.py",
+        "sha256": hashlib.sha256(value).hexdigest(),
+        "size": len(value),
+        "target": "/engine/launcher/target_portfolio_strategy.py",
+    }
+
+
+def _write_strategy_loader_fixture(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    source: bytes = (
+        b"class TargetPortfolioStrategy:\n    pass\n\n"
+        b"class TargetPortfolioStrategyConfig:\n    pass\n"
+    ),
+) -> tuple[Path, Path, dict[str, object]]:
+    strategy_path = tmp_path / "target_portfolio_strategy.py"
+    strategy_path.write_bytes(source)
+    strategy_path.chmod(0o400)
+    manifest_path = tmp_path / "closure-manifest.json"
+    record = _strategy_manifest_record(strategy_path)
+    manifest_path.write_bytes(
+        json.dumps(
+            {"files": [record]},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+    manifest_path.chmod(0o400)
+    monkeypatch.setattr(
+        launcher_module,
+        "_CLOSURE_MANIFEST_PATH",
+        manifest_path,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher_module,
+        "_TARGET_PORTFOLIO_STRATEGY_PATH",
+        strategy_path,
+        raising=False,
+    )
+    return manifest_path, strategy_path, record
+
+
+def test_manifest_bound_strategy_loader_returns_exact_module_symbols(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _manifest_path, strategy_path, _record = _write_strategy_loader_fixture(
+        launcher_module, tmp_path, monkeypatch
+    )
+
+    strategy, configuration = launcher_module._load_target_portfolio_strategy()
+
+    assert strategy.__name__ == "TargetPortfolioStrategy"
+    assert configuration.__name__ == "TargetPortfolioStrategyConfig"
+    assert strategy.__module__ == configuration.__module__
+    loaded_module = sys.modules[strategy.__module__]
+    assert Path(loaded_module.__file__) == strategy_path
+    assert strategy is loaded_module.TargetPortfolioStrategy
+    assert configuration is loaded_module.TargetPortfolioStrategyConfig
+
+
+def test_strategy_loader_bounds_only_the_selected_strategy_record(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path, _strategy_path, record = _write_strategy_loader_fixture(
+        launcher_module, tmp_path, monkeypatch
+    )
+    manifest_path.chmod(0o600)
+    manifest_path.write_bytes(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "mode": "0400",
+                        "path": "files/engine/wheels/nautilus.whl",
+                        "sha256": "f" * 64,
+                        "size": 50_000_000,
+                        "target": "/engine/wheels/nautilus.whl",
+                    },
+                    record,
+                ]
+            },
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+    manifest_path.chmod(0o400)
+
+    strategy, configuration = launcher_module._load_target_portfolio_strategy()
+
+    assert strategy.__name__ == "TargetPortfolioStrategy"
+    assert configuration.__name__ == "TargetPortfolioStrategyConfig"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("malformed-files", "missing", "malformed-record", "duplicate", "wrong-target"),
+)
+def test_strategy_loader_rejects_invalid_manifest_records_before_module_execution(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    marker = tmp_path / "executed"
+    manifest_path, _strategy_path, record = _write_strategy_loader_fixture(
+        launcher_module,
+        tmp_path,
+        monkeypatch,
+        source=(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+            "class TargetPortfolioStrategy:\n    pass\n"
+            "class TargetPortfolioStrategyConfig:\n    pass\n"
+        ).encode("utf-8"),
+    )
+    if mutation == "malformed-files":
+        document: object = {"files": {}}
+    elif mutation == "missing":
+        document = {"files": []}
+    elif mutation == "malformed-record":
+        document = {"files": [{key: value for key, value in record.items() if key != "size"}]}
+    elif mutation == "duplicate":
+        document = {"files": [record, dict(record)]}
+    else:
+        document = {"files": [{**record, "target": "/engine/launcher/not-the-strategy.py"}]}
+    manifest_path.chmod(0o600)
+    manifest_path.write_bytes(
+        json.dumps(
+            document,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+    manifest_path.chmod(0o400)
+
+    with pytest.raises(ValueError):
+        launcher_module._load_target_portfolio_strategy()
+
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("mutation", ("sha256", "mode", "noncanonical"))
+def test_strategy_loader_rejects_unbound_manifest_before_module_execution(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    marker = tmp_path / "executed"
+    manifest_path, _strategy_path, record = _write_strategy_loader_fixture(
+        launcher_module,
+        tmp_path,
+        monkeypatch,
+        source=(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+            "class TargetPortfolioStrategy:\n    pass\n"
+            "class TargetPortfolioStrategyConfig:\n    pass\n"
+        ).encode("utf-8"),
+    )
+    if mutation == "sha256":
+        record["sha256"] = "0" * 64
+    elif mutation == "mode":
+        record["mode"] = "0500"
+    document = {"files": [record]}
+    separators = None if mutation == "noncanonical" else (",", ":")
+    manifest_path.chmod(0o600)
+    manifest_path.write_bytes(
+        json.dumps(
+            document,
+            ensure_ascii=True,
+            separators=separators,
+            sort_keys=True,
+        ).encode("ascii")
+        + (b"" if mutation == "noncanonical" else b"\n")
+    )
+    manifest_path.chmod(0o400)
+
+    with pytest.raises(ValueError):
+        launcher_module._load_target_portfolio_strategy()
+
+    assert not marker.exists()
+
+
+def test_strategy_loader_rejects_symlink_without_module_execution(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "executed"
+    manifest_path, strategy_path, record = _write_strategy_loader_fixture(
+        launcher_module,
+        tmp_path,
+        monkeypatch,
+        source=(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+            "class TargetPortfolioStrategy:\n    pass\n"
+            "class TargetPortfolioStrategyConfig:\n    pass\n"
+        ).encode("utf-8"),
+    )
+    real_strategy_path = tmp_path / "real-target-portfolio-strategy.py"
+    strategy_path.rename(real_strategy_path)
+    strategy_path.symlink_to(real_strategy_path)
+    manifest_path.chmod(0o600)
+    manifest_path.write_bytes(
+        json.dumps(
+            {"files": [record]},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+    manifest_path.chmod(0o400)
+
+    with pytest.raises(ValueError):
+        launcher_module._load_target_portfolio_strategy()
+
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "missing_symbol",
+    ("TargetPortfolioStrategy", "TargetPortfolioStrategyConfig"),
+)
+def test_strategy_loader_rejects_missing_symbols_before_module_execution(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_symbol: str,
+) -> None:
+    marker = tmp_path / "executed"
+    definitions = {
+        "TargetPortfolioStrategy": "class TargetPortfolioStrategy:\n    pass\n",
+        "TargetPortfolioStrategyConfig": (
+            "class TargetPortfolioStrategyConfig:\n    pass\n"
+        ),
+    }
+    source = (
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+        + "".join(
+            definition
+            for name, definition in definitions.items()
+            if name != missing_symbol
+        )
+    ).encode("utf-8")
+    _write_strategy_loader_fixture(
+        launcher_module, tmp_path, monkeypatch, source=source
+    )
+
+    with pytest.raises(ValueError, match="symbols"):
+        launcher_module._load_target_portfolio_strategy()
+
+    assert not marker.exists()
+
+
+def test_strategy_loader_never_falls_back_to_an_ambient_bare_import(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    marker = tmp_path / "ambient-executed"
+    (ambient / "target_portfolio_strategy.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n"
+        "class TargetPortfolioStrategy:\n    pass\n"
+        "class TargetPortfolioStrategyConfig:\n    pass\n",
+        encoding="utf-8",
+    )
+    manifest_path, strategy_path, _record = _write_strategy_loader_fixture(
+        launcher_module, tmp_path, monkeypatch
+    )
+    strategy_path.chmod(0o600)
+    strategy_path.unlink()
+    monkeypatch.syspath_prepend(str(ambient))
+
+    with pytest.raises(ValueError):
+        launcher_module._load_target_portfolio_strategy()
+
+    assert manifest_path.exists()
+    assert not marker.exists()
+
+
+def test_launcher_has_no_ambient_strategy_import_or_sys_path_prepend() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+
+    assert "sys.path.insert" not in source
+    assert "from target_portfolio_strategy import" not in source
 
 
 class _EngineAmount:

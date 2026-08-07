@@ -159,7 +159,10 @@ def _closure_file(source: Path, target: str) -> ReadOnlyClosureMount:
 
 
 def _closure(
-    tmp_path: Path, *, profile: str = "zero-order"
+    tmp_path: Path,
+    *,
+    profile: str = "zero-order",
+    with_closure_manifest: bool = False,
 ) -> CompleteEngineClosureAttestation:
     sandbox = tmp_path / "sealed" / "bin" / "sandbox"
     sandbox.parent.mkdir(parents=True)
@@ -171,6 +174,10 @@ def _closure(
     entrypoint.parent.mkdir(mode=0o700)
     entrypoint.write_bytes(b"reviewed-engine-entrypoint-v1")
     entrypoint.chmod(0o500)
+    closure_manifest_path = release / "closure-manifest.json"
+    if with_closure_manifest:
+        closure_manifest_path.write_bytes(b'{"files":[]}')
+        closure_manifest_path.chmod(0o400)
     entrypoint.parent.chmod(0o500)
     release.chmod(0o500)
     return CompleteEngineClosureAttestation(
@@ -195,6 +202,13 @@ def _closure(
         semantic_profile=(
             "nautilus-execution-simulation-v2"
             if profile == "execution-simulation"
+            else None
+        ),
+        closure_manifest=(
+            _closure_file(
+                closure_manifest_path, "/engine/closure-manifest.json"
+            )
+            if with_closure_manifest
             else None
         ),
     )
@@ -429,6 +443,54 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
     run_root = tmp_path / "transport" / f"run-{envelope.engine_run_id.hex}"
     assert (run_root / "request.json").stat().st_mode & 0o777 == 0o400
     assert (run_root / "request.sha256").stat().st_mode & 0o777 == 0o400
+
+
+def test_provider_seals_separate_closure_manifest_at_the_fixed_target(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(secure_tmp_path, with_closure_manifest=True)
+    assert closure.closure_manifest is not None
+    spawn = consume_prepared_engine_spawn(
+        _provider(secure_tmp_path, lambda: closure).prepare(_envelope())
+    )
+    try:
+        descriptor = _data_fd(spawn.argv, "/engine/closure-manifest.json")
+        assert os.pread(descriptor, 1_000_000, 0) == b'{"files":[]}'
+        assert fcntl.fcntl(descriptor, F_GET_SEALS) == (
+            F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL
+        )
+        target_index = spawn.argv.index("/engine/closure-manifest.json")
+        assert spawn.argv[target_index - 4 : target_index] == (
+            "--perms",
+            "0400",
+            "--ro-bind-data",
+            str(descriptor),
+        )
+        assert closure.closure_manifest not in closure.mounts
+    finally:
+        _close_spawn_fds(spawn)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"target": PurePosixPath("/engine/not-the-closure-manifest.json")},
+        {"mode": 0o500},
+    ),
+)
+def test_provider_rejects_malformed_separate_closure_manifest_attestation(
+    secure_tmp_path: Path,
+    mutation: dict[str, object],
+) -> None:
+    closure = _closure(secure_tmp_path, with_closure_manifest=True)
+    assert closure.closure_manifest is not None
+    malformed = replace(
+        closure,
+        closure_manifest=replace(closure.closure_manifest, **mutation),
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(secure_tmp_path, lambda: malformed).prepare(_envelope())
 
 
 def test_provider_mounts_each_attested_artifact_as_a_sealed_hash_bound_input(

@@ -7,8 +7,10 @@ through the sealed command JSON plus its SHA-256 sidecar.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 import re
@@ -71,6 +73,17 @@ _SIMULATION_INPUT_ARTIFACT_NAMES = (
 )
 _MAX_COMMAND_BYTES = 1_048_576
 _MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
+_MAX_STRATEGY_BYTES = 1_048_576
+_CLOSURE_MANIFEST_PATH = Path("/engine/closure-manifest.json")
+_TARGET_PORTFOLIO_STRATEGY_PATH = Path(
+    "/engine/launcher/target_portfolio_strategy.py"
+)
+_TARGET_PORTFOLIO_STRATEGY_TARGET = "/engine/launcher/target_portfolio_strategy.py"
+_TARGET_PORTFOLIO_STRATEGY_SOURCE = (
+    "files/engine/launcher/target_portfolio_strategy.py"
+)
+_TARGET_PORTFOLIO_STRATEGY_MODULE = "_sealed_target_portfolio_strategy"
+_CLOSURE_FILE_FIELDS = {"mode", "path", "sha256", "size", "target"}
 _CATALOG_FIELDS = {
     "canonical_rows_sha256",
     "content_digest",
@@ -193,6 +206,200 @@ def _read_regular(path: Path, *, maximum_size: int = _MAX_COMMAND_BYTES) -> byte
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _strict_json_document(raw: bytes) -> object:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("closure manifest contains a duplicate field")
+            value[key] = item
+        return value
+
+    try:
+        document = json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("closure manifest JSON is invalid") from exc
+    if _canonical_json_bytes(document) + b"\n" != raw:
+        raise ValueError("closure manifest bytes are not canonical")
+    return document
+
+
+def _verified_strategy_source(record: dict[str, object]) -> bytes:
+    expected_size = record["size"]
+    expected_sha256 = record["sha256"]
+    assert isinstance(expected_size, int)
+    assert isinstance(expected_sha256, str)
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            _TARGET_PORTFOLIO_STRATEGY_PATH,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_size != expected_size
+            or opened.st_size > _MAX_STRATEGY_BYTES
+        ):
+            raise ValueError("target portfolio strategy identity is invalid")
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            block = os.read(descriptor, min(65_536, remaining))
+            if not block:
+                raise ValueError("target portfolio strategy read was incomplete")
+            chunks.append(block)
+            remaining -= len(block)
+        value = b"".join(chunks)
+        named = _TARGET_PORTFOLIO_STRATEGY_PATH.stat(follow_symlinks=False)
+        if (
+            not stat.S_ISREG(named.st_mode)
+            or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+            or named.st_size != opened.st_size
+            or not hmac.compare_digest(
+                hashlib.sha256(value).hexdigest(), expected_sha256
+            )
+        ):
+            raise ValueError("target portfolio strategy is not manifest-bound")
+        return value
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("target portfolio strategy cannot be safely read") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+class _VerifiedStrategyLoader:
+    def __init__(self, source: bytes) -> None:
+        self._source = source
+
+    def create_module(self, spec):
+        del spec
+        return None
+
+    def exec_module(self, module) -> None:
+        code = compile(
+            self._source,
+            str(_TARGET_PORTFOLIO_STRATEGY_PATH),
+            "exec",
+            dont_inherit=True,
+        )
+        exec(code, module.__dict__)
+
+
+def _load_target_portfolio_strategy() -> tuple[type, type]:
+    """Load only the exact strategy bytes named by the sealed closure manifest."""
+
+    raw_manifest = _read_regular(_CLOSURE_MANIFEST_PATH)
+    document = _strict_json_document(raw_manifest)
+    if not isinstance(document, dict):
+        raise ValueError("closure manifest must be an object")
+    files = document.get("files")
+    if not isinstance(files, list) or not files:
+        raise ValueError("closure manifest files are invalid")
+    matches: list[dict[str, object]] = []
+    for record in files:
+        if not isinstance(record, dict) or set(record) != _CLOSURE_FILE_FIELDS:
+            raise ValueError("closure manifest file record is invalid")
+        path = record["path"]
+        target = record["target"]
+        digest = record["sha256"]
+        size = record["size"]
+        mode = record["mode"]
+        if (
+            not isinstance(path, str)
+            or not path
+            or Path(path).is_absolute()
+            or any(part in {"", ".", ".."} for part in Path(path).parts)
+            or not isinstance(target, str)
+            or not target.startswith("/")
+            or any(part in {"", ".", ".."} for part in Path(target).parts)
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            or isinstance(size, bool)
+            or not isinstance(size, int)
+            or size < 0
+            or mode not in {"0400", "0500"}
+        ):
+            raise ValueError("closure manifest file record is invalid")
+        if target == _TARGET_PORTFOLIO_STRATEGY_TARGET:
+            matches.append(record)
+    if len(matches) != 1:
+        raise ValueError("closure manifest must name exactly one target strategy")
+    match = matches[0]
+    if (
+        match["path"] != _TARGET_PORTFOLIO_STRATEGY_SOURCE
+        or match["mode"] != "0400"
+        or not isinstance(match["size"], int)
+        or match["size"] > _MAX_STRATEGY_BYTES
+    ):
+        raise ValueError("target portfolio strategy manifest record is invalid")
+
+    source = _verified_strategy_source(match)
+    try:
+        syntax = ast.parse(
+            source,
+            filename=str(_TARGET_PORTFOLIO_STRATEGY_PATH),
+            mode="exec",
+        )
+    except (SyntaxError, ValueError) as exc:
+        raise ValueError("target portfolio strategy module syntax is invalid") from exc
+    required_symbols = {
+        "TargetPortfolioStrategy",
+        "TargetPortfolioStrategyConfig",
+    }
+    if any(
+        sum(
+            isinstance(node, ast.ClassDef) and node.name == required
+            for node in syntax.body
+        )
+        != 1
+        for required in required_symbols
+    ):
+        raise ValueError("target portfolio strategy module symbols are invalid")
+    loader = _VerifiedStrategyLoader(source)
+    spec = importlib.util.spec_from_file_location(
+        _TARGET_PORTFOLIO_STRATEGY_MODULE,
+        _TARGET_PORTFOLIO_STRATEGY_PATH,
+        loader=loader,
+    )
+    if (
+        spec is None
+        or spec.loader is not loader
+        or spec.origin != str(_TARGET_PORTFOLIO_STRATEGY_PATH)
+    ):
+        raise ValueError("target portfolio strategy module identity is invalid")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(_TARGET_PORTFOLIO_STRATEGY_MODULE)
+    sys.modules[_TARGET_PORTFOLIO_STRATEGY_MODULE] = module
+    try:
+        loader.exec_module(module)
+    except BaseException as exc:
+        if previous is None:
+            sys.modules.pop(_TARGET_PORTFOLIO_STRATEGY_MODULE, None)
+        else:
+            sys.modules[_TARGET_PORTFOLIO_STRATEGY_MODULE] = previous
+        raise ValueError("target portfolio strategy module cannot be executed") from exc
+    strategy = getattr(module, "TargetPortfolioStrategy", None)
+    configuration = getattr(module, "TargetPortfolioStrategyConfig", None)
+    if (
+        not isinstance(strategy, type)
+        or strategy.__module__ != _TARGET_PORTFOLIO_STRATEGY_MODULE
+        or not isinstance(configuration, type)
+        or configuration.__module__ != _TARGET_PORTFOLIO_STRATEGY_MODULE
+    ):
+        if previous is None:
+            sys.modules.pop(_TARGET_PORTFOLIO_STRATEGY_MODULE, None)
+        else:
+            sys.modules[_TARGET_PORTFOLIO_STRATEGY_MODULE] = previous
+        raise ValueError("target portfolio strategy module symbols are invalid")
+    return strategy, configuration
 
 
 def _artifact(value: object) -> None:
@@ -1605,7 +1812,7 @@ def _run_nautilus_simulation_fixture(
                 archive.extractall(destination)
         except (OSError, zipfile.BadZipFile) as exc:
             raise ValueError("Nautilus runtime wheel is unreadable") from exc
-        sys.path.insert(0, str(destination))
+        sys.path.append(str(destination))
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.backtest.models import FeeModel
     from nautilus_trader.common.config import LoggingConfig
@@ -1616,9 +1823,8 @@ def _run_nautilus_simulation_fixture(
     from nautilus_trader.model.identifiers import Venue
     from nautilus_trader.model.objects import Money, Price, Quantity
     from nautilus_trader.test_kit.providers import TestInstrumentProvider
-    from target_portfolio_strategy import (
-        TargetPortfolioStrategy,
-        TargetPortfolioStrategyConfig,
+    TargetPortfolioStrategy, TargetPortfolioStrategyConfig = (
+        _load_target_portfolio_strategy()
     )
 
     class ScenarioFeeModel(FeeModel):
@@ -1885,7 +2091,7 @@ def _run_nautilus(
                 archive.extractall(destination)
         except (OSError, zipfile.BadZipFile) as exc:
             raise ValueError("Nautilus runtime wheel is unreadable") from exc
-        sys.path.insert(0, str(destination))
+        sys.path.append(str(destination))
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig

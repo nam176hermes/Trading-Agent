@@ -10,7 +10,11 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 import services.job_worker.nautilus_closure as nautilus_closure_module
-from services.job_worker.engine_spawn import EngineSpawnError, OsSandboxProof
+from services.job_worker.engine_spawn import (
+    EngineSpawnError,
+    OsSandboxProof,
+    ReadOnlyClosureMount,
+)
 from services.job_worker.nautilus_closure import (
     NautilusClosureConfig,
     attest_nautilus_backtest_closure,
@@ -101,16 +105,26 @@ def _build_closure_config(
 
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
-    files = (
+    files = [
         _write_file(runtime, runtime / "files/bin/python3.12", b"python", 0o500),
         _write_file(runtime, runtime / "files/launcher/nautilus_backtest.py", b"launcher", 0o400),
         _write_file(runtime, runtime / "files/lib/python3.12/encodings/__init__.py", b"", 0o400),
-    )
-    targets = (
+    ]
+    targets = [
         "/engine/bin/python3.12",
         "/engine/launcher/nautilus_backtest.py",
         "/engine/lib/python3.12/encodings/__init__.py",
-    )
+    ]
+    if engine_upstream_commit is not None:
+        files.append(
+            _write_file(
+                runtime,
+                runtime / "files/engine/launcher/target_portfolio_strategy.py",
+                b"class TargetPortfolioStrategy: pass\nclass TargetPortfolioStrategyConfig: pass\n",
+                0o400,
+            )
+        )
+        targets.append("/engine/launcher/target_portfolio_strategy.py")
     records = [dict(item, target=target) for item, target in zip(files, targets, strict=True)]
     profiles = {
         "zero-order": (
@@ -288,6 +302,14 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
         "result_validator_id": "nautilus-backtest-simulation-result-v1",
         "source_commit": REPOSITORY_SOURCE_COMMIT,
     }
+    first_manifest = ReadOnlyClosureMount(
+        source=Path("/sealed/closure-manifest.json"),
+        target=PurePosixPath("/engine/closure-manifest.json"),
+        identity=(1, 2),
+        size=101,
+        mode=0o400,
+        sha256="1" * 64,
+    )
     first = nautilus_closure_module._closure_digest(
         closure_manifest={**common, "engine_upstream_commit": SOURCE_COMMIT},
         artifact_digest="a" * 64,
@@ -296,6 +318,7 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
         mounts=(),
         entrypoint=PurePosixPath("/engine/bin/python3.12"),
         timeout=120,
+        closure_manifest_sidecar=first_manifest,
     )
     second = nautilus_closure_module._closure_digest(
         closure_manifest={**common, "engine_upstream_commit": "f" * 40},
@@ -305,9 +328,156 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
         mounts=(),
         entrypoint=PurePosixPath("/engine/bin/python3.12"),
         timeout=120,
+        closure_manifest_sidecar=first_manifest,
     )
 
     assert first != second
+
+
+def test_v4_closure_digest_binds_manifest_sidecar_size_and_sha256() -> None:
+    common = {
+        "schema_version": 4,
+        "argv_prefix": [
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ],
+        "result_validator_id": "nautilus-backtest-simulation-result-v1",
+        "source_commit": REPOSITORY_SOURCE_COMMIT,
+        "engine_upstream_commit": SOURCE_COMMIT,
+    }
+    first_manifest = ReadOnlyClosureMount(
+        source=Path("/sealed/closure-manifest.json"),
+        target=PurePosixPath("/engine/closure-manifest.json"),
+        identity=(1, 2),
+        size=101,
+        mode=0o400,
+        sha256="1" * 64,
+    )
+    second_manifest = ReadOnlyClosureMount(
+        source=Path("/sealed/closure-manifest.json"),
+        target=PurePosixPath("/engine/closure-manifest.json"),
+        identity=(1, 2),
+        size=102,
+        mode=0o400,
+        sha256="2" * 64,
+    )
+
+    digests = {
+        nautilus_closure_module._closure_digest(
+            closure_manifest=common,
+            artifact_digest="a" * 64,
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            mounts=(),
+            entrypoint=PurePosixPath("/engine/bin/python3.12"),
+            timeout=120,
+            closure_manifest_sidecar=sidecar,
+        )
+        for sidecar in (first_manifest, second_manifest)
+    }
+
+    assert len(digests) == 2
+
+
+def test_v4_attestor_binds_manifest_as_a_separate_fixed_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        nautilus_closure_module,
+        "_sandbox_proof",
+        lambda path: OsSandboxProof(
+            executable=path,
+            identity=(1, 1),
+            executable_sha256="b" * 64,
+            profile_sha256="c" * 64,
+            version="bubblewrap 0.9.0",
+            capabilities=("--perms", "--ro-bind-data"),
+        ),
+    )
+    base = Path(tempfile.mkdtemp(prefix="nautilus-v4-manifest-sidecar-", dir="/tmp"))
+    try:
+        config = _build_closure_config(
+            base,
+            base / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+        )
+
+        closure = attest_nautilus_backtest_closure(
+            config, expected_profile="execution-simulation"
+        )
+
+        sidecar = closure.closure_manifest
+        assert sidecar is not None
+        manifest_path = config.runtime_root / "closure-manifest.json"
+        observed = manifest_path.stat(follow_symlinks=False)
+        assert sidecar.source == manifest_path
+        assert sidecar.target == PurePosixPath("/engine/closure-manifest.json")
+        assert sidecar.identity == (observed.st_dev, observed.st_ino)
+        assert sidecar.size == observed.st_size
+        assert sidecar.mode == 0o400
+        assert sidecar.sha256 == _sha256(manifest_path)
+        assert sidecar not in closure.mounts
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert all(
+            record["path"] != "closure-manifest.json"
+            and record["target"] != "/engine/closure-manifest.json"
+            for record in manifest["files"]
+        )
+    finally:
+        for directory, child_directories, file_names in os.walk(base, topdown=False):
+            current = Path(directory)
+            for name in file_names:
+                (current / name).chmod(0o600)
+            for name in child_directories:
+                (current / name).chmod(0o700)
+            current.chmod(0o700)
+        shutil.rmtree(base)
+
+
+def test_v3_attestor_preserves_legacy_closure_without_manifest_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        nautilus_closure_module,
+        "_sandbox_proof",
+        lambda path: OsSandboxProof(
+            executable=path,
+            identity=(1, 1),
+            executable_sha256="b" * 64,
+            profile_sha256="c" * 64,
+            version="bubblewrap 0.9.0",
+            capabilities=("--perms", "--ro-bind-data"),
+        ),
+    )
+    base = Path(tempfile.mkdtemp(prefix="nautilus-v3-manifest-compat-", dir="/tmp"))
+    try:
+        config = _build_closure_config(
+            base,
+            base / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+        )
+
+        closure = attest_nautilus_backtest_closure(
+            config, expected_profile="execution-simulation"
+        )
+
+        assert closure.closure_manifest is None
+    finally:
+        for directory, child_directories, file_names in os.walk(base, topdown=False):
+            current = Path(directory)
+            for name in file_names:
+                (current / name).chmod(0o600)
+            for name in child_directories:
+                (current / name).chmod(0o700)
+            current.chmod(0o700)
+        shutil.rmtree(base)
 
 
 def test_attestor_rejects_unlisted_runtime_file(closure_config: NautilusClosureConfig) -> None:

@@ -38,6 +38,7 @@ _REQUIRED_SANDBOX_PROFILE_SHA256 = (
 )
 _RESERVED_TARGETS = tuple(PurePosixPath(value) for value in ("/inputs", "/proc", "/dev", "/tmp"))
 _MANIFEST_NAME = "closure-manifest.json"
+_MANIFEST_TARGET = PurePosixPath("/engine/closure-manifest.json")
 _ARTIFACT_MANIFEST_NAME = "artifact-manifest.json"
 _FILES_DIRECTORY = "files"
 _EXPECTED_ENGINE_NAME = "nautilus_trader"
@@ -288,6 +289,7 @@ def _closure_digest(
     mounts: tuple[ReadOnlyClosureMount, ...],
     entrypoint: PurePosixPath,
     timeout: int,
+    closure_manifest_sidecar: ReadOnlyClosureMount | None = None,
 ) -> str:
     digest_document = {
         "artifact_manifest_sha256": artifact_digest,
@@ -313,7 +315,36 @@ def _closure_digest(
         digest_document["engine_upstream_commit"] = closure_manifest[
             "engine_upstream_commit"
         ]
+        if closure_manifest_sidecar is None:
+            _blocked(
+                "ENGINE_CLOSURE_INVALID",
+                "schema-v4 closure manifest sidecar is missing",
+            )
+        digest_document["closure_manifest"] = {
+            "mode": f"{closure_manifest_sidecar.mode:04o}",
+            "sha256": closure_manifest_sidecar.sha256,
+            "size": closure_manifest_sidecar.size,
+            "target": str(closure_manifest_sidecar.target),
+        }
     return hashlib.sha256(_canonical_json_bytes(digest_document)).hexdigest()
+
+
+def _closure_manifest_sidecar(path: Path) -> ReadOnlyClosureMount:
+    observed = _sealed_file(path, "closure manifest")
+    mode = stat.S_IMODE(observed.st_mode)
+    if mode != 0o400:
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "closure manifest sidecar mode is invalid",
+        )
+    return ReadOnlyClosureMount(
+        source=path,
+        target=_MANIFEST_TARGET,
+        identity=(observed.st_dev, observed.st_ino),
+        size=observed.st_size,
+        mode=mode,
+        sha256=_sha256_path(path),
+    )
 
 
 def attest_nautilus_backtest_closure(
@@ -401,6 +432,21 @@ def attest_nautilus_backtest_closure(
     ):
         _blocked("ENGINE_CLOSURE_INVALID", "artifact manifest identity is incompatible")
     mounts = _manifest_files(config.runtime_root, closure_manifest["files"])
+    closure_manifest_sidecar = (
+        _closure_manifest_sidecar(config.runtime_root / _MANIFEST_NAME)
+        if schema_version == 4
+        else None
+    )
+    if closure_manifest_sidecar is not None and any(
+        mount.target == _MANIFEST_TARGET
+        or mount.target.is_relative_to(_MANIFEST_TARGET)
+        or _MANIFEST_TARGET.is_relative_to(mount.target)
+        for mount in mounts
+    ):
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "closure manifest must be a separate sidecar",
+        )
     entrypoint = _safe_target(closure_manifest["entrypoint"])
     matching = [mount for mount in mounts if mount.target == entrypoint]
     if len(matching) != 1 or not matching[0].mode & 0o100:
@@ -426,6 +472,7 @@ def attest_nautilus_backtest_closure(
             mounts=mounts,
             entrypoint=entrypoint,
             timeout=timeout,
+            closure_manifest_sidecar=closure_manifest_sidecar,
         ),
         mounts=mounts,
         entrypoint=entrypoint,
@@ -434,6 +481,7 @@ def attest_nautilus_backtest_closure(
         result_validator_id=closure_manifest["result_validator_id"],
         sandbox=_sandbox_proof(config.sandbox_executable),
         semantic_profile=semantic_profile,
+        closure_manifest=closure_manifest_sidecar,
     )
 
 
