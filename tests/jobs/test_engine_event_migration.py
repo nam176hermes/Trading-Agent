@@ -37,7 +37,6 @@ def test_engine_event_write_authority_is_one_protected_atomic_function() -> None
         "INSERT INTO public.engine_event_batch_receipts",
         "INSERT INTO public.engine_events",
         "INSERT INTO public.engine_run_projections",
-        "ON CONFLICT (engine_run_id) DO UPDATE",
         "sum(grouped.type_count)",
         "P2D01",
         "P2D02",
@@ -49,6 +48,16 @@ def test_engine_event_write_authority_is_one_protected_atomic_function() -> None
     assert body.index("INSERT INTO public.engine_event_batch_receipts") < body.index(
         "INSERT INTO public.engine_events"
     ) < body.index("INSERT INTO public.engine_run_projections")
+    projection = body.split("INSERT INTO public.engine_run_projections", 1)[1]
+    assert "ON CONFLICT ON CONSTRAINT engine_run_projections_pkey DO UPDATE" in projection
+    assert "ON CONFLICT (engine_run_id) DO UPDATE" not in projection
+    for expected in (
+        "event_count = EXCLUDED.event_count",
+        "event_type_counts = EXCLUDED.event_type_counts",
+        "last_sequence = EXCLUDED.last_sequence",
+        "last_digest = EXCLUDED.last_digest",
+    ):
+        assert expected in projection
 
 
 def test_database_rederives_canonical_event_and_batch_seals_before_mutation() -> None:

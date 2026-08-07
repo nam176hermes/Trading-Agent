@@ -456,7 +456,7 @@ def upgrade() -> None:
             WHERE stored.engine_run_id = v_engine_run_id
             GROUP BY stored.event_type
           ) AS grouped
-          ON CONFLICT (engine_run_id) DO UPDATE SET
+          ON CONFLICT ON CONSTRAINT engine_run_projections_pkey DO UPDATE SET
             event_count = EXCLUDED.event_count,
             event_type_counts = EXCLUDED.event_type_counts,
             last_sequence = EXCLUDED.last_sequence,
