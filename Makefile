@@ -8,7 +8,7 @@
 	build-nautilus-engine verify-nautilus-engine \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
-	build-dashboard test-all ci ci-private
+	build-dashboard prepare-root-test-install test-all-private test-all ci ci-private
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 RUNTIME_RELEASE_WHEELHOUSE_ROOT ?= $(HOME)/.cache/trading-agent/runtime-release-wheelhouse
@@ -219,7 +219,20 @@ lint-dashboard:
 build-dashboard:
 	cd apps/dashboard && npm run build
 
-test-all: audit check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
+prepare-root-test-install:
+	uv sync --frozen --reinstall-package trading-agent-control-api
+
+test-all-private: audit check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
+
+test-all:
+	@set -eu; \
+		test_tmpdir=$$(mktemp -d /tmp/trading-agent-test-all.XXXXXXXXXX); \
+		chmod 0700 "$$test_tmpdir"; \
+		test "$$(stat -c '%u:%a' -- "$$test_tmpdir")" = "$$(id -u):700"; \
+		cleanup_test_tmpdir() { find -P "$$test_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$test_tmpdir"; }; \
+		trap 'cleanup_test_tmpdir' EXIT; \
+		TMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir" \
+			$(MAKE) prepare-root-test-install test-all-private
 
 ci:
 	@set -eu; \
@@ -234,4 +247,6 @@ ci:
 		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
 			$(MAKE) ci-private
 
-ci-private: test-all check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies
+ci-private:
+	$(MAKE) prepare-root-test-install
+	$(MAKE) test-all-private check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies

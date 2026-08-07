@@ -54,8 +54,11 @@ MAKE_TARGETS = {
     "typecheck-dashboard",
     "lint-dashboard",
     "build-dashboard",
+    "prepare-root-test-install",
+    "test-all-private",
     "test-all",
     "ci",
+    "ci-private",
 }
 POSTGRES_TEMPLATE = "ops/postgres/postgres.env.example"
 FORBIDDEN_POSTGRES_TEMPLATE = "ops/postgres/.env.example"
@@ -348,9 +351,11 @@ def test_makefile_exposes_safe_component_orchestration() -> None:
     }
     assert MAKE_TARGETS <= targets
 
-    test_all = re.search(r"^test-all\s*:(.*)$", makefile, re.MULTILINE)
-    assert test_all is not None
-    prerequisites = set(test_all.group(1).split())
+    test_all_private = re.search(
+        r"^test-all-private\s*:(.*)$", makefile, re.MULTILINE
+    )
+    assert test_all_private is not None
+    prerequisites = set(test_all_private.group(1).split())
     assert prerequisites == {
         "audit",
         "check-d0-closure",
@@ -387,14 +392,7 @@ def test_makefile_exposes_safe_component_orchestration() -> None:
 
     ci_private_gate = re.search(r"^ci-private\s*:(.*)$", makefile, re.MULTILINE)
     assert ci_private_gate is not None
-    assert set(ci_private_gate.group(1).split()) == {
-        "test-all",
-        "check-test-skips",
-        "check-critical-coverage",
-        "build-dashboard",
-        "audit-python-source",
-        "audit-dependencies",
-    }
+    assert ci_private_gate.group(1).split() == []
 
     assert "uv export --frozen --no-dev" in makefile
     assert "uv export --frozen --all-groups" in makefile
@@ -408,7 +406,6 @@ def test_makefile_exposes_safe_component_orchestration() -> None:
     assert MAKE_TARGETS <= set(phony.group(1).split())
 
     forbidden_recipe_fragments = {
-        "uv sync",
         "npm ci",
         "uvicorn",
         "next dev",

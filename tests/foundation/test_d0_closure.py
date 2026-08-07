@@ -125,16 +125,14 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
     assert "@given" in replay_source
     assert 'testpaths = ["tests"]' in pyproject
     assert 'pytest -q -m "not runtime_postgres and not host_coupled" tests' in makefile
-    assert "test-all: audit check-d0-closure check-contracts" in makefile
+    assert "test-all-private: audit check-d0-closure check-contracts" in makefile
     assert "check-d0-closure:" in makefile
     assert "uv run pytest -q tests/foundation/test_d0_closure.py" in makefile
     assert "run: make ci" in workflow
     assert "uses: actions/upload-artifact@v4" in workflow
     assert "path: /tmp/trading-agent-test-evidence" in workflow
-    assert (
-        "ci-private: test-all check-test-skips check-critical-coverage build-dashboard "
-        "audit-python-source audit-dependencies"
-    ) in makefile
+    assert "ci-private:\n\t$(MAKE) prepare-root-test-install" in makefile
+    assert "\t$(MAKE) test-all-private check-test-skips check-critical-coverage " in makefile
     assert set(document["final_proof_commands"]) == REQUIRED_COMMANDS
 
 
@@ -142,7 +140,7 @@ def test_canonical_ci_uses_a_private_linux_temp_root() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
     assert "ci:\n\t@set -eu;" in makefile
-    assert "ci-private: test-all check-test-skips check-critical-coverage build-dashboard " in makefile
+    assert "ci-private:\n\t$(MAKE) prepare-root-test-install" in makefile
     assert "ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci.XXXXXXXXXX)" in makefile
     assert 'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700"' in makefile
     assert "cleanup_ci_tmpdir() {" in makefile
@@ -150,6 +148,25 @@ def test_canonical_ci_uses_a_private_linux_temp_root() -> None:
     assert "trap 'cleanup_ci_tmpdir' EXIT" in makefile
     assert 'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir"' in makefile
     assert "$(MAKE) ci-private" in makefile
+
+
+def test_ci_uses_private_test_target_after_one_source_reinstall() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert "$(MAKE) prepare-root-test-install" in makefile
+    assert "$(MAKE) test-all-private" in makefile
+    ci_private = makefile.split("ci-private:\n", 1)[1]
+    assert ci_private.count("prepare-root-test-install") == 1
+
+
+def test_test_all_rebuilds_the_current_root_package_and_uses_private_tmp() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert "prepare-root-test-install:" in makefile
+    assert "uv sync --frozen --reinstall-package trading-agent-control-api" in makefile
+    assert "test-all-private:" in makefile
+    assert "mktemp -d /tmp/trading-agent-test-all.XXXXXXXXXX" in makefile
+    assert 'TMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir"' in makefile
 
 
 def test_track_c_source_head_defers_runtime_activation() -> None:
