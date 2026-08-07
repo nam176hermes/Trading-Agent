@@ -43,6 +43,25 @@ _PREPARED_TTL_NS = 5 * 60 * 1_000_000_000
 _INPUT_TARGET = PurePosixPath("/inputs/request.json")
 _SIDECAR_TARGET = PurePosixPath("/inputs/request.sha256")
 _CLOSURE_MANIFEST_TARGET = PurePosixPath("/engine/closure-manifest.json")
+_NATIVE_GUARD_TARGET = PurePosixPath("/engine/bin/nautilus-entry-guard")
+_NATIVE_GUARDED_EXECUTABLE = PurePosixPath("/usr/bin/python3.12")
+_NATIVE_GUARDED_ARGV_PREFIX = (
+    "/usr/bin/python3.12",
+    "-I",
+    "-S",
+    "/engine/launcher/nautilus_backtest.py",
+    "--profile",
+    "execution-simulation",
+)
+_NATIVE_GUARD_SOURCE = "engines/nautilus/native_entry_guard/src/main.rs"
+_NATIVE_GUARD_CARGO_MANIFEST = "engines/nautilus/native_entry_guard/Cargo.toml"
+_NATIVE_GUARD_CARGO_LOCK = "engines/nautilus/native_entry_guard/Cargo.lock"
+_NATIVE_CARGO_IDENTITY = re.compile(
+    r"^cargo 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII
+)
+_NATIVE_RUSTC_IDENTITY = re.compile(
+    r"^rustc 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII
+)
 _ZERO_ORDER_INPUT_ARTIFACT_NAMES = (
     "engine_configuration",
     "instrument_catalog",
@@ -112,6 +131,28 @@ class ReadOnlyClosureMount:
 
 
 @dataclass(frozen=True, slots=True)
+class NativeEntryGuardAttestation:
+    """Build provenance and exact handoff contract for a native guard."""
+
+    target: PurePosixPath
+    guarded_executable: PurePosixPath
+    binary_sha256: str
+    binary_size: int
+    mode: int
+    source: str
+    source_sha256: str
+    cargo_manifest: str
+    cargo_manifest_sha256: str
+    cargo_lock: str
+    cargo_lock_sha256: str
+    cargo_identity: str
+    rustc_identity: str
+    rust_toolchain_policy_sha256: str
+    llvm_toolchain_policy_sha256: str
+    target_triple: str
+
+
+@dataclass(frozen=True, slots=True)
 class CompleteEngineClosureAttestation:
     """Complete immutable engine release plus mandatory sandbox authority.
 
@@ -132,6 +173,7 @@ class CompleteEngineClosureAttestation:
     sandbox: OsSandboxProof
     semantic_profile: str | None = None
     closure_manifest: ReadOnlyClosureMount | None = None
+    native_entry_guard: NativeEntryGuardAttestation | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,6 +519,79 @@ def _validate_entrypoint(attestation: CompleteEngineClosureAttestation) -> None:
         )
 
 
+def _validate_native_entry_guard(
+    attestation: CompleteEngineClosureAttestation,
+) -> None:
+    guard = attestation.native_entry_guard
+    if guard is None:
+        if (
+            attestation.profile == "execution-simulation"
+            and attestation.closure_manifest is not None
+        ):
+            _blocked(
+                "ENGINE_CLOSURE_INVALID",
+                "execution-simulation manifest sidecar requires a native guard",
+            )
+        return
+    if type(guard) is not NativeEntryGuardAttestation:
+        _blocked("ENGINE_CLOSURE_INVALID", "native entry guard contract is invalid")
+    digest_fields = (
+        guard.binary_sha256,
+        guard.source_sha256,
+        guard.cargo_manifest_sha256,
+        guard.cargo_lock_sha256,
+        guard.rust_toolchain_policy_sha256,
+        guard.llvm_toolchain_policy_sha256,
+    )
+    if (
+        guard.target != _NATIVE_GUARD_TARGET
+        or attestation.profile != "execution-simulation"
+        or guard.guarded_executable != _NATIVE_GUARDED_EXECUTABLE
+        or attestation.entrypoint != guard.target
+        or attestation.argv_prefix != _NATIVE_GUARDED_ARGV_PREFIX
+        or attestation.closure_manifest is None
+        or guard.mode != 0o500
+        or guard.source != _NATIVE_GUARD_SOURCE
+        or guard.cargo_manifest != _NATIVE_GUARD_CARGO_MANIFEST
+        or guard.cargo_lock != _NATIVE_GUARD_CARGO_LOCK
+        or isinstance(guard.binary_size, bool)
+        or not isinstance(guard.binary_size, int)
+        or guard.binary_size <= 0
+        or any(
+            not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
+            for digest in digest_fields
+        )
+        or not isinstance(guard.cargo_identity, str)
+        or _NATIVE_CARGO_IDENTITY.fullmatch(guard.cargo_identity) is None
+        or not isinstance(guard.rustc_identity, str)
+        or _NATIVE_RUSTC_IDENTITY.fullmatch(guard.rustc_identity) is None
+        or guard.target_triple != "x86_64-unknown-linux-gnu"
+    ):
+        _blocked("ENGINE_CLOSURE_INVALID", "native entry guard contract is invalid")
+    matching_guard = [
+        mount for mount in attestation.mounts if mount.target == guard.target
+    ]
+    matching_python = [
+        mount
+        for mount in attestation.mounts
+        if mount.target == guard.guarded_executable
+    ]
+    if (
+        len(matching_guard) != 1
+        or matching_guard[0].mode != guard.mode
+        or matching_guard[0].size != guard.binary_size
+        or matching_guard[0].sha256 != guard.binary_sha256
+        or len(matching_python) != 1
+        or matching_python[0].mode != 0o500
+        or not matching_python[0].mode & 0o111
+        or guard.guarded_executable == guard.target
+    ):
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "native entry guard executable binding is invalid",
+        )
+
+
 def _closure_target_directories(
     mounts: tuple[ReadOnlyClosureMount, ...],
 ) -> tuple[PurePosixPath, ...]:
@@ -636,6 +751,7 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
             _blocked("ENGINE_CLOSURE_STALE", "closure file identity changed")
         _verified_closure_file(mount)
         targets.add(mount.target)
+    _validate_native_entry_guard(attestation)
     _validate_entrypoint(attestation)
     return attestation
 
@@ -1218,6 +1334,7 @@ __all__ = [
     "EngineSpawnLineage",
     "EngineSpawnProvider",
     "HashBoundEngineInput",
+    "NativeEntryGuardAttestation",
     "OsSandboxProof",
     "PreparedEngineSpawn",
     "ReadOnlyClosureMount",

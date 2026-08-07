@@ -24,6 +24,27 @@ from services.job_worker.nautilus_closure import (
 
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
 REPOSITORY_SOURCE_COMMIT = "4648ecaf6169b0886daf47fe27467b0292153cbb"
+NATIVE_GUARD_VALUE = b"reviewed-native-entry-guard-v1"
+
+
+def _native_guard_record() -> dict[str, object]:
+    return {
+        "binary_sha256": hashlib.sha256(NATIVE_GUARD_VALUE).hexdigest(),
+        "binary_size": len(NATIVE_GUARD_VALUE),
+        "cargo_identity": "cargo 1.95.0 (fixture)",
+        "cargo_lock": "engines/nautilus/native_entry_guard/Cargo.lock",
+        "cargo_lock_sha256": "1" * 64,
+        "cargo_manifest": "engines/nautilus/native_entry_guard/Cargo.toml",
+        "cargo_manifest_sha256": "2" * 64,
+        "llvm_toolchain_policy_sha256": "3" * 64,
+        "mode": "0500",
+        "rust_toolchain_policy_sha256": "4" * 64,
+        "rustc_identity": "rustc 1.95.0 (fixture)",
+        "source": "engines/nautilus/native_entry_guard/src/main.rs",
+        "source_sha256": "5" * 64,
+        "target": "/engine/bin/nautilus-entry-guard",
+        "target_triple": "x86_64-unknown-linux-gnu",
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -46,7 +67,11 @@ def _seal(root: Path) -> None:
     for directory, child_directories, files in os.walk(root, topdown=False):
         current = Path(directory)
         for name in files:
-            (current / name).chmod(0o500 if name == "python3.12" else 0o400)
+            (current / name).chmod(
+                0o500
+                if name in {"python3.12", "nautilus-entry-guard"}
+                else 0o400
+            )
         for name in child_directories:
             (current / name).chmod(0o500)
     root.chmod(0o500)
@@ -82,6 +107,7 @@ def _build_closure_config(
     semantic_profile: str | None = None,
     source_commit: str = SOURCE_COMMIT,
     engine_upstream_commit: str | None = None,
+    native_guard: bool = False,
 ):
 
     artifacts = tmp_path / "artifacts"
@@ -116,6 +142,18 @@ def _build_closure_config(
         "/engine/launcher/nautilus_backtest.py",
         "/engine/lib/python3.12/encodings/__init__.py",
     ]
+    native_guard_record: dict[str, object] | None = None
+    if native_guard:
+        targets[0] = "/usr/bin/python3.12"
+        guard_file = _write_file(
+            runtime,
+            runtime / "files/engine/bin/nautilus-entry-guard",
+            NATIVE_GUARD_VALUE,
+            0o500,
+        )
+        files.append(guard_file)
+        targets.append("/engine/bin/nautilus-entry-guard")
+        native_guard_record = _native_guard_record()
     if engine_upstream_commit is not None:
         files.append(
             _write_file(
@@ -144,9 +182,13 @@ def _build_closure_config(
         ),
     }
     argv_prefix, validator_id = profiles[profile]
+    if native_guard:
+        argv_prefix = ["/usr/bin/python3.12", *argv_prefix]
     manifest = {
         "schema_version": (
-            4
+            5
+            if native_guard
+            else 4
             if engine_upstream_commit is not None
             else 3 if semantic_profile is not None else 2
         ),
@@ -156,7 +198,11 @@ def _build_closure_config(
         "python_identity": "CPython 3.12.3",
         "source_commit": source_commit,
         "artifact_manifest_sha256": _sha256(artifact_manifest),
-        "entrypoint": "/engine/bin/python3.12",
+        "entrypoint": (
+            "/engine/bin/nautilus-entry-guard"
+            if native_guard
+            else "/engine/bin/python3.12"
+        ),
         "argv_prefix": argv_prefix,
         "timeout_seconds": 120,
         "result_validator_id": validator_id,
@@ -166,6 +212,8 @@ def _build_closure_config(
         manifest["semantic_profile"] = semantic_profile
     if engine_upstream_commit is not None:
         manifest["engine_upstream_commit"] = engine_upstream_commit
+    if native_guard_record is not None:
+        manifest["native_entry_guard"] = native_guard_record
     (runtime / "closure-manifest.json").write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")), encoding="utf-8"
     )
@@ -242,6 +290,7 @@ def test_attestor_separates_repository_and_engine_upstream_identities_before_san
             semantic_profile="nautilus-execution-simulation-v2",
             source_commit=REPOSITORY_SOURCE_COMMIT,
             engine_upstream_commit=SOURCE_COMMIT,
+            native_guard=True,
         )
 
         closure = attest_nautilus_backtest_closure(
@@ -259,6 +308,7 @@ def test_attestor_separates_repository_and_engine_upstream_identities_before_san
             semantic_profile="nautilus-execution-simulation-v2",
             source_commit=SOURCE_COMMIT,
             engine_upstream_commit=SOURCE_COMMIT,
+            native_guard=True,
         )
         with pytest.raises(EngineSpawnError, match="closure manifest identity"):
             attest_nautilus_backtest_closure(
@@ -274,6 +324,7 @@ def test_attestor_separates_repository_and_engine_upstream_identities_before_san
             semantic_profile="nautilus-execution-simulation-v2",
             source_commit=REPOSITORY_SOURCE_COMMIT,
             engine_upstream_commit="f" * 40,
+            native_guard=True,
         )
         with pytest.raises(EngineSpawnError, match="artifact manifest identity"):
             attest_nautilus_backtest_closure(
@@ -290,10 +341,11 @@ def test_attestor_separates_repository_and_engine_upstream_identities_before_san
         shutil.rmtree(base)
 
 
-def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
+def test_v5_closure_digest_binds_engine_upstream_identity() -> None:
     common = {
-        "schema_version": 4,
+        "schema_version": 5,
         "argv_prefix": [
+            "/usr/bin/python3.12",
             "-I",
             "-S",
             "/engine/launcher/nautilus_backtest.py",
@@ -302,6 +354,7 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
         ],
         "result_validator_id": "nautilus-backtest-simulation-result-v1",
         "source_commit": REPOSITORY_SOURCE_COMMIT,
+        "native_entry_guard": _native_guard_record(),
     }
     first_manifest = ReadOnlyClosureMount(
         source=Path("/sealed/closure-manifest.json"),
@@ -317,7 +370,7 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
         profile="execution-simulation",
         semantic_profile="nautilus-execution-simulation-v2",
         mounts=(),
-        entrypoint=PurePosixPath("/engine/bin/python3.12"),
+        entrypoint=PurePosixPath("/engine/bin/nautilus-entry-guard"),
         timeout=120,
         closure_manifest_sidecar=first_manifest,
     )
@@ -327,12 +380,68 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
         profile="execution-simulation",
         semantic_profile="nautilus-execution-simulation-v2",
         mounts=(),
-        entrypoint=PurePosixPath("/engine/bin/python3.12"),
+        entrypoint=PurePosixPath("/engine/bin/nautilus-entry-guard"),
         timeout=120,
         closure_manifest_sidecar=first_manifest,
     )
 
     assert first != second
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("source_sha256", "0" * 64),
+        ("binary_sha256", "6" * 64),
+        ("cargo_lock_sha256", "7" * 64),
+        ("mode", "0400"),
+    ),
+)
+def test_v5_closure_digest_binds_native_guard_provenance(
+    field: str,
+    value: object,
+) -> None:
+    native_guard = _native_guard_record()
+    common = {
+        "schema_version": 5,
+        "argv_prefix": [
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ],
+        "result_validator_id": "nautilus-backtest-simulation-result-v1",
+        "source_commit": REPOSITORY_SOURCE_COMMIT,
+        "engine_upstream_commit": SOURCE_COMMIT,
+        "native_entry_guard": native_guard,
+    }
+    sidecar = ReadOnlyClosureMount(
+        source=Path("/sealed/closure-manifest.json"),
+        target=PurePosixPath("/engine/closure-manifest.json"),
+        identity=(1, 2),
+        size=101,
+        mode=0o400,
+        sha256="1" * 64,
+    )
+
+    def closure_digest(manifest: dict[str, object]) -> str:
+        return nautilus_closure_module._closure_digest(
+            closure_manifest=manifest,
+            artifact_digest="a" * 64,
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            mounts=(),
+            entrypoint=PurePosixPath("/engine/bin/nautilus-entry-guard"),
+            timeout=120,
+            closure_manifest_sidecar=sidecar,
+        )
+
+    drifted_guard = {**native_guard, field: value}
+    assert closure_digest(common) != closure_digest(
+        {**common, "native_entry_guard": drifted_guard}
+    )
 
 
 @pytest.mark.parametrize(
@@ -345,13 +454,14 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
         ("target", PurePosixPath("/engine/other-manifest.json")),
     ),
 )
-def test_v4_closure_digest_binds_each_manifest_sidecar_field_independently(
+def test_v5_closure_digest_binds_each_manifest_sidecar_field_independently(
     field: str,
     value: object,
 ) -> None:
     common = {
-        "schema_version": 4,
+        "schema_version": 5,
         "argv_prefix": [
+            "/usr/bin/python3.12",
             "-I",
             "-S",
             "/engine/launcher/nautilus_backtest.py",
@@ -361,6 +471,7 @@ def test_v4_closure_digest_binds_each_manifest_sidecar_field_independently(
         "result_validator_id": "nautilus-backtest-simulation-result-v1",
         "source_commit": REPOSITORY_SOURCE_COMMIT,
         "engine_upstream_commit": SOURCE_COMMIT,
+        "native_entry_guard": _native_guard_record(),
     }
     first_manifest = ReadOnlyClosureMount(
         source=Path("/sealed/closure-manifest.json"),
@@ -378,7 +489,7 @@ def test_v4_closure_digest_binds_each_manifest_sidecar_field_independently(
             profile="execution-simulation",
             semantic_profile="nautilus-execution-simulation-v2",
             mounts=(),
-            entrypoint=PurePosixPath("/engine/bin/python3.12"),
+            entrypoint=PurePosixPath("/engine/bin/nautilus-entry-guard"),
             timeout=120,
             closure_manifest_sidecar=sidecar,
         )
@@ -392,7 +503,7 @@ def test_v4_closure_digest_binds_each_manifest_sidecar_field_independently(
     ("schema_version", "semantic_profile"),
     ((1, None), (2, None), (3, "nautilus-execution-simulation-v2")),
 )
-def test_v1_v3_closure_digests_ignore_optional_v4_manifest_sidecar(
+def test_v1_v3_closure_digests_ignore_optional_v5_manifest_sidecar(
     schema_version: int,
     semantic_profile: str | None,
 ) -> None:
@@ -429,7 +540,7 @@ def test_v1_v3_closure_digests_ignore_optional_v4_manifest_sidecar(
     assert len(digests) == 1
 
 
-def test_v4_attestor_binds_manifest_as_a_separate_fixed_sidecar(
+def test_v5_attestor_binds_manifest_as_a_separate_fixed_sidecar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -444,7 +555,7 @@ def test_v4_attestor_binds_manifest_as_a_separate_fixed_sidecar(
             capabilities=("--perms", "--ro-bind-data"),
         ),
     )
-    base = Path(tempfile.mkdtemp(prefix="nautilus-v4-manifest-sidecar-", dir="/tmp"))
+    base = Path(tempfile.mkdtemp(prefix="nautilus-v5-manifest-sidecar-", dir="/tmp"))
     try:
         config = _build_closure_config(
             base,
@@ -453,6 +564,7 @@ def test_v4_attestor_binds_manifest_as_a_separate_fixed_sidecar(
             semantic_profile="nautilus-execution-simulation-v2",
             source_commit=REPOSITORY_SOURCE_COMMIT,
             engine_upstream_commit=SOURCE_COMMIT,
+            native_guard=True,
         )
 
         closure = attest_nautilus_backtest_closure(
@@ -487,8 +599,172 @@ def test_v4_attestor_binds_manifest_as_a_separate_fixed_sidecar(
         shutil.rmtree(base)
 
 
-def test_v3_attestor_preserves_legacy_closure_without_manifest_sidecar(
+def _reviewed_sandbox(path: Path) -> OsSandboxProof:
+    return OsSandboxProof(
+        executable=path,
+        identity=(1, 1),
+        executable_sha256="b" * 64,
+        profile_sha256="c" * 64,
+        version="bubblewrap 0.9.0",
+        capabilities=("--perms", "--ro-bind-data"),
+    )
+
+
+def _remove_test_tree(base: Path) -> None:
+    for directory, child_directories, file_names in os.walk(base, topdown=False):
+        current = Path(directory)
+        for name in file_names:
+            (current / name).chmod(0o600)
+        for name in child_directories:
+            (current / name).chmod(0o700)
+        current.chmod(0o700)
+    shutil.rmtree(base)
+
+
+def test_v5_attestor_requires_native_guard_before_sealed_cpython(
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        nautilus_closure_module, "_sandbox_proof", _reviewed_sandbox
+    )
+    base = Path(tempfile.mkdtemp(prefix="nautilus-v5-native-guard-", dir="/tmp"))
+    try:
+        config = _build_closure_config(
+            base,
+            base / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+            native_guard=True,
+        )
+
+        closure = attest_nautilus_backtest_closure(
+            config, expected_profile="execution-simulation"
+        )
+
+        assert closure.entrypoint == PurePosixPath(
+            "/engine/bin/nautilus-entry-guard"
+        )
+        assert closure.argv_prefix == (
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        )
+        assert closure.entrypoint != PurePosixPath(closure.argv_prefix[0])
+        guard = closure.native_entry_guard
+        assert guard is not None
+        assert guard.target == closure.entrypoint
+        assert guard.guarded_executable == PurePosixPath("/usr/bin/python3.12")
+        assert guard.mode == 0o500
+        assert guard.binary_sha256 == next(
+            mount.sha256
+            for mount in closure.mounts
+            if mount.target == closure.entrypoint
+        )
+    finally:
+        _remove_test_tree(base)
+
+
+def test_v4_direct_python_candidate_is_rejected_while_v1_v3_remain_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        nautilus_closure_module, "_sandbox_proof", _reviewed_sandbox
+    )
+    base = Path(tempfile.mkdtemp(prefix="nautilus-v4-direct-python-", dir="/tmp"))
+    try:
+        config = _build_closure_config(
+            base,
+            base / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+        )
+
+        with pytest.raises(EngineSpawnError, match="native|schema|fields"):
+            attest_nautilus_backtest_closure(
+                config, expected_profile="execution-simulation"
+            )
+    finally:
+        _remove_test_tree(base)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "direct-python-entry",
+        "missing-python-argv",
+        "foreign-executable",
+        "binary-hash",
+        "binary-mode",
+        "source-path",
+        "source-hash",
+        "missing-native-guard",
+    ),
+)
+def test_v5_attestor_rejects_direct_python_or_native_guard_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    monkeypatch.setattr(
+        nautilus_closure_module, "_sandbox_proof", _reviewed_sandbox
+    )
+    base = Path(tempfile.mkdtemp(prefix="nautilus-v5-native-drift-", dir="/tmp"))
+    try:
+        config = _build_closure_config(
+            base,
+            base / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+            native_guard=True,
+        )
+        manifest_path = config.runtime_root / "closure-manifest.json"
+        config.runtime_root.chmod(0o700)
+        manifest_path.chmod(0o600)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        guard = manifest["native_entry_guard"]
+        if mutation == "direct-python-entry":
+            manifest["entrypoint"] = "/usr/bin/python3.12"
+        elif mutation == "missing-python-argv":
+            manifest["argv_prefix"] = manifest["argv_prefix"][1:]
+        elif mutation == "foreign-executable":
+            manifest["argv_prefix"][0] = "/engine/bin/foreign-python"
+        elif mutation == "binary-hash":
+            guard["binary_sha256"] = "0" * 64
+        elif mutation == "binary-mode":
+            guard["mode"] = "0400"
+        elif mutation == "source-path":
+            guard["source"] = "engines/nautilus/native_entry_guard/src/foreign.rs"
+        elif mutation == "source-hash":
+            guard["source_sha256"] = "not-a-sha256"
+        else:
+            del manifest["native_entry_guard"]
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        manifest_path.chmod(0o400)
+        config.runtime_root.chmod(0o500)
+
+        with pytest.raises(EngineSpawnError, match="native|entrypoint|identity|fields"):
+            attest_nautilus_backtest_closure(
+                config, expected_profile="execution-simulation"
+            )
+    finally:
+        _remove_test_tree(base)
+
+
+@pytest.mark.parametrize("schema_version", (1, 2, 3))
+def test_v1_v3_attestor_preserves_legacy_direct_cpython_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+    schema_version: int,
 ) -> None:
     monkeypatch.setattr(
         nautilus_closure_module,
@@ -502,20 +778,44 @@ def test_v3_attestor_preserves_legacy_closure_without_manifest_sidecar(
             capabilities=("--perms", "--ro-bind-data"),
         ),
     )
-    base = Path(tempfile.mkdtemp(prefix="nautilus-v3-manifest-compat-", dir="/tmp"))
+    base = Path(
+        tempfile.mkdtemp(
+            prefix=f"nautilus-v{schema_version}-manifest-compat-", dir="/tmp"
+        )
+    )
     try:
+        profile = "execution-simulation" if schema_version == 3 else "zero-order"
         config = _build_closure_config(
             base,
             base / "not-invoked-bwrap",
-            profile="execution-simulation",
-            semantic_profile="nautilus-execution-simulation-v2",
+            profile=profile,
+            semantic_profile=(
+                "nautilus-execution-simulation-v2"
+                if schema_version == 3
+                else None
+            ),
         )
+        if schema_version == 1:
+            manifest_path = config.runtime_root / "closure-manifest.json"
+            config.runtime_root.chmod(0o700)
+            manifest_path.chmod(0o600)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["schema_version"] = 1
+            del manifest["profile"]
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            manifest_path.chmod(0o400)
+            config.runtime_root.chmod(0o500)
 
         closure = attest_nautilus_backtest_closure(
-            config, expected_profile="execution-simulation"
+            config, expected_profile=profile
         )
 
         assert closure.closure_manifest is None
+        assert closure.native_entry_guard is None
+        assert closure.entrypoint == PurePosixPath("/engine/bin/python3.12")
     finally:
         for directory, child_directories, file_names in os.walk(base, topdown=False):
             current = Path(directory)

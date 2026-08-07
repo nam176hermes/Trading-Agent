@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 
 from .engine_spawn import (
     CompleteEngineClosureAttestation,
+    NativeEntryGuardAttestation,
     OsSandboxProof,
     ReadOnlyClosureMount,
 )
@@ -75,7 +76,39 @@ _MANIFEST_FIELDS_V1 = {
 _MANIFEST_FIELDS_V2 = {*_MANIFEST_FIELDS_V1, "profile"}
 _MANIFEST_FIELDS_V3 = {*_MANIFEST_FIELDS_V2, "semantic_profile"}
 _MANIFEST_FIELDS_V4 = {*_MANIFEST_FIELDS_V3, "engine_upstream_commit"}
+_MANIFEST_FIELDS_V5 = {*_MANIFEST_FIELDS_V4, "native_entry_guard"}
 _FILE_FIELDS = {"path", "target", "sha256", "size", "mode"}
+_NATIVE_GUARD_FIELDS = {
+    "binary_sha256",
+    "binary_size",
+    "cargo_identity",
+    "cargo_lock",
+    "cargo_lock_sha256",
+    "cargo_manifest",
+    "cargo_manifest_sha256",
+    "llvm_toolchain_policy_sha256",
+    "mode",
+    "rust_toolchain_policy_sha256",
+    "rustc_identity",
+    "source",
+    "source_sha256",
+    "target",
+    "target_triple",
+}
+_NATIVE_GUARD_TARGET = PurePosixPath("/engine/bin/nautilus-entry-guard")
+_NATIVE_GUARD_SOURCE = "engines/nautilus/native_entry_guard/src/main.rs"
+_NATIVE_GUARD_CARGO_MANIFEST = "engines/nautilus/native_entry_guard/Cargo.toml"
+_NATIVE_GUARD_CARGO_LOCK = "engines/nautilus/native_entry_guard/Cargo.lock"
+_NATIVE_GUARDED_ARGV_PREFIX = (
+    "/usr/bin/python3.12",
+    "-I",
+    "-S",
+    "/engine/launcher/nautilus_backtest.py",
+    "--profile",
+    "execution-simulation",
+)
+_RUST_IDENTITY = re.compile(r"^rustc 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII)
+_CARGO_IDENTITY = re.compile(r"^cargo 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII)
 _SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
 
 
@@ -311,14 +344,14 @@ def _closure_digest(
     }
     if semantic_profile is not None:
         digest_document["semantic_profile"] = semantic_profile
-    if closure_manifest["schema_version"] == 4:
+    if closure_manifest["schema_version"] == 5:
         digest_document["engine_upstream_commit"] = closure_manifest[
             "engine_upstream_commit"
         ]
         if closure_manifest_sidecar is None:
             _blocked(
                 "ENGINE_CLOSURE_INVALID",
-                "schema-v4 closure manifest sidecar is missing",
+                "closure manifest sidecar is missing",
             )
         digest_document["closure_manifest"] = {
             "identity": list(closure_manifest_sidecar.identity),
@@ -327,6 +360,9 @@ def _closure_digest(
             "size": closure_manifest_sidecar.size,
             "target": str(closure_manifest_sidecar.target),
         }
+        digest_document["native_entry_guard"] = closure_manifest[
+            "native_entry_guard"
+        ]
     return hashlib.sha256(_canonical_json_bytes(digest_document)).hexdigest()
 
 
@@ -345,6 +381,98 @@ def _closure_manifest_sidecar(path: Path) -> ReadOnlyClosureMount:
         size=observed.st_size,
         mode=mode,
         sha256=_sha256_path(path),
+    )
+
+
+def _native_entry_guard(
+    value: object,
+    *,
+    mounts: tuple[ReadOnlyClosureMount, ...],
+    entrypoint: PurePosixPath,
+    argv_prefix: tuple[str, ...],
+) -> NativeEntryGuardAttestation:
+    if not isinstance(value, dict) or set(value) != _NATIVE_GUARD_FIELDS:
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "native entry guard fields are missing or unknown",
+        )
+    for field in (
+        "binary_sha256",
+        "cargo_lock_sha256",
+        "cargo_manifest_sha256",
+        "llvm_toolchain_policy_sha256",
+        "rust_toolchain_policy_sha256",
+        "source_sha256",
+    ):
+        if not isinstance(value[field], str) or _SHA256.fullmatch(value[field]) is None:
+            _blocked("ENGINE_CLOSURE_INVALID", "native entry guard digest is invalid")
+    binary_size = value["binary_size"]
+    if (
+        isinstance(binary_size, bool)
+        or not isinstance(binary_size, int)
+        or binary_size <= 0
+        or value["mode"] != "0500"
+        or value["source"] != _NATIVE_GUARD_SOURCE
+        or value["cargo_manifest"] != _NATIVE_GUARD_CARGO_MANIFEST
+        or value["cargo_lock"] != _NATIVE_GUARD_CARGO_LOCK
+        or value["target_triple"] != "x86_64-unknown-linux-gnu"
+        or not isinstance(value["cargo_identity"], str)
+        or _CARGO_IDENTITY.fullmatch(value["cargo_identity"]) is None
+        or not isinstance(value["rustc_identity"], str)
+        or _RUST_IDENTITY.fullmatch(value["rustc_identity"]) is None
+    ):
+        _blocked("ENGINE_CLOSURE_INVALID", "native entry guard identity is invalid")
+    target = _safe_target(value["target"])
+    if (
+        target != _NATIVE_GUARD_TARGET
+        or entrypoint != target
+        or argv_prefix != _NATIVE_GUARDED_ARGV_PREFIX
+    ):
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "native entry guard argv or entrypoint is invalid",
+        )
+    matching_guard = [mount for mount in mounts if mount.target == target]
+    if (
+        len(matching_guard) != 1
+        or matching_guard[0].mode != 0o500
+        or matching_guard[0].size != binary_size
+        or matching_guard[0].sha256 != value["binary_sha256"]
+    ):
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "native entry guard binary identity drifted",
+        )
+    guarded_executable = _safe_target(argv_prefix[0])
+    matching_python = [
+        mount for mount in mounts if mount.target == guarded_executable
+    ]
+    if (
+        guarded_executable == target
+        or len(matching_python) != 1
+        or matching_python[0].mode != 0o500
+    ):
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "guarded CPython is not one exact executable closure file",
+        )
+    return NativeEntryGuardAttestation(
+        target=target,
+        guarded_executable=guarded_executable,
+        binary_sha256=value["binary_sha256"],
+        binary_size=binary_size,
+        mode=0o500,
+        source=value["source"],
+        source_sha256=value["source_sha256"],
+        cargo_manifest=value["cargo_manifest"],
+        cargo_manifest_sha256=value["cargo_manifest_sha256"],
+        cargo_lock=value["cargo_lock"],
+        cargo_lock_sha256=value["cargo_lock_sha256"],
+        cargo_identity=value["cargo_identity"],
+        rustc_identity=value["rustc_identity"],
+        rust_toolchain_policy_sha256=value["rust_toolchain_policy_sha256"],
+        llvm_toolchain_policy_sha256=value["llvm_toolchain_policy_sha256"],
+        target_triple=value["target_triple"],
     )
 
 
@@ -378,7 +506,7 @@ def attest_nautilus_backtest_closure(
     elif schema_version == 3 and set(closure_manifest) == _MANIFEST_FIELDS_V3:
         profile = closure_manifest.get("profile")
         semantic_profile = closure_manifest.get("semantic_profile")
-    elif schema_version == 4 and set(closure_manifest) == _MANIFEST_FIELDS_V4:
+    elif schema_version == 5 and set(closure_manifest) == _MANIFEST_FIELDS_V5:
         profile = closure_manifest.get("profile")
         semantic_profile = closure_manifest.get("semantic_profile")
     else:
@@ -389,7 +517,7 @@ def attest_nautilus_backtest_closure(
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     if schema_version == 3 and profile != "execution-simulation":
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
-    if schema_version == 4 and profile != "execution-simulation":
+    if schema_version == 5 and profile != "execution-simulation":
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     expected_identity = _PROFILES[profile]
     if (
@@ -400,7 +528,7 @@ def attest_nautilus_backtest_closure(
         or not isinstance(closure_manifest["source_commit"], str)
         or _SOURCE_COMMIT.fullmatch(closure_manifest["source_commit"]) is None
         or (
-            schema_version == 4
+            schema_version == 5
             and (
                 not isinstance(closure_manifest["engine_upstream_commit"], str)
                 or _SOURCE_COMMIT.fullmatch(
@@ -414,7 +542,11 @@ def attest_nautilus_backtest_closure(
         or closure_manifest["result_validator_id"]
         != expected_identity["result_validator_id"]
         or tuple(closure_manifest.get("argv_prefix", ()))
-        != expected_identity["argv_prefix"]
+        != (
+            _NATIVE_GUARDED_ARGV_PREFIX
+            if schema_version == 5
+            else expected_identity["argv_prefix"]
+        )
     ):
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest identity is invalid")
     artifact_digest = closure_manifest["artifact_manifest_sha256"]
@@ -427,7 +559,7 @@ def attest_nautilus_backtest_closure(
         or artifact_manifest.get("upstream_commit")
         != (
             closure_manifest["engine_upstream_commit"]
-            if schema_version == 4
+            if schema_version == 5
             else closure_manifest["source_commit"]
         )
     ):
@@ -435,7 +567,7 @@ def attest_nautilus_backtest_closure(
     mounts = _manifest_files(config.runtime_root, closure_manifest["files"])
     closure_manifest_sidecar = (
         _closure_manifest_sidecar(config.runtime_root / _MANIFEST_NAME)
-        if schema_version == 4
+        if schema_version == 5
         else None
     )
     if closure_manifest_sidecar is not None and any(
@@ -459,6 +591,16 @@ def attest_nautilus_backtest_closure(
         or any(not isinstance(argument, str) or not argument or "\x00" in argument for argument in argv_value)
     ):
         _blocked("ENGINE_CLOSURE_INVALID", "closure argv prefix is invalid")
+    native_entry_guard = (
+        _native_entry_guard(
+            closure_manifest["native_entry_guard"],
+            mounts=mounts,
+            entrypoint=entrypoint,
+            argv_prefix=tuple(argv_value),
+        )
+        if schema_version == 5
+        else None
+    )
     timeout = closure_manifest["timeout_seconds"]
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 0 < timeout <= 3_600:
         _blocked("ENGINE_CLOSURE_INVALID", "closure timeout is invalid")
@@ -483,6 +625,7 @@ def attest_nautilus_backtest_closure(
         sandbox=_sandbox_proof(config.sandbox_executable),
         semantic_profile=semantic_profile,
         closure_manifest=closure_manifest_sidecar,
+        native_entry_guard=native_entry_guard,
     )
 
 

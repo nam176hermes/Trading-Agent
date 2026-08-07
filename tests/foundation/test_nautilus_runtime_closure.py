@@ -29,6 +29,12 @@ ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
 STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
 CHECKED_IN_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
+PRIVATE_CARGO = Path(
+    "/home/thenam176/.cache/trading-agent/nautilus/rust-1.95.0/bin/cargo"
+)
+PRIVATE_LLVM = Path(
+    "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
+)
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
 REPOSITORY_SOURCE_COMMIT = "4648ecaf6169b0886daf47fe27467b0292153cbb"
 
@@ -154,6 +160,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
 
         policy = {
             "argv_prefix": [
+                "/usr/bin/python3.12",
                 "-I",
                 "-S",
                 "/engine/launcher/nautilus_backtest.py",
@@ -173,13 +180,16 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
             "engine_version": "1.227.0",
             "engine_wheel_mode": "0400",
             "engine_wheel_target": f"/engine/wheels/{wheel_name}",
-            "entrypoint": "/usr/bin/python3.12",
+            "entrypoint": "/engine/bin/nautilus-entry-guard",
             "launcher_inventory": [
                 {"mode": "0400", "sha256": _sha256(LAUNCHER), "source": "engines/nautilus/launcher/nautilus_backtest.py", "target": "/engine/launcher/nautilus_backtest.py"},
                 {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
             ],
+            "native_entry_guard": json.loads(
+                CHECKED_IN_POLICY.read_text(encoding="ascii")
+            )["native_entry_guard"],
             "profile": "execution-simulation",
-            "profile_manifest_schema_version": 4,
+            "profile_manifest_schema_version": 5,
             "python_identity": "CPython 3.12.3",
             "result_validator_id": "nautilus-backtest-simulation-result-v1",
             "schema_version": 1,
@@ -190,7 +200,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
         policy_path = root / "runtime-closure-policy.json"
         policy_path.write_bytes(_canonical(policy) + b"\n")
         policy_path.chmod(0o400)
-        destination = root / "runtime-closure-v4-simulation"
+        destination = root / "runtime-closure-v5-simulation"
         yield root, base, artifacts, policy_path, destination
     finally:
         for directory, child_directories, files in os.walk(root, topdown=False):
@@ -215,6 +225,8 @@ def _materialize(inputs: tuple[Path, Path, Path, Path, Path]) -> Path:
         artifact_directory=artifacts,
         destination=destination,
         sandbox_executable=Path("/usr/bin/bwrap"),
+        cargo=PRIVATE_CARGO,
+        llvm_toolchain=PRIVATE_LLVM,
     )
 
 
@@ -248,6 +260,16 @@ def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None
         {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
     ]
     assert policy["semantic_profile"] == "nautilus-execution-simulation-v2"
+    guard = policy["native_entry_guard"]
+    assert guard["source_sha256"] == _sha256(
+        ROOT / guard["source"]
+    )
+    assert guard["cargo_manifest_sha256"] == _sha256(
+        ROOT / guard["cargo_manifest"]
+    )
+    assert guard["cargo_lock_sha256"] == _sha256(
+        ROOT / guard["cargo_lock"]
+    )
 
 
 def test_checked_in_policy_binds_the_reviewed_final_source_and_launcher_inventory() -> None:
@@ -308,6 +330,7 @@ def test_checked_in_policy_separates_repository_and_sealed_engine_identities() -
 def test_materializer_output_manifest_carries_split_engine_identity() -> None:
     policy = {
         "argv_prefix": [
+            "/usr/bin/python3.12",
             "-I",
             "-S",
             "/engine/launcher/nautilus_backtest.py",
@@ -318,9 +341,12 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
         "engine_name": "nautilus_trader",
         "engine_upstream_commit": SOURCE_COMMIT,
         "engine_version": "1.227.0",
-        "entrypoint": "/usr/bin/python3.12",
+        "entrypoint": "/engine/bin/nautilus-entry-guard",
+        "native_entry_guard": json.loads(
+            CHECKED_IN_POLICY.read_text(encoding="ascii")
+        )["native_entry_guard"],
         "profile": "execution-simulation",
-        "profile_manifest_schema_version": 4,
+        "profile_manifest_schema_version": 5,
         "python_identity": "CPython 3.12.3",
         "result_validator_id": "nautilus-backtest-simulation-result-v1",
         "semantic_profile": "nautilus-execution-simulation-v2",
@@ -330,9 +356,19 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
 
     manifest = materializer_module._build_output_manifest(policy, [])
 
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
     assert manifest["source_commit"] == REPOSITORY_SOURCE_COMMIT
     assert manifest["engine_upstream_commit"] == SOURCE_COMMIT
+    native_guard = manifest["native_entry_guard"]
+    with pytest.raises(
+        RuntimeClosureMaterializationError,
+        match="output provenance drifted",
+    ):
+        materializer_module._build_output_manifest(
+            policy,
+            [],
+            native_entry_guard={**native_guard, "source_sha256": "0" * 64},
+        )
 
 
 def test_materializer_policy_rejects_identical_repository_and_engine_identities(
@@ -346,6 +382,32 @@ def test_materializer_policy_rejects_identical_repository_and_engine_identities(
     with pytest.raises(
         RuntimeClosureMaterializationError, match="profile or identity"
     ):
+        materializer_module._load_policy(policy_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("source_sha256", "0" * 64, "source digest drifted"),
+        ("cargo_manifest_sha256", "0" * 64, "cargo_manifest digest drifted"),
+        ("cargo_lock_sha256", "0" * 64, "cargo_lock digest drifted"),
+        ("rust_toolchain_policy_sha256", "0" * 64, "toolchain policy digest"),
+        ("llvm_toolchain_policy_sha256", "0" * 64, "toolchain policy digest"),
+        ("mode", "0400", "policy identity"),
+    ),
+)
+def test_materializer_policy_rejects_native_guard_source_or_build_input_drift(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    policy["native_entry_guard"][field] = value
+    policy_path = tmp_path / "runtime-closure-policy.json"
+    policy_path.write_bytes(_canonical(policy) + b"\n")
+
+    with pytest.raises(RuntimeClosureMaterializationError, match=message):
         materializer_module._load_policy(policy_path)
 
 
@@ -379,7 +441,10 @@ def test_materializer_publishes_a_new_attested_simulation_closure_atomically(
     assert (base / "closure-manifest.json").read_bytes() == base_manifest_before
     manifest = json.loads((published / "closure-manifest.json").read_text())
     assert manifest["profile"] == "execution-simulation"
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
+    assert manifest["entrypoint"] == "/engine/bin/nautilus-entry-guard"
+    assert manifest["argv_prefix"][0] == "/usr/bin/python3.12"
+    assert manifest["native_entry_guard"]["target"] == manifest["entrypoint"]
     assert manifest["semantic_profile"] == "nautilus-execution-simulation-v2"
     assert manifest["argv_prefix"][-2:] == ["--profile", "execution-simulation"]
     assert manifest["artifact_manifest_sha256"] == _sha256(
@@ -555,6 +620,8 @@ def test_materializer_rejects_a_preexisting_destination_without_changing_it(
             artifact_directory=artifacts,
             destination=destination,
             sandbox_executable=Path("/usr/bin/bwrap"),
+            cargo=PRIVATE_CARGO,
+            llvm_toolchain=PRIVATE_LLVM,
         )
 
     assert marker.read_text(encoding="ascii") == "retain"

@@ -1,5 +1,6 @@
 {
   "argv_prefix": [
+    "/usr/bin/python3.12",
     "-I",
     "-S",
     "/engine/launcher/nautilus_backtest.py",
@@ -15,7 +16,7 @@
   "engine_version": "1.227.0",
   "engine_wheel_mode": "0400",
   "engine_wheel_target": "/engine/wheels/nautilus_trader-1.227.0-cp312-cp312-manylinux_2_39_x86_64.whl",
-  "entrypoint": "/usr/bin/python3.12",
+  "entrypoint": "/engine/bin/nautilus-entry-guard",
   "launcher_inventory": [
     {
       "mode": "0400",
@@ -30,8 +31,25 @@
       "target": "/engine/launcher/target_portfolio_strategy.py"
     }
   ],
+  "native_entry_guard": {
+    "binary_sha256": "211d965b9041892ff70692ed16e092d3100052037033aa67378716a6ae47a682",
+    "binary_size": 289400,
+    "cargo_identity": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "cargo_lock": "engines/nautilus/native_entry_guard/Cargo.lock",
+    "cargo_lock_sha256": "ce3f0c6900a6ad4c4f8cb04b2624d76bde6a3424f1a22e19aecf62d1347e12a7",
+    "cargo_manifest": "engines/nautilus/native_entry_guard/Cargo.toml",
+    "cargo_manifest_sha256": "85f5df996a40d673f2a86e4f1e1c0248c1627dfaca06b0979c648b1fe26961bf",
+    "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
+    "mode": "0500",
+    "rust_toolchain_policy_sha256": "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe",
+    "rustc_identity": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "source": "engines/nautilus/native_entry_guard/src/main.rs",
+    "source_sha256": "57754c6b60bf44332477a6d171d64b92466ebf097ff44003a20d26f9c9148ac3",
+    "target": "/engine/bin/nautilus-entry-guard",
+    "target_triple": "x86_64-unknown-linux-gnu"
+  },
   "profile": "execution-simulation",
-  "profile_manifest_schema_version": 4,
+  "profile_manifest_schema_version": 5,
   "python_identity": "CPython 3.12.3",
   "result_validator_id": "nautilus-backtest-simulation-result-v1",
   "schema_version": 1,

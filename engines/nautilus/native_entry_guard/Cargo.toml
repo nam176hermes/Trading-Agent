@@ -1,0 +1,18 @@
+[package]
+name = "nautilus-entry-guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[dependencies]
+
+[profile.release]
+codegen-units = 1
+debug = false
+incremental = false
+lto = "fat"
+opt-level = "z"
+overflow-checks = true
+panic = "abort"
+strip = "symbols"

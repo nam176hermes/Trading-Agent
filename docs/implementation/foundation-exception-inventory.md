@@ -185,6 +185,7 @@ apps/job_api/app.py|439|Exception|PRODUCTION_CRITICAL|RETURN
 apps/job_api/app.py|452|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|67|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|116|Exception|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/launcher/nautilus_backtest.py|758|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/alert_manager.py|98|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/allocation_engine.py|161|Exception|PRODUCTION_CRITICAL|CONTINUE
 legacy/research-backend/allocation_engine.py|187|Exception|PRODUCTION_CRITICAL|RETURN
@@ -442,6 +443,7 @@ packages/data_catalog/parquet.py|418|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|431|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|466|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|480|Exception|PRODUCTION_CRITICAL|RAISE
+packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
 packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
 packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
@@ -540,11 +542,11 @@ services/job_worker/command_registry.py|308|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|361|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|374|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/command_registry.py|407|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|226|BaseException|PRODUCTION_CRITICAL|PASS
-services/job_worker/engine_spawn.py|755|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|770|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|860|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|949|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|270|BaseException|PRODUCTION_CRITICAL|PASS
+services/job_worker/engine_spawn.py|888|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|903|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|993|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1082|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|83|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|557|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|600|BaseException|PRODUCTION_CRITICAL|RAISE

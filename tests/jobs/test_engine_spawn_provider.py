@@ -34,6 +34,7 @@ from services.job_worker.engine_spawn import (
     HashBoundEngineInput,
     EngineSpawnError,
     EngineSpawnProvider,
+    NativeEntryGuardAttestation,
     OsSandboxProof,
     ReadOnlyClosureMount,
     consume_prepared_engine_spawn,
@@ -163,6 +164,7 @@ def _closure(
     *,
     profile: str = "zero-order",
     with_closure_manifest: bool = False,
+    native_guard: bool = False,
 ) -> CompleteEngineClosureAttestation:
     sandbox = tmp_path / "sealed" / "bin" / "sandbox"
     sandbox.parent.mkdir(parents=True)
@@ -170,25 +172,82 @@ def _closure(
     sandbox.chmod(0o500)
     release = tmp_path / "sealed" / "engine-release"
     release.mkdir(mode=0o700)
-    entrypoint = release / "bin" / "engine"
+    entrypoint = release / "bin" / (
+        "nautilus-entry-guard" if native_guard else "engine"
+    )
     entrypoint.parent.mkdir(mode=0o700)
-    entrypoint.write_bytes(b"reviewed-engine-entrypoint-v1")
+    entrypoint_value = (
+        b"reviewed-native-entry-guard-v1"
+        if native_guard
+        else b"reviewed-engine-entrypoint-v1"
+    )
+    entrypoint.write_bytes(entrypoint_value)
     entrypoint.chmod(0o500)
+    guarded_python = release / "usr/bin/python3.12"
+    if native_guard:
+        guarded_python.parent.mkdir(parents=True, mode=0o700)
+        guarded_python.write_bytes(b"reviewed-sealed-cpython-v1")
+        guarded_python.chmod(0o500)
+        guarded_python.parent.chmod(0o500)
     closure_manifest_path = release / "closure-manifest.json"
     if with_closure_manifest:
         closure_manifest_path.write_bytes(b'{"files":[]}')
         closure_manifest_path.chmod(0o400)
     entrypoint.parent.chmod(0o500)
     release.chmod(0o500)
+    entrypoint_target = (
+        PurePosixPath("/engine/bin/nautilus-entry-guard")
+        if native_guard
+        else PurePosixPath("/engine/bin/engine")
+    )
+    mounts = (
+        _closure_file(entrypoint, str(entrypoint_target)),
+        *(
+            (_closure_file(guarded_python, "/usr/bin/python3.12"),)
+            if native_guard
+            else ()
+        ),
+    )
+    native_attestation = (
+        NativeEntryGuardAttestation(
+            target=entrypoint_target,
+            guarded_executable=PurePosixPath("/usr/bin/python3.12"),
+            binary_sha256=hashlib.sha256(entrypoint_value).hexdigest(),
+            binary_size=len(entrypoint_value),
+            mode=0o500,
+            source="engines/nautilus/native_entry_guard/src/main.rs",
+            source_sha256="1" * 64,
+            cargo_manifest="engines/nautilus/native_entry_guard/Cargo.toml",
+            cargo_manifest_sha256="2" * 64,
+            cargo_lock="engines/nautilus/native_entry_guard/Cargo.lock",
+            cargo_lock_sha256="3" * 64,
+            cargo_identity="cargo 1.95.0 (fixture)",
+            rustc_identity="rustc 1.95.0 (fixture)",
+            rust_toolchain_policy_sha256="4" * 64,
+            llvm_toolchain_policy_sha256="5" * 64,
+            target_triple="x86_64-unknown-linux-gnu",
+        )
+        if native_guard
+        else None
+    )
     return CompleteEngineClosureAttestation(
         profile=profile,
         source_commit=SOURCE_COMMIT,
         closure_sha256="a" * 64,
-        mounts=(
-            _closure_file(entrypoint, "/engine/bin/engine"),
+        mounts=mounts,
+        entrypoint=entrypoint_target,
+        argv_prefix=(
+            (
+                "/usr/bin/python3.12",
+                "-I",
+                "-S",
+                "/engine/launcher/nautilus_backtest.py",
+                "--profile",
+                "execution-simulation",
+            )
+            if native_guard
+            else ("run-backtest",)
         ),
-        entrypoint=PurePosixPath("/engine/bin/engine"),
-        argv_prefix=("run-backtest",),
         timeout_seconds=10,
         result_validator_id="engine-event-v1",
         sandbox=OsSandboxProof(
@@ -211,6 +270,7 @@ def _closure(
             if with_closure_manifest
             else None
         ),
+        native_entry_guard=native_attestation,
     )
 
 
@@ -443,6 +503,172 @@ def test_provider_seals_inputs_and_builds_only_a_sandboxed_fd_bound_launch(
     run_root = tmp_path / "transport" / f"run-{envelope.engine_run_id.hex}"
     assert (run_root / "request.json").stat().st_mode & 0o777 == 0o400
     assert (run_root / "request.sha256").stat().st_mode & 0o777 == 0o400
+
+
+def _native_simulation_envelope() -> EngineCommandEnvelope:
+    references = tuple(
+        ArtifactReference(
+            artifact_id=UUID(
+                f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"
+            ),
+            sha256=f"{index}" * 64,
+            media_type="application/jsonl" if index == 4 else "application/json",
+        )
+        for index in range(1, 6)
+    )
+    return _simulation_envelope(references)
+
+
+def test_provider_spawns_native_guard_with_cpython_as_exact_guarded_argv(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+
+    spawn = consume_prepared_engine_spawn(
+        _provider(secure_tmp_path, lambda: closure).prepare(
+            _native_simulation_envelope()
+        )
+    )
+    try:
+        assert spawn.argv[-9:] == (
+            "/engine/bin/nautilus-entry-guard",
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+            "/inputs/request.json",
+            "/inputs/request.sha256",
+        )
+        assert _data_fd(spawn.argv, "/engine/bin/nautilus-entry-guard") in (
+            spawn.pass_fds
+        )
+        assert _data_fd(spawn.argv, "/usr/bin/python3.12") in spawn.pass_fds
+        assert spawn.argv[-9] != spawn.argv[-8]
+    finally:
+        _close_spawn_fds(spawn)
+
+
+def test_provider_rejects_native_contract_forged_as_direct_python_entry(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+    python_mount = next(
+        mount
+        for mount in closure.mounts
+        if mount.target == PurePosixPath("/usr/bin/python3.12")
+    )
+    assert closure.native_entry_guard is not None
+    direct = replace(
+        closure,
+        entrypoint=python_mount.target,
+        native_entry_guard=replace(
+            closure.native_entry_guard,
+            target=python_mount.target,
+            guarded_executable=python_mount.target,
+            binary_sha256=python_mount.sha256,
+            binary_size=python_mount.size,
+        ),
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(secure_tmp_path, lambda: direct).prepare(
+            _native_simulation_envelope()
+        )
+
+
+def test_provider_rejects_direct_python_when_v5_native_attestation_is_removed(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+    python_mount = next(
+        mount
+        for mount in closure.mounts
+        if mount.target == PurePosixPath("/usr/bin/python3.12")
+    )
+    direct = replace(
+        closure,
+        entrypoint=python_mount.target,
+        argv_prefix=(
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ),
+        native_entry_guard=None,
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(secure_tmp_path, lambda: direct).prepare(
+            _native_simulation_envelope()
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"mode": 0o400},
+        {"binary_sha256": "0" * 64},
+        {"guarded_executable": PurePosixPath("/engine/bin/foreign-python")},
+        {"source": "engines/nautilus/native_entry_guard/src/foreign.rs"},
+        {"cargo_identity": "cargo 1.95.0 foreign"},
+        {"target_triple": "aarch64-unknown-linux-gnu"},
+    ),
+)
+def test_provider_rejects_malformed_native_guard_provenance(
+    secure_tmp_path: Path,
+    mutation: dict[str, object],
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+    assert closure.native_entry_guard is not None
+    malformed = replace(
+        closure,
+        native_entry_guard=replace(closure.native_entry_guard, **mutation),
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(secure_tmp_path, lambda: malformed).prepare(
+            _native_simulation_envelope()
+        )
+
+
+def test_provider_rejects_non_attestation_native_guard_object(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+    malformed = replace(closure, native_entry_guard=object())
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(secure_tmp_path, lambda: malformed).prepare(
+            _native_simulation_envelope()
+        )
 
 
 def test_provider_seals_separate_closure_manifest_at_the_fixed_target(

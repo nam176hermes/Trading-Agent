@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Materialize one new sealed Nautilus simulation closure from reviewed inputs.
 
-This tool has no acquisition or build mode.  It copies an exact sealed runtime
-inventory, replaces only the repository launcher and selected input-bound
-Nautilus wheel, root-attests the sealed staging tree, then atomically publishes
-and re-attests the same inode tree at a previously absent destination.
+This tool has no acquisition mode. It copies an exact sealed runtime inventory,
+replaces the repository launcher and selected input-bound Nautilus wheel, builds
+the policy-bound native entry guard from sealed private toolchains, root-attests
+the sealed staging tree, then atomically publishes and re-attests the same inode
+tree at a previously absent destination.
 """
 
 from __future__ import annotations
@@ -13,11 +14,13 @@ import argparse
 import ctypes
 import errno
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -41,6 +44,11 @@ from services.job_worker.nautilus_closure import (
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$", re.ASCII)
+_INPUT_CACHE_TOOL = _ROOT / "scripts/prepare_nautilus_input_cache.py"
+_RUST_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_toolchain.py"
+_RUST_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/toolchain-inputs.json"
+_LLVM_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_llvm_toolchain.py"
+_LLVM_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/llvm-toolchain-policy.json"
 _POLICY_FIELDS = {
     "argv_prefix",
     "artifact_manifest_sha256",
@@ -54,6 +62,7 @@ _POLICY_FIELDS = {
     "engine_wheel_target",
     "entrypoint",
     "launcher_inventory",
+    "native_entry_guard",
     "profile",
     "profile_manifest_schema_version",
     "python_identity",
@@ -62,6 +71,40 @@ _POLICY_FIELDS = {
     "semantic_profile",
     "source_commit",
     "timeout_seconds",
+}
+_NATIVE_GUARD_POLICY_FIELDS = {
+    "binary_sha256",
+    "binary_size",
+    "cargo_identity",
+    "cargo_lock",
+    "cargo_lock_sha256",
+    "cargo_manifest",
+    "cargo_manifest_sha256",
+    "llvm_toolchain_policy_sha256",
+    "mode",
+    "rust_toolchain_policy_sha256",
+    "rustc_identity",
+    "source",
+    "source_sha256",
+    "target",
+    "target_triple",
+}
+_NATIVE_GUARD_PROVENANCE_FIELDS = {
+    "binary_sha256",
+    "binary_size",
+    "cargo_identity",
+    "cargo_lock",
+    "cargo_lock_sha256",
+    "cargo_manifest",
+    "cargo_manifest_sha256",
+    "llvm_toolchain_policy_sha256",
+    "mode",
+    "rust_toolchain_policy_sha256",
+    "rustc_identity",
+    "source",
+    "source_sha256",
+    "target",
+    "target_triple",
 }
 _BASE_MANIFEST_FIELDS = {
     "argv_prefix",
@@ -84,8 +127,17 @@ _LAUNCHER_INVENTORY = (
     ("engines/nautilus/launcher/target_portfolio_strategy.py", "/engine/launcher/target_portfolio_strategy.py"),
 )
 _LAUNCHER_TARGET = _LAUNCHER_INVENTORY[0][1]
+_NATIVE_GUARD_SOURCE = "engines/nautilus/native_entry_guard/src/main.rs"
+_NATIVE_GUARD_CARGO_MANIFEST = "engines/nautilus/native_entry_guard/Cargo.toml"
+_NATIVE_GUARD_CARGO_LOCK = "engines/nautilus/native_entry_guard/Cargo.lock"
+_NATIVE_GUARD_TARGET = "/engine/bin/nautilus-entry-guard"
+_NATIVE_GUARD_TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
+_NATIVE_GUARD_BINARY_NAME = "nautilus-entry-guard"
+_EXPECTED_CARGO_IDENTITY = "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+_EXPECTED_RUSTC_IDENTITY = "rustc 1.95.0 (59807616e 2026-04-14)"
 _PROFILE = "execution-simulation"
 _ARGV_PREFIX = (
+    "/usr/bin/python3.12",
     "-I",
     "-S",
     _LAUNCHER_TARGET,
@@ -148,6 +200,40 @@ def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
             os.close(descriptor)
 
 
+def _read_private_build_output(path: Path) -> bytes:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        observed = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_uid != os.geteuid()
+            or not observed.st_mode & stat.S_IXUSR
+            or observed.st_mode & 0o022
+        ):
+            raise RuntimeClosureMaterializationError(
+                "built native entry guard identity is unsafe"
+            )
+        chunks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            chunks.append(block)
+        return b"".join(chunks)
+    except RuntimeClosureMaterializationError:
+        raise
+    except OSError as exc:
+        raise RuntimeClosureMaterializationError(
+            "built native entry guard cannot be read"
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _json_object(raw: bytes, *, label: str) -> dict[str, object]:
     try:
         value = json.loads(raw)
@@ -201,6 +287,99 @@ def _safe_target(value: object, *, label: str) -> PurePosixPath:
     return path
 
 
+def _load_local_tool(path: Path, name: str):
+    specification = importlib.util.spec_from_file_location(name, path)
+    if specification is None or specification.loader is None:
+        raise RuntimeClosureMaterializationError(
+            "native guard build verifier is unavailable"
+        )
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+def _reject_ambient_cargo_configuration(path: Path) -> None:
+    for directory in (path, *path.parents):
+        cargo_directory = directory / ".cargo"
+        if cargo_directory.is_symlink():
+            raise RuntimeClosureMaterializationError(
+                "native entry guard build found ambient Cargo configuration"
+            )
+        if any(
+            candidate.exists() or candidate.is_symlink()
+            for candidate in (
+                cargo_directory / "config",
+                cargo_directory / "config.toml",
+            )
+        ):
+            raise RuntimeClosureMaterializationError(
+                "native entry guard build found ambient Cargo configuration"
+            )
+
+
+def _native_guard_provenance(
+    guard: dict[str, object],
+) -> dict[str, object]:
+    return {field: guard[field] for field in sorted(_NATIVE_GUARD_PROVENANCE_FIELDS)}
+
+
+def _validate_native_guard_policy(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != _NATIVE_GUARD_POLICY_FIELDS:
+        raise RuntimeClosureMaterializationError(
+            "native entry guard policy fields are missing or unknown"
+        )
+    if (
+        value["cargo_lock"] != _NATIVE_GUARD_CARGO_LOCK
+        or value["cargo_manifest"] != _NATIVE_GUARD_CARGO_MANIFEST
+        or value["source"] != _NATIVE_GUARD_SOURCE
+        or value["target"] != _NATIVE_GUARD_TARGET
+        or value["target_triple"] != _NATIVE_GUARD_TARGET_TRIPLE
+        or value["mode"] != "0500"
+        or value["cargo_identity"] != _EXPECTED_CARGO_IDENTITY
+        or value["rustc_identity"] != _EXPECTED_RUSTC_IDENTITY
+        or isinstance(value["binary_size"], bool)
+        or not isinstance(value["binary_size"], int)
+        or int(value["binary_size"]) <= 0
+    ):
+        raise RuntimeClosureMaterializationError(
+            "native entry guard policy identity is invalid"
+        )
+    for field in (
+        "binary_sha256",
+        "cargo_lock_sha256",
+        "cargo_manifest_sha256",
+        "llvm_toolchain_policy_sha256",
+        "rust_toolchain_policy_sha256",
+        "source_sha256",
+    ):
+        _require_sha256(value[field], label=f"native entry guard {field}")
+    for path_field, digest_field in (
+        ("source", "source_sha256"),
+        ("cargo_manifest", "cargo_manifest_sha256"),
+        ("cargo_lock", "cargo_lock_sha256"),
+    ):
+        relative = _safe_relative(value[path_field], label=path_field)
+        raw = _read_file(
+            _ROOT.joinpath(*relative.parts),
+            label=f"native entry guard {path_field}",
+            sealed=False,
+        )
+        if _sha256_bytes(raw) != value[digest_field]:
+            raise RuntimeClosureMaterializationError(
+                f"native entry guard {path_field} digest drifted"
+            )
+    for policy_path, field in (
+        (_RUST_TOOLCHAIN_POLICY, "rust_toolchain_policy_sha256"),
+        (_LLVM_TOOLCHAIN_POLICY, "llvm_toolchain_policy_sha256"),
+    ):
+        raw = _read_file(policy_path, label="native build toolchain policy", sealed=False)
+        if _sha256_bytes(raw) != value[field]:
+            raise RuntimeClosureMaterializationError(
+                "native entry guard toolchain policy digest drifted"
+            )
+    return value
+
+
 def _load_policy(path: Path) -> dict[str, object]:
     policy = _json_object(
         _read_file(path, label="runtime closure policy", sealed=False),
@@ -212,11 +391,12 @@ def _load_policy(path: Path) -> dict[str, object]:
         )
     if (
         policy["schema_version"] != 1
-        or policy["profile_manifest_schema_version"] != 4
+        or policy["profile_manifest_schema_version"] != 5
         or policy["profile"] != _PROFILE
         or tuple(policy["argv_prefix"]) != _ARGV_PREFIX
         or policy["result_validator_id"] != _VALIDATOR
         or policy["semantic_profile"] != _SEMANTIC_PROFILE
+        or policy["entrypoint"] != _NATIVE_GUARD_TARGET
         or policy["engine_wheel_mode"] != "0400"
         or policy["engine_name"] != "nautilus_trader"
         or policy["engine_version"] != "1.227.0"
@@ -258,6 +438,7 @@ def _load_policy(path: Path) -> dict[str, object]:
         observed_launchers.add((source, target))
     if observed_launchers != set(_LAUNCHER_INVENTORY):
         raise RuntimeClosureMaterializationError("launcher inventory is not the fixed strategy set")
+    _validate_native_guard_policy(policy["native_entry_guard"])
     _safe_target(policy["engine_wheel_target"], label="engine wheel target")
     _safe_target(policy["entrypoint"], label="closure entrypoint")
     return policy
@@ -282,7 +463,7 @@ def _validate_base_runtime(
         or manifest["engine_version"] != policy["engine_version"]
         or manifest["python_identity"] != policy["python_identity"]
         or manifest["source_commit"] != policy["engine_upstream_commit"]
-        or manifest["entrypoint"] != policy["entrypoint"]
+        or manifest["entrypoint"] != policy["argv_prefix"][0]
         or tuple(manifest["argv_prefix"])
         != ("-I", "-S", _LAUNCHER_TARGET)
         or manifest["result_validator_id"] != "nautilus-backtest-result-v1"
@@ -375,6 +556,216 @@ def _validate_artifact(
             "selected artifact directory contains an unlisted file"
         )
     return manifest, wheel_path
+
+
+def _verify_native_guard_toolchains(
+    *, cargo: Path, llvm_toolchain: Path, guard: dict[str, object]
+) -> tuple[str, str]:
+    if (
+        not cargo.is_absolute()
+        or cargo.name != "cargo"
+        or cargo.parent.name != "bin"
+        or not llvm_toolchain.is_absolute()
+        or llvm_toolchain == Path("/")
+        or ".." in cargo.parts
+        or ".." in llvm_toolchain.parts
+    ):
+        raise RuntimeClosureMaterializationError(
+            "native entry guard requires explicit private build toolchains"
+        )
+    rust_toolchain = cargo.parent.parent
+    private_tool_verifier = _load_local_tool(
+        _INPUT_CACHE_TOOL, "native_guard_private_tool_verifier"
+    )
+    rust_verifier = _load_local_tool(
+        _RUST_TOOLCHAIN_TOOL, "native_guard_rust_toolchain_verifier"
+    )
+    llvm_verifier = _load_local_tool(
+        _LLVM_TOOLCHAIN_TOOL, "native_guard_llvm_toolchain_verifier"
+    )
+    try:
+        rust_policy = rust_verifier.load_manifest(_RUST_TOOLCHAIN_POLICY)
+        rust_verifier.verify_materialized_toolchain(rust_toolchain, rust_policy)
+        llvm_policy = llvm_verifier.load_policy(_LLVM_TOOLCHAIN_POLICY)
+        llvm_verifier.verify_materialized(llvm_toolchain, llvm_policy)
+        cargo_identity = private_tool_verifier.validate_private_cargo(
+            cargo, "1.95.0"
+        )
+        rustc_identity = private_tool_verifier.validate_private_rustc(
+            cargo.with_name("rustc"), "1.95.0"
+        )
+    except (OSError, ValueError) as exc:
+        raise RuntimeClosureMaterializationError(
+            "native entry guard build toolchain verification failed"
+        ) from exc
+    if (
+        cargo_identity != guard["cargo_identity"]
+        or rustc_identity != guard["rustc_identity"]
+    ):
+        raise RuntimeClosureMaterializationError(
+            "native entry guard compiler identity drifted"
+        )
+    return cargo_identity, rustc_identity
+
+
+def _build_native_entry_guard(
+    *,
+    staging: Path,
+    policy: dict[str, object],
+    cargo: Path,
+    llvm_toolchain: Path,
+) -> dict[str, dict[str, object]]:
+    """Build one exact no-dependency guard with only sealed private tools."""
+
+    try:
+        observed_stage = staging.lstat()
+    except OSError as exc:
+        raise RuntimeClosureMaterializationError(
+            "native entry guard staging directory is unavailable"
+        ) from exc
+    if (
+        staging.is_symlink()
+        or not stat.S_ISDIR(observed_stage.st_mode)
+        or observed_stage.st_uid != os.geteuid()
+        or stat.S_IMODE(observed_stage.st_mode) != 0o700
+    ):
+        raise RuntimeClosureMaterializationError(
+            "native entry guard staging directory is unsafe"
+        )
+    guard = _validate_native_guard_policy(policy.get("native_entry_guard"))
+    _reject_ambient_cargo_configuration(staging)
+    cargo_identity, rustc_identity = _verify_native_guard_toolchains(
+        cargo=cargo,
+        llvm_toolchain=llvm_toolchain,
+        guard=guard,
+    )
+    destination_relative = PurePosixPath("files", *_safe_target(guard["target"], label="native guard target").parts[1:])
+    destination = staging.joinpath(*destination_relative.parts)
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeClosureMaterializationError(
+            "native entry guard destination already exists"
+        )
+
+    with tempfile.TemporaryDirectory(
+        prefix=".native-entry-guard-build-", dir=staging
+    ) as temporary:
+        build_root = Path(temporary)
+        os.chmod(build_root, 0o700)
+        project = build_root / "source"
+        (project / "src").mkdir(parents=True, mode=0o700)
+        for relative_text, digest_field in (
+            (_NATIVE_GUARD_CARGO_MANIFEST, "cargo_manifest_sha256"),
+            (_NATIVE_GUARD_CARGO_LOCK, "cargo_lock_sha256"),
+            (_NATIVE_GUARD_SOURCE, "source_sha256"),
+        ):
+            relative = PurePosixPath(relative_text)
+            source = _ROOT.joinpath(*relative.parts)
+            target = (
+                project / "Cargo.toml"
+                if relative_text == _NATIVE_GUARD_CARGO_MANIFEST
+                else project / "Cargo.lock"
+                if relative_text == _NATIVE_GUARD_CARGO_LOCK
+                else project / "src/main.rs"
+            )
+            raw = _read_file(
+                source,
+                label="native entry guard build source",
+                sealed=False,
+            )
+            if _sha256_bytes(raw) != guard[digest_field]:
+                raise RuntimeClosureMaterializationError(
+                    "native entry guard build input drifted"
+                )
+            target.write_bytes(raw)
+            target.chmod(0o400)
+        cargo_home = build_root / "cargo-home"
+        target_directory = build_root / "target"
+        compiler_tmp = build_root / "compiler-tmp"
+        home = build_root / "home"
+        for directory in (cargo_home, target_directory, compiler_tmp, home):
+            directory.mkdir(mode=0o700)
+        rustc = cargo.with_name("rustc")
+        linker = llvm_toolchain / "bin/clang"
+        environment = {
+            "CARGO_HOME": str(cargo_home),
+            "CARGO_INCREMENTAL": "0",
+            "CARGO_NET_OFFLINE": "true",
+            "CARGO_TARGET_DIR": str(target_directory),
+            "HOME": str(home),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "NAUTILUS_GUARD_ENTRYPOINT": str(policy["entrypoint"]),
+            "NAUTILUS_GUARD_LAUNCHER": _LAUNCHER_TARGET,
+            "NAUTILUS_GUARD_PYTHON": str(policy["argv_prefix"][0]),
+            "NAUTILUS_GUARD_REQUEST": "/inputs/request.json",
+            "NAUTILUS_GUARD_SIDECAR": "/inputs/request.sha256",
+            "PATH": f"{cargo.parent}:{llvm_toolchain / 'bin'}",
+            "RUSTC": str(rustc),
+            "RUSTFLAGS": (
+                f"-C linker={linker} -C link-arg=-fuse-ld=lld "
+                "-C link-arg=-Wl,--build-id=none"
+            ),
+            "SOURCE_DATE_EPOCH": "0",
+            "TEMP": str(compiler_tmp),
+            "TMP": str(compiler_tmp),
+            "TMPDIR": str(compiler_tmp),
+        }
+        try:
+            subprocess.run(
+                [
+                    str(cargo),
+                    "build",
+                    "--manifest-path",
+                    str(project / "Cargo.toml"),
+                    "--locked",
+                    "--offline",
+                    "--release",
+                    "--target",
+                    str(guard["target_triple"]),
+                ],
+                check=True,
+                cwd=project,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=300,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeClosureMaterializationError(
+                "offline native entry guard build failed"
+            ) from exc
+        built = (
+            target_directory
+            / str(guard["target_triple"])
+            / "release"
+            / _NATIVE_GUARD_BINARY_NAME
+        )
+        raw = _read_private_build_output(built)
+        if (
+            len(raw) != guard["binary_size"]
+            or _sha256_bytes(raw) != guard["binary_sha256"]
+        ):
+            raise RuntimeClosureMaterializationError(
+                "native entry guard binary identity drifted"
+            )
+        destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        destination.write_bytes(raw)
+        destination.chmod(0o500)
+
+    provenance = _native_guard_provenance(guard)
+    provenance["cargo_identity"] = cargo_identity
+    provenance["rustc_identity"] = rustc_identity
+    return {
+        "file": {
+            "mode": "0500",
+            "path": destination_relative.as_posix(),
+            "sha256": provenance["binary_sha256"],
+            "size": provenance["binary_size"],
+            "target": provenance["target"],
+        },
+        "provenance": provenance,
+    }
 
 
 def _unseal_and_remove(path: Path) -> None:
@@ -522,8 +913,16 @@ def _publish_noreplace(
 
 
 def _build_output_manifest(
-    policy: dict[str, object], output_records: list[dict[str, object]]
+    policy: dict[str, object],
+    output_records: list[dict[str, object]],
+    native_entry_guard: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    guard = _validate_native_guard_policy(policy["native_entry_guard"])
+    expected_guard = _native_guard_provenance(guard)
+    if native_entry_guard is not None and native_entry_guard != expected_guard:
+        raise RuntimeClosureMaterializationError(
+            "native entry guard output provenance drifted"
+        )
     return {
         "argv_prefix": list(policy["argv_prefix"]),
         "artifact_manifest_sha256": policy["artifact_manifest_sha256"],
@@ -532,6 +931,11 @@ def _build_output_manifest(
         "engine_version": policy["engine_version"],
         "entrypoint": policy["entrypoint"],
         "files": output_records,
+        "native_entry_guard": (
+            expected_guard
+            if native_entry_guard is None
+            else native_entry_guard
+        ),
         "profile": policy["profile"],
         "python_identity": policy["python_identity"],
         "result_validator_id": policy["result_validator_id"],
@@ -549,10 +953,23 @@ def materialize_runtime_closure(
     artifact_directory: Path,
     destination: Path,
     sandbox_executable: Path,
+    cargo: Path,
+    llvm_toolchain: Path,
 ) -> Path:
     """Publish one new execution-simulation closure or fail without selecting it."""
 
-    paths = tuple(Path(value) for value in (policy_path, base_runtime, artifact_directory, destination, sandbox_executable))
+    paths = tuple(
+        Path(value)
+        for value in (
+            policy_path,
+            base_runtime,
+            artifact_directory,
+            destination,
+            sandbox_executable,
+            cargo,
+            llvm_toolchain,
+        )
+    )
     if any(not path.is_absolute() or path == Path("/") or ".." in path.parts for path in paths):
         raise RuntimeClosureMaterializationError("all materializer paths must be absolute and safe")
     if destination.exists() or destination.is_symlink():
@@ -619,17 +1036,45 @@ def materialize_runtime_closure(
                 relative = PurePosixPath("files", *PurePosixPath(target).parts[1:])
                 copied = _copy_file(source, staging.joinpath(*relative.parts), mode=mode)
                 output_records.append({"path": relative.as_posix(), "target": target, **copied})
+        native_guard = _build_native_entry_guard(
+            staging=staging,
+            policy=policy,
+            cargo=cargo,
+            llvm_toolchain=llvm_toolchain,
+        )
+        guard_file = native_guard["file"]
+        if any(
+            record["path"] == guard_file["path"]
+            or record["target"] == guard_file["target"]
+            for record in output_records
+        ):
+            raise RuntimeClosureMaterializationError(
+                "native entry guard conflicts with the base runtime inventory"
+            )
+        output_records.append(guard_file)
         if not any(
             record["target"] == _LAUNCHER_TARGET
             for record in output_records
         ) or not set(launchers).issubset({str(record["target"]) for record in output_records}) or not any(
             record["target"] == policy["engine_wheel_target"]
             for record in output_records
+        ) or not any(
+            record["target"] == policy["argv_prefix"][0]
+            and record["mode"] == "0500"
+            for record in output_records
+        ) or not any(
+            record["target"] == policy["entrypoint"]
+            and record["mode"] == "0500"
+            for record in output_records
         ):
             raise RuntimeClosureMaterializationError(
                 "runtime inventory lacks a required replacement target"
             )
-        manifest = _build_output_manifest(policy, output_records)
+        manifest = _build_output_manifest(
+            policy,
+            output_records,
+            native_entry_guard=native_guard["provenance"],
+        )
         manifest_path = staging / _CLOSURE_MANIFEST
         manifest_path.write_bytes(_canonical_json_bytes(manifest) + b"\n")
         manifest_path.chmod(0o400)
@@ -725,6 +1170,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-directory", type=Path, required=True)
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument("--sandbox", type=Path, required=True)
+    parser.add_argument("--cargo", type=Path, required=True)
+    parser.add_argument("--llvm-toolchain", type=Path, required=True)
     return parser
 
 
@@ -741,6 +1188,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             artifact_directory=arguments.artifact_directory,
             destination=arguments.destination,
             sandbox_executable=arguments.sandbox,
+            cargo=arguments.cargo,
+            llvm_toolchain=arguments.llvm_toolchain,
         )
     except RuntimeClosureMaterializationError as exc:
         _fail(str(exc))
