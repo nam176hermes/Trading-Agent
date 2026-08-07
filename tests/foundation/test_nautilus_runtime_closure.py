@@ -247,6 +247,19 @@ def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None
     assert policy["semantic_profile"] == "nautilus-execution-simulation-v2"
 
 
+def test_checked_in_policy_binds_the_preceding_committed_parity_source() -> None:
+    policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    completed = subprocess.run(
+        ["git", "cat-file", "-e", f"{policy['source_commit']}^{{commit}}"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0
+    assert policy["source_commit"] == "8a49220df87be2bc9c18e3be511ae1640d972faa"
+
+
 def test_materializer_cli_bootstraps_only_the_checkout_authority() -> None:
     completed = subprocess.run(
         [

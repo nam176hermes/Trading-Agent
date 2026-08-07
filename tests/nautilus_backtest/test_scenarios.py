@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 
 import pytest
+
+from test_launcher_protocol import _simulation_fixture
+
+
+_START = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+_END = datetime(2026, 8, 5, 12, 30, tzinfo=UTC)
 
 
 def _canonical(value: object) -> bytes:
@@ -11,35 +18,7 @@ def _canonical(value: object) -> bytes:
 
 
 def _mounted(scenario_id: str = "event-digest") -> tuple[bytes, bytes, bytes, bytes]:
-    catalog = _canonical({"catalog": "fixed"})
-    strategy = _canonical(
-        {
-            "effective_at": "2026-08-05T12:00:00Z",
-            "positions": [{"instrument": {"product_type": "crypto_spot", "symbol": "BTCUSDT", "venue": "BINANCE"}, "target_quantity": "1"}],
-            "schema_version": "nautilus-execution-target-v1",
-        }
-    )
-    market = b'{"close":"101"}\n'
-    scenario = _canonical(
-        {
-            "catalog_sha256": hashlib.sha256(catalog).hexdigest(),
-            "events": [
-                {
-                    "ask": "100", "bid": "99", "close": "101", "event_time": "2026-08-05T12:00:00Z",
-                    "high": "102", "low": "98", "open": "100", "quote_time": "2026-08-05T12:00:00Z",
-                    "sequence": 1, "session_open": True, "volume": "1",
-                }
-            ],
-            "fee_rate": "0.001",
-            "instrument": {"product_type": "crypto_spot", "symbol": "BTCUSDT", "venue": "BINANCE"},
-            "liquidity_limit": "1", "market_data_sha256": hashlib.sha256(market).hexdigest(),
-            "scenario_id": scenario_id, "schema_version": "nautilus-execution-scenario-v1",
-            "session_policy": "explicit-open-flag-v1", "slippage_bps": "0",
-            "stale_quote_threshold_seconds": 30, "stop_price": None,
-            "stop_take_profit_precedence": "stop-first", "strategy_sha256": hashlib.sha256(strategy).hexdigest(),
-            "take_profit_price": None,
-        }
-    )
+    _configuration, catalog, strategy, market, scenario = _simulation_fixture(scenario_id)
     return scenario, catalog, strategy, market
 
 
@@ -52,6 +31,8 @@ def test_root_scenario_reconstructs_exact_mounted_bytes_and_bindings() -> None:
         catalog_bytes=catalog,
         strategy_bytes=strategy,
         market_data_bytes=market,
+        start_time=_START,
+        end_time=_END,
     )
 
     assert scenario.mounted_bytes == scenario_bytes
@@ -84,4 +65,101 @@ def test_root_scenario_fails_closed_on_unsealed_semantics(mutation: str) -> None
             catalog_bytes=catalog,
             strategy_bytes=strategy,
             market_data_bytes=market,
+            start_time=_START,
+            end_time=_END,
+        )
+
+
+@pytest.mark.parametrize("mutation", ("sub-cent-price", "unordered-time", "forbidden-trigger"))
+def test_root_scenario_rejects_launcher_invalid_semantics(mutation: str) -> None:
+    """Changing this grammar check would admit inputs the launcher rejects."""
+    from packages.nautilus_backtest.scenarios import BacktestScenarioError, BacktestScenarioV1
+
+    configuration, catalog, strategy, market, scenario_bytes = _simulation_fixture("event-digest")
+    del configuration
+    scenario = json.loads(scenario_bytes)
+    if mutation == "sub-cent-price":
+        scenario["events"][0]["ask"] = "100.001"
+    elif mutation == "unordered-time":
+        scenario["events"].append({**scenario["events"][0], "sequence": 2, "event_time": "2026-08-05T11:59:00Z"})
+    else:
+        scenario["stop_price"] = "99"
+    scenario_bytes = _canonical(scenario)
+
+    with pytest.raises(BacktestScenarioError):
+        BacktestScenarioV1.from_mounted_artifacts(
+            scenario_bytes=scenario_bytes,
+            catalog_bytes=catalog,
+            strategy_bytes=strategy,
+            market_data_bytes=market,
+            start_time=_START,
+            end_time=_END,
+        )
+
+
+def test_root_scenario_rejects_slippage_derived_price_outside_nautilus_bound() -> None:
+    """Removing the derived bound would admit a scenario the launcher rejects."""
+    from packages.nautilus_backtest.scenarios import BacktestScenarioError, BacktestScenarioV1
+
+    _configuration, catalog, strategy, market, scenario_bytes = _simulation_fixture(
+        "event-digest"
+    )
+    scenario = json.loads(scenario_bytes)
+    scenario["events"][0]["ask"] = "17014118346046"
+    scenario["slippage_bps"] = "1"
+
+    with pytest.raises(BacktestScenarioError, match="executable entry price"):
+        BacktestScenarioV1.from_mounted_artifacts(
+            scenario_bytes=_canonical(scenario),
+            catalog_bytes=catalog,
+            strategy_bytes=strategy,
+            market_data_bytes=market,
+            start_time=_START,
+            end_time=_END,
+        )
+
+
+@pytest.mark.parametrize("artifact", ("catalog", "market"))
+def test_root_scenario_rejects_launcher_invalid_catalog_or_market_contract(
+    artifact: str,
+) -> None:
+    """Replacing a mounted data contract must fail beyond its hash binding."""
+    from packages.nautilus_backtest.scenarios import BacktestScenarioError, BacktestScenarioV1
+
+    _configuration, catalog, strategy, market, scenario_bytes = _simulation_fixture(
+        "event-digest"
+    )
+    scenario = json.loads(scenario_bytes)
+    if artifact == "catalog":
+        catalog = _canonical({"catalog": "fixed"})
+        scenario["catalog_sha256"] = hashlib.sha256(catalog).hexdigest()
+    else:
+        market = b'{"close":"1"}\n'
+        scenario["market_data_sha256"] = hashlib.sha256(market).hexdigest()
+
+    with pytest.raises(BacktestScenarioError):
+        BacktestScenarioV1.from_mounted_artifacts(
+            scenario_bytes=_canonical(scenario),
+            catalog_bytes=catalog,
+            strategy_bytes=strategy,
+            market_data_bytes=market,
+            start_time=_START,
+            end_time=_END,
+        )
+
+
+def test_root_scenario_rejects_event_outside_command_window() -> None:
+    """Ignoring the command window would admit an unlaunchable fixture."""
+    from packages.nautilus_backtest.scenarios import BacktestScenarioError, BacktestScenarioV1
+
+    scenario_bytes, catalog, strategy, market = _mounted()
+
+    with pytest.raises(BacktestScenarioError, match="command window"):
+        BacktestScenarioV1.from_mounted_artifacts(
+            scenario_bytes=scenario_bytes,
+            catalog_bytes=catalog,
+            strategy_bytes=strategy,
+            market_data_bytes=market,
+            start_time=datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
+            end_time=_END,
         )

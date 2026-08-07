@@ -1222,6 +1222,116 @@ def run_execution_simulation(fixture: dict[str, object]) -> dict[str, object]:
         return _run_execution_simulation(fixture)
 
 
+def _scenario_commission(
+    *, fill_quantity: Decimal, fill_price: Decimal, fee_rate: Decimal
+) -> Decimal:
+    """Return the exact quote-currency commission for one actual fill."""
+
+    return abs(fill_quantity) * fill_price * fee_rate
+
+
+def _build_target_portfolio_execution_plan(
+    fixture: dict[str, object],
+) -> tuple[dict[str, object], ...]:
+    """Map the validated v2 semantics into exact engine order instructions."""
+
+    with localcontext(_SIMULATION_DECIMAL_CONTEXT):
+        return _build_target_portfolio_execution_plan_in_context(fixture)
+
+
+def _build_target_portfolio_execution_plan_in_context(
+    fixture: dict[str, object],
+) -> tuple[dict[str, object], ...]:
+    """Build the plan while the fixed precision-80 context is active."""
+
+    events = fixture["events"]
+    target = fixture["target_quantity"]
+    liquidity_limit = fixture["liquidity_limit"]
+    slippage_bps = fixture["slippage_bps"]
+    threshold = fixture["stale_quote_threshold_seconds"]
+    stop = fixture["stop_price"]
+    take_profit = fixture["take_profit_price"]
+    assert isinstance(events, tuple)
+    assert isinstance(target, Decimal)
+    assert isinstance(liquidity_limit, Decimal)
+    assert isinstance(slippage_bps, Decimal)
+    assert type(threshold) is int
+    assert stop is None or isinstance(stop, Decimal)
+    assert take_profit is None or isinstance(take_profit, Decimal)
+
+    side = Decimal(1) if target > 0 else Decimal(-1)
+    remaining = abs(target)
+    rate = slippage_bps / Decimal(10_000)
+    plan: list[dict[str, object]] = []
+    for event in events:
+        assert isinstance(event, dict)
+        age = event["event_time"] - event["quote_time"]
+        skip_reason: str | None = None
+        if event["session_open"] is not True:
+            skip_reason = "session-closed"
+        elif age > timedelta(seconds=threshold):
+            skip_reason = "stale-quote"
+        volume = event["volume"]
+        assert isinstance(volume, Decimal)
+        available = min(volume, liquidity_limit, remaining)
+        if skip_reason is None and available <= 0:
+            skip_reason = "zero-liquidity"
+        eligible = skip_reason is None and remaining > 0
+        entry_price: Decimal | None = None
+        exit_price: Decimal | None = None
+        exit_trigger: Decimal | None = None
+        exit_reason: str | None = None
+        if eligible:
+            quote = event["ask"] if side > 0 else event["bid"]
+            assert isinstance(quote, Decimal)
+            entry_price = quote * (
+                Decimal(1) + rate if side > 0 else Decimal(1) - rate
+            )
+            _require_nautilus_price(entry_price, label="executable entry price")
+            remaining -= available
+            stop_hit = stop is not None and (
+                event["low"] <= stop if side > 0 else event["high"] >= stop
+            )
+            take_hit = take_profit is not None and (
+                event["high"] >= take_profit
+                if side > 0
+                else event["low"] <= take_profit
+            )
+            if stop_hit:
+                exit_reason, exit_trigger = "stop", stop
+            elif take_hit:
+                exit_reason, exit_trigger = "take-profit", take_profit
+            if exit_trigger is not None:
+                exit_price = exit_trigger * (
+                    Decimal(1) - rate if side > 0 else Decimal(1) + rate
+                )
+                _require_nautilus_price(exit_price, label="executable exit price")
+        plan.append(
+            {
+                "eligible": eligible,
+                "entry_price": (
+                    None if entry_price is None else _decimal_text(entry_price)
+                ),
+                "event_time": event["event_time_text"],
+                "exit_price": (
+                    None if exit_price is None else _decimal_text(exit_price)
+                ),
+                "exit_reason": exit_reason,
+                "exit_trigger": (
+                    None if exit_trigger is None else _decimal_text(exit_trigger)
+                ),
+                "fill_quantity": _decimal_text(
+                    available if eligible else Decimal(0)
+                ),
+                "market_sequence": event["sequence"],
+                "quote_age_seconds": int(age.total_seconds()),
+                "session_open": event["session_open"],
+                "skip_reason": skip_reason,
+            }
+        )
+    return tuple(plan)
+
+
 def _run_nautilus_simulation_fixture(
     fixture: dict[str, object],
 ) -> dict[str, object]:
@@ -1266,6 +1376,7 @@ def _run_nautilus_simulation_fixture(
             raise ValueError("Nautilus runtime wheel is unreadable") from exc
         sys.path.insert(0, str(destination))
     from nautilus_trader.backtest.engine import BacktestEngine
+    from nautilus_trader.backtest.models import FeeModel
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig
     from nautilus_trader.model.currencies import USDT
@@ -1278,6 +1389,21 @@ def _run_nautilus_simulation_fixture(
         TargetPortfolioStrategy,
         TargetPortfolioStrategyConfig,
     )
+
+    class ScenarioFeeModel(FeeModel):
+        """Charge the validated scenario rate on every engine fill."""
+
+        def __init__(self, fee_rate: Decimal) -> None:
+            self._fee_rate = fee_rate
+
+        def get_commission(self, order, fill_qty, fill_px, instrument):
+            del order
+            commission = _scenario_commission(
+                fill_quantity=Decimal(str(fill_qty)),
+                fill_price=Decimal(str(fill_px)),
+                fee_rate=self._fee_rate,
+            )
+            return Money(commission, instrument.quote_currency)
 
     engine = BacktestEngine(
         BacktestEngineConfig(
@@ -1294,15 +1420,54 @@ def _run_nautilus_simulation_fixture(
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
             starting_balances=[Money(1_000_000, USDT)],
+            fee_model=ScenarioFeeModel(fixture["fee_rate"]),
         )
         engine.add_instrument(instrument)
         target = fixture["target_quantity"]
         assert isinstance(target, Decimal)
+        execution_plan = _build_target_portfolio_execution_plan(fixture)
         strategy = TargetPortfolioStrategy(
             TargetPortfolioStrategyConfig(
                 instrument_id=instrument.id,
                 target_quantity=_nautilus_quantity_text(
                     target, 6, label="simulation target quantity"
+                ),
+                scenario_id=str(fixture["scenario_id"]),
+                execution_plan=execution_plan,
+                event_semantics=tuple(
+                    {
+                        "ask": _decimal_text(event["ask"]),
+                        "bid": _decimal_text(event["bid"]),
+                        "high": _decimal_text(event["high"]),
+                        "low": _decimal_text(event["low"]),
+                        "quote_age_seconds": int(
+                            (
+                                event["event_time"] - event["quote_time"]
+                            ).total_seconds()
+                        ),
+                        "session_open": event["session_open"],
+                        "volume": _decimal_text(event["volume"]),
+                    }
+                    for event in fixture["events"]
+                ),
+                fee_rate=_decimal_text(fixture["fee_rate"]),
+                slippage_bps=_decimal_text(fixture["slippage_bps"]),
+                liquidity_limit=_decimal_text(fixture["liquidity_limit"]),
+                stale_quote_threshold_seconds=int(
+                    fixture["stale_quote_threshold_seconds"]
+                ),
+                stop_price=(
+                    None
+                    if fixture["stop_price"] is None
+                    else _decimal_text(fixture["stop_price"])
+                ),
+                take_profit_price=(
+                    None
+                    if fixture["take_profit_price"] is None
+                    else _decimal_text(fixture["take_profit_price"])
+                ),
+                stop_take_profit_precedence=str(
+                    fixture["stop_take_profit_precedence"]
                 ),
             )
         )

@@ -18,13 +18,13 @@
   "launcher_inventory": [
     {
       "mode": "0400",
-      "sha256": "96309f552d3fe107c3c8ad903ec707ae30edde04d841cd6d876f5ddc914a500b",
+      "sha256": "8e8989142c38982f9b3f9d790c0f642636c0e21127dd0e953186c90b69eed23d",
       "source": "engines/nautilus/launcher/nautilus_backtest.py",
       "target": "/engine/launcher/nautilus_backtest.py"
     },
     {
       "mode": "0400",
-      "sha256": "362702946639b3369b0b2183a1a35937a8359b397dfef3f76d8f2aa995223583",
+      "sha256": "523f65c956adba111a88ce911b504a6beb86697a8a25741a0e6582b90af86edc",
       "source": "engines/nautilus/launcher/target_portfolio_strategy.py",
       "target": "/engine/launcher/target_portfolio_strategy.py"
     }
@@ -35,6 +35,6 @@
   "result_validator_id": "nautilus-backtest-simulation-result-v1",
   "schema_version": 1,
   "semantic_profile": "nautilus-execution-simulation-v2",
-  "source_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
+  "source_commit": "8a49220df87be2bc9c18e3be511ae1640d972faa",
   "timeout_seconds": 120
 }

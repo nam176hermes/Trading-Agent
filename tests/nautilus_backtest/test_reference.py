@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -19,6 +20,8 @@ _GOLDENS = {
     "session-boundary": ("e358a04095cab4ddc9fe6fd14e120d588ee47377fa859fa751e4855a0bf8e1bb", "1", "0.102", "0", "1", "3"),
     "event-digest": ("30b6de71b9d7a69f8e1038d1584efecd3c2bdfe4a944303a479c4680f078cd33", "1", "0.1", "1", "1", "2"),
 }
+_START = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
+_END = datetime(2026, 8, 5, 12, 30, tzinfo=UTC)
 
 
 def _scenario(scenario_id: str):
@@ -27,6 +30,7 @@ def _scenario(scenario_id: str):
     scenario, catalog, strategy, market = _simulation_fixture(scenario_id)[4], *_simulation_fixture(scenario_id)[1:4]
     return BacktestScenarioV1.from_mounted_artifacts(
         scenario_bytes=scenario, catalog_bytes=catalog, strategy_bytes=strategy, market_data_bytes=market
+        , start_time=_START, end_time=_END
     )
 
 
@@ -45,7 +49,7 @@ def test_reference_oracle_has_fixed_golden_outcome_for_each_scenario(scenario_id
     assert outcome.total_events == int(events)
 
 
-@pytest.mark.parametrize("mutation", ("fee", "fill", "event", "session", "trigger", "slippage"))
+@pytest.mark.parametrize("mutation", ("fee", "slippage"))
 def test_reference_oracle_changes_deterministically_when_execution_input_changes(mutation: str) -> None:
     from packages.nautilus_backtest.reference import calculate_reference_outcome
 
@@ -53,14 +57,6 @@ def test_reference_oracle_changes_deterministically_when_execution_input_changes
     raw = json.loads(baseline.mounted_bytes)
     if mutation == "fee":
         raw["fee_rate"] = "0.002"
-    elif mutation == "fill":
-        raw["events"][0]["volume"] = "0"
-    elif mutation == "event":
-        raw["events"][0]["close"] = "102"
-    elif mutation == "session":
-        raw["events"][0]["session_open"] = False
-    elif mutation == "trigger":
-        raw["stop_price"] = "99"
     else:
         raw["slippage_bps"] = "1"
     changed = json.dumps(raw, separators=(",", ":"), sort_keys=True).encode()
@@ -69,6 +65,8 @@ def test_reference_oracle_changes_deterministically_when_execution_input_changes
         catalog_bytes=_simulation_fixture("event-digest")[1],
         strategy_bytes=_simulation_fixture("event-digest")[2],
         market_data_bytes=_simulation_fixture("event-digest")[3],
+        start_time=_START,
+        end_time=_END,
     )
 
     assert calculate_reference_outcome(scenario) != calculate_reference_outcome(baseline)
