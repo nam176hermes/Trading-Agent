@@ -163,3 +163,33 @@ def test_root_scenario_rejects_event_outside_command_window() -> None:
             start_time=datetime(2026, 8, 5, 12, 1, tzinfo=UTC),
             end_time=_END,
         )
+
+
+def test_root_scenario_rejects_more_market_rows_than_scenario_events() -> None:
+    """Dropping cardinality parity would admit input the launcher rejects."""
+    from packages.nautilus_backtest.scenarios import BacktestScenarioError, BacktestScenarioV1
+
+    _configuration, catalog_bytes, strategy, market, scenario_bytes = (
+        _simulation_fixture("event-digest")
+    )
+    market_rows = [json.loads(market), json.loads(market)]
+    market = b"".join(_canonical(row) + b"\n" for row in market_rows)
+    catalog = json.loads(catalog_bytes)
+    catalog["row_count"] = 2
+    catalog["canonical_rows_sha256"] = hashlib.sha256(
+        _canonical(market_rows)
+    ).hexdigest()
+    catalog_bytes = _canonical(catalog)
+    scenario = json.loads(scenario_bytes)
+    scenario["catalog_sha256"] = hashlib.sha256(catalog_bytes).hexdigest()
+    scenario["market_data_sha256"] = hashlib.sha256(market).hexdigest()
+
+    with pytest.raises(BacktestScenarioError, match="events do not match market data"):
+        BacktestScenarioV1.from_mounted_artifacts(
+            scenario_bytes=_canonical(scenario),
+            catalog_bytes=catalog_bytes,
+            strategy_bytes=strategy,
+            market_data_bytes=market,
+            start_time=_START,
+            end_time=_END,
+        )

@@ -264,6 +264,8 @@ class BacktestScenarioV1(BaseModel):
         events = value.get("events")
         if type(events) is not list or not events:
             raise BacktestScenarioError("scenario events are invalid")
+        if len(events) != len(market_rows):
+            raise BacktestScenarioError("scenario events do not match market data")
         validated_events: list[dict[str, object]] = []
         previous_time: datetime | None = None
         for index, event in enumerate(events, start=1):
