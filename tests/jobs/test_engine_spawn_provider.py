@@ -189,6 +189,11 @@ def _closure(
             version="bubblewrap 0.9.0",
             capabilities=("--perms", "--ro-bind-data"),
         ),
+        semantic_profile=(
+            "nautilus-execution-simulation-v2"
+            if profile == "execution-simulation"
+            else None
+        ),
     )
 
 

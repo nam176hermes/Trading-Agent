@@ -16,14 +16,15 @@
   "engine_wheel_target": "/engine/wheels/nautilus_trader-1.227.0-cp312-cp312-manylinux_2_39_x86_64.whl",
   "entrypoint": "/usr/bin/python3.12",
   "launcher_mode": "0400",
-  "launcher_sha256": "6ff8634af211c7aee9789bef6be9fc9a1f8e64a81a10909fc1248bf620104366",
+  "launcher_sha256": "e8012838ba6eca788de98d6520123f769602d28f8f57662395b2e0d54b3dab8f",
   "launcher_source": "engines/nautilus/launcher/nautilus_backtest.py",
   "launcher_target": "/engine/launcher/nautilus_backtest.py",
   "profile": "execution-simulation",
-  "profile_manifest_schema_version": 2,
+  "profile_manifest_schema_version": 3,
   "python_identity": "CPython 3.12.3",
   "result_validator_id": "nautilus-backtest-simulation-result-v1",
   "schema_version": 1,
+  "semantic_profile": "nautilus-execution-simulation-v2",
   "source_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
   "timeout_seconds": 120
 }

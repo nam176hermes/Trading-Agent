@@ -72,7 +72,9 @@ _MANIFEST_FIELDS_V1 = {
     "files",
 }
 _MANIFEST_FIELDS_V2 = {*_MANIFEST_FIELDS_V1, "profile"}
+_MANIFEST_FIELDS_V3 = {*_MANIFEST_FIELDS_V2, "semantic_profile"}
 _FILE_FIELDS = {"path", "target", "sha256", "size", "mode"}
+_SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,12 +301,21 @@ def attest_nautilus_backtest_closure(
     schema_version = closure_manifest.get("schema_version")
     if schema_version == 1 and set(closure_manifest) == _MANIFEST_FIELDS_V1:
         profile = "zero-order"
+        semantic_profile = None
     elif schema_version == 2 and set(closure_manifest) == _MANIFEST_FIELDS_V2:
         profile = closure_manifest.get("profile")
+        semantic_profile = None
+    elif schema_version == 3 and set(closure_manifest) == _MANIFEST_FIELDS_V3:
+        profile = closure_manifest.get("profile")
+        semantic_profile = closure_manifest.get("semantic_profile")
     else:
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest fields are missing or unknown")
     if profile != expected_profile or profile not in _PROFILES:
         _blocked("ENGINE_CLOSURE_INVALID", "closure profile does not match explicit authority")
+    if profile == "execution-simulation" and semantic_profile != _SEMANTIC_PROFILE:
+        _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
+    if schema_version == 3 and profile != "execution-simulation":
+        _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     expected_identity = _PROFILES[profile]
     if (
         closure_manifest["engine_name"] != _EXPECTED_ENGINE_NAME
@@ -362,6 +373,8 @@ def attest_nautilus_backtest_closure(
         "source_commit": closure_manifest["source_commit"],
         "timeout_seconds": timeout,
     }
+    if semantic_profile is not None:
+        digest_document["semantic_profile"] = semantic_profile
     return CompleteEngineClosureAttestation(
         profile=profile,
         source_commit=closure_manifest["source_commit"],
@@ -372,6 +385,7 @@ def attest_nautilus_backtest_closure(
         timeout_seconds=timeout,
         result_validator_id=closure_manifest["result_validator_id"],
         sandbox=_sandbox_proof(config.sandbox_executable),
+        semantic_profile=semantic_profile,
     )
 
 

@@ -61,6 +61,7 @@ _POLICY_FIELDS = {
     "python_identity",
     "result_validator_id",
     "schema_version",
+    "semantic_profile",
     "source_commit",
     "timeout_seconds",
 }
@@ -91,6 +92,7 @@ _ARGV_PREFIX = (
     _PROFILE,
 )
 _VALIDATOR = "nautilus-backtest-simulation-result-v1"
+_SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
 _RENAME_NOREPLACE = 1
 
 
@@ -209,12 +211,13 @@ def _load_policy(path: Path) -> dict[str, object]:
         )
     if (
         policy["schema_version"] != 1
-        or policy["profile_manifest_schema_version"] != 2
+        or policy["profile_manifest_schema_version"] != 3
         or policy["profile"] != _PROFILE
         or policy["launcher_source"] != _LAUNCHER_SOURCE
         or policy["launcher_target"] != _LAUNCHER_TARGET
         or tuple(policy["argv_prefix"]) != _ARGV_PREFIX
         or policy["result_validator_id"] != _VALIDATOR
+        or policy["semantic_profile"] != _SEMANTIC_PROFILE
         or policy["launcher_mode"] != "0400"
         or policy["engine_wheel_mode"] != "0400"
         or policy["engine_name"] != "nautilus_trader"
@@ -591,6 +594,7 @@ def materialize_runtime_closure(
             "python_identity": policy["python_identity"],
             "result_validator_id": policy["result_validator_id"],
             "schema_version": policy["profile_manifest_schema_version"],
+            "semantic_profile": policy["semantic_profile"],
             "source_commit": policy["source_commit"],
             "timeout_seconds": policy["timeout_seconds"],
         }

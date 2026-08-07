@@ -168,10 +168,11 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
             "launcher_source": "engines/nautilus/launcher/nautilus_backtest.py",
             "launcher_target": "/engine/launcher/nautilus_backtest.py",
             "profile": "execution-simulation",
-            "profile_manifest_schema_version": 2,
+            "profile_manifest_schema_version": 3,
             "python_identity": "CPython 3.12.3",
             "result_validator_id": "nautilus-backtest-simulation-result-v1",
             "schema_version": 1,
+            "semantic_profile": "nautilus-execution-simulation-v2",
             "source_commit": SOURCE_COMMIT,
             "timeout_seconds": 120,
         }
@@ -232,6 +233,7 @@ def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None
         artifacts / "artifact-manifest.json"
     )
     assert policy["launcher_sha256"] == _sha256(LAUNCHER)
+    assert policy["semantic_profile"] == "nautilus-execution-simulation-v2"
 
 
 def test_materializer_cli_bootstraps_only_the_checkout_authority() -> None:
@@ -264,7 +266,8 @@ def test_materializer_publishes_a_new_attested_simulation_closure_atomically(
     assert (base / "closure-manifest.json").read_bytes() == base_manifest_before
     manifest = json.loads((published / "closure-manifest.json").read_text())
     assert manifest["profile"] == "execution-simulation"
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
+    assert manifest["semantic_profile"] == "nautilus-execution-simulation-v2"
     assert manifest["argv_prefix"][-2:] == ["--profile", "execution-simulation"]
     assert manifest["artifact_manifest_sha256"] == _sha256(
         artifacts / "artifact-manifest.json"
@@ -275,6 +278,7 @@ def test_materializer_publishes_a_new_attested_simulation_closure_atomically(
         expected_profile="execution-simulation",
     )
     assert closure.profile == "execution-simulation"
+    assert closure.semantic_profile == "nautilus-execution-simulation-v2"
 
 
 def test_materializer_attests_staging_then_re_attests_same_tree_after_rename(
@@ -580,7 +584,9 @@ def test_materializer_rejects_every_bound_input_digest_drift(
     assert not destination.exists()
 
 
-@pytest.mark.parametrize("mutation", ["unlisted-file", "unsafe-mode", "profile"])
+@pytest.mark.parametrize(
+    "mutation", ["unlisted-file", "unsafe-mode", "profile", "semantic-profile"]
+)
 def test_materializer_fails_closed_on_inventory_mode_or_profile_drift(
     closure_inputs, mutation: str
 ) -> None:
@@ -598,10 +604,16 @@ def test_materializer_fails_closed_on_inventory_mode_or_profile_drift(
         launcher = base / "files/engine/launcher/nautilus_backtest.py"
         launcher.chmod(0o600)
         base.chmod(0o500)
-    else:
+    elif mutation == "profile":
         policy_path.chmod(0o600)
         policy = json.loads(policy_path.read_text())
         policy["profile"] = "zero-order"
+        policy_path.write_bytes(_canonical(policy) + b"\n")
+        policy_path.chmod(0o400)
+    else:
+        policy_path.chmod(0o600)
+        policy = json.loads(policy_path.read_text())
+        policy["semantic_profile"] = "transport-only"
         policy_path.write_bytes(_canonical(policy) + b"\n")
         policy_path.chmod(0o400)
 

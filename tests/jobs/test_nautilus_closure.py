@@ -67,7 +67,13 @@ def closure_config() -> NautilusClosureConfig:
         shutil.rmtree(base)
 
 
-def _build_closure_config(tmp_path: Path, sandbox: Path, *, profile: str):
+def _build_closure_config(
+    tmp_path: Path,
+    sandbox: Path,
+    *,
+    profile: str,
+    semantic_profile: str | None = None,
+):
 
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(mode=0o700)
@@ -120,7 +126,7 @@ def _build_closure_config(tmp_path: Path, sandbox: Path, *, profile: str):
     }
     argv_prefix, validator_id = profiles[profile]
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3 if semantic_profile is not None else 2,
         "profile": profile,
         "engine_name": "nautilus_trader",
         "engine_version": "1.227.0",
@@ -133,6 +139,8 @@ def _build_closure_config(tmp_path: Path, sandbox: Path, *, profile: str):
         "result_validator_id": validator_id,
         "files": records,
     }
+    if semantic_profile is not None:
+        manifest["semantic_profile"] = semantic_profile
     (runtime / "closure-manifest.json").write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")), encoding="utf-8"
     )
@@ -250,7 +258,10 @@ def test_attestor_accepts_only_an_explicit_execution_simulation_profile(
         shutil.copyfile("/usr/bin/bwrap", sandbox)
         sandbox.chmod(0o500)
         config = _build_closure_config(
-            base, sandbox, profile="execution-simulation"
+            base,
+            sandbox,
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
         )
 
         closure = attest_nautilus_backtest_closure(
@@ -258,10 +269,93 @@ def test_attestor_accepts_only_an_explicit_execution_simulation_profile(
         )
 
         assert closure.profile == "execution-simulation"
+        assert closure.semantic_profile == "nautilus-execution-simulation-v2"
         assert closure.argv_prefix[-2:] == ("--profile", "execution-simulation")
         assert closure.result_validator_id == "nautilus-backtest-simulation-result-v1"
         with pytest.raises(EngineSpawnError, match="profile"):
             attest_nautilus_backtest_closure(config, expected_profile="zero-order")
+    finally:
+        for directory, child_directories, files in os.walk(base, topdown=False):
+            current = Path(directory)
+            for name in files:
+                (current / name).chmod(0o600)
+            for name in child_directories:
+                (current / name).chmod(0o700)
+            current.chmod(0o700)
+        shutil.rmtree(base)
+
+
+def test_attestor_rejects_legacy_execution_transport_manifest_for_v2_authority(
+    tmp_path: Path,
+) -> None:
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("Bubblewrap is required for the Nautilus closure test")
+    base = Path(
+        tempfile.mkdtemp(prefix="nautilus-legacy-closure-test-", dir="/home/thenam176/.cache")
+    )
+    try:
+        sandbox = base / "bwrap"
+        shutil.copyfile("/usr/bin/bwrap", sandbox)
+        sandbox.chmod(0o500)
+        config = _build_closure_config(
+            base, sandbox, profile="execution-simulation"
+        )
+
+        with pytest.raises(EngineSpawnError, match="semantic"):
+            attest_nautilus_backtest_closure(
+                config, expected_profile="execution-simulation"
+            )
+    finally:
+        for directory, child_directories, files in os.walk(base, topdown=False):
+            current = Path(directory)
+            for name in files:
+                (current / name).chmod(0o600)
+            for name in child_directories:
+                (current / name).chmod(0o700)
+            current.chmod(0o700)
+        shutil.rmtree(base)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "v1", "changed"])
+def test_attestor_rejects_semantic_profile_manifest_drift(
+    tmp_path: Path, mutation: str
+) -> None:
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("Bubblewrap is required for the Nautilus closure test")
+    base = Path(
+        tempfile.mkdtemp(prefix="nautilus-semantic-closure-test-", dir="/home/thenam176/.cache")
+    )
+    try:
+        sandbox = base / "bwrap"
+        shutil.copyfile("/usr/bin/bwrap", sandbox)
+        sandbox.chmod(0o500)
+        config = _build_closure_config(
+            base,
+            sandbox,
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+        )
+        manifest_path = config.runtime_root / "closure-manifest.json"
+        config.runtime_root.chmod(0o700)
+        manifest_path.chmod(0o600)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if mutation == "missing":
+            del manifest["semantic_profile"]
+        elif mutation == "v1":
+            manifest["semantic_profile"] = "nautilus-execution-simulation-v1"
+        else:
+            manifest["semantic_profile"] = "transport-only"
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        manifest_path.chmod(0o400)
+        config.runtime_root.chmod(0o500)
+
+        with pytest.raises(EngineSpawnError, match="semantic|fields"):
+            attest_nautilus_backtest_closure(
+                config, expected_profile="execution-simulation"
+            )
     finally:
         for directory, child_directories, files in os.walk(base, topdown=False):
             current = Path(directory)

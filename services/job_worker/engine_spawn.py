@@ -129,6 +129,7 @@ class CompleteEngineClosureAttestation:
     timeout_seconds: int
     result_validator_id: str
     sandbox: OsSandboxProof
+    semantic_profile: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -496,6 +497,18 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
     attestation = value
     if (
         attestation.profile not in {"zero-order", "execution-simulation"}
+        or (
+            attestation.semantic_profile
+            not in {None, "nautilus-execution-simulation-v2"}
+        )
+        or (
+            attestation.profile == "execution-simulation"
+            and attestation.semantic_profile != "nautilus-execution-simulation-v2"
+        )
+        or (
+            attestation.profile == "zero-order"
+            and attestation.semantic_profile is not None
+        )
         or not isinstance(attestation.source_commit, str)
         or _SOURCE_COMMIT.fullmatch(attestation.source_commit) is None
         or not isinstance(attestation.closure_sha256, str)

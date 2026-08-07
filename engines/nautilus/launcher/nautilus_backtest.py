@@ -15,7 +15,8 @@ import re
 import stat
 import sys
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Context, Decimal, InvalidOperation, localcontext
 from pathlib import Path
 from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
@@ -92,6 +93,70 @@ _CATALOG_FIELDS = {
     "timeframe",
 }
 _MARKET_ROW_FIELDS = {"close", "high", "low", "open", "open_time", "volume"}
+_SIMULATION_SCENARIO_IDS = {
+    "long-accounting",
+    "short-accounting",
+    "partial-fill",
+    "same-bar-stop-take-profit",
+    "stale-quote",
+    "zero-liquidity",
+    "session-boundary",
+    "event-digest",
+}
+_SIMULATION_CONFIGURATION = {
+    "execution_mode": "execution-simulation",
+    "run_analysis": False,
+    "schema_version": "nautilus-backtest-engine-config-v1",
+}
+_SIMULATION_STRATEGY_FIELDS = {
+    "effective_at",
+    "positions",
+    "schema_version",
+}
+_SIMULATION_POSITION_FIELDS = {"instrument", "target_quantity"}
+_SIMULATION_INSTRUMENT = {
+    "product_type": "crypto_spot",
+    "symbol": "BTCUSDT",
+    "venue": "BINANCE",
+}
+_SIMULATION_SCENARIO_FIELDS = {
+    "catalog_sha256",
+    "events",
+    "fee_rate",
+    "instrument",
+    "liquidity_limit",
+    "market_data_sha256",
+    "scenario_id",
+    "schema_version",
+    "session_policy",
+    "slippage_bps",
+    "stale_quote_threshold_seconds",
+    "stop_price",
+    "stop_take_profit_precedence",
+    "strategy_sha256",
+    "take_profit_price",
+}
+_SIMULATION_EVENT_FIELDS = {
+    "ask",
+    "bid",
+    "close",
+    "event_time",
+    "high",
+    "low",
+    "open",
+    "quote_time",
+    "sequence",
+    "session_open",
+    "volume",
+}
+_CANONICAL_DECIMAL = re.compile(
+    r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*[1-9])?$", re.ASCII
+)
+_SIMULATION_DECIMAL_CONTEXT = Context(prec=80, Emin=-999, Emax=999)
+_MAX_DECIMAL_SIGNIFICANT_DIGITS = 38
+_MAX_DECIMAL_EXPONENT_MAGNITUDE = 38
+_NAUTILUS_PRICE_MAX = Decimal("17014118346046")
+_NAUTILUS_QUANTITY_MAX = Decimal("34028236692093")
 
 
 def _canonical_json_bytes(value: object) -> bytes:
@@ -306,13 +371,97 @@ def _input_artifacts_sha256(
 
 
 def _canonical_object(value: bytes, *, label: str) -> dict[str, object]:
+    def reject_duplicate_keys(
+        pairs: list[tuple[str, object]],
+    ) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for name, item in pairs:
+            if name in result:
+                raise ValueError(f"{label} contains a duplicate key")
+            result[name] = item
+        return result
+
     try:
-        decoded = json.loads(value)
+        decoded = json.loads(value, object_pairs_hook=reject_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{label} JSON is invalid") from exc
     if not isinstance(decoded, dict) or _canonical_json_bytes(decoded) != value:
         raise ValueError(f"{label} must be a canonical JSON object")
     return decoded
+
+
+def _decimal(value: object, *, label: str, positive: bool = False) -> Decimal:
+    if (
+        not isinstance(value, str)
+        or _CANONICAL_DECIMAL.fullmatch(value) is None
+        or value == "-0"
+    ):
+        raise ValueError(f"{label} must be a canonical decimal string")
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError(f"{label} must be a canonical decimal string") from exc
+    decimal_tuple = parsed.as_tuple()
+    if (
+        len(decimal_tuple.digits) > _MAX_DECIMAL_SIGNIFICANT_DIGITS
+        or not isinstance(decimal_tuple.exponent, int)
+        or abs(decimal_tuple.exponent) > _MAX_DECIMAL_EXPONENT_MAGNITUDE
+    ):
+        raise ValueError(f"{label} exceeds the simulation decimal bound")
+    if not parsed.is_finite() or (positive and parsed <= 0):
+        raise ValueError(f"{label} decimal is outside its allowed range")
+    return parsed
+
+
+def _decimal_text(value: Decimal) -> str:
+    if not value.is_finite():
+        raise ValueError("simulation produced a non-finite decimal")
+    if value.is_zero():
+        return "0"
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered
+
+
+def _require_nautilus_fixed_point_bound(
+    value: Decimal, *, maximum: Decimal, label: str
+) -> None:
+    if not value.is_finite() or abs(value) > maximum:
+        raise ValueError(f"{label} exceeds the Nautilus fixed-point bound")
+
+
+def _require_nautilus_price(value: Decimal, *, label: str) -> None:
+    _require_nautilus_fixed_point_bound(
+        value, maximum=_NAUTILUS_PRICE_MAX, label=label
+    )
+
+
+def _require_nautilus_quantity(value: Decimal, *, label: str) -> None:
+    _require_nautilus_fixed_point_bound(
+        value, maximum=_NAUTILUS_QUANTITY_MAX, label=label
+    )
+
+
+def _require_precision(value: Decimal, precision: int, *, label: str) -> None:
+    exponent = value.as_tuple().exponent
+    if not isinstance(exponent, int) or exponent < -precision:
+        raise ValueError(f"{label} exceeds the fixed instrument precision")
+
+
+def _fixed_precision_text(value: Decimal, precision: int) -> str:
+    _require_precision(value, precision, label="Nautilus fixture value")
+    return format(value, f".{precision}f")
+
+
+def _nautilus_price_text(value: Decimal, precision: int, *, label: str) -> str:
+    _require_nautilus_price(value, label=label)
+    return _fixed_precision_text(value, precision)
+
+
+def _nautilus_quantity_text(value: Decimal, precision: int, *, label: str) -> str:
+    _require_nautilus_quantity(value, label=label)
+    return _fixed_precision_text(value, precision)
 
 
 def _required_sha256(value: object, *, label: str) -> None:
@@ -431,6 +580,770 @@ def validate_zero_order_fixture_inputs(
     ):
         raise ValueError("market fixture does not match the 04A canonical rows")
     return catalog, rows
+
+
+def _validated_simulation_catalog(
+    catalog_bytes: bytes, market_bytes: bytes
+) -> tuple[dict[str, object], tuple[dict[str, object], ...]]:
+    catalog = _canonical_object(catalog_bytes, label="catalog manifest")
+    if (
+        set(catalog) != _CATALOG_FIELDS
+        or catalog.get("schema_version") != "market-dataset-manifest-v1"
+        or catalog.get("timeframe") != "1m"
+        or catalog.get("instrument") != _SIMULATION_INSTRUMENT
+    ):
+        raise ValueError("simulation catalog manifest is invalid")
+    row_count = catalog.get("row_count")
+    if type(row_count) is not int or not 0 < row_count <= 32:
+        raise ValueError("simulation catalog row_count is invalid")
+    for name in (
+        "canonical_rows_sha256",
+        "content_digest",
+        "parquet_sha256",
+        "raw_evidence_sha256",
+    ):
+        _required_sha256(catalog.get(name), label=f"catalog {name}")
+    for name in (
+        "first_event_at",
+        "last_event_at",
+        "observed_at",
+        "fetched_at",
+        "known_at",
+    ):
+        _canonical_timestamp(catalog.get(name), label=f"catalog {name}")
+    continuity = catalog.get("continuity")
+    if (
+        not isinstance(continuity, dict)
+        or set(continuity) != {"timeframe", "gap_report", "duplicate_report"}
+        or continuity["timeframe"] != "1m"
+        or continuity["gap_report"] != []
+        or continuity["duplicate_report"] != []
+    ):
+        raise ValueError("simulation catalog continuity is invalid")
+    if not market_bytes.endswith(b"\n"):
+        raise ValueError("simulation market fixture must use canonical JSONL")
+    lines = market_bytes[:-1].split(b"\n")
+    if len(lines) != row_count or any(not line for line in lines):
+        raise ValueError("simulation market fixture row count is invalid")
+    rows = tuple(
+        _canonical_object(line, label="simulation market row") for line in lines
+    )
+    if any(set(row) != _MARKET_ROW_FIELDS for row in rows):
+        raise ValueError("simulation market fixture row fields are invalid")
+    for row in rows:
+        _canonical_timestamp(row["open_time"], label="simulation market row")
+        prices = {
+            name: _decimal(row[name], label=f"simulation market {name}")
+            for name in _MARKET_ROW_FIELDS - {"open_time"}
+        }
+        for name in ("open", "high", "low", "close"):
+            _require_nautilus_price(
+                prices[name], label=f"simulation market {name}"
+            )
+        _require_nautilus_quantity(
+            prices["volume"], label="simulation market volume"
+        )
+        if (
+            prices["open"] <= 0
+            or prices["high"] <= 0
+            or prices["low"] <= 0
+            or prices["close"] <= 0
+            or prices["volume"] < 0
+            or prices["low"] > min(prices["open"], prices["close"])
+            or prices["high"] < max(prices["open"], prices["close"])
+        ):
+            raise ValueError("simulation market price range is invalid")
+    if not hmac.compare_digest(
+        hashlib.sha256(_canonical_json_bytes(list(rows))).hexdigest(),
+        str(catalog["canonical_rows_sha256"]),
+    ):
+        raise ValueError("simulation market fixture does not match catalog")
+    return catalog, rows
+
+
+def _validated_simulation_strategy(
+    raw: bytes, *, start: datetime, end: datetime
+) -> tuple[dict[str, object], Decimal]:
+    strategy = _canonical_object(raw, label="simulation strategy")
+    if (
+        set(strategy) != _SIMULATION_STRATEGY_FIELDS
+        or strategy.get("schema_version") != "nautilus-execution-target-v1"
+        or type(strategy.get("positions")) is not list
+        or len(strategy["positions"]) != 1
+    ):
+        raise ValueError("simulation strategy fields are invalid")
+    effective_at = _canonical_timestamp(
+        strategy["effective_at"], label="simulation strategy"
+    )
+    if not start <= effective_at < end:
+        raise ValueError("simulation strategy is outside the command window")
+    position = strategy["positions"][0]
+    if (
+        not isinstance(position, dict)
+        or set(position) != _SIMULATION_POSITION_FIELDS
+        or position.get("instrument") != _SIMULATION_INSTRUMENT
+    ):
+        raise ValueError("simulation strategy position is invalid")
+    target = _decimal(position["target_quantity"], label="target quantity")
+    _require_precision(target, 6, label="target quantity")
+    _require_nautilus_quantity(target, label="target quantity")
+    if target == 0:
+        raise ValueError("execution simulation requires a non-zero target quantity")
+    return strategy, target
+
+
+def _validate_simulation_fixture_inputs(
+    request: dict[str, object], artifacts: tuple[bytes, ...]
+) -> dict[str, object]:
+    """Validate the closed semantic grammar before any engine setup occurs."""
+
+    if len(artifacts) != len(_SIMULATION_INPUT_ARTIFACT_NAMES):
+        raise ValueError("simulation requires five hash-bound inputs")
+    payload = request.get("payload")
+    if (
+        not isinstance(payload, dict)
+        or payload.get("command_type") != "RunBacktestSimulation"
+    ):
+        raise ValueError("execution simulation requires RunBacktestSimulation")
+    start = _canonical_timestamp(payload.get("start_time"), label="command start")
+    end = _canonical_timestamp(payload.get("end_time"), label="command end")
+    if end <= start:
+        raise ValueError("simulation command window is invalid")
+    configuration_raw, catalog_raw, strategy_raw, market_raw, scenario_raw = artifacts
+    configuration = _canonical_object(
+        configuration_raw, label="simulation engine configuration"
+    )
+    if configuration != _SIMULATION_CONFIGURATION:
+        raise ValueError("simulation engine configuration fields are invalid")
+    catalog, market_rows = _validated_simulation_catalog(catalog_raw, market_raw)
+    strategy, target = _validated_simulation_strategy(
+        strategy_raw, start=start, end=end
+    )
+    scenario = _canonical_object(scenario_raw, label="simulation scenario")
+    if set(scenario) != _SIMULATION_SCENARIO_FIELDS:
+        raise ValueError("simulation scenario fields are missing or unknown")
+    scenario_id = scenario.get("scenario_id")
+    if (
+        scenario.get("schema_version") != "nautilus-execution-scenario-v1"
+        or scenario_id not in _SIMULATION_SCENARIO_IDS
+        or scenario.get("instrument") != _SIMULATION_INSTRUMENT
+        or scenario.get("session_policy") != "explicit-open-flag-v1"
+    ):
+        raise ValueError("simulation scenario identity is invalid")
+    if scenario.get("stop_take_profit_precedence") != "stop-first":
+        raise ValueError("simulation stop/take-profit precedence is invalid")
+    bindings = {
+        "catalog_sha256": hashlib.sha256(catalog_raw).hexdigest(),
+        "strategy_sha256": hashlib.sha256(strategy_raw).hexdigest(),
+        "market_data_sha256": hashlib.sha256(market_raw).hexdigest(),
+    }
+    for name, expected in bindings.items():
+        observed = scenario.get(name)
+        if not isinstance(observed, str) or not hmac.compare_digest(observed, expected):
+            label = name.removesuffix("_sha256").replace("_", " ")
+            raise ValueError(f"simulation scenario {label} binding is invalid")
+    fee_rate = _decimal(scenario["fee_rate"], label="fee rate")
+    slippage_bps = _decimal(scenario["slippage_bps"], label="slippage bps")
+    liquidity_limit = _decimal(
+        scenario["liquidity_limit"], label="liquidity limit"
+    )
+    _require_nautilus_quantity(liquidity_limit, label="liquidity limit")
+    if (
+        not Decimal(0) <= fee_rate < Decimal(1)
+        or not Decimal(0) <= slippage_bps < Decimal(10_000)
+        or liquidity_limit < 0
+    ):
+        raise ValueError("simulation decimal parameter is outside its allowed range")
+    threshold = scenario.get("stale_quote_threshold_seconds")
+    if type(threshold) is not int or not 0 <= threshold <= 86_400:
+        raise ValueError("simulation stale quote threshold is invalid")
+    stop = (
+        None
+        if scenario["stop_price"] is None
+        else _decimal(scenario["stop_price"], label="stop price", positive=True)
+    )
+    take_profit = (
+        None
+        if scenario["take_profit_price"] is None
+        else _decimal(
+            scenario["take_profit_price"],
+            label="take-profit price",
+            positive=True,
+        )
+    )
+    if stop is not None:
+        _require_precision(stop, 2, label="stop price")
+        _require_nautilus_price(stop, label="stop price")
+    if take_profit is not None:
+        _require_precision(take_profit, 2, label="take-profit price")
+        _require_nautilus_price(take_profit, label="take-profit price")
+    raw_events = scenario.get("events")
+    if type(raw_events) is not list or not 0 < len(raw_events) <= 32:
+        raise ValueError("simulation scenario events are invalid")
+    if len(raw_events) != len(market_rows):
+        raise ValueError("simulation scenario events do not match market data")
+    events: list[dict[str, object]] = []
+    previous_time: datetime | None = None
+    for index, (raw_event, row) in enumerate(
+        zip(raw_events, market_rows, strict=True), start=1
+    ):
+        if not isinstance(raw_event, dict) or set(raw_event) != _SIMULATION_EVENT_FIELDS:
+            raise ValueError("simulation event fields are missing or unknown")
+        if raw_event.get("sequence") != index or type(raw_event.get("session_open")) is not bool:
+            raise ValueError("simulation event sequence or session flag is invalid")
+        event_time = _canonical_timestamp(
+            raw_event["event_time"], label="simulation event"
+        )
+        quote_time = _canonical_timestamp(
+            raw_event["quote_time"], label="simulation quote"
+        )
+        if not start <= event_time < end:
+            raise ValueError("simulation event is outside the command window")
+        if quote_time > event_time:
+            raise ValueError("simulation quote occurs after its event")
+        if previous_time is not None and event_time <= previous_time:
+            raise ValueError("simulation events are not strictly ordered")
+        previous_time = event_time
+        decimals = {
+            name: _decimal(raw_event[name], label=f"simulation event {name}")
+            for name in ("ask", "bid", "close", "high", "low", "open", "volume")
+        }
+        for name in ("ask", "bid", "close", "high", "low", "open"):
+            _require_precision(
+                decimals[name], 2, label=f"simulation event {name}"
+            )
+            _require_nautilus_price(
+                decimals[name], label=f"simulation event {name}"
+            )
+        _require_precision(
+            decimals["volume"], 6, label="simulation event volume"
+        )
+        _require_nautilus_quantity(
+            decimals["volume"], label="simulation event volume"
+        )
+        if (
+            decimals["ask"] <= 0
+            or decimals["bid"] <= 0
+            or decimals["bid"] > decimals["ask"]
+            or decimals["open"] <= 0
+            or decimals["high"] <= 0
+            or decimals["low"] <= 0
+            or decimals["close"] <= 0
+            or decimals["volume"] < 0
+            or decimals["low"] > min(decimals["open"], decimals["close"])
+            or decimals["high"] < max(decimals["open"], decimals["close"])
+        ):
+            raise ValueError("simulation event price or quantity range is invalid")
+        expected_row = {
+            "close": raw_event["close"],
+            "high": raw_event["high"],
+            "low": raw_event["low"],
+            "open": raw_event["open"],
+            "open_time": raw_event["event_time"],
+            "volume": raw_event["volume"],
+        }
+        if expected_row != row:
+            raise ValueError("simulation event does not match hash-bound market data")
+        events.append(
+            {
+                **decimals,
+                "event_time": event_time,
+                "event_time_text": raw_event["event_time"],
+                "quote_time": quote_time,
+                "sequence": index,
+                "session_open": raw_event["session_open"],
+            }
+        )
+    if catalog["first_event_at"] != raw_events[0]["event_time"] or catalog[
+        "last_event_at"
+    ] != raw_events[-1]["event_time"]:
+        raise ValueError("simulation catalog event boundary is invalid")
+    _validate_executable_price_bounds(
+        events=events,
+        target=target,
+        slippage_bps=slippage_bps,
+        stop=stop,
+        take_profit=take_profit,
+    )
+    _validate_scenario_semantic_preconditions(
+        scenario_id=scenario_id,
+        target=target,
+        events=events,
+        liquidity_limit=liquidity_limit,
+        slippage_bps=slippage_bps,
+        threshold=threshold,
+        stop=stop,
+        take_profit=take_profit,
+    )
+    return {
+        "events": tuple(events),
+        "fee_rate": fee_rate,
+        "liquidity_limit": liquidity_limit,
+        "scenario_id": scenario_id,
+        "slippage_bps": slippage_bps,
+        "stale_quote_threshold_seconds": threshold,
+        "stop_price": stop,
+        "stop_take_profit_precedence": "stop-first",
+        "take_profit_price": take_profit,
+        "target_quantity": target,
+    }
+
+
+def _validate_executable_price_bounds(
+    *,
+    events: list[dict[str, object]],
+    target: Decimal,
+    slippage_bps: Decimal,
+    stop: Decimal | None,
+    take_profit: Decimal | None,
+) -> None:
+    """Reject derived execution prices that Nautilus cannot represent."""
+
+    rate = slippage_bps / Decimal(10_000)
+    is_long = target > 0
+    for event in events:
+        quote = event["ask"] if is_long else event["bid"]
+        assert isinstance(quote, Decimal)
+        entry = quote * (Decimal(1) + rate if is_long else Decimal(1) - rate)
+        _require_nautilus_price(entry, label="executable entry price")
+    for trigger, label in (
+        (stop, "executable stop exit price"),
+        (take_profit, "executable take-profit exit price"),
+    ):
+        if trigger is not None:
+            exit_price = trigger * (
+                Decimal(1) - rate if is_long else Decimal(1) + rate
+            )
+            _require_nautilus_price(exit_price, label=label)
+
+
+def _validate_scenario_semantic_preconditions(
+    *,
+    scenario_id: str,
+    target: Decimal,
+    events: list[dict[str, object]],
+    liquidity_limit: Decimal,
+    slippage_bps: Decimal,
+    threshold: int,
+    stop: Decimal | None,
+    take_profit: Decimal | None,
+) -> None:
+    """Bind each declared scenario ID to one unambiguous execution cause."""
+
+    def fresh(event: dict[str, object]) -> bool:
+        return event["event_time"] - event["quote_time"] <= timedelta(
+            seconds=threshold
+        )
+
+    def capacity(event: dict[str, object]) -> Decimal:
+        volume = event["volume"]
+        assert isinstance(volume, Decimal)
+        return min(volume, liquidity_limit)
+
+    def fail() -> NoReturn:
+        raise ValueError(
+            f"{scenario_id} scenario semantic precondition is invalid"
+        )
+
+    if scenario_id == "short-accounting":
+        if target >= 0:
+            fail()
+    elif target <= 0:
+        fail()
+
+    if scenario_id != "same-bar-stop-take-profit" and (
+        stop is not None or take_profit is not None
+    ):
+        fail()
+
+    target_size = abs(target)
+    if scenario_id in {"long-accounting", "short-accounting", "event-digest"}:
+        if (
+            not all(event["session_open"] is True and fresh(event) for event in events)
+            or sum((capacity(event) for event in events), Decimal(0)) < target_size
+        ):
+            fail()
+    elif scenario_id == "partial-fill":
+        available = sum(
+            (
+                capacity(event)
+                for event in events
+                if event["session_open"] is True and fresh(event)
+            ),
+            Decimal(0),
+        )
+        if (
+            not all(event["session_open"] is True and fresh(event) for event in events)
+            or not Decimal(0) < available < target_size
+        ):
+            fail()
+    elif scenario_id == "same-bar-stop-take-profit":
+        first = events[0]
+        ask = first["ask"]
+        assert isinstance(ask, Decimal)
+        entry = ask * (Decimal(1) + slippage_bps / Decimal(10_000))
+        _require_nautilus_price(entry, label="executable entry price")
+        if (
+            len(events) != 1
+            or first["session_open"] is not True
+            or not fresh(first)
+            or capacity(first) < target_size
+            or stop is None
+            or take_profit is None
+            or not stop < entry < take_profit
+            or not first["low"] <= stop <= first["high"]
+            or not first["low"] <= take_profit <= first["high"]
+        ):
+            fail()
+    elif scenario_id == "stale-quote":
+        if liquidity_limit <= 0 or not all(
+            event["session_open"] is True
+            and not fresh(event)
+            and capacity(event) > 0
+            for event in events
+        ):
+            fail()
+    elif scenario_id == "zero-liquidity":
+        if liquidity_limit != 0 or not all(
+            event["session_open"] is True
+            and fresh(event)
+            and event["volume"] > 0
+            for event in events
+        ):
+            fail()
+    elif scenario_id == "session-boundary":
+        later = events[1:]
+        if (
+            len(events) < 2
+            or events[0]["session_open"] is not False
+            or liquidity_limit <= 0
+            or not all(event["session_open"] is True and fresh(event) for event in later)
+            or sum((capacity(event) for event in later), Decimal(0)) < target_size
+        ):
+            fail()
+
+
+def validate_simulation_fixture_inputs(
+    request: dict[str, object], artifacts: tuple[bytes, ...]
+) -> dict[str, object]:
+    """Validate semantics under an isolated, high-precision Decimal context."""
+
+    with localcontext(_SIMULATION_DECIMAL_CONTEXT):
+        return _validate_simulation_fixture_inputs(request, artifacts)
+
+
+def _run_execution_simulation(fixture: dict[str, object]) -> dict[str, object]:
+    """Run the bounded Decimal-only in-process fixture execution model."""
+
+    events = fixture["events"]
+    assert isinstance(events, tuple)
+    target = fixture["target_quantity"]
+    fee_rate = fixture["fee_rate"]
+    slippage_bps = fixture["slippage_bps"]
+    liquidity_limit = fixture["liquidity_limit"]
+    threshold = fixture["stale_quote_threshold_seconds"]
+    stop = fixture["stop_price"]
+    take_profit = fixture["take_profit_price"]
+    assert isinstance(target, Decimal)
+    assert isinstance(fee_rate, Decimal)
+    assert isinstance(slippage_bps, Decimal)
+    assert isinstance(liquidity_limit, Decimal)
+    assert type(threshold) is int
+    assert stop is None or isinstance(stop, Decimal)
+    assert take_profit is None or isinstance(take_profit, Decimal)
+    side = Decimal(1) if target > 0 else Decimal(-1)
+    remaining = target
+    filled = Decimal(0)
+    position = Decimal(0)
+    entry_notional = Decimal(0)
+    average_entry = Decimal(0)
+    fees = Decimal(0)
+    realized = Decimal(0)
+    total_fills = 0
+    total_orders = 1
+    total_positions = 0
+    event_records: list[dict[str, object]] = [
+        {
+            "event_type": "order-created",
+            "quantity": _decimal_text(target),
+            "sequence": 0,
+        }
+    ]
+    rate = slippage_bps / Decimal(10_000)
+    last_close = Decimal(0)
+    for event in events:
+        assert isinstance(event, dict)
+        last_close = event["close"]
+        assert isinstance(last_close, Decimal)
+        sequence = event["sequence"]
+        event_time_text = event["event_time_text"]
+        if remaining == 0:
+            break
+        if event["session_open"] is not True:
+            event_records.append(
+                {
+                    "event_type": "session-closed",
+                    "market_sequence": sequence,
+                    "sequence": len(event_records),
+                }
+            )
+            continue
+        age = event["event_time"] - event["quote_time"]
+        if age > timedelta(seconds=threshold):
+            event_records.append(
+                {
+                    "event_type": "quote-rejected",
+                    "market_sequence": sequence,
+                    "reason": "stale",
+                    "sequence": len(event_records),
+                }
+            )
+            continue
+        volume = event["volume"]
+        assert isinstance(volume, Decimal)
+        available = min(volume, liquidity_limit, abs(remaining))
+        _require_nautilus_quantity(available, label="fill quantity")
+        if available <= 0:
+            event_records.append(
+                {
+                    "event_type": "liquidity-rejected",
+                    "market_sequence": sequence,
+                    "reason": "zero",
+                    "sequence": len(event_records),
+                }
+            )
+            continue
+        quote = event["ask"] if side > 0 else event["bid"]
+        assert isinstance(quote, Decimal)
+        price = quote * (Decimal(1) + rate if side > 0 else Decimal(1) - rate)
+        _require_nautilus_price(price, label="executable entry price")
+        quantity = side * available
+        _require_nautilus_quantity(quantity, label="fill quantity")
+        filled += quantity
+        _require_nautilus_quantity(filled, label="fill quantity")
+        remaining = target - filled
+        _require_nautilus_quantity(remaining, label="remaining quantity")
+        position += quantity
+        _require_nautilus_quantity(position, label="position quantity")
+        entry_notional += abs(quantity) * price
+        average_entry = entry_notional / abs(filled)
+        _require_nautilus_price(average_entry, label="average entry price")
+        fees += abs(quantity) * price * fee_rate
+        total_fills += 1
+        total_positions = 1
+        event_records.append(
+            {
+                "event_time": event_time_text,
+                "event_type": "fill",
+                "price": _decimal_text(price),
+                "quantity": _decimal_text(quantity),
+                "sequence": len(event_records),
+            }
+        )
+        stop_hit = stop is not None and (
+            event["low"] <= stop if position > 0 else event["high"] >= stop
+        )
+        take_hit = take_profit is not None and (
+            event["high"] >= take_profit
+            if position > 0
+            else event["low"] <= take_profit
+        )
+        exit_trigger = stop if stop_hit else take_profit if take_hit else None
+        if exit_trigger is not None:
+            total_orders += 1
+            event_records.append(
+                {
+                    "event_type": "exit-order-created",
+                    "reason": "stop" if stop_hit else "take-profit",
+                    "sequence": len(event_records),
+                }
+            )
+            exit_price = exit_trigger * (
+                Decimal(1) - rate if position > 0 else Decimal(1) + rate
+            )
+            _require_nautilus_price(exit_price, label="executable exit price")
+            close_quantity = -position
+            _require_nautilus_quantity(close_quantity, label="fill quantity")
+            realized += (exit_price - average_entry) * position
+            fees += abs(close_quantity) * exit_price * fee_rate
+            total_fills += 1
+            event_records.append(
+                {
+                    "event_time": event_time_text,
+                    "event_type": "fill",
+                    "price": _decimal_text(exit_price),
+                    "quantity": _decimal_text(close_quantity),
+                    "sequence": len(event_records),
+                }
+            )
+            position = Decimal(0)
+            _require_nautilus_quantity(position, label="position quantity")
+            event_records.append(
+                {
+                    "event_type": "position-closed",
+                    "sequence": len(event_records),
+                }
+            )
+            break
+    unrealized = (
+        (last_close - average_entry) * position if position != 0 else Decimal(0)
+    )
+    _require_nautilus_quantity(filled, label="fill quantity")
+    _require_nautilus_quantity(remaining, label="remaining quantity")
+    _require_nautilus_quantity(position, label="position quantity")
+    _require_nautilus_price(average_entry, label="average entry price")
+    return {
+        "average_entry_price": _decimal_text(average_entry),
+        "event_digest": hashlib.sha256(
+            _canonical_json_bytes(event_records)
+        ).hexdigest(),
+        "fees": _decimal_text(fees),
+        "filled_quantity": _decimal_text(filled),
+        "iterations": len(events),
+        "position_quantity": _decimal_text(position),
+        "realized_pnl": _decimal_text(realized),
+        "remaining_quantity": _decimal_text(remaining),
+        "scenario_id": fixture["scenario_id"],
+        "stop_take_profit_precedence": fixture[
+            "stop_take_profit_precedence"
+        ],
+        "total_events": len(event_records),
+        "total_fills": total_fills,
+        "total_orders": total_orders,
+        "total_positions": total_positions,
+        "unrealized_pnl": _decimal_text(unrealized),
+    }
+
+
+def run_execution_simulation(fixture: dict[str, object]) -> dict[str, object]:
+    """Run every derived operation under the fixed simulation Decimal context."""
+
+    with localcontext(_SIMULATION_DECIMAL_CONTEXT):
+        return _run_execution_simulation(fixture)
+
+
+def _run_nautilus_simulation_fixture(
+    fixture: dict[str, object],
+) -> dict[str, object]:
+    """Ingest the finite semantic feed in the sealed Nautilus runtime.
+
+    The actual execution accounting remains the explicit Decimal model above;
+    Nautilus is used only as the bounded engine/feed boundary.  No strategy,
+    provider, broker, client, database, or module path is configurable.
+    """
+
+    wheels_root = Path("/engine/wheels")
+    extraction_root = Path("/tmp/nautilus-simulation-wheels")
+    extraction_root.mkdir(mode=0o700)
+    wheels = tuple(sorted(wheels_root.glob("*.whl"), key=lambda path: path.name))
+    if not wheels:
+        raise ValueError("Nautilus runtime wheel closure is missing")
+    for wheel in wheels:
+        destination = extraction_root / hashlib.sha256(
+            wheel.name.encode("ascii")
+        ).hexdigest()
+        destination.mkdir(mode=0o700)
+        try:
+            with zipfile.ZipFile(wheel) as archive:
+                for member in archive.infolist():
+                    relative = Path(member.filename)
+                    if (
+                        relative.is_absolute()
+                        or not member.filename
+                        or ".." in relative.parts
+                        or stat.S_ISLNK(member.external_attr >> 16)
+                        or member.is_dir()
+                    ):
+                        if (
+                            member.is_dir()
+                            and member.filename
+                            and ".." not in relative.parts
+                        ):
+                            continue
+                        raise ValueError("Nautilus wheel has an unsafe member")
+                archive.extractall(destination)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ValueError("Nautilus runtime wheel is unreadable") from exc
+        sys.path.insert(0, str(destination))
+    from nautilus_trader.backtest.engine import BacktestEngine
+    from nautilus_trader.common.config import LoggingConfig
+    from nautilus_trader.config import BacktestEngineConfig
+    from nautilus_trader.model.currencies import USDT
+    from nautilus_trader.model.data import Bar, BarType
+    from nautilus_trader.model.enums import AccountType, OmsType
+    from nautilus_trader.model.identifiers import Venue
+    from nautilus_trader.model.objects import Money, Price, Quantity
+    from nautilus_trader.test_kit.providers import TestInstrumentProvider
+
+    engine = BacktestEngine(
+        BacktestEngineConfig(
+            logging=LoggingConfig(bypass_logging=True),
+            run_analysis=False,
+        )
+    )
+    try:
+        instrument = TestInstrumentProvider.btcusdt_binance()
+        if str(instrument.id) != "BTCUSDT.BINANCE":
+            raise ValueError("Nautilus simulation fixture instrument is incompatible")
+        engine.add_venue(
+            venue=Venue("BINANCE"),
+            oms_type=OmsType.NETTING,
+            account_type=AccountType.CASH,
+            starting_balances=[Money(1_000_000, USDT)],
+        )
+        engine.add_instrument(instrument)
+        bar_type = BarType.from_str("BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL")
+        bars = []
+        events = fixture["events"]
+        assert isinstance(events, tuple)
+        for event in events:
+            assert isinstance(event, dict)
+            timestamp = event["event_time"]
+            assert isinstance(timestamp, datetime)
+            timestamp_ns = (
+                int(timestamp.timestamp()) * 1_000_000_000
+                + timestamp.microsecond * 1_000
+            )
+            bars.append(
+                Bar(
+                    bar_type,
+                    Price.from_str(
+                        _nautilus_price_text(
+                            event["open"], 2, label="simulation event open"
+                        )
+                    ),
+                    Price.from_str(
+                        _nautilus_price_text(
+                            event["high"], 2, label="simulation event high"
+                        )
+                    ),
+                    Price.from_str(
+                        _nautilus_price_text(
+                            event["low"], 2, label="simulation event low"
+                        )
+                    ),
+                    Price.from_str(
+                        _nautilus_price_text(
+                            event["close"], 2, label="simulation event close"
+                        )
+                    ),
+                    Quantity.from_str(
+                        _nautilus_quantity_text(
+                            event["volume"], 6, label="simulation event volume"
+                        )
+                    ),
+                    timestamp_ns,
+                    timestamp_ns,
+                )
+            )
+        engine.add_data(bars)
+        engine.run()
+        engine_result = engine.get_result()
+        if int(engine_result.iterations) != len(events):
+            raise ValueError("Nautilus simulation fixture iteration count changed")
+        return run_execution_simulation(fixture)
+    finally:
+        engine.dispose()
 
 
 def _run_nautilus(
@@ -565,7 +1478,9 @@ def _event(
 
 
 def _simulation_event(
-    request: dict[str, object], artifacts: tuple[bytes, ...]
+    request: dict[str, object],
+    artifacts: tuple[bytes, ...],
+    result: dict[str, object],
 ) -> dict[str, object]:
     if len(artifacts) != len(_SIMULATION_INPUT_ARTIFACT_NAMES):
         raise ValueError("simulation requires five hash-bound inputs")
@@ -586,6 +1501,26 @@ def _simulation_event(
                 ),
             },
             {"name": "scenario_digest", "value": scenario["sha256"]},
+            *[
+                {"name": name, "value": result[name]}
+                for name in (
+                    "scenario_id",
+                    "event_digest",
+                    "iterations",
+                    "total_events",
+                    "total_orders",
+                    "total_fills",
+                    "total_positions",
+                    "filled_quantity",
+                    "remaining_quantity",
+                    "position_quantity",
+                    "average_entry_price",
+                    "fees",
+                    "realized_pnl",
+                    "unrealized_pnl",
+                    "stop_take_profit_precedence",
+                )
+            ],
         ],
     }
     return {
@@ -637,7 +1572,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 request, artifacts, _run_nautilus(fixture)  # type: ignore[arg-type]
             )
         else:
-            event = _simulation_event(request, artifacts)
+            fixture = validate_simulation_fixture_inputs(request, artifacts)
+            event = _simulation_event(
+                request,
+                artifacts,
+                _run_nautilus_simulation_fixture(fixture),
+            )
         print(_canonical_json_bytes(event).decode("utf-8"))
     except (ImportError, OSError, ValueError) as exc:
         _fail(str(exc))
