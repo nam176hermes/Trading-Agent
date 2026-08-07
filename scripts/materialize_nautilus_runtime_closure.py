@@ -48,6 +48,7 @@ _POLICY_FIELDS = {
     "base_file_inventory_sha256",
     "base_runtime_manifest_sha256",
     "engine_name",
+    "engine_upstream_commit",
     "engine_version",
     "engine_wheel_mode",
     "engine_wheel_target",
@@ -223,6 +224,8 @@ def _load_policy(path: Path) -> dict[str, object]:
         or not str(policy["python_identity"]).startswith("CPython 3.12.")
         or not isinstance(policy["source_commit"], str)
         or _SOURCE_COMMIT.fullmatch(str(policy["source_commit"])) is None
+        or not isinstance(policy["engine_upstream_commit"], str)
+        or _SOURCE_COMMIT.fullmatch(str(policy["engine_upstream_commit"])) is None
         or isinstance(policy["base_file_count"], bool)
         or not isinstance(policy["base_file_count"], int)
         or int(policy["base_file_count"]) <= 0
@@ -277,7 +280,7 @@ def _validate_base_runtime(
         or manifest["engine_name"] != policy["engine_name"]
         or manifest["engine_version"] != policy["engine_version"]
         or manifest["python_identity"] != policy["python_identity"]
-        or manifest["source_commit"] != policy["source_commit"]
+        or manifest["source_commit"] != policy["engine_upstream_commit"]
         or manifest["entrypoint"] != policy["entrypoint"]
         or tuple(manifest["argv_prefix"])
         != ("-I", "-S", _LAUNCHER_TARGET)
@@ -348,7 +351,7 @@ def _validate_artifact(
         manifest.get("engine_name") != policy["engine_name"]
         or manifest.get("engine_version") != policy["engine_version"]
         or manifest.get("python_identity") != policy["python_identity"]
-        or manifest.get("upstream_commit") != policy["source_commit"]
+        or manifest.get("upstream_commit") != policy["engine_upstream_commit"]
         or not isinstance(wheel, dict)
         or set(wheel) != {"filename", "sha256", "size"}
         or not isinstance(wheel.get("filename"), str)
@@ -517,6 +520,26 @@ def _publish_noreplace(
             os.close(descriptor)
 
 
+def _build_output_manifest(
+    policy: dict[str, object], output_records: list[dict[str, object]]
+) -> dict[str, object]:
+    return {
+        "argv_prefix": list(policy["argv_prefix"]),
+        "artifact_manifest_sha256": policy["artifact_manifest_sha256"],
+        "engine_name": policy["engine_name"],
+        "engine_version": policy["engine_version"],
+        "entrypoint": policy["entrypoint"],
+        "files": output_records,
+        "profile": policy["profile"],
+        "python_identity": policy["python_identity"],
+        "result_validator_id": policy["result_validator_id"],
+        "schema_version": policy["profile_manifest_schema_version"],
+        "semantic_profile": policy["semantic_profile"],
+        "source_commit": policy["source_commit"],
+        "timeout_seconds": policy["timeout_seconds"],
+    }
+
+
 def materialize_runtime_closure(
     *,
     policy_path: Path,
@@ -604,21 +627,7 @@ def materialize_runtime_closure(
             raise RuntimeClosureMaterializationError(
                 "runtime inventory lacks a required replacement target"
             )
-        manifest = {
-            "argv_prefix": list(policy["argv_prefix"]),
-            "artifact_manifest_sha256": policy["artifact_manifest_sha256"],
-            "engine_name": policy["engine_name"],
-            "engine_version": policy["engine_version"],
-            "entrypoint": policy["entrypoint"],
-            "files": output_records,
-            "profile": policy["profile"],
-            "python_identity": policy["python_identity"],
-            "result_validator_id": policy["result_validator_id"],
-            "schema_version": policy["profile_manifest_schema_version"],
-            "semantic_profile": policy["semantic_profile"],
-            "source_commit": policy["source_commit"],
-            "timeout_seconds": policy["timeout_seconds"],
-        }
+        manifest = _build_output_manifest(policy, output_records)
         manifest_path = staging / _CLOSURE_MANIFEST
         manifest_path.write_bytes(_canonical_json_bytes(manifest) + b"\n")
         manifest_path.chmod(0o400)

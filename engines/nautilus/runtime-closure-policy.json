@@ -11,6 +11,7 @@
   "base_file_inventory_sha256": "894e8048d062877dda374f7968ee04c3e75febfc948f82669f23485ecc7f6126",
   "base_runtime_manifest_sha256": "69cb87568361ccd6324550fb3823956c64e073b4cf09e674d7eb0883f844c044",
   "engine_name": "nautilus_trader",
+  "engine_upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
   "engine_version": "1.227.0",
   "engine_wheel_mode": "0400",
   "engine_wheel_target": "/engine/wheels/nautilus_trader-1.227.0-cp312-cp312-manylinux_2_39_x86_64.whl",

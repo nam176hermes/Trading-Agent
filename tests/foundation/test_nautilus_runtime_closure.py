@@ -30,6 +30,7 @@ LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
 STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
 CHECKED_IN_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
+REPOSITORY_SOURCE_COMMIT = "8080337a546576e17432dbefcda3a18c6bfdb5aa"
 
 
 def _sha256(path: Path) -> str:
@@ -168,6 +169,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
                 base / "closure-manifest.json"
             ),
             "engine_name": "nautilus_trader",
+            "engine_upstream_commit": SOURCE_COMMIT,
             "engine_version": "1.227.0",
             "engine_wheel_mode": "0400",
             "engine_wheel_target": f"/engine/wheels/{wheel_name}",
@@ -182,7 +184,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
             "result_validator_id": "nautilus-backtest-simulation-result-v1",
             "schema_version": 1,
             "semantic_profile": "nautilus-execution-simulation-v2",
-            "source_commit": SOURCE_COMMIT,
+            "source_commit": REPOSITORY_SOURCE_COMMIT,
             "timeout_seconds": 120,
         }
         policy_path = root / "runtime-closure-policy.json"
@@ -267,6 +269,40 @@ def test_checked_in_policy_binds_the_preceding_committed_parity_source() -> None
         {"mode": "0400", "sha256": _sha256(LAUNCHER), "source": "engines/nautilus/launcher/nautilus_backtest.py", "target": "/engine/launcher/nautilus_backtest.py"},
         {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
     ]
+
+
+def test_checked_in_policy_separates_repository_and_sealed_engine_identities() -> None:
+    base = Path(
+        "/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3"
+    )
+    artifacts = Path(
+        "/home/thenam176/.cache/trading-agent/nautilus/artifacts/"
+        "nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c"
+    )
+    if not base.is_dir() or not artifacts.is_dir():
+        pytest.skip("reviewed external Nautilus inputs are unavailable")
+
+    raw_policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+
+    assert raw_policy["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    assert raw_policy["engine_upstream_commit"] == SOURCE_COMMIT
+    assert raw_policy["source_commit"] != raw_policy["engine_upstream_commit"]
+
+    policy = materializer_module._load_policy(CHECKED_IN_POLICY)
+    materializer_module._validate_base_runtime(base, policy)
+    materializer_module._validate_artifact(artifacts, policy)
+
+    changed_engine_identity = {**policy, "engine_upstream_commit": "f" * 40}
+    with pytest.raises(RuntimeClosureMaterializationError, match="base runtime profile"):
+        materializer_module._validate_base_runtime(base, changed_engine_identity)
+    with pytest.raises(
+        RuntimeClosureMaterializationError, match="selected artifact identity"
+    ):
+        materializer_module._validate_artifact(artifacts, changed_engine_identity)
+
+    manifest = materializer_module._build_output_manifest(policy, [])
+    assert manifest["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    assert manifest["source_commit"] != policy["engine_upstream_commit"]
 
 
 def test_materializer_cli_bootstraps_only_the_checkout_authority() -> None:
