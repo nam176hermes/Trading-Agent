@@ -226,6 +226,7 @@ def _load_policy(path: Path) -> dict[str, object]:
         or _SOURCE_COMMIT.fullmatch(str(policy["source_commit"])) is None
         or not isinstance(policy["engine_upstream_commit"], str)
         or _SOURCE_COMMIT.fullmatch(str(policy["engine_upstream_commit"])) is None
+        or policy["source_commit"] == policy["engine_upstream_commit"]
         or isinstance(policy["base_file_count"], bool)
         or not isinstance(policy["base_file_count"], int)
         or int(policy["base_file_count"]) <= 0

@@ -335,6 +335,20 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
     assert manifest["engine_upstream_commit"] == SOURCE_COMMIT
 
 
+def test_materializer_policy_rejects_identical_repository_and_engine_identities(
+    tmp_path: Path,
+) -> None:
+    policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    policy["engine_upstream_commit"] = policy["source_commit"]
+    policy_path = tmp_path / "runtime-closure-policy.json"
+    policy_path.write_bytes(_canonical(policy) + b"\n")
+
+    with pytest.raises(
+        RuntimeClosureMaterializationError, match="profile or identity"
+    ):
+        materializer_module._load_policy(policy_path)
+
+
 def test_materializer_cli_bootstraps_only_the_checkout_authority() -> None:
     completed = subprocess.run(
         [

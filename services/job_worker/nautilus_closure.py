@@ -279,6 +279,43 @@ def _sandbox_proof(path: Path) -> OsSandboxProof:
     )
 
 
+def _closure_digest(
+    *,
+    closure_manifest: dict[str, object],
+    artifact_digest: str,
+    profile: str,
+    semantic_profile: str | None,
+    mounts: tuple[ReadOnlyClosureMount, ...],
+    entrypoint: PurePosixPath,
+    timeout: int,
+) -> str:
+    digest_document = {
+        "artifact_manifest_sha256": artifact_digest,
+        "argv_prefix": closure_manifest["argv_prefix"],
+        "entrypoint": str(entrypoint),
+        "files": [
+            {
+                "mode": f"{mount.mode:04o}",
+                "sha256": mount.sha256,
+                "size": mount.size,
+                "target": str(mount.target),
+            }
+            for mount in mounts
+        ],
+        "result_validator_id": closure_manifest["result_validator_id"],
+        "profile": profile,
+        "source_commit": closure_manifest["source_commit"],
+        "timeout_seconds": timeout,
+    }
+    if semantic_profile is not None:
+        digest_document["semantic_profile"] = semantic_profile
+    if closure_manifest["schema_version"] == 4:
+        digest_document["engine_upstream_commit"] = closure_manifest[
+            "engine_upstream_commit"
+        ]
+    return hashlib.sha256(_canonical_json_bytes(digest_document)).hexdigest()
+
+
 def attest_nautilus_backtest_closure(
     config: NautilusClosureConfig,
     *,
@@ -338,6 +375,8 @@ def attest_nautilus_backtest_closure(
                     closure_manifest["engine_upstream_commit"]
                 )
                 is None
+                or closure_manifest["source_commit"]
+                == closure_manifest["engine_upstream_commit"]
             )
         )
         or closure_manifest["result_validator_id"]
@@ -376,34 +415,18 @@ def attest_nautilus_backtest_closure(
     timeout = closure_manifest["timeout_seconds"]
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 0 < timeout <= 3_600:
         _blocked("ENGINE_CLOSURE_INVALID", "closure timeout is invalid")
-    digest_document = {
-        "artifact_manifest_sha256": artifact_digest,
-        "argv_prefix": argv_value,
-        "entrypoint": str(entrypoint),
-        "files": [
-            {
-                "mode": f"{mount.mode:04o}",
-                "sha256": mount.sha256,
-                "size": mount.size,
-                "target": str(mount.target),
-            }
-            for mount in mounts
-        ],
-        "result_validator_id": closure_manifest["result_validator_id"],
-        "profile": profile,
-        "source_commit": closure_manifest["source_commit"],
-        "timeout_seconds": timeout,
-    }
-    if semantic_profile is not None:
-        digest_document["semantic_profile"] = semantic_profile
-    if schema_version == 4:
-        digest_document["engine_upstream_commit"] = closure_manifest[
-            "engine_upstream_commit"
-        ]
     return CompleteEngineClosureAttestation(
         profile=profile,
         source_commit=closure_manifest["source_commit"],
-        closure_sha256=hashlib.sha256(_canonical_json_bytes(digest_document)).hexdigest(),
+        closure_sha256=_closure_digest(
+            closure_manifest=closure_manifest,
+            artifact_digest=artifact_digest,
+            profile=profile,
+            semantic_profile=semantic_profile,
+            mounts=mounts,
+            entrypoint=entrypoint,
+            timeout=timeout,
+        ),
         mounts=mounts,
         entrypoint=entrypoint,
         argv_prefix=tuple(argv_value),

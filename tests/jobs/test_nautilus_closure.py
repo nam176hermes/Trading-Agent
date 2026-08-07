@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -235,6 +235,21 @@ def test_attestor_separates_repository_and_engine_upstream_identities_before_san
 
         assert closure.source_commit == REPOSITORY_SOURCE_COMMIT
 
+        identical_root = base / "identical"
+        identical_root.mkdir()
+        identical_config = _build_closure_config(
+            identical_root,
+            identical_root / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+        )
+        with pytest.raises(EngineSpawnError, match="closure manifest identity"):
+            attest_nautilus_backtest_closure(
+                identical_config, expected_profile="execution-simulation"
+            )
+
         mismatch_root = base / "mismatch"
         mismatch_root.mkdir()
         mismatch_config = _build_closure_config(
@@ -258,6 +273,41 @@ def test_attestor_separates_repository_and_engine_upstream_identities_before_san
                 (current / name).chmod(0o700)
             current.chmod(0o700)
         shutil.rmtree(base)
+
+
+def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
+    common = {
+        "schema_version": 4,
+        "argv_prefix": [
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ],
+        "result_validator_id": "nautilus-backtest-simulation-result-v1",
+        "source_commit": REPOSITORY_SOURCE_COMMIT,
+    }
+    first = nautilus_closure_module._closure_digest(
+        closure_manifest={**common, "engine_upstream_commit": SOURCE_COMMIT},
+        artifact_digest="a" * 64,
+        profile="execution-simulation",
+        semantic_profile="nautilus-execution-simulation-v2",
+        mounts=(),
+        entrypoint=PurePosixPath("/engine/bin/python3.12"),
+        timeout=120,
+    )
+    second = nautilus_closure_module._closure_digest(
+        closure_manifest={**common, "engine_upstream_commit": "f" * 40},
+        artifact_digest="a" * 64,
+        profile="execution-simulation",
+        semantic_profile="nautilus-execution-simulation-v2",
+        mounts=(),
+        entrypoint=PurePosixPath("/engine/bin/python3.12"),
+        timeout=120,
+    )
+
+    assert first != second
 
 
 def test_attestor_rejects_unlisted_runtime_file(closure_config: NautilusClosureConfig) -> None:
