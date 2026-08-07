@@ -232,7 +232,9 @@ test-all:
 		cleanup_test_tmpdir() { find -P "$$test_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$test_tmpdir"; }; \
 		trap 'cleanup_test_tmpdir' EXIT; \
 		TMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir" \
-			$(MAKE) prepare-root-test-install test-all-private
+			$(MAKE) prepare-root-test-install; \
+		TMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir" \
+			$(MAKE) test-all-private
 
 ci:
 	@set -eu; \

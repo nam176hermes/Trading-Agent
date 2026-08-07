@@ -169,6 +169,19 @@ def test_test_all_rebuilds_the_current_root_package_and_uses_private_tmp() -> No
     assert 'TMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir"' in makefile
 
 
+def test_test_all_reinstalls_before_private_validation_under_parallel_make() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    recipe = makefile.split("test-all:\n", 1)[1].split("\n\nci:", 1)[0]
+
+    assert (
+        'TMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir" \\\n'
+        '\t\t\t$(MAKE) prepare-root-test-install; \\\n'
+        '\t\tTMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir" \\\n'
+        '\t\t\t$(MAKE) test-all-private'
+    ) in recipe
+    assert "$(MAKE) prepare-root-test-install test-all-private" not in recipe
+
+
 def test_track_c_source_head_defers_runtime_activation() -> None:
     verdict = TRACK_C_PACKET_3_VERDICT.read_text(encoding="utf-8")
     migration_0008 = (
