@@ -9,7 +9,7 @@ from uuid import UUID
 
 import pytest
 
-from packages.engine_contracts import ArtifactReference, RunBacktest
+from packages.engine_contracts import ArtifactReference, RunBacktest, RunBacktestSimulation
 from services.job_worker.engine_artifacts import (
     EngineArtifactBinding,
     HashBoundArtifactResolver,
@@ -59,6 +59,21 @@ def _request(references: tuple[ArtifactReference, ...]) -> RunBacktest:
     )
 
 
+def _simulation_request(
+    references: tuple[ArtifactReference, ...]
+) -> RunBacktestSimulation:
+    return RunBacktestSimulation(
+        command_type="RunBacktestSimulation",
+        engine_configuration=references[0],
+        instrument_catalog=references[1],
+        strategy_configuration=references[2],
+        market_data=references[3],
+        simulation_scenario=references[4],
+        start_time="2026-08-05T12:00:00Z",
+        end_time="2026-08-05T12:30:00Z",
+    )
+
+
 def test_resolver_returns_only_request_bound_sealed_artifacts(sealed_artifacts) -> None:
     root, references = sealed_artifacts
     resolver = HashBoundArtifactResolver(
@@ -77,6 +92,49 @@ def test_resolver_returns_only_request_bound_sealed_artifacts(sealed_artifacts) 
         "market_data",
     )
     assert tuple(item.sha256 for item in inputs) == tuple(reference.sha256 for reference in references)
+
+
+def test_resolver_requires_the_fifth_simulation_scenario_binding(
+    sealed_artifacts,
+) -> None:
+    root, references = sealed_artifacts
+    scenario = root / "artifact-5"
+    root.chmod(0o700)
+    scenario.write_bytes(b'{"scenario":"event-digest"}\n')
+    scenario.chmod(0o400)
+    root.chmod(0o500)
+    scenario_reference = ArtifactReference(
+        artifact_id=UUID("55555555-1111-4111-8111-111111111111"),
+        sha256=hashlib.sha256(scenario.read_bytes()).hexdigest(),
+        media_type="application/json",
+    )
+    all_references = (*references, scenario_reference)
+    incomplete = HashBoundArtifactResolver(
+        tuple(
+            EngineArtifactBinding(reference, root / f"artifact-{index}")
+            for index, reference in enumerate(references, start=1)
+        )
+    )
+
+    with pytest.raises(EngineSpawnError, match="binding is missing"):
+        incomplete(_simulation_request(all_references))
+
+    complete = HashBoundArtifactResolver(
+        tuple(
+            EngineArtifactBinding(reference, root / f"artifact-{index}")
+            for index, reference in enumerate(all_references, start=1)
+        )
+    )
+    inputs = complete(_simulation_request(all_references))
+
+    assert tuple(item.name for item in inputs) == (
+        "engine_configuration",
+        "instrument_catalog",
+        "strategy_configuration",
+        "market_data",
+        "simulation_scenario",
+    )
+    assert inputs[-1].sha256 == scenario_reference.sha256
 
 
 def test_resolver_rejects_digest_drift(sealed_artifacts) -> None:

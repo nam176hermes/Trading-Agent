@@ -28,7 +28,7 @@ _UUID = re.compile(
     re.ASCII,
 )
 _ARTIFACT_FIELDS = {"artifact_id", "sha256", "media_type"}
-_PAYLOAD_FIELDS = {
+_ZERO_ORDER_PAYLOAD_FIELDS = {
     "command_type",
     "engine_configuration",
     "instrument_catalog",
@@ -36,6 +36,10 @@ _PAYLOAD_FIELDS = {
     "market_data",
     "start_time",
     "end_time",
+}
+_SIMULATION_PAYLOAD_FIELDS = {
+    *_ZERO_ORDER_PAYLOAD_FIELDS,
+    "simulation_scenario",
 }
 _ENVELOPE_FIELDS = {
     "message_id",
@@ -53,11 +57,16 @@ _ENVELOPE_FIELDS = {
     "payload",
 }
 _EVENT_TYPE = "NautilusBacktestCompleted"
-_INPUT_ARTIFACT_NAMES = (
+_SIMULATION_EVENT_TYPE = "NautilusBacktestSimulationCompleted"
+_ZERO_ORDER_INPUT_ARTIFACT_NAMES = (
     "engine_configuration",
     "instrument_catalog",
     "strategy_configuration",
     "market_data",
+)
+_SIMULATION_INPUT_ARTIFACT_NAMES = (
+    *_ZERO_ORDER_INPUT_ARTIFACT_NAMES,
+    "simulation_scenario",
 )
 _MAX_COMMAND_BYTES = 1_048_576
 _MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
@@ -134,7 +143,9 @@ def _artifact(value: object) -> None:
         raise ValueError("backtest artifact reference is invalid")
 
 
-def _validate_request(value: object, raw: bytes) -> dict[str, object]:
+def _validate_request(
+    value: object, raw: bytes, *, profile: str = "zero-order"
+) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != _ENVELOPE_FIELDS:
         raise ValueError("command envelope fields are invalid")
     if _canonical_json_bytes(value) != raw:
@@ -155,10 +166,28 @@ def _validate_request(value: object, raw: bytes) -> dict[str, object]:
     ):
         raise ValueError("command envelope metadata is invalid")
     payload = value["payload"]
-    if not isinstance(payload, dict) or set(payload) != _PAYLOAD_FIELDS or payload["command_type"] != "RunBacktest":
-        raise ValueError("only RunBacktest is accepted")
-    for field in ("engine_configuration", "instrument_catalog", "strategy_configuration", "market_data"):
+    if profile == "zero-order":
+        payload_fields = _ZERO_ORDER_PAYLOAD_FIELDS
+        command_type = "RunBacktest"
+        artifact_names = _ZERO_ORDER_INPUT_ARTIFACT_NAMES
+    elif profile == "execution-simulation":
+        payload_fields = _SIMULATION_PAYLOAD_FIELDS
+        command_type = "RunBacktestSimulation"
+        artifact_names = _SIMULATION_INPUT_ARTIFACT_NAMES
+    else:
+        raise ValueError("launcher profile is invalid")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != payload_fields
+        or payload["command_type"] != command_type
+    ):
+        raise ValueError(f"only {command_type} is accepted")
+    for field in artifact_names:
         _artifact(payload[field])
+    if profile == "execution-simulation" and len(
+        {_canonical_json_bytes(payload[field]) for field in artifact_names}
+    ) != len(artifact_names):
+        raise ValueError("simulation contains a duplicate artifact reference")
     if not isinstance(payload["start_time"], str) or not isinstance(payload["end_time"], str) or payload["end_time"] <= payload["start_time"]:
         raise ValueError("backtest window is invalid")
     if hashlib.sha256(_canonical_json_bytes(payload)).hexdigest() != value["payload_digest"]:
@@ -172,7 +201,12 @@ def _validate_request(value: object, raw: bytes) -> dict[str, object]:
     return value
 
 
-def validated_request(request_path: Path, sidecar_path: Path) -> dict[str, object]:
+def validated_request(
+    request_path: Path,
+    sidecar_path: Path,
+    *,
+    profile: str = "zero-order",
+) -> dict[str, object]:
     """Read and validate the exact controller command envelope."""
 
     raw = _read_regular(request_path)
@@ -189,13 +223,13 @@ def validated_request(request_path: Path, sidecar_path: Path) -> dict[str, objec
         document = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("command envelope JSON is invalid") from exc
-    return _validate_request(document, raw)
+    return _validate_request(document, raw, profile=profile)
 
 
 def _input_artifact_path(
     name: str, reference: object, artifact_root: Path
 ) -> Path:
-    if name not in _INPUT_ARTIFACT_NAMES:
+    if name not in _SIMULATION_INPUT_ARTIFACT_NAMES:
         raise ValueError("backtest input name is invalid")
     _artifact(reference)
     assert isinstance(reference, dict)
@@ -204,8 +238,11 @@ def _input_artifact_path(
 
 
 def validated_input_artifacts(
-    request: dict[str, object], artifact_root: Path = Path("/inputs/artifacts")
-) -> tuple[bytes, bytes, bytes, bytes]:
+    request: dict[str, object],
+    artifact_root: Path = Path("/inputs/artifacts"),
+    *,
+    profile: str = "zero-order",
+) -> tuple[bytes, ...]:
     """Read exactly the request-bound artifact files from the private mount.
 
     The path is derived solely from each command reference.  No supplied
@@ -223,8 +260,17 @@ def validated_input_artifacts(
     payload = request.get("payload")
     if not isinstance(payload, dict):
         raise ValueError("command payload is invalid")
+    if profile == "zero-order" and payload.get("command_type") == "RunBacktest":
+        artifact_names = _ZERO_ORDER_INPUT_ARTIFACT_NAMES
+    elif (
+        profile == "execution-simulation"
+        and payload.get("command_type") == "RunBacktestSimulation"
+    ):
+        artifact_names = _SIMULATION_INPUT_ARTIFACT_NAMES
+    else:
+        raise ValueError("command does not match launcher profile")
     values: list[bytes] = []
-    for name in _INPUT_ARTIFACT_NAMES:
+    for name in artifact_names:
         reference = payload.get(name)
         path = _input_artifact_path(name, reference, artifact_root)
         value = _read_regular(path, maximum_size=_MAX_ARTIFACT_BYTES)
@@ -234,15 +280,26 @@ def validated_input_artifacts(
         ):
             raise ValueError("engine artifact digest does not match command")
         values.append(value)
-    return tuple(values)  # type: ignore[return-value]
+    return tuple(values)
 
 
-def _input_artifacts_sha256(artifacts: tuple[bytes, bytes, bytes, bytes]) -> str:
+def _input_artifacts_sha256(
+    artifacts: tuple[bytes, ...], *, profile: str = "zero-order"
+) -> str:
+    names = (
+        _ZERO_ORDER_INPUT_ARTIFACT_NAMES
+        if profile == "zero-order"
+        else _SIMULATION_INPUT_ARTIFACT_NAMES
+        if profile == "execution-simulation"
+        else ()
+    )
+    if not names or len(artifacts) != len(names):
+        raise ValueError("input artifact set does not match launcher profile")
     return hashlib.sha256(
         _canonical_json_bytes(
             {
                 name: hashlib.sha256(value).hexdigest()
-                for name, value in zip(_INPUT_ARTIFACT_NAMES, artifacts, strict=True)
+                for name, value in zip(names, artifacts, strict=True)
             }
         )
     ).hexdigest()
@@ -507,6 +564,51 @@ def _event(
     }
 
 
+def _simulation_event(
+    request: dict[str, object], artifacts: tuple[bytes, ...]
+) -> dict[str, object]:
+    if len(artifacts) != len(_SIMULATION_INPUT_ARTIFACT_NAMES):
+        raise ValueError("simulation requires five hash-bound inputs")
+    payload = request.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("simulation request payload is invalid")
+    scenario = payload.get("simulation_scenario")
+    _artifact(scenario)
+    assert isinstance(scenario, dict)
+    event_payload = {
+        "event_type": _SIMULATION_EVENT_TYPE,
+        "family": "ENGINE_LIFECYCLE",
+        "attributes": [
+            {
+                "name": "input_artifacts_sha256",
+                "value": _input_artifacts_sha256(
+                    artifacts, profile="execution-simulation"
+                ),
+            },
+            {"name": "scenario_digest", "value": scenario["sha256"]},
+        ],
+    }
+    return {
+        "message_id": str(
+            uuid5(UUID(str(request["message_id"])), _SIMULATION_EVENT_TYPE)
+        ),
+        "correlation_id": request["correlation_id"],
+        "causation_id": request["message_id"],
+        "engine_run_id": request["engine_run_id"],
+        "stream_sequence": int(request["stream_sequence"]) + 1,
+        "event_time": request["event_time"],
+        "initialization_time": request["initialization_time"],
+        "schema_version": request["schema_version"],
+        "producer_identity": request["producer_identity"],
+        "source_commit": request["source_commit"],
+        "config_digest": request["config_digest"],
+        "payload_digest": hashlib.sha256(
+            _canonical_json_bytes(event_payload)
+        ).hexdigest(),
+        "payload": event_payload,
+    }
+
+
 def _fail(message: str) -> NoReturn:
     print(f"error: {message}", file=sys.stderr)
     raise SystemExit(1)
@@ -514,17 +616,29 @@ def _fail(message: str) -> NoReturn:
 
 def main(argv: Sequence[str] | None = None) -> None:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if len(arguments) != 2:
-        _fail("expected request.json and request.sha256")
+    if len(arguments) == 2:
+        profile = "zero-order"
+        request_argument, sidecar_argument = arguments
+    elif arguments[:2] == ["--profile", "execution-simulation"] and len(arguments) == 4:
+        profile = "execution-simulation"
+        request_argument, sidecar_argument = arguments[2:]
+    else:
+        _fail("expected the attested launcher profile and request inputs")
     try:
-        request = validated_request(Path(arguments[0]), Path(arguments[1]))
-        artifacts = validated_input_artifacts(request)
-        fixture = validate_zero_order_fixture_inputs(artifacts)
-        print(
-            _canonical_json_bytes(
-                _event(request, artifacts, _run_nautilus(fixture))
-            ).decode("utf-8")
+        request = validated_request(
+            Path(request_argument), Path(sidecar_argument), profile=profile
         )
+        artifacts = validated_input_artifacts(request, profile=profile)
+        if profile == "zero-order":
+            if len(artifacts) != 4:
+                raise ValueError("zero-order requires four hash-bound inputs")
+            fixture = validate_zero_order_fixture_inputs(artifacts)  # type: ignore[arg-type]
+            event = _event(
+                request, artifacts, _run_nautilus(fixture)  # type: ignore[arg-type]
+            )
+        else:
+            event = _simulation_event(request, artifacts)
+        print(_canonical_json_bytes(event).decode("utf-8"))
     except (ImportError, OSError, ValueError) as exc:
         _fail(str(exc))
 

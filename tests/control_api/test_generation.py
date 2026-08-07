@@ -115,5 +115,19 @@ def test_generated_contracts_are_present_and_current() -> None:
         / "json-schema"
         / "EngineBacktestPayload.json"
     ).is_file()
+    assert (
+        ROOT
+        / "generated"
+        / "job-api"
+        / "json-schema"
+        / "EngineBacktestSimulationInput.json"
+    ).is_file()
+    assert (
+        ROOT
+        / "generated"
+        / "job-api"
+        / "json-schema"
+        / "EngineBacktestSimulationPayload.json"
+    ).is_file()
     assert (ROOT / "generated" / "dashboard" / "api-types.ts").is_file()
     assert (ROOT / "generated" / "dashboard" / "api-schemas.ts").is_file()

@@ -42,6 +42,7 @@ _PAYLOAD_SCHEMA_JOB_TYPES = (
     JobType.REPLAY,
     JobType.BACKTEST,
     JobType.BACKTEST,
+    JobType.BACKTEST,
 )
 
 

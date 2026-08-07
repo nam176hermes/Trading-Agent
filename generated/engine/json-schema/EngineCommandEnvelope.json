@@ -624,6 +624,56 @@
       "title": "RunBacktest",
       "type": "object"
     },
+    "RunBacktestSimulation": {
+      "additionalProperties": false,
+      "description": "One fixture-only execution simulation with a separately bound scenario.",
+      "properties": {
+        "command_type": {
+          "const": "RunBacktestSimulation",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "end_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "End Time",
+          "type": "string"
+        },
+        "engine_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "instrument_catalog": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "market_data": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "simulation_scenario": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "start_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Start Time",
+          "type": "string"
+        },
+        "strategy_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "command_type",
+        "engine_configuration",
+        "instrument_catalog",
+        "strategy_configuration",
+        "market_data",
+        "simulation_scenario",
+        "start_time",
+        "end_time"
+      ],
+      "title": "RunBacktestSimulation",
+      "type": "object"
+    },
     "StartPaperEngine": {
       "additionalProperties": false,
       "properties": {
@@ -832,6 +882,7 @@
           "ModifyOrderIntent": "#/$defs/ModifyOrderIntent",
           "RequestExecutionReconciliation": "#/$defs/RequestExecutionReconciliation",
           "RunBacktest": "#/$defs/RunBacktest",
+          "RunBacktestSimulation": "#/$defs/RunBacktestSimulation",
           "StartPaperEngine": "#/$defs/StartPaperEngine",
           "StopPaperEngine": "#/$defs/StopPaperEngine",
           "SubmitOrderIntent": "#/$defs/SubmitOrderIntent",
@@ -860,6 +911,9 @@
         },
         {
           "$ref": "#/$defs/RunBacktest"
+        },
+        {
+          "$ref": "#/$defs/RunBacktestSimulation"
         },
         {
           "$ref": "#/$defs/CancelBacktest"

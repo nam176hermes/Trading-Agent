@@ -26,6 +26,7 @@ from packages.engine_contracts import (
     ArtifactReference,
     EngineCommandEnvelope,
     RunBacktest,
+    RunBacktestSimulation,
     canonical_json_bytes,
 )
 from .engine_spawn_interface import EnginePreparedSpawnMarker, EngineSpawnError
@@ -41,11 +42,15 @@ _BWRAP_VERSION = re.compile(
 _PREPARED_TTL_NS = 5 * 60 * 1_000_000_000
 _INPUT_TARGET = PurePosixPath("/inputs/request.json")
 _SIDECAR_TARGET = PurePosixPath("/inputs/request.sha256")
-_INPUT_ARTIFACT_NAMES = (
+_ZERO_ORDER_INPUT_ARTIFACT_NAMES = (
     "engine_configuration",
     "instrument_catalog",
     "strategy_configuration",
     "market_data",
+)
+_SIMULATION_INPUT_ARTIFACT_NAMES = (
+    *_ZERO_ORDER_INPUT_ARTIFACT_NAMES,
+    "simulation_scenario",
 )
 _SANDBOX_PROFILE_DOCUMENT = (
     b"trading-agent-engine-bwrap-v2:die-with-parent,user,pid,net,new-session,"
@@ -115,6 +120,7 @@ class CompleteEngineClosureAttestation:
     independently seals every listed file.
     """
 
+    profile: str
     source_commit: str
     closure_sha256: str
     mounts: tuple[ReadOnlyClosureMount, ...]
@@ -180,7 +186,7 @@ class _InputIdentity:
 @dataclass(frozen=True, slots=True)
 class _PreparedRecord:
     closure: CompleteEngineClosureAttestation
-    request: RunBacktest
+    request: RunBacktest | RunBacktestSimulation
     inputs: tuple[HashBoundEngineInput, ...]
     inputs_sha256: str
     request_sha256: str
@@ -489,7 +495,8 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
         )
     attestation = value
     if (
-        not isinstance(attestation.source_commit, str)
+        attestation.profile not in {"zero-order", "execution-simulation"}
+        or not isinstance(attestation.source_commit, str)
         or _SOURCE_COMMIT.fullmatch(attestation.source_commit) is None
         or not isinstance(attestation.closure_sha256, str)
         or _SHA256.fullmatch(attestation.closure_sha256) is None
@@ -620,16 +627,20 @@ def _input_mount(value: HashBoundEngineInput) -> ReadOnlyClosureMount:
 
 
 def _validate_inputs(
-    value: object, request: RunBacktest
+    value: object, request: RunBacktest | RunBacktestSimulation
 ) -> tuple[HashBoundEngineInput, ...]:
-    if type(value) is not tuple or len(value) != len(_INPUT_ARTIFACT_NAMES):
+    if type(request) is RunBacktest:
+        names = _ZERO_ORDER_INPUT_ARTIFACT_NAMES
+    elif type(request) is RunBacktestSimulation:
+        names = _SIMULATION_INPUT_ARTIFACT_NAMES
+    else:
+        _blocked("ENGINE_INPUT_AUTHORITY_INVALID", "exact backtest command is required")
+    if type(value) is not tuple or len(value) != len(names):
         _blocked("ENGINE_INPUT_AUTHORITY_INVALID", "complete hash-bound inputs are required")
-    expected_references = tuple(
-        getattr(request, name) for name in _INPUT_ARTIFACT_NAMES
-    )
+    expected_references = tuple(getattr(request, name) for name in names)
     validated: list[HashBoundEngineInput] = []
     for name, expected_reference, artifact in zip(
-        _INPUT_ARTIFACT_NAMES, expected_references, value, strict=True
+        names, expected_references, value, strict=True
     ):
         if (
             type(artifact) is not HashBoundEngineInput
@@ -684,7 +695,10 @@ class EngineSpawnProvider:
         *,
         transport_root: Path,
         attest_closure: Callable[[], CompleteEngineClosureAttestation],
-        attest_inputs: Callable[[RunBacktest], tuple[HashBoundEngineInput, ...]]
+        attest_inputs: Callable[
+            [RunBacktest | RunBacktestSimulation],
+            tuple[HashBoundEngineInput, ...],
+        ]
         | None = None,
         monotonic_ns: Callable[[], int],
     ) -> None:
@@ -732,7 +746,7 @@ class EngineSpawnProvider:
         return _validate_closure(value)
 
     def _current_inputs(
-        self, request: RunBacktest
+        self, request: RunBacktest | RunBacktestSimulation
     ) -> tuple[HashBoundEngineInput, ...]:
         if self._attest_inputs is None:
             return ()
@@ -838,9 +852,22 @@ class EngineSpawnProvider:
             raise
 
     def prepare(self, envelope: EngineCommandEnvelope) -> PreparedEngineSpawn:
-        if type(envelope) is not EngineCommandEnvelope or type(envelope.payload) is not RunBacktest:
-            _blocked("ENGINE_REQUEST_INVALID", "exact RunBacktest envelope is required")
+        if type(envelope) is not EngineCommandEnvelope or type(envelope.payload) not in {
+            RunBacktest,
+            RunBacktestSimulation,
+        }:
+            _blocked("ENGINE_REQUEST_INVALID", "exact backtest envelope is required")
         closure = self._current_closure()
+        expected_profile = (
+            "zero-order"
+            if type(envelope.payload) is RunBacktest
+            else "execution-simulation"
+        )
+        if closure.profile != expected_profile:
+            _blocked(
+                "ENGINE_CLOSURE_PROFILE_MISMATCH",
+                "engine closure profile does not match the command",
+            )
         inputs = self._current_inputs(envelope.payload)
         inputs_sha256 = _inputs_sha256(inputs)
         request = canonical_json_bytes(envelope)

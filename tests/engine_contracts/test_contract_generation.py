@@ -21,6 +21,7 @@ EXPECTED_COMMAND_NAMES = (
     "ValidateStrategyConfiguration",
     "InspectEngineRun",
     "RunBacktest",
+    "RunBacktestSimulation",
     "CancelBacktest",
     "ExportBacktestReport",
     "StartPaperEngine",

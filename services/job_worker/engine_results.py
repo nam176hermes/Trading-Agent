@@ -16,10 +16,16 @@ from pydantic import ValidationError
 from packages.engine_contracts import (
     EngineCommandEnvelope,
     EngineEventEnvelope,
+    EventFamily,
+    RunBacktestSimulation,
     canonical_json_bytes,
     validate_envelope_batch,
 )
-from packages.job_contracts import EngineBacktestPayload, JobType
+from packages.job_contracts import (
+    EngineBacktestPayload,
+    EngineBacktestSimulationPayload,
+    JobType,
+)
 from services.job_store.worker_repository import ClaimedJob
 
 from .artifacts import MAX_STREAM_BYTES, ArtifactMetadata
@@ -37,6 +43,8 @@ MAX_ENGINE_EVENTS = 4_096
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _GENERIC_EVENT_VALIDATOR = "engine-event-v1"
 _NAUTILUS_BACKTEST_VALIDATOR = "nautilus-backtest-result-v1"
+_NAUTILUS_SIMULATION_VALIDATOR = "nautilus-backtest-simulation-result-v1"
+_NAUTILUS_SIMULATION_EVENT = "NautilusBacktestSimulationCompleted"
 
 
 class EngineResultValidationError(ResultValidationError):
@@ -78,6 +86,7 @@ class EngineResultValidator:
         if validator_id not in {
             _GENERIC_EVENT_VALIDATOR,
             _NAUTILUS_BACKTEST_VALIDATOR,
+            _NAUTILUS_SIMULATION_VALIDATOR,
         }:
             raise EngineResultValidationError(
                 "engine result validator is not allowlisted"
@@ -87,7 +96,8 @@ class EngineResultValidator:
         if (
             type(job) is not ClaimedJob
             or job.job_type is not JobType.BACKTEST
-            or type(job.payload) is not EngineBacktestPayload
+            or type(job.payload)
+            not in {EngineBacktestPayload, EngineBacktestSimulationPayload}
             or type(request) is not EngineCommandEnvelope
         ):
             raise EngineResultValidationError("engine result authority is invalid")
@@ -128,7 +138,9 @@ class EngineResultValidator:
         raw = self._read_captured_stdout(job, stdout, check)
         events = self._parse_canonical_batch(raw, request, check)
         has_nautilus_completion = any(
-            event.payload.event_type == "NautilusBacktestCompleted" for event in events
+            event.payload.event_type
+            in {"NautilusBacktestCompleted", _NAUTILUS_SIMULATION_EVENT}
+            for event in events
         )
         if validator_id == _GENERIC_EVENT_VALIDATOR and has_nautilus_completion:
             raise EngineResultValidationError(
@@ -150,8 +162,65 @@ class EngineResultValidator:
                 raise EngineResultValidationError(
                     "Nautilus backtest result is not hash-bound and zero-order"
                 ) from exc
+        if validator_id == _NAUTILUS_SIMULATION_VALIDATOR:
+            if len(events) != 1:
+                raise EngineResultValidationError(
+                    "Nautilus simulation must emit exactly one completion event"
+                )
+            self._validate_simulation_completion(request, events[0])
         check()
         return self._seal(job, request, raw, events, validator_id)
+
+    @staticmethod
+    def _validate_simulation_completion(
+        request: EngineCommandEnvelope, event: EngineEventEnvelope
+    ) -> None:
+        if (
+            type(request.payload) is not RunBacktestSimulation
+            or event.payload.event_type != _NAUTILUS_SIMULATION_EVENT
+            or event.payload.family is not EventFamily.ENGINE_LIFECYCLE
+        ):
+            raise EngineResultValidationError(
+                "Nautilus simulation result has the wrong command or event"
+            )
+        attributes = {
+            attribute.name: attribute.value for attribute in event.payload.attributes
+        }
+        if set(attributes) != {"input_artifacts_sha256", "scenario_digest"}:
+            raise EngineResultValidationError(
+                "Nautilus simulation result attributes are incomplete"
+            )
+        if any(
+            not isinstance(attributes[name], str)
+            or _SHA256.fullmatch(attributes[name]) is None
+            for name in attributes
+        ):
+            raise EngineResultValidationError(
+                "Nautilus simulation result digest is invalid"
+            )
+        inputs = {
+            name: getattr(request.payload, name).sha256
+            for name in (
+                "engine_configuration",
+                "instrument_catalog",
+                "strategy_configuration",
+                "market_data",
+                "simulation_scenario",
+            )
+        }
+        expected_inputs = hashlib.sha256(canonical_json_bytes(inputs)).hexdigest()
+        if (
+            not secrets.compare_digest(
+                str(attributes["input_artifacts_sha256"]), expected_inputs
+            )
+            or not secrets.compare_digest(
+                str(attributes["scenario_digest"]),
+                request.payload.simulation_scenario.sha256,
+            )
+        ):
+            raise EngineResultValidationError(
+                "Nautilus simulation result is not bound to its scenario inputs"
+            )
 
     def _read_captured_stdout(
         self,

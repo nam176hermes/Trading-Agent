@@ -50,6 +50,26 @@ verified using `--verify --verify-input-bindings --offline`. The prior
 `nautilus-1.227.0-cp312-rust-bound` generation remains sealed and unmodified
 as the rollback generation; it is not selected by the command template below.
 
+## Execution-simulation runtime closure
+
+Packet 04E0 materialized the new external generation
+`runtime-closure-v4-simulation` atomically from the unchanged sealed
+`runtime-closure-v3` file inventory, the selected input-bound engine artifact,
+and the repository launcher. The materializer has no acquisition or build
+mode. Its checked-in policy SHA-256 is
+`1ea1d4aefdeb80fb4c320f0fecb0a3c87cde78a0b0ee37abc80dca062a6572c5`.
+
+| Closure | Profile | Manifest SHA-256 | Attested closure SHA-256 | Validator |
+| --- | --- | --- | --- | --- |
+| `runtime-closure-v3` | `zero-order` | `69cb87568361ccd6324550fb3823956c64e073b4cf09e674d7eb0883f844c044` | `18c9ba4af073ae953e0115f577423348b6d454c158da59cbcbd3c9e34a22856f` | `nautilus-backtest-result-v1` |
+| `runtime-closure-v4-simulation` | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
+
+Both generations passed independent root attestation after materialization,
+and the selected 01D artifact passed the full offline input-binding verifier
+both before and after publication. The v3 manifest digest remained unchanged.
+The external closure is not committed and does not authorize a service start,
+paper-runtime activation, broker access, or live trading.
+
 ## Offline command template
 
 Substitute only pre-existing, external sealed locations for the angle-bracketed

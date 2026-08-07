@@ -158,7 +158,46 @@ class EngineBacktestPayload(StrictPayload):
     engine_backtest: EngineBacktestInput
 
 
-BacktestJobPayload: TypeAlias = BacktestPayload | EngineBacktestPayload
+class EngineBacktestSimulationInput(StrictPayload):
+    """Closed authority input for one fixture-only execution simulation."""
+
+    engine_configuration: ArtifactReference
+    instrument_catalog: ArtifactReference
+    strategy_configuration: ArtifactReference
+    market_data: ArtifactReference
+    simulation_scenario: ArtifactReference
+    start_time: CanonicalUtcDateTime
+    end_time: CanonicalUtcDateTime
+
+    @model_validator(mode="after")
+    def _validate_simulation(self) -> "EngineBacktestSimulationInput":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        references = (
+            self.engine_configuration,
+            self.instrument_catalog,
+            self.strategy_configuration,
+            self.market_data,
+            self.simulation_scenario,
+        )
+        identities = tuple(
+            (reference.artifact_id, reference.sha256, reference.media_type)
+            for reference in references
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError("simulation contains a duplicate artifact reference")
+        return self
+
+
+class EngineBacktestSimulationPayload(StrictPayload):
+    """Simulation authority kept disjoint from the zero-order payload."""
+
+    engine_backtest_simulation: EngineBacktestSimulationInput
+
+
+BacktestJobPayload: TypeAlias = (
+    BacktestPayload | EngineBacktestPayload | EngineBacktestSimulationPayload
+)
 JobPayload: TypeAlias = (
     SnapshotPayload | DebatePayload | ReplayPayload | BacktestJobPayload
 )

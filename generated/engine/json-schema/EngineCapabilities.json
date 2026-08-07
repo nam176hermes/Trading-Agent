@@ -59,6 +59,7 @@
           "ValidateStrategyConfiguration",
           "InspectEngineRun",
           "RunBacktest",
+          "RunBacktestSimulation",
           "CancelBacktest",
           "ExportBacktestReport",
           "StartPaperEngine",

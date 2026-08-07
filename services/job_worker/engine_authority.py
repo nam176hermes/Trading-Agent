@@ -11,9 +11,14 @@ from packages.engine_contracts import (
     CURRENT_SCHEMA_VERSION,
     EngineCommandEnvelope,
     RunBacktest,
+    RunBacktestSimulation,
     payload_digest,
 )
-from packages.job_contracts import EngineBacktestPayload, JobType
+from packages.job_contracts import (
+    EngineBacktestPayload,
+    EngineBacktestSimulationPayload,
+    JobType,
+)
 from services.job_store.worker_repository import ClaimedJob
 
 
@@ -45,7 +50,9 @@ def _canonical_worker_time(value: object, *, error: str) -> datetime:
     return value.astimezone(UTC)
 
 
-def _configuration_projection(command: RunBacktest) -> dict[str, object]:
+def _configuration_projection(
+    command: RunBacktest | RunBacktestSimulation,
+) -> dict[str, object]:
     """Project exactly engine, instrument, and strategy configuration refs."""
 
     return {
@@ -72,7 +79,10 @@ class BacktestEngineAuthorityFactory:
             raise TypeError("engine authority requires the exact ClaimedJob type")
         if claimed.job_type is not JobType.BACKTEST:
             raise ValueError("claimed BACKTEST job is required")
-        if type(claimed.payload) is not EngineBacktestPayload:
+        if type(claimed.payload) not in {
+            EngineBacktestPayload,
+            EngineBacktestSimulationPayload,
+        }:
             raise ValueError("engine backtest authority input is required")
         if (
             not isinstance(claimed.job_id, str)
@@ -106,16 +116,29 @@ class BacktestEngineAuthorityFactory:
         if lease_expires_at <= now:
             raise ValueError("claim lease is expired")
 
-        engine_input = claimed.payload.engine_backtest
-        command = RunBacktest(
-            command_type="RunBacktest",
-            engine_configuration=engine_input.engine_configuration,
-            instrument_catalog=engine_input.instrument_catalog,
-            strategy_configuration=engine_input.strategy_configuration,
-            market_data=engine_input.market_data,
-            start_time=engine_input.start_time,
-            end_time=engine_input.end_time,
-        )
+        if type(claimed.payload) is EngineBacktestPayload:
+            engine_input = claimed.payload.engine_backtest
+            command: RunBacktest | RunBacktestSimulation = RunBacktest(
+                command_type="RunBacktest",
+                engine_configuration=engine_input.engine_configuration,
+                instrument_catalog=engine_input.instrument_catalog,
+                strategy_configuration=engine_input.strategy_configuration,
+                market_data=engine_input.market_data,
+                start_time=engine_input.start_time,
+                end_time=engine_input.end_time,
+            )
+        else:
+            simulation_input = claimed.payload.engine_backtest_simulation
+            command = RunBacktestSimulation(
+                command_type="RunBacktestSimulation",
+                engine_configuration=simulation_input.engine_configuration,
+                instrument_catalog=simulation_input.instrument_catalog,
+                strategy_configuration=simulation_input.strategy_configuration,
+                market_data=simulation_input.market_data,
+                simulation_scenario=simulation_input.simulation_scenario,
+                start_time=simulation_input.start_time,
+                end_time=simulation_input.end_time,
+            )
         command_digest = payload_digest(command)
         config_digest = payload_digest(_configuration_projection(command))
         return EngineCommandEnvelope(

@@ -16,7 +16,12 @@ from packages.engine_contracts import (
     canonical_json_bytes,
     payload_digest,
 )
-from packages.job_contracts import EngineBacktestPayload, JobType, parse_payload
+from packages.job_contracts import (
+    EngineBacktestPayload,
+    EngineBacktestSimulationPayload,
+    JobType,
+    parse_payload,
+)
 from services.job_store.worker_repository import ClaimedJob
 from services.job_worker.artifacts import ArtifactMetadata
 from services.job_worker.engine_authority import BacktestEngineAuthorityFactory
@@ -78,6 +83,28 @@ def _request():
     ).from_claim(_claim())
 
 
+def _simulation_claim() -> ClaimedJob:
+    zero_claim = _claim()
+    engine_input = zero_claim.payload.engine_backtest.model_dump(mode="json")
+    engine_input["simulation_scenario"] = {
+        "artifact_id": "55555555-5555-4555-8555-555555555555",
+        "sha256": "5" * 64,
+        "media_type": "application/json",
+    }
+    payload = parse_payload(
+        JobType.BACKTEST,
+        {"engine_backtest_simulation": engine_input},
+    )
+    assert isinstance(payload, EngineBacktestSimulationPayload)
+    return replace(zero_claim, payload=payload)
+
+
+def _simulation_request():
+    return BacktestEngineAuthorityFactory(
+        code_commit=CODE_COMMIT, clock=lambda: NOW
+    ).from_claim(_simulation_claim())
+
+
 def _event(
     *,
     request=None,
@@ -136,6 +163,56 @@ def _nautilus_event(*, request=None) -> EngineEventEnvelope:
         causation_id=request.message_id,
         engine_run_id=request.engine_run_id,
         stream_sequence=2,
+        event_time=request.event_time,
+        initialization_time=request.initialization_time,
+        schema_version=request.schema_version,
+        producer_identity=request.producer_identity,
+        source_commit=request.source_commit,
+        config_digest=request.config_digest,
+        payload_digest=payload_digest(payload),
+        payload=payload,
+    )
+
+
+def _simulation_event(
+    *,
+    request=None,
+    input_digest: str | None = None,
+    scenario_digest: str | None = None,
+) -> EngineEventEnvelope:
+    request = request or _simulation_request()
+    assert request.payload.command_type == "RunBacktestSimulation"
+    inputs = {
+        name: getattr(request.payload, name).sha256
+        for name in (
+            "engine_configuration",
+            "instrument_catalog",
+            "strategy_configuration",
+            "market_data",
+            "simulation_scenario",
+        )
+    }
+    payload = EngineEvent(
+        event_type="NautilusBacktestSimulationCompleted",
+        family=EventFamily.ENGINE_LIFECYCLE,
+        attributes=(
+            EventAttribute(
+                name="input_artifacts_sha256",
+                value=input_digest
+                or hashlib.sha256(canonical_json_bytes(inputs)).hexdigest(),
+            ),
+            EventAttribute(
+                name="scenario_digest",
+                value=scenario_digest or request.payload.simulation_scenario.sha256,
+            ),
+        ),
+    )
+    return EngineEventEnvelope(
+        message_id=uuid5(request.message_id, "NautilusBacktestSimulationCompleted"),
+        correlation_id=request.correlation_id,
+        causation_id=request.message_id,
+        engine_run_id=request.engine_run_id,
+        stream_sequence=request.stream_sequence + 1,
         event_time=request.event_time,
         initialization_time=request.initialization_time,
         schema_version=request.schema_version,
@@ -215,6 +292,103 @@ def test_nautilus_validator_requires_the_hash_bound_zero_order_completion(
 
     assert result.validator_id == "nautilus-backtest-result-v1"
     assert result.events == (event,)
+
+
+def test_simulation_validator_accepts_only_the_five_input_bound_completion(
+    tmp_path: Path,
+) -> None:
+    from services.job_worker.engine_results import EngineResultValidator
+
+    request = _simulation_request()
+    event = _simulation_event(request=request)
+    result = EngineResultValidator(tmp_path).validate(
+        "nautilus-backtest-simulation-result-v1",
+        _simulation_claim(),
+        request=request,
+        stdout=_stdout(tmp_path, canonical_json_bytes(event) + b"\n"),
+        exit_code=0,
+    )
+
+    assert result.validator_id == "nautilus-backtest-simulation-result-v1"
+    assert result.events == (event,)
+
+
+def test_zero_order_and_simulation_validators_reject_the_opposite_command(
+    tmp_path: Path,
+) -> None:
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
+
+    simulation_request = _simulation_request()
+    simulation_event = _simulation_event(request=simulation_request)
+    with pytest.raises(EngineResultValidationError, match="simulation|zero-order"):
+        EngineResultValidator(tmp_path / "simulation-as-zero").validate(
+            "nautilus-backtest-result-v1",
+            _simulation_claim(),
+            request=simulation_request,
+            stdout=_stdout(
+                tmp_path / "simulation-as-zero",
+                canonical_json_bytes(simulation_event) + b"\n",
+            ),
+            exit_code=0,
+        )
+
+    zero_request = _request()
+    zero_event = _nautilus_event(request=zero_request)
+    with pytest.raises(EngineResultValidationError, match="simulation"):
+        EngineResultValidator(tmp_path / "zero-as-simulation").validate(
+            "nautilus-backtest-simulation-result-v1",
+            _claim(),
+            request=zero_request,
+            stdout=_stdout(
+                tmp_path / "zero-as-simulation",
+                canonical_json_bytes(zero_event) + b"\n",
+            ),
+            exit_code=0,
+        )
+
+
+@pytest.mark.parametrize("mutation", ["four-input-digest", "scenario-digest"])
+def test_simulation_validator_rejects_every_scenario_binding_drift(
+    tmp_path: Path, mutation: str
+) -> None:
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
+
+    request = _simulation_request()
+    four_inputs = {
+        name: getattr(request.payload, name).sha256
+        for name in (
+            "engine_configuration",
+            "instrument_catalog",
+            "strategy_configuration",
+            "market_data",
+        )
+    }
+    event = _simulation_event(
+        request=request,
+        input_digest=(
+            hashlib.sha256(canonical_json_bytes(four_inputs)).hexdigest()
+            if mutation == "four-input-digest"
+            else None
+        ),
+        scenario_digest="0" * 64 if mutation == "scenario-digest" else None,
+    )
+
+    with pytest.raises(EngineResultValidationError, match="simulation"):
+        EngineResultValidator(tmp_path / mutation).validate(
+            "nautilus-backtest-simulation-result-v1",
+            _simulation_claim(),
+            request=request,
+            stdout=_stdout(
+                tmp_path / mutation, canonical_json_bytes(event) + b"\n"
+            ),
+            exit_code=0,
+        )
 
 
 def test_nautilus_validator_rejects_a_generic_engine_event(

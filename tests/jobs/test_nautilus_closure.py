@@ -55,7 +55,7 @@ def closure_config() -> NautilusClosureConfig:
         sandbox = base / "bwrap"
         shutil.copyfile("/usr/bin/bwrap", sandbox)
         sandbox.chmod(0o500)
-        yield _build_closure_config(base, sandbox)
+        yield _build_closure_config(base, sandbox, profile="zero-order")
     finally:
         for directory, child_directories, files in os.walk(base, topdown=False):
             current = Path(directory)
@@ -67,7 +67,7 @@ def closure_config() -> NautilusClosureConfig:
         shutil.rmtree(base)
 
 
-def _build_closure_config(tmp_path: Path, sandbox: Path):
+def _build_closure_config(tmp_path: Path, sandbox: Path, *, profile: str):
 
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir(mode=0o700)
@@ -102,17 +102,35 @@ def _build_closure_config(tmp_path: Path, sandbox: Path):
         "/engine/lib/python3.12/encodings/__init__.py",
     )
     records = [dict(item, target=target) for item, target in zip(files, targets, strict=True)]
+    profiles = {
+        "zero-order": (
+            ["-I", "-S", "/engine/launcher/nautilus_backtest.py"],
+            "nautilus-backtest-result-v1",
+        ),
+        "execution-simulation": (
+            [
+                "-I",
+                "-S",
+                "/engine/launcher/nautilus_backtest.py",
+                "--profile",
+                "execution-simulation",
+            ],
+            "nautilus-backtest-simulation-result-v1",
+        ),
+    }
+    argv_prefix, validator_id = profiles[profile]
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "profile": profile,
         "engine_name": "nautilus_trader",
         "engine_version": "1.227.0",
         "python_identity": "CPython 3.12.3",
         "source_commit": SOURCE_COMMIT,
         "artifact_manifest_sha256": _sha256(artifact_manifest),
         "entrypoint": "/engine/bin/python3.12",
-        "argv_prefix": ["-I", "-S", "/engine/launcher/nautilus_backtest.py"],
+        "argv_prefix": argv_prefix,
         "timeout_seconds": 120,
-        "result_validator_id": "nautilus-backtest-result-v1",
+        "result_validator_id": validator_id,
         "files": records,
     }
     (runtime / "closure-manifest.json").write_text(
@@ -138,13 +156,17 @@ def test_attestor_rejects_artifact_manifest_drift_before_spawn(
     artifacts.chmod(0o500)
 
     with pytest.raises(EngineSpawnError, match="artifact"):
-        attest_nautilus_backtest_closure(closure_config)
+        attest_nautilus_backtest_closure(
+            closure_config, expected_profile="zero-order"
+        )
 
 
 def test_attestor_binds_only_read_only_launcher_and_python_closure_files(
     closure_config: NautilusClosureConfig,
 ) -> None:
-    closure = attest_nautilus_backtest_closure(closure_config)
+    closure = attest_nautilus_backtest_closure(
+        closure_config, expected_profile="zero-order"
+    )
 
     assert str(closure.entrypoint) == "/engine/bin/python3.12"
     assert closure.argv_prefix == (
@@ -152,6 +174,7 @@ def test_attestor_binds_only_read_only_launcher_and_python_closure_files(
         "-S",
         "/engine/launcher/nautilus_backtest.py",
     )
+    assert closure.profile == "zero-order"
     assert {str(mount.target) for mount in closure.mounts} == {
         "/engine/bin/python3.12",
         "/engine/launcher/nautilus_backtest.py",
@@ -172,4 +195,79 @@ def test_attestor_rejects_unlisted_runtime_file(closure_config: NautilusClosureC
     runtime.chmod(0o500)
 
     with pytest.raises(EngineSpawnError, match="unlisted"):
-        attest_nautilus_backtest_closure(closure_config)
+        attest_nautilus_backtest_closure(
+            closure_config, expected_profile="zero-order"
+        )
+
+
+@pytest.mark.parametrize("mutation", ["profile", "argv", "validator"])
+def test_attestor_rejects_every_profile_identity_mismatch(
+    closure_config: NautilusClosureConfig, mutation: str
+) -> None:
+    runtime = closure_config.runtime_root
+    manifest_path = runtime / "closure-manifest.json"
+    runtime.chmod(0o700)
+    manifest_path.chmod(0o600)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if mutation == "profile":
+        manifest["profile"] = "execution-simulation"
+    elif mutation == "argv":
+        manifest["argv_prefix"] = [
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ]
+    else:
+        manifest["result_validator_id"] = "nautilus-backtest-simulation-result-v1"
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    manifest_path.chmod(0o400)
+    runtime.chmod(0o500)
+
+    with pytest.raises(EngineSpawnError, match="profile|identity"):
+        attest_nautilus_backtest_closure(
+            closure_config, expected_profile="zero-order"
+        )
+
+
+def test_attestor_accepts_only_an_explicit_execution_simulation_profile(
+    tmp_path: Path,
+) -> None:
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("Bubblewrap is required for the Nautilus closure test")
+    base = Path(
+        tempfile.mkdtemp(
+            prefix="nautilus-simulation-closure-test-",
+            dir="/home/thenam176/.cache",
+        )
+    )
+    try:
+        sandbox = base / "bwrap"
+        shutil.copyfile("/usr/bin/bwrap", sandbox)
+        sandbox.chmod(0o500)
+        config = _build_closure_config(
+            base, sandbox, profile="execution-simulation"
+        )
+
+        closure = attest_nautilus_backtest_closure(
+            config, expected_profile="execution-simulation"
+        )
+
+        assert closure.profile == "execution-simulation"
+        assert closure.argv_prefix[-2:] == ("--profile", "execution-simulation")
+        assert closure.result_validator_id == "nautilus-backtest-simulation-result-v1"
+        with pytest.raises(EngineSpawnError, match="profile"):
+            attest_nautilus_backtest_closure(config, expected_profile="zero-order")
+    finally:
+        for directory, child_directories, files in os.walk(base, topdown=False):
+            current = Path(directory)
+            for name in files:
+                (current / name).chmod(0o600)
+            for name in child_directories:
+                (current / name).chmod(0o700)
+            current.chmod(0o700)
+        shutil.rmtree(base)

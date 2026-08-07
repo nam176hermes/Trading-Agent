@@ -42,8 +42,23 @@ _ARTIFACT_MANIFEST_NAME = "artifact-manifest.json"
 _FILES_DIRECTORY = "files"
 _EXPECTED_ENGINE_NAME = "nautilus_trader"
 _EXPECTED_ENGINE_VERSION = "1.227.0"
-_EXPECTED_RESULT_VALIDATOR = "nautilus-backtest-result-v1"
-_MANIFEST_FIELDS = {
+_PROFILES = {
+    "zero-order": {
+        "argv_prefix": ("-I", "-S", "/engine/launcher/nautilus_backtest.py"),
+        "result_validator_id": "nautilus-backtest-result-v1",
+    },
+    "execution-simulation": {
+        "argv_prefix": (
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ),
+        "result_validator_id": "nautilus-backtest-simulation-result-v1",
+    },
+}
+_MANIFEST_FIELDS_V1 = {
     "schema_version",
     "engine_name",
     "engine_version",
@@ -56,6 +71,7 @@ _MANIFEST_FIELDS = {
     "result_validator_id",
     "files",
 }
+_MANIFEST_FIELDS_V2 = {*_MANIFEST_FIELDS_V1, "profile"}
 _FILE_FIELDS = {"path", "target", "sha256", "size", "mode"}
 
 
@@ -233,7 +249,7 @@ def _sandbox_proof(path: Path) -> OsSandboxProof:
         if (
             stat.S_ISLNK(observed.st_mode)
             or not stat.S_ISREG(observed.st_mode)
-            or observed.st_uid != os.geteuid()
+            or observed.st_uid not in {0, os.geteuid()}
             or observed.st_mode & 0o022
             or not observed.st_mode & stat.S_IXUSR
         ):
@@ -262,6 +278,8 @@ def _sandbox_proof(path: Path) -> OsSandboxProof:
 
 def attest_nautilus_backtest_closure(
     config: NautilusClosureConfig,
+    *,
+    expected_profile: str,
 ) -> CompleteEngineClosureAttestation:
     """Return the complete immutable CPython 3.12 closure for one backtest.
 
@@ -271,22 +289,34 @@ def attest_nautilus_backtest_closure(
 
     if type(config) is not NautilusClosureConfig:
         raise TypeError("NautilusClosureConfig is required")
+    if expected_profile not in _PROFILES:
+        raise ValueError("explicit supported Nautilus closure profile is required")
     _ensure_external_private_directory(config.runtime_root, "Nautilus runtime root")
     _ensure_external_private_directory(config.artifact_directory, "Nautilus artifact directory")
     closure_manifest = _read_json(config.runtime_root / _MANIFEST_NAME, "closure manifest")
     artifact_manifest_path = config.artifact_directory / _ARTIFACT_MANIFEST_NAME
     artifact_manifest = _read_json(artifact_manifest_path, "artifact manifest")
-    if set(closure_manifest) != _MANIFEST_FIELDS:
+    schema_version = closure_manifest.get("schema_version")
+    if schema_version == 1 and set(closure_manifest) == _MANIFEST_FIELDS_V1:
+        profile = "zero-order"
+    elif schema_version == 2 and set(closure_manifest) == _MANIFEST_FIELDS_V2:
+        profile = closure_manifest.get("profile")
+    else:
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest fields are missing or unknown")
+    if profile != expected_profile or profile not in _PROFILES:
+        _blocked("ENGINE_CLOSURE_INVALID", "closure profile does not match explicit authority")
+    expected_identity = _PROFILES[profile]
     if (
-        closure_manifest["schema_version"] != 1
-        or closure_manifest["engine_name"] != _EXPECTED_ENGINE_NAME
+        closure_manifest["engine_name"] != _EXPECTED_ENGINE_NAME
         or closure_manifest["engine_version"] != _EXPECTED_ENGINE_VERSION
         or not isinstance(closure_manifest["python_identity"], str)
         or _PYTHON_IDENTITY.fullmatch(closure_manifest["python_identity"]) is None
         or not isinstance(closure_manifest["source_commit"], str)
         or _SOURCE_COMMIT.fullmatch(closure_manifest["source_commit"]) is None
-        or closure_manifest["result_validator_id"] != _EXPECTED_RESULT_VALIDATOR
+        or closure_manifest["result_validator_id"]
+        != expected_identity["result_validator_id"]
+        or tuple(closure_manifest.get("argv_prefix", ()))
+        != expected_identity["argv_prefix"]
     ):
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest identity is invalid")
     artifact_digest = closure_manifest["artifact_manifest_sha256"]
@@ -328,10 +358,12 @@ def attest_nautilus_backtest_closure(
             for mount in mounts
         ],
         "result_validator_id": closure_manifest["result_validator_id"],
+        "profile": profile,
         "source_commit": closure_manifest["source_commit"],
         "timeout_seconds": timeout,
     }
     return CompleteEngineClosureAttestation(
+        profile=profile,
         source_commit=closure_manifest["source_commit"],
         closure_sha256=hashlib.sha256(_canonical_json_bytes(digest_document)).hexdigest(),
         mounts=mounts,

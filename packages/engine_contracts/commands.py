@@ -41,6 +41,7 @@ CommandName: TypeAlias = Literal[
     "ValidateStrategyConfiguration",
     "InspectEngineRun",
     "RunBacktest",
+    "RunBacktestSimulation",
     "CancelBacktest",
     "ExportBacktestReport",
     "StartPaperEngine",
@@ -323,6 +324,38 @@ class RunBacktest(CommandModel):
         return self
 
 
+class RunBacktestSimulation(CommandModel):
+    """One fixture-only execution simulation with a separately bound scenario."""
+
+    command_type: Literal["RunBacktestSimulation"]
+    engine_configuration: ArtifactReference
+    instrument_catalog: ArtifactReference
+    strategy_configuration: ArtifactReference
+    market_data: ArtifactReference
+    simulation_scenario: ArtifactReference
+    start_time: CanonicalUtcDateTime
+    end_time: CanonicalUtcDateTime
+
+    @model_validator(mode="after")
+    def _validate_simulation(self) -> "RunBacktestSimulation":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        references = (
+            self.engine_configuration,
+            self.instrument_catalog,
+            self.strategy_configuration,
+            self.market_data,
+            self.simulation_scenario,
+        )
+        identities = tuple(
+            (reference.artifact_id, reference.sha256, reference.media_type)
+            for reference in references
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError("simulation contains a duplicate artifact reference")
+        return self
+
+
 class CancelBacktest(CommandModel):
     command_type: Literal["CancelBacktest"]
     target_engine_run_id: UUID
@@ -387,6 +420,7 @@ EngineCommand: TypeAlias = (
     | ValidateStrategyConfiguration
     | InspectEngineRun
     | RunBacktest
+    | RunBacktestSimulation
     | CancelBacktest
     | ExportBacktestReport
     | StartPaperEngine
@@ -409,6 +443,7 @@ _COMMAND_MODELS = {
         ValidateStrategyConfiguration,
         InspectEngineRun,
         RunBacktest,
+        RunBacktestSimulation,
         CancelBacktest,
         ExportBacktestReport,
         StartPaperEngine,

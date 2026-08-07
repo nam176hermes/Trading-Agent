@@ -13,7 +13,9 @@ from packages.engine_contracts import (
     ArtifactReference,
     CURRENT_SCHEMA_VERSION,
     EngineCommandEnvelope,
+    EngineEventEnvelope,
     RunBacktest,
+    RunBacktestSimulation,
     canonical_json_bytes,
     payload_digest,
 )
@@ -157,6 +159,122 @@ def test_launcher_reads_only_the_four_hash_bound_input_artifacts(
     )
 
     assert loaded == tuple(value for _name, value, _media_type in artifact_values)
+
+
+def test_launcher_simulation_profile_reads_five_inputs_and_binds_stdout_event(
+    launcher_module, tmp_path: Path
+) -> None:
+    artifact_values = (
+        ("engine_configuration", b'{"execution_mode":"execution-simulation"}', "application/json"),
+        ("instrument_catalog", b'{"catalog":"fixture"}', "application/json"),
+        ("strategy_configuration", b'{"positions":[{}]}', "application/json"),
+        ("market_data", b'{"close":"1"}\n', "application/jsonl"),
+        ("simulation_scenario", b'{"scenario":"event-digest"}', "application/json"),
+    )
+    artifact_root = tmp_path / "simulation-artifacts"
+    artifact_root.mkdir()
+    references: list[ArtifactReference] = []
+    for index, (name, value, media_type) in enumerate(artifact_values, start=1):
+        digest = hashlib.sha256(value).hexdigest()
+        extension = ".jsonl" if media_type == "application/jsonl" else ".json"
+        (artifact_root / f"{name}-{digest}{extension}").write_bytes(value)
+        references.append(
+            ArtifactReference(
+                artifact_id=UUID(
+                    f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"
+                ),
+                sha256=digest,
+                media_type=media_type,
+            )
+        )
+    command = RunBacktestSimulation(
+        command_type="RunBacktestSimulation",
+        engine_configuration=references[0],
+        instrument_catalog=references[1],
+        strategy_configuration=references[2],
+        market_data=references[3],
+        simulation_scenario=references[4],
+        start_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+        end_time=datetime(2026, 8, 5, 12, 30, tzinfo=UTC),
+    )
+    envelope = _request().model_copy(
+        update={
+            "config_digest": payload_digest(
+                {
+                    "engine_configuration": command.engine_configuration,
+                    "instrument_catalog": command.instrument_catalog,
+                    "strategy_configuration": command.strategy_configuration,
+                }
+            ),
+            "payload_digest": payload_digest(command),
+            "payload": command,
+        }
+    )
+    raw_request = canonical_json_bytes(envelope)
+    request_path = tmp_path / "simulation-request.json"
+    sidecar_path = tmp_path / "simulation-request.sha256"
+    request_path.write_bytes(raw_request)
+    sidecar_path.write_text(
+        hashlib.sha256(raw_request).hexdigest() + "\n", encoding="ascii"
+    )
+
+    accepted = launcher_module.validated_request(
+        request_path,
+        sidecar_path,
+        profile="execution-simulation",
+    )
+    artifacts = launcher_module.validated_input_artifacts(
+        accepted,
+        artifact_root,
+        profile="execution-simulation",
+    )
+    event = launcher_module._simulation_event(accepted, artifacts)
+    parsed = EngineEventEnvelope.model_validate_json(canonical_json_bytes(event))
+
+    assert len(artifacts) == 5
+    assert parsed.payload.event_type == "NautilusBacktestSimulationCompleted"
+    assert {item.name: item.value for item in parsed.payload.attributes} == {
+        "input_artifacts_sha256": hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    name: hashlib.sha256(value).hexdigest()
+                    for (name, _raw, _media), value in zip(
+                        artifact_values, artifacts, strict=True
+                    )
+                }
+            )
+        ).hexdigest(),
+        "scenario_digest": references[4].sha256,
+    }
+    with pytest.raises(ValueError, match="RunBacktest"):
+        launcher_module.validated_request(request_path, sidecar_path)
+
+
+def test_launcher_rejects_duplicate_simulation_artifact_references(
+    launcher_module, tmp_path: Path
+) -> None:
+    envelope = _request().model_dump(mode="json")
+    payload = dict(envelope["payload"])
+    payload["command_type"] = "RunBacktestSimulation"
+    payload["simulation_scenario"] = payload["engine_configuration"]
+    envelope["payload"] = payload
+    envelope["payload_digest"] = hashlib.sha256(
+        canonical_json_bytes(payload)
+    ).hexdigest()
+    raw_request = canonical_json_bytes(envelope)
+    request_path = tmp_path / "duplicate-simulation-request.json"
+    sidecar_path = tmp_path / "duplicate-simulation-request.sha256"
+    request_path.write_bytes(raw_request)
+    sidecar_path.write_text(
+        hashlib.sha256(raw_request).hexdigest() + "\n", encoding="ascii"
+    )
+
+    with pytest.raises(ValueError, match="duplicate artifact"):
+        launcher_module.validated_request(
+            request_path,
+            sidecar_path,
+            profile="execution-simulation",
+        )
 
 
 def test_launcher_accepts_only_a_zero_order_04a_catalog_and_04b_target(

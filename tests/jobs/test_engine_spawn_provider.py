@@ -22,6 +22,7 @@ from packages.engine_contracts import (
     CURRENT_SCHEMA_VERSION,
     EngineCommandEnvelope,
     RunBacktest,
+    RunBacktestSimulation,
     canonical_json_bytes,
     payload_digest,
 )
@@ -108,6 +109,34 @@ def _envelope() -> EngineCommandEnvelope:
     )
 
 
+def _simulation_envelope(
+    references: tuple[ArtifactReference, ...],
+) -> EngineCommandEnvelope:
+    command = RunBacktestSimulation(
+        command_type="RunBacktestSimulation",
+        engine_configuration=references[0],
+        instrument_catalog=references[1],
+        strategy_configuration=references[2],
+        market_data=references[3],
+        simulation_scenario=references[4],
+        start_time=datetime(2026, 8, 5, 12, 0, tzinfo=UTC),
+        end_time=datetime(2026, 8, 5, 12, 30, tzinfo=UTC),
+    )
+    return _envelope().model_copy(
+        update={
+            "config_digest": payload_digest(
+                {
+                    "engine_configuration": command.engine_configuration,
+                    "instrument_catalog": command.instrument_catalog,
+                    "strategy_configuration": command.strategy_configuration,
+                }
+            ),
+            "payload_digest": payload_digest(command),
+            "payload": command,
+        }
+    )
+
+
 def _identity(path: Path) -> tuple[int, int]:
     observed = path.stat(follow_symlinks=False)
     return observed.st_dev, observed.st_ino
@@ -126,7 +155,9 @@ def _closure_file(source: Path, target: str) -> ReadOnlyClosureMount:
     )
 
 
-def _closure(tmp_path: Path) -> CompleteEngineClosureAttestation:
+def _closure(
+    tmp_path: Path, *, profile: str = "zero-order"
+) -> CompleteEngineClosureAttestation:
     sandbox = tmp_path / "sealed" / "bin" / "sandbox"
     sandbox.parent.mkdir(parents=True)
     sandbox.write_bytes(b"reviewed-os-sandbox-v1")
@@ -140,6 +171,7 @@ def _closure(tmp_path: Path) -> CompleteEngineClosureAttestation:
     entrypoint.parent.chmod(0o500)
     release.chmod(0o500)
     return CompleteEngineClosureAttestation(
+        profile=profile,
         source_commit=SOURCE_COMMIT,
         closure_sha256="a" * 64,
         mounts=(
@@ -257,6 +289,7 @@ def _real_bwrap_closure(
         root.chmod(0o500)
 
     closure = CompleteEngineClosureAttestation(
+        profile="zero-order",
         source_commit=SOURCE_COMMIT,
         closure_sha256="b" * 64,
         mounts=(
@@ -468,6 +501,132 @@ def test_provider_mounts_each_attested_artifact_as_a_sealed_hash_bound_input(
             )
     finally:
         _close_spawn_fds(spawn)
+
+
+def test_simulation_provider_mounts_exactly_five_hash_bound_inputs(
+    secure_tmp_path: Path,
+) -> None:
+    values = (
+        ("engine_configuration", b'{"mode":"execution-simulation"}\n', "application/json"),
+        ("instrument_catalog", b'{"catalog":"fixture"}\n', "application/json"),
+        ("strategy_configuration", b'{"positions":[{}]}\n', "application/json"),
+        ("market_data", b'{"close":"1"}\n', "application/jsonl"),
+        ("simulation_scenario", b'{"scenario":"event-digest"}\n', "application/json"),
+    )
+    root = secure_tmp_path / "simulation-artifacts"
+    root.mkdir(mode=0o700)
+    references: list[ArtifactReference] = []
+    inputs: list[HashBoundEngineInput] = []
+    for index, (name, value, media_type) in enumerate(values, start=1):
+        source = root / name
+        source.write_bytes(value)
+        source.chmod(0o400)
+        digest = hashlib.sha256(value).hexdigest()
+        reference = ArtifactReference(
+            artifact_id=UUID(
+                f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"
+            ),
+            sha256=digest,
+            media_type=media_type,
+        )
+        references.append(reference)
+        observed = source.stat(follow_symlinks=False)
+        inputs.append(
+            HashBoundEngineInput(
+                name=name,
+                reference=reference,
+                source=source,
+                identity=(observed.st_dev, observed.st_ino),
+                size=observed.st_size,
+                mode=0o400,
+                sha256=digest,
+            )
+        )
+    envelope = _simulation_envelope(tuple(references))
+    closure = _closure(secure_tmp_path, profile="execution-simulation")
+
+    spawn = consume_prepared_engine_spawn(
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            attest_inputs=lambda request: tuple(inputs),
+        ).prepare(envelope)
+    )
+    try:
+        input_targets = {
+            spawn.argv[index + 2]
+            for index, argument in enumerate(spawn.argv[:-2])
+            if argument == "--ro-bind-data"
+            and spawn.argv[index + 2].startswith("/inputs/artifacts/")
+        }
+        assert len(input_targets) == 5
+        assert any("simulation_scenario-" in target for target in input_targets)
+    finally:
+        _close_spawn_fds(spawn)
+
+
+def test_zero_order_request_rejects_an_extra_fifth_input(
+    secure_tmp_path: Path,
+) -> None:
+    envelope = _envelope()
+    source = secure_tmp_path / "extra-input"
+    source.write_bytes(b"{}\n")
+    source.chmod(0o400)
+    observed = source.stat(follow_symlinks=False)
+    reference = ArtifactReference(
+        artifact_id=UUID("55555555-1111-4111-8111-111111111111"),
+        sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        media_type="application/json",
+    )
+    extra = HashBoundEngineInput(
+        name="simulation_scenario",
+        reference=reference,
+        source=source,
+        identity=(observed.st_dev, observed.st_ino),
+        size=observed.st_size,
+        mode=0o400,
+        sha256=reference.sha256,
+    )
+
+    with pytest.raises(EngineSpawnError, match="complete hash-bound inputs"):
+        _provider(
+            secure_tmp_path,
+            lambda: _closure(secure_tmp_path),
+            attest_inputs=lambda request: (extra,),
+        ).prepare(envelope)
+
+
+def test_closure_profiles_reject_the_opposite_backtest_command(
+    secure_tmp_path: Path,
+) -> None:
+    references = tuple(
+        ArtifactReference(
+            artifact_id=UUID(
+                f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"
+            ),
+            sha256=f"{index}" * 64,
+            media_type="application/jsonl" if index == 4 else "application/json",
+        )
+        for index in range(1, 6)
+    )
+    simulation = _simulation_envelope(references)
+    zero_root = secure_tmp_path / "zero-profile"
+    simulation_root = secure_tmp_path / "simulation-profile"
+    zero_root.mkdir(mode=0o700)
+    simulation_root.mkdir(mode=0o700)
+
+    with pytest.raises(EngineSpawnError, match="profile"):
+        _provider(
+            zero_root,
+            lambda: _closure(zero_root, profile="zero-order"),
+        ).prepare(simulation)
+    with pytest.raises(EngineSpawnError, match="profile"):
+        _provider(
+            simulation_root,
+            lambda: _closure(
+                simulation_root, profile="execution-simulation"
+            ),
+        ).prepare(_envelope())
 
 
 def test_provider_rejects_an_artifact_changed_after_prepare_before_spawn(

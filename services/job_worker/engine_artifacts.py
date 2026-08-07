@@ -8,19 +8,24 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from packages.engine_contracts import ArtifactReference, RunBacktest
+from packages.engine_contracts import (
+    ArtifactReference,
+    RunBacktest,
+    RunBacktestSimulation,
+)
 
 from .engine_spawn import HashBoundEngineInput
 from .engine_spawn_interface import EngineSpawnError
 
 
 _ROOT = Path(__file__).resolve().parents[2]
-_NAMES = (
+_ZERO_ORDER_NAMES = (
     "engine_configuration",
     "instrument_catalog",
     "strategy_configuration",
     "market_data",
 )
+_SIMULATION_NAMES = (*_ZERO_ORDER_NAMES, "simulation_scenario")
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,11 +121,20 @@ class HashBoundArtifactResolver:
             sha256=binding.reference.sha256,
         )
 
-    def __call__(self, request: RunBacktest) -> tuple[HashBoundEngineInput, ...]:
-        if type(request) is not RunBacktest:
-            raise EngineSpawnError("ENGINE_INPUT_AUTHORITY_INVALID", "exact RunBacktest is required")
+    def __call__(
+        self, request: RunBacktest | RunBacktestSimulation
+    ) -> tuple[HashBoundEngineInput, ...]:
+        if type(request) is RunBacktest:
+            names = _ZERO_ORDER_NAMES
+        elif type(request) is RunBacktestSimulation:
+            names = _SIMULATION_NAMES
+        else:
+            raise EngineSpawnError(
+                "ENGINE_INPUT_AUTHORITY_INVALID",
+                "exact backtest command is required",
+            )
         values: list[HashBoundEngineInput] = []
-        for name in _NAMES:
+        for name in names:
             reference = getattr(request, name)
             key = (str(reference.artifact_id), reference.sha256, reference.media_type)
             try:

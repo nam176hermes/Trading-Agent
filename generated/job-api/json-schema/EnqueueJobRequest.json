@@ -208,6 +208,64 @@
       "title": "EngineBacktestPayload",
       "type": "object"
     },
+    "EngineBacktestSimulationInput": {
+      "additionalProperties": false,
+      "description": "Closed authority input for one fixture-only execution simulation.",
+      "properties": {
+        "end_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "End Time",
+          "type": "string"
+        },
+        "engine_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "instrument_catalog": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "market_data": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "simulation_scenario": {
+          "$ref": "#/$defs/ArtifactReference"
+        },
+        "start_time": {
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$",
+          "title": "Start Time",
+          "type": "string"
+        },
+        "strategy_configuration": {
+          "$ref": "#/$defs/ArtifactReference"
+        }
+      },
+      "required": [
+        "engine_configuration",
+        "instrument_catalog",
+        "strategy_configuration",
+        "market_data",
+        "simulation_scenario",
+        "start_time",
+        "end_time"
+      ],
+      "title": "EngineBacktestSimulationInput",
+      "type": "object"
+    },
+    "EngineBacktestSimulationPayload": {
+      "additionalProperties": false,
+      "description": "Simulation authority kept disjoint from the zero-order payload.",
+      "properties": {
+        "engine_backtest_simulation": {
+          "$ref": "#/$defs/EngineBacktestSimulationInput"
+        }
+      },
+      "required": [
+        "engine_backtest_simulation"
+      ],
+      "title": "EngineBacktestSimulationPayload",
+      "type": "object"
+    },
     "MarketDataSnapshotRequest": {
       "additionalProperties": false,
       "description": "Closed, paper-only acquisition intent for the injected P10 fixture.",
@@ -493,6 +551,9 @@
             },
             {
               "$ref": "#/$defs/EngineBacktestPayload"
+            },
+            {
+              "$ref": "#/$defs/EngineBacktestSimulationPayload"
             }
           ]
         },

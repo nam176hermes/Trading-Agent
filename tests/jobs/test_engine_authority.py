@@ -10,12 +10,17 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 
-from packages.engine_contracts import ArtifactReference, RunBacktest
+from packages.engine_contracts import (
+    ArtifactReference,
+    RunBacktest,
+    RunBacktestSimulation,
+)
 from packages.job_contracts import (
     BacktestPayload,
     EnqueueJobRequest,
     EngineBacktestInput,
     EngineBacktestPayload,
+    EngineBacktestSimulationPayload,
     JobType,
     parse_payload,
 )
@@ -62,6 +67,20 @@ def _engine_payload() -> EngineBacktestPayload:
         },
     )
     assert isinstance(parsed, EngineBacktestPayload)
+    return parsed
+
+
+def _simulation_payload() -> EngineBacktestSimulationPayload:
+    wire = _engine_payload().model_dump(mode="json")["engine_backtest"]
+    wire["simulation_scenario"] = {
+        "artifact_id": "55555555-5555-4555-8555-555555555555",
+        "sha256": "5" * 64,
+        "media_type": "application/json",
+    }
+    parsed = parse_payload(
+        JobType.BACKTEST, {"engine_backtest_simulation": wire}
+    )
+    assert isinstance(parsed, EngineBacktestSimulationPayload)
     return parsed
 
 
@@ -226,6 +245,29 @@ def test_factory_derives_the_closed_command_and_full_attempt_authority() -> None
     assert envelope.config_digest != envelope.payload_digest
     assert "provider" not in canonical_command.decode("utf-8").lower()
     assert "nautilus" not in canonical_command.decode("utf-8").lower()
+
+
+def test_factory_derives_a_distinct_hash_bound_simulation_command() -> None:
+    claim = _claim(payload=_simulation_payload())
+
+    envelope = _factory().from_claim(claim)
+
+    assert type(envelope.payload) is RunBacktestSimulation
+    assert envelope.payload.command_type == "RunBacktestSimulation"
+    assert envelope.payload.simulation_scenario == ArtifactReference(
+        artifact_id=UUID("55555555-5555-4555-8555-555555555555"),
+        sha256="5" * 64,
+        media_type="application/json",
+    )
+    assert envelope.payload_digest == hashlib.sha256(
+        json.dumps(
+            envelope.payload.model_dump(mode="json"),
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def test_factory_ids_vary_by_attempt_while_the_closed_command_stays_identical() -> None:

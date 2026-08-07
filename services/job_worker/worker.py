@@ -213,10 +213,14 @@ class JobWorker:
             and claimed.job_type is self._engine_backtest_job_type
         ):
             from packages.engine_event_ledger import EngineEventConflictError
-            from packages.job_contracts import EngineBacktestPayload
+            from packages.job_contracts import (
+                EngineBacktestPayload,
+                EngineBacktestSimulationPayload,
+            )
 
             if (
-                type(claimed.payload) is not EngineBacktestPayload
+                type(claimed.payload)
+                not in {EngineBacktestPayload, EngineBacktestSimulationPayload}
                 or not self._engine_backtest_enabled
             ):
                 finalized = self._repository.finalize_execution(

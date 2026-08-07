@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 import sys
+import tempfile
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -67,6 +70,25 @@ ATTEMPT_ID = "attempt_fedcba9876543210fedcba9876543210"
 SANDBOX_PROFILE_SHA256 = (
     "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
 )
+
+
+@pytest.fixture
+def secure_tmp_path() -> Path:
+    path = Path(tempfile.mkdtemp(prefix="engine-worker-lifecycle-test-", dir="/tmp"))
+    try:
+        yield path
+    finally:
+        for directory, child_directories, files in os.walk(path):
+            Path(directory).chmod(0o700)
+            for child in child_directories:
+                candidate = Path(directory) / child
+                if not candidate.is_symlink():
+                    candidate.chmod(0o700)
+            for child in files:
+                candidate = Path(directory) / child
+                if not candidate.is_symlink():
+                    candidate.chmod(0o600)
+        shutil.rmtree(path)
 
 
 def _engine_payload() -> EngineBacktestPayload:
@@ -215,6 +237,7 @@ def _real_provider(tmp_path: Path) -> EngineSpawnProvider:
     entrypoint_info = entrypoint.stat(follow_symlinks=False)
     entrypoint_raw = entrypoint.read_bytes()
     closure = CompleteEngineClosureAttestation(
+        profile="zero-order",
         source_commit=CODE_COMMIT,
         closure_sha256="c" * 64,
         mounts=(
@@ -530,8 +553,9 @@ def test_opted_in_engine_ingestor_is_unreachable_from_snapshot_path() -> None:
 
 
 def test_authorized_fixture_runs_through_capture_validation_sealing_and_success(
-    monkeypatch, tmp_path: Path,
+    monkeypatch, secure_tmp_path: Path,
 ) -> None:
+    tmp_path = secure_tmp_path
     from services.job_worker import process_runner as process_runner_module
     from services.job_worker.engine_spawn import consume_prepared_engine_spawn
 

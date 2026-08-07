@@ -16,6 +16,7 @@ EXPECTED_COMMAND_TYPES = (
     "ValidateStrategyConfiguration",
     "InspectEngineRun",
     "RunBacktest",
+    "RunBacktestSimulation",
     "CancelBacktest",
     "ExportBacktestReport",
     "StartPaperEngine",
@@ -267,6 +268,69 @@ def test_backtest_window_accepts_only_canonical_utc_z_json() -> None:
         contracts.RunBacktest.model_validate_json(
             json.dumps({**payload, "start_time": "2026-08-04T18:30:00+00:00"})
         )
+
+
+def _simulation_command_json() -> dict[str, object]:
+    references = [
+        {
+            "artifact_id": f"{number}" * 8 + "-1111-4111-8111-111111111111",
+            "sha256": f"{number}" * 64,
+            "media_type": "application/jsonl" if number == 4 else "application/json",
+        }
+        for number in range(1, 6)
+    ]
+    return {
+        "command_type": "RunBacktestSimulation",
+        "engine_configuration": references[0],
+        "instrument_catalog": references[1],
+        "strategy_configuration": references[2],
+        "market_data": references[3],
+        "simulation_scenario": references[4],
+        "start_time": "2026-08-05T12:00:00Z",
+        "end_time": "2026-08-05T12:30:00Z",
+    }
+
+
+def test_run_backtest_simulation_is_a_distinct_five_artifact_command() -> None:
+    contracts = import_module("packages.engine_contracts")
+    payload = _simulation_command_json()
+
+    command = contracts.parse_command(payload)
+
+    assert isinstance(command, contracts.RunBacktestSimulation)
+    assert command.simulation_scenario.sha256 == "5" * 64
+    with pytest.raises(ValidationError, match="simulation_scenario"):
+        contracts.RunBacktestSimulation.model_validate_json(
+            json.dumps({key: value for key, value in payload.items() if key != "simulation_scenario"})
+        )
+    with pytest.raises(ValidationError, match="duplicate artifact"):
+        contracts.RunBacktestSimulation.model_validate_json(
+            json.dumps({**payload, "simulation_scenario": payload["engine_configuration"]})
+        )
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        contracts.RunBacktestSimulation.model_validate_json(
+            json.dumps({**payload, "profile": "execution-simulation"})
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("sha256", "A" * 64, "string_pattern_mismatch"),
+        ("media_type", "application/octet-stream", "literal_error"),
+    ],
+)
+def test_run_backtest_simulation_rejects_changed_scenario_identity(
+    field: str, value: str, message: str
+) -> None:
+    contracts = import_module("packages.engine_contracts")
+    payload = _simulation_command_json()
+    scenario = payload["simulation_scenario"]
+    assert isinstance(scenario, dict)
+    scenario[field] = value
+
+    with pytest.raises(ValidationError, match=message):
+        contracts.RunBacktestSimulation.model_validate_json(json.dumps(payload))
 
 
 def test_target_portfolio_rejects_unknown_nested_instrument_field() -> None:
