@@ -28,9 +28,9 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 | WS01 | Toolchain/provenance cache has not been freshly reverified on the current checkout. | 01D | Offline verifier transcripts and redacted digest-only record. |
 | WS02 | Runtime migrations/concurrency proof against PostgreSQL 16 was expressly deferred. | 02E | Required runtime tests against an operator-approved disposable DB. |
 | WS03 | No source or acceptance residual identified. | Carry-forward only | Existing final gate plus unchanged-contract checks in 04E/04F. |
-| WS04 | 04C is deliberately zero-order; 04D validates external evidence but does not produce non-zero execution or paper compatibility evidence. | 04E, 04F | Scenario matrix, sealed comparison evidence, and isolated paper compatibility result. |
+| WS04 | 04C is deliberately zero-order; 04D validates external evidence but does not produce non-zero execution or paper compatibility evidence. | 04E0, 04E, 04F | Attested simulation closure, scenario matrix, sealed comparison evidence, and isolated paper compatibility result. |
 
-“Phase 1–4 complete” is permitted only after 01D, 02E, 04E, and 04F have each passed their final gate.  Until 02E receives operator approval, report Phase 2 as **source-complete; runtime gate pending operator approval**, not complete.
+“Phase 1–4 complete” is permitted only after 01D, 02E, 04E0, 04E, and 04F have each passed their final gate.  Until 02E receives operator approval, report Phase 2 as **source-complete; runtime gate pending operator approval**, not complete.
 
 ---
 
@@ -105,7 +105,62 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Require an independent final-gate review that checks for an executed, non-skipped runtime report and the absence of DSNs/secrets.
   - Commit only the evidence document with `docs: close WS02 disposable PostgreSQL runtime gate` after PASS.
 
-## Task 3: Packet 04E — Deterministic Non-Zero Backtest Parity
+## Task 3: Packet 04E0 — Attested Simulation Transport and Runtime Closure
+
+**Purpose:** Add the minimal closed protocol needed for 04E to reach the existing isolated CPython 3.12 spawn path.  This packet creates a distinct simulation command, a fifth hash-bound scenario input, a distinct closure/result-validator identity, and an offline materializer for a new runtime-closure generation.  It must not weaken or overload 04C's `RunBacktest` zero-order path.
+
+**Files:**
+
+- Create: `scripts/materialize_nautilus_runtime_closure.py`
+- Create: `engines/nautilus/runtime-closure-policy.json`
+- Create: `tests/foundation/test_nautilus_runtime_closure.py`
+- Modify: `packages/engine_contracts/commands.py`
+- Modify: `packages/engine_contracts/__init__.py`
+- Modify: `services/job_worker/engine_artifacts.py`
+- Modify: `services/job_worker/engine_spawn.py`
+- Modify: `services/job_worker/nautilus_closure.py`
+- Modify: `services/job_worker/engine_results.py`
+- Modify: `engines/nautilus/launcher/nautilus_backtest.py`
+- Modify: `tests/engine_contracts/test_commands.py`
+- Modify: `tests/jobs/test_engine_artifacts.py`
+- Modify: `tests/jobs/test_engine_spawn_provider.py`
+- Modify: `tests/jobs/test_nautilus_closure.py`
+- Modify: `tests/jobs/test_engine_result_validation.py`
+- Modify: `tests/nautilus_backtest/test_launcher_protocol.py`
+
+- [ ] **Step 1: Add a distinct closed simulation command and input identity.**
+  - Add `RunBacktestSimulation`, never an optional profile on `RunBacktest`.  It carries the existing four artifact references, a required `simulation_scenario: ArtifactReference`, and the same strict canonical UTC window.
+  - Keep `RunBacktest` byte-for-byte schema/semantics unchanged.  The two payload types must be disjoint in the engine-command union and every type guard must reject a forged/ambiguous command.
+  - Tests first: reject missing scenario, a duplicate artifact reference, unknown fields, changed digest/media type, and a simulation command passed to a zero-order-only validator.
+
+- [ ] **Step 2: Carry the fifth artifact through the authoritative spawn path.**
+  - Generalise only the typed internal input sequence so the resolver selects exactly four named inputs for `RunBacktest` and exactly five for `RunBacktestSimulation`; never infer names from ambient request keys.
+  - `HashBoundArtifactResolver`, sealed memfd snapshots, and Bubblewrap mounts must attest `simulation_scenario` exactly like the existing inputs.  It must be an external 0400 regular file, no symlink/ancestor escape, and included in the request/input digest.
+  - Tests first: missing scenario binding, changed scenario inode/digest, an extra mounted input, or a simulation request accepted by a four-input profile all fail closed.
+
+- [ ] **Step 3: Attest two immutable closure profiles.**
+  - Extend the closure manifest schema with an explicit `profile` field.  The only values are `zero-order` and `execution-simulation`.
+  - `zero-order` retains `nautilus-backtest-result-v1` and the existing launcher argv.  `execution-simulation` uses `nautilus-backtest-simulation-result-v1` and an argv prefix that passes a literal `--profile execution-simulation` to the same sealed launcher.
+  - The root attestor takes an explicit expected profile; it must reject a closure manifest with a profile/validator/argv mismatch and may never select a profile from an environment variable, file name, or caller-controlled string.
+  - Tests first: a zero-order closure cannot launch a simulation command, an execution-simulation closure cannot launch a zero-order command, and tampering any profile/argv/validator/launcher digest fails before spawn.
+
+- [ ] **Step 4: Keep stdout as the only sealed result transport.**
+  - Do not add a writable output mount or output-path capability.  Both profiles emit exactly one canonical JSONL `EngineEventEnvelope` on captured stdout, which remains sealed by `EngineResultValidator`.
+  - Add the explicit simulation validator ID to its allowlist.  It accepts only `RunBacktestSimulation`, the simulation completion event type, the exact five-input digest, and a scenario digest; it must reject all non-zero effects under the existing zero-order validator.
+  - Tests first: a simulated event under the zero-order validator, a zero-order event under the simulation validator, an event with four-input digest, and a changed scenario digest all fail closed.
+
+- [ ] **Step 5: Add a reproducible offline runtime-closure materializer.**
+  - `materialize_nautilus_runtime_closure.py` consumes a strict policy, the sealed CPython 3.12 runtime base, the selected 01D engine artifact generation, and the repository launcher bytes.  It must create a **new**, previously absent external runtime-closure generation atomically; no existing closure is modified.
+  - The policy binds exact base runtime manifest/artifact manifest digests, expected source launcher path, profile manifest schema, file inventory, modes, and source commit.  The materializer verifies all inputs before copying, produces only 0500 roots/0400 or 0500 regular sealed files, writes a canonical closure manifest, then verifies the new generation with the root closure attestor.
+  - The materializer has no acquisition mode and must use no network, global Python/Rust, or ambient dependency location.  Retain `runtime-closure-v3` untouched as rollback.
+  - Tests first: pre-existing destination, base/artifact/launcher digest drift, unlisted file, profile mismatch, unsafe file mode, and atomic publish failure all leave no selected generation and fail closed.
+
+- [ ] **Step 6: Materialize and verify the selected simulation closure.**
+  - After source tests pass, materialize an external generation named `runtime-closure-v4-simulation` below the private Nautilus cache using only the current sealed inputs and the selected 01D artifact.  Do not commit its files.
+  - Run independent read-only closure attestation for both `runtime-closure-v3` (zero-order) and the new generation (execution-simulation), and run the selected 01D full input-binding verifier before and after materialization.
+  - Commit source/tests/docs only as `feat: attest Nautilus execution-simulation closure` after focused tests, `make audit`, and `make check-contracts` pass.
+
+## Task 4: Packet 04E — Deterministic Non-Zero Backtest Parity
 
 **Purpose:** Replace the deliberate 04C zero-order limitation with a bounded, fixture-only execution-simulation profile.  It must prove long/short accounting, partial fills, same-bar stop/take-profit precedence, stale quote rejection, zero liquidity, session boundaries, and deterministic event digests in the isolated engine.
 
@@ -158,7 +213,7 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Independent reviewer verifies root Python has no Nautilus import/dependency, all simulator inputs are hash-bound, and tests cover all eight roadmap cases.
   - Commit as `feat: add WS04 deterministic execution parity` only after final-gate PASS.
 
-## Task 4: Packet 04F — Sealed Differential Evidence and Paper-Engine Compatibility
+## Task 5: Packet 04F — Sealed Differential Evidence and Paper-Engine Compatibility
 
 **Purpose:** Prove that the same strategy intent used in 04E is paper-engine compatible and create the actual sealed evidence that 04D can evaluate.  This is a one-shot fixture compatibility smoke, never a persistent paper service and never a public-data or broker integration.
 
@@ -206,7 +261,7 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Independent final gate verifies the command is finite/local, compares same strategy intent across simulation and paper compatibility, checks all evidence is hash-bound, and confirms neither root Python nor the legacy artifact gains authority.
   - Commit as `feat: close WS04 paper compatibility evidence` only after PASS.
 
-## Task 5: Final Program Gate
+## Task 6: Final Program Gate
 
 - [ ] Confirm 01D evidence passes on the final merge commit and the private toolchain cache remains the only selected Rust/LLVM/wheel source.
 - [ ] Confirm 02E has an operator-approved, non-skipped PostgreSQL 16 runtime report.  If it does not, stop and report the program as pending; do not waive this criterion.
