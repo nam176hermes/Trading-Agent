@@ -138,7 +138,7 @@ test-runtime-release-host:
 
 test-runtime-postgres:
 	@set -eu; \
-		postgres_evidence_dir="$$(mktemp -d /tmp/foundation-postgres-evidence.XXXXXXXXXX)"; \
+		postgres_evidence_dir="$$(mktemp -d /tmp/foundation-postgres-evidence-XXXXXXXXXX)"; \
 		cleanup_postgres_evidence_dir() { \
 			find -P "$$postgres_evidence_dir" -xdev -type d -exec chmod u+rwx -- {} +; \
 			rm -rf -- "$$postgres_evidence_dir"; \

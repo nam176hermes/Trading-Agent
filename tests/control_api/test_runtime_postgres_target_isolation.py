@@ -144,7 +144,7 @@ def test_engine_event_runtime_concurrency_module_has_no_runtime_connection_input
 def test_make_targets_select_only_reviewed_disposable_modules() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     recipe = makefile.split("test-runtime-postgres:\n", 1)[1].split("\n\n", 1)[0]
-    assert "mktemp -d /tmp/foundation-postgres-evidence.XXXXXXXXXX" in recipe
+    assert "mktemp -d /tmp/foundation-postgres-evidence-XXXXXXXXXX" in recipe
     assert "chmod 0700 \"$$postgres_evidence_dir\"" in recipe
     assert "stat -c '%u:%a' -- \"$$postgres_evidence_dir\"" in recipe
     assert "TRADING_TEST_POSTGRES_EVIDENCE_DIR=\"$$postgres_evidence_dir\"" in recipe
