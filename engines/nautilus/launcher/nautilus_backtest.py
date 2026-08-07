@@ -28,6 +28,57 @@ from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
 
 
+def _kernel_process_arguments() -> tuple[bytes, ...]:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            "/proc/self/cmdline",
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, 4096)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 1_048_576:
+                return ()
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        if not raw or not raw.endswith(b"\0"):
+            return ()
+        return tuple(raw[:-1].split(b"\0"))
+    except OSError:
+        return ()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+_KERNEL_PROCESS_ARGUMENTS = _kernel_process_arguments()
+_CLEAN_ISOLATED_ENGINE_ENTRY = (
+    __name__ == "__main__"
+    and __spec__ is None
+    and sys.implementation.name == "cpython"
+    and sys.flags.isolated == 1
+    and sys.flags.no_site == 1
+    and sys.flags.ignore_environment == 1
+    and sys.flags.no_user_site == 1
+    and sys.flags.safe_path is True
+    and tuple(sys.orig_argv[1:3]) == ("-I", "-S")
+    and tuple(sys.orig_argv[3:]) == tuple(sys.argv)
+    and bool(sys.argv)
+    and sys.argv[0] == __file__
+    and len(_KERNEL_PROCESS_ARGUMENTS) >= 4
+    and _KERNEL_PROCESS_ARGUMENTS[1:3] == (b"-I", b"-S")
+    and _KERNEL_PROCESS_ARGUMENTS[3:] == tuple(
+        os.fsencode(argument) for argument in sys.argv
+    )
+    and _KERNEL_PROCESS_ARGUMENTS[3] == os.fsencode(__file__)
+)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _COMMIT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", re.ASCII)
 _UUID = re.compile(
@@ -350,6 +401,7 @@ _TRUSTED_STDLIB_ALIASES = {
     "os.path": frozenset({"ntpath", "posixpath"}),
 }
 _MISSING_MODULE = object()
+_MISSING_PARENT_ATTRIBUTE = object()
 
 
 def _is_trusted_stdlib_path(value: str) -> bool:
@@ -426,6 +478,8 @@ def _has_trusted_interpreter_provenance(name: str, module: object) -> bool:
     )
 
 
+# This is an import-state repair baseline, not standalone runtime authority.
+# Production may consume it only after the direct isolated entry gate in main.
 _TRUSTED_PRELOADED_INTERPRETER_MODULES = MappingProxyType(
     {
         name: module
@@ -433,6 +487,119 @@ _TRUSTED_PRELOADED_INTERPRETER_MODULES = MappingProxyType(
         if _has_trusted_interpreter_provenance(name, module)
     }
 )
+_TRUSTED_PRELOADED_INTERPRETER_PARENT_NAMESPACES = MappingProxyType(
+    {
+        name: MappingProxyType(
+            dict(object.__getattribute__(module, "__dict__"))
+        )
+        for name, module in _TRUSTED_PRELOADED_INTERPRETER_MODULES.items()
+        if type(module) is type(sys)
+    }
+)
+
+
+def _snapshot_interpreter_module_parent_namespaces() -> tuple[
+    tuple[object, dict[str, object]], ...
+]:
+    snapshots: list[tuple[object, dict[str, object]]] = []
+    seen: set[int] = set()
+    for parent in _TRUSTED_PRELOADED_INTERPRETER_MODULES.values():
+        identity = id(parent)
+        if identity in seen or type(parent) is not type(sys):
+            continue
+        seen.add(identity)
+        namespace = object.__getattribute__(parent, "__dict__")
+        snapshots.append((parent, dict(namespace)))
+    return tuple(snapshots)
+
+
+def _interpreter_module_parent_attribute_names(
+    module_names: set[str],
+) -> set[str]:
+    names = {name for name in module_names if isinstance(name, str)}
+    for parent_name, parent in _TRUSTED_PRELOADED_INTERPRETER_MODULES.items():
+        if type(parent) is not type(sys):
+            continue
+        baseline = _TRUSTED_PRELOADED_INTERPRETER_PARENT_NAMESPACES.get(
+            parent_name
+        )
+        if baseline is None:
+            continue
+        namespace = object.__getattribute__(parent, "__dict__")
+        for attribute, child in tuple(namespace.items()):
+            if not isinstance(attribute, str):
+                continue
+            if (
+                attribute not in baseline
+                or isinstance(child, type(sys))
+            ):
+                names.add(f"{parent_name}.{attribute}")
+        for attribute, child in baseline.items():
+            if isinstance(attribute, str) and isinstance(child, type(sys)):
+                names.add(f"{parent_name}.{attribute}")
+    return names
+
+
+def _synchronize_interpreter_module_parent_attributes(
+    module_names: set[str],
+) -> None:
+    for name in sorted(module_names):
+        parent_name, separator, attribute = name.rpartition(".")
+        if not separator:
+            continue
+        parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
+            parent_name, _MISSING_MODULE
+        )
+        if parent is _MISSING_MODULE or type(parent) is not type(sys):
+            continue
+        namespace = object.__getattribute__(parent, "__dict__")
+        trusted_child = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
+            name, _MISSING_MODULE
+        )
+        if trusted_child is _MISSING_MODULE:
+            baseline = (
+                _TRUSTED_PRELOADED_INTERPRETER_PARENT_NAMESPACES.get(
+                    parent_name
+                )
+            )
+            original = (
+                _MISSING_PARENT_ATTRIBUTE
+                if baseline is None
+                else baseline.get(attribute, _MISSING_PARENT_ATTRIBUTE)
+            )
+            if original is _MISSING_PARENT_ATTRIBUTE:
+                namespace.pop(attribute, None)
+            else:
+                namespace[attribute] = original
+        else:
+            namespace[attribute] = trusted_child
+
+
+def _restore_interpreter_module_parent_attributes(
+    module_names: set[str],
+    snapshots: tuple[tuple[object, dict[str, object]], ...],
+) -> None:
+    originals = {id(parent): namespace for parent, namespace in snapshots}
+    for name in sorted(module_names):
+        parent_name, separator, attribute = name.rpartition(".")
+        if not separator:
+            continue
+        parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
+            parent_name, _MISSING_MODULE
+        )
+        if parent is _MISSING_MODULE or type(parent) is not type(sys):
+            continue
+        original_namespace = originals.get(id(parent))
+        if original_namespace is None:
+            continue
+        namespace = object.__getattribute__(parent, "__dict__")
+        original = original_namespace.get(
+            attribute, _MISSING_PARENT_ATTRIBUTE
+        )
+        if original is _MISSING_PARENT_ATTRIBUTE:
+            namespace.pop(attribute, None)
+        else:
+            namespace[attribute] = original
 
 
 def _is_active_launcher_module(name: str, module: object) -> bool:
@@ -449,6 +616,8 @@ def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
 
     original_meta_path = tuple(sys.meta_path)
     original_modules = dict(sys.modules)
+    parent_namespace_snapshots = _snapshot_interpreter_module_parent_namespaces()
+    parent_attribute_names: set[str] = set()
     finder = _SealedWheelFinder(roots)
     try:
         for name in tuple(sys.modules):
@@ -463,14 +632,40 @@ def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
             else:
                 sys.modules.pop(name, None)
         sys.modules.update(_TRUSTED_PRELOADED_INTERPRETER_MODULES)
+        parent_attribute_names = _interpreter_module_parent_attribute_names(
+            set(original_modules)
+            | set(_TRUSTED_PRELOADED_INTERPRETER_MODULES)
+        )
+        _synchronize_interpreter_module_parent_attributes(
+            parent_attribute_names
+        )
         sys.meta_path.insert(0, finder)
         yield
     finally:
-        sys.meta_path[:] = original_meta_path
-        for name in tuple(sys.modules):
-            if name not in original_modules:
-                sys.modules.pop(name, None)
-        sys.modules.update(original_modules)
+        scoped_module_names: set[str] = set()
+        scoped_parent_attribute_names: set[str] = set()
+        try:
+            scoped_module_names = set(sys.modules)
+            scoped_parent_attribute_names = (
+                _interpreter_module_parent_attribute_names(
+                    scoped_module_names | parent_attribute_names
+                )
+            )
+        finally:
+            sys.meta_path[:] = original_meta_path
+            for name in tuple(sys.modules):
+                if name not in original_modules:
+                    sys.modules.pop(name, None)
+            sys.modules.update(original_modules)
+            _restore_interpreter_module_parent_attributes(
+                (
+                    set(original_modules)
+                    | set(_TRUSTED_PRELOADED_INTERPRETER_MODULES)
+                    | scoped_module_names
+                    | scoped_parent_attribute_names
+                ),
+                parent_namespace_snapshots,
+            )
 
 
 def _load_target_portfolio_strategy() -> tuple[type, type]:
@@ -2454,7 +2649,15 @@ def _fail(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
+def _require_clean_isolated_engine_entry() -> None:
+    if not _CLEAN_ISOLATED_ENGINE_ENTRY:
+        raise SystemExit(
+            "error: Nautilus engine entry requires direct CPython -I -S execution"
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> None:
+    _require_clean_isolated_engine_entry()
     arguments = list(sys.argv[1:] if argv is None else argv)
     if len(arguments) == 2:
         profile = "zero-order"

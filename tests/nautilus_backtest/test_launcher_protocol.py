@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib
+import importlib.machinery
 import importlib.util
 import json
 import subprocess
@@ -478,6 +480,114 @@ print("isolated-cross-root-import-ok")
     assert result.stdout == "isolated-cross-root-import-ok\n"
 
 
+def test_launcher_source_requires_direct_isolated_no_site_execution() -> None:
+    required_error = (
+        "error: Nautilus engine entry requires direct CPython -I -S execution\n"
+    )
+    for flags in ((), ("-I",), ("-S",), ("-S", "-I")):
+        result = subprocess.run(
+            [sys.executable, *flags, str(LAUNCHER.resolve())],
+            check=False,
+            capture_output=True,
+            env={},
+            text=True,
+            timeout=10,
+        )
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == required_error
+
+    isolated = subprocess.run(
+        [sys.executable, "-I", "-S", str(LAUNCHER.resolve())],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+        timeout=10,
+    )
+
+    assert isolated.returncode == 1
+    assert isolated.stdout == ""
+    assert isolated.stderr == (
+        "error: expected the attested launcher profile and request inputs\n"
+    )
+
+
+def test_launcher_source_rejects_forged_preload_before_startup_snapshot() -> None:
+    script = r"""
+import importlib.machinery
+import importlib.util
+import sys
+import sysconfig
+from pathlib import Path
+from types import ModuleType
+
+real_sys = sys
+stdlib = Path(sysconfig.get_path("stdlib"))
+
+def forged_source_module(name, path):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    forged = ModuleType(name)
+    forged.__file__ = str(path)
+    forged.__loader__ = loader
+    forged.__package__ = name.rpartition(".")[0]
+    forged.__spec__ = spec
+    forged.AMBIENT_IMPERSONATOR = True
+    return forged
+
+forged_json = forged_source_module("json", stdlib / "json" / "__init__.py")
+forged_child = forged_source_module(
+    "xml.ambient_only_dependency", stdlib / "json" / "decoder.py"
+)
+forged_sys = ModuleType("sys")
+forged_sys.__dict__.update(real_sys.__dict__)
+forged_sys.AMBIENT_IMPERSONATOR = True
+
+real_sys.modules["json"] = forged_json
+real_sys.modules["sys"] = forged_sys
+real_sys.modules["xml.ambient_only_dependency"] = forged_child
+
+launcher_path = str(Path(real_sys.argv[1]).resolve())
+claimed_argv = [launcher_path]
+claimed_orig_argv = [real_sys.executable, "-I", "-S", launcher_path]
+real_sys.argv = claimed_argv
+real_sys.orig_argv = claimed_orig_argv
+forged_sys.argv = claimed_argv
+forged_sys.orig_argv = claimed_orig_argv
+
+launcher = ModuleType("__main__")
+launcher.__file__ = launcher_path
+launcher.__package__ = None
+launcher.__spec__ = None
+real_sys.modules["__main__"] = launcher
+source = Path(launcher_path).read_bytes()
+exec(compile(source, launcher_path, "exec"), launcher.__dict__)
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(LAUNCHER.resolve()),
+        ],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        "error: Nautilus engine entry requires direct CPython -I -S execution\n"
+    )
+
+
 def test_sealed_wheel_scope_refuses_ambient_fallback_and_restores_after_error(
     launcher_module,
     tmp_path: Path,
@@ -566,38 +676,239 @@ def test_sealed_wheel_scope_refuses_stdlib_key_impersonation_and_restores_after_
     assert "nautilus_trader" not in sys.modules
 
 
+@pytest.mark.parametrize("mapping_state", ("spoofed", "missing"))
 def test_sealed_wheel_scope_refuses_stdlib_child_key_impersonation_and_restores_after_error(
     launcher_module,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mapping_state: str,
 ) -> None:
     sealed = tmp_path / "sealed"
     (sealed / "nautilus_trader").mkdir(parents=True)
     (sealed / "nautilus_trader/__init__.py").write_text(
-        "import xml.ambient_only_dependency\n", encoding="utf-8"
+        "from xml import ambient_only_dependency\n", encoding="utf-8"
     )
     genuine_stdlib_child = importlib.import_module("json.decoder")
-    impersonator = ModuleType("xml.ambient_only_dependency")
-    impersonator.VALUE = "must-not-load"
-    for attribute in ("__file__", "__loader__", "__package__", "__spec__"):
-        setattr(impersonator, attribute, getattr(genuine_stdlib_child, attribute))
-    monkeypatch.delitem(sys.modules, "nautilus_trader", raising=False)
-    monkeypatch.setitem(
-        sys.modules, "xml.ambient_only_dependency", impersonator
+    child_name = "xml.ambient_only_dependency"
+    assert genuine_stdlib_child.__file__ is not None
+    loader = importlib.machinery.SourceFileLoader(
+        child_name, genuine_stdlib_child.__file__
     )
+    impersonator = ModuleType(child_name)
+    impersonator.VALUE = "must-not-load"
+    impersonator.__file__ = genuine_stdlib_child.__file__
+    impersonator.__loader__ = loader
+    impersonator.__package__ = "xml"
+    impersonator.__spec__ = importlib.util.spec_from_loader(child_name, loader)
+    xml = importlib.import_module("xml")
+    monkeypatch.delitem(sys.modules, "nautilus_trader", raising=False)
+    if mapping_state == "spoofed":
+        monkeypatch.setitem(sys.modules, child_name, impersonator)
+    else:
+        impersonator.__name__ = "different.claim"
+        monkeypatch.delitem(sys.modules, child_name, raising=False)
+    monkeypatch.setattr(xml, "ambient_only_dependency", impersonator, raising=False)
     before_path = list(sys.path)
     before_meta_path = tuple(sys.meta_path)
     before_modules = dict(sys.modules)
 
-    with pytest.raises(ModuleNotFoundError, match="xml.ambient_only_dependency"):
+    with pytest.raises(ImportError, match="ambient_only_dependency"):
         with launcher_module._sealed_wheel_import_scope((sealed,)):
             importlib.import_module("nautilus_trader")
 
     assert list(sys.path) == before_path
     assert tuple(sys.meta_path) == before_meta_path
     assert sys.modules == before_modules
-    assert sys.modules["xml.ambient_only_dependency"] is impersonator
+    if mapping_state == "spoofed":
+        assert sys.modules[child_name] is impersonator
+    else:
+        assert child_name not in sys.modules
+    assert xml.ambient_only_dependency is impersonator
     assert "nautilus_trader" not in sys.modules
+
+
+@pytest.mark.parametrize(
+    "child_name",
+    (
+        "json.decoder",
+        "os.path",
+        "importlib._bootstrap",
+        "importlib._bootstrap_external",
+        "typing.io",
+        "typing.re",
+    ),
+)
+def test_sealed_wheel_scope_synchronizes_trusted_child_parent_attributes(
+    launcher_module,
+    child_name: str,
+) -> None:
+    parent_name, _, attribute = child_name.rpartition(".")
+    parent = importlib.import_module(parent_name)
+    trusted_child = launcher_module._TRUSTED_PRELOADED_INTERPRETER_MODULES[
+        child_name
+    ]
+    original_child = sys.modules[child_name]
+    original_parent_attribute = vars(parent)[attribute]
+    impersonator = ModuleType(child_name)
+    impersonator.AMBIENT_IMPERSONATOR = True
+    try:
+        sys.modules[child_name] = impersonator
+        vars(parent)[attribute] = impersonator
+        before_modules = dict(sys.modules)
+
+        with launcher_module._sealed_wheel_import_scope(()):
+            imported_child = importlib.import_module(child_name)
+            namespace: dict[str, object] = {}
+            exec(
+                f"from {parent_name} import {attribute} as imported_from_parent",
+                namespace,
+            )
+            assert imported_child is trusted_child
+            assert namespace["imported_from_parent"] is trusted_child
+            assert vars(parent)[attribute] is trusted_child
+
+        assert sys.modules == before_modules
+        assert sys.modules[child_name] is impersonator
+        assert vars(parent)[attribute] is impersonator
+    finally:
+        sys.modules[child_name] = original_child
+        vars(parent)[attribute] = original_parent_attribute
+
+
+@pytest.mark.parametrize("parent_state", ("missing", "spoofed"))
+def test_sealed_wheel_scope_reseeds_missing_child_mapping_and_parent_attribute(
+    launcher_module,
+    parent_state: str,
+) -> None:
+    child_name = "json.decoder"
+    parent = json
+    trusted_child = launcher_module._TRUSTED_PRELOADED_INTERPRETER_MODULES[
+        child_name
+    ]
+    original_child = sys.modules[child_name]
+    original_parent_attribute = vars(parent)["decoder"]
+    impersonator = ModuleType(child_name)
+    try:
+        sys.modules.pop(child_name)
+        if parent_state == "missing":
+            vars(parent).pop("decoder")
+        else:
+            vars(parent)["decoder"] = impersonator
+        before_modules = dict(sys.modules)
+
+        with launcher_module._sealed_wheel_import_scope(()):
+            namespace: dict[str, object] = {}
+            exec("from json import decoder as imported_from_parent", namespace)
+            exec("import json.decoder", namespace)
+            assert namespace["imported_from_parent"] is trusted_child
+            assert json.decoder is trusted_child
+            assert sys.modules[child_name] is trusted_child
+
+        assert sys.modules == before_modules
+        assert child_name not in sys.modules
+        if parent_state == "missing":
+            assert "decoder" not in vars(parent)
+        else:
+            assert parent.decoder is impersonator
+    finally:
+        sys.modules[child_name] = original_child
+        vars(parent)["decoder"] = original_parent_attribute
+
+
+def test_sealed_wheel_scope_restores_repaired_child_parent_after_import_error(
+    launcher_module,
+    tmp_path: Path,
+) -> None:
+    sealed = tmp_path / "sealed"
+    (sealed / "nautilus_trader").mkdir(parents=True)
+    (sealed / "nautilus_trader/__init__.py").write_text(
+        "from json import decoder\n"
+        "assert not getattr(decoder, 'AMBIENT_IMPERSONATOR', False)\n"
+        "import ambient_only_dependency\n",
+        encoding="utf-8",
+    )
+    child_name = "json.decoder"
+    original_child = sys.modules[child_name]
+    original_parent_attribute = vars(json)["decoder"]
+    impersonator = ModuleType(child_name)
+    impersonator.AMBIENT_IMPERSONATOR = True
+    missing = object()
+    original_nautilus = sys.modules.pop("nautilus_trader", missing)
+    try:
+        sys.modules[child_name] = impersonator
+        vars(json)["decoder"] = impersonator
+        before_modules = dict(sys.modules)
+
+        with pytest.raises(ModuleNotFoundError, match="sealed wheel closure"):
+            with launcher_module._sealed_wheel_import_scope((sealed,)):
+                importlib.import_module("nautilus_trader")
+
+        assert sys.modules == before_modules
+        assert sys.modules[child_name] is impersonator
+        assert json.decoder is impersonator
+        assert "nautilus_trader" not in sys.modules
+    finally:
+        sys.modules[child_name] = original_child
+        vars(json)["decoder"] = original_parent_attribute
+        if original_nautilus is not missing:
+            sys.modules["nautilus_trader"] = original_nautilus
+
+
+def test_sealed_wheel_scope_removes_new_stdlib_child_parent_attribute(
+    launcher_module,
+) -> None:
+    child_name = "json.tool"
+    missing = object()
+    original_child = sys.modules.pop(child_name, missing)
+    original_parent_attribute = vars(json).pop("tool", missing)
+    try:
+        before_modules = dict(sys.modules)
+
+        with launcher_module._sealed_wheel_import_scope(()):
+            imported_child = importlib.import_module(child_name)
+            assert sys.modules[child_name] is imported_child
+            assert json.tool is imported_child
+
+        assert sys.modules == before_modules
+        assert child_name not in sys.modules
+        assert "tool" not in vars(json)
+    finally:
+        sys.modules.pop(child_name, None)
+        vars(json).pop("tool", None)
+        if original_child is not missing:
+            sys.modules[child_name] = original_child
+        if original_parent_attribute is not missing:
+            vars(json)["tool"] = original_parent_attribute
+
+
+def test_sealed_wheel_scope_restores_globals_after_nameless_child_error(
+    launcher_module,
+) -> None:
+    attribute = "ambient_nameless_dependency"
+    child = ModuleType(f"json.{attribute}")
+    vars(child).pop("__name__")
+    missing = object()
+    original_attribute = vars(json).pop(attribute, missing)
+    before_meta_path = tuple(sys.meta_path)
+    before_modules = dict(sys.modules)
+    try:
+        with pytest.raises(RuntimeError, match="sealed failure"):
+            with launcher_module._sealed_wheel_import_scope(()):
+                vars(json)[attribute] = child
+                raise RuntimeError("sealed failure")
+
+        assert tuple(sys.meta_path) == before_meta_path
+        assert sys.modules == before_modules
+        assert attribute not in vars(json)
+    finally:
+        sys.meta_path[:] = before_meta_path
+        for name in tuple(sys.modules):
+            if name not in before_modules:
+                sys.modules.pop(name, None)
+        sys.modules.update(before_modules)
+        vars(json).pop(attribute, None)
+        if original_attribute is not missing:
+            vars(json)[attribute] = original_attribute
 
 
 def test_sealed_wheel_scope_removes_negative_cache_and_restores_after_success(
@@ -1039,7 +1350,7 @@ def _assert_complete_envelope_rejects_before_nautilus(
     monkeypatch: pytest.MonkeyPatch,
     artifacts: tuple[bytes, bytes, bytes, bytes, bytes],
 ) -> None:
-    request = _simulation_request(artifacts).model_dump(mode="json")
+    del artifacts
     entered_nautilus = False
 
     def no_nautilus_run(_fixture: dict[str, object]) -> dict[str, object]:
@@ -1047,21 +1358,30 @@ def _assert_complete_envelope_rejects_before_nautilus(
         entered_nautilus = True
         raise AssertionError("invalid simulation reached Nautilus")
 
-    monkeypatch.setattr(launcher_module, "validated_request", lambda *_args, **_kwargs: request)
+    def no_request_validation(*_args, **_kwargs):
+        raise AssertionError("imported host context reached request validation")
+
+    def no_artifact_validation(*_args, **_kwargs):
+        raise AssertionError("imported host context reached artifact validation")
+
+    monkeypatch.setattr(launcher_module, "validated_request", no_request_validation)
     monkeypatch.setattr(
         launcher_module,
         "validated_input_artifacts",
-        lambda *_args, **_kwargs: artifacts,
+        no_artifact_validation,
     )
     monkeypatch.setattr(
         launcher_module, "_run_nautilus_simulation_fixture", no_nautilus_run
     )
 
-    with pytest.raises(SystemExit, match="1"):
+    with pytest.raises(SystemExit) as error:
         launcher_module.main(
             ["--profile", "execution-simulation", "request.json", "request.sha256"]
         )
 
+    assert error.value.code == (
+        "error: Nautilus engine entry requires direct CPython -I -S execution"
+    )
     assert entered_nautilus is False
 
 
