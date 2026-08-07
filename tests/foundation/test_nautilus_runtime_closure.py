@@ -30,7 +30,7 @@ LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
 STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
 CHECKED_IN_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
-REPOSITORY_SOURCE_COMMIT = "8080337a546576e17432dbefcda3a18c6bfdb5aa"
+REPOSITORY_SOURCE_COMMIT = "4648ecaf6169b0886daf47fe27467b0292153cbb"
 
 
 def _sha256(path: Path) -> str:
@@ -250,7 +250,7 @@ def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None
     assert policy["semantic_profile"] == "nautilus-execution-simulation-v2"
 
 
-def test_checked_in_policy_binds_the_preceding_committed_parity_source() -> None:
+def test_checked_in_policy_binds_the_reviewed_final_source_and_launcher_inventory() -> None:
     policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
     source_commit = policy["source_commit"]
 
@@ -264,7 +264,7 @@ def test_checked_in_policy_binds_the_preceding_committed_parity_source() -> None
     )
 
     assert completed.returncode == 0
-    assert source_commit == "8080337a546576e17432dbefcda3a18c6bfdb5aa"
+    assert source_commit == REPOSITORY_SOURCE_COMMIT
     assert policy["launcher_inventory"] == [
         {"mode": "0400", "sha256": _sha256(LAUNCHER), "source": "engines/nautilus/launcher/nautilus_backtest.py", "target": "/engine/launcher/nautilus_backtest.py"},
         {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
