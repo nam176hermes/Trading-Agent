@@ -26,6 +26,7 @@ from services.job_worker.nautilus_closure import (
 
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
+STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
 CHECKED_IN_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
 
@@ -99,6 +100,13 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
             ),
             _record(
                 base,
+                "files/engine/launcher/target_portfolio_strategy.py",
+                "/engine/launcher/target_portfolio_strategy.py",
+                b"old-zero-order-strategy",
+                0o400,
+            ),
+            _record(
+                base,
                 f"files/engine/wheels/{wheel_name}",
                 f"/engine/wheels/{wheel_name}",
                 b"old-engine-wheel",
@@ -163,10 +171,10 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
             "engine_wheel_mode": "0400",
             "engine_wheel_target": f"/engine/wheels/{wheel_name}",
             "entrypoint": "/usr/bin/python3.12",
-            "launcher_mode": "0400",
-            "launcher_sha256": _sha256(LAUNCHER),
-            "launcher_source": "engines/nautilus/launcher/nautilus_backtest.py",
-            "launcher_target": "/engine/launcher/nautilus_backtest.py",
+            "launcher_inventory": [
+                {"mode": "0400", "sha256": _sha256(LAUNCHER), "source": "engines/nautilus/launcher/nautilus_backtest.py", "target": "/engine/launcher/nautilus_backtest.py"},
+                {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
+            ],
             "profile": "execution-simulation",
             "profile_manifest_schema_version": 3,
             "python_identity": "CPython 3.12.3",
@@ -232,7 +240,10 @@ def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None
     assert policy["artifact_manifest_sha256"] == _sha256(
         artifacts / "artifact-manifest.json"
     )
-    assert policy["launcher_sha256"] == _sha256(LAUNCHER)
+    assert policy["launcher_inventory"] == [
+        {"mode": "0400", "sha256": _sha256(LAUNCHER), "source": "engines/nautilus/launcher/nautilus_backtest.py", "target": "/engine/launcher/nautilus_backtest.py"},
+        {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
+    ]
     assert policy["semantic_profile"] == "nautilus-execution-simulation-v2"
 
 
@@ -565,7 +576,7 @@ def test_unavailable_no_clobber_syscall_fails_without_publication(
     [
         "base_runtime_manifest_sha256",
         "artifact_manifest_sha256",
-        "launcher_sha256",
+        "launcher_inventory",
     ],
 )
 def test_materializer_rejects_every_bound_input_digest_drift(
@@ -574,7 +585,10 @@ def test_materializer_rejects_every_bound_input_digest_drift(
     _root, _base, _artifacts, policy_path, destination = closure_inputs
     policy_path.chmod(0o600)
     policy = json.loads(policy_path.read_text())
-    policy[field] = "0" * 64
+    if field == "launcher_inventory":
+        policy[field][0]["sha256"] = "0" * 64
+    else:
+        policy[field] = "0" * 64
     policy_path.write_bytes(_canonical(policy) + b"\n")
     policy_path.chmod(0o400)
 

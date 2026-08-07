@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 import pytest
@@ -15,12 +16,15 @@ from packages.engine_contracts import (
     EventAttribute,
     EventFamily,
     RunBacktest,
+    RunBacktestSimulation,
     canonical_json_bytes,
     payload_digest,
 )
 from packages.nautilus_backtest import (
+    BacktestExpectedOutcomeV1,
     NautilusBacktestError,
     validate_isolated_backtest_result,
+    validate_isolated_simulation_result,
 )
 
 
@@ -139,3 +143,29 @@ def test_result_rejects_catalog_or_target_digest_drift() -> None:
 
     with pytest.raises(NautilusBacktestError, match="input artifact"):
         validate_isolated_backtest_result(request, drifted)
+
+
+def test_simulation_result_requires_all_parity_attributes_and_expected_values() -> None:
+    base = _request()
+    references = tuple(
+        ArtifactReference(
+            artifact_id=UUID(f"{number}{number}{number}{number}{number}{number}{number}{number}-1111-4111-8111-111111111111"),
+            sha256=hashlib.sha256(f"simulation-{number}".encode()).hexdigest(),
+            media_type="application/jsonl" if number == 4 else "application/json",
+        ) for number in range(1, 6)
+    )
+    command = RunBacktestSimulation(command_type="RunBacktestSimulation", engine_configuration=references[0], instrument_catalog=references[1], strategy_configuration=references[2], market_data=references[3], simulation_scenario=references[4], start_time=base.payload.start_time, end_time=base.payload.end_time)
+    request = base.model_copy(update={"payload": command, "payload_digest": payload_digest(command)})
+    expected = BacktestExpectedOutcomeV1(scenario_id="event-digest", scenario_digest=references[4].sha256, event_digest="a" * 64, iterations=1, total_events=2, total_orders=1, total_fills=1, total_positions=1, filled_quantity=Decimal("1"), remaining_quantity=Decimal("0"), position_quantity=Decimal("1"), average_entry_price=Decimal("100"), fees=Decimal("0.1"), realized_pnl=Decimal("0"), unrealized_pnl=Decimal("1"), stop_take_profit_precedence="stop-first")
+    input_digest = hashlib.sha256(canonical_json_bytes({name: getattr(command, name).sha256 for name in ("engine_configuration", "instrument_catalog", "strategy_configuration", "market_data", "simulation_scenario")})).hexdigest()
+    values = {"input_artifacts_sha256": input_digest, "scenario_digest": expected.scenario_digest, **{name: getattr(expected, name) for name in ("scenario_id", "event_digest", "iterations", "total_events", "total_orders", "total_fills", "total_positions", "filled_quantity", "remaining_quantity", "position_quantity", "average_entry_price", "fees", "realized_pnl", "unrealized_pnl", "stop_take_profit_precedence")}}
+    payload = EngineEvent(event_type="NautilusBacktestSimulationCompleted", family=EventFamily.ENGINE_LIFECYCLE, attributes=tuple(EventAttribute(name=name, value=str(value) if isinstance(value, Decimal) else value) for name, value in values.items()))
+    event = _event(base).model_copy(update={"payload": payload, "payload_digest": payload_digest(payload)})
+
+    assert validate_isolated_simulation_result(request, event, expected).total_fills == 1
+    with pytest.raises(NautilusBacktestError, match="RunBacktest"):
+        validate_isolated_backtest_result(request, event)
+    changed_payload = payload.model_copy(update={"attributes": tuple(EventAttribute(name=item.name, value=2 if item.name == "total_fills" else item.value) for item in payload.attributes)})
+    changed_event = event.model_copy(update={"payload": changed_payload, "payload_digest": payload_digest(changed_payload)})
+    with pytest.raises(NautilusBacktestError, match="expected"):
+        validate_isolated_simulation_result(request, changed_event, expected)

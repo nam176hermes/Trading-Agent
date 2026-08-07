@@ -1227,9 +1227,9 @@ def _run_nautilus_simulation_fixture(
 ) -> dict[str, object]:
     """Ingest the finite semantic feed in the sealed Nautilus runtime.
 
-    The actual execution accounting remains the explicit Decimal model above;
-    Nautilus is used only as the bounded engine/feed boundary.  No strategy,
-    provider, broker, client, database, or module path is configurable.
+    This is intentionally distinct from the root Decimal oracle.  The returned
+    values come from the fixed strategy's real Nautilus orders/fills/cache and
+    account result, never from ``_run_execution_simulation``.
     """
 
     wheels_root = Path("/engine/wheels")
@@ -1274,6 +1274,10 @@ def _run_nautilus_simulation_fixture(
     from nautilus_trader.model.identifiers import Venue
     from nautilus_trader.model.objects import Money, Price, Quantity
     from nautilus_trader.test_kit.providers import TestInstrumentProvider
+    from target_portfolio_strategy import (
+        TargetPortfolioStrategy,
+        TargetPortfolioStrategyConfig,
+    )
 
     engine = BacktestEngine(
         BacktestEngineConfig(
@@ -1292,6 +1296,17 @@ def _run_nautilus_simulation_fixture(
             starting_balances=[Money(1_000_000, USDT)],
         )
         engine.add_instrument(instrument)
+        target = fixture["target_quantity"]
+        assert isinstance(target, Decimal)
+        strategy = TargetPortfolioStrategy(
+            TargetPortfolioStrategyConfig(
+                instrument_id=instrument.id,
+                target_quantity=_nautilus_quantity_text(
+                    target, 6, label="simulation target quantity"
+                ),
+            )
+        )
+        engine.add_strategy(strategy)
         bar_type = BarType.from_str("BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL")
         bars = []
         events = fixture["events"]
@@ -1341,7 +1356,41 @@ def _run_nautilus_simulation_fixture(
         engine_result = engine.get_result()
         if int(engine_result.iterations) != len(events):
             raise ValueError("Nautilus simulation fixture iteration count changed")
-        return run_execution_simulation(fixture)
+        # The cache/account accesses are intentional: this result is evidence
+        # of the strategy-driven Nautilus execution state, not a parallel
+        # arithmetic calculation.  Qualification compares it to the root
+        # oracle only after a separately reviewed sealed runtime is published.
+        orders = tuple(engine.cache.orders())
+        positions = tuple(engine.cache.positions())
+        account = engine.cache.account_for_venue(Venue("BINANCE"))
+        if account is None:
+            raise ValueError("Nautilus simulation account state is unavailable")
+        if len(positions) > 1:
+            raise ValueError("Nautilus simulation produced more than one position")
+        position = positions[0] if positions else None
+        quantity = Decimal(str(position.quantity)) if position is not None else Decimal(0)
+        average = Decimal(str(position.avg_px_open)) if position is not None else Decimal(0)
+        realized = Decimal(str(position.realized_pnl)) if position is not None else Decimal(0)
+        unrealized = Decimal(str(position.unrealized_pnl)) if position is not None else Decimal(0)
+        fees = Decimal(str(account.commissions()))
+        filled = sum((Decimal(str(order.filled_qty)) for order in orders), Decimal(0))
+        return {
+            "average_entry_price": _decimal_text(average),
+            "event_digest": hashlib.sha256(_canonical_json_bytes(engine_result)).hexdigest(),
+            "fees": _decimal_text(fees),
+            "filled_quantity": _decimal_text(filled if target > 0 else -filled),
+            "iterations": int(engine_result.iterations),
+            "position_quantity": _decimal_text(quantity),
+            "realized_pnl": _decimal_text(realized),
+            "remaining_quantity": _decimal_text(target - (filled if target > 0 else -filled)),
+            "scenario_id": fixture["scenario_id"],
+            "stop_take_profit_precedence": fixture["stop_take_profit_precedence"],
+            "total_events": int(engine_result.total_events),
+            "total_fills": sum(int(order.filled_qty > 0) for order in orders),
+            "total_orders": int(engine_result.total_orders),
+            "total_positions": int(engine_result.total_positions),
+            "unrealized_pnl": _decimal_text(unrealized),
+        }
     finally:
         engine.dispose()
 

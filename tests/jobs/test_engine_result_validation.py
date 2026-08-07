@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid5
 
@@ -179,6 +180,7 @@ def _simulation_event(
     request=None,
     input_digest: str | None = None,
     scenario_digest: str | None = None,
+    expected=None,
 ) -> EngineEventEnvelope:
     request = request or _simulation_request()
     assert request.payload.command_type == "RunBacktestSimulation"
@@ -192,20 +194,45 @@ def _simulation_event(
             "simulation_scenario",
         )
     }
+    attributes = (
+        EventAttribute(
+            name="input_artifacts_sha256",
+            value=input_digest
+            or hashlib.sha256(canonical_json_bytes(inputs)).hexdigest(),
+        ),
+        EventAttribute(
+            name="scenario_digest",
+            value=scenario_digest or request.payload.simulation_scenario.sha256,
+        ),
+    )
+    if expected is not None:
+        attributes += tuple(
+            EventAttribute(
+                name=name,
+                value=str(value) if isinstance(value, Decimal) else value,
+            )
+            for name, value in (
+                ("scenario_id", expected.scenario_id),
+                ("event_digest", expected.event_digest),
+                ("iterations", expected.iterations),
+                ("total_events", expected.total_events),
+                ("total_orders", expected.total_orders),
+                ("total_fills", expected.total_fills),
+                ("total_positions", expected.total_positions),
+                ("filled_quantity", expected.filled_quantity),
+                ("remaining_quantity", expected.remaining_quantity),
+                ("position_quantity", expected.position_quantity),
+                ("average_entry_price", expected.average_entry_price),
+                ("fees", expected.fees),
+                ("realized_pnl", expected.realized_pnl),
+                ("unrealized_pnl", expected.unrealized_pnl),
+                ("stop_take_profit_precedence", expected.stop_take_profit_precedence),
+            )
+        )
     payload = EngineEvent(
         event_type="NautilusBacktestSimulationCompleted",
         family=EventFamily.ENGINE_LIFECYCLE,
-        attributes=(
-            EventAttribute(
-                name="input_artifacts_sha256",
-                value=input_digest
-                or hashlib.sha256(canonical_json_bytes(inputs)).hexdigest(),
-            ),
-            EventAttribute(
-                name="scenario_digest",
-                value=scenario_digest or request.payload.simulation_scenario.sha256,
-            ),
-        ),
+        attributes=attributes,
     )
     return EngineEventEnvelope(
         message_id=uuid5(request.message_id, "NautilusBacktestSimulationCompleted"),
@@ -240,7 +267,10 @@ def _stdout(root: Path, raw: bytes) -> ArtifactMetadata:
 def test_engine_stdout_is_canonical_authority_validated_and_sealed(
     tmp_path: Path,
 ) -> None:
-    from services.job_worker.engine_results import EngineResultValidator
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
 
     event = _event()
     raw = canonical_json_bytes(event) + b"\n"
@@ -294,23 +324,52 @@ def test_nautilus_validator_requires_the_hash_bound_zero_order_completion(
     assert result.events == (event,)
 
 
-def test_simulation_validator_accepts_only_the_five_input_bound_completion(
+def test_simulation_validator_rejects_the_former_two_digest_placeholder(
     tmp_path: Path,
 ) -> None:
-    from services.job_worker.engine_results import EngineResultValidator
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
 
     request = _simulation_request()
     event = _simulation_event(request=request)
-    result = EngineResultValidator(tmp_path).validate(
-        "nautilus-backtest-simulation-result-v1",
-        _simulation_claim(),
-        request=request,
-        stdout=_stdout(tmp_path, canonical_json_bytes(event) + b"\n"),
-        exit_code=0,
+    with pytest.raises(EngineResultValidationError, match="oracle|parity"):
+        EngineResultValidator(tmp_path).validate(
+            "nautilus-backtest-simulation-result-v1",
+            _simulation_claim(),
+            request=request,
+            stdout=_stdout(tmp_path, canonical_json_bytes(event) + b"\n"),
+            exit_code=0,
+        )
+
+
+def test_simulation_validator_calls_the_independent_oracle_and_rejects_counter_drift(
+    tmp_path: Path,
+) -> None:
+    from packages.nautilus_backtest import BacktestExpectedOutcomeV1
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
     )
 
-    assert result.validator_id == "nautilus-backtest-simulation-result-v1"
-    assert result.events == (event,)
+    request = _simulation_request()
+    expected = BacktestExpectedOutcomeV1(
+        scenario_id="event-digest", scenario_digest=request.payload.simulation_scenario.sha256,
+        event_digest="a" * 64, iterations=1, total_events=2, total_orders=1,
+        total_fills=1, total_positions=1, filled_quantity=Decimal("1"),
+        remaining_quantity=Decimal("0"), position_quantity=Decimal("1"),
+        average_entry_price=Decimal("100"), fees=Decimal("0.1"),
+        realized_pnl=Decimal("0"), unrealized_pnl=Decimal("1"),
+        stop_take_profit_precedence="stop-first",
+    )
+    event = _simulation_event(request=request, expected=expected)
+    validator = EngineResultValidator(tmp_path, simulation_expected=lambda _request: expected)
+    assert validator.validate("nautilus-backtest-simulation-result-v1", _simulation_claim(), request=request, stdout=_stdout(tmp_path, canonical_json_bytes(event) + b"\n"), exit_code=0).events == (event,)
+    drifted_payload = event.payload.model_copy(update={"attributes": tuple(EventAttribute(name=item.name, value=2 if item.name == "total_fills" else item.value) for item in event.payload.attributes)})
+    drifted = event.model_copy(update={"payload": drifted_payload, "payload_digest": payload_digest(drifted_payload)})
+    with pytest.raises(EngineResultValidationError, match="parity"):
+        EngineResultValidator(tmp_path / "drift", simulation_expected=lambda _request: expected).validate("nautilus-backtest-simulation-result-v1", _simulation_claim(), request=request, stdout=_stdout(tmp_path / "drift", canonical_json_bytes(drifted) + b"\n"), exit_code=0)
 
 
 def test_zero_order_and_simulation_validators_reject_the_opposite_command(

@@ -52,10 +52,7 @@ _POLICY_FIELDS = {
     "engine_wheel_mode",
     "engine_wheel_target",
     "entrypoint",
-    "launcher_mode",
-    "launcher_sha256",
-    "launcher_source",
-    "launcher_target",
+    "launcher_inventory",
     "profile",
     "profile_manifest_schema_version",
     "python_identity",
@@ -81,8 +78,11 @@ _BASE_MANIFEST_FIELDS = {
 _FILE_FIELDS = {"mode", "path", "sha256", "size", "target"}
 _ARTIFACT_MANIFEST = "artifact-manifest.json"
 _CLOSURE_MANIFEST = "closure-manifest.json"
-_LAUNCHER_SOURCE = "engines/nautilus/launcher/nautilus_backtest.py"
-_LAUNCHER_TARGET = "/engine/launcher/nautilus_backtest.py"
+_LAUNCHER_INVENTORY = (
+    ("engines/nautilus/launcher/nautilus_backtest.py", "/engine/launcher/nautilus_backtest.py"),
+    ("engines/nautilus/launcher/target_portfolio_strategy.py", "/engine/launcher/target_portfolio_strategy.py"),
+)
+_LAUNCHER_TARGET = _LAUNCHER_INVENTORY[0][1]
 _PROFILE = "execution-simulation"
 _ARGV_PREFIX = (
     "-I",
@@ -213,12 +213,9 @@ def _load_policy(path: Path) -> dict[str, object]:
         policy["schema_version"] != 1
         or policy["profile_manifest_schema_version"] != 3
         or policy["profile"] != _PROFILE
-        or policy["launcher_source"] != _LAUNCHER_SOURCE
-        or policy["launcher_target"] != _LAUNCHER_TARGET
         or tuple(policy["argv_prefix"]) != _ARGV_PREFIX
         or policy["result_validator_id"] != _VALIDATOR
         or policy["semantic_profile"] != _SEMANTIC_PROFILE
-        or policy["launcher_mode"] != "0400"
         or policy["engine_wheel_mode"] != "0400"
         or policy["engine_name"] != "nautilus_trader"
         or policy["engine_version"] != "1.227.0"
@@ -240,9 +237,23 @@ def _load_policy(path: Path) -> dict[str, object]:
         "artifact_manifest_sha256",
         "base_file_inventory_sha256",
         "base_runtime_manifest_sha256",
-        "launcher_sha256",
     ):
         _require_sha256(policy[field], label=f"policy {field}")
+    inventory = policy["launcher_inventory"]
+    if not isinstance(inventory, list) or len(inventory) != len(_LAUNCHER_INVENTORY):
+        raise RuntimeClosureMaterializationError("launcher inventory is invalid")
+    observed_launchers: set[tuple[str, str]] = set()
+    for record in inventory:
+        if not isinstance(record, dict) or set(record) != {"mode", "sha256", "source", "target"}:
+            raise RuntimeClosureMaterializationError("launcher inventory record is invalid")
+        if record["mode"] != "0400":
+            raise RuntimeClosureMaterializationError("launcher inventory mode is unsafe")
+        _require_sha256(record["sha256"], label="launcher inventory digest")
+        source = _safe_relative(record["source"], label="launcher source").as_posix()
+        target = _safe_target(record["target"], label="launcher target").as_posix()
+        observed_launchers.add((source, target))
+    if observed_launchers != set(_LAUNCHER_INVENTORY):
+        raise RuntimeClosureMaterializationError("launcher inventory is not the fixed strategy set")
     _safe_target(policy["engine_wheel_target"], label="engine wheel target")
     _safe_target(policy["entrypoint"], label="closure entrypoint")
     return policy
@@ -381,7 +392,8 @@ def _unseal_and_remove(path: Path) -> None:
 
 def _copy_file(source: Path, destination: Path, *, mode: int) -> dict[str, object]:
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    raw = _read_file(source, label="materialization source file", sealed=source != _ROOT / _LAUNCHER_SOURCE)
+    launcher_sources = {_ROOT / source for source, _target in _LAUNCHER_INVENTORY}
+    raw = _read_file(source, label="materialization source file", sealed=source not in launcher_sources)
     destination.write_bytes(raw)
     destination.chmod(mode)
     return {"sha256": _sha256_bytes(raw), "size": len(raw), "mode": f"{mode:04o}"}
@@ -537,10 +549,14 @@ def materialize_runtime_closure(
     _artifact_manifest, selected_wheel = _validate_artifact(
         artifact_directory, policy
     )
-    launcher = _ROOT / str(policy["launcher_source"])
-    launcher_raw = _read_file(launcher, label="repository launcher", sealed=False)
-    if _sha256_bytes(launcher_raw) != policy["launcher_sha256"]:
-        raise RuntimeClosureMaterializationError("repository launcher digest drifted")
+    launchers: dict[str, tuple[Path, int]] = {}
+    for record in policy["launcher_inventory"]:
+        assert isinstance(record, dict)
+        source = _ROOT / str(record["source"])
+        raw = _read_file(source, label="repository launcher", sealed=False)
+        if _sha256_bytes(raw) != record["sha256"]:
+            raise RuntimeClosureMaterializationError("repository launcher digest drifted")
+        launchers[str(record["target"])] = (source, int(str(record["mode"]), 8))
 
     staging = Path(
         tempfile.mkdtemp(
@@ -554,9 +570,8 @@ def materialize_runtime_closure(
         for record in records:
             relative = _safe_relative(record["path"], label="runtime file path")
             target = str(record["target"])
-            if target == policy["launcher_target"]:
-                source = launcher
-                mode = int(str(policy["launcher_mode"]), 8)
+            if target in launchers:
+                source, mode = launchers[target]
             elif target == policy["engine_wheel_target"]:
                 source = selected_wheel
                 mode = int(str(policy["engine_wheel_mode"]), 8)
@@ -573,10 +588,16 @@ def materialize_runtime_closure(
                     **copied,
                 }
             )
+        listed_targets = {str(record["target"]) for record in output_records}
+        for target, (source, mode) in launchers.items():
+            if target not in listed_targets:
+                relative = PurePosixPath("files", *PurePosixPath(target).parts[1:])
+                copied = _copy_file(source, staging.joinpath(*relative.parts), mode=mode)
+                output_records.append({"path": relative.as_posix(), "target": target, **copied})
         if not any(
-            record["target"] == policy["launcher_target"]
+            record["target"] == _LAUNCHER_TARGET
             for record in output_records
-        ) or not any(
+        ) or not set(launchers).issubset({str(record["target"]) for record in output_records}) or not any(
             record["target"] == policy["engine_wheel_target"]
             for record in output_records
         ):

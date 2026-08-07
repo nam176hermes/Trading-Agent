@@ -69,9 +69,15 @@ class ValidatedEngineEventBatch:
 class EngineResultValidator:
     """Validate captured stdout and seal the exact accepted JSONL bytes."""
 
-    def __init__(self, artifact_root: Path) -> None:
+    def __init__(
+        self,
+        artifact_root: Path,
+        *,
+        simulation_expected: Callable[[EngineCommandEnvelope], object] | None = None,
+    ) -> None:
         self._artifact_root = Path(artifact_root).absolute()
         self._results_root = self._artifact_root / "engine-results"
+        self._simulation_expected = simulation_expected
 
     def validate(
         self,
@@ -167,60 +173,34 @@ class EngineResultValidator:
                 raise EngineResultValidationError(
                     "Nautilus simulation must emit exactly one completion event"
                 )
-            self._validate_simulation_completion(request, events[0])
+            if self._simulation_expected is None:
+                raise EngineResultValidationError(
+                    "Nautilus simulation oracle is unavailable"
+                )
+            self._validate_simulation_completion(
+                request, events[0], self._simulation_expected(request)
+            )
         check()
         return self._seal(job, request, raw, events, validator_id)
 
     @staticmethod
     def _validate_simulation_completion(
-        request: EngineCommandEnvelope, event: EngineEventEnvelope
+        request: EngineCommandEnvelope, event: EngineEventEnvelope, expected: object
     ) -> None:
-        if (
-            type(request.payload) is not RunBacktestSimulation
-            or event.payload.event_type != _NAUTILUS_SIMULATION_EVENT
-            or event.payload.family is not EventFamily.ENGINE_LIFECYCLE
-        ):
+        from packages.nautilus_backtest import (
+            BacktestExpectedOutcomeV1,
+            NautilusBacktestError,
+            validate_isolated_simulation_result,
+        )
+
+        try:
+            if type(expected) is not BacktestExpectedOutcomeV1:
+                raise NautilusBacktestError("simulation oracle result is invalid")
+            validate_isolated_simulation_result(request, event, expected)
+        except NautilusBacktestError as exc:
             raise EngineResultValidationError(
-                "Nautilus simulation result has the wrong command or event"
-            )
-        attributes = {
-            attribute.name: attribute.value for attribute in event.payload.attributes
-        }
-        if set(attributes) != {"input_artifacts_sha256", "scenario_digest"}:
-            raise EngineResultValidationError(
-                "Nautilus simulation result attributes are incomplete"
-            )
-        if any(
-            not isinstance(attributes[name], str)
-            or _SHA256.fullmatch(attributes[name]) is None
-            for name in attributes
-        ):
-            raise EngineResultValidationError(
-                "Nautilus simulation result digest is invalid"
-            )
-        inputs = {
-            name: getattr(request.payload, name).sha256
-            for name in (
-                "engine_configuration",
-                "instrument_catalog",
-                "strategy_configuration",
-                "market_data",
-                "simulation_scenario",
-            )
-        }
-        expected_inputs = hashlib.sha256(canonical_json_bytes(inputs)).hexdigest()
-        if (
-            not secrets.compare_digest(
-                str(attributes["input_artifacts_sha256"]), expected_inputs
-            )
-            or not secrets.compare_digest(
-                str(attributes["scenario_digest"]),
-                request.payload.simulation_scenario.sha256,
-            )
-        ):
-            raise EngineResultValidationError(
-                "Nautilus simulation result is not bound to its scenario inputs"
-            )
+                "Nautilus simulation result does not prove parity"
+            ) from exc
 
     def _read_captured_stdout(
         self,
