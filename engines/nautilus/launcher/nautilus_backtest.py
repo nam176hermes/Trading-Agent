@@ -17,11 +17,13 @@ import os
 import re
 import stat
 import sys
+import sysconfig
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Context, Decimal, InvalidOperation, localcontext
 from pathlib import Path
+from types import MappingProxyType
 from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
 
@@ -325,6 +327,122 @@ class _SealedWheelFinder:
         )
 
 
+_TRUSTED_STDLIB_ROOTS = tuple(
+    dict.fromkeys(
+        Path(value).resolve()
+        for value in (
+            sysconfig.get_path("stdlib"),
+            sysconfig.get_path("platstdlib"),
+        )
+        if value
+    )
+)
+_TRUSTED_STDLIB_FILE_LOADERS = (
+    importlib.machinery.SourceFileLoader,
+    importlib.machinery.SourcelessFileLoader,
+    importlib.machinery.ExtensionFileLoader,
+)
+_TRUSTED_STDLIB_ALIASES = {
+    "importlib._bootstrap": frozenset({"_frozen_importlib"}),
+    "importlib._bootstrap_external": frozenset(
+        {"_frozen_importlib_external"}
+    ),
+    "os.path": frozenset({"ntpath", "posixpath"}),
+}
+_MISSING_MODULE = object()
+
+
+def _is_trusted_stdlib_path(value: str) -> bool:
+    candidate = Path(value).resolve()
+    for root in _TRUSTED_STDLIB_ROOTS:
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError:
+            continue
+        if not {"site-packages", "dist-packages"}.intersection(relative.parts):
+            return True
+    return False
+
+
+def _has_trusted_interpreter_provenance(name: str, module: object) -> bool:
+    top_level = name.partition(".")[0]
+    is_sysconfigdata = "." not in name and name.startswith("_sysconfigdata_")
+    if (
+        top_level not in sys.stdlib_module_names
+        and top_level not in sys.builtin_module_names
+        and not is_sysconfigdata
+    ):
+        return False
+    spec = getattr(module, "__spec__", None)
+    if not isinstance(spec, importlib.machinery.ModuleSpec):
+        if name in {"typing.io", "typing.re"}:
+            typing_module = sys.modules.get("typing")
+            return (
+                typing_module is not None
+                and _has_trusted_interpreter_provenance(
+                    "typing", typing_module
+                )
+                and getattr(typing_module, name.partition(".")[2], None)
+                is module
+            )
+        return False
+    if spec.name != name and not (
+        spec.name in _TRUSTED_STDLIB_ALIASES.get(name, ())
+        and sys.modules.get(spec.name) is module
+    ):
+        return False
+    loader = spec.loader
+    if getattr(module, "__loader__", None) is not loader:
+        return False
+    if loader is importlib.machinery.BuiltinImporter:
+        return (
+            spec.origin == "built-in"
+            and importlib.machinery.BuiltinImporter.find_spec(spec.name)
+            is not None
+        )
+    if loader is importlib.machinery.FrozenImporter:
+        return (
+            spec.origin == "frozen"
+            and importlib.machinery.FrozenImporter.find_spec(spec.name)
+            is not None
+        )
+    if not isinstance(loader, _TRUSTED_STDLIB_FILE_LOADERS):
+        return False
+    origin = spec.origin
+    module_file = getattr(module, "__file__", None)
+    loader_path = getattr(loader, "path", None)
+    if (
+        not isinstance(origin, str)
+        or not isinstance(module_file, str)
+        or not isinstance(loader_path, str)
+        or getattr(loader, "name", None) != spec.name
+    ):
+        return False
+    resolved_origin = Path(origin).resolve()
+    return (
+        resolved_origin == Path(module_file).resolve()
+        and resolved_origin == Path(loader_path).resolve()
+        and _is_trusted_stdlib_path(origin)
+    )
+
+
+_TRUSTED_PRELOADED_INTERPRETER_MODULES = MappingProxyType(
+    {
+        name: module
+        for name, module in tuple(sys.modules.items())
+        if _has_trusted_interpreter_provenance(name, module)
+    }
+)
+
+
+def _is_active_launcher_module(name: str, module: object) -> bool:
+    return (
+        name in {"__main__", __name__}
+        and type(module) is type(sys)
+        and getattr(module, "__dict__", None) is globals()
+    )
+
+
 @contextmanager
 def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
     """Resolve top-level dependencies only from sealed roots, then restore."""
@@ -334,13 +452,17 @@ def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
     finder = _SealedWheelFinder(roots)
     try:
         for name in tuple(sys.modules):
-            top_level = name.partition(".")[0]
-            if (
-                name not in {"__main__", __name__}
-                and top_level not in sys.stdlib_module_names
-                and top_level not in sys.builtin_module_names
-            ):
+            module = sys.modules[name]
+            trusted = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
+                name, _MISSING_MODULE
+            )
+            if trusted is module or _is_active_launcher_module(name, module):
+                continue
+            if trusted is not _MISSING_MODULE:
+                sys.modules[name] = trusted
+            else:
                 sys.modules.pop(name, None)
+        sys.modules.update(_TRUSTED_PRELOADED_INTERPRETER_MODULES)
         sys.meta_path.insert(0, finder)
         yield
     finally:

@@ -10,7 +10,7 @@ import tempfile
 from datetime import UTC, datetime
 from decimal import Context, Decimal, localcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -436,6 +436,7 @@ from types import ModuleType
 
 spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 ambient_module = ModuleType("preloaded_ambient_dependency")
 sys.modules[ambient_module.__name__] = ambient_module
@@ -444,6 +445,7 @@ before_meta_path = tuple(sys.meta_path)
 before_modules = dict(sys.modules)
 with module._sealed_wheel_import_scope((module.Path(sys.argv[2]), module.Path(sys.argv[3]))):
     assert ambient_module.__name__ not in sys.modules
+    assert sys.modules[spec.name] is module
     resolved = importlib.import_module("nautilus_trader")
     assert resolved.ORIGIN == "second"
     assert resolved.DEPENDENCY == "dependency-from-first"
@@ -511,6 +513,175 @@ def test_sealed_wheel_scope_refuses_ambient_fallback_and_restores_after_error(
     assert sys.modules == before_modules
     assert sys.modules["ambient_only_dependency"] is ambient_module
     assert "nautilus_trader" not in sys.modules
+
+
+def test_sealed_wheel_scope_refuses_stdlib_key_impersonation_and_restores_after_success(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed = tmp_path / "sealed"
+    (sealed / "nautilus_trader").mkdir(parents=True)
+    (sealed / "nautilus_trader/__init__.py").write_text(
+        "import json\n"
+        "import sys\n"
+        "USED_AMBIENT = getattr(json, 'AMBIENT_IMPERSONATOR', False)\n"
+        "SERIALIZED = json.dumps(\n"
+        "    {'trusted': True}, sort_keys=True, separators=(',', ':')\n"
+        ")\n"
+        "BUILTIN_SYS_OK = sys.version_info.major >= 3\n",
+        encoding="utf-8",
+    )
+    real_json = json
+    impersonator = ModuleType("json")
+    impersonator.AMBIENT_IMPERSONATOR = True
+    impersonator.dumps = lambda *_args, **_kwargs: "ambient"
+    for attribute in ("__file__", "__loader__", "__package__", "__spec__"):
+        setattr(impersonator, attribute, getattr(real_json, attribute))
+    real_sys = sys
+    builtin_impersonator = ModuleType("sys")
+    builtin_impersonator.__loader__ = real_sys.__loader__
+    builtin_impersonator.__spec__ = real_sys.__spec__
+    monkeypatch.delitem(sys.modules, "nautilus_trader", raising=False)
+    monkeypatch.setitem(sys.modules, "json", impersonator)
+    monkeypatch.setitem(sys.modules, "sys", builtin_impersonator)
+    before_path = list(sys.path)
+    before_meta_path = tuple(sys.meta_path)
+    before_modules = dict(sys.modules)
+
+    with launcher_module._sealed_wheel_import_scope((sealed,)):
+        resolved = importlib.import_module("nautilus_trader")
+        assert resolved.USED_AMBIENT is False
+        assert resolved.SERIALIZED == '{"trusted":true}'
+        assert resolved.BUILTIN_SYS_OK is True
+        assert sys.modules["json"] is real_json
+        assert sys.modules["sys"] is real_sys
+        assert list(sys.path) == before_path
+
+    assert list(sys.path) == before_path
+    assert tuple(sys.meta_path) == before_meta_path
+    assert sys.modules == before_modules
+    assert sys.modules["json"] is impersonator
+    assert sys.modules["sys"] is builtin_impersonator
+    assert "nautilus_trader" not in sys.modules
+
+
+def test_sealed_wheel_scope_refuses_stdlib_child_key_impersonation_and_restores_after_error(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed = tmp_path / "sealed"
+    (sealed / "nautilus_trader").mkdir(parents=True)
+    (sealed / "nautilus_trader/__init__.py").write_text(
+        "import xml.ambient_only_dependency\n", encoding="utf-8"
+    )
+    genuine_stdlib_child = importlib.import_module("json.decoder")
+    impersonator = ModuleType("xml.ambient_only_dependency")
+    impersonator.VALUE = "must-not-load"
+    for attribute in ("__file__", "__loader__", "__package__", "__spec__"):
+        setattr(impersonator, attribute, getattr(genuine_stdlib_child, attribute))
+    monkeypatch.delitem(sys.modules, "nautilus_trader", raising=False)
+    monkeypatch.setitem(
+        sys.modules, "xml.ambient_only_dependency", impersonator
+    )
+    before_path = list(sys.path)
+    before_meta_path = tuple(sys.meta_path)
+    before_modules = dict(sys.modules)
+
+    with pytest.raises(ModuleNotFoundError, match="xml.ambient_only_dependency"):
+        with launcher_module._sealed_wheel_import_scope((sealed,)):
+            importlib.import_module("nautilus_trader")
+
+    assert list(sys.path) == before_path
+    assert tuple(sys.meta_path) == before_meta_path
+    assert sys.modules == before_modules
+    assert sys.modules["xml.ambient_only_dependency"] is impersonator
+    assert "nautilus_trader" not in sys.modules
+
+
+def test_sealed_wheel_scope_removes_negative_cache_and_restores_after_success(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    (sealed / "sealed_negative_cache_dependency.py").write_text(
+        "VALUE = 'sealed'\n", encoding="utf-8"
+    )
+    module_name = "sealed_negative_cache_dependency"
+    monkeypatch.setitem(sys.modules, module_name, None)
+    before_modules = dict(sys.modules)
+
+    with launcher_module._sealed_wheel_import_scope((sealed,)):
+        resolved = importlib.import_module(module_name)
+        assert resolved.VALUE == "sealed"
+
+    assert sys.modules == before_modules
+    assert sys.modules[module_name] is None
+
+
+def test_sealed_wheel_scope_does_not_inspect_launcher_key_impersonator(
+    launcher_module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LauncherKeyImpersonator:
+        def __getattribute__(self, _name: str) -> object:
+            raise AssertionError("ambient launcher impersonator was inspected")
+
+    module_name = launcher_module.__name__
+    impersonator = LauncherKeyImpersonator()
+    monkeypatch.setitem(sys.modules, module_name, impersonator)
+    before_modules = dict(sys.modules)
+
+    with launcher_module._sealed_wheel_import_scope(()):
+        assert module_name not in sys.modules
+
+    assert sys.modules == before_modules
+    assert sys.modules[module_name] is impersonator
+
+
+def test_sealed_wheel_scope_preserves_cpython_interpreter_machinery(
+    launcher_module,
+) -> None:
+    names = (
+        "os.path",
+        "importlib._bootstrap",
+        "importlib._bootstrap_external",
+        "typing.io",
+        "typing.re",
+        *(
+            name
+            for name in sys.modules
+            if name.startswith("_sysconfigdata_")
+        ),
+    )
+    assert any(name.startswith("_sysconfigdata_") for name in names)
+    machinery = {name: sys.modules[name] for name in names}
+    before_modules = dict(sys.modules)
+
+    with launcher_module._sealed_wheel_import_scope(()):
+        assert all(sys.modules[name] is module for name, module in machinery.items())
+
+    assert sys.modules == before_modules
+
+
+def test_sealed_wheel_scope_reseeds_missing_interpreter_alias_and_restores(
+    launcher_module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alias_name = "os.path"
+    trusted_alias = sys.modules[alias_name]
+    monkeypatch.delitem(sys.modules, alias_name)
+    before_modules = dict(sys.modules)
+
+    with launcher_module._sealed_wheel_import_scope(()):
+        resolved = importlib.import_module(alias_name)
+        assert resolved is trusted_alias
+
+    assert sys.modules == before_modules
+    assert alias_name not in sys.modules
 
 
 def test_launcher_has_no_global_sys_path_mutation_or_bare_strategy_import() -> None:
