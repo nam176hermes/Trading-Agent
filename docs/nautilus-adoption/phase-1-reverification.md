@@ -52,27 +52,30 @@ as the rollback generation; it is not selected by the command template below.
 
 ## Execution-simulation runtime closure
 
-Packet 04E0 fix round 1 materialized the selected external generation
-`runtime-closure-v5-simulation` from the unchanged sealed
+Packet 04E0 fix round 2 materialized the selected external generation
+`runtime-closure-v6-simulation` from the unchanged sealed
 `runtime-closure-v3` file inventory, the selected input-bound engine artifact,
 and the repository launcher. The sealed external staging tree passed root
 attestation before its atomic rename, retained the same directory identity,
-and passed independent destination re-attestation afterward. The materializer
-has no acquisition or build mode. Its checked-in policy SHA-256 is
+and passed independent destination re-attestation afterward. Destination
+identity was checked against the staged identity immediately before and after
+that re-attestation. The materializer has no acquisition or build mode. Its
+checked-in policy SHA-256 is
 `1ea1d4aefdeb80fb4c320f0fecb0a3c87cde78a0b0ee37abc80dca062a6572c5`.
 
 | Closure | Status | Profile | Manifest SHA-256 | Attested closure SHA-256 | Validator |
 | --- | --- | --- | --- | --- | --- |
 | `runtime-closure-v3` | rollback | `zero-order` | `69cb87568361ccd6324550fb3823956c64e073b4cf09e674d7eb0883f844c044` | `18c9ba4af073ae953e0115f577423348b6d454c158da59cbcbd3c9e34a22856f` | `nautilus-backtest-result-v1` |
 | `runtime-closure-v4-simulation` | rejected forensic candidate | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
-| `runtime-closure-v5-simulation` | selected simulation closure | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
+| `runtime-closure-v5-simulation` | rejected forensic candidate | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
+| `runtime-closure-v6-simulation` | selected simulation closure | `execution-simulation` | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` | `nautilus-backtest-simulation-result-v1` |
 
-V3 and v5 passed independent root attestation after v5 materialization, and the
+V3 and v6 passed independent root attestation after v6 materialization, and the
 selected 01D artifact passed the full offline input-binding verifier both before
-and after publication. The v3 and v4 manifest digests remained unchanged. V4
-was not selected, overwritten, or deleted. The external closures are not
-committed and do not authorize a service start, paper-runtime activation,
-broker access, or live trading.
+and after publication. The v3, v4, and v5 manifest digests and directory
+identities remained unchanged. V4 and v5 were not selected, overwritten, or
+deleted. The external closures are not committed and do not authorize a
+service start, paper-runtime activation, broker access, or live trading.
 
 ## Offline command template
 

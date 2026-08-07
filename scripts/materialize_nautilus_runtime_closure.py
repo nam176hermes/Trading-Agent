@@ -511,6 +511,14 @@ def materialize_runtime_closure(
             )
 
         phase = "published closure re-attestation"
+        destination_before_attestation = destination.lstat()
+        if (
+            destination_before_attestation.st_dev,
+            destination_before_attestation.st_ino,
+        ) != staged_identity:
+            raise RuntimeClosureMaterializationError(
+                "destination closure identity changed before re-attestation"
+            )
         published_attestation = attest_nautilus_backtest_closure(
             NautilusClosureConfig(
                 runtime_root=destination,
@@ -519,6 +527,14 @@ def materialize_runtime_closure(
             ),
             expected_profile=_PROFILE,
         )
+        destination_after_attestation = destination.lstat()
+        if (
+            destination_after_attestation.st_dev,
+            destination_after_attestation.st_ino,
+        ) != staged_identity:
+            raise RuntimeClosureMaterializationError(
+                "destination closure identity changed after re-attestation"
+            )
         if (
             published_attestation.profile != staging_attestation.profile
             or published_attestation.closure_sha256

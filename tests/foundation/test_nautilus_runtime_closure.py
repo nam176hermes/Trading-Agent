@@ -384,6 +384,44 @@ def test_staging_identity_change_after_attestation_fails_before_publish(
     assert not destination.exists()
 
 
+def test_destination_identity_change_during_re_attestation_fails_closed(
+    closure_inputs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _base, _artifacts, _policy, destination = closure_inputs
+    real_attest = materializer_module.attest_nautilus_backtest_closure
+    displaced: list[tuple[Path, tuple[int, int]]] = []
+
+    def attest_then_replace_destination(
+        config: NautilusClosureConfig, *, expected_profile: str
+    ):
+        attestation = real_attest(config, expected_profile=expected_profile)
+        if config.runtime_root == destination:
+            observed = destination.lstat()
+            original = root / ".destination-attested-original"
+            os.rename(destination, original)
+            shutil.copytree(original, destination)
+            displaced.append((original, (observed.st_dev, observed.st_ino)))
+        return attestation
+
+    monkeypatch.setattr(
+        materializer_module,
+        "attest_nautilus_backtest_closure",
+        attest_then_replace_destination,
+    )
+
+    with pytest.raises(
+        RuntimeClosureMaterializationError,
+        match="destination closure identity changed after re-attestation",
+    ):
+        _materialize(closure_inputs)
+
+    assert len(displaced) == 1
+    original, attested_identity = displaced[0]
+    observed_original = original.lstat()
+    assert (observed_original.st_dev, observed_original.st_ino) == attested_identity
+    assert not destination.exists()
+
+
 def test_materializer_rejects_a_preexisting_destination_without_changing_it(
     closure_inputs,
 ) -> None:
