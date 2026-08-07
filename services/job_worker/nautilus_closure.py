@@ -344,14 +344,15 @@ def _closure_digest(
     }
     if semantic_profile is not None:
         digest_document["semantic_profile"] = semantic_profile
-    if closure_manifest["schema_version"] == 5:
+    schema_version = closure_manifest["schema_version"]
+    if schema_version in {4, 5}:
         digest_document["engine_upstream_commit"] = closure_manifest[
             "engine_upstream_commit"
         ]
         if closure_manifest_sidecar is None:
             _blocked(
                 "ENGINE_CLOSURE_INVALID",
-                "closure manifest sidecar is missing",
+                f"schema-v{schema_version} closure manifest sidecar is missing",
             )
         digest_document["closure_manifest"] = {
             "identity": list(closure_manifest_sidecar.identity),
@@ -360,6 +361,8 @@ def _closure_digest(
             "size": closure_manifest_sidecar.size,
             "target": str(closure_manifest_sidecar.target),
         }
+    if schema_version == 5:
+        digest_document["manifest_schema_version"] = schema_version
         digest_document["native_entry_guard"] = closure_manifest[
             "native_entry_guard"
         ]
@@ -497,6 +500,11 @@ def attest_nautilus_backtest_closure(
     artifact_manifest_path = config.artifact_directory / _ARTIFACT_MANIFEST_NAME
     artifact_manifest = _read_json(artifact_manifest_path, "artifact manifest")
     schema_version = closure_manifest.get("schema_version")
+    if type(schema_version) is not int:
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "closure manifest schema generation is invalid",
+        )
     if schema_version == 1 and set(closure_manifest) == _MANIFEST_FIELDS_V1:
         profile = "zero-order"
         semantic_profile = None
@@ -504,6 +512,9 @@ def attest_nautilus_backtest_closure(
         profile = closure_manifest.get("profile")
         semantic_profile = None
     elif schema_version == 3 and set(closure_manifest) == _MANIFEST_FIELDS_V3:
+        profile = closure_manifest.get("profile")
+        semantic_profile = closure_manifest.get("semantic_profile")
+    elif schema_version == 4 and set(closure_manifest) == _MANIFEST_FIELDS_V4:
         profile = closure_manifest.get("profile")
         semantic_profile = closure_manifest.get("semantic_profile")
     elif schema_version == 5 and set(closure_manifest) == _MANIFEST_FIELDS_V5:
@@ -515,9 +526,7 @@ def attest_nautilus_backtest_closure(
         _blocked("ENGINE_CLOSURE_INVALID", "closure profile does not match explicit authority")
     if profile == "execution-simulation" and semantic_profile != _SEMANTIC_PROFILE:
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
-    if schema_version == 3 and profile != "execution-simulation":
-        _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
-    if schema_version == 5 and profile != "execution-simulation":
+    if schema_version in {3, 4, 5} and profile != "execution-simulation":
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     expected_identity = _PROFILES[profile]
     if (
@@ -528,7 +537,7 @@ def attest_nautilus_backtest_closure(
         or not isinstance(closure_manifest["source_commit"], str)
         or _SOURCE_COMMIT.fullmatch(closure_manifest["source_commit"]) is None
         or (
-            schema_version == 5
+            schema_version in {4, 5}
             and (
                 not isinstance(closure_manifest["engine_upstream_commit"], str)
                 or _SOURCE_COMMIT.fullmatch(
@@ -559,7 +568,7 @@ def attest_nautilus_backtest_closure(
         or artifact_manifest.get("upstream_commit")
         != (
             closure_manifest["engine_upstream_commit"]
-            if schema_version == 5
+            if schema_version in {4, 5}
             else closure_manifest["source_commit"]
         )
     ):
@@ -567,7 +576,7 @@ def attest_nautilus_backtest_closure(
     mounts = _manifest_files(config.runtime_root, closure_manifest["files"])
     closure_manifest_sidecar = (
         _closure_manifest_sidecar(config.runtime_root / _MANIFEST_NAME)
-        if schema_version == 5
+        if schema_version in {4, 5}
         else None
     )
     if closure_manifest_sidecar is not None and any(
@@ -605,6 +614,7 @@ def attest_nautilus_backtest_closure(
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 0 < timeout <= 3_600:
         _blocked("ENGINE_CLOSURE_INVALID", "closure timeout is invalid")
     return CompleteEngineClosureAttestation(
+        manifest_schema_version=schema_version,
         profile=profile,
         source_commit=closure_manifest["source_commit"],
         closure_sha256=_closure_digest(

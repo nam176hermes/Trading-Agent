@@ -165,6 +165,7 @@ def _closure(
     profile: str = "zero-order",
     with_closure_manifest: bool = False,
     native_guard: bool = False,
+    manifest_schema_version: int | None = None,
 ) -> CompleteEngineClosureAttestation:
     sandbox = tmp_path / "sealed" / "bin" / "sandbox"
     sandbox.parent.mkdir(parents=True)
@@ -230,7 +231,12 @@ def _closure(
         if native_guard
         else None
     )
+    if manifest_schema_version is None:
+        manifest_schema_version = (
+            5 if native_guard else 4 if with_closure_manifest else 1
+        )
     return CompleteEngineClosureAttestation(
+        manifest_schema_version=manifest_schema_version,
         profile=profile,
         source_commit=SOURCE_COMMIT,
         closure_sha256="a" * 64,
@@ -279,6 +285,7 @@ def _provider(
     attestor,
     *,
     attest_inputs=None,
+    expected_manifest_schema_version: int = 1,
 ) -> EngineSpawnProvider:
     transport = tmp_path / "transport"
     transport.mkdir(mode=0o700, exist_ok=True)
@@ -286,6 +293,7 @@ def _provider(
         transport_root=transport,
         attest_closure=attestor,
         attest_inputs=attest_inputs,
+        expected_manifest_schema_version=expected_manifest_schema_version,
         monotonic_ns=lambda: 1_000_000_000,
     )
 
@@ -371,6 +379,7 @@ def _real_bwrap_closure(
         root.chmod(0o500)
 
     closure = CompleteEngineClosureAttestation(
+        manifest_schema_version=1,
         profile="zero-order",
         source_commit=SOURCE_COMMIT,
         closure_sha256="b" * 64,
@@ -530,7 +539,11 @@ def test_provider_spawns_native_guard_with_cpython_as_exact_guarded_argv(
     )
 
     spawn = consume_prepared_engine_spawn(
-        _provider(secure_tmp_path, lambda: closure).prepare(
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=5,
+        ).prepare(
             _native_simulation_envelope()
         )
     )
@@ -583,7 +596,11 @@ def test_provider_rejects_native_contract_forged_as_direct_python_entry(
     )
 
     with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
-        _provider(secure_tmp_path, lambda: direct).prepare(
+        _provider(
+            secure_tmp_path,
+            lambda: direct,
+            expected_manifest_schema_version=5,
+        ).prepare(
             _native_simulation_envelope()
         )
 
@@ -616,8 +633,160 @@ def test_provider_rejects_direct_python_when_v5_native_attestation_is_removed(
     )
 
     with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
-        _provider(secure_tmp_path, lambda: direct).prepare(
+        _provider(
+            secure_tmp_path,
+            lambda: direct,
+            expected_manifest_schema_version=5,
+        ).prepare(
             _native_simulation_envelope()
+        )
+
+
+def test_provider_rejects_v5_manifest_sidecar_removal_with_guard_retained(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: replace(closure, closure_manifest=None),
+            expected_manifest_schema_version=5,
+        ).prepare(_native_simulation_envelope())
+
+
+def _strip_v5_native_contract(
+    closure: CompleteEngineClosureAttestation,
+) -> CompleteEngineClosureAttestation:
+    python_mount = next(
+        mount
+        for mount in closure.mounts
+        if mount.target == PurePosixPath("/usr/bin/python3.12")
+    )
+    return replace(
+        closure,
+        entrypoint=python_mount.target,
+        argv_prefix=(
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ),
+        closure_manifest=None,
+        native_entry_guard=None,
+    )
+
+
+def test_provider_rejects_strip_both_v5_downgrade_during_prepare(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+    direct = _strip_v5_native_contract(closure)
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: direct,
+            expected_manifest_schema_version=5,
+        ).prepare(
+            _native_simulation_envelope()
+        )
+
+
+def test_provider_rejects_strip_both_and_schema_version_downgrade(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+    direct = replace(
+        _strip_v5_native_contract(closure),
+        manifest_schema_version=3,
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: direct,
+            expected_manifest_schema_version=5,
+        ).prepare(_native_simulation_envelope())
+
+
+def test_provider_rejects_strip_both_v5_downgrade_during_consume(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+    )
+    attestations = iter((closure, _strip_v5_native_contract(closure)))
+    provider = _provider(
+        secure_tmp_path,
+        lambda: next(attestations),
+        expected_manifest_schema_version=5,
+    )
+    prepared = provider.prepare(_native_simulation_envelope())
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        consume_prepared_engine_spawn(prepared)
+
+
+@pytest.mark.parametrize(
+    ("actual_schema_version", "expected_schema_version"),
+    ((4, 5), (5, 4)),
+)
+def test_provider_rejects_manifest_schema_generation_mismatch(
+    secure_tmp_path: Path,
+    actual_schema_version: int,
+    expected_schema_version: int,
+) -> None:
+    native_guard = actual_schema_version == 5
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=native_guard,
+        manifest_schema_version=actual_schema_version,
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=expected_schema_version,
+        ).prepare(_native_simulation_envelope())
+
+
+@pytest.mark.parametrize("expected_schema_version", (True, 0, 6, None))
+def test_provider_requires_one_exact_supported_manifest_schema_generation(
+    secure_tmp_path: Path,
+    expected_schema_version: object,
+) -> None:
+    transport = secure_tmp_path / "transport"
+    transport.mkdir(mode=0o700)
+
+    with pytest.raises(ValueError, match="exact supported closure manifest schema"):
+        EngineSpawnProvider(
+            transport_root=transport,
+            attest_closure=lambda: _closure(secure_tmp_path),
+            expected_manifest_schema_version=expected_schema_version,  # type: ignore[arg-type]
+            monotonic_ns=lambda: 1_000_000_000,
         )
 
 
@@ -649,7 +818,11 @@ def test_provider_rejects_malformed_native_guard_provenance(
     )
 
     with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
-        _provider(secure_tmp_path, lambda: malformed).prepare(
+        _provider(
+            secure_tmp_path,
+            lambda: malformed,
+            expected_manifest_schema_version=5,
+        ).prepare(
             _native_simulation_envelope()
         )
 
@@ -666,7 +839,11 @@ def test_provider_rejects_non_attestation_native_guard_object(
     malformed = replace(closure, native_entry_guard=object())
 
     with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
-        _provider(secure_tmp_path, lambda: malformed).prepare(
+        _provider(
+            secure_tmp_path,
+            lambda: malformed,
+            expected_manifest_schema_version=5,
+        ).prepare(
             _native_simulation_envelope()
         )
 
@@ -677,7 +854,11 @@ def test_provider_seals_separate_closure_manifest_at_the_fixed_target(
     closure = _closure(secure_tmp_path, with_closure_manifest=True)
     assert closure.closure_manifest is not None
     spawn = consume_prepared_engine_spawn(
-        _provider(secure_tmp_path, lambda: closure).prepare(_envelope())
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=4,
+        ).prepare(_envelope())
     )
     try:
         descriptor = _data_fd(spawn.argv, "/engine/closure-manifest.json")
@@ -697,12 +878,78 @@ def test_provider_seals_separate_closure_manifest_at_the_fixed_target(
         _close_spawn_fds(spawn)
 
 
+def test_provider_preserves_v4_sidecar_without_requiring_native_guard(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+    )
+
+    spawn = consume_prepared_engine_spawn(
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=4,
+        ).prepare(
+            _native_simulation_envelope()
+        )
+    )
+    try:
+        assert _data_fd(spawn.argv, "/engine/closure-manifest.json") in (
+            spawn.pass_fds
+        )
+        assert closure.native_entry_guard is None
+    finally:
+        _close_spawn_fds(spawn)
+
+
+@pytest.mark.parametrize("manifest_schema_version", (1, 2, 3))
+def test_provider_preserves_v1_v3_without_native_metadata(
+    secure_tmp_path: Path,
+    manifest_schema_version: int,
+) -> None:
+    profile = (
+        "execution-simulation"
+        if manifest_schema_version == 3
+        else "zero-order"
+    )
+    closure = _closure(
+        secure_tmp_path,
+        profile=profile,
+        manifest_schema_version=manifest_schema_version,
+    )
+    envelope = (
+        _native_simulation_envelope()
+        if profile == "execution-simulation"
+        else _envelope()
+    )
+
+    spawn = consume_prepared_engine_spawn(
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=manifest_schema_version,
+        ).prepare(envelope)
+    )
+    try:
+        assert closure.closure_manifest is None
+        assert closure.native_entry_guard is None
+    finally:
+        _close_spawn_fds(spawn)
+
+
 def test_provider_rejects_replaced_closure_manifest_and_closes_prepared_fds(
     secure_tmp_path: Path,
 ) -> None:
     closure = _closure(secure_tmp_path, with_closure_manifest=True)
     assert closure.closure_manifest is not None
-    provider = _provider(secure_tmp_path, lambda: closure)
+    provider = _provider(
+        secure_tmp_path,
+        lambda: closure,
+        expected_manifest_schema_version=4,
+    )
     prepared = provider.prepare(_envelope())
     record_fds = (
         prepared._record.request_fd,
@@ -745,7 +992,11 @@ def test_provider_rejects_malformed_separate_closure_manifest_attestation(
     )
 
     with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
-        _provider(secure_tmp_path, lambda: malformed).prepare(_envelope())
+        _provider(
+            secure_tmp_path,
+            lambda: malformed,
+            expected_manifest_schema_version=4,
+        ).prepare(_envelope())
 
 
 def test_provider_mounts_each_attested_artifact_as_a_sealed_hash_bound_input(
@@ -1443,6 +1694,7 @@ def test_provider_rejects_every_preexisting_or_symlinked_transport_run(
     provider = EngineSpawnProvider(
         transport_root=transport,
         attest_closure=lambda: closure,
+        expected_manifest_schema_version=1,
         monotonic_ns=lambda: 1_000_000_000,
     )
 
@@ -1726,6 +1978,7 @@ def test_closure_inventory_rejects_a_host_directory_source(
 @pytest.mark.parametrize(
     "malformed",
     (
+        {"manifest_schema_version": True},
         {"source_commit": None},
         {"closure_sha256": None},
         {"timeout_seconds": "10"},
@@ -1752,6 +2005,7 @@ def test_symlinked_transport_root_is_rejected_without_ambient_fallback(
     provider = EngineSpawnProvider(
         transport_root=transport,
         attest_closure=lambda: closure,
+        expected_manifest_schema_version=1,
         monotonic_ns=lambda: 1_000_000_000,
     )
 

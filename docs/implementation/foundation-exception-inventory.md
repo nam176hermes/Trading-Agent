@@ -542,11 +542,11 @@ services/job_worker/command_registry.py|308|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|361|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|374|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/command_registry.py|407|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|270|BaseException|PRODUCTION_CRITICAL|PASS
-services/job_worker/engine_spawn.py|888|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|903|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|993|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1082|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|274|BaseException|PRODUCTION_CRITICAL|PASS
+services/job_worker/engine_spawn.py|919|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|937|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1027|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1116|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|83|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|557|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|600|BaseException|PRODUCTION_CRITICAL|RAISE

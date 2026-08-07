@@ -159,9 +159,13 @@ class CompleteEngineClosureAttestation:
     The closure digest is produced by the external release verifier.  It must
     cover the exact file inventory in ``mounts`` and the reviewed command
     specification; this provider re-runs that verifier at consumption and
-    independently seals every listed file.
+    independently seals every listed file.  ``manifest_schema_version`` is the
+    non-optional contract generation checked against the provider's separately
+    pinned expectation; generation five intrinsically requires the native
+    entry guard.
     """
 
+    manifest_schema_version: int
     profile: str
     source_commit: str
     closure_sha256: str
@@ -523,16 +527,26 @@ def _validate_native_entry_guard(
     attestation: CompleteEngineClosureAttestation,
 ) -> None:
     guard = attestation.native_entry_guard
-    if guard is None:
-        if (
-            attestation.profile == "execution-simulation"
-            and attestation.closure_manifest is not None
-        ):
+    schema_version = attestation.manifest_schema_version
+    if schema_version in {1, 2, 3}:
+        if attestation.closure_manifest is not None or guard is not None:
             _blocked(
                 "ENGINE_CLOSURE_INVALID",
-                "execution-simulation manifest sidecar requires a native guard",
+                "legacy closure generation has unexpected native metadata",
             )
         return
+    if schema_version == 4:
+        if attestation.closure_manifest is None or guard is not None:
+            _blocked(
+                "ENGINE_CLOSURE_INVALID",
+                "schema-v4 closure metadata is invalid",
+            )
+        return
+    if attestation.closure_manifest is None or guard is None:
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "schema-v5 closure requires its manifest and native guard",
+        )
     if type(guard) is not NativeEntryGuardAttestation:
         _blocked("ENGINE_CLOSURE_INVALID", "native entry guard contract is invalid")
     digest_fields = (
@@ -606,7 +620,11 @@ def _closure_target_directories(
     )
 
 
-def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
+def _validate_closure(
+    value: object,
+    *,
+    expected_manifest_schema_version: int,
+) -> CompleteEngineClosureAttestation:
     if type(value) is not CompleteEngineClosureAttestation:
         _blocked(
             "ENGINE_CLOSURE_UNAVAILABLE",
@@ -614,7 +632,11 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
         )
     attestation = value
     if (
-        attestation.profile not in {"zero-order", "execution-simulation"}
+        type(attestation.manifest_schema_version) is not int
+        or attestation.manifest_schema_version not in {1, 2, 3, 4, 5}
+        or attestation.manifest_schema_version
+        != expected_manifest_schema_version
+        or attestation.profile not in {"zero-order", "execution-simulation"}
         or (
             attestation.semantic_profile
             not in {None, "nautilus-execution-simulation-v2"}
@@ -841,6 +863,7 @@ class EngineSpawnProvider:
         *,
         transport_root: Path,
         attest_closure: Callable[[], CompleteEngineClosureAttestation],
+        expected_manifest_schema_version: int,
         attest_inputs: Callable[
             [RunBacktest | RunBacktestSimulation],
             tuple[HashBoundEngineInput, ...],
@@ -852,12 +875,20 @@ class EngineSpawnProvider:
             raise ValueError("engine transport root must be canonical and absolute")
         if not callable(attest_closure):
             raise TypeError("complete engine closure attestor is required")
+        if (
+            type(expected_manifest_schema_version) is not int
+            or expected_manifest_schema_version not in {1, 2, 3, 4, 5}
+        ):
+            raise ValueError(
+                "one exact supported closure manifest schema is required"
+            )
         if attest_inputs is not None and not callable(attest_inputs):
             raise TypeError("engine input attestor must be callable")
         if not callable(monotonic_ns):
             raise TypeError("monotonic clock is required")
         self._transport_root = transport_root
         self._attest_closure = attest_closure
+        self._expected_manifest_schema_version = expected_manifest_schema_version
         self._attest_inputs = attest_inputs
         self._monotonic_ns = monotonic_ns
         self._issued: weakref.WeakSet[PreparedEngineSpawn] = weakref.WeakSet()
@@ -889,7 +920,10 @@ class EngineSpawnProvider:
             raise EngineSpawnError(
                 "ENGINE_CLOSURE_UNAVAILABLE", "complete closure attestation failed"
             ) from exc
-        return _validate_closure(value)
+        return _validate_closure(
+            value,
+            expected_manifest_schema_version=self._expected_manifest_schema_version,
+        )
 
     def _current_inputs(
         self, request: RunBacktest | RunBacktestSimulation

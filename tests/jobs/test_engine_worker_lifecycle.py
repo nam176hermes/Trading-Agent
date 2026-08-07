@@ -237,6 +237,7 @@ def _real_provider(tmp_path: Path) -> EngineSpawnProvider:
     entrypoint_info = entrypoint.stat(follow_symlinks=False)
     entrypoint_raw = entrypoint.read_bytes()
     closure = CompleteEngineClosureAttestation(
+        manifest_schema_version=1,
         profile="zero-order",
         source_commit=CODE_COMMIT,
         closure_sha256="c" * 64,
@@ -268,6 +269,7 @@ def _real_provider(tmp_path: Path) -> EngineSpawnProvider:
     return EngineSpawnProvider(
         transport_root=transport,
         attest_closure=lambda: closure,
+        expected_manifest_schema_version=1,
         monotonic_ns=time.monotonic_ns,
     )
 
