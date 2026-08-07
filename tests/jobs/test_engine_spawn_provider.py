@@ -1286,41 +1286,74 @@ def test_sandbox_proof_requires_versioned_ro_bind_data_capability(
 
 
 @pytest.mark.parametrize(
-    ("owner", "mode", "is_rejected"),
+    ("owner", "mode", "is_accepted"),
     (
-        (0, 0o755, False),
-        (0, 0o775, True),
-        (1001, 0o755, True),
+        (0, 0o755, True),
+        (os.geteuid(), 0o755, True),
+        (0, 0o775, False),
+        (
+            next(
+                candidate
+                for candidate in range(1, 1_000)
+                if candidate not in {0, os.geteuid()}
+            ),
+            0o755,
+            False,
+        ),
     ),
 )
-def test_sandbox_proof_requires_root_owned_non_group_or_other_writable_executable(
+def test_sandbox_proof_is_pinned_only_for_trusted_non_group_or_other_writable_executables(
     secure_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     owner: int,
     mode: int,
-    is_rejected: bool,
+    is_accepted: bool,
 ) -> None:
-    """Protects the reviewed sandbox boundary from unsafe executable metadata."""
+    """Protects the reviewed sandbox boundary through final FD pinning."""
     closure = _closure(secure_tmp_path)
     original_observed_identity = engine_spawn_module._observed_identity
+    original_fstat = engine_spawn_module.os.fstat
 
     def observed_identity(path: Path, *, reason: str):
         observed, identity = original_observed_identity(path, reason=reason)
         if path == closure.sandbox.executable:
-            return SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=owner), identity
+            return (
+                SimpleNamespace(
+                    st_mode=stat.S_IFREG | mode,
+                    st_uid=owner,
+                    st_dev=observed.st_dev,
+                    st_ino=observed.st_ino,
+                    st_size=observed.st_size,
+                ),
+                identity,
+            )
         return observed, identity
+
+    def fstat(descriptor: int):
+        observed = original_fstat(descriptor)
+        if Path(f"/proc/self/fd/{descriptor}").resolve() == closure.sandbox.executable:
+            return SimpleNamespace(
+                st_mode=stat.S_IFREG | mode,
+                st_uid=owner,
+                st_dev=observed.st_dev,
+                st_ino=observed.st_ino,
+                st_size=observed.st_size,
+            )
+        return observed
 
     monkeypatch.setattr(
         engine_spawn_module, "_observed_identity", observed_identity
     )
+    monkeypatch.setattr(engine_spawn_module.os, "fstat", fstat)
 
     provider = _provider(secure_tmp_path, lambda: closure)
-    if is_rejected:
+    if not is_accepted:
         with pytest.raises(EngineSpawnError) as error:
             provider.prepare(_envelope())
         assert error.value.reason == "ENGINE_SANDBOX_PROOF_INVALID"
     else:
-        provider.prepare(_envelope())
+        spawn = consume_prepared_engine_spawn(provider.prepare(_envelope()))
+        _close_spawn_fds(spawn)
 
 
 def test_closure_mounts_cannot_shadow_sandbox_owned_targets(

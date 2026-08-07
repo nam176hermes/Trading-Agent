@@ -338,8 +338,9 @@ def _sealed_sandbox_snapshot(proof: OsSandboxProof) -> int:
         if (
             not stat.S_ISREG(opened.st_mode)
             or (opened.st_dev, opened.st_ino) != proof.identity
+            or opened.st_uid not in {0, os.geteuid()}
             or not opened.st_mode & 0o111
-            or opened.st_mode & 0o222
+            or opened.st_mode & 0o022
         ):
             _blocked(
                 "ENGINE_SANDBOX_PROOF_INVALID",
