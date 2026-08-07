@@ -567,8 +567,9 @@ def _validate_closure(value: object) -> CompleteEngineClosureAttestation:
     if (
         identity != proof.identity
         or not stat.S_ISREG(observed.st_mode)
+        or observed.st_uid not in {0, os.geteuid()}
         or not observed.st_mode & 0o111
-        or observed.st_mode & 0o222
+        or observed.st_mode & 0o022
         or not hmac.compare_digest(_sha256_path(proof.executable), proof.executable_sha256)
     ):
         _blocked("ENGINE_SANDBOX_PROOF_INVALID", "OS sandbox proof is stale or unsafe")

@@ -5,6 +5,7 @@ import gc
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import threading
@@ -13,10 +14,12 @@ import weakref
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
+import services.job_worker.engine_spawn as engine_spawn_module
 from packages.engine_contracts import (
     ArtifactReference,
     CURRENT_SCHEMA_VERSION,
@@ -1280,6 +1283,44 @@ def test_sandbox_proof_requires_versioned_ro_bind_data_capability(
 
     with pytest.raises(EngineSpawnError, match="ENGINE_SANDBOX_PROOF_INVALID"):
         _provider(secure_tmp_path, lambda: unsupported).prepare(_envelope())
+
+
+@pytest.mark.parametrize(
+    ("owner", "mode", "is_rejected"),
+    (
+        (0, 0o755, False),
+        (0, 0o775, True),
+        (1001, 0o755, True),
+    ),
+)
+def test_sandbox_proof_requires_root_owned_non_group_or_other_writable_executable(
+    secure_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: int,
+    mode: int,
+    is_rejected: bool,
+) -> None:
+    """Protects the reviewed sandbox boundary from unsafe executable metadata."""
+    closure = _closure(secure_tmp_path)
+    original_observed_identity = engine_spawn_module._observed_identity
+
+    def observed_identity(path: Path, *, reason: str):
+        observed, identity = original_observed_identity(path, reason=reason)
+        if path == closure.sandbox.executable:
+            return SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=owner), identity
+        return observed, identity
+
+    monkeypatch.setattr(
+        engine_spawn_module, "_observed_identity", observed_identity
+    )
+
+    provider = _provider(secure_tmp_path, lambda: closure)
+    if is_rejected:
+        with pytest.raises(EngineSpawnError) as error:
+            provider.prepare(_envelope())
+        assert error.value.reason == "ENGINE_SANDBOX_PROOF_INVALID"
+    else:
+        provider.prepare(_envelope())
 
 
 def test_closure_mounts_cannot_shadow_sandbox_owned_targets(
