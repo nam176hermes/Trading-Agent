@@ -176,15 +176,18 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 - Modify: `engines/nautilus/launcher/nautilus_backtest.py`
 - Modify: `engines/nautilus/runtime-closure-policy.json`
 - Modify: `scripts/materialize_nautilus_runtime_closure.py`
+- Modify: `services/job_worker/nautilus_closure.py`
 - Modify: `tests/nautilus_backtest/test_launcher_protocol.py`
 - Modify: `tests/foundation/test_nautilus_runtime_closure.py`
+- Modify: `tests/jobs/test_nautilus_closure.py`
 - Modify: `docs/nautilus-adoption/phase-1-reverification.md`
 - Create: `docs/nautilus-adoption/phase-4-simulation-closure.md`
 
 - [ ] **Step 1: Specify and test the isolated semantic scenario grammar.**
   - The launcher accepts only the canonical, hash-bound `simulation_scenario` bytes mounted by `RunBacktestSimulation`; it must reject floats, unknown keys, duplicate keys, arbitrary modules, provider/broker settings, writable paths, unbound catalog references, and events outside the command window.
-  - Implement the eight fixed scenario identifiers required by 04E: long accounting, short accounting, partial fill, same-bar stop/take-profit, stale quote, zero liquidity, session boundary, and event digest.  All quantities, prices, fees, and P&L use canonical decimal strings; do not accept binary floats.
-  - Tests first: every identifier's malformed/changed scenario input is rejected before Nautilus setup; a zero-order command under the simulation profile and a simulation command under zero-order both fail closed.
+  - Implement the eight fixed scenario identifiers required by 04E: long accounting, short accounting, partial fill, same-bar stop/take-profit, stale quote, zero liquidity, session boundary, and event digest.  Each identifier has a fixed semantic precondition (including mandatory sign, liquidity, and session/trigger properties) so a supplied value cannot silently turn it into a different scenario.  All quantities, prices, fees, and P&L use canonical decimal strings; do not accept binary floats.
+  - Bound every decimal input to at most 38 significant digits and use an isolated Decimal context of at least 80 precision for all derived accounting.  Reject an out-of-bound coefficient/exponent before any arithmetic; never rely on the ambient Decimal context.
+  - Tests first: every identifier's malformed/changed or semantic-precondition-violating scenario input is rejected before Nautilus setup; all eight complete envelopes are accepted; a zero-order command under the simulation profile and a simulation command under zero-order both fail closed.
 
 - [ ] **Step 2: Implement bounded fixture-only simulation inside the sealed launcher.**
   - Convert only the mounted scenario/catalog/strategy artifacts into a finite in-memory Nautilus fixture feed.  Use no network/client configuration, dynamic imports, arbitrary strategy path, data provider, execution provider, database, or durable output.
@@ -192,9 +195,9 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Tests first: each scenario produces the declared event shape; replay of identical sealed inputs produces byte-identical output; non-zero effects under zero-order remain rejected.
 
 - [ ] **Step 3: Update policy and materialize v9 from the semantic launcher bytes.**
-  - Update the committed closure policy only with the new launcher SHA-256 and expected semantic-profile identity.  The materializer must retain all no-clobber/staging-attestation/inode-continuity guarantees from 04E0.
-  - After source tests and selected 01D full input-binding preflight pass, create only `/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v10-simulation` atomically.  Never modify v3–v9.  Treat v4–v7 and the failed smoke-test v9 generation as rejected forensic candidates; retain v8 only as valid **transport-only rollback**, never semantic-parity authority.
-  - Independently attest v3 and v10, rerun the full input-binding verifier after publication, and record only safe digests/generation identifiers in the evidence document.  No external artifact belongs in Git.
+  - Make the semantic identity a first-class closure-manifest/attestation field, derived from the canonical eight-scenario grammar and checked by the root closure attestor—not only a policy/document label.  Update the committed closure policy with this identity and the new launcher SHA-256.  The materializer must retain all no-clobber/staging-attestation/inode-continuity guarantees from 04E0.
+  - After source tests and selected 01D full input-binding preflight pass, create only `/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v11-simulation` atomically.  Never modify v3–v10.  Treat v4–v7, the failed smoke-test v9 generation, and the pre-grammar-repair v10 generation as rejected forensic candidates; retain v8 only as valid **transport-only rollback**, never semantic-parity authority.
+  - Independently attest v3 and v11, rerun the full input-binding verifier after publication, and record only safe digests/generation identifiers in the evidence document.  No external artifact belongs in Git.
 
 - [ ] **Step 4: Gate and merge.**
   - Run focused launcher/materializer tests, `make audit`, `make check-contracts`, and the selected 01D verifier.  Treat unrelated pre-existing test failures as failures to report, not conditions to weaken.
