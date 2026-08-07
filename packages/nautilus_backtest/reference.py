@@ -28,6 +28,47 @@ def _time(value: str) -> datetime:
     return datetime.fromisoformat(value[:-1] + "+00:00")
 
 
+def _canonical_result_record(
+    *,
+    records: list[dict[str, object]],
+    iterations: int,
+    total_orders: int,
+    total_fills: int,
+    filled: Decimal,
+    total_positions: int,
+    position: Decimal,
+    average_entry: Decimal,
+    realized: Decimal,
+    unrealized: Decimal,
+    fees: Decimal,
+) -> dict[str, object]:
+    """Independently build the reviewed ``nautilus-simulation-result-v1`` domain.
+
+    This root authority intentionally does not import the launcher or call its
+    calculator. All Decimal values are normalized strings, and run UUID/clock
+    fields are excluded.
+    """
+
+    return {
+        "account": {"balance_count": 1, "commissions": _text(fees)},
+        "engine": {"iterations": iterations},
+        "orders": {
+            "count": total_orders,
+            "filled_count": total_fills,
+            "filled_quantity": _text(filled),
+        },
+        "positions": {
+            "average_entry_price": _text(average_entry),
+            "count": total_positions,
+            "quantity": _text(position),
+            "realized_pnl": _text(realized),
+            "unrealized_pnl": _text(unrealized),
+        },
+        "schema_version": "nautilus-simulation-result-v1",
+        "strategy_events": records,
+    }
+
+
 def calculate_reference_outcome(scenario: BacktestScenarioV1):
     """Calculate accounting independently of the engine-owned Nautilus strategy."""
     from .result import BacktestExpectedOutcomeV1
@@ -39,7 +80,7 @@ def calculate_reference_outcome(scenario: BacktestScenarioV1):
         side = Decimal(1) if target > 0 else Decimal(-1)
         remaining, filled, position = target, Decimal(0), Decimal(0)
         entry_notional = average_entry = fees = realized = Decimal(0)
-        total_fills, total_orders, total_positions = 0, 1, 0
+        total_fills, total_orders, total_positions = 0, 0, 0
         records: list[dict[str, object]] = [{"event_type": "order-created", "quantity": _text(target), "sequence": 0}]
         rate = scenario.slippage_bps / Decimal(10_000)
         last_close = Decimal(0)
@@ -66,6 +107,7 @@ def calculate_reference_outcome(scenario: BacktestScenarioV1):
             entry_notional += abs(quantity) * price
             average_entry = entry_notional / abs(filled)
             fees += abs(quantity) * price * scenario.fee_rate
+            total_orders += 1
             total_fills += 1
             total_positions = 1
             records.append({"event_time": event.event_time, "event_type": "fill", "price": _text(price), "quantity": _text(quantity), "sequence": len(records)})
@@ -85,10 +127,23 @@ def calculate_reference_outcome(scenario: BacktestScenarioV1):
                 records.append({"event_type": "position-closed", "sequence": len(records)})
                 break
         unrealized = (last_close - average_entry) * position if position else Decimal(0)
+        result_record = _canonical_result_record(
+            records=records,
+            iterations=len(scenario.events),
+            total_orders=total_orders,
+            total_fills=total_fills,
+            filled=filled,
+            total_positions=total_positions,
+            position=position,
+            average_entry=average_entry,
+            realized=realized,
+            unrealized=unrealized,
+            fees=fees,
+        )
         return BacktestExpectedOutcomeV1(
             scenario_id=scenario.scenario_id,
             scenario_digest=scenario.scenario_digest,
-            event_digest=hashlib.sha256(_canonical(records)).hexdigest(),
+            event_digest=hashlib.sha256(_canonical(result_record)).hexdigest(),
             iterations=len(scenario.events), total_events=len(records), total_orders=total_orders,
             total_fills=total_fills, total_positions=total_positions,
             filled_quantity=filled, remaining_quantity=remaining, position_quantity=position,

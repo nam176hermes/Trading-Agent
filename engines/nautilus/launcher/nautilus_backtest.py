@@ -1329,6 +1329,53 @@ def _json_native_strategy_events(value: object) -> list[dict[str, object]]:
     return copied
 
 
+def _gross_realized_pnl(strategy_events: object) -> Decimal:
+    """Calculate gross price PnL from actual strategy fill callbacks.
+
+    Commissions remain exclusively in the result's ``fees`` field. This
+    converts Nautilus's commission-inclusive position accounting into the
+    reviewed gross-PnL contract without consulting the root oracle.
+    """
+
+    with localcontext(_SIMULATION_DECIMAL_CONTEXT):
+        return _gross_realized_pnl_in_context(strategy_events)
+
+
+def _gross_realized_pnl_in_context(strategy_events: object) -> Decimal:
+    """Calculate gross fill-ledger PnL under the fixed precision-80 context."""
+
+    position = Decimal(0)
+    average_entry = Decimal(0)
+    realized = Decimal(0)
+    for record in _json_native_strategy_events(strategy_events):
+        if record.get("event_type") != "fill":
+            continue
+        quantity = _engine_decimal(record.get("quantity"), label="fill quantity")
+        price = _engine_decimal(record.get("price"), label="fill price")
+        if quantity == 0 or price <= 0:
+            raise ValueError("Nautilus fill evidence is invalid")
+        same_side = position == 0 or (position > 0) == (quantity > 0)
+        if same_side:
+            new_position = position + quantity
+            average_entry = (
+                abs(position) * average_entry + abs(quantity) * price
+            ) / abs(new_position)
+            position = new_position
+            continue
+        closing_quantity = min(abs(position), abs(quantity))
+        position_side = Decimal(1) if position > 0 else Decimal(-1)
+        realized += (price - average_entry) * closing_quantity * position_side
+        new_position = position + quantity
+        if new_position == 0:
+            average_entry = Decimal(0)
+        elif (new_position > 0) != (position > 0):
+            average_entry = price
+        position = new_position
+    if not realized.is_finite():
+        raise ValueError("Nautilus gross realized PnL is not finite")
+    return realized
+
+
 def _result_counter(value: object, *, label: str) -> int:
     if type(value) is not int or value < 0:
         raise ValueError(f"Nautilus {label} counter is invalid")
@@ -1717,11 +1764,8 @@ def _run_nautilus_simulation_fixture(
             if position is not None
             else Decimal(0)
         )
-        realized = (
-            _engine_decimal(position.realized_pnl, label="realized PnL")
-            if position is not None
-            else Decimal(0)
-        )
+        strategy_events = strategy.semantic_events
+        realized = _gross_realized_pnl(strategy_events)
         if position is None or quantity == 0:
             unrealized = Decimal(0)
         else:
@@ -1749,7 +1793,7 @@ def _run_nautilus_simulation_fixture(
             for order in orders
         )
         canonical_result = _canonical_nautilus_result_record(
-            strategy_events=strategy.semantic_events,
+            strategy_events=strategy_events,
             iterations=iterations,
             order_count=len(orders),
             fill_count=total_fills,
@@ -1775,7 +1819,7 @@ def _run_nautilus_simulation_fixture(
             "remaining_quantity": _decimal_text(target - filled),
             "scenario_id": fixture["scenario_id"],
             "stop_take_profit_precedence": fixture["stop_take_profit_precedence"],
-            "total_events": len(strategy.semantic_events),
+            "total_events": len(strategy_events),
             "total_fills": total_fills,
             "total_orders": len(orders),
             "total_positions": len(positions),

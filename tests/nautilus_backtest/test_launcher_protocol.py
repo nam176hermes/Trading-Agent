@@ -702,6 +702,54 @@ def test_canonical_nautilus_result_record_rejects_non_json_strategy_events(
         )
 
 
+def test_gross_realized_pnl_uses_actual_fills_without_double_counting_fees(
+    launcher_module,
+) -> None:
+    entry = [
+        {"event_type": "order-created", "quantity": "1", "sequence": 0},
+        {
+            "event_time": "2026-08-05T12:00:00Z",
+            "event_type": "fill",
+            "price": "100",
+            "quantity": "1",
+            "sequence": 1,
+        },
+    ]
+    closed = [
+        *entry,
+        {"event_type": "exit-order-created", "reason": "stop", "sequence": 2},
+        {
+            "event_time": "2026-08-05T12:00:00Z",
+            "event_type": "fill",
+            "price": "98",
+            "quantity": "-1",
+            "sequence": 3,
+        },
+        {"event_type": "position-closed", "sequence": 4},
+    ]
+
+    assert launcher_module._gross_realized_pnl(entry) == Decimal("0")
+    assert launcher_module._gross_realized_pnl(closed) == Decimal("-2")
+    assert launcher_module._normalize_commissions(
+        {"USDT": _EngineAmount("0.198")}
+    ) == Decimal("0.198")
+
+
+def test_gross_realized_pnl_uses_fixed_context_not_ambient_precision(
+    launcher_module,
+) -> None:
+    events = [
+        {"event_type": "fill", "price": "100.123456789", "quantity": "1"},
+        {"event_type": "fill", "price": "100.987654321", "quantity": "1"},
+        {"event_type": "fill", "price": "101.5", "quantity": "-2"},
+    ]
+
+    with localcontext(Context(prec=5)):
+        observed = launcher_module._gross_realized_pnl(events)
+
+    assert observed == Decimal("1.888888890")
+
+
 @pytest.mark.parametrize(
     ("scenario_id", "expected"),
     [

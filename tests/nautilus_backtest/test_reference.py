@@ -1,27 +1,39 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from test_launcher_protocol import _simulation_fixture
+from test_launcher_protocol import _simulation_request
 
 
 _GOLDENS = {
-    "long-accounting": ("39258ec4143a8f789d7cda7e1c709e72df49fd38b228e88ece9f79d12083eab2", "2", "0.2", "2", "1", "2"),
-    "short-accounting": ("95329534a5527307dc1a941bdec6cbffd0aeefde2c688bddd598a8a4c30ca8ba", "-2", "0.198", "-4", "1", "2"),
-    "partial-fill": ("5b732a9c8e5430ae9f4774fb217c19146a9a36da6dbb475fa36b229d83a8931f", "1", "0.1", "1", "1", "2"),
-    "same-bar-stop-take-profit": ("2ff844069040c8cffeee31d02d1d3ee0bd0aeffd1e86ccb33fa1e59745af4d8a", "0", "0.198", "0", "2", "5"),
-    "stale-quote": ("7ed8afc414a08884f1880a0fa6641cb3330f19876a404fa17300424e82167371", "0", "0", "0", "0", "2"),
-    "zero-liquidity": ("803c9a26d5ab16800f1743696ca1929639730ae6c84f26c3bf5565d4147cb06c", "0", "0", "0", "0", "2"),
-    "session-boundary": ("e358a04095cab4ddc9fe6fd14e120d588ee47377fa859fa751e4855a0bf8e1bb", "1", "0.102", "0", "1", "3"),
-    "event-digest": ("30b6de71b9d7a69f8e1038d1584efecd3c2bdfe4a944303a479c4680f078cd33", "1", "0.1", "1", "1", "2"),
+    "long-accounting": ("9a348cbd911852be08644345fd9c095b657c694280064c9b6d935eee16f07e81", "2", "0.2", "2", "1", "2", "1"),
+    "short-accounting": ("f446c7ef6c7b65d2a016f6a156b7468dfd40ea452a18c4f3bd79f521531e51de", "-2", "0.198", "-4", "1", "2", "1"),
+    "partial-fill": ("7c1a628d952b38fd4fff3df2e954e30ee70f43a769d48a51d771c39522d0c7f3", "1", "0.1", "1", "1", "2", "1"),
+    "same-bar-stop-take-profit": ("31631b6e27d8441d69999436bc564e44f2e88279eb1fce87e5db1b84e09c04c0", "0", "0.198", "0", "2", "5", "2"),
+    "stale-quote": ("27d1ef994a0081cbf2b0839a4624ca1f020911af7a88ab1683adace3a0a91460", "0", "0", "0", "0", "2", "0"),
+    "zero-liquidity": ("b9e2e9af09fa6cfb58912de49b7502180d7dd9f63c1c263c1c4c3baa21b5147f", "0", "0", "0", "0", "2", "0"),
+    "session-boundary": ("4d345ad6a4130a8394912579c1f1aa1766895778dade42d5ea565ccd7b5a529c", "1", "0.102", "0", "1", "3", "1"),
+    "event-digest": ("00e144a68cf61d8e0c0bfc6ee413a139403c583e4a4eea4628cf3b8ede6b320b", "1", "0.1", "1", "1", "2", "1"),
 }
 _START = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
 _END = datetime(2026, 8, 5, 12, 30, tzinfo=UTC)
+_LAUNCHER = Path("engines/nautilus/launcher/nautilus_backtest.py")
+
+
+def _launcher_module():
+    spec = importlib.util.spec_from_file_location("reference_boundary_launcher", _LAUNCHER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _scenario(scenario_id: str):
@@ -38,7 +50,7 @@ def _scenario(scenario_id: str):
 def test_reference_oracle_has_fixed_golden_outcome_for_each_scenario(scenario_id: str) -> None:
     from packages.nautilus_backtest.reference import calculate_reference_outcome
 
-    expected_digest, position, fees, unrealized, fills, events = _GOLDENS[scenario_id]
+    expected_digest, position, fees, unrealized, fills, events, orders = _GOLDENS[scenario_id]
     outcome = calculate_reference_outcome(_scenario(scenario_id))
 
     assert outcome.event_digest == expected_digest
@@ -47,6 +59,47 @@ def test_reference_oracle_has_fixed_golden_outcome_for_each_scenario(scenario_id
     assert outcome.unrealized_pnl == Decimal(unrealized)
     assert outcome.total_fills == int(fills)
     assert outcome.total_events == int(events)
+    assert outcome.total_orders == int(orders)
+
+
+@pytest.mark.parametrize("scenario_id", tuple(_GOLDENS))
+def test_launcher_event_equals_independent_reference_and_root_validator(
+    scenario_id: str,
+) -> None:
+    from packages.engine_contracts import EngineEventEnvelope, canonical_json_bytes
+    from packages.nautilus_backtest.reference import calculate_reference_outcome
+    from packages.nautilus_backtest.result import validate_isolated_simulation_result
+
+    launcher = _launcher_module()
+    artifacts = _simulation_fixture(scenario_id)
+    request = _simulation_request(artifacts)
+    raw_request = canonical_json_bytes(request)
+    accepted = launcher._validate_request(
+        json.loads(raw_request), raw_request, profile="execution-simulation"
+    )
+    fixture = launcher.validate_simulation_fixture_inputs(accepted, artifacts)
+    result = launcher.run_execution_simulation(fixture)
+    event = EngineEventEnvelope.model_validate_json(
+        launcher._canonical_json_bytes(
+            launcher._simulation_event(accepted, artifacts, result)
+        )
+    )
+    expected = calculate_reference_outcome(_scenario(scenario_id))
+
+    validated = validate_isolated_simulation_result(request, event, expected)
+
+    assert validated.event_digest == result["event_digest"]
+    assert validated.total_orders == result["total_orders"]
+    assert validated.realized_pnl == Decimal(str(result["realized_pnl"]))
+
+
+@pytest.mark.parametrize("scenario_id", ("stale-quote", "zero-liquidity"))
+def test_reference_counts_no_order_when_strategy_never_submits(
+    scenario_id: str,
+) -> None:
+    from packages.nautilus_backtest.reference import calculate_reference_outcome
+
+    assert calculate_reference_outcome(_scenario(scenario_id)).total_orders == 0
 
 
 @pytest.mark.parametrize("mutation", ("fee", "slippage"))
