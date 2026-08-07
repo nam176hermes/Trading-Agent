@@ -116,17 +116,22 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 - Create: `tests/foundation/test_nautilus_runtime_closure.py`
 - Modify: `packages/engine_contracts/commands.py`
 - Modify: `packages/engine_contracts/__init__.py`
+- Modify: `packages/job_contracts/payloads.py`, `packages/job_contracts/api.py`, and `packages/job_contracts/__init__.py`
 - Modify: `services/job_worker/engine_artifacts.py`
+- Modify: `services/job_worker/engine_authority.py` and `services/job_worker/worker.py`
 - Modify: `services/job_worker/engine_spawn.py`
 - Modify: `services/job_worker/nautilus_closure.py`
 - Modify: `services/job_worker/engine_results.py`
 - Modify: `engines/nautilus/launcher/nautilus_backtest.py`
+- Modify: `scripts/generate_contracts.py` and generated engine/Job API contract outputs through `make generate-contracts`
 - Modify: `tests/engine_contracts/test_commands.py`
 - Modify: `tests/jobs/test_engine_artifacts.py`
 - Modify: `tests/jobs/test_engine_spawn_provider.py`
 - Modify: `tests/jobs/test_nautilus_closure.py`
 - Modify: `tests/jobs/test_engine_result_validation.py`
+- Modify: `tests/jobs/test_engine_authority.py`, `tests/jobs/test_engine_worker_lifecycle.py`, and `tests/control_api/test_generation.py`
 - Modify: `tests/nautilus_backtest/test_launcher_protocol.py`
+- Modify: `docs/nautilus-adoption/phase-1-reverification.md`
 
 - [ ] **Step 1: Add a distinct closed simulation command and input identity.**
   - Add `RunBacktestSimulation`, never an optional profile on `RunBacktest`.  It carries the existing four artifact references, a required `simulation_scenario: ArtifactReference`, and the same strict canonical UTC window.
@@ -136,7 +141,8 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 - [ ] **Step 2: Carry the fifth artifact through the authoritative spawn path.**
   - Generalise only the typed internal input sequence so the resolver selects exactly four named inputs for `RunBacktest` and exactly five for `RunBacktestSimulation`; never infer names from ambient request keys.
   - `HashBoundArtifactResolver`, sealed memfd snapshots, and Bubblewrap mounts must attest `simulation_scenario` exactly like the existing inputs.  It must be an external 0400 regular file, no symlink/ancestor escape, and included in the request/input digest.
-  - Tests first: missing scenario binding, changed scenario inode/digest, an extra mounted input, or a simulation request accepted by a four-input profile all fail closed.
+  - Extend the durable job payload and worker authority factory so a claimed BACKTEST job derives `RunBacktestSimulation` only from its own fifth reference.  Refresh the disjoint Job API/engine contract outputs using `make generate-contracts`; never accept the scenario from a caller-provided engine envelope.
+  - Tests first: missing scenario binding, a changed **simulation-scenario-only** inode/digest after prepare, an extra mounted input, a caller-forged simulation envelope, or a simulation request accepted by a four-input profile all fail closed.
 
 - [ ] **Step 3: Attest two immutable closure profiles.**
   - Extend the closure manifest schema with an explicit `profile` field.  The only values are `zero-order` and `execution-simulation`.
@@ -151,13 +157,13 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 
 - [ ] **Step 5: Add a reproducible offline runtime-closure materializer.**
   - `materialize_nautilus_runtime_closure.py` consumes a strict policy, the sealed CPython 3.12 runtime base, the selected 01D engine artifact generation, and the repository launcher bytes.  It must create a **new**, previously absent external runtime-closure generation atomically; no existing closure is modified.
-  - The policy binds exact base runtime manifest/artifact manifest digests, expected source launcher path, profile manifest schema, file inventory, modes, and source commit.  The materializer verifies all inputs before copying, produces only 0500 roots/0400 or 0500 regular sealed files, writes a canonical closure manifest, then verifies the new generation with the root closure attestor.
+  - The policy binds exact base runtime manifest/artifact manifest digests, expected source launcher path, profile manifest schema, file inventory, modes, and source commit.  The materializer verifies all inputs before copying, produces only 0500 roots/0400 or 0500 regular sealed files, writes a canonical closure manifest, and attests the sealed private staging tree with the root attestor **before** it becomes visible at the final destination.  It must re-attest destination identity after rename.
   - The materializer has no acquisition mode and must use no network, global Python/Rust, or ambient dependency location.  Retain `runtime-closure-v3` untouched as rollback.
-  - Tests first: pre-existing destination, base/artifact/launcher digest drift, unlisted file, profile mismatch, unsafe file mode, and atomic publish failure all leave no selected generation and fail closed.
+  - Tests first: pre-existing destination, base/artifact/launcher digest drift, unlisted file, profile mismatch, unsafe file mode, failed pre-publish attestation, and atomic publish failure all leave no selected generation and fail closed.
 
 - [ ] **Step 6: Materialize and verify the selected simulation closure.**
-  - After source tests pass, materialize an external generation named `runtime-closure-v4-simulation` below the private Nautilus cache using only the current sealed inputs and the selected 01D artifact.  Do not commit its files.
-  - Run independent read-only closure attestation for both `runtime-closure-v3` (zero-order) and the new generation (execution-simulation), and run the selected 01D full input-binding verifier before and after materialization.
+  - After source tests pass, materialize an external generation named `runtime-closure-v5-simulation` below the private Nautilus cache using only the current sealed inputs and the selected 01D artifact.  Do not commit its files.  Retain `runtime-closure-v4-simulation` as a rejected forensic candidate: do not select, overwrite, or delete it.
+  - Run independent read-only closure attestation for both `runtime-closure-v3` (zero-order) and the new v5 generation (execution-simulation), and run the selected 01D full input-binding verifier before and after materialization.
   - Commit source/tests/docs only as `feat: attest Nautilus execution-simulation closure` after focused tests, `make audit`, and `make check-contracts` pass.
 
 ## Task 4: Packet 04E — Deterministic Non-Zero Backtest Parity
