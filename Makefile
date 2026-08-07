@@ -141,7 +141,8 @@ test-runtime-postgres:
 		tests/control_api/test_postgres_api.py \
 		tests/control_api/test_postgres_repositories.py \
 		tests/control_api/test_alembic_schema.py \
-		tests/control_api/test_foundation_postgres_runtime_parity.py
+		tests/control_api/test_foundation_postgres_runtime_parity.py \
+		tests/jobs/test_engine_event_postgres_runtime.py
 
 test-package6-paper-runtime:
 	uv run python scripts/run_required_runtime_pytest.py \

@@ -43,6 +43,9 @@ TARGETS = {
     "tests/control_api/test_foundation_postgres_runtime_parity.py": {
         "foundation-postgres-restore-green-v1"
     },
+    "tests/jobs/test_engine_event_postgres_runtime.py": {
+        "engine-event-ingestion-concurrency-runtime-green-v1"
+    },
     "tests/control_api/test_dual_read.py": {"control-api-dual-read-green-v1"},
     "tests/event_ledger/test_snapshot_postgres_runtime.py": {
         "event-ledger-durability-runtime-green-v1"
@@ -120,6 +123,24 @@ def test_required_runtime_postgres_targets_are_disposable_only() -> None:
         assert _all_runtime_calls_are_planned(source, relative_path)
 
 
+def test_engine_event_runtime_concurrency_module_has_no_runtime_connection_input() -> None:
+    relative_path = "tests/jobs/test_engine_event_postgres_runtime.py"
+    source = (ROOT / relative_path).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=relative_path)
+
+    assert "pytestmark = pytest.mark.runtime_postgres" in source
+    assert all(fragment not in source for fragment in FORBIDDEN_SOURCE)
+    assert "DatabaseSettings" not in source
+    assert "disposable_database" in {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "tests.jobs._postgres"
+        for alias in node.names
+    }
+    assert _all_runtime_calls_are_planned(source, relative_path)
+
+
 def test_make_targets_select_only_reviewed_disposable_modules() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     assert (
@@ -128,7 +149,8 @@ def test_make_targets_select_only_reviewed_disposable_modules() -> None:
         "\t\ttests/control_api/test_postgres_api.py \\\n"
         "\t\ttests/control_api/test_postgres_repositories.py \\\n"
         "\t\ttests/control_api/test_alembic_schema.py \\\n"
-        "\t\ttests/control_api/test_foundation_postgres_runtime_parity.py"
+        "\t\ttests/control_api/test_foundation_postgres_runtime_parity.py \\\n"
+        "\t\ttests/jobs/test_engine_event_postgres_runtime.py"
     ) in makefile
     assert (
         "test-event-ledger-runtime-postgres:\n"
