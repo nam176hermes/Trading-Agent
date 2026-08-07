@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import hmac
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -20,6 +21,7 @@ import zipfile
 from datetime import datetime, timedelta
 from decimal import Context, Decimal, InvalidOperation, localcontext
 from pathlib import Path
+from types import ModuleType
 from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
 
@@ -182,6 +184,16 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _canonical_closure_manifest_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii") + b"\n"
+
+
 def _read_regular(path: Path, *, maximum_size: int = _MAX_COMMAND_BYTES) -> bytes:
     descriptor = -1
     try:
@@ -221,7 +233,7 @@ def _strict_json_document(raw: bytes) -> object:
         document = json.loads(raw, object_pairs_hook=reject_duplicate_keys)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("closure manifest JSON is invalid") from exc
-    if _canonical_json_bytes(document) + b"\n" != raw:
+    if _canonical_closure_manifest_bytes(document) != raw:
         raise ValueError("closure manifest bytes are not canonical")
     return document
 
@@ -244,6 +256,7 @@ def _verified_strategy_source(record: dict[str, object]) -> bytes:
             not stat.S_ISREG(opened.st_mode)
             or opened.st_size != expected_size
             or opened.st_size > _MAX_STRATEGY_BYTES
+            or stat.S_IMODE(opened.st_mode) != 0o400
         ):
             raise ValueError("target portfolio strategy identity is invalid")
         chunks: list[bytes] = []
@@ -260,6 +273,7 @@ def _verified_strategy_source(record: dict[str, object]) -> bytes:
             not stat.S_ISREG(named.st_mode)
             or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
             or named.st_size != opened.st_size
+            or stat.S_IMODE(named.st_mode) != 0o400
             or not hmac.compare_digest(
                 hashlib.sha256(value).hexdigest(), expected_sha256
             )
@@ -291,6 +305,29 @@ class _VerifiedStrategyLoader:
             dont_inherit=True,
         )
         exec(code, module.__dict__)
+
+
+def _load_explicit_wheel_package(
+    name: str, roots: tuple[Path, ...]
+) -> ModuleType:
+    """Load one top-level package from sealed roots with legacy precedence."""
+
+    search_path = [str(root) for root in reversed(roots)]
+    spec = importlib.machinery.PathFinder.find_spec(name, search_path)
+    if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
+        raise ValueError("Nautilus runtime wheel package is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException as exc:
+        if previous is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+        raise ValueError("Nautilus runtime wheel package cannot be loaded") from exc
+    return module
 
 
 def _load_target_portfolio_strategy() -> tuple[type, type]:
@@ -1786,6 +1823,7 @@ def _run_nautilus_simulation_fixture(
     wheels = tuple(sorted(wheels_root.glob("*.whl"), key=lambda path: path.name))
     if not wheels:
         raise ValueError("Nautilus runtime wheel closure is missing")
+    extracted_roots: list[Path] = []
     for wheel in wheels:
         destination = extraction_root / hashlib.sha256(
             wheel.name.encode("ascii")
@@ -1812,7 +1850,8 @@ def _run_nautilus_simulation_fixture(
                 archive.extractall(destination)
         except (OSError, zipfile.BadZipFile) as exc:
             raise ValueError("Nautilus runtime wheel is unreadable") from exc
-        sys.path.append(str(destination))
+        extracted_roots.append(destination)
+    _load_explicit_wheel_package("nautilus_trader", tuple(extracted_roots))
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.backtest.models import FeeModel
     from nautilus_trader.common.config import LoggingConfig
@@ -2071,6 +2110,7 @@ def _run_nautilus(
     wheels = tuple(sorted(wheels_root.glob("*.whl"), key=lambda path: path.name))
     if not wheels:
         raise ValueError("Nautilus runtime wheel closure is missing")
+    extracted_roots: list[Path] = []
     for wheel in wheels:
         destination = extraction_root / hashlib.sha256(wheel.name.encode("ascii")).hexdigest()
         destination.mkdir(mode=0o700)
@@ -2091,7 +2131,8 @@ def _run_nautilus(
                 archive.extractall(destination)
         except (OSError, zipfile.BadZipFile) as exc:
             raise ValueError("Nautilus runtime wheel is unreadable") from exc
-        sys.path.append(str(destination))
+        extracted_roots.append(destination)
+    _load_explicit_wheel_package("nautilus_trader", tuple(extracted_roots))
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig

@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import tempfile
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -334,7 +335,20 @@ def test_v4_closure_digest_binds_engine_upstream_identity() -> None:
     assert first != second
 
 
-def test_v4_closure_digest_binds_manifest_sidecar_size_and_sha256() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("identity", (3, 4)),
+        ("mode", 0o500),
+        ("size", 102),
+        ("sha256", "2" * 64),
+        ("target", PurePosixPath("/engine/other-manifest.json")),
+    ),
+)
+def test_v4_closure_digest_binds_each_manifest_sidecar_field_independently(
+    field: str,
+    value: object,
+) -> None:
     common = {
         "schema_version": 4,
         "argv_prefix": [
@@ -356,17 +370,9 @@ def test_v4_closure_digest_binds_manifest_sidecar_size_and_sha256() -> None:
         mode=0o400,
         sha256="1" * 64,
     )
-    second_manifest = ReadOnlyClosureMount(
-        source=Path("/sealed/closure-manifest.json"),
-        target=PurePosixPath("/engine/closure-manifest.json"),
-        identity=(1, 2),
-        size=102,
-        mode=0o400,
-        sha256="2" * 64,
-    )
 
-    digests = {
-        nautilus_closure_module._closure_digest(
+    def closure_digest(sidecar: ReadOnlyClosureMount) -> str:
+        return nautilus_closure_module._closure_digest(
             closure_manifest=common,
             artifact_digest="a" * 64,
             profile="execution-simulation",
@@ -376,10 +382,51 @@ def test_v4_closure_digest_binds_manifest_sidecar_size_and_sha256() -> None:
             timeout=120,
             closure_manifest_sidecar=sidecar,
         )
+
+    assert closure_digest(first_manifest) != closure_digest(
+        replace(first_manifest, **{field: value})
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "semantic_profile"),
+    ((1, None), (2, None), (3, "nautilus-execution-simulation-v2")),
+)
+def test_v1_v3_closure_digests_ignore_optional_v4_manifest_sidecar(
+    schema_version: int,
+    semantic_profile: str | None,
+) -> None:
+    common = {
+        "schema_version": schema_version,
+        "argv_prefix": ["-I", "-S", "/engine/launcher/nautilus_backtest.py"],
+        "result_validator_id": "nautilus-backtest-result-v1",
+        "source_commit": SOURCE_COMMIT,
+    }
+    first_manifest = ReadOnlyClosureMount(
+        source=Path("/sealed/closure-manifest.json"),
+        target=PurePosixPath("/engine/closure-manifest.json"),
+        identity=(1, 2),
+        size=101,
+        mode=0o400,
+        sha256="1" * 64,
+    )
+    second_manifest = replace(first_manifest, identity=(3, 4), sha256="2" * 64)
+
+    digests = {
+        nautilus_closure_module._closure_digest(
+            closure_manifest=common,
+            artifact_digest="a" * 64,
+            profile="zero-order",
+            semantic_profile=semantic_profile,
+            mounts=(),
+            entrypoint=PurePosixPath("/engine/bin/python3.12"),
+            timeout=120,
+            closure_manifest_sidecar=sidecar,
+        )
         for sidecar in (first_manifest, second_manifest)
     }
 
-    assert len(digests) == 2
+    assert len(digests) == 1
 
 
 def test_v4_attestor_binds_manifest_as_a_separate_fixed_sidecar(

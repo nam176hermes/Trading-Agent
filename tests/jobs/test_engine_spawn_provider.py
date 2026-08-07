@@ -471,6 +471,35 @@ def test_provider_seals_separate_closure_manifest_at_the_fixed_target(
         _close_spawn_fds(spawn)
 
 
+def test_provider_rejects_replaced_closure_manifest_and_closes_prepared_fds(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(secure_tmp_path, with_closure_manifest=True)
+    assert closure.closure_manifest is not None
+    provider = _provider(secure_tmp_path, lambda: closure)
+    prepared = provider.prepare(_envelope())
+    record_fds = (
+        prepared._record.request_fd,
+        prepared._record.sidecar_fd,
+        prepared._record.run_fd,
+        prepared._record.root_fd,
+    )
+    source = closure.closure_manifest.source
+    replacement = source.with_name("closure-manifest.replacement.json")
+    source.parent.chmod(0o700)
+    replacement.write_bytes(source.read_bytes())
+    replacement.chmod(0o400)
+    os.replace(replacement, source)
+    source.parent.chmod(0o500)
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_STALE"):
+        consume_prepared_engine_spawn(prepared)
+
+    for descriptor in record_fds:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
 @pytest.mark.parametrize(
     "mutation",
     (

@@ -321,6 +321,7 @@ def _closure_digest(
                 "schema-v4 closure manifest sidecar is missing",
             )
         digest_document["closure_manifest"] = {
+            "identity": list(closure_manifest_sidecar.identity),
             "mode": f"{closure_manifest_sidecar.mode:04o}",
             "sha256": closure_manifest_sidecar.sha256,
             "size": closure_manifest_sidecar.size,
