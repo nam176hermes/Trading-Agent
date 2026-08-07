@@ -28,9 +28,9 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 | WS01 | Toolchain/provenance cache has not been freshly reverified on the current checkout. | 01D | Offline verifier transcripts and redacted digest-only record. |
 | WS02 | Runtime migrations/concurrency proof against PostgreSQL 16 was expressly deferred. | 02E | Required runtime tests against an operator-approved disposable DB. |
 | WS03 | No source or acceptance residual identified. | Carry-forward only | Existing final gate plus unchanged-contract checks in 04E/04F. |
-| WS04 | 04C is deliberately zero-order; 04D validates external evidence but does not produce non-zero execution or paper compatibility evidence. | 04E0, 04E, 04F | Attested simulation closure, scenario matrix, sealed comparison evidence, and isolated paper compatibility result. |
+| WS04 | 04C is deliberately zero-order; 04D validates external evidence but does not produce non-zero execution or paper compatibility evidence. | 04E0, 04E1, 04E, 04F | Attested simulation transport, semantic simulation closure, scenario matrix, sealed comparison evidence, and isolated paper compatibility result. |
 
-“Phase 1–4 complete” is permitted only after 01D, 02E, 04E0, 04E, and 04F have each passed their final gate.  Until 02E receives operator approval, report Phase 2 as **source-complete; runtime gate pending operator approval**, not complete.
+“Phase 1–4 complete” is permitted only after 01D, 02E, 04E0, 04E1, 04E, and 04F have each passed their final gate.  Until 02E receives operator approval, report Phase 2 as **source-complete; runtime gate pending operator approval**, not complete.
 
 ---
 
@@ -167,7 +167,41 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Run independent read-only closure attestation for both `runtime-closure-v3` (zero-order) and the new v8 generation (execution-simulation), and run the selected 01D full input-binding verifier before and after materialization.
   - Commit source/tests/docs only as `feat: attest Nautilus execution-simulation closure` after focused tests, `make audit`, and `make check-contracts` pass.
 
-## Task 4: Packet 04E — Deterministic Non-Zero Backtest Parity
+## Task 4: Packet 04E1 — Semantic Simulation Launcher and v9 Closure
+
+**Purpose:** Replace the 04E0 simulation placeholder with a deterministic, fixture-only execution implementation inside the isolated launcher, then materialize a new attested semantic closure.  This packet is required because changing launcher bytes invalidates v8 by design.  It does not add public data, broker/provider access, a persistent paper engine, or any live path.
+
+**Files:**
+
+- Modify: `engines/nautilus/launcher/nautilus_backtest.py`
+- Modify: `engines/nautilus/runtime-closure-policy.json`
+- Modify: `scripts/materialize_nautilus_runtime_closure.py`
+- Modify: `tests/nautilus_backtest/test_launcher_protocol.py`
+- Modify: `tests/foundation/test_nautilus_runtime_closure.py`
+- Modify: `docs/nautilus-adoption/phase-1-reverification.md`
+- Create: `docs/nautilus-adoption/phase-4-simulation-closure.md`
+
+- [ ] **Step 1: Specify and test the isolated semantic scenario grammar.**
+  - The launcher accepts only the canonical, hash-bound `simulation_scenario` bytes mounted by `RunBacktestSimulation`; it must reject floats, unknown keys, duplicate keys, arbitrary modules, provider/broker settings, writable paths, unbound catalog references, and events outside the command window.
+  - Implement the eight fixed scenario identifiers required by 04E: long accounting, short accounting, partial fill, same-bar stop/take-profit, stale quote, zero liquidity, session boundary, and event digest.  All quantities, prices, fees, and P&L use canonical decimal strings; do not accept binary floats.
+  - Tests first: every identifier's malformed/changed scenario input is rejected before Nautilus setup; a zero-order command under the simulation profile and a simulation command under zero-order both fail closed.
+
+- [ ] **Step 2: Implement bounded fixture-only simulation inside the sealed launcher.**
+  - Convert only the mounted scenario/catalog/strategy artifacts into a finite in-memory Nautilus fixture feed.  Use no network/client configuration, dynamic imports, arbitrary strategy path, data provider, execution provider, database, or durable output.
+  - Emit exactly one canonical simulation completion event on stdout, binding the five-input digest, scenario digest, deterministic event digest, execution counts, Decimal accounting values, and declared stop/take-profit precedence.  The existing zero-order completion event and all of its semantics remain byte-compatible.
+  - Tests first: each scenario produces the declared event shape; replay of identical sealed inputs produces byte-identical output; non-zero effects under zero-order remain rejected.
+
+- [ ] **Step 3: Update policy and materialize v9 from the semantic launcher bytes.**
+  - Update the committed closure policy only with the new launcher SHA-256 and expected semantic-profile identity.  The materializer must retain all no-clobber/staging-attestation/inode-continuity guarantees from 04E0.
+  - After source tests and selected 01D full input-binding preflight pass, create only `/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v9-simulation` atomically.  Never modify v3–v8.  Treat v4–v7 as rejected forensic candidates and v8 as a valid **transport-only rollback** generation, not semantic-parity authority.
+  - Independently attest v3 and v9, rerun the full input-binding verifier after publication, and record only safe digests/generation identifiers in the evidence document.  No external artifact belongs in Git.
+
+- [ ] **Step 4: Gate and merge.**
+  - Run focused launcher/materializer tests, `make audit`, `make check-contracts`, and the selected 01D verifier.  Treat unrelated pre-existing test failures as failures to report, not conditions to weaken.
+  - Require independent review and a Codex-only final gate verifying v9 is the only semantic selected closure, v3–v8 preservation, and absence of any network/provider/broker/paper/live behavior.
+  - Commit source/tests/docs only as `feat: seal semantic Nautilus simulation closure` after final-gate PASS.
+
+## Task 5: Packet 04E — Deterministic Non-Zero Backtest Parity
 
 **Purpose:** Replace the deliberate 04C zero-order limitation with a bounded, fixture-only execution-simulation profile.  It must prove long/short accounting, partial fills, same-bar stop/take-profit precedence, stale quote rejection, zero liquidity, session boundaries, and deterministic event digests in the isolated engine.
 
@@ -220,7 +254,7 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Independent reviewer verifies root Python has no Nautilus import/dependency, all simulator inputs are hash-bound, and tests cover all eight roadmap cases.
   - Commit as `feat: add WS04 deterministic execution parity` only after final-gate PASS.
 
-## Task 5: Packet 04F — Sealed Differential Evidence and Paper-Engine Compatibility
+## Task 6: Packet 04F — Sealed Differential Evidence and Paper-Engine Compatibility
 
 **Purpose:** Prove that the same strategy intent used in 04E is paper-engine compatible and create the actual sealed evidence that 04D can evaluate.  This is a one-shot fixture compatibility smoke, never a persistent paper service and never a public-data or broker integration.
 
@@ -268,7 +302,7 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Independent final gate verifies the command is finite/local, compares same strategy intent across simulation and paper compatibility, checks all evidence is hash-bound, and confirms neither root Python nor the legacy artifact gains authority.
   - Commit as `feat: close WS04 paper compatibility evidence` only after PASS.
 
-## Task 6: Final Program Gate
+## Task 7: Final Program Gate
 
 - [ ] Confirm 01D evidence passes on the final merge commit and the private toolchain cache remains the only selected Rust/LLVM/wheel source.
 - [ ] Confirm 02E has an operator-approved, non-skipped PostgreSQL 16 runtime report.  If it does not, stop and report the program as pending; do not waive this criterion.
