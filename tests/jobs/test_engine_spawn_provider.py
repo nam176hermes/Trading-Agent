@@ -699,6 +699,79 @@ def test_provider_rejects_an_artifact_changed_after_prepare_before_spawn(
         consume_prepared_engine_spawn(prepared)
 
 
+def test_simulation_provider_rejects_only_scenario_replaced_after_prepare(
+    secure_tmp_path: Path,
+) -> None:
+    values = (
+        ("engine_configuration", b'{"mode":"execution-simulation"}\n', "application/json"),
+        ("instrument_catalog", b'{"catalog":"fixture"}\n', "application/json"),
+        ("strategy_configuration", b'{"positions":[{}]}\n', "application/json"),
+        ("market_data", b'{"close":"1"}\n', "application/jsonl"),
+        ("simulation_scenario", b'{"scenario":"before"}\n', "application/json"),
+    )
+    root = secure_tmp_path / "stale-simulation-artifacts"
+    root.mkdir(mode=0o700)
+    references: list[ArtifactReference] = []
+    inputs: list[HashBoundEngineInput] = []
+    original_identities: dict[str, tuple[int, int]] = {}
+    sources: dict[str, Path] = {}
+    for index, (name, value, media_type) in enumerate(values, start=1):
+        source = root / name
+        source.write_bytes(value)
+        source.chmod(0o400)
+        observed = source.stat(follow_symlinks=False)
+        digest = hashlib.sha256(value).hexdigest()
+        reference = ArtifactReference(
+            artifact_id=UUID(
+                f"{index}{index}{index}{index}{index}{index}{index}{index}-1111-4111-8111-111111111111"
+            ),
+            sha256=digest,
+            media_type=media_type,
+        )
+        references.append(reference)
+        sources[name] = source
+        original_identities[name] = (observed.st_dev, observed.st_ino)
+        inputs.append(
+            HashBoundEngineInput(
+                name=name,
+                reference=reference,
+                source=source,
+                identity=original_identities[name],
+                size=observed.st_size,
+                mode=0o400,
+                sha256=digest,
+            )
+        )
+    envelope = _simulation_envelope(tuple(references))
+    closure = _closure(secure_tmp_path, profile="execution-simulation")
+    prepared = _provider(
+        secure_tmp_path,
+        lambda: closure,
+        attest_inputs=lambda request: tuple(inputs),
+    ).prepare(envelope)
+
+    replacement = root / "scenario-replacement"
+    replacement.write_bytes(b'{"scenario":"after"}\n')
+    replacement.chmod(0o400)
+    os.replace(replacement, sources["simulation_scenario"])
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_INPUT_STALE"):
+        consume_prepared_engine_spawn(prepared)
+
+    assert _identity(sources["simulation_scenario"]) != original_identities[
+        "simulation_scenario"
+    ]
+    assert {
+        name: _identity(source)
+        for name, source in sources.items()
+        if name != "simulation_scenario"
+    } == {
+        name: identity
+        for name, identity in original_identities.items()
+        if name != "simulation_scenario"
+    }
+
+
 def test_consumed_request_is_a_sealed_snapshot_not_the_mutable_transport_inode(
     secure_tmp_path: Path,
 ) -> None:

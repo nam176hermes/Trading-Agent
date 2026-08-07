@@ -3,8 +3,8 @@
 
 This tool has no acquisition or build mode.  It copies an exact sealed runtime
 inventory, replaces only the repository launcher and selected input-bound
-Nautilus wheel, atomically publishes a previously absent generation, and asks
-the root attestor to verify the result.
+Nautilus wheel, root-attests the sealed staging tree, then atomically publishes
+and re-attests the same inode tree at a previously absent destination.
 """
 
 from __future__ import annotations
@@ -430,6 +430,7 @@ def materialize_runtime_closure(
         )
     )
     published = False
+    phase = "runtime closure materialization"
     try:
         output_records: list[dict[str, object]] = []
         for record in records:
@@ -482,9 +483,35 @@ def materialize_runtime_closure(
         manifest_path.write_bytes(_canonical_json_bytes(manifest) + b"\n")
         manifest_path.chmod(0o400)
         _seal_tree(staging)
+
+        phase = "staging closure attestation"
+        staged_before = staging.lstat()
+        staged_identity = (staged_before.st_dev, staged_before.st_ino)
+        staging_attestation = attest_nautilus_backtest_closure(
+            NautilusClosureConfig(
+                runtime_root=staging,
+                artifact_directory=artifact_directory,
+                sandbox_executable=sandbox_executable,
+            ),
+            expected_profile=_PROFILE,
+        )
+        staged_after = staging.lstat()
+        if (staged_after.st_dev, staged_after.st_ino) != staged_identity:
+            raise RuntimeClosureMaterializationError(
+                "staging closure identity changed after attestation"
+            )
+
+        phase = "atomic publish"
         os.replace(staging, destination)
         published = True
-        attest_nautilus_backtest_closure(
+        observed = destination.lstat()
+        if (observed.st_dev, observed.st_ino) != staged_identity:
+            raise RuntimeClosureMaterializationError(
+                "published closure identity changed during atomic rename"
+            )
+
+        phase = "published closure re-attestation"
+        published_attestation = attest_nautilus_backtest_closure(
             NautilusClosureConfig(
                 runtime_root=destination,
                 artifact_directory=artifact_directory,
@@ -492,12 +519,21 @@ def materialize_runtime_closure(
             ),
             expected_profile=_PROFILE,
         )
+        if (
+            published_attestation.profile != staging_attestation.profile
+            or published_attestation.closure_sha256
+            != staging_attestation.closure_sha256
+            or published_attestation.result_validator_id
+            != staging_attestation.result_validator_id
+        ):
+            raise RuntimeClosureMaterializationError(
+                "published closure attestation changed after atomic rename"
+            )
         return destination
     except RuntimeClosureMaterializationError:
         raise
     except (EngineSpawnError, OSError, TypeError, ValueError) as exc:
-        label = "published closure verification" if published else "atomic publish"
-        raise RuntimeClosureMaterializationError(f"{label} failed") from exc
+        raise RuntimeClosureMaterializationError(f"{phase} failed") from exc
     finally:
         if published:
             # A successfully verified destination is the selected generation.

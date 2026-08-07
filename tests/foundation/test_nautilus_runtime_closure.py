@@ -11,10 +11,12 @@ from pathlib import Path
 
 import pytest
 
+import scripts.materialize_nautilus_runtime_closure as materializer_module
 from scripts.materialize_nautilus_runtime_closure import (
     RuntimeClosureMaterializationError,
     materialize_runtime_closure,
 )
+from services.job_worker.engine_spawn_interface import EngineSpawnError
 from services.job_worker.nautilus_closure import (
     NautilusClosureConfig,
     attest_nautilus_backtest_closure,
@@ -272,6 +274,114 @@ def test_materializer_publishes_a_new_attested_simulation_closure_atomically(
         expected_profile="execution-simulation",
     )
     assert closure.profile == "execution-simulation"
+
+
+def test_materializer_attests_staging_then_re_attests_same_tree_after_rename(
+    closure_inputs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _base, _artifacts, _policy, destination = closure_inputs
+    real_attest = materializer_module.attest_nautilus_backtest_closure
+    observations: list[tuple[Path, tuple[int, int], bool]] = []
+
+    def record_attestation(config: NautilusClosureConfig, *, expected_profile: str):
+        observed = config.runtime_root.lstat()
+        observations.append(
+            (
+                config.runtime_root,
+                (observed.st_dev, observed.st_ino),
+                destination.exists(),
+            )
+        )
+        return real_attest(config, expected_profile=expected_profile)
+
+    monkeypatch.setattr(
+        materializer_module,
+        "attest_nautilus_backtest_closure",
+        record_attestation,
+    )
+
+    assert _materialize(closure_inputs) == destination
+
+    assert len(observations) == 2
+    staging_path, staging_identity, destination_existed_during_staging = observations[0]
+    published_path, published_identity, destination_existed_after_rename = observations[1]
+    assert staging_path.parent == root
+    assert staging_path.name.startswith(f".{destination.name}.staging-")
+    assert not destination_existed_during_staging
+    assert published_path == destination
+    assert destination_existed_after_rename
+    assert staging_identity == published_identity
+    assert not staging_path.exists()
+
+
+def test_failed_staging_attestation_never_exposes_selected_destination(
+    closure_inputs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _base, _artifacts, _policy, destination = closure_inputs
+    attempted_staging: list[Path] = []
+
+    def fail_attestation(
+        config: NautilusClosureConfig, *, expected_profile: str
+    ) -> None:
+        assert expected_profile == "execution-simulation"
+        assert config.runtime_root != destination
+        assert not destination.exists()
+        attempted_staging.append(config.runtime_root)
+        raise EngineSpawnError(
+            "ENGINE_CLOSURE_INVALID", "injected staging attestation failure"
+        )
+
+    monkeypatch.setattr(
+        materializer_module,
+        "attest_nautilus_backtest_closure",
+        fail_attestation,
+    )
+
+    with pytest.raises(
+        RuntimeClosureMaterializationError,
+        match="staging closure attestation",
+    ):
+        _materialize(closure_inputs)
+
+    assert len(attempted_staging) == 1
+    assert not destination.exists()
+    assert not attempted_staging[0].exists()
+    assert not any(
+        path.name.startswith(f".{destination.name}.staging-")
+        for path in root.iterdir()
+    )
+
+
+def test_staging_identity_change_after_attestation_fails_before_publish(
+    closure_inputs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _base, _artifacts, _policy, destination = closure_inputs
+    real_attest = materializer_module.attest_nautilus_backtest_closure
+    displaced: list[Path] = []
+
+    def attest_then_replace_staging(
+        config: NautilusClosureConfig, *, expected_profile: str
+    ):
+        attestation = real_attest(config, expected_profile=expected_profile)
+        if not displaced:
+            original = root / ".attested-staging-original"
+            os.rename(config.runtime_root, original)
+            shutil.copytree(original, config.runtime_root)
+            displaced.append(original)
+        return attestation
+
+    monkeypatch.setattr(
+        materializer_module,
+        "attest_nautilus_backtest_closure",
+        attest_then_replace_staging,
+    )
+
+    with pytest.raises(RuntimeClosureMaterializationError, match="identity changed"):
+        _materialize(closure_inputs)
+
+    assert len(displaced) == 1
+    assert displaced[0].exists()
+    assert not destination.exists()
 
 
 def test_materializer_rejects_a_preexisting_destination_without_changing_it(
