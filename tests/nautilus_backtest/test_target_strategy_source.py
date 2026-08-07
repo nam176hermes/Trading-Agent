@@ -110,4 +110,81 @@ def test_fixed_strategy_config_carries_every_validated_execution_semantic() -> N
     config = next(node for node in module.body if isinstance(node, ast.ClassDef) and node.name == "TargetPortfolioStrategyConfig")
     fields = {node.target.id for node in config.body if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)}
 
-    assert {"target_quantity", "scenario_id", "event_semantics", "fee_rate", "slippage_bps", "liquidity_limit", "stale_quote_threshold_seconds", "stop_price", "take_profit_price", "stop_take_profit_precedence"} <= fields
+    assert {
+        "bar_type",
+        "event_semantics",
+        "execution_plan",
+        "fee_rate",
+        "liquidity_limit",
+        "scenario_id",
+        "slippage_bps",
+        "stale_quote_threshold_seconds",
+        "stop_price",
+        "stop_take_profit_precedence",
+        "take_profit_price",
+        "target_quantity",
+    } <= fields
+
+
+def test_fixed_strategy_subscribes_to_configured_bars_on_start() -> None:
+    """Without the configured subscription, the engine never dispatches on_bar."""
+    source = Path("engines/nautilus/launcher/target_portfolio_strategy.py")
+    module = ast.parse(source.read_text(encoding="utf-8"))
+    strategy = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "TargetPortfolioStrategy"
+    )
+    on_start = next(
+        node
+        for node in strategy.body
+        if isinstance(node, ast.FunctionDef) and node.name == "on_start"
+    )
+    subscribe = next(
+        (
+            node
+            for node in ast.walk(on_start)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "subscribe_bars"
+        ),
+        None,
+    )
+
+    assert subscribe is not None
+    assert ast.unparse(subscribe.args[0]) == "self.config.bar_type"
+
+
+def test_launcher_passes_the_ingested_bar_type_to_strategy_config() -> None:
+    """Subscribing to a different BarType would still suppress on_bar dispatch."""
+    module = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+    config_call = next(
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "TargetPortfolioStrategyConfig"
+    )
+    keyword = next(
+        (item for item in config_call.keywords if item.arg == "bar_type"), None
+    )
+
+    assert keyword is not None
+    assert ast.unparse(keyword.value) == "bar_type"
+
+
+def test_launcher_never_serializes_native_backtest_result() -> None:
+    """A BacktestResult contains UUID/time fields and is not JSON serializable."""
+    module = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+    forbidden = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_canonical_json_bytes"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "engine_result"
+    ]
+
+    assert forbidden == []

@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime
 from decimal import Context, Decimal, localcontext
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -32,6 +33,14 @@ def launcher_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class _EngineAmount:
+    def __init__(self, value: str) -> None:
+        self._value = Decimal(value)
+
+    def as_decimal(self) -> Decimal:
+        return self._value
 
 
 def _request() -> EngineCommandEnvelope:
@@ -568,6 +577,131 @@ def test_launcher_rejects_duplicate_simulation_artifact_references(
         )
 
 
+def test_commission_mapping_sums_only_numeric_values_fail_closed(
+    launcher_module,
+) -> None:
+    assert launcher_module._normalize_commissions(
+        {
+            "BTC": _EngineAmount("0.000001"),
+            "USDT": _EngineAmount("0.125"),
+        }
+    ) == Decimal("0.125001")
+
+    for unsupported in (
+        _EngineAmount("0.1"),
+        [_EngineAmount("0.1")],
+        {"USDT": object()},
+        {"USDT": _EngineAmount("NaN")},
+    ):
+        with pytest.raises(ValueError, match="commission"):
+            launcher_module._normalize_commissions(unsupported)
+
+
+def test_account_balances_are_numeric_and_internally_consistent(
+    launcher_module,
+) -> None:
+    account = SimpleNamespace(
+        balances=lambda: {
+            "USDT": SimpleNamespace(
+                total=_EngineAmount("1000"),
+                locked=_EngineAmount("25"),
+                free=_EngineAmount("975"),
+            )
+        }
+    )
+
+    assert launcher_module._account_balance_count(account) == 1
+
+    account.balances = lambda: {
+        "USDT": SimpleNamespace(
+            total=_EngineAmount("1000"),
+            locked=_EngineAmount("25"),
+            free=_EngineAmount("974"),
+        )
+    }
+    with pytest.raises(ValueError, match="balance"):
+        launcher_module._account_balance_count(account)
+
+
+def test_canonical_nautilus_result_record_is_json_native_and_run_invariant(
+    launcher_module,
+) -> None:
+    strategy_events = [
+        {"event_type": "order-created", "quantity": "1", "sequence": 0},
+        {
+            "event_time": "2026-08-05T12:00:00Z",
+            "event_type": "fill",
+            "price": "100",
+            "quantity": "1",
+            "sequence": 1,
+        },
+    ]
+
+    record = launcher_module._canonical_nautilus_result_record(
+        strategy_events=strategy_events,
+        iterations=1,
+        order_count=1,
+        fill_count=1,
+        filled_quantity=Decimal("1.000000"),
+        position_count=1,
+        position_quantity=Decimal("1.000000"),
+        average_entry_price=Decimal("100.000000"),
+        realized_pnl=Decimal("0.00"),
+        unrealized_pnl=Decimal("1.00"),
+        account_balance_count=1,
+        commissions=Decimal("0.1000"),
+    )
+
+    assert record == {
+        "account": {"balance_count": 1, "commissions": "0.1"},
+        "engine": {"iterations": 1},
+        "orders": {
+            "count": 1,
+            "filled_count": 1,
+            "filled_quantity": "1",
+        },
+        "positions": {
+            "average_entry_price": "100",
+            "count": 1,
+            "quantity": "1",
+            "realized_pnl": "0",
+            "unrealized_pnl": "1",
+        },
+        "schema_version": "nautilus-simulation-result-v1",
+        "strategy_events": strategy_events,
+    }
+    assert json.loads(launcher_module._canonical_json_bytes(record)) == record
+    assert not ({"run_id", "event_time", "started_at", "finished_at"} & set(record))
+
+
+@pytest.mark.parametrize(
+    "strategy_events",
+    (
+        ({"event_type": "fill"},),
+        [{"event_type": "fill", "native": object()}],
+        [{1: "non-string-key"}],
+    ),
+)
+def test_canonical_nautilus_result_record_rejects_non_json_strategy_events(
+    launcher_module, strategy_events: object
+) -> None:
+    with pytest.raises(ValueError, match="strategy event"):
+        launcher_module._canonical_nautilus_result_record(
+            strategy_events=strategy_events,
+            iterations=0,
+            order_count=0,
+            fill_count=0,
+            filled_quantity=Decimal(0),
+            position_count=0,
+            position_quantity=Decimal(0),
+            average_entry_price=Decimal(0),
+            realized_pnl=Decimal(0),
+            unrealized_pnl=Decimal(0),
+            account_balance_count=1,
+            commissions=Decimal(0),
+        )
+
+
 @pytest.mark.parametrize(
     ("scenario_id", "expected"),
     [
@@ -640,7 +774,7 @@ def test_launcher_rejects_duplicate_simulation_artifact_references(
         (
             "event-digest",
             {
-                "event_digest": "30b6de71b9d7a69f8e1038d1584efecd3c2bdfe4a944303a479c4680f078cd33",
+                "event_digest": "00e144a68cf61d8e0c0bfc6ee413a139403c583e4a4eea4628cf3b8ede6b320b",
                 "total_events": 2,
             },
         ),

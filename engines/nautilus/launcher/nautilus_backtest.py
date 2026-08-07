@@ -1060,7 +1060,7 @@ def _run_execution_simulation(fixture: dict[str, object]) -> dict[str, object]:
     fees = Decimal(0)
     realized = Decimal(0)
     total_fills = 0
-    total_orders = 1
+    total_orders = 0
     total_positions = 0
     event_records: list[dict[str, object]] = [
         {
@@ -1129,6 +1129,7 @@ def _run_execution_simulation(fixture: dict[str, object]) -> dict[str, object]:
         average_entry = entry_notional / abs(filled)
         _require_nautilus_price(average_entry, label="average entry price")
         fees += abs(quantity) * price * fee_rate
+        total_orders += 1
         total_fills += 1
         total_positions = 1
         event_records.append(
@@ -1192,10 +1193,24 @@ def _run_execution_simulation(fixture: dict[str, object]) -> dict[str, object]:
     _require_nautilus_quantity(remaining, label="remaining quantity")
     _require_nautilus_quantity(position, label="position quantity")
     _require_nautilus_price(average_entry, label="average entry price")
+    canonical_result = _canonical_nautilus_result_record(
+        strategy_events=event_records,
+        iterations=len(events),
+        order_count=total_orders,
+        fill_count=total_fills,
+        filled_quantity=filled,
+        position_count=total_positions,
+        position_quantity=position,
+        average_entry_price=average_entry,
+        realized_pnl=realized,
+        unrealized_pnl=unrealized,
+        account_balance_count=1,
+        commissions=fees,
+    )
     return {
         "average_entry_price": _decimal_text(average_entry),
         "event_digest": hashlib.sha256(
-            _canonical_json_bytes(event_records)
+            _canonical_json_bytes(canonical_result)
         ).hexdigest(),
         "fees": _decimal_text(fees),
         "filled_quantity": _decimal_text(filled),
@@ -1228,6 +1243,159 @@ def _scenario_commission(
     """Return the exact quote-currency commission for one actual fill."""
 
     return abs(fill_quantity) * fill_price * fee_rate
+
+
+def _engine_decimal(value: object, *, label: str) -> Decimal:
+    """Normalize one fixed-point value without stringifying arbitrary objects."""
+
+    if isinstance(value, Decimal):
+        parsed = value
+    elif type(value) is int or isinstance(value, str) or type(value) is float:
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"Nautilus {label} is not numeric") from exc
+    else:
+        as_decimal = getattr(value, "as_decimal", None)
+        if not callable(as_decimal):
+            raise ValueError(f"Nautilus {label} shape is unsupported")
+        parsed = as_decimal()
+        if not isinstance(parsed, Decimal):
+            raise ValueError(f"Nautilus {label} shape is unsupported")
+    if not parsed.is_finite():
+        raise ValueError(f"Nautilus {label} is not finite")
+    return parsed
+
+
+def _normalize_commissions(value: object) -> Decimal:
+    """Sum only numeric values from ``CashAccount.commissions()``."""
+
+    if type(value) is not dict:
+        raise ValueError("Nautilus commission state must be a mapping")
+    total = Decimal(0)
+    for amount in value.values():
+        total += _engine_decimal(amount, label="commission value")
+    if not total.is_finite():
+        raise ValueError("Nautilus commission total is not finite")
+    return total
+
+
+def _account_balance_count(account: object) -> int:
+    """Validate and count the sealed account's explicit balance records."""
+
+    balances = getattr(account, "balances", None)
+    if not callable(balances):
+        raise ValueError("Nautilus account balances API is unavailable")
+    value = balances()
+    if type(value) is dict:
+        records = tuple(value.values())
+    elif type(value) is list or type(value) is tuple:
+        records = tuple(value)
+    else:
+        raise ValueError("Nautilus account balances shape is unsupported")
+    for balance in records:
+        total = _engine_decimal(
+            getattr(balance, "total", None), label="account balance total"
+        )
+        locked = _engine_decimal(
+            getattr(balance, "locked", None), label="account balance locked"
+        )
+        free = _engine_decimal(
+            getattr(balance, "free", None), label="account balance free"
+        )
+        if total != locked + free:
+            raise ValueError("Nautilus account balance arithmetic is invalid")
+    return len(records)
+
+
+def _json_native_strategy_events(value: object) -> list[dict[str, object]]:
+    """Copy an ordered strategy event list while rejecting native engine values."""
+
+    def copy_json_native(item: object) -> object:
+        if item is None or type(item) in (bool, int, str):
+            return item
+        if type(item) is list:
+            return [copy_json_native(child) for child in item]
+        if type(item) is dict and all(isinstance(key, str) for key in item):
+            return {key: copy_json_native(child) for key, child in item.items()}
+        raise ValueError("Nautilus strategy event is not JSON-native")
+
+    if type(value) is not list:
+        raise ValueError("Nautilus strategy events must be an ordered JSON list")
+    copied = copy_json_native(value)
+    assert isinstance(copied, list)
+    if not all(isinstance(item, dict) for item in copied):
+        raise ValueError("Nautilus strategy event list contains a non-record")
+    return copied
+
+
+def _result_counter(value: object, *, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"Nautilus {label} counter is invalid")
+    return value
+
+
+def _canonical_nautilus_result_record(
+    *,
+    strategy_events: object,
+    iterations: object,
+    order_count: object,
+    fill_count: object,
+    filled_quantity: Decimal,
+    position_count: object,
+    position_quantity: Decimal,
+    average_entry_price: Decimal,
+    realized_pnl: Decimal,
+    unrealized_pnl: Decimal,
+    account_balance_count: object,
+    commissions: Decimal,
+) -> dict[str, object]:
+    """Build the deterministic JSON digest domain from actual engine state.
+
+    Native ``BacktestResult`` objects, identifiers, run UUIDs, and engine clock
+    fields are deliberately outside this record.
+    """
+
+    orders = _result_counter(order_count, label="order")
+    fills = _result_counter(fill_count, label="fill")
+    positions = _result_counter(position_count, label="position")
+    balances = _result_counter(account_balance_count, label="account balance")
+    if fills > orders:
+        raise ValueError("Nautilus fill counter exceeds order counter")
+    decimal_values = (
+        filled_quantity,
+        position_quantity,
+        average_entry_price,
+        realized_pnl,
+        unrealized_pnl,
+        commissions,
+    )
+    if not all(
+        isinstance(value, Decimal) and value.is_finite()
+        for value in decimal_values
+    ):
+        raise ValueError("Nautilus result decimal shape is unsupported")
+    return {
+        "account": {
+            "balance_count": balances,
+            "commissions": _decimal_text(commissions),
+        },
+        "engine": {"iterations": _result_counter(iterations, label="iteration")},
+        "orders": {
+            "count": orders,
+            "filled_count": fills,
+            "filled_quantity": _decimal_text(filled_quantity),
+        },
+        "positions": {
+            "average_entry_price": _decimal_text(average_entry_price),
+            "count": positions,
+            "quantity": _decimal_text(position_quantity),
+            "realized_pnl": _decimal_text(realized_pnl),
+            "unrealized_pnl": _decimal_text(unrealized_pnl),
+        },
+        "schema_version": "nautilus-simulation-result-v1",
+        "strategy_events": _json_native_strategy_events(strategy_events),
+    }
 
 
 def _build_target_portfolio_execution_plan(
@@ -1426,12 +1594,12 @@ def _run_nautilus_simulation_fixture(
         target = fixture["target_quantity"]
         assert isinstance(target, Decimal)
         execution_plan = _build_target_portfolio_execution_plan(fixture)
+        bar_type = BarType.from_str("BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL")
         strategy = TargetPortfolioStrategy(
             TargetPortfolioStrategyConfig(
                 instrument_id=instrument.id,
-                target_quantity=_nautilus_quantity_text(
-                    target, 6, label="simulation target quantity"
-                ),
+                bar_type=bar_type,
+                target_quantity=_decimal_text(target),
                 scenario_id=str(fixture["scenario_id"]),
                 execution_plan=execution_plan,
                 event_semantics=tuple(
@@ -1472,7 +1640,6 @@ def _run_nautilus_simulation_fixture(
             )
         )
         engine.add_strategy(strategy)
-        bar_type = BarType.from_str("BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL")
         bars = []
         events = fixture["events"]
         assert isinstance(events, tuple)
@@ -1519,7 +1686,10 @@ def _run_nautilus_simulation_fixture(
         engine.add_data(bars)
         engine.run()
         engine_result = engine.get_result()
-        if int(engine_result.iterations) != len(events):
+        iterations = _result_counter(
+            getattr(engine_result, "iterations", None), label="iteration"
+        )
+        if iterations != len(events):
             raise ValueError("Nautilus simulation fixture iteration count changed")
         # The cache/account accesses are intentional: this result is evidence
         # of the strategy-driven Nautilus execution state, not a parallel
@@ -1532,28 +1702,83 @@ def _run_nautilus_simulation_fixture(
             raise ValueError("Nautilus simulation account state is unavailable")
         if len(positions) > 1:
             raise ValueError("Nautilus simulation produced more than one position")
+        if strategy.rejected:
+            raise ValueError("Nautilus simulation strategy order was rejected")
         position = positions[0] if positions else None
-        quantity = Decimal(str(position.quantity)) if position is not None else Decimal(0)
-        average = Decimal(str(position.avg_px_open)) if position is not None else Decimal(0)
-        realized = Decimal(str(position.realized_pnl)) if position is not None else Decimal(0)
-        unrealized = Decimal(str(position.unrealized_pnl)) if position is not None else Decimal(0)
-        fees = Decimal(str(account.commissions()))
-        filled = sum((Decimal(str(order.filled_qty)) for order in orders), Decimal(0))
+        quantity = (
+            _engine_decimal(position.quantity, label="position quantity")
+            if position is not None
+            else Decimal(0)
+        )
+        if target < 0:
+            quantity = -quantity
+        average = (
+            _engine_decimal(position.avg_px_open, label="average entry price")
+            if position is not None
+            else Decimal(0)
+        )
+        realized = (
+            _engine_decimal(position.realized_pnl, label="realized PnL")
+            if position is not None
+            else Decimal(0)
+        )
+        if position is None or quantity == 0:
+            unrealized = Decimal(0)
+        else:
+            unrealized_value = position.unrealized_pnl
+            if callable(unrealized_value):
+                if not bars:
+                    raise ValueError("Nautilus simulation has no final bar")
+                unrealized_value = unrealized_value(bars[-1].close)
+            unrealized = _engine_decimal(unrealized_value, label="unrealized PnL")
+        commissions = getattr(account, "commissions", None)
+        if not callable(commissions):
+            raise ValueError("Nautilus account commissions API is unavailable")
+        fees = _normalize_commissions(commissions())
+        filled = (
+            Decimal(0)
+            if strategy.entry_filled_quantity is None
+            else _engine_decimal(
+                strategy.entry_filled_quantity, label="entry filled quantity"
+            )
+        )
+        if target < 0:
+            filled = -filled
+        total_fills = sum(
+            _engine_decimal(order.filled_qty, label="order filled quantity") > 0
+            for order in orders
+        )
+        canonical_result = _canonical_nautilus_result_record(
+            strategy_events=strategy.semantic_events,
+            iterations=iterations,
+            order_count=len(orders),
+            fill_count=total_fills,
+            filled_quantity=filled,
+            position_count=len(positions),
+            position_quantity=quantity,
+            average_entry_price=average,
+            realized_pnl=realized,
+            unrealized_pnl=unrealized,
+            account_balance_count=_account_balance_count(account),
+            commissions=fees,
+        )
         return {
             "average_entry_price": _decimal_text(average),
-            "event_digest": hashlib.sha256(_canonical_json_bytes(engine_result)).hexdigest(),
+            "event_digest": hashlib.sha256(
+                _canonical_json_bytes(canonical_result)
+            ).hexdigest(),
             "fees": _decimal_text(fees),
-            "filled_quantity": _decimal_text(filled if target > 0 else -filled),
-            "iterations": int(engine_result.iterations),
+            "filled_quantity": _decimal_text(filled),
+            "iterations": iterations,
             "position_quantity": _decimal_text(quantity),
             "realized_pnl": _decimal_text(realized),
-            "remaining_quantity": _decimal_text(target - (filled if target > 0 else -filled)),
+            "remaining_quantity": _decimal_text(target - filled),
             "scenario_id": fixture["scenario_id"],
             "stop_take_profit_precedence": fixture["stop_take_profit_precedence"],
-            "total_events": int(engine_result.total_events),
-            "total_fills": sum(int(order.filled_qty > 0) for order in orders),
-            "total_orders": int(engine_result.total_orders),
-            "total_positions": int(engine_result.total_positions),
+            "total_events": len(strategy.semantic_events),
+            "total_fills": total_fills,
+            "total_orders": len(orders),
+            "total_positions": len(positions),
             "unrealized_pnl": _decimal_text(unrealized),
         }
     finally:
