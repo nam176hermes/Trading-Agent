@@ -41,6 +41,7 @@ def _canonical_result_record(
     realized: Decimal,
     unrealized: Decimal,
     fees: Decimal,
+    account_balance_count: int,
 ) -> dict[str, object]:
     """Independently build the reviewed ``nautilus-simulation-result-v1`` domain.
 
@@ -50,7 +51,10 @@ def _canonical_result_record(
     """
 
     return {
-        "account": {"balance_count": 1, "commissions": _text(fees)},
+        "account": {
+            "balance_count": account_balance_count,
+            "commissions": _text(fees),
+        },
         "engine": {"iterations": iterations},
         "orders": {
             "count": total_orders,
@@ -127,6 +131,7 @@ def calculate_reference_outcome(scenario: BacktestScenarioV1):
                 records.append({"event_type": "position-closed", "sequence": len(records)})
                 break
         unrealized = (last_close - average_entry) * position if position else Decimal(0)
+        account_balance_count = 2 if total_fills > 0 or target < 0 else 1
         result_record = _canonical_result_record(
             records=records,
             iterations=len(scenario.events),
@@ -139,6 +144,7 @@ def calculate_reference_outcome(scenario: BacktestScenarioV1):
             realized=realized,
             unrealized=unrealized,
             fees=fees,
+            account_balance_count=account_balance_count,
         )
         return BacktestExpectedOutcomeV1(
             scenario_id=scenario.scenario_id,

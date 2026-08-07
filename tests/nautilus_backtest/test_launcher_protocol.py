@@ -623,6 +623,18 @@ def test_account_balances_are_numeric_and_internally_consistent(
         launcher_module._account_balance_count(account)
 
 
+def test_short_cash_account_starts_with_exact_base_inventory(
+    launcher_module,
+) -> None:
+    assert launcher_module._starting_balance_plan(Decimal("2")) == (
+        ("USDT", Decimal("1000000")),
+    )
+    assert launcher_module._starting_balance_plan(Decimal("-2")) == (
+        ("USDT", Decimal("1000000")),
+        ("BTC", Decimal("2")),
+    )
+
+
 def test_canonical_nautilus_result_record_is_json_native_and_run_invariant(
     launcher_module,
 ) -> None:
@@ -822,7 +834,7 @@ def test_gross_realized_pnl_uses_fixed_context_not_ambient_precision(
         (
             "event-digest",
             {
-                "event_digest": "00e144a68cf61d8e0c0bfc6ee413a139403c583e4a4eea4628cf3b8ede6b320b",
+                "event_digest": "31ca501f78a3ac250c0fc7d7d8d38d9fb4acbb51bae7c3b15d39c311082c6baa",
                 "total_events": 2,
             },
         ),

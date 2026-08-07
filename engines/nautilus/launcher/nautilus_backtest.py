@@ -1204,7 +1204,7 @@ def _run_execution_simulation(fixture: dict[str, object]) -> dict[str, object]:
         average_entry_price=average_entry,
         realized_pnl=realized,
         unrealized_pnl=unrealized,
-        account_balance_count=1,
+        account_balance_count=2 if total_fills > 0 or target < 0 else 1,
         commissions=fees,
     )
     return {
@@ -1243,6 +1243,22 @@ def _scenario_commission(
     """Return the exact quote-currency commission for one actual fill."""
 
     return abs(fill_quantity) * fill_price * fee_rate
+
+
+def _starting_balance_plan(target: Decimal) -> tuple[tuple[str, Decimal], ...]:
+    """Return the reviewed cash inventory needed by the fixed scenario side.
+
+    Long scenarios start with quote cash only. A short scenario starts with
+    exactly its target amount of BTC inventory, so its SELL never relies on
+    disabled cash borrowing and can produce actual balance/commission state.
+    """
+
+    if not isinstance(target, Decimal) or not target.is_finite() or target == 0:
+        raise ValueError("simulation target cannot fund a cash account")
+    balances = [("USDT", Decimal("1000000"))]
+    if target < 0:
+        balances.append(("BTC", abs(target)))
+    return tuple(balances)
 
 
 def _engine_decimal(value: object, *, label: str) -> Decimal:
@@ -1594,7 +1610,7 @@ def _run_nautilus_simulation_fixture(
     from nautilus_trader.backtest.models import FeeModel
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig
-    from nautilus_trader.model.currencies import USDT
+    from nautilus_trader.model.currencies import BTC, USDT
     from nautilus_trader.model.data import Bar, BarType
     from nautilus_trader.model.enums import AccountType, OmsType
     from nautilus_trader.model.identifiers import Venue
@@ -1630,16 +1646,20 @@ def _run_nautilus_simulation_fixture(
         instrument = TestInstrumentProvider.btcusdt_binance()
         if str(instrument.id) != "BTCUSDT.BINANCE":
             raise ValueError("Nautilus simulation fixture instrument is incompatible")
+        target = fixture["target_quantity"]
+        assert isinstance(target, Decimal)
+        currencies = {"BTC": BTC, "USDT": USDT}
         engine.add_venue(
             venue=Venue("BINANCE"),
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
-            starting_balances=[Money(1_000_000, USDT)],
+            starting_balances=[
+                Money(amount, currencies[currency])
+                for currency, amount in _starting_balance_plan(target)
+            ],
             fee_model=ScenarioFeeModel(fixture["fee_rate"]),
         )
         engine.add_instrument(instrument)
-        target = fixture["target_quantity"]
-        assert isinstance(target, Decimal)
         execution_plan = _build_target_portfolio_execution_plan(fixture)
         bar_type = BarType.from_str("BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL")
         strategy = TargetPortfolioStrategy(
