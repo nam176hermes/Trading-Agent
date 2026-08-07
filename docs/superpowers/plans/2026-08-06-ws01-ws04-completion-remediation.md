@@ -193,8 +193,8 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 
 - [ ] **Step 3: Update policy and materialize v9 from the semantic launcher bytes.**
   - Update the committed closure policy only with the new launcher SHA-256 and expected semantic-profile identity.  The materializer must retain all no-clobber/staging-attestation/inode-continuity guarantees from 04E0.
-  - After source tests and selected 01D full input-binding preflight pass, create only `/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v9-simulation` atomically.  Never modify v3–v8.  Treat v4–v7 as rejected forensic candidates and v8 as a valid **transport-only rollback** generation, not semantic-parity authority.
-  - Independently attest v3 and v9, rerun the full input-binding verifier after publication, and record only safe digests/generation identifiers in the evidence document.  No external artifact belongs in Git.
+  - After source tests and selected 01D full input-binding preflight pass, create only `/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v10-simulation` atomically.  Never modify v3–v9.  Treat v4–v7 and the failed smoke-test v9 generation as rejected forensic candidates; retain v8 only as valid **transport-only rollback**, never semantic-parity authority.
+  - Independently attest v3 and v10, rerun the full input-binding verifier after publication, and record only safe digests/generation identifiers in the evidence document.  No external artifact belongs in Git.
 
 - [ ] **Step 4: Gate and merge.**
   - Run focused launcher/materializer tests, `make audit`, `make check-contracts`, and the selected 01D verifier.  Treat unrelated pre-existing test failures as failures to report, not conditions to weaken.
