@@ -137,7 +137,17 @@ test-runtime-release-host:
 		uv run pytest -q -m "host_coupled" tests/runtime_release
 
 test-runtime-postgres:
-	uv run python scripts/run_required_runtime_pytest.py \
+	@set -eu; \
+		postgres_evidence_dir="$$(mktemp -d /tmp/foundation-postgres-evidence.XXXXXXXXXX)"; \
+		cleanup_postgres_evidence_dir() { \
+			find -P "$$postgres_evidence_dir" -xdev -type d -exec chmod u+rwx -- {} +; \
+			rm -rf -- "$$postgres_evidence_dir"; \
+		}; \
+		trap 'cleanup_postgres_evidence_dir' EXIT; \
+		chmod 0700 "$$postgres_evidence_dir"; \
+		test "$$(stat -c '%u:%a' -- "$$postgres_evidence_dir")" = "$$(id -u):700"; \
+		TRADING_TEST_POSTGRES_EVIDENCE_DIR="$$postgres_evidence_dir" \
+		uv run python scripts/run_required_runtime_pytest.py \
 		tests/control_api/test_postgres_api.py \
 		tests/control_api/test_postgres_repositories.py \
 		tests/control_api/test_alembic_schema.py \

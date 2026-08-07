@@ -143,15 +143,24 @@ def test_engine_event_runtime_concurrency_module_has_no_runtime_connection_input
 
 def test_make_targets_select_only_reviewed_disposable_modules() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    assert (
-        "test-runtime-postgres:\n"
-        "\tuv run python scripts/run_required_runtime_pytest.py \\\n"
-        "\t\ttests/control_api/test_postgres_api.py \\\n"
-        "\t\ttests/control_api/test_postgres_repositories.py \\\n"
-        "\t\ttests/control_api/test_alembic_schema.py \\\n"
-        "\t\ttests/control_api/test_foundation_postgres_runtime_parity.py \\\n"
-        "\t\ttests/jobs/test_engine_event_postgres_runtime.py"
-    ) in makefile
+    recipe = makefile.split("test-runtime-postgres:\n", 1)[1].split("\n\n", 1)[0]
+    assert "mktemp -d /tmp/foundation-postgres-evidence.XXXXXXXXXX" in recipe
+    assert "chmod 0700 \"$$postgres_evidence_dir\"" in recipe
+    assert "stat -c '%u:%a' -- \"$$postgres_evidence_dir\"" in recipe
+    assert "TRADING_TEST_POSTGRES_EVIDENCE_DIR=\"$$postgres_evidence_dir\"" in recipe
+    assert "trap 'cleanup_postgres_evidence_dir' EXIT" in recipe
+    assert "export TRADING_TEST_POSTGRES_EVIDENCE_DIR" not in recipe
+    assert [
+        "tests/control_api/test_postgres_api.py",
+        "tests/control_api/test_postgres_repositories.py",
+        "tests/control_api/test_alembic_schema.py",
+        "tests/control_api/test_foundation_postgres_runtime_parity.py",
+        "tests/jobs/test_engine_event_postgres_runtime.py",
+    ] == [
+        line.strip().removesuffix(" \\")
+        for line in recipe.splitlines()
+        if line.strip().startswith("tests/")
+    ]
     assert (
         "test-event-ledger-runtime-postgres:\n"
         "\tuv run python scripts/run_required_runtime_pytest.py \\\n"
