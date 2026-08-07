@@ -4,6 +4,7 @@ import ast
 import hashlib
 import importlib.util
 import json
+import subprocess
 import sys
 import tempfile
 from datetime import UTC, datetime
@@ -408,30 +409,97 @@ def test_strategy_loader_never_falls_back_to_an_ambient_bare_import(
     assert not marker.exists()
 
 
-def test_explicit_wheel_package_load_preserves_legacy_precedence_and_sys_path(
-    launcher_module,
+def test_sealed_wheel_scope_resolves_cross_root_dependency_with_legacy_precedence(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
-    first.mkdir()
-    second.mkdir()
-    (first / "legacy_resolution_probe.py").write_text(
-        "VALUE = 'first'\n", encoding="utf-8"
+    (first / "nautilus_trader").mkdir(parents=True)
+    (second / "nautilus_trader").mkdir(parents=True)
+    (first / "nautilus_trader/__init__.py").write_text(
+        "ORIGIN = 'first'\n", encoding="utf-8"
     )
-    (second / "legacy_resolution_probe.py").write_text(
-        "VALUE = 'second'\n", encoding="utf-8"
+    (first / "sealed_cross_root_dependency.py").write_text(
+        "VALUE = 'dependency-from-first'\n", encoding="utf-8"
     )
-    before = list(sys.path)
-    sys.modules.pop("legacy_resolution_probe", None)
-    try:
-        resolved = launcher_module._load_explicit_wheel_package(
-            "legacy_resolution_probe", (first, second)
-        )
-        assert list(sys.path) == before
-        assert resolved.VALUE == "second"
-    finally:
-        sys.modules.pop("legacy_resolution_probe", None)
+    (second / "nautilus_trader/__init__.py").write_text(
+        "import sealed_cross_root_dependency\n"
+        "ORIGIN = 'second'\n"
+        "DEPENDENCY = sealed_cross_root_dependency.VALUE\n",
+        encoding="utf-8",
+    )
+    script = """
+import importlib
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+before_path = list(sys.path)
+before_meta_path = tuple(sys.meta_path)
+names = ("nautilus_trader", "sealed_cross_root_dependency")
+with module._sealed_wheel_import_scope((module.Path(sys.argv[2]), module.Path(sys.argv[3]))):
+    resolved = importlib.import_module("nautilus_trader")
+    assert resolved.ORIGIN == "second"
+    assert resolved.DEPENDENCY == "dependency-from-first"
+    assert list(sys.path) == before_path
+assert list(sys.path) == before_path
+assert tuple(sys.meta_path) == before_meta_path
+assert all(name not in sys.modules for name in names)
+print("isolated-cross-root-import-ok")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(LAUNCHER.resolve()),
+            str(first),
+            str(second),
+        ],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "isolated-cross-root-import-ok\n"
+
+
+def test_sealed_wheel_scope_refuses_ambient_fallback_and_restores_after_error(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed = tmp_path / "sealed"
+    ambient = tmp_path / "ambient"
+    (sealed / "nautilus_trader").mkdir(parents=True)
+    ambient.mkdir()
+    (sealed / "nautilus_trader/__init__.py").write_text(
+        "import ambient_only_dependency\n", encoding="utf-8"
+    )
+    (ambient / "ambient_only_dependency.py").write_text(
+        "VALUE = 'must-not-load'\n", encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(ambient))
+    before_path = list(sys.path)
+    before_meta_path = tuple(sys.meta_path)
+    names = ("nautilus_trader", "ambient_only_dependency")
+    for name in names:
+        sys.modules.pop(name, None)
+
+    with pytest.raises(ModuleNotFoundError, match="sealed wheel closure"):
+        with launcher_module._sealed_wheel_import_scope((sealed,)):
+            importlib.import_module("nautilus_trader")
+
+    assert list(sys.path) == before_path
+    assert tuple(sys.meta_path) == before_meta_path
+    assert all(name not in sys.modules for name in names)
 
 
 def test_launcher_has_no_global_sys_path_mutation_or_bare_strategy_import() -> None:

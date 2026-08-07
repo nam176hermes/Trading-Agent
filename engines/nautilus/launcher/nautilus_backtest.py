@@ -18,10 +18,10 @@ import re
 import stat
 import sys
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Context, Decimal, InvalidOperation, localcontext
 from pathlib import Path
-from types import ModuleType
 from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
 
@@ -307,27 +307,40 @@ class _VerifiedStrategyLoader:
         exec(code, module.__dict__)
 
 
-def _load_explicit_wheel_package(
-    name: str, roots: tuple[Path, ...]
-) -> ModuleType:
-    """Load one top-level package from sealed roots with legacy precedence."""
+class _SealedWheelFinder:
+    def __init__(self, roots: tuple[Path, ...]) -> None:
+        self._search_path = [str(root) for root in reversed(roots)]
 
-    search_path = [str(root) for root in reversed(roots)]
-    spec = importlib.machinery.PathFinder.find_spec(name, search_path)
-    if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):
-        raise ValueError("Nautilus runtime wheel package is unavailable")
-    module = importlib.util.module_from_spec(spec)
-    previous = sys.modules.get(name)
-    sys.modules[name] = module
+    def find_spec(self, fullname, path=None, target=None):
+        del target
+        if path is not None:
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(
+            fullname, self._search_path
+        )
+        if spec is not None or fullname in sys.stdlib_module_names:
+            return spec
+        raise ModuleNotFoundError(
+            f"{fullname} is unavailable in the sealed wheel closure"
+        )
+
+
+@contextmanager
+def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
+    """Resolve top-level dependencies only from sealed roots, then restore."""
+
+    original_meta_path = tuple(sys.meta_path)
+    original_modules = dict(sys.modules)
+    finder = _SealedWheelFinder(roots)
+    sys.meta_path.insert(0, finder)
     try:
-        spec.loader.exec_module(module)
-    except BaseException as exc:
-        if previous is None:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = previous
-        raise ValueError("Nautilus runtime wheel package cannot be loaded") from exc
-    return module
+        yield
+    finally:
+        sys.meta_path[:] = original_meta_path
+        for name in tuple(sys.modules):
+            if name not in original_modules:
+                sys.modules.pop(name, None)
+        sys.modules.update(original_modules)
 
 
 def _load_target_portfolio_strategy() -> tuple[type, type]:
@@ -1851,7 +1864,13 @@ def _run_nautilus_simulation_fixture(
         except (OSError, zipfile.BadZipFile) as exc:
             raise ValueError("Nautilus runtime wheel is unreadable") from exc
         extracted_roots.append(destination)
-    _load_explicit_wheel_package("nautilus_trader", tuple(extracted_roots))
+    with _sealed_wheel_import_scope(tuple(extracted_roots)):
+        return _run_nautilus_simulation_fixture_loaded(fixture)
+
+
+def _run_nautilus_simulation_fixture_loaded(
+    fixture: dict[str, object],
+) -> dict[str, object]:
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.backtest.models import FeeModel
     from nautilus_trader.common.config import LoggingConfig
@@ -2132,7 +2151,13 @@ def _run_nautilus(
         except (OSError, zipfile.BadZipFile) as exc:
             raise ValueError("Nautilus runtime wheel is unreadable") from exc
         extracted_roots.append(destination)
-    _load_explicit_wheel_package("nautilus_trader", tuple(extracted_roots))
+    with _sealed_wheel_import_scope(tuple(extracted_roots)):
+        return _run_nautilus_loaded(fixture)
+
+
+def _run_nautilus_loaded(
+    fixture: tuple[dict[str, object], tuple[dict[str, object], ...]]
+) -> tuple[int, int, int, int]:
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig
