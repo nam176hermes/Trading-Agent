@@ -125,6 +125,7 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
 - Modify: `engines/nautilus/launcher/nautilus_backtest.py`
 - Modify: `scripts/generate_contracts.py` and generated engine/Job API contract outputs through `make generate-contracts`
 - Modify: `tests/engine_contracts/test_commands.py`
+- Modify: `tests/engine_contracts/test_contract_generation.py`
 - Modify: `tests/jobs/test_engine_artifacts.py`
 - Modify: `tests/jobs/test_engine_spawn_provider.py`
 - Modify: `tests/jobs/test_nautilus_closure.py`
@@ -162,8 +163,8 @@ The program tracker embedded in `codex_plan.zip` was never updated: it cannot se
   - Tests first: pre-existing destination, base/artifact/launcher digest drift, unlisted file, profile mismatch, unsafe file mode, failed pre-publish attestation, and atomic publish failure all leave no selected generation and fail closed.
 
 - [ ] **Step 6: Materialize and verify the selected simulation closure.**
-  - After source tests pass, materialize an external generation named `runtime-closure-v5-simulation` below the private Nautilus cache using only the current sealed inputs and the selected 01D artifact.  Do not commit its files.  Retain `runtime-closure-v4-simulation` as a rejected forensic candidate: do not select, overwrite, or delete it.
-  - Run independent read-only closure attestation for both `runtime-closure-v3` (zero-order) and the new v5 generation (execution-simulation), and run the selected 01D full input-binding verifier before and after materialization.
+  - After source tests pass, materialize an external generation named `runtime-closure-v6-simulation` below the private Nautilus cache using only the current sealed inputs and the selected 01D artifact.  Do not commit its files.  Retain `runtime-closure-v4-simulation` and `runtime-closure-v5-simulation` as rejected forensic candidates: do not select, overwrite, or delete them.
+  - Run independent read-only closure attestation for both `runtime-closure-v3` (zero-order) and the new v6 generation (execution-simulation), and run the selected 01D full input-binding verifier before and after materialization.
   - Commit source/tests/docs only as `feat: attest Nautilus execution-simulation closure` after focused tests, `make audit`, and `make check-contracts` pass.
 
 ## Task 4: Packet 04E — Deterministic Non-Zero Backtest Parity
