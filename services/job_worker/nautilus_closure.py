@@ -73,6 +73,7 @@ _MANIFEST_FIELDS_V1 = {
 }
 _MANIFEST_FIELDS_V2 = {*_MANIFEST_FIELDS_V1, "profile"}
 _MANIFEST_FIELDS_V3 = {*_MANIFEST_FIELDS_V2, "semantic_profile"}
+_MANIFEST_FIELDS_V4 = {*_MANIFEST_FIELDS_V3, "engine_upstream_commit"}
 _FILE_FIELDS = {"path", "target", "sha256", "size", "mode"}
 _SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
 
@@ -308,6 +309,9 @@ def attest_nautilus_backtest_closure(
     elif schema_version == 3 and set(closure_manifest) == _MANIFEST_FIELDS_V3:
         profile = closure_manifest.get("profile")
         semantic_profile = closure_manifest.get("semantic_profile")
+    elif schema_version == 4 and set(closure_manifest) == _MANIFEST_FIELDS_V4:
+        profile = closure_manifest.get("profile")
+        semantic_profile = closure_manifest.get("semantic_profile")
     else:
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest fields are missing or unknown")
     if profile != expected_profile or profile not in _PROFILES:
@@ -315,6 +319,8 @@ def attest_nautilus_backtest_closure(
     if profile == "execution-simulation" and semantic_profile != _SEMANTIC_PROFILE:
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     if schema_version == 3 and profile != "execution-simulation":
+        _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
+    if schema_version == 4 and profile != "execution-simulation":
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     expected_identity = _PROFILES[profile]
     if (
@@ -324,6 +330,16 @@ def attest_nautilus_backtest_closure(
         or _PYTHON_IDENTITY.fullmatch(closure_manifest["python_identity"]) is None
         or not isinstance(closure_manifest["source_commit"], str)
         or _SOURCE_COMMIT.fullmatch(closure_manifest["source_commit"]) is None
+        or (
+            schema_version == 4
+            and (
+                not isinstance(closure_manifest["engine_upstream_commit"], str)
+                or _SOURCE_COMMIT.fullmatch(
+                    closure_manifest["engine_upstream_commit"]
+                )
+                is None
+            )
+        )
         or closure_manifest["result_validator_id"]
         != expected_identity["result_validator_id"]
         or tuple(closure_manifest.get("argv_prefix", ()))
@@ -337,7 +353,12 @@ def attest_nautilus_backtest_closure(
         artifact_manifest.get("engine_name") != _EXPECTED_ENGINE_NAME
         or artifact_manifest.get("engine_version") != _EXPECTED_ENGINE_VERSION
         or artifact_manifest.get("python_identity") != closure_manifest["python_identity"]
-        or artifact_manifest.get("upstream_commit") != closure_manifest["source_commit"]
+        or artifact_manifest.get("upstream_commit")
+        != (
+            closure_manifest["engine_upstream_commit"]
+            if schema_version == 4
+            else closure_manifest["source_commit"]
+        )
     ):
         _blocked("ENGINE_CLOSURE_INVALID", "artifact manifest identity is incompatible")
     mounts = _manifest_files(config.runtime_root, closure_manifest["files"])
@@ -375,6 +396,10 @@ def attest_nautilus_backtest_closure(
     }
     if semantic_profile is not None:
         digest_document["semantic_profile"] = semantic_profile
+    if schema_version == 4:
+        digest_document["engine_upstream_commit"] = closure_manifest[
+            "engine_upstream_commit"
+        ]
     return CompleteEngineClosureAttestation(
         profile=profile,
         source_commit=closure_manifest["source_commit"],

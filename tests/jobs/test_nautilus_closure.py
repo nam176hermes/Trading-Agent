@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from services.job_worker.engine_spawn import EngineSpawnError
+import services.job_worker.nautilus_closure as nautilus_closure_module
+from services.job_worker.engine_spawn import EngineSpawnError, OsSandboxProof
 from services.job_worker.nautilus_closure import (
     NautilusClosureConfig,
     attest_nautilus_backtest_closure,
@@ -17,6 +18,7 @@ from services.job_worker.nautilus_closure import (
 
 
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
+REPOSITORY_SOURCE_COMMIT = "4648ecaf6169b0886daf47fe27467b0292153cbb"
 
 
 def _sha256(path: Path) -> str:
@@ -73,6 +75,8 @@ def _build_closure_config(
     *,
     profile: str,
     semantic_profile: str | None = None,
+    source_commit: str = SOURCE_COMMIT,
+    engine_upstream_commit: str | None = None,
 ):
 
     artifacts = tmp_path / "artifacts"
@@ -126,12 +130,16 @@ def _build_closure_config(
     }
     argv_prefix, validator_id = profiles[profile]
     manifest = {
-        "schema_version": 3 if semantic_profile is not None else 2,
+        "schema_version": (
+            4
+            if engine_upstream_commit is not None
+            else 3 if semantic_profile is not None else 2
+        ),
         "profile": profile,
         "engine_name": "nautilus_trader",
         "engine_version": "1.227.0",
         "python_identity": "CPython 3.12.3",
-        "source_commit": SOURCE_COMMIT,
+        "source_commit": source_commit,
         "artifact_manifest_sha256": _sha256(artifact_manifest),
         "entrypoint": "/engine/bin/python3.12",
         "argv_prefix": argv_prefix,
@@ -141,6 +149,8 @@ def _build_closure_config(
     }
     if semantic_profile is not None:
         manifest["semantic_profile"] = semantic_profile
+    if engine_upstream_commit is not None:
+        manifest["engine_upstream_commit"] = engine_upstream_commit
     (runtime / "closure-manifest.json").write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")), encoding="utf-8"
     )
@@ -190,6 +200,64 @@ def test_attestor_binds_only_read_only_launcher_and_python_closure_files(
     }
     assert all(mount.mode & 0o222 == 0 for mount in closure.mounts)
     assert all(mount.source.is_relative_to(closure_config.runtime_root) for mount in closure.mounts)
+
+
+def test_attestor_separates_repository_and_engine_upstream_identities_before_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reviewed_sandbox(path: Path) -> OsSandboxProof:
+        return OsSandboxProof(
+            executable=path,
+            identity=(1, 1),
+            executable_sha256="b" * 64,
+            profile_sha256="c" * 64,
+            version="bubblewrap 0.9.0",
+            capabilities=("--perms", "--ro-bind-data"),
+        )
+
+    monkeypatch.setattr(nautilus_closure_module, "_sandbox_proof", reviewed_sandbox)
+    base = Path(tempfile.mkdtemp(prefix="nautilus-split-identity-test-", dir="/tmp"))
+    try:
+        valid_root = base / "valid"
+        valid_root.mkdir()
+        valid_config = _build_closure_config(
+            valid_root,
+            valid_root / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+        )
+
+        closure = attest_nautilus_backtest_closure(
+            valid_config, expected_profile="execution-simulation"
+        )
+
+        assert closure.source_commit == REPOSITORY_SOURCE_COMMIT
+
+        mismatch_root = base / "mismatch"
+        mismatch_root.mkdir()
+        mismatch_config = _build_closure_config(
+            mismatch_root,
+            mismatch_root / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit="f" * 40,
+        )
+        with pytest.raises(EngineSpawnError, match="artifact manifest identity"):
+            attest_nautilus_backtest_closure(
+                mismatch_config, expected_profile="execution-simulation"
+            )
+    finally:
+        for directory, child_directories, files in os.walk(base, topdown=False):
+            current = Path(directory)
+            for name in files:
+                (current / name).chmod(0o600)
+            for name in child_directories:
+                (current / name).chmod(0o700)
+            current.chmod(0o700)
+        shutil.rmtree(base)
 
 
 def test_attestor_rejects_unlisted_runtime_file(closure_config: NautilusClosureConfig) -> None:

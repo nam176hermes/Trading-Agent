@@ -179,7 +179,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
                 {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
             ],
             "profile": "execution-simulation",
-            "profile_manifest_schema_version": 3,
+            "profile_manifest_schema_version": 4,
             "python_identity": "CPython 3.12.3",
             "result_validator_id": "nautilus-backtest-simulation-result-v1",
             "schema_version": 1,
@@ -305,6 +305,36 @@ def test_checked_in_policy_separates_repository_and_sealed_engine_identities() -
     assert manifest["source_commit"] != policy["engine_upstream_commit"]
 
 
+def test_materializer_output_manifest_carries_split_engine_identity() -> None:
+    policy = {
+        "argv_prefix": [
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ],
+        "artifact_manifest_sha256": "a" * 64,
+        "engine_name": "nautilus_trader",
+        "engine_upstream_commit": SOURCE_COMMIT,
+        "engine_version": "1.227.0",
+        "entrypoint": "/usr/bin/python3.12",
+        "profile": "execution-simulation",
+        "profile_manifest_schema_version": 4,
+        "python_identity": "CPython 3.12.3",
+        "result_validator_id": "nautilus-backtest-simulation-result-v1",
+        "semantic_profile": "nautilus-execution-simulation-v2",
+        "source_commit": REPOSITORY_SOURCE_COMMIT,
+        "timeout_seconds": 120,
+    }
+
+    manifest = materializer_module._build_output_manifest(policy, [])
+
+    assert manifest["schema_version"] == 4
+    assert manifest["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    assert manifest["engine_upstream_commit"] == SOURCE_COMMIT
+
+
 def test_materializer_cli_bootstraps_only_the_checkout_authority() -> None:
     completed = subprocess.run(
         [
@@ -335,7 +365,7 @@ def test_materializer_publishes_a_new_attested_simulation_closure_atomically(
     assert (base / "closure-manifest.json").read_bytes() == base_manifest_before
     manifest = json.loads((published / "closure-manifest.json").read_text())
     assert manifest["profile"] == "execution-simulation"
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["semantic_profile"] == "nautilus-execution-simulation-v2"
     assert manifest["argv_prefix"][-2:] == ["--profile", "execution-simulation"]
     assert manifest["artifact_manifest_sha256"] == _sha256(

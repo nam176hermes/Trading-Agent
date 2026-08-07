@@ -212,7 +212,7 @@ def _load_policy(path: Path) -> dict[str, object]:
         )
     if (
         policy["schema_version"] != 1
-        or policy["profile_manifest_schema_version"] != 3
+        or policy["profile_manifest_schema_version"] != 4
         or policy["profile"] != _PROFILE
         or tuple(policy["argv_prefix"]) != _ARGV_PREFIX
         or policy["result_validator_id"] != _VALIDATOR
@@ -527,6 +527,7 @@ def _build_output_manifest(
         "argv_prefix": list(policy["argv_prefix"]),
         "artifact_manifest_sha256": policy["artifact_manifest_sha256"],
         "engine_name": policy["engine_name"],
+        "engine_upstream_commit": policy["engine_upstream_commit"],
         "engine_version": policy["engine_version"],
         "entrypoint": policy["entrypoint"],
         "files": output_records,

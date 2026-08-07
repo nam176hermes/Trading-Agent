@@ -31,7 +31,7 @@
     }
   ],
   "profile": "execution-simulation",
-  "profile_manifest_schema_version": 3,
+  "profile_manifest_schema_version": 4,
   "python_identity": "CPython 3.12.3",
   "result_validator_id": "nautilus-backtest-simulation-result-v1",
   "schema_version": 1,
