@@ -332,8 +332,16 @@ def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
     original_meta_path = tuple(sys.meta_path)
     original_modules = dict(sys.modules)
     finder = _SealedWheelFinder(roots)
-    sys.meta_path.insert(0, finder)
     try:
+        for name in tuple(sys.modules):
+            top_level = name.partition(".")[0]
+            if (
+                name not in {"__main__", __name__}
+                and top_level not in sys.stdlib_module_names
+                and top_level not in sys.builtin_module_names
+            ):
+                sys.modules.pop(name, None)
+        sys.meta_path.insert(0, finder)
         yield
     finally:
         sys.meta_path[:] = original_meta_path

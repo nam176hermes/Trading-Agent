@@ -432,21 +432,26 @@ def test_sealed_wheel_scope_resolves_cross_root_dependency_with_legacy_precedenc
 import importlib
 import importlib.util
 import sys
+from types import ModuleType
 
 spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+ambient_module = ModuleType("preloaded_ambient_dependency")
+sys.modules[ambient_module.__name__] = ambient_module
 before_path = list(sys.path)
 before_meta_path = tuple(sys.meta_path)
-names = ("nautilus_trader", "sealed_cross_root_dependency")
+before_modules = dict(sys.modules)
 with module._sealed_wheel_import_scope((module.Path(sys.argv[2]), module.Path(sys.argv[3]))):
+    assert ambient_module.__name__ not in sys.modules
     resolved = importlib.import_module("nautilus_trader")
     assert resolved.ORIGIN == "second"
     assert resolved.DEPENDENCY == "dependency-from-first"
     assert list(sys.path) == before_path
 assert list(sys.path) == before_path
 assert tuple(sys.meta_path) == before_meta_path
-assert all(name not in sys.modules for name in names)
+assert sys.modules == before_modules
+assert sys.modules[ambient_module.__name__] is ambient_module
 print("isolated-cross-root-import-ok")
 """
     result = subprocess.run(
@@ -487,11 +492,15 @@ def test_sealed_wheel_scope_refuses_ambient_fallback_and_restores_after_error(
         "VALUE = 'must-not-load'\n", encoding="utf-8"
     )
     monkeypatch.syspath_prepend(str(ambient))
+    assert "ambient_only_dependency" not in sys.modules
+    ambient_module = importlib.import_module("ambient_only_dependency")
+    sys.modules.pop("ambient_only_dependency")
+    monkeypatch.setitem(
+        sys.modules, "ambient_only_dependency", ambient_module
+    )
     before_path = list(sys.path)
     before_meta_path = tuple(sys.meta_path)
-    names = ("nautilus_trader", "ambient_only_dependency")
-    for name in names:
-        sys.modules.pop(name, None)
+    before_modules = dict(sys.modules)
 
     with pytest.raises(ModuleNotFoundError, match="sealed wheel closure"):
         with launcher_module._sealed_wheel_import_scope((sealed,)):
@@ -499,7 +508,9 @@ def test_sealed_wheel_scope_refuses_ambient_fallback_and_restores_after_error(
 
     assert list(sys.path) == before_path
     assert tuple(sys.meta_path) == before_meta_path
-    assert all(name not in sys.modules for name in names)
+    assert sys.modules == before_modules
+    assert sys.modules["ambient_only_dependency"] is ambient_module
+    assert "nautilus_trader" not in sys.modules
 
 
 def test_launcher_has_no_global_sys_path_mutation_or_bare_strategy_import() -> None:
