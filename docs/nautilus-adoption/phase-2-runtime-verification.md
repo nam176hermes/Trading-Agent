@@ -1,6 +1,7 @@
 # Phase 2 Runtime Verification
 
-Status: PASS
+Status: INCOMPLETE — the selected runtime matrix passed, but the requested
+engine-event ingestion-concurrency coverage was not executed.
 
 This WS02 runtime verification was executed against source commit
 `e99d7cf348980c9a4eb8ced81cc65706dabb3e48` under the user's full-authority
@@ -20,8 +21,20 @@ confirming that this gate does not turn an unavailable runtime into a skipped
 success.
 
 All selected tests executed under the exact paper-only safety baseline. The
-runtime checks covered migrations through
-`0011_engine_backtest_worker_authority`, PostgreSQL-backed ingestion and event
-ledger durability, and canonical dual-read compatibility.
+empty-database head-upgrade test in `make test-runtime-postgres` executed both
+`0010_engine_event_ledger` and
+`0011_engine_backtest_worker_authority` before asserting the exact `0011`
+head, including the `0010` engine-event tables and indexes.
+
+| Feature-level coverage | Executed | Passed | Failed | Skipped | Result |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Migration `0010_engine_event_ledger` | 1 | 1 | 0 | 0 | PASS |
+| Migration `0011_engine_backtest_worker_authority` | 1 | 1 | 0 | 0 | PASS |
+| Engine-event ingestion-concurrency | 0 | 0 | 0 | 0 | NOT EXECUTED |
+
+The two migration rows describe the same single passing empty-database
+head-upgrade test and are not additive to the target totals above. The three
+selected Make targets did not select a runtime ingestion-concurrency test, so
+this run provides no pass/fail result for that required coverage.
 
 No production database, service, scheduler, or protected runtime was touched.
