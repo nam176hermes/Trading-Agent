@@ -20,7 +20,7 @@
   "launcher_inventory": [
     {
       "mode": "0400",
-      "sha256": "797b8dc0deaf0bc56b3675e3b8d9851a74f5299e1c59c4de81ac95cd1e9b0297",
+      "sha256": "e112968dcb02ca570cdb033a98b5157c55326b73a80e0e4704f56a71a16ad923",
       "source": "engines/nautilus/launcher/nautilus_backtest.py",
       "target": "/engine/launcher/nautilus_backtest.py"
     },
