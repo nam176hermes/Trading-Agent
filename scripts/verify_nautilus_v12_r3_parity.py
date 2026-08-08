@@ -116,6 +116,17 @@ class _RetainedRunSnapshot:
     member_identities: dict[str, tuple[int, ...]]
 
 
+@dataclass(slots=True)
+class _SubrootCustody:
+    name: str
+    path: Path
+    created: bool = False
+    descriptor: int = -1
+    construction_complete: bool = False
+    identity: tuple[int, ...] | None = None
+    snapshot: _RetainedRunSnapshot | None = None
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Verify the fixed Nautilus v12-r3 8x2 runtime parity matrix.",
@@ -434,25 +445,42 @@ def _close_transport_campaign(campaign: _TransportCampaign) -> None:
 def _create_transport_subroot(
     campaign: _TransportCampaign,
     *,
-    name: str,
+    custody: _SubrootCustody,
 ) -> tuple[Path, tuple[int, int]]:
-    descriptor = -1
     try:
-        os.mkdir(name, mode=0o700, dir_fd=campaign.root_descriptor)
-        descriptor = os.open(
-            name,
+        os.mkdir(custody.name, mode=0o500, dir_fd=campaign.root_descriptor)
+        custody.created = True
+        named_created = os.stat(
+            custody.name,
+            dir_fd=campaign.root_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(named_created.st_mode)
+            or named_created.st_uid != os.geteuid()
+            or stat.S_IMODE(named_created.st_mode) != 0o500
+        ):
+            raise ParityVerificationError(
+                "transport subroot was not created sealed"
+            )
+        custody.identity = _transport_identity(named_created)
+        custody.descriptor = os.open(
+            custody.name,
             os.O_RDONLY
             | getattr(os, "O_DIRECTORY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=campaign.root_descriptor,
         )
-        os.fchmod(descriptor, 0o700)
-        os.fsync(descriptor)
+        opened_sealed = os.fstat(custody.descriptor)
+        if _transport_identity(opened_sealed) != custody.identity:
+            raise ParityVerificationError("transport subroot identity changed")
+        os.fchmod(custody.descriptor, 0o700)
+        os.fsync(custody.descriptor)
         os.fsync(campaign.root_descriptor)
-        opened = os.fstat(descriptor)
+        opened = os.fstat(custody.descriptor)
         named = os.stat(
-            name,
+            custody.name,
             dir_fd=campaign.root_descriptor,
             follow_symlinks=False,
         )
@@ -460,14 +488,115 @@ def _create_transport_subroot(
             _transport_identity(opened) != _transport_identity(named)
             or opened.st_uid != os.geteuid()
             or stat.S_IMODE(opened.st_mode) != 0o700
-            or os.listdir(descriptor)
+            or os.listdir(custody.descriptor)
         ):
             raise ParityVerificationError("transport subroot is unsafe")
-        return campaign.path / name, (opened.st_dev, opened.st_ino)
+        custody.construction_complete = True
+        custody.identity = _transport_identity(opened)
+        os.close(custody.descriptor)
+        custody.descriptor = -1
+        return custody.path, (opened.st_dev, opened.st_ino)
+    except ParityVerificationError:
+        raise
     except OSError as exc:
         raise ParityVerificationError("transport subroot cannot be created") from exc
-    finally:
+
+
+def _seal_failed_subroot(
+    campaign: _TransportCampaign,
+    *,
+    custody: _SubrootCustody,
+    envelope: EngineCommandEnvelope,
+) -> None:
+    if not custody.created:
+        return
+    descriptor = custody.descriptor
+    opened_here = False
+    inspection_descriptor = -1
+    try:
+        if descriptor < 0 and custody.construction_complete:
+            descriptor = os.open(
+                custody.name,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=campaign.root_descriptor,
+            )
+            opened_here = True
         if descriptor >= 0:
+            opened = os.fstat(descriptor)
+            if (
+                custody.identity is not None
+                and (opened.st_dev, opened.st_ino)
+                != (custody.identity[0], custody.identity[1])
+            ):
+                raise ParityVerificationError(
+                    "failed transport subroot identity changed"
+                )
+            os.fchmod(descriptor, 0o500)
+            os.fsync(descriptor)
+            opened = os.fstat(descriptor)
+            named = os.stat(
+                custody.name,
+                dir_fd=campaign.root_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                _transport_identity(opened) != _transport_identity(named)
+                or stat.S_IMODE(opened.st_mode) != 0o500
+            ):
+                raise ParityVerificationError(
+                    "failed transport subroot could not be sealed"
+                )
+            custody.identity = _transport_identity(opened)
+        else:
+            named = os.stat(
+                custody.name,
+                dir_fd=campaign.root_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                custody.identity is None
+                or (named.st_dev, named.st_ino)
+                != (custody.identity[0], custody.identity[1])
+                or not stat.S_ISDIR(named.st_mode)
+                or named.st_uid != os.geteuid()
+                or stat.S_IMODE(named.st_mode) != 0o500
+            ):
+                raise ParityVerificationError(
+                    "failed transport subroot identity changed"
+                )
+            custody.identity = _transport_identity(named)
+        inspection_descriptor = descriptor
+        if inspection_descriptor < 0:
+            inspection_descriptor = os.open(
+                custody.name,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=campaign.root_descriptor,
+            )
+        subroot_entries = set(os.listdir(inspection_descriptor))
+        if subroot_entries:
+            custody.snapshot = _validate_retained_transport_run(
+                custody.path,
+                envelope,
+                expected_root_identity=(custody.identity[0], custody.identity[1]),
+                expected_root_mode=0o500,
+            )
+    except OSError as exc:
+        raise ParityVerificationError(
+            "failed transport subroot cannot be inspected"
+        ) from exc
+    finally:
+        if inspection_descriptor >= 0 and inspection_descriptor != descriptor:
+            os.close(inspection_descriptor)
+        if custody.descriptor >= 0:
+            os.close(custody.descriptor)
+            custody.descriptor = -1
+        elif opened_here and descriptor >= 0:
             os.close(descriptor)
 
 
@@ -475,6 +604,7 @@ def _verify_transport_campaign(
     campaign: _TransportCampaign,
     *,
     subroots: dict[str, _RetainedRunSnapshot],
+    current: _SubrootCustody | None = None,
 ) -> None:
     subroot_descriptor = -1
     run_descriptor = -1
@@ -488,6 +618,18 @@ def _verify_transport_campaign(
             follow_symlinks=False,
         )
         full_root = campaign.path.lstat()
+        created_names = tuple(subroots)
+        if current is not None and current.created:
+            created_names = (*created_names, current.name)
+        canonical_names = tuple(
+            f"parity-{scenario_id}-run-{run_number}"
+            for scenario_id in SCENARIO_IDS
+            for run_number in range(1, _RUN_COUNT + 1)
+        )
+        if created_names != canonical_names[: len(created_names)]:
+            raise ParityVerificationError(
+                "transport campaign is not the exact ordered prefix"
+            )
         if (
             _transport_identity(parent)
             != _transport_identity(named_parent)
@@ -499,7 +641,7 @@ def _verify_transport_campaign(
             != campaign.root_identity
             or root.st_uid != os.geteuid()
             or stat.S_IMODE(root.st_mode) != 0o700
-            or set(os.listdir(campaign.root_descriptor)) != set(subroots)
+            or set(os.listdir(campaign.root_descriptor)) != set(created_names)
         ):
             raise ParityVerificationError("transport campaign identity changed")
         for name, snapshot in subroots.items():
@@ -565,6 +707,79 @@ def _verify_transport_campaign(
             run_descriptor = -1
             os.close(subroot_descriptor)
             subroot_descriptor = -1
+        if current is not None and current.created:
+            if current.identity is None:
+                raise ParityVerificationError(
+                    "failed transport subroot has no identity"
+                )
+            observed = os.stat(
+                current.name,
+                dir_fd=campaign.root_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                _transport_identity(observed) != current.identity
+                or not stat.S_ISDIR(observed.st_mode)
+                or observed.st_uid != os.geteuid()
+                or stat.S_IMODE(observed.st_mode) != 0o500
+            ):
+                raise ParityVerificationError(
+                    "failed transport subroot identity changed"
+                )
+            subroot_descriptor = os.open(
+                current.name,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=campaign.root_descriptor,
+            )
+            expected_inventory = (
+                set()
+                if current.snapshot is None
+                else {current.snapshot.run_name}
+            )
+            if (
+                _transport_identity(os.fstat(subroot_descriptor))
+                != current.identity
+                or set(os.listdir(subroot_descriptor)) != expected_inventory
+            ):
+                raise ParityVerificationError(
+                    "failed transport subroot inventory changed"
+                )
+            if current.snapshot is not None:
+                run_descriptor = os.open(
+                    current.snapshot.run_name,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=subroot_descriptor,
+                )
+                if (
+                    _transport_identity(os.fstat(run_descriptor))
+                    != current.snapshot.run_identity
+                    or set(os.listdir(run_descriptor))
+                    != set(current.snapshot.member_identities)
+                ):
+                    raise ParityVerificationError(
+                        "failed transport run identity changed"
+                    )
+                for member, expected in current.snapshot.member_identities.items():
+                    if _transport_identity(
+                        os.stat(
+                            member,
+                            dir_fd=run_descriptor,
+                            follow_symlinks=False,
+                        )
+                    ) != expected:
+                        raise ParityVerificationError(
+                            "failed transport member identity changed"
+                        )
+                os.close(run_descriptor)
+                run_descriptor = -1
+            os.close(subroot_descriptor)
+            subroot_descriptor = -1
     except OSError as exc:
         raise ParityVerificationError(
             "transport campaign cannot be inspected"
@@ -581,6 +796,7 @@ def _validate_retained_transport_run(
     envelope: EngineCommandEnvelope,
     *,
     expected_root_identity: tuple[int, int] | None = None,
+    expected_root_mode: int = 0o700,
 ) -> _RetainedRunSnapshot:
     """Validate one retained provider run without mutating shared pathnames."""
 
@@ -600,7 +816,7 @@ def _validate_retained_transport_run(
         if (
             not stat.S_ISDIR(opened_root.st_mode)
             or opened_root.st_uid != os.geteuid()
-            or stat.S_IMODE(opened_root.st_mode) != 0o700
+            or stat.S_IMODE(opened_root.st_mode) != expected_root_mode
             or (
                 expected_root_identity is not None
                 and (opened_root.st_dev, opened_root.st_ino)
@@ -881,6 +1097,7 @@ def _run_parity_matrix(
     transport_campaign = _open_transport_campaign(transport_root)
     subroots: dict[str, _RetainedRunSnapshot] = {}
     scenario_records: list[ScenarioParityRecord] = []
+    current: _SubrootCustody | None = None
     try:
         for campaign_scenario in campaign.scenarios:
             scenario_id = campaign_scenario.scenario_id
@@ -891,10 +1108,14 @@ def _run_parity_matrix(
             expected = None
             for run_number in range(1, run_count + 1):
                 subroot_name = f"parity-{scenario_id}-run-{run_number}"
+                current = _SubrootCustody(
+                    name=subroot_name,
+                    path=transport_campaign.path / subroot_name,
+                )
                 run_transport_root, run_transport_identity = (
                     _create_transport_subroot(
                         transport_campaign,
-                        name=subroot_name,
+                        custody=current,
                     )
                 )
                 provider = provider_factory(
@@ -906,39 +1127,26 @@ def _run_parity_matrix(
                     ),
                     monotonic_ns=time.monotonic_ns,
                 )
-                primary_failure: BaseException | None = None
-                try:
-                    prepared = provider.prepare(envelope)
-                    built = consume_spawn(prepared)
-                    event_bytes = _launch_once(
-                        built,
-                        popen_factory=popen_factory,
-                    )
-                    _event, validated, expected = _validated_event(
-                        event_bytes,
-                        envelope=envelope,
-                        fixture=fixture,
-                    )
-                    event_bytes_by_run.append(event_bytes)
-                    validated_by_run.append(validated)
-                except BaseException as exc:
-                    primary_failure = exc
-                    raise
-                finally:
-                    try:
-                        snapshot = _validate_retained_transport_run(
-                            run_transport_root,
-                            envelope,
-                            expected_root_identity=run_transport_identity,
-                        )
-                        subroots[subroot_name] = snapshot
-                    except ParityVerificationError as forensic_error:
-                        if primary_failure is None:
-                            raise
-                        primary_failure.add_note(
-                            "secondary forensic validation failure: "
-                            f"{forensic_error}"
-                        )
+                prepared = provider.prepare(envelope)
+                built = consume_spawn(prepared)
+                event_bytes = _launch_once(
+                    built,
+                    popen_factory=popen_factory,
+                )
+                _event, validated, expected = _validated_event(
+                    event_bytes,
+                    envelope=envelope,
+                    fixture=fixture,
+                )
+                event_bytes_by_run.append(event_bytes)
+                validated_by_run.append(validated)
+                snapshot = _validate_retained_transport_run(
+                    run_transport_root,
+                    envelope,
+                    expected_root_identity=run_transport_identity,
+                )
+                subroots[subroot_name] = snapshot
+                current = None
             if event_bytes_by_run[0] != event_bytes_by_run[1]:
                 raise ParityVerificationError(
                     "run-1 and run-2 events are non-identical"
@@ -1005,6 +1213,31 @@ def _run_parity_matrix(
             )
         _verify_transport_campaign(transport_campaign, subroots=subroots)
         return scenario_records
+    except BaseException as primary_failure:
+        if current is not None:
+            try:
+                _seal_failed_subroot(
+                    transport_campaign,
+                    custody=current,
+                    envelope=envelope,
+                )
+            except ParityVerificationError as forensic_error:
+                primary_failure.add_note(
+                    "secondary forensic sealing failure: "
+                    f"{forensic_error}"
+                )
+        try:
+            _verify_transport_campaign(
+                transport_campaign,
+                subroots=subroots,
+                current=current,
+            )
+        except ParityVerificationError as forensic_error:
+            primary_failure.add_note(
+                "secondary forensic validation failure: "
+                f"{forensic_error}"
+            )
+        raise
     finally:
         _close_transport_campaign(transport_campaign)
 

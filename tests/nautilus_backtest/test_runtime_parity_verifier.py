@@ -559,7 +559,97 @@ def test_verifier_retains_partial_transport_when_prepare_fails_after_publication
         _verify(external_paths, harness)
 
     _assert_retained_runs(external_paths["transport_root"], expected_count=1)
+    retained_subroot = next(external_paths["transport_root"].iterdir())
+    assert retained_subroot.name == "parity-long-accounting-run-1"
+    assert stat.S_IMODE(retained_subroot.stat().st_mode) == 0o500
     assert not external_paths["record"].exists()
+
+
+def test_verifier_seals_mode_0500_subroot_when_open_fails_after_mkdir(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_open = verifier.os.open
+    failed = False
+
+    def fail_first_subroot_open(path, flags, *args, **kwargs):
+        nonlocal failed
+        if not failed and os.fspath(path) == "parity-long-accounting-run-1":
+            failed = True
+            raise OSError("inert parity subroot open gap")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(verifier.os, "open", fail_first_subroot_open)
+
+    with pytest.raises(
+        verifier.ParityVerificationError,
+        match="transport subroot",
+    ):
+        _verify(external_paths, _Harness())
+
+    retained = list(external_paths["transport_root"].iterdir())
+    assert [path.name for path in retained] == ["parity-long-accounting-run-1"]
+    assert stat.S_IMODE(retained[0].stat().st_mode) == 0o500
+    assert list(retained[0].iterdir()) == []
+
+
+def test_verifier_reseals_opened_subroot_when_construction_fchmod_fails(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_fchmod = verifier.os.fchmod
+    failed = False
+
+    def fail_first_construction_fchmod(descriptor: int, mode: int) -> None:
+        nonlocal failed
+        if not failed and mode == 0o700:
+            failed = True
+            raise OSError("inert parity subroot construction mode failure")
+        real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(verifier.os, "fchmod", fail_first_construction_fchmod)
+
+    with pytest.raises(
+        verifier.ParityVerificationError,
+        match="transport subroot",
+    ):
+        _verify(external_paths, _Harness())
+
+    assert failed is True
+    retained = list(external_paths["transport_root"].iterdir())
+    assert [path.name for path in retained] == ["parity-long-accounting-run-1"]
+    assert stat.S_IMODE(retained[0].stat().st_mode) == 0o500
+    assert list(retained[0].iterdir()) == []
+
+
+def test_verifier_preserves_subroot_primary_and_notes_unexpected_prefix_entry(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_open = verifier.os.open
+    failed = False
+
+    def inject_unexpected_then_fail(path, flags, *args, **kwargs):
+        nonlocal failed
+        if not failed and os.fspath(path) == "parity-long-accounting-run-1":
+            failed = True
+            os.mkdir("unexpected", mode=0o500, dir_fd=kwargs["dir_fd"])
+            raise OSError("inert parity subroot open gap")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(verifier.os, "open", inject_unexpected_then_fail)
+
+    with pytest.raises(
+        verifier.ParityVerificationError,
+        match="transport subroot",
+    ) as observed:
+        _verify(external_paths, _Harness())
+
+    assert any("forensic" in note for note in observed.value.__notes__)
+    assert {path.name for path in external_paths["transport_root"].iterdir()} == {
+        "parity-long-accounting-run-1",
+        "unexpected",
+    }
 
 
 def test_verifier_preserves_primary_failure_when_forensic_validation_also_fails(

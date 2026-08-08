@@ -851,7 +851,7 @@ def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
             raise CampaignEvidenceError(
                 "campaign destination parent identity changed"
             )
-        os.mkdir(destination.name, mode=0o700, dir_fd=parent_descriptor)
+        os.mkdir(destination.name, mode=0o500, dir_fd=parent_descriptor)
         parent_identity = _identity(os.fstat(parent_descriptor))
         root_descriptor = os.open(
             destination.name,
@@ -866,12 +866,18 @@ def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
             destination,
             _identity(os.fstat(root_descriptor)),
         )
+        os.fchmod(root_descriptor, 0o700)
+        root = _DirectoryHandle(
+            root_descriptor,
+            destination,
+            _identity(os.fstat(root_descriptor)),
+        )
         files[root_descriptor] = {}
         records: list[dict[str, object]] = []
         for scenario_id in SCENARIO_IDS:
             fixture = build_canonical_simulation_fixture(scenario_id)
             scenario_directory = destination / scenario_id
-            os.mkdir(scenario_id, mode=0o700, dir_fd=root_descriptor)
+            os.mkdir(scenario_id, mode=0o500, dir_fd=root_descriptor)
             scenario_descriptor = os.open(
                 scenario_id,
                 os.O_RDONLY
@@ -886,6 +892,12 @@ def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
                 _identity(os.fstat(scenario_descriptor)),
             )
             scenario_handles.append(scenario_handle)
+            os.fchmod(scenario_descriptor, 0o700)
+            scenario_handles[-1] = _DirectoryHandle(
+                scenario_descriptor,
+                scenario_directory,
+                _identity(os.fstat(scenario_descriptor)),
+            )
             files[scenario_descriptor] = {}
             record: dict[str, object] = {"scenario_id": scenario_id}
             for (filename, field), value in zip(

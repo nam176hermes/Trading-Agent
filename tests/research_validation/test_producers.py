@@ -49,6 +49,16 @@ LEGACY_ADAPTER_COMMAND = (
     "legacy/research-backend/.venv/bin/python",
     "legacy/research-backend/nautilus_parity_adapter.py",
 )
+LEGACY_ENV_COMMAND = (
+    "/usr/bin/env",
+    "-i",
+    "PATH=/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "PYTHONHASHSEED=0",
+    "PYTHONNOUSERSITE=1",
+    "UV_OFFLINE=1",
+)
+LEGACY_SYNC_ARGUMENTS = ("sync", "--frozen", "--extra", "test")
 ARTIFACT_NAMES = (
     "engine-configuration.json",
     "instrument-catalog.json",
@@ -182,6 +192,56 @@ def test_materializer_failure_never_calls_production_unlink_or_rmdir(
 
     assert deletion_calls == []
     assert destination.exists()
+
+
+@pytest.mark.parametrize(
+    ("failure_name", "expected_directories"),
+    (
+        ("campaign", {"campaign"}),
+        ("long-accounting", {"campaign", "long-accounting"}),
+    ),
+)
+def test_materializer_open_gap_retains_only_mode_0500_directories_without_delete(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_name: str,
+    expected_directories: set[str],
+) -> None:
+    destination = private_root / "campaign"
+    deletion_calls: list[tuple[str, object]] = []
+    real_open = producers.os.open
+
+    def fail_selected_directory_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == failure_name and kwargs.get("dir_fd") is not None:
+            raise OSError(f"inert {failure_name} open gap")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(producers.os, "open", fail_selected_directory_open)
+    monkeypatch.setattr(
+        producers.os,
+        "unlink",
+        lambda path, **_kwargs: deletion_calls.append(("unlink", path)),
+    )
+    monkeypatch.setattr(
+        producers.os,
+        "rmdir",
+        lambda path, **_kwargs: deletion_calls.append(("rmdir", path)),
+    )
+
+    with pytest.raises(OSError, match=f"inert {failure_name} open gap"):
+        research.materialize_phase4_campaign(destination)
+
+    retained = {destination.name: destination}
+    retained.update(
+        {
+            path.name: path
+            for path in destination.rglob("*")
+            if path.is_dir() and not path.is_symlink()
+        }
+    )
+    assert set(retained) == expected_directories
+    assert all(stat.S_IMODE(path.stat().st_mode) == 0o500 for path in retained.values())
+    assert deletion_calls == []
 
 
 def test_verified_campaign_rejects_a_self_consistent_noncanonical_artifact(
@@ -608,34 +668,38 @@ def _public_research_authorities(
 
     legacy = private_root / "legacy"
     legacy.mkdir(mode=0o700)
-    legacy_environment = {
-        "PATH": os.environ["PATH"],
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "UV_OFFLINE": "1",
-    }
+    discovered_uv = shutil.which("uv")
+    assert discovered_uv is not None
+    uv_path = Path(discovered_uv).resolve(strict=True)
+    assert uv_path.is_absolute()
+    assert uv_path.is_file()
+    assert os.access(uv_path, os.X_OK)
+    sync_command = (*LEGACY_ENV_COMMAND, str(uv_path), *LEGACY_SYNC_ARGUMENTS)
     synced = subprocess.run(
-        ["uv", "sync", "--frozen", "--extra", "test"],
+        sync_command,
         cwd=LEGACY_ROOT,
-        env=legacy_environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
     )
     assert synced.returncode == 0, synced.stderr.decode("utf-8", errors="replace")
+    legacy_commands: list[tuple[str, ...]] = []
     for scenario_id in SCENARIO_IDS:
+        command = (
+            *LEGACY_ENV_COMMAND,
+            *LEGACY_ADAPTER_COMMAND,
+            "--campaign-directory",
+            str(campaign),
+            "--transport-root",
+            str(legacy),
+            "--scenario-id",
+            scenario_id,
+        )
+        legacy_commands.append(command)
         completed = subprocess.run(
-            [
-                *LEGACY_ADAPTER_COMMAND,
-                "--campaign-directory",
-                str(campaign),
-                "--transport-root",
-                str(legacy),
-                "--scenario-id",
-                scenario_id,
-            ],
+            command,
             cwd=REPOSITORY_ROOT,
-            env=legacy_environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -646,6 +710,17 @@ def _public_research_authorities(
         )
         assert completed.stdout == b""
         assert completed.stderr == b""
+    assert len(legacy_commands) == 8
+    assert tuple(command[-1] for command in legacy_commands) == SCENARIO_IDS
+    assert all(
+        command[: len(LEGACY_ENV_COMMAND)] == LEGACY_ENV_COMMAND
+        and command[
+            len(LEGACY_ENV_COMMAND) : len(LEGACY_ENV_COMMAND)
+            + len(LEGACY_ADAPTER_COMMAND)
+        ]
+        == LEGACY_ADAPTER_COMMAND
+        for command in legacy_commands
+    )
     legacy.chmod(0o500)
     return campaign, parity_path, paper_path, legacy
 
@@ -678,6 +753,16 @@ def test_research_producer_derives_complete_campaign_evidence_from_sealed_inputs
 
 
 def test_task8_legacy_adapter_command_is_literal_nested_venv_direct_script() -> None:
+    assert LEGACY_ENV_COMMAND == (
+        "/usr/bin/env",
+        "-i",
+        "PATH=/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "PYTHONHASHSEED=0",
+        "PYTHONNOUSERSITE=1",
+        "UV_OFFLINE=1",
+    )
+    assert LEGACY_SYNC_ARGUMENTS == ("sync", "--frozen", "--extra", "test")
     assert LEGACY_ADAPTER_COMMAND == (
         "legacy/research-backend/.venv/bin/python",
         "legacy/research-backend/nautilus_parity_adapter.py",
