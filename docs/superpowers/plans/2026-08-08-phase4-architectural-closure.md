@@ -566,10 +566,24 @@ folds derived from sealed observations and computes each out-of-sample value
 from that fold's inputs; parity-counting is not a walk-forward calculation.
 All campaign, parity, and legacy snapshot/publication/rollback paths retain
 directory descriptors and inode identities, reject ancestor substitution, and
-never remove a replacement object. Prepared and partially prepared engine
-transport is cleaned with primary-error preservation. The legacy checkout
-boundary covers the canonical repository root and all malformed input/engine
-failures use the finite generic error envelope.
+never remove a replacement object. Because the host filesystem has no atomic
+compare-inode-and-unlink primitive, a failed publication is retained sealed and
+the packet fails closed; production rollback does not unlink or recursively
+remove a shared pathname. Prepared and partially prepared engine transport is
+also retained as sealed forensic state with exact inventory/cardinality, while
+primary failures remain unmasked. The aggregate research load holds each
+record parent/root descriptor across the complete snapshot and rechecks its
+member identity set after parsing. The legacy checkout boundary covers the
+canonical repository root and all malformed input/engine failures use the
+finite generic error envelope.
+
+The legacy adapter runs from the dedicated frozen/offline legacy virtual
+environment without CPython `-I`. This flat project is intentionally marked
+virtual/non-installed, so isolated-mode direct-script startup would remove the
+reviewed component source root before `backtest_engine` can import. Isolation
+here is the dedicated dependency graph plus the adapter's canonical
+repository/external-root boundary; tests and Task 8 use the same literal
+invocation.
 
 - [ ] **Step 4: Gate both dependency graphs, commit, and review.**
 
@@ -729,9 +743,10 @@ python3.11 -I scripts/diagnose_nautilus_v12_runtime_failure.py \
 ```
 
 This is exactly one `long-accounting` through the normal diagnostic harness. Require
-exit zero, empty stderr, one canonical event, one prepare/consume/Popen, empty
-transport, and unchanged forensic identities. Stop and preserve v12-r9 on any
-failure; no retry or matrix is allowed in that packet.
+exit zero, empty stderr, one canonical event, one prepare/consume/Popen, one
+sealed retained diagnostic transport run with its exact two request members,
+and unchanged forensic identities. Stop and preserve v12-r9 on any failure;
+no retry or matrix is allowed in that packet.
 
 - [ ] **Step 4: Run the exact simulation campaign.**
 
@@ -751,7 +766,8 @@ python3.11 -I scripts/verify_nautilus_v12_r3_parity.py \
 ```
 
 Require 8 ordered scenarios × 2 byte-identical normal engine runs, 16/0/0,
-independent root-oracle equality, no stderr/skip, and stable attestation.
+independent root-oracle equality, no stderr/skip, stable attestation, and 16
+sealed retained transport runs with exact request-member inventories.
 
 - [ ] **Step 5: Materialize and run v13 paper compatibility once.**
 
@@ -797,7 +813,7 @@ them inside the closer invocation. Then close evidence:
 mkdir -m 0700 "${phase4_runtime_root}/legacy-records"
 phase4_scenario_ids=(long-accounting short-accounting partial-fill same-bar-stop-take-profit stale-quote zero-liquidity session-boundary event-digest)
 for phase4_scenario_id in "${phase4_scenario_ids[@]}"; do
-  legacy/research-backend/.venv/bin/python -I legacy/research-backend/nautilus_parity_adapter.py \
+  legacy/research-backend/.venv/bin/python legacy/research-backend/nautilus_parity_adapter.py \
     --campaign-directory "${phase4_runtime_root}/campaign" \
     --transport-root "${phase4_runtime_root}/legacy-records" \
     --scenario-id "${phase4_scenario_id}"
