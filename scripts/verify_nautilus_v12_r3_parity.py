@@ -278,11 +278,18 @@ def _verify_reserved_record(
         raise ParityVerificationError("parity record identity changed")
 
 
-def _close_reserved_record(reservation: _ReservedRecord) -> None:
-    try:
-        os.close(reservation.descriptor)
-    finally:
-        os.close(reservation.parent_descriptor)
+def _close_reserved_record(
+    reservation: _ReservedRecord,
+    *,
+    primary: BaseException | None = None,
+) -> BaseException | None:
+    return _close_descriptors(
+        (
+            ("parity record", reservation.descriptor),
+            ("parity record parent", reservation.parent_descriptor),
+        ),
+        primary=primary,
+    )
 
 
 def _reserve_record(
@@ -293,6 +300,7 @@ def _reserve_record(
     parent_descriptor = -1
     descriptor = -1
     reservation: _ReservedRecord | None = None
+    failure: BaseException | None = None
     try:
         parent_descriptor = os.open(
             path.parent,
@@ -331,23 +339,23 @@ def _reserve_record(
         _verify_reserved_record(reservation, expected_size=0)
         return reservation
     except OSError as exc:
-        if reservation is not None:
-            _close_reserved_record(reservation)
-        else:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if parent_descriptor >= 0:
-                os.close(parent_descriptor)
-        raise ParityVerificationError("parity record cannot be reserved") from exc
-    except ParityVerificationError:
-        if reservation is not None:
-            _close_reserved_record(reservation)
-        else:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if parent_descriptor >= 0:
-                os.close(parent_descriptor)
-        raise
+        failure = ParityVerificationError("parity record cannot be reserved")
+        failure.__cause__ = exc
+    except BaseException as exc:
+        failure = exc
+    assert failure is not None
+    if reservation is not None:
+        failure = _close_reserved_record(reservation, primary=failure)
+    else:
+        failure = _close_descriptors(
+            (
+                ("parity record", descriptor),
+                ("parity record parent", parent_descriptor),
+            ),
+            primary=failure,
+        )
+    assert failure is not None
+    raise failure
 
 
 def _validate_matrix(
@@ -408,6 +416,7 @@ def _close_descriptors(
 def _open_transport_campaign(path: Path) -> _TransportCampaign:
     parent_descriptor = -1
     root_descriptor = -1
+    failure: BaseException | None = None
     try:
         parent_descriptor = os.open(
             path.parent,
@@ -450,17 +459,20 @@ def _open_transport_campaign(path: Path) -> _TransportCampaign:
             root_identity=(root.st_dev, root.st_ino),
         )
     except OSError as exc:
-        if root_descriptor >= 0:
-            os.close(root_descriptor)
-        if parent_descriptor >= 0:
-            os.close(parent_descriptor)
-        raise ParityVerificationError("transport campaign is unavailable") from exc
-    except ParityVerificationError:
-        if root_descriptor >= 0:
-            os.close(root_descriptor)
-        if parent_descriptor >= 0:
-            os.close(parent_descriptor)
-        raise
+        failure = ParityVerificationError("transport campaign is unavailable")
+        failure.__cause__ = exc
+    except BaseException as exc:
+        failure = exc
+    assert failure is not None
+    failure = _close_descriptors(
+        (
+            ("transport campaign root", root_descriptor),
+            ("transport campaign parent", parent_descriptor),
+        ),
+        primary=failure,
+    )
+    assert failure is not None
+    raise failure
 
 
 def _close_transport_campaign(campaign: _TransportCampaign) -> None:
@@ -525,13 +537,159 @@ def _create_transport_subroot(
             raise ParityVerificationError("transport subroot is unsafe")
         custody.construction_complete = True
         custody.identity = _transport_identity(opened)
-        os.close(custody.descriptor)
+        descriptor_to_close = custody.descriptor
         custody.descriptor = -1
+        close_failure = _close_descriptors(
+            (("created transport subroot", descriptor_to_close),)
+        )
+        if close_failure is not None:
+            raise close_failure
         return custody.path, (opened.st_dev, opened.st_ino)
     except ParityVerificationError:
         raise
     except OSError as exc:
         raise ParityVerificationError("transport subroot cannot be created") from exc
+
+
+def _seal_provider_run(
+    subroot_descriptor: int,
+    *,
+    run_name: str,
+    expected_snapshot: _RetainedRunSnapshot | None = None,
+) -> tuple[
+    tuple[int, ...],
+    dict[str, tuple[int, ...]],
+    ParityVerificationError | None,
+]:
+    """Seal one descriptor-bound provider run before its containing subroot."""
+
+    run_descriptor = -1
+    member_descriptors: list[tuple[str, int]] = []
+    member_identities: dict[str, tuple[int, ...]] = {}
+    refreshed_run: tuple[int, ...] | None = None
+    failure: BaseException | None = None
+    try:
+        if set(os.listdir(subroot_descriptor)) != {run_name}:
+            raise ParityVerificationError(
+                "provider transport subroot inventory is invalid"
+            )
+        run_descriptor = os.open(
+            run_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=subroot_descriptor,
+        )
+        opened_run = os.fstat(run_descriptor)
+        named_run = os.stat(
+            run_name,
+            dir_fd=subroot_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(opened_run.st_mode)
+            or opened_run.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_run.st_mode) not in {0o700, 0o500}
+            or _transport_identity(opened_run) != _transport_identity(named_run)
+            or (
+                expected_snapshot is not None
+                and _transport_identity(opened_run)
+                != expected_snapshot.run_identity
+            )
+        ):
+            raise ParityVerificationError("provider transport run identity changed")
+        members = {"request.json", "request.sha256"}
+        if set(os.listdir(run_descriptor)) != members:
+            raise ParityVerificationError(
+                "provider transport run inventory is invalid"
+            )
+        for member in sorted(members):
+            descriptor = os.open(
+                member,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=run_descriptor,
+            )
+            member_descriptors.append(
+                (f"sealed provider transport member {member}", descriptor)
+            )
+            opened = os.fstat(descriptor)
+            named = os.stat(
+                member,
+                dir_fd=run_descriptor,
+                follow_symlinks=False,
+            )
+            identity = _transport_identity(opened)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid != os.geteuid()
+                or opened.st_nlink != 1
+                or stat.S_IMODE(opened.st_mode) != 0o400
+                or opened.st_size <= 0
+                or identity != _transport_identity(named)
+                or (
+                    expected_snapshot is not None
+                    and identity
+                    != expected_snapshot.member_identities.get(member)
+                )
+            ):
+                raise ParityVerificationError(
+                    "provider transport member identity changed"
+                )
+            member_identities[member] = identity
+        os.fchmod(run_descriptor, 0o500)
+        os.fsync(run_descriptor)
+        os.fsync(subroot_descriptor)
+        opened_run = os.fstat(run_descriptor)
+        named_run = os.stat(
+            run_name,
+            dir_fd=subroot_descriptor,
+            follow_symlinks=False,
+        )
+        refreshed_run = _transport_identity(opened_run)
+        if (
+            refreshed_run != _transport_identity(named_run)
+            or stat.S_IMODE(opened_run.st_mode) != 0o500
+            or set(os.listdir(run_descriptor)) != members
+        ):
+            raise ParityVerificationError(
+                "provider transport run could not be sealed"
+            )
+        for member, expected in member_identities.items():
+            if _transport_identity(
+                os.stat(
+                    member,
+                    dir_fd=run_descriptor,
+                    follow_symlinks=False,
+                )
+            ) != expected:
+                raise ParityVerificationError(
+                    "provider transport member identity changed"
+                )
+    except OSError as exc:
+        failure = ParityVerificationError(
+            "provider transport run cannot be sealed"
+        )
+        failure.__cause__ = exc
+    except BaseException as exc:
+        failure = exc
+    finally:
+        failure = _close_descriptors(
+            (
+                *member_descriptors,
+                ("sealed provider transport run", run_descriptor),
+            ),
+            primary=failure,
+        )
+    if failure is not None and refreshed_run is None:
+        raise failure
+    assert refreshed_run is not None
+    if failure is None:
+        return refreshed_run, member_identities, None
+    assert isinstance(failure, ParityVerificationError)
+    return refreshed_run, member_identities, failure
 
 
 def _seal_failed_subroot(
@@ -543,8 +701,8 @@ def _seal_failed_subroot(
     if not custody.created:
         return
     descriptor = custody.descriptor
-    inspection_descriptor = -1
     failure: BaseException | None = None
+    close_failure: ParityVerificationError | None = None
     try:
         if descriptor < 0 and custody.construction_complete:
             descriptor = os.open(
@@ -565,8 +723,23 @@ def _seal_failed_subroot(
                 raise ParityVerificationError(
                     "failed transport subroot identity changed"
                 )
+            subroot_entries = set(os.listdir(descriptor))
+            if subroot_entries:
+                run_name = f"run-{envelope.engine_run_id.hex}"
+                run_identity, member_identities, close_failure = (
+                    _seal_provider_run(
+                        descriptor,
+                        run_name=run_name,
+                        expected_snapshot=custody.snapshot,
+                    )
+                )
+            else:
+                run_name = ""
+                run_identity = ()
+                member_identities = {}
             os.fchmod(descriptor, 0o500)
             os.fsync(descriptor)
+            os.fsync(campaign.root_descriptor)
             opened = os.fstat(descriptor)
             named = os.stat(
                 custody.name,
@@ -581,6 +754,26 @@ def _seal_failed_subroot(
                     "failed transport subroot could not be sealed"
                 )
             custody.identity = _transport_identity(opened)
+            if subroot_entries:
+                custody.snapshot = _RetainedRunSnapshot(
+                    root_identity=custody.identity,
+                    run_name=run_name,
+                    run_identity=run_identity,
+                    member_identities=member_identities,
+                )
+                validated = _validate_retained_transport_run(
+                    custody.path,
+                    envelope,
+                    expected_root_identity=(
+                        custody.identity[0],
+                        custody.identity[1],
+                    ),
+                    expected_root_mode=0o500,
+                    expected_run_mode=0o500,
+                )
+                custody.snapshot = validated
+            if close_failure is not None:
+                raise close_failure
         else:
             named = os.stat(
                 custody.name,
@@ -599,24 +792,6 @@ def _seal_failed_subroot(
                     "failed transport subroot identity changed"
                 )
             custody.identity = _transport_identity(named)
-        inspection_descriptor = descriptor
-        if inspection_descriptor < 0:
-            inspection_descriptor = os.open(
-                custody.name,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=campaign.root_descriptor,
-            )
-        subroot_entries = set(os.listdir(inspection_descriptor))
-        if subroot_entries:
-            custody.snapshot = _validate_retained_transport_run(
-                custody.path,
-                envelope,
-                expected_root_identity=(custody.identity[0], custody.identity[1]),
-                expected_root_mode=0o500,
-            )
     except ParityVerificationError as exc:
         failure = exc
     except OSError as exc:
@@ -628,10 +803,7 @@ def _seal_failed_subroot(
     finally:
         custody.descriptor = -1
         failure = _close_descriptors(
-            (
-                ("failed subroot inspection", inspection_descriptor),
-                ("failed subroot custody", descriptor),
-            ),
+            (("failed subroot custody", descriptor),),
             primary=failure,
         )
     if failure is not None:
@@ -645,7 +817,6 @@ def _seal_completed_subroot(
     snapshot: _RetainedRunSnapshot,
 ) -> tuple[_RetainedRunSnapshot, ParityVerificationError | None]:
     subroot_descriptor = -1
-    run_descriptor = -1
     refreshed: _RetainedRunSnapshot | None = None
     failure: BaseException | None = None
     try:
@@ -679,6 +850,11 @@ def _seal_completed_subroot(
             raise ParityVerificationError(
                 "completed transport subroot inventory changed"
             )
+        run_identity, member_identities, failure = _seal_provider_run(
+            subroot_descriptor,
+            run_name=snapshot.run_name,
+            expected_snapshot=snapshot,
+        )
         os.fchmod(subroot_descriptor, 0o500)
         os.fsync(subroot_descriptor)
         os.fsync(campaign.root_descriptor)
@@ -695,39 +871,11 @@ def _seal_completed_subroot(
             raise ParityVerificationError(
                 "completed transport subroot could not be sealed"
             )
-        run_descriptor = os.open(
-            snapshot.run_name,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=subroot_descriptor,
-        )
-        if (
-            _transport_identity(os.fstat(run_descriptor))
-            != snapshot.run_identity
-            or set(os.listdir(run_descriptor))
-            != set(snapshot.member_identities)
-        ):
-            raise ParityVerificationError(
-                "completed transport run identity changed"
-            )
-        for member, expected in snapshot.member_identities.items():
-            if _transport_identity(
-                os.stat(
-                    member,
-                    dir_fd=run_descriptor,
-                    follow_symlinks=False,
-                )
-            ) != expected:
-                raise ParityVerificationError(
-                    "completed transport member identity changed"
-                )
         refreshed = _RetainedRunSnapshot(
             root_identity=_transport_identity(opened),
             run_name=snapshot.run_name,
-            run_identity=snapshot.run_identity,
-            member_identities=snapshot.member_identities,
+            run_identity=run_identity,
+            member_identities=member_identities,
         )
     except ParityVerificationError as exc:
         failure = exc
@@ -739,10 +887,7 @@ def _seal_completed_subroot(
         failure = exc
     finally:
         failure = _close_descriptors(
-            (
-                ("completed transport run", run_descriptor),
-                ("completed transport subroot", subroot_descriptor),
-            ),
+            (("completed transport subroot", subroot_descriptor),),
             primary=failure,
         )
     if failure is not None and refreshed is None:
@@ -872,6 +1017,8 @@ def _verify_transport_campaign(
             if (
                 _transport_identity(os.fstat(run_descriptor))
                 != snapshot.run_identity
+                or stat.S_IMODE(os.fstat(run_descriptor).st_mode)
+                != (0o500 if completed_root_mode == 0o500 else 0o700)
                 or set(os.listdir(run_descriptor))
                 != set(snapshot.member_identities)
             ):
@@ -955,6 +1102,7 @@ def _verify_transport_campaign(
                 if (
                     _transport_identity(os.fstat(run_descriptor))
                     != current.snapshot.run_identity
+                    or stat.S_IMODE(os.fstat(run_descriptor).st_mode) != 0o500
                     or set(os.listdir(run_descriptor))
                     != set(current.snapshot.member_identities)
                 ):
@@ -1012,13 +1160,17 @@ def _validate_retained_transport_run(
     *,
     expected_root_identity: tuple[int, int] | None = None,
     expected_root_mode: int = 0o700,
+    expected_run_mode: int = 0o700,
 ) -> _RetainedRunSnapshot:
     """Validate one retained provider run without mutating shared pathnames."""
 
     root_descriptor = -1
     run_descriptor = -1
+    member_descriptors: list[tuple[str, int]] = []
     member_identities: dict[str, tuple[int, ...]] = {}
     run_name = f"run-{envelope.engine_run_id.hex}"
+    result: _RetainedRunSnapshot | None = None
+    failure: BaseException | None = None
     try:
         root_descriptor = os.open(
             transport_root,
@@ -1060,7 +1212,7 @@ def _validate_retained_transport_run(
         if (
             not stat.S_ISDIR(opened_run.st_mode)
             or opened_run.st_uid != os.geteuid()
-            or stat.S_IMODE(opened_run.st_mode) != 0o700
+            or stat.S_IMODE(opened_run.st_mode) != expected_run_mode
             or _transport_identity(opened_run) != _transport_identity(named_run)
         ):
             raise ParityVerificationError("provider transport run is unsafe")
@@ -1077,27 +1229,27 @@ def _validate_retained_transport_run(
                 | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=run_descriptor,
             )
-            try:
-                opened = os.fstat(descriptor)
-                named = os.stat(
-                    name,
-                    dir_fd=run_descriptor,
-                    follow_symlinks=False,
+            member_descriptors.append(
+                (f"provider transport member {name}", descriptor)
+            )
+            opened = os.fstat(descriptor)
+            named = os.stat(
+                name,
+                dir_fd=run_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_uid != os.geteuid()
+                or opened.st_nlink != 1
+                or stat.S_IMODE(opened.st_mode) != 0o400
+                or opened.st_size <= 0
+                or _transport_identity(opened) != _transport_identity(named)
+            ):
+                raise ParityVerificationError(
+                    "provider transport member is unsafe"
                 )
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or opened.st_uid != os.geteuid()
-                    or opened.st_nlink != 1
-                    or stat.S_IMODE(opened.st_mode) != 0o400
-                    or opened.st_size <= 0
-                    or _transport_identity(opened) != _transport_identity(named)
-                ):
-                    raise ParityVerificationError(
-                        "provider transport member is unsafe"
-                    )
-                member_identities[name] = _transport_identity(opened)
-            finally:
-                os.close(descriptor)
+            member_identities[name] = _transport_identity(opened)
         named_root = transport_root.lstat()
         if (
             (named_root.st_dev, named_root.st_ino)
@@ -1120,21 +1272,32 @@ def _validate_retained_transport_run(
                 raise ParityVerificationError(
                     "provider transport member identity changed"
                 )
-        return _RetainedRunSnapshot(
+        result = _RetainedRunSnapshot(
             root_identity=_transport_identity(os.fstat(root_descriptor)),
             run_name=run_name,
             run_identity=_transport_identity(os.fstat(run_descriptor)),
             member_identities=member_identities,
         )
     except OSError as exc:
-        raise ParityVerificationError(
+        failure = ParityVerificationError(
             "provider transport run cannot be inspected"
-        ) from exc
+        )
+        failure.__cause__ = exc
+    except BaseException as exc:
+        failure = exc
     finally:
-        if run_descriptor >= 0:
-            os.close(run_descriptor)
-        if root_descriptor >= 0:
-            os.close(root_descriptor)
+        failure = _close_descriptors(
+            (
+                *member_descriptors,
+                ("provider transport run", run_descriptor),
+                ("provider transport root", root_descriptor),
+            ),
+            primary=failure,
+        )
+    if failure is not None:
+        raise failure
+    assert result is not None
+    return result
 
 
 def _launch_once(
@@ -1279,6 +1442,7 @@ def _write_record(
 ) -> None:
     value = canonical_json_bytes(record) + b"\n"
     reservation = _reserve_record(path, parent_identity=parent_identity)
+    failure: BaseException | None = None
     try:
         _verify_reserved_record(reservation, expected_size=0)
         remaining = memoryview(value)
@@ -1289,14 +1453,17 @@ def _write_record(
             remaining = remaining[written:]
         os.fsync(reservation.descriptor)
         _verify_reserved_record(reservation, expected_size=len(value))
-    except ParityVerificationError:
-        raise
     except OSError as exc:
-        raise ParityVerificationError(
+        failure = ParityVerificationError(
             "parity evidence record cannot be sealed"
-        ) from exc
+        )
+        failure.__cause__ = exc
+    except BaseException as exc:
+        failure = exc
     finally:
-        _close_reserved_record(reservation)
+        failure = _close_reserved_record(reservation, primary=failure)
+    if failure is not None:
+        raise failure
 
 
 def _run_parity_matrix(

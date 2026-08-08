@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,8 +81,47 @@ DIGEST_FIELDS = (
 )
 
 
-def _preflight_legacy_uv() -> Path:
-    path = LEGACY_UV_PATH
+@dataclass(frozen=True, slots=True)
+class _RetainedUvAuthority:
+    descriptor: int
+    path: Path
+    identity: tuple[int, ...]
+
+    @property
+    def exec_path(self) -> str:
+        return f"/proc/self/fd/{self.descriptor}"
+
+
+def _uv_identity(observed: os.stat_result) -> tuple[int, ...]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_uid,
+        observed.st_gid,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _digest_retained_descriptor(descriptor: int) -> str:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def _open_retained_uv_authority(
+    path: Path,
+    *,
+    expected_sha256: str,
+) -> _RetainedUvAuthority:
     resolved = path.resolve(strict=True)
     named_before = path.lstat()
     if (
@@ -100,50 +140,66 @@ def _preflight_legacy_uv() -> Path:
     )
     try:
         opened_before = os.fstat(descriptor)
-        digest = hashlib.sha256()
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
+        digest = _digest_retained_descriptor(descriptor)
         opened_after = os.fstat(descriptor)
-    finally:
-        os.close(descriptor)
-    named_after = path.lstat()
-
-    def identity(observed: os.stat_result) -> tuple[int, ...]:
-        return (
-            observed.st_dev,
-            observed.st_ino,
-            observed.st_mode,
-            observed.st_uid,
-            observed.st_gid,
-            observed.st_size,
-            observed.st_mtime_ns,
-            observed.st_ctime_ns,
+        named_after = path.lstat()
+        if (
+            _uv_identity(named_before) != _uv_identity(opened_before)
+            or _uv_identity(opened_before) != _uv_identity(opened_after)
+            or _uv_identity(opened_after) != _uv_identity(named_after)
+            or digest != expected_sha256
+        ):
+            raise AssertionError("legacy uv authority identity changed")
+        return _RetainedUvAuthority(
+            descriptor=descriptor,
+            path=path,
+            identity=_uv_identity(opened_after),
         )
-    if (
-        identity(named_before)
-        != identity(opened_before)
-        or identity(opened_before) != identity(opened_after)
-        or identity(opened_after) != identity(named_after)
-        or digest.hexdigest() != LEGACY_UV_SHA256
-    ):
-        raise AssertionError("legacy uv authority identity changed")
-    version = subprocess.run(
-        (str(path), "--version"),
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _run_retained_uv(
+    authority: _RetainedUvAuthority,
+    arguments: tuple[str, ...],
+    *,
+    clean_env: bool,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    command = (
+        (*LEGACY_ENV_COMMAND, authority.exec_path, *arguments)
+        if clean_env
+        else (authority.exec_path, *arguments)
+    )
+    return subprocess.run(
+        command,
+        cwd=cwd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        pass_fds=(authority.descriptor,),
     )
+
+
+def _recheck_retained_uv_authority(
+    authority: _RetainedUvAuthority,
+    path: Path,
+    *,
+    expected_sha256: str,
+) -> None:
+    opened_before = os.fstat(authority.descriptor)
+    digest = _digest_retained_descriptor(authority.descriptor)
+    opened_after = os.fstat(authority.descriptor)
+    named = path.lstat()
     if (
-        version.returncode != 0
-        or version.stdout != f"{LEGACY_UV_VERSION}\n".encode("ascii")
-        or version.stderr != b""
+        _uv_identity(opened_before) != authority.identity
+        or _uv_identity(opened_after) != authority.identity
+        or _uv_identity(named) != authority.identity
+        or digest != expected_sha256
     ):
-        raise AssertionError("legacy uv authority version changed")
-    return path
+        raise AssertionError("legacy uv authority identity changed")
 
 
 @pytest.fixture
@@ -788,17 +844,35 @@ def _public_research_authorities(
 
     legacy = private_root / "legacy"
     legacy.mkdir(mode=0o700)
-    uv_path = _preflight_legacy_uv()
-    sync_command = (*LEGACY_ENV_COMMAND, str(uv_path), *LEGACY_SYNC_ARGUMENTS)
-    synced = subprocess.run(
-        sync_command,
-        cwd=LEGACY_ROOT,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    uv_authority = _open_retained_uv_authority(
+        LEGACY_UV_PATH,
+        expected_sha256=LEGACY_UV_SHA256,
     )
-    assert synced.returncode == 0, synced.stderr.decode("utf-8", errors="replace")
+    try:
+        version = _run_retained_uv(
+            uv_authority,
+            ("--version",),
+            clean_env=False,
+        )
+        assert version.returncode == 0
+        assert version.stdout == f"{LEGACY_UV_VERSION}\n".encode("ascii")
+        assert version.stderr == b""
+        synced = _run_retained_uv(
+            uv_authority,
+            LEGACY_SYNC_ARGUMENTS,
+            clean_env=True,
+            cwd=LEGACY_ROOT,
+        )
+        assert synced.returncode == 0, synced.stderr.decode(
+            "utf-8", errors="replace"
+        )
+        _recheck_retained_uv_authority(
+            uv_authority,
+            LEGACY_UV_PATH,
+            expected_sha256=LEGACY_UV_SHA256,
+        )
+    finally:
+        os.close(uv_authority.descriptor)
     legacy_commands: list[tuple[str, ...]] = []
     for scenario_id in SCENARIO_IDS:
         command = (
@@ -873,7 +947,23 @@ def test_task8_legacy_adapter_command_is_literal_nested_venv_direct_script() -> 
         "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
     )
     assert LEGACY_UV_VERSION == "uv 0.11.7 (x86_64-unknown-linux-gnu)"
-    assert _preflight_legacy_uv() == LEGACY_UV_PATH
+    authority = _open_retained_uv_authority(
+        LEGACY_UV_PATH,
+        expected_sha256=LEGACY_UV_SHA256,
+    )
+    try:
+        assert authority.exec_path == f"/proc/self/fd/{authority.descriptor}"
+        version = _run_retained_uv(authority, ("--version",), clean_env=False)
+        assert version.returncode == 0
+        assert version.stdout == f"{LEGACY_UV_VERSION}\n".encode("ascii")
+        assert version.stderr == b""
+        _recheck_retained_uv_authority(
+            authority,
+            LEGACY_UV_PATH,
+            expected_sha256=LEGACY_UV_SHA256,
+        )
+    finally:
+        os.close(authority.descriptor)
     assert LEGACY_ENV_COMMAND == (
         "/usr/bin/env",
         "-i",
@@ -889,6 +979,40 @@ def test_task8_legacy_adapter_command_is_literal_nested_venv_direct_script() -> 
         "legacy/research-backend/nautilus_parity_adapter.py",
     )
     assert "-I" not in LEGACY_ADAPTER_COMMAND
+
+
+def test_retained_uv_fd_executes_verified_inode_and_rejects_named_swap(
+    private_root: Path,
+) -> None:
+    tool = private_root / "uv-fixture"
+    original = b"#!/bin/sh\nprintf 'uv-test-original\\n'\n"
+    replacement = b"#!/bin/sh\nprintf 'uv-test-replacement\\n'\n"
+    tool.write_bytes(original)
+    tool.chmod(0o755)
+    expected_sha256 = hashlib.sha256(original).hexdigest()
+    authority = _open_retained_uv_authority(
+        tool,
+        expected_sha256=expected_sha256,
+    )
+    displaced = private_root / "uv-fixture.displaced"
+    try:
+        tool.rename(displaced)
+        tool.write_bytes(replacement)
+        tool.chmod(0o755)
+
+        executed = _run_retained_uv(authority, (), clean_env=False)
+
+        assert executed.returncode == 0
+        assert executed.stdout == b"uv-test-original\n"
+        assert executed.stderr == b""
+        with pytest.raises(AssertionError, match="identity changed"):
+            _recheck_retained_uv_authority(
+                authority,
+                tool,
+                expected_sha256=expected_sha256,
+            )
+    finally:
+        os.close(authority.descriptor)
 
 
 def test_research_snapshot_rejects_equivalent_parity_parent_substitution(

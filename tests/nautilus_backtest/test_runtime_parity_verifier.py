@@ -291,7 +291,12 @@ def _verify(paths: dict[str, Path], harness: _Harness, **overrides):
     return verifier.verify_nautilus_v12_r3_parity(**arguments)
 
 
-def _assert_retained_runs(transport_root: Path, *, expected_count: int) -> None:
+def _assert_retained_runs(
+    transport_root: Path,
+    *,
+    expected_count: int,
+    expected_run_mode: int = 0o700,
+) -> None:
     run_directories = tuple(
         path
         for path in transport_root.rglob("run-*")
@@ -299,7 +304,7 @@ def _assert_retained_runs(transport_root: Path, *, expected_count: int) -> None:
     )
     assert len(run_directories) == expected_count
     for run_directory in run_directories:
-        assert stat.S_IMODE(run_directory.stat().st_mode) == 0o700
+        assert stat.S_IMODE(run_directory.stat().st_mode) == expected_run_mode
         assert {path.name for path in run_directory.iterdir()} == {
             "request.json",
             "request.sha256",
@@ -324,7 +329,7 @@ def _assert_sealed_retained_prefix(
         run_directories = tuple(subroot.iterdir())
         assert len(run_directories) == 1
         run_directory = run_directories[0]
-        assert stat.S_IMODE(run_directory.stat().st_mode) == 0o700
+        assert stat.S_IMODE(run_directory.stat().st_mode) == 0o500
         members = {path.name: path for path in run_directory.iterdir()}
         assert set(members) == {"request.json", "request.sha256"}
         for member in members.values():
@@ -343,6 +348,8 @@ def _assert_sealed_retained_prefix(
                 assert stat.S_IMODE(opened.st_mode) == 0o400
             finally:
                 os.close(descriptor)
+        with pytest.raises(PermissionError):
+            os.unlink(run_directory / "request.json")
 
 
 def test_launch_uses_exact_built_authority_and_closes_fds_before_wait() -> None:
@@ -560,6 +567,64 @@ def test_verifier_rejects_nonempty_or_public_transport_root(
         _verify(external_paths, _Harness())
 
 
+def test_transport_open_close_failure_preserves_primary_and_attempts_both_descriptors(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = verifier.ParityVerificationError("primary transport open failure")
+    real_open = verifier.os.open
+    real_close = verifier.os.close
+    real_listdir = verifier.os.listdir
+    opened: list[int] = []
+    close_attempts: list[int] = []
+    injected_body = False
+    injected_close = False
+
+    def tracked_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def fail_body_once(path):
+        nonlocal injected_body
+        if not injected_body and isinstance(path, int) and path in opened:
+            injected_body = True
+            raise primary
+        return real_listdir(path)
+
+    def fail_first_close(descriptor: int) -> None:
+        nonlocal injected_close
+        close_attempts.append(descriptor)
+        if not injected_close:
+            injected_close = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    monkeypatch.setattr(verifier.os, "open", tracked_open)
+    monkeypatch.setattr(verifier.os, "listdir", fail_body_once)
+    monkeypatch.setattr(verifier.os, "close", fail_first_close)
+
+    try:
+        with pytest.raises(verifier.ParityVerificationError) as observed:
+            verifier._open_transport_campaign(external_paths["transport_root"])
+    finally:
+        for descriptor in opened:
+            if descriptor not in close_attempts:
+                real_close(descriptor)
+
+    assert observed.value is primary
+    assert set(close_attempts) == set(opened)
+    _assert_type_only_close_note(primary)
+
+
+def test_parity_verifier_routes_every_descriptor_close_through_one_collector() -> None:
+    source = Path(verifier.__file__).read_text(encoding="utf-8")
+
+    assert source.count("os.close(") == 1
+    assert "os.close(descriptor)" in source
+
+
 def test_verifier_rejects_record_inside_checkout(
     external_paths: dict[str, Path],
 ) -> None:
@@ -593,7 +658,11 @@ def test_verifier_retains_partial_transport_when_prepare_fails_after_publication
     with pytest.raises(EngineSpawnError, match="prepare authority changed"):
         _verify(external_paths, harness)
 
-    _assert_retained_runs(external_paths["transport_root"], expected_count=1)
+    _assert_retained_runs(
+        external_paths["transport_root"],
+        expected_count=1,
+        expected_run_mode=0o500,
+    )
     retained_subroot = next(external_paths["transport_root"].iterdir())
     assert retained_subroot.name == "parity-long-accounting-run-1"
     assert stat.S_IMODE(retained_subroot.stat().st_mode) == 0o500
@@ -706,7 +775,11 @@ def test_verifier_preserves_primary_failure_when_forensic_validation_also_fails(
         _verify(external_paths, harness)
 
     assert any("forensic" in note for note in observed.value.__notes__)
-    _assert_retained_runs(external_paths["transport_root"], expected_count=1)
+    _assert_retained_runs(
+        external_paths["transport_root"],
+        expected_count=1,
+        expected_run_mode=0o500,
+    )
 
 
 def _assert_type_only_close_note(error: BaseException) -> None:
@@ -879,6 +952,75 @@ def test_verifier_preserves_primary_when_transport_campaign_close_fails(
     _assert_type_only_close_note(primary)
 
 
+def test_verifier_retained_run_close_failure_attempts_root_and_preserves_primary(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary prepare failure")
+    harness = _Harness(prepare_error_after_transport=primary)
+    real_validate = verifier._validate_retained_transport_run
+    real_verify = verifier._verify_transport_campaign
+    real_open = verifier.os.open
+    real_close = verifier.os.close
+    in_retained_validation = False
+    root_descriptor = -1
+    run_descriptor = -1
+    close_attempts: list[int] = []
+    close_failed = False
+    validation_calls = 0
+
+    def tracked_validate(*args, **kwargs):
+        nonlocal in_retained_validation
+        in_retained_validation = True
+        try:
+            return real_validate(*args, **kwargs)
+        finally:
+            in_retained_validation = False
+
+    def tracked_open(path, flags, *args, **kwargs):
+        nonlocal root_descriptor, run_descriptor
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if in_retained_validation:
+            if isinstance(path, Path) and root_descriptor < 0:
+                root_descriptor = descriptor
+            elif os.fspath(path).startswith("run-") and run_descriptor < 0:
+                run_descriptor = descriptor
+        return descriptor
+
+    def fail_run_close(descriptor: int) -> None:
+        nonlocal close_failed
+        close_attempts.append(descriptor)
+        if descriptor == run_descriptor and not close_failed:
+            close_failed = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    def counted_verify(*args, **kwargs):
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_validate_retained_transport_run", tracked_validate)
+    monkeypatch.setattr(verifier, "_verify_transport_campaign", counted_verify)
+    monkeypatch.setattr(verifier.os, "open", tracked_open)
+    monkeypatch.setattr(verifier.os, "close", fail_run_close)
+
+    try:
+        with pytest.raises(EngineSpawnError) as observed:
+            _verify(external_paths, harness)
+    finally:
+        if root_descriptor >= 0 and root_descriptor not in close_attempts:
+            real_close(root_descriptor)
+
+    assert observed.value is primary
+    assert close_failed is True
+    assert run_descriptor in close_attempts
+    assert root_descriptor in close_attempts
+    assert validation_calls == 1
+    _assert_type_only_close_note(primary)
+
+
 def test_verifier_normalizes_transport_campaign_close_failure_without_primary(
     external_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -911,6 +1053,111 @@ def test_verifier_normalizes_transport_campaign_close_failure_without_primary(
         _verify(external_paths, _Harness())
 
     assert close_failed is True
+
+
+def test_record_reservation_close_failure_preserves_primary_and_attempts_both_descriptors(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = verifier.ParityVerificationError("primary reservation failure")
+    real_open = verifier.os.open
+    real_close = verifier.os.close
+    opened: list[int] = []
+    close_attempts: list[int] = []
+    close_failed = False
+
+    def tracked_open(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def fail_first_close(descriptor: int) -> None:
+        nonlocal close_failed
+        close_attempts.append(descriptor)
+        if not close_failed:
+            close_failed = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    monkeypatch.setattr(verifier.os, "open", tracked_open)
+    monkeypatch.setattr(verifier.os, "close", fail_first_close)
+    monkeypatch.setattr(
+        verifier,
+        "_verify_reserved_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(primary),
+    )
+
+    parent_identity = verifier._validate_record_path(
+        external_paths["record"],
+        transport_root=external_paths["transport_root"],
+    )
+    with pytest.raises(verifier.ParityVerificationError) as observed:
+        verifier._reserve_record(
+            external_paths["record"],
+            parent_identity=parent_identity,
+        )
+
+    assert observed.value is primary
+    assert set(close_attempts) == set(opened)
+    _assert_type_only_close_note(primary)
+
+
+def test_record_write_close_failure_preserves_primary_and_attempts_both_descriptors(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = verifier.ParityVerificationError("primary record write failure")
+    real_reserve = verifier._reserve_record
+    real_verify_reserved = verifier._verify_reserved_record
+    real_close = verifier.os.close
+    reservation = None
+    reservation_ready = False
+    close_attempts: list[int] = []
+    close_failed = False
+
+    def tracked_reserve(*args, **kwargs):
+        nonlocal reservation, reservation_ready
+        reservation = real_reserve(*args, **kwargs)
+        reservation_ready = True
+        return reservation
+
+    def fail_write_verification(*args, **kwargs):
+        if reservation_ready:
+            raise primary
+        return real_verify_reserved(*args, **kwargs)
+
+    def fail_first_close(descriptor: int) -> None:
+        nonlocal close_failed
+        close_attempts.append(descriptor)
+        if not close_failed:
+            close_failed = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    monkeypatch.setattr(verifier, "_reserve_record", tracked_reserve)
+    monkeypatch.setattr(verifier, "_verify_reserved_record", fail_write_verification)
+    monkeypatch.setattr(verifier.os, "close", fail_first_close)
+
+    parent_identity = verifier._validate_record_path(
+        external_paths["record"],
+        transport_root=external_paths["transport_root"],
+    )
+    with pytest.raises(verifier.ParityVerificationError) as observed:
+        verifier._write_record(
+            external_paths["record"],
+            {},
+            parent_identity=parent_identity,
+        )
+
+    assert observed.value is primary
+    assert reservation is not None
+    assert set(close_attempts) == {
+        reservation.descriptor,
+        reservation.parent_descriptor,
+    }
+    _assert_type_only_close_note(primary)
 
 
 def test_verifier_rejects_record_parent_substitution_during_publication(
