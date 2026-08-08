@@ -529,6 +529,35 @@ def test_materializer_publishes_only_exact_sealed_inventory_atomically(
     assert _sha256(binary) == binary_sha256
 
 
+def test_materializer_accepts_only_the_expected_cargo_hardlinked_release_output(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    policy = _task3_policy(module)
+    build_root = module._create_build_root(native_tmp_path, "private-build")
+
+    def cargo_build(*_args, **_kwargs):
+        output = build_root / "target" / TARGET / "release" / "nautilus-sealed-uv-exec"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        backing = output.with_name("backing-artifact")
+        backing.write_bytes(b"cargo-hardlinked-output")
+        backing.chmod(0o500)
+        os.link(backing, output)
+        assert output.stat().st_nlink == 2
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(module.subprocess, "run", cargo_build)
+
+    output = module._build_once(
+        policy,
+        build_root,
+        cargo=Path("/tmp/cargo"),
+        llvm_toolchain=Path("/tmp/llvm"),
+    )
+
+    assert output.stat().st_nlink == 2
+
+
 def test_materialized_inventory_rejects_an_extra_file(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

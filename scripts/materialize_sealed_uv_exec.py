@@ -335,10 +335,89 @@ def _build_once(
     except (OSError, subprocess.SubprocessError) as error:
         raise MaterializationError("sealed UV executor offline build failed") from error
     binary = build_root / "target" / str(policy["target_triple"]) / "release" / str(policy["binary_name"])
-    _require_direct_file(binary, "built sealed UV executor")
-    if binary.stat().st_size <= 0:
+    info = _require_build_output(binary, "built sealed UV executor")
+    if info.st_size <= 0:
         raise MaterializationError("built sealed UV executor is empty")
     return binary
+
+
+def _require_build_output(path: Path, label: str) -> os.stat_result:
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise MaterializationError(f"{label} is missing") from error
+    if (
+        path.is_symlink()
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_nlink < 1
+        or info.st_uid != os.geteuid()
+        or not info.st_mode & stat.S_IXUSR
+        or info.st_mode & 0o022
+    ):
+        raise MaterializationError(f"{label} is not a private release output")
+    return info
+
+
+def _open_build_output(path: Path, build_root: Path, policy: dict[str, object]) -> tuple[int, int, str]:
+    expected = (
+        build_root
+        / "target"
+        / str(policy["target_triple"])
+        / "release"
+        / str(policy["binary_name"])
+    )
+    if path != expected:
+        raise MaterializationError("built sealed UV executor path is not the expected release output")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as error:
+        raise MaterializationError("built sealed UV executor cannot be opened safely") from error
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink < 1
+            or info.st_uid != os.geteuid()
+            or not info.st_mode & stat.S_IXUSR
+            or info.st_mode & 0o022
+            or info.st_size <= 0
+        ):
+            raise MaterializationError("built sealed UV executor descriptor is unsafe")
+        digest = hashlib.sha256()
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor, info.st_size, digest.hexdigest()
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _copy_open_build_output(source_fd: int, destination: Path) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    try:
+        destination_fd = os.open(destination, flags, BINARY_MODE)
+    except OSError as error:
+        raise MaterializationError("sealed UV executor destination cannot be created") from error
+    try:
+        while True:
+            block = os.read(source_fd, 1024 * 1024)
+            if not block:
+                break
+            view = memoryview(block)
+            while view:
+                written = os.write(destination_fd, view)
+                if written <= 0:
+                    raise MaterializationError("sealed UV executor destination write failed")
+                view = view[written:]
+        os.fsync(destination_fd)
+    except BaseException:
+        os.close(destination_fd)
+        raise
+    os.close(destination_fd)
 
 
 def _renameat2_noreplace(parent_fd: int, source_name: bytes, destination_name: bytes) -> None:
@@ -452,10 +531,18 @@ def materialize(
         second_root = _create_build_root(stage, "second-build")
         first = _build_once(policy, first_root, cargo, llvm_toolchain)
         second = _build_once(policy, second_root, cargo, llvm_toolchain)
-        if first.stat().st_size != second.stat().st_size or _sha256(first) != _sha256(second):
-            raise MaterializationError("sealed UV executor builds are not reproducible")
-        binary = stage / str(policy["binary_name"])
-        shutil.copyfile(first, binary)
+        first_fd, first_size, first_digest = _open_build_output(first, first_root, policy)
+        try:
+            second_fd, second_size, second_digest = _open_build_output(second, second_root, policy)
+            try:
+                if first_size != second_size or first_digest != second_digest:
+                    raise MaterializationError("sealed UV executor builds are not reproducible")
+            finally:
+                os.close(second_fd)
+            binary = stage / str(policy["binary_name"])
+            _copy_open_build_output(first_fd, binary)
+        finally:
+            os.close(first_fd)
         binary.chmod(BINARY_MODE)
         _cleanup_staging(first_root)
         _cleanup_staging(second_root)
