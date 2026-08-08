@@ -139,7 +139,9 @@ def _reject_symlink_ancestors(path: Path, label: str, *, include_leaf: bool = Tr
             raise MaterializationError(f"{label} has a symlinked ancestor")
 
 
-def _repository_file(relative: object, label: str) -> Path:
+def _repository_file(
+    relative: object, label: str, *, repository_root: Path | None = None
+) -> Path:
     if not isinstance(relative, str):
         raise MaterializationError(f"{label} path is invalid")
     pure = PurePosixPath(relative)
@@ -150,7 +152,8 @@ def _repository_file(relative: object, label: str) -> Path:
         or any(part in {"", ".", ".."} for part in pure.parts)
     ):
         raise MaterializationError(f"{label} path is invalid")
-    path = ROOT.joinpath(*pure.parts)
+    root = ROOT if repository_root is None else repository_root
+    path = root.joinpath(*pure.parts)
     _require_direct_file(path, label)
     return path
 
@@ -184,11 +187,47 @@ def load_policy(path: Path) -> dict[str, object]:
     return _validate_policy(document)
 
 
-def _verify_policy_sources(policy: dict[str, object]) -> None:
+def _git_source_commit_output(repository_root: Path, arguments: list[str]) -> bytes:
+    try:
+        completed = subprocess.run(
+            arguments,
+            check=False,
+            cwd=repository_root,
+            env={"LC_ALL": "C", "LANG": "C", "PATH": "/usr/bin:/bin"},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise MaterializationError("sealed UV executor source commit is unavailable") from error
+    if completed.returncode != 0:
+        raise MaterializationError("sealed UV executor source commit is unavailable")
+    return completed.stdout
+
+
+def _verify_policy_source_commit(
+    policy: dict[str, object], *, repository_root: Path | None = None
+) -> None:
+    root = ROOT if repository_root is None else repository_root
+    source_commit = str(policy["source_commit"])
+    _git_source_commit_output(
+        root,
+        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+    )
     for name in POLICY_SOURCE_PATHS:
-        source = _repository_file(policy[name], name)
-        if _sha256(source) != policy[f"{name}_sha256"]:
+        source = _repository_file(policy[name], name, repository_root=root)
+        expected_digest = str(policy[f"{name}_sha256"])
+        if _sha256(source) != expected_digest:
             raise MaterializationError(f"sealed UV executor {name} source digest drifted")
+        source_at_commit = _git_source_commit_output(
+            root,
+            ["git", "show", f"{source_commit}:{policy[name]}"],
+        )
+        if hashlib.sha256(source_at_commit).hexdigest() != expected_digest:
+            raise MaterializationError(
+                f"sealed UV executor {name} source commit digest drifted"
+            )
 
 
 def _load_local_tool(path: Path, module_name: str) -> Any:
@@ -541,11 +580,11 @@ def materialize(
     *, policy_path: Path, destination: Path, cargo: Path, llvm_toolchain: Path
 ) -> dict[str, object]:
     policy = load_policy(policy_path)
+    _verify_policy_source_commit(policy)
     destination, parent_fd, parent_identity = _prepare_destination(destination)
     stage_name: str | None = None
     stage: Path | None = None
     try:
-        _verify_policy_sources(policy)
         _verify_toolchains(policy, cargo, llvm_toolchain)
         stage_name, stage = _create_staging(parent_fd, destination.parent)
         first_root = _create_build_root(stage, "first-build")

@@ -845,8 +845,8 @@ as `phase4_campaign_sha256`, `phase4_parity_record_sha256`,
 them inside the closer invocation. Then close evidence:
 
 ```bash
-phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/nautilus-sealed-uv-exec
-phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/sealed-uv-exec-manifest.json
+phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/nautilus-sealed-uv-exec
+phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/sealed-uv-exec-manifest.json
 test -x "${phase4_sealed_uv}" && test -r "${phase4_sealed_uv_manifest}"
 "${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv \
   --sha256 cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4 \

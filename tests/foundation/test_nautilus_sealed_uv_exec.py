@@ -335,13 +335,21 @@ def _private_parent(tmp_path: Path) -> Path:
     return parent
 
 
-def _task3_policy(module, *, source_drift: bool = False) -> dict[str, object]:
+def _task3_policy(
+    module,
+    *,
+    source_drift: bool = False,
+    source_root: Path | None = None,
+    source_commit: str | None = None,
+) -> dict[str, object]:
     paths = module.POLICY_SOURCE_PATHS
+    source_root = source_root or module.ROOT
     document: dict[str, object] = {
         "schema_version": 1,
-        "source_commit": subprocess.run(
+        "source_commit": source_commit
+        or subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
+            cwd=source_root,
             check=True,
             capture_output=True,
             text=True,
@@ -352,15 +360,31 @@ def _task3_policy(module, *, source_drift: bool = False) -> dict[str, object]:
     }
     for name, relative in paths.items():
         document[name] = relative
-        document[f"{name}_sha256"] = _sha256(ROOT / relative)
+        document[f"{name}_sha256"] = _sha256(source_root / relative)
     if source_drift:
         document["rust_source_sha256"] = "0" * 64
     return document
 
 
-def _write_policy(tmp_path: Path, module, *, source_drift: bool = False) -> Path:
+def _write_policy(
+    tmp_path: Path,
+    module,
+    *,
+    source_drift: bool = False,
+    source_root: Path | None = None,
+    source_commit: str | None = None,
+) -> Path:
     policy = tmp_path / "sealed-uv-exec-policy.json"
-    policy.write_bytes(_canonical_json(_task3_policy(module, source_drift=source_drift)))
+    policy.write_bytes(
+        _canonical_json(
+            _task3_policy(
+                module,
+                source_drift=source_drift,
+                source_root=source_root,
+                source_commit=source_commit,
+            )
+        )
+    )
     policy.chmod(0o400)
     return policy
 
@@ -383,6 +407,171 @@ def _fake_builder(payloads: list[bytes]):
         return output
 
     return build
+
+
+def _git(repository: Path, *arguments: str) -> str:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+
+
+def _commit(repository: Path, message: str) -> str:
+    _git(repository, "add", "--all")
+    _git(repository, "commit", "-qm", message)
+    return _git(repository, "rev-parse", "HEAD")
+
+
+def _provenance_repository(native_tmp_path: Path, module) -> tuple[Path, dict[str, bytes]]:
+    repository = native_tmp_path / "source-repository"
+    repository.mkdir(mode=0o700)
+    source_bytes: dict[str, bytes] = {}
+    for relative in module.POLICY_SOURCE_PATHS.values():
+        source = ROOT / relative
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        contents = source.read_bytes()
+        destination.write_bytes(contents)
+        destination.chmod(0o600)
+        source_bytes[relative] = contents
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.email", "sealed-uv-test@local.invalid")
+    _git(repository, "config", "user.name", "Sealed UV Test")
+    _commit(repository, "fixture source")
+    return repository, source_bytes
+
+
+def _forbid_materialization_authority(
+    monkeypatch: pytest.MonkeyPatch, module
+) -> list[str]:
+    calls: list[str] = []
+
+    def forbidden(label: str):
+        def reject(*_args, **_kwargs):
+            calls.append(label)
+            raise AssertionError(f"{label} reached before source-commit rejection")
+
+        return reject
+
+    monkeypatch.setattr(module, "_verify_toolchains", forbidden("importer"))
+    monkeypatch.setattr(module, "_build_once", forbidden("cargo"))
+    monkeypatch.setattr(module, "_create_staging", forbidden("staging"))
+    monkeypatch.setattr(module, "_renameat2_noreplace", forbidden("destination"))
+    return calls
+
+
+def _rewrite_policy_source_commit(policy: Path, source_commit: str) -> None:
+    document = json.loads(policy.read_text(encoding="ascii"))
+    document["source_commit"] = source_commit
+    policy.chmod(0o600)
+    policy.write_bytes(_canonical_json(document))
+    policy.chmod(0o400)
+
+
+def test_materializer_rejects_nonexistent_source_commit_before_authority_use(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    policy = _write_policy(native_tmp_path, module, source_root=repository)
+    _rewrite_policy_source_commit(policy, "0" * 40)
+    calls = _forbid_materialization_authority(monkeypatch, module)
+    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
+
+    with pytest.raises(module.MaterializationError, match="source commit"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert calls == []
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    (
+        "materializer_source",
+        "rust_source",
+        "rust_toolchain_validator",
+        "llvm_toolchain_validator",
+        "input_cache_validator",
+    ),
+)
+def test_materializer_rejects_source_commit_bytes_mismatch_before_authority_use(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_name: str
+) -> None:
+    module = _load_materializer()
+    repository, source_bytes = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    relative = module.POLICY_SOURCE_PATHS[source_name]
+    source = repository / relative
+    source.write_bytes(source_bytes[relative] + b"\n# committed mismatch\n")
+    source.chmod(0o600)
+    source_commit = _commit(repository, "commit source mismatch")
+    source.write_bytes(source_bytes[relative])
+    source.chmod(0o600)
+    policy = _write_policy(
+        native_tmp_path,
+        module,
+        source_root=repository,
+        source_commit=source_commit,
+    )
+    calls = _forbid_materialization_authority(monkeypatch, module)
+    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
+
+    with pytest.raises(module.MaterializationError, match="source commit"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert calls == []
+    assert not destination.exists()
+
+
+def test_materializer_rejects_source_commit_worktree_only_source_before_authority_use(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, source_bytes = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    relative = module.POLICY_SOURCE_PATHS["rust_source"]
+    source = repository / relative
+    source.unlink()
+    source_commit = _commit(repository, "remove committed rust source")
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(source_bytes[relative])
+    source.chmod(0o600)
+    policy = _write_policy(
+        native_tmp_path,
+        module,
+        source_root=repository,
+        source_commit=source_commit,
+    )
+    calls = _forbid_materialization_authority(monkeypatch, module)
+    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
+
+    with pytest.raises(module.MaterializationError, match="source commit"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert calls == []
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize(
@@ -416,6 +605,8 @@ def test_materializer_rejects_drifted_verifier_source_before_toolchain_import(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_name: str
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
     document = json.loads(policy.read_text(encoding="ascii"))
     document[f"{source_name}_sha256"] = "0" * 64
@@ -441,9 +632,11 @@ def test_materializer_rejects_drifted_verifier_source_before_toolchain_import(
 
 
 def test_materializer_rejects_nonabsolute_paths_before_authority_use(
-    native_tmp_path: Path,
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
 
     with pytest.raises(module.MaterializationError, match="policy must be absolute"):
@@ -461,6 +654,8 @@ def test_materializer_rejects_existing_destination_without_clobbering(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     parent = _private_parent(native_tmp_path)
     destination = parent / "sealed-uv-exec"
     destination.mkdir(mode=0o700)
@@ -485,6 +680,8 @@ def test_materializer_rejects_policy_source_drift_before_build(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module, source_drift=True)
     calls: list[str] = []
     monkeypatch.setattr(
@@ -508,6 +705,8 @@ def test_materializer_rejects_unverified_toolchain_before_build(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
     called: list[str] = []
     monkeypatch.setattr(
@@ -531,6 +730,8 @@ def test_materializer_requires_two_identical_private_builds(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
     parent = _private_parent(native_tmp_path)
     destination = parent / "sealed-uv-exec"
@@ -552,6 +753,8 @@ def test_materializer_publishes_only_exact_sealed_inventory_atomically(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
     parent = _private_parent(native_tmp_path)
     destination = parent / "sealed-uv-exec"
@@ -629,6 +832,8 @@ def test_materialized_inventory_rejects_an_extra_file(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
     parent = _private_parent(native_tmp_path)
     destination = parent / "sealed-uv-exec"
@@ -665,11 +870,11 @@ def test_committed_policy_binds_all_task3_sources_and_private_toolchain_policies
 
 def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
-    start = text.index("phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/")
+    start = text.index("phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/")
     end = text.index('mkdir -m 0700 "${phase4_runtime_root}/legacy-records"', start)
     block = text[start:end]
 
-    assert 'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/' in block
+    assert 'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/' in block
     assert 'test -x "${phase4_sealed_uv}" && test -r "${phase4_sealed_uv_manifest}"' in block
     assert block.count('"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv') == 2
     assert "--action version" in block
