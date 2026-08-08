@@ -1363,14 +1363,11 @@ def _execute_verified_descriptor_in_child(module, pair, helper_arguments: list[s
     """Exercise the real kernel primitive without replacing the pytest process."""
     child = os.fork()
     if child == 0:
-        try:
-            null = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(null, 1)
-            os.dup2(null, 2)
-            os.close(null)
-            module._execveat(pair.binary_fd, helper_arguments)
-        except BaseException:
-            os._exit(125)
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+        module._execveat(pair.binary_fd, helper_arguments)
         os._exit(126)
     _, status = os.waitpid(child, 0)
     assert status & 0x7F == 0
@@ -1383,16 +1380,13 @@ def _execute_verified_pair_in_child(
     """Exercise the public verify-to-exec operation without replacing pytest."""
     child = os.fork()
     if child == 0:
-        try:
-            null = os.open(os.devnull, os.O_WRONLY)
-            os.dup2(null, 1)
-            os.dup2(null, 2)
-            os.close(null)
-            module.execute_materialized_pair(
-                destination, module.load_policy(policy), helper_arguments
-            )
-        except BaseException:
-            os._exit(125)
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+        module.execute_materialized_pair(
+            destination, module.load_policy(policy), helper_arguments
+        )
         os._exit(126)
     _, status = os.waitpid(child, 0)
     assert status & 0x7F == 0
