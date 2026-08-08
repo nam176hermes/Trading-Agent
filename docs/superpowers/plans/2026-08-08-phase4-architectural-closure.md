@@ -383,6 +383,7 @@ is required before any official generation is materialized.
 - Modify: `tests/jobs/test_engine_artifacts.py`
 - Modify: `tests/jobs/test_engine_spawn_provider.py`
 - Modify: `tests/jobs/test_nautilus_closure.py`
+- Modify mechanically: `docs/implementation/foundation-exception-inventory.md`
 
 **Interfaces:**
 - Produces: `ValidatePaperCompatibility`, `PaperCompatibilityResultV1`, profile `paper-compatibility`, and a finite root harness that never enters normal worker/job authority.
