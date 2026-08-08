@@ -192,6 +192,18 @@ def _run(diagnostic, paths: dict[str, Path], harness: _Harness, **overrides):
     return diagnostic.diagnose_nautilus_v12_runtime_failure(**arguments)
 
 
+def _path_identity(path: Path) -> tuple[int, int]:
+    observed = path.lstat()
+    return observed.st_dev, observed.st_ino
+
+
+def _replace_record(path: Path) -> tuple[int, int]:
+    path.unlink()
+    path.write_bytes(hashlib.sha256(b"inert-path-replacement").digest())
+    path.chmod(0o400)
+    return _path_identity(path)
+
+
 def test_cli_requires_exactly_the_seven_named_arguments(diagnostic, capsys) -> None:
     parser = diagnostic._parser()
     required = [
@@ -339,6 +351,103 @@ def test_completed_process_writes_only_the_canonical_private_diagnostic_record(
     assert record_path.read_bytes() == canonical_json_bytes(record) + b"\n"
     assert stat.S_IMODE(record_path.stat().st_mode) == 0o400
     assert harness.events[-2:] == ["popen", "communicate"]
+
+
+@pytest.mark.parametrize("mutation", ("replace", "remove"))
+def test_diagnostic_rejects_record_path_mutation_during_process_reap(
+    diagnostic,
+    external_paths: dict[str, Path],
+    mutation: str,
+) -> None:
+    harness = _Harness()
+    record_path = external_paths["diagnostic_record"]
+    replacement_identity: list[tuple[int, int]] = []
+
+    def popen(_argv, **_kwargs):
+        class Process:
+            returncode = harness.returncode
+
+            def communicate(self, *, timeout: int):
+                assert timeout == 11
+                if mutation == "replace":
+                    replacement_identity.append(_replace_record(record_path))
+                else:
+                    record_path.unlink()
+                return harness.stdout, harness.stderr
+
+        return Process()
+
+    with pytest.raises(
+        diagnostic.RuntimeFailureDiagnosticError,
+        match="record.*identity|record.*named entry",
+    ):
+        _run(
+            diagnostic,
+            external_paths,
+            harness,
+            popen_factory=popen,
+        )
+
+    if mutation == "replace":
+        assert _path_identity(record_path) == replacement_identity[0]
+    else:
+        assert not record_path.exists()
+
+
+def test_diagnostic_rejects_record_replacement_during_sealing(
+    diagnostic,
+    external_paths: dict[str, Path],
+    monkeypatch,
+) -> None:
+    harness = _Harness()
+    record_path = external_paths["diagnostic_record"]
+    replacement_identity: list[tuple[int, int]] = []
+    real_fsync = diagnostic.os.fsync
+
+    def replace_record_on_its_fsync(descriptor: int) -> None:
+        if record_path.exists():
+            named = record_path.lstat()
+            opened = os.fstat(descriptor)
+            if (
+                not replacement_identity
+                and (named.st_dev, named.st_ino)
+                == (opened.st_dev, opened.st_ino)
+            ):
+                replacement_identity.append(_replace_record(record_path))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(diagnostic.os, "fsync", replace_record_on_its_fsync)
+
+    with pytest.raises(
+        diagnostic.RuntimeFailureDiagnosticError,
+        match="record.*identity|record.*named entry",
+    ):
+        _run(diagnostic, external_paths, harness)
+
+    assert _path_identity(record_path) == replacement_identity[0]
+
+
+def test_failure_cleanup_preserves_a_replacement_record_inode(
+    diagnostic,
+    external_paths: dict[str, Path],
+) -> None:
+    harness = _Harness()
+    record_path = external_paths["diagnostic_record"]
+    replacement_identity: list[tuple[int, int]] = []
+
+    def replace_then_fail(_argv, **_kwargs):
+        replacement_identity.append(_replace_record(record_path))
+        raise OSError("inert launch refusal after replacement")
+
+    with pytest.raises(OSError, match="inert launch refusal"):
+        _run(
+            diagnostic,
+            external_paths,
+            harness,
+            popen_factory=replace_then_fail,
+        )
+
+    assert _path_identity(record_path) == replacement_identity[0]
 
 
 @pytest.mark.parametrize("mutation", ("relative", "checkout", "existing"))

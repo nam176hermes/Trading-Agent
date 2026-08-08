@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -61,6 +62,15 @@ class RuntimeFailureDiagnosticRecord(TypedDict):
     stdout_sha256: str
     stderr_sha256: str
     stderr_base64: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ReservedRecord:
+    descriptor: int
+    parent_descriptor: int
+    path: Path
+    parent_identity: tuple[int, int]
+    identity: tuple[int, int]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -137,7 +147,11 @@ def _require_private_directory(
         )
 
 
-def _validate_record_path(record: Path, *, transport_root: Path) -> None:
+def _validate_record_path(
+    record: Path,
+    *,
+    transport_root: Path,
+) -> tuple[int, int]:
     _require_absolute(record, label="diagnostic record")
     try:
         parent = record.parent.resolve(strict=True)
@@ -159,7 +173,7 @@ def _validate_record_path(record: Path, *, transport_root: Path) -> None:
     try:
         record.lstat()
     except FileNotFoundError:
-        return
+        return observed_parent.st_dev, observed_parent.st_ino
     except OSError as exc:
         raise RuntimeFailureDiagnosticError(
             "diagnostic record path cannot be inspected"
@@ -167,52 +181,158 @@ def _validate_record_path(record: Path, *, transport_root: Path) -> None:
     raise RuntimeFailureDiagnosticError("diagnostic record already exists")
 
 
-def _reserve_record(path: Path) -> int:
-    descriptor = -1
-    created = False
+def _named_record_stat(reservation: _ReservedRecord):
     try:
+        parent = os.fstat(reservation.parent_descriptor)
+        named_parent = reservation.path.parent.lstat()
+        opened = os.fstat(reservation.descriptor)
+        named = os.stat(
+            reservation.path.name,
+            dir_fd=reservation.parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise RuntimeFailureDiagnosticError(
+            "diagnostic record named entry is unavailable"
+        ) from exc
+    if (
+        (parent.st_dev, parent.st_ino) != reservation.parent_identity
+        or (named_parent.st_dev, named_parent.st_ino)
+        != reservation.parent_identity
+        or stat.S_ISLNK(named_parent.st_mode)
+        or not stat.S_ISDIR(named_parent.st_mode)
+        or named_parent.st_uid != os.geteuid()
+        or stat.S_IMODE(named_parent.st_mode) != 0o700
+        or (opened.st_dev, opened.st_ino) != reservation.identity
+        or (named.st_dev, named.st_ino) != reservation.identity
+        or not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or opened.st_uid != os.geteuid()
+        or named.st_uid != os.geteuid()
+        or opened.st_nlink != 1
+        or named.st_nlink != 1
+        or stat.S_IMODE(opened.st_mode) != 0o400
+        or stat.S_IMODE(named.st_mode) != 0o400
+    ):
+        raise RuntimeFailureDiagnosticError(
+            "diagnostic record identity or mode 0400 changed"
+        )
+    return opened, named
+
+
+def _verify_reserved_record(
+    reservation: _ReservedRecord,
+    *,
+    expected_size: int,
+) -> None:
+    opened, named = _named_record_stat(reservation)
+    if opened.st_size != expected_size or named.st_size != expected_size:
+        raise RuntimeFailureDiagnosticError(
+            "diagnostic record identity changed"
+        )
+
+
+def _unlink_reserved_record(reservation: _ReservedRecord) -> None:
+    try:
+        parent = os.fstat(reservation.parent_descriptor)
+        opened = os.fstat(reservation.descriptor)
+        named = os.stat(
+            reservation.path.name,
+            dir_fd=reservation.parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    if (
+        (parent.st_dev, parent.st_ino) == reservation.parent_identity
+        and (opened.st_dev, opened.st_ino) == reservation.identity
+        and (named.st_dev, named.st_ino) == reservation.identity
+    ):
+        try:
+            os.unlink(
+                reservation.path.name,
+                dir_fd=reservation.parent_descriptor,
+            )
+        except OSError:
+            pass
+
+
+def _close_reserved_record(reservation: _ReservedRecord) -> None:
+    try:
+        os.close(reservation.descriptor)
+    finally:
+        os.close(reservation.parent_descriptor)
+
+
+def _reserve_record(
+    path: Path,
+    *,
+    parent_identity: tuple[int, int],
+) -> _ReservedRecord:
+    parent_descriptor = -1
+    descriptor = -1
+    reservation: _ReservedRecord | None = None
+    try:
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        observed_parent = os.fstat(parent_descriptor)
+        if (
+            (observed_parent.st_dev, observed_parent.st_ino)
+            != parent_identity
+            or not stat.S_ISDIR(observed_parent.st_mode)
+            or observed_parent.st_uid != os.geteuid()
+            or stat.S_IMODE(observed_parent.st_mode) != 0o700
+        ):
+            raise RuntimeFailureDiagnosticError(
+                "diagnostic record parent identity changed"
+            )
         descriptor = os.open(
-            path,
+            path.name,
             os.O_WRONLY
             | os.O_CREAT
             | os.O_EXCL
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             0o400,
+            dir_fd=parent_descriptor,
         )
-        created = True
         os.fchmod(descriptor, 0o400)
         observed = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(observed.st_mode)
-            or observed.st_uid != os.geteuid()
-            or observed.st_nlink != 1
-            or stat.S_IMODE(observed.st_mode) != 0o400
-            or observed.st_size != 0
-        ):
-            raise RuntimeFailureDiagnosticError(
-                "diagnostic record reservation must be exclusive mode 0400"
-            )
-        return descriptor
+        reservation = _ReservedRecord(
+            descriptor=descriptor,
+            parent_descriptor=parent_descriptor,
+            path=path,
+            parent_identity=parent_identity,
+            identity=(observed.st_dev, observed.st_ino),
+        )
+        _verify_reserved_record(reservation, expected_size=0)
+        return reservation
     except OSError as exc:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if created:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        if reservation is not None:
+            _unlink_reserved_record(reservation)
+            _close_reserved_record(reservation)
+        else:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
         raise RuntimeFailureDiagnosticError(
             "diagnostic record cannot be reserved"
         ) from exc
     except RuntimeFailureDiagnosticError:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if created:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        if reservation is not None:
+            _unlink_reserved_record(reservation)
+            _close_reserved_record(reservation)
+        else:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
         raise
 
 
@@ -384,24 +504,22 @@ def _launch_once(
 
 
 def _write_reserved_record(
-    descriptor: int,
+    reservation: _ReservedRecord,
     record: RuntimeFailureDiagnosticRecord,
 ) -> None:
     value = canonical_json_bytes(record) + b"\n"
     try:
-        observed = os.fstat(descriptor)
-        if (
-            stat.S_IMODE(observed.st_mode) != 0o400
-            or observed.st_size != 0
-        ):
-            raise OSError("diagnostic record reservation drifted")
+        _verify_reserved_record(reservation, expected_size=0)
         remaining = memoryview(value)
         while remaining:
-            written = os.write(descriptor, remaining)
+            written = os.write(reservation.descriptor, remaining)
             if written <= 0:
                 raise OSError("short diagnostic record write")
             remaining = remaining[written:]
-        os.fsync(descriptor)
+        os.fsync(reservation.descriptor)
+        _verify_reserved_record(reservation, expected_size=len(value))
+    except RuntimeFailureDiagnosticError:
+        raise
     except OSError as exc:
         raise RuntimeFailureDiagnosticError(
             "diagnostic record cannot be sealed"
@@ -447,7 +565,10 @@ def diagnose_nautilus_v12_runtime_failure(
         expected_mode=0o700,
         empty=True,
     )
-    _validate_record_path(diagnostic_record, transport_root=transport_root)
+    record_parent_identity = _validate_record_path(
+        diagnostic_record,
+        transport_root=transport_root,
+    )
     for path, label in (
         (rollback_closure, "rollback closure"),
         (candidate_closure, "candidate closure"),
@@ -455,12 +576,15 @@ def diagnose_nautilus_v12_runtime_failure(
     ):
         _require_absolute(path, label=label)
 
-    record_descriptor = -1
+    record_reservation: _ReservedRecord | None = None
     record_published = False
     task_root: Path | None = None
     envelope: EngineCommandEnvelope | None = None
     try:
-        record_descriptor = _reserve_record(diagnostic_record)
+        record_reservation = _reserve_record(
+            diagnostic_record,
+            parent_identity=record_parent_identity,
+        )
         rollback_config = NautilusClosureConfig(
             runtime_root=rollback_closure,
             artifact_directory=rollback_artifact_directory,
@@ -535,7 +659,7 @@ def diagnose_nautilus_v12_runtime_failure(
             stderr_sha256=hashlib.sha256(stderr).hexdigest(),
             stderr_base64=base64.b64encode(stderr).decode("ascii"),
         )
-        _write_reserved_record(record_descriptor, record)
+        _write_reserved_record(record_reservation, record)
         record_published = True
     finally:
         try:
@@ -543,16 +667,11 @@ def diagnose_nautilus_v12_runtime_failure(
                 shutil.rmtree(task_root)
         finally:
             try:
-                if record_descriptor >= 0:
-                    os.close(record_descriptor)
+                if record_reservation is not None and not record_published:
+                    _unlink_reserved_record(record_reservation)
             finally:
-                if not record_published:
-                    try:
-                        diagnostic_record.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError:
-                        pass
+                if record_reservation is not None:
+                    _close_reserved_record(record_reservation)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
