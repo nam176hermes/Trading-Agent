@@ -11,6 +11,7 @@
   "base_file_count": 88,
   "base_file_inventory_sha256": "894e8048d062877dda374f7968ee04c3e75febfc948f82669f23485ecc7f6126",
   "base_runtime_manifest_sha256": "69cb87568361ccd6324550fb3823956c64e073b4cf09e674d7eb0883f844c044",
+  "dependency_import_policy": "native-guarded-stdlib-first-sealed-wheel-path-v1",
   "engine_name": "nautilus_trader",
   "engine_upstream_commit": "280ae1762df51a492a4ce71506a40b5c8706def5",
   "engine_version": "1.227.0",
@@ -20,7 +21,7 @@
   "launcher_inventory": [
     {
       "mode": "0400",
-      "sha256": "e112968dcb02ca570cdb033a98b5157c55326b73a80e0e4704f56a71a16ad923",
+      "sha256": "9939a613dd380e156daf32602fba58f42c801090fcdc2a08974ceb196c6a666b",
       "source": "engines/nautilus/launcher/nautilus_backtest.py",
       "target": "/engine/launcher/nautilus_backtest.py"
     },
@@ -49,11 +50,11 @@
     "target_triple": "x86_64-unknown-linux-gnu"
   },
   "profile": "execution-simulation",
-  "profile_manifest_schema_version": 5,
+  "profile_manifest_schema_version": 6,
   "python_identity": "CPython 3.12.3",
   "result_validator_id": "nautilus-backtest-simulation-result-v1",
   "schema_version": 1,
   "semantic_profile": "nautilus-execution-simulation-v2",
-  "source_commit": "8594cc62dfdcbfbef5f42a392b2089cd7b19e38c",
+  "source_commit": "a7d9f3e399c979ec9ac61ffbb7d02e0f64ed09ac",
   "timeout_seconds": 120
 }

@@ -56,6 +56,9 @@ _NATIVE_GUARDED_ARGV_PREFIX = (
 _NATIVE_GUARD_SOURCE = "engines/nautilus/native_entry_guard/src/main.rs"
 _NATIVE_GUARD_CARGO_MANIFEST = "engines/nautilus/native_entry_guard/Cargo.toml"
 _NATIVE_GUARD_CARGO_LOCK = "engines/nautilus/native_entry_guard/Cargo.lock"
+_DEPENDENCY_IMPORT_POLICY = (
+    "native-guarded-stdlib-first-sealed-wheel-path-v1"
+)
 _NATIVE_CARGO_IDENTITY = re.compile(
     r"^cargo 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII
 )
@@ -161,8 +164,9 @@ class CompleteEngineClosureAttestation:
     specification; this provider re-runs that verifier at consumption and
     independently seals every listed file.  ``manifest_schema_version`` is the
     non-optional contract generation checked against the provider's separately
-    pinned expectation; generation five intrinsically requires the native
-    entry guard.
+    pinned expectation; generations five and six intrinsically require the
+    native entry guard, while generation six also binds dependency import
+    authority.
     """
 
     manifest_schema_version: int
@@ -178,6 +182,7 @@ class CompleteEngineClosureAttestation:
     semantic_profile: str | None = None
     closure_manifest: ReadOnlyClosureMount | None = None
     native_entry_guard: NativeEntryGuardAttestation | None = None
+    dependency_import_policy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -545,7 +550,7 @@ def _validate_native_entry_guard(
     if attestation.closure_manifest is None or guard is None:
         _blocked(
             "ENGINE_CLOSURE_INVALID",
-            "schema-v5 closure requires its manifest and native guard",
+            "schema-v5/v6 closure requires its manifest and native guard",
         )
     if type(guard) is not NativeEntryGuardAttestation:
         _blocked("ENGINE_CLOSURE_INVALID", "native entry guard contract is invalid")
@@ -633,9 +638,18 @@ def _validate_closure(
     attestation = value
     if (
         type(attestation.manifest_schema_version) is not int
-        or attestation.manifest_schema_version not in {1, 2, 3, 4, 5}
+        or attestation.manifest_schema_version not in {1, 2, 3, 4, 5, 6}
         or attestation.manifest_schema_version
         != expected_manifest_schema_version
+        or (
+            attestation.manifest_schema_version == 6
+            and attestation.dependency_import_policy
+            != _DEPENDENCY_IMPORT_POLICY
+        )
+        or (
+            attestation.manifest_schema_version != 6
+            and attestation.dependency_import_policy is not None
+        )
         or attestation.profile not in {"zero-order", "execution-simulation"}
         or (
             attestation.semantic_profile
@@ -877,7 +891,7 @@ class EngineSpawnProvider:
             raise TypeError("complete engine closure attestor is required")
         if (
             type(expected_manifest_schema_version) is not int
-            or expected_manifest_schema_version not in {1, 2, 3, 4, 5}
+            or expected_manifest_schema_version not in {1, 2, 3, 4, 5, 6}
         ):
             raise ValueError(
                 "one exact supported closure manifest schema is required"

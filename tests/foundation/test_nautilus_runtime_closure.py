@@ -36,7 +36,10 @@ PRIVATE_LLVM = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
 )
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
-REPOSITORY_SOURCE_COMMIT = "8594cc62dfdcbfbef5f42a392b2089cd7b19e38c"
+REPOSITORY_SOURCE_COMMIT = "a7d9f3e399c979ec9ac61ffbb7d02e0f64ed09ac"
+DEPENDENCY_IMPORT_POLICY = (
+    "native-guarded-stdlib-first-sealed-wheel-path-v1"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -175,6 +178,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
             "base_runtime_manifest_sha256": _sha256(
                 base / "closure-manifest.json"
             ),
+            "dependency_import_policy": DEPENDENCY_IMPORT_POLICY,
             "engine_name": "nautilus_trader",
             "engine_upstream_commit": SOURCE_COMMIT,
             "engine_version": "1.227.0",
@@ -189,7 +193,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
                 CHECKED_IN_POLICY.read_text(encoding="ascii")
             )["native_entry_guard"],
             "profile": "execution-simulation",
-            "profile_manifest_schema_version": 5,
+            "profile_manifest_schema_version": 6,
             "python_identity": "CPython 3.12.3",
             "result_validator_id": "nautilus-backtest-simulation-result-v1",
             "schema_version": 1,
@@ -287,6 +291,8 @@ def test_checked_in_policy_binds_the_reviewed_final_source_and_launcher_inventor
 
     assert completed.returncode == 0
     assert source_commit == REPOSITORY_SOURCE_COMMIT
+    assert policy["profile_manifest_schema_version"] == 6
+    assert policy["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
     assert policy["launcher_inventory"] == [
         {"mode": "0400", "sha256": _sha256(LAUNCHER), "source": "engines/nautilus/launcher/nautilus_backtest.py", "target": "/engine/launcher/nautilus_backtest.py"},
         {"mode": "0400", "sha256": _sha256(STRATEGY), "source": "engines/nautilus/launcher/target_portfolio_strategy.py", "target": "/engine/launcher/target_portfolio_strategy.py"},
@@ -338,6 +344,7 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
             "execution-simulation",
         ],
         "artifact_manifest_sha256": "a" * 64,
+        "dependency_import_policy": DEPENDENCY_IMPORT_POLICY,
         "engine_name": "nautilus_trader",
         "engine_upstream_commit": SOURCE_COMMIT,
         "engine_version": "1.227.0",
@@ -346,7 +353,7 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
             CHECKED_IN_POLICY.read_text(encoding="ascii")
         )["native_entry_guard"],
         "profile": "execution-simulation",
-        "profile_manifest_schema_version": 5,
+        "profile_manifest_schema_version": 6,
         "python_identity": "CPython 3.12.3",
         "result_validator_id": "nautilus-backtest-simulation-result-v1",
         "semantic_profile": "nautilus-execution-simulation-v2",
@@ -356,7 +363,8 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
 
     manifest = materializer_module._build_output_manifest(policy, [])
 
-    assert manifest["schema_version"] == 5
+    assert manifest["schema_version"] == 6
+    assert manifest["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
     assert manifest["source_commit"] == REPOSITORY_SOURCE_COMMIT
     assert manifest["engine_upstream_commit"] == SOURCE_COMMIT
     native_guard = manifest["native_entry_guard"]
@@ -382,6 +390,30 @@ def test_materializer_policy_rejects_identical_repository_and_engine_identities(
     with pytest.raises(
         RuntimeClosureMaterializationError, match="profile or identity"
     ):
+        materializer_module._load_policy(policy_path)
+
+
+@pytest.mark.parametrize(
+    "dependency_import_policy",
+    (None, "ambient-site-packages-first", True),
+)
+def test_materializer_schema_6_requires_exact_dependency_import_policy(
+    tmp_path: Path,
+    dependency_import_policy: object,
+) -> None:
+    loaded = materializer_module._load_policy(CHECKED_IN_POLICY)
+    assert loaded["profile_manifest_schema_version"] == 6
+    assert loaded["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
+
+    policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    if dependency_import_policy is None:
+        del policy["dependency_import_policy"]
+    else:
+        policy["dependency_import_policy"] = dependency_import_policy
+    policy_path = tmp_path / "runtime-closure-policy.json"
+    policy_path.write_bytes(_canonical(policy) + b"\n")
+
+    with pytest.raises(RuntimeClosureMaterializationError):
         materializer_module._load_policy(policy_path)
 
 
@@ -441,7 +473,8 @@ def test_materializer_publishes_a_new_attested_simulation_closure_atomically(
     assert (base / "closure-manifest.json").read_bytes() == base_manifest_before
     manifest = json.loads((published / "closure-manifest.json").read_text())
     assert manifest["profile"] == "execution-simulation"
-    assert manifest["schema_version"] == 5
+    assert manifest["schema_version"] == 6
+    assert manifest["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
     assert manifest["entrypoint"] == "/engine/bin/nautilus-entry-guard"
     assert manifest["argv_prefix"][0] == "/usr/bin/python3.12"
     assert manifest["native_entry_guard"]["target"] == manifest["entrypoint"]
@@ -457,6 +490,7 @@ def test_materializer_publishes_a_new_attested_simulation_closure_atomically(
     )
     assert closure.profile == "execution-simulation"
     assert closure.semantic_profile == "nautilus-execution-simulation-v2"
+    assert closure.dependency_import_policy == DEPENDENCY_IMPORT_POLICY
 
 
 def test_materializer_attests_staging_then_re_attests_same_tree_after_rename(

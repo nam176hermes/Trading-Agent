@@ -55,6 +55,7 @@ _POLICY_FIELDS = {
     "base_file_count",
     "base_file_inventory_sha256",
     "base_runtime_manifest_sha256",
+    "dependency_import_policy",
     "engine_name",
     "engine_upstream_commit",
     "engine_version",
@@ -146,6 +147,9 @@ _ARGV_PREFIX = (
 )
 _VALIDATOR = "nautilus-backtest-simulation-result-v1"
 _SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
+_DEPENDENCY_IMPORT_POLICY = (
+    "native-guarded-stdlib-first-sealed-wheel-path-v1"
+)
 _RENAME_NOREPLACE = 1
 
 
@@ -391,7 +395,8 @@ def _load_policy(path: Path) -> dict[str, object]:
         )
     if (
         policy["schema_version"] != 1
-        or policy["profile_manifest_schema_version"] != 5
+        or policy["profile_manifest_schema_version"] != 6
+        or policy["dependency_import_policy"] != _DEPENDENCY_IMPORT_POLICY
         or policy["profile"] != _PROFILE
         or tuple(policy["argv_prefix"]) != _ARGV_PREFIX
         or policy["result_validator_id"] != _VALIDATOR
@@ -926,6 +931,7 @@ def _build_output_manifest(
     return {
         "argv_prefix": list(policy["argv_prefix"]),
         "artifact_manifest_sha256": policy["artifact_manifest_sha256"],
+        "dependency_import_policy": policy["dependency_import_policy"],
         "engine_name": policy["engine_name"],
         "engine_upstream_commit": policy["engine_upstream_commit"],
         "engine_version": policy["engine_version"],

@@ -25,6 +25,9 @@ from services.job_worker.nautilus_closure import (
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
 REPOSITORY_SOURCE_COMMIT = "4648ecaf6169b0886daf47fe27467b0292153cbb"
 NATIVE_GUARD_VALUE = b"reviewed-native-entry-guard-v1"
+DEPENDENCY_IMPORT_POLICY = (
+    "native-guarded-stdlib-first-sealed-wheel-path-v1"
+)
 
 
 def _native_guard_record() -> dict[str, object]:
@@ -108,6 +111,7 @@ def _build_closure_config(
     source_commit: str = SOURCE_COMMIT,
     engine_upstream_commit: str | None = None,
     native_guard: bool = False,
+    dependency_import_policy: object | None = None,
 ):
 
     artifacts = tmp_path / "artifacts"
@@ -186,8 +190,9 @@ def _build_closure_config(
         argv_prefix = ["/usr/bin/python3.12", *argv_prefix]
     manifest = {
         "schema_version": (
-            5
-            if native_guard
+            6
+            if dependency_import_policy is not None
+            else 5 if native_guard
             else 4
             if engine_upstream_commit is not None
             else 3 if semantic_profile is not None else 2
@@ -214,6 +219,8 @@ def _build_closure_config(
         manifest["engine_upstream_commit"] = engine_upstream_commit
     if native_guard_record is not None:
         manifest["native_entry_guard"] = native_guard_record
+    if dependency_import_policy is not None:
+        manifest["dependency_import_policy"] = dependency_import_policy
     (runtime / "closure-manifest.json").write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")), encoding="utf-8"
     )
@@ -583,6 +590,51 @@ def test_v5_closure_digest_explicitly_binds_manifest_schema_generation(
     assert captured["manifest_schema_version"] == 5
 
 
+def test_schema_6_closure_digest_binds_only_dependency_import_policy_change() -> None:
+    common = {
+        "schema_version": 6,
+        "argv_prefix": [
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ],
+        "result_validator_id": "nautilus-backtest-simulation-result-v1",
+        "source_commit": REPOSITORY_SOURCE_COMMIT,
+        "engine_upstream_commit": SOURCE_COMMIT,
+        "native_entry_guard": _native_guard_record(),
+    }
+    sidecar = ReadOnlyClosureMount(
+        source=Path("/sealed/closure-manifest.json"),
+        target=PurePosixPath("/engine/closure-manifest.json"),
+        identity=(1, 2),
+        size=101,
+        mode=0o400,
+        sha256="1" * 64,
+    )
+
+    def closure_digest(dependency_import_policy: object) -> str:
+        return nautilus_closure_module._closure_digest(
+            closure_manifest={
+                **common,
+                "dependency_import_policy": dependency_import_policy,
+            },
+            artifact_digest="a" * 64,
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            mounts=(),
+            entrypoint=PurePosixPath("/engine/bin/nautilus-entry-guard"),
+            timeout=120,
+            closure_manifest_sidecar=sidecar,
+        )
+
+    assert closure_digest(DEPENDENCY_IMPORT_POLICY) != closure_digest(
+        "ambient-site-packages-first"
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (
@@ -839,6 +891,7 @@ def test_v5_attestor_requires_native_guard_before_sealed_cpython(
         )
 
         assert closure.manifest_schema_version == 5
+        assert closure.dependency_import_policy is None
         assert closure.entrypoint == PurePosixPath(
             "/engine/bin/nautilus-entry-guard"
         )
@@ -887,6 +940,7 @@ def test_v4_attestor_preserves_direct_python_and_manifest_sidecar_contract(
         )
 
         assert closure.manifest_schema_version == 4
+        assert closure.dependency_import_policy is None
         assert closure.entrypoint == PurePosixPath("/engine/bin/python3.12")
         assert closure.argv_prefix == (
             "-I",
@@ -1021,6 +1075,7 @@ def test_v1_v3_attestor_preserves_legacy_direct_cpython_contracts(
         )
 
         assert closure.manifest_schema_version == schema_version
+        assert closure.dependency_import_policy is None
         assert closure.closure_manifest is None
         assert closure.native_entry_guard is None
         assert closure.entrypoint == PurePosixPath("/engine/bin/python3.12")
@@ -1033,6 +1088,58 @@ def test_v1_v3_attestor_preserves_legacy_direct_cpython_contracts(
                 (current / name).chmod(0o700)
             current.chmod(0o700)
         shutil.rmtree(base)
+
+
+@pytest.mark.parametrize(
+    "dependency_import_policy",
+    (None, "ambient-site-packages-first", True),
+)
+def test_schema_6_attestor_rejects_missing_unknown_or_boolean_import_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    dependency_import_policy: object,
+) -> None:
+    monkeypatch.setattr(
+        nautilus_closure_module, "_sandbox_proof", _reviewed_sandbox
+    )
+    base = Path(tempfile.mkdtemp(prefix="nautilus-v6-import-policy-", dir="/tmp"))
+    try:
+        config = _build_closure_config(
+            base,
+            base / "not-invoked-bwrap",
+            profile="execution-simulation",
+            semantic_profile="nautilus-execution-simulation-v2",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+            native_guard=True,
+            dependency_import_policy=DEPENDENCY_IMPORT_POLICY,
+        )
+        closure = attest_nautilus_backtest_closure(
+            config, expected_profile="execution-simulation"
+        )
+        assert closure.manifest_schema_version == 6
+        assert closure.dependency_import_policy == DEPENDENCY_IMPORT_POLICY
+
+        manifest_path = config.runtime_root / "closure-manifest.json"
+        config.runtime_root.chmod(0o700)
+        manifest_path.chmod(0o600)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if dependency_import_policy is None:
+            del manifest["dependency_import_policy"]
+        else:
+            manifest["dependency_import_policy"] = dependency_import_policy
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        manifest_path.chmod(0o400)
+        config.runtime_root.chmod(0o500)
+
+        with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+            attest_nautilus_backtest_closure(
+                config, expected_profile="execution-simulation"
+            )
+    finally:
+        _remove_test_tree(base)
 
 
 def test_attestor_rejects_unlisted_runtime_file(closure_config: NautilusClosureConfig) -> None:

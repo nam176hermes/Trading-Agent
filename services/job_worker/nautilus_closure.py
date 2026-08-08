@@ -77,6 +77,7 @@ _MANIFEST_FIELDS_V2 = {*_MANIFEST_FIELDS_V1, "profile"}
 _MANIFEST_FIELDS_V3 = {*_MANIFEST_FIELDS_V2, "semantic_profile"}
 _MANIFEST_FIELDS_V4 = {*_MANIFEST_FIELDS_V3, "engine_upstream_commit"}
 _MANIFEST_FIELDS_V5 = {*_MANIFEST_FIELDS_V4, "native_entry_guard"}
+_MANIFEST_FIELDS_V6 = {*_MANIFEST_FIELDS_V5, "dependency_import_policy"}
 _FILE_FIELDS = {"path", "target", "sha256", "size", "mode"}
 _NATIVE_GUARD_FIELDS = {
     "binary_sha256",
@@ -110,6 +111,9 @@ _NATIVE_GUARDED_ARGV_PREFIX = (
 _RUST_IDENTITY = re.compile(r"^rustc 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII)
 _CARGO_IDENTITY = re.compile(r"^cargo 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII)
 _SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
+_DEPENDENCY_IMPORT_POLICY = (
+    "native-guarded-stdlib-first-sealed-wheel-path-v1"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,7 +349,7 @@ def _closure_digest(
     if semantic_profile is not None:
         digest_document["semantic_profile"] = semantic_profile
     schema_version = closure_manifest["schema_version"]
-    if schema_version in {4, 5}:
+    if schema_version in {4, 5, 6}:
         digest_document["engine_upstream_commit"] = closure_manifest[
             "engine_upstream_commit"
         ]
@@ -361,10 +365,14 @@ def _closure_digest(
             "size": closure_manifest_sidecar.size,
             "target": str(closure_manifest_sidecar.target),
         }
-    if schema_version == 5:
+    if schema_version in {5, 6}:
         digest_document["manifest_schema_version"] = schema_version
         digest_document["native_entry_guard"] = closure_manifest[
             "native_entry_guard"
+        ]
+    if schema_version == 6:
+        digest_document["dependency_import_policy"] = closure_manifest[
+            "dependency_import_policy"
         ]
     return hashlib.sha256(_canonical_json_bytes(digest_document)).hexdigest()
 
@@ -520,13 +528,16 @@ def attest_nautilus_backtest_closure(
     elif schema_version == 5 and set(closure_manifest) == _MANIFEST_FIELDS_V5:
         profile = closure_manifest.get("profile")
         semantic_profile = closure_manifest.get("semantic_profile")
+    elif schema_version == 6 and set(closure_manifest) == _MANIFEST_FIELDS_V6:
+        profile = closure_manifest.get("profile")
+        semantic_profile = closure_manifest.get("semantic_profile")
     else:
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest fields are missing or unknown")
     if profile != expected_profile or profile not in _PROFILES:
         _blocked("ENGINE_CLOSURE_INVALID", "closure profile does not match explicit authority")
     if profile == "execution-simulation" and semantic_profile != _SEMANTIC_PROFILE:
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
-    if schema_version in {3, 4, 5} and profile != "execution-simulation":
+    if schema_version in {3, 4, 5, 6} and profile != "execution-simulation":
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     expected_identity = _PROFILES[profile]
     if (
@@ -537,7 +548,7 @@ def attest_nautilus_backtest_closure(
         or not isinstance(closure_manifest["source_commit"], str)
         or _SOURCE_COMMIT.fullmatch(closure_manifest["source_commit"]) is None
         or (
-            schema_version in {4, 5}
+            schema_version in {4, 5, 6}
             and (
                 not isinstance(closure_manifest["engine_upstream_commit"], str)
                 or _SOURCE_COMMIT.fullmatch(
@@ -553,8 +564,13 @@ def attest_nautilus_backtest_closure(
         or tuple(closure_manifest.get("argv_prefix", ()))
         != (
             _NATIVE_GUARDED_ARGV_PREFIX
-            if schema_version == 5
+            if schema_version in {5, 6}
             else expected_identity["argv_prefix"]
+        )
+        or (
+            schema_version == 6
+            and closure_manifest["dependency_import_policy"]
+            != _DEPENDENCY_IMPORT_POLICY
         )
     ):
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest identity is invalid")
@@ -568,7 +584,7 @@ def attest_nautilus_backtest_closure(
         or artifact_manifest.get("upstream_commit")
         != (
             closure_manifest["engine_upstream_commit"]
-            if schema_version in {4, 5}
+            if schema_version in {4, 5, 6}
             else closure_manifest["source_commit"]
         )
     ):
@@ -576,7 +592,7 @@ def attest_nautilus_backtest_closure(
     mounts = _manifest_files(config.runtime_root, closure_manifest["files"])
     closure_manifest_sidecar = (
         _closure_manifest_sidecar(config.runtime_root / _MANIFEST_NAME)
-        if schema_version in {4, 5}
+        if schema_version in {4, 5, 6}
         else None
     )
     if closure_manifest_sidecar is not None and any(
@@ -607,7 +623,7 @@ def attest_nautilus_backtest_closure(
             entrypoint=entrypoint,
             argv_prefix=tuple(argv_value),
         )
-        if schema_version == 5
+        if schema_version in {5, 6}
         else None
     )
     timeout = closure_manifest["timeout_seconds"]
@@ -636,6 +652,11 @@ def attest_nautilus_backtest_closure(
         semantic_profile=semantic_profile,
         closure_manifest=closure_manifest_sidecar,
         native_entry_guard=native_entry_guard,
+        dependency_import_policy=(
+            closure_manifest["dependency_import_policy"]
+            if schema_version == 6
+            else None
+        ),
     )
 
 

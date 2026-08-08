@@ -42,6 +42,10 @@ from services.job_worker.engine_spawn import (
 
 
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+DEPENDENCY_IMPORT_POLICY = (
+    "native-guarded-stdlib-first-sealed-wheel-path-v1"
+)
+_UNSET = object()
 SANDBOX_PROFILE_SHA256 = (
     "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
 )
@@ -166,6 +170,7 @@ def _closure(
     with_closure_manifest: bool = False,
     native_guard: bool = False,
     manifest_schema_version: int | None = None,
+    dependency_import_policy: object = _UNSET,
 ) -> CompleteEngineClosureAttestation:
     sandbox = tmp_path / "sealed" / "bin" / "sandbox"
     sandbox.parent.mkdir(parents=True)
@@ -235,6 +240,17 @@ def _closure(
         manifest_schema_version = (
             5 if native_guard else 4 if with_closure_manifest else 1
         )
+    dependency_import_policy_fields = (
+        {
+            "dependency_import_policy": (
+                DEPENDENCY_IMPORT_POLICY
+                if dependency_import_policy is _UNSET
+                else dependency_import_policy
+            )
+        }
+        if manifest_schema_version == 6
+        else {}
+    )
     return CompleteEngineClosureAttestation(
         manifest_schema_version=manifest_schema_version,
         profile=profile,
@@ -277,6 +293,7 @@ def _closure(
             else None
         ),
         native_entry_guard=native_attestation,
+        **dependency_import_policy_fields,
     )
 
 
@@ -773,7 +790,7 @@ def test_provider_rejects_manifest_schema_generation_mismatch(
         ).prepare(_native_simulation_envelope())
 
 
-@pytest.mark.parametrize("expected_schema_version", (True, 0, 6, None))
+@pytest.mark.parametrize("expected_schema_version", (True, 0, 7, None))
 def test_provider_requires_one_exact_supported_manifest_schema_generation(
     secure_tmp_path: Path,
     expected_schema_version: object,
@@ -788,6 +805,78 @@ def test_provider_requires_one_exact_supported_manifest_schema_generation(
             expected_manifest_schema_version=expected_schema_version,  # type: ignore[arg-type]
             monotonic_ns=lambda: 1_000_000_000,
         )
+
+
+def test_provider_rejects_schema_5_downgrade_when_schema_6_expected(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+        manifest_schema_version=5,
+    )
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: closure,
+            expected_manifest_schema_version=6,
+        ).prepare(_native_simulation_envelope())
+
+
+@pytest.mark.parametrize(
+    "dependency_import_policy",
+    ("ambient-site-packages-first", True),
+)
+def test_provider_rejects_schema_6_unknown_or_boolean_import_policy_during_prepare(
+    secure_tmp_path: Path,
+    dependency_import_policy: object,
+) -> None:
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: _closure(
+                secure_tmp_path,
+                profile="execution-simulation",
+                with_closure_manifest=True,
+                native_guard=True,
+                manifest_schema_version=6,
+                dependency_import_policy=dependency_import_policy,
+            ),
+            expected_manifest_schema_version=6,
+        ).prepare(_native_simulation_envelope())
+
+
+def test_provider_rejects_import_policy_changed_after_prepare_before_consume(
+    secure_tmp_path: Path,
+) -> None:
+    closure = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+        manifest_schema_version=6,
+    )
+    attestations = iter(
+        (
+            closure,
+            replace(
+                closure,
+                dependency_import_policy="ambient-site-packages-first",
+            ),
+        )
+    )
+    provider = _provider(
+        secure_tmp_path,
+        lambda: next(attestations),
+        expected_manifest_schema_version=6,
+    )
+    prepared = provider.prepare(_native_simulation_envelope())
+
+    with pytest.raises(EngineSpawnError, match="ENGINE_CLOSURE_INVALID"):
+        consume_prepared_engine_spawn(prepared)
 
 
 @pytest.mark.parametrize(
