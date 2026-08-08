@@ -5,7 +5,7 @@
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
-	build-nautilus-engine verify-nautilus-engine \
+	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all ci ci-private
@@ -16,6 +16,11 @@ RUNTIME_RELEASE_WHEELHOUSE := $(RUNTIME_RELEASE_WHEELHOUSE_ROOT)/$(RUNTIME_RELEA
 TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence
 NAUTILUS_ENGINE_CONTROLLER_PYTHON ?= python3.11
 NAUTILUS_ENGINE_SANDBOX ?= /usr/bin/bwrap
+NAUTILUS_IMPORT_POLICY ?= $(CURDIR)/engines/nautilus/runtime-closure-policy.json
+NAUTILUS_IMPORT_BASE_RUNTIME ?=
+NAUTILUS_IMPORT_ARTIFACT_DIRECTORY ?=
+NAUTILUS_IMPORT_SANDBOX ?= $(NAUTILUS_ENGINE_SANDBOX)
+NAUTILUS_IMPORT_RECEIPT ?=
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
@@ -199,6 +204,20 @@ verify-nautilus-engine:
 			--python "$(NAUTILUS_ENGINE_PYTHON)" \
 			--artifacts "$(NAUTILUS_ENGINE_ARTIFACTS)" \
 			--verify
+
+qualify-nautilus-sealed-imports:
+	@set -eu; \
+		test -n "$(NAUTILUS_IMPORT_POLICY)"; \
+		test -n "$(NAUTILUS_IMPORT_BASE_RUNTIME)"; \
+		test -n "$(NAUTILUS_IMPORT_ARTIFACT_DIRECTORY)"; \
+		test -n "$(NAUTILUS_IMPORT_SANDBOX)"; \
+		test -n "$(NAUTILUS_IMPORT_RECEIPT)"; \
+		$(NAUTILUS_ENGINE_CONTROLLER_PYTHON) scripts/qualify_nautilus_sealed_imports.py \
+			--policy "$(NAUTILUS_IMPORT_POLICY)" \
+			--base-runtime "$(NAUTILUS_IMPORT_BASE_RUNTIME)" \
+			--artifact-directory "$(NAUTILUS_IMPORT_ARTIFACT_DIRECTORY)" \
+			--sandbox "$(NAUTILUS_IMPORT_SANDBOX)" \
+			--receipt "$(NAUTILUS_IMPORT_RECEIPT)"
 
 test-event-ledger-runtime-postgres:
 	uv run python scripts/run_required_runtime_pytest.py \
