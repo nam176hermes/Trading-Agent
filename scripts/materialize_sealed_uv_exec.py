@@ -5,14 +5,18 @@ from __future__ import annotations
 import argparse
 import ctypes
 import errno
+import fcntl
 import hashlib
-import importlib.util
 import json
 import os
+import platform
+import selectors
 import shutil
 import stat
 import subprocess
 import sys
+import time
+import types
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
@@ -56,28 +60,91 @@ POLICY_FIELDS = {
     "target_triple",
     "binary_name",
     "binary_mode",
+    "sandbox_path",
+    "sandbox_sha256",
+    "sandbox_uid",
+    "sandbox_gid",
+    "sandbox_mode",
+    "sandbox_version",
+    "sandbox_capabilities",
 }
 MANIFEST_NAME = "sealed-uv-exec-manifest.json"
 TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
 BINARY_NAME = "nautilus-sealed-uv-exec"
 BINARY_MODE = 0o500
+SANDBOX_PATH = "/usr/bin/bwrap"
+SANDBOX_CAPABILITIES = ("--clearenv", "--perms", "--ro-bind-data", "--tmpfs")
 _SHA256_LENGTH = 64
 _RENAME_NOREPLACE = 1
+_MFD_ALLOW_SEALING = 0x0002
+_MFD_CLOEXEC = 0x0001
+_MEMFD_CREATE_SYSCALLS = {
+    "x86_64": 319,
+    "amd64": 319,
+    "aarch64": 279,
+    "arm64": 279,
+}
+_F_ADD_SEALS = 1033
+_F_GET_SEALS = 1034
+_F_SEAL_SEAL = 0x0001
+_F_SEAL_SHRINK = 0x0002
+_F_SEAL_GROW = 0x0004
+_F_SEAL_WRITE = 0x0008
+_ALL_SEALS = _F_SEAL_SEAL | _F_SEAL_SHRINK | _F_SEAL_GROW | _F_SEAL_WRITE
+_MAX_BINARY_BYTES = 64 * 1024 * 1024
+_MAX_SANDBOX_STDERR_BYTES = 16 * 1024
+_SANDBOX_TIMEOUT_SECONDS = 180
 
 
 class MaterializationError(ValueError):
     """Raised when one materialization authority or output check fails."""
 
 
-class VerifiedSourceSnapshot:
-    """A private copy of the exact Git-blob bytes bound by the policy."""
+class VerifiedSourceBundle:
+    """Git blobs retained as kernel-sealed descriptors until all consumers exit."""
 
     def __init__(
-        self, *, root: Path, paths: dict[str, Path], source_bytes: dict[str, bytes]
+        self, descriptors: dict[str, int], digests: dict[str, str], sizes: dict[str, int]
     ) -> None:
-        self.root = root
-        self.paths = paths
-        self.source_bytes = source_bytes
+        self._descriptors = descriptors
+        self._digests = digests
+        self._sizes = sizes
+
+    def source_names(self) -> tuple[str, ...]:
+        return tuple(self._descriptors)
+
+    def descriptor(self, source_name: str) -> int:
+        try:
+            return self._descriptors[source_name]
+        except KeyError as error:
+            raise MaterializationError("verified source bundle input is unavailable") from error
+
+    def read(self, source_name: str) -> bytes:
+        descriptor = self.descriptor(source_name)
+        _sealed_descriptor_state(descriptor, 0o400)
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            chunks: list[bytes] = []
+            while block := os.read(descriptor, 1024 * 1024):
+                chunks.append(block)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+        except OSError as error:
+            raise MaterializationError("verified source bundle cannot be read") from error
+        value = b"".join(chunks)
+        if (
+            len(value) != self._sizes[source_name]
+            or hashlib.sha256(value).hexdigest() != self._digests[source_name]
+        ):
+            raise MaterializationError("verified source bundle digest drifted")
+        return value
+
+    def close(self) -> None:
+        for descriptor in self._descriptors.values():
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        self._descriptors.clear()
 
 
 def _sha256(path: Path) -> str:
@@ -186,7 +253,7 @@ def _policy_relative_parts(relative: object, label: str) -> tuple[str, ...]:
 def _validate_policy(document: object) -> dict[str, object]:
     if not isinstance(document, dict) or set(document) != POLICY_FIELDS:
         raise MaterializationError("sealed UV executor policy fields are invalid")
-    if document["schema_version"] != 1:
+    if document["schema_version"] != 2:
         raise MaterializationError("unsupported sealed UV executor policy")
     if not _is_commit(document["source_commit"]):
         raise MaterializationError("sealed UV executor source commit is invalid")
@@ -198,6 +265,22 @@ def _validate_policy(document: object) -> dict[str, object]:
         raise MaterializationError("sealed UV executor target is invalid")
     if document["binary_name"] != BINARY_NAME or document["binary_mode"] != "0500":
         raise MaterializationError("sealed UV executor output identity is invalid")
+    if (
+        document["sandbox_path"] != SANDBOX_PATH
+        or not _is_digest(document["sandbox_sha256"])
+        or not isinstance(document["sandbox_uid"], int)
+        or isinstance(document["sandbox_uid"], bool)
+        or document["sandbox_uid"] < 0
+        or not isinstance(document["sandbox_gid"], int)
+        or isinstance(document["sandbox_gid"], bool)
+        or document["sandbox_gid"] < 0
+        or document["sandbox_mode"] != "0755"
+        or not isinstance(document["sandbox_version"], str)
+        or not document["sandbox_version"].startswith("bubblewrap ")
+        or not isinstance(document["sandbox_capabilities"], list)
+        or tuple(document["sandbox_capabilities"]) != SANDBOX_CAPABILITIES
+    ):
+        raise MaterializationError("sealed UV executor sandbox binding is invalid")
     return document
 
 
@@ -258,260 +341,180 @@ def _verify_policy_source_commit(
     return verified_bytes
 
 
-def _open_snapshot_directory(parent_fd: int, name: str, mode: int) -> int:
+def _sealed_memfd(name: str, value: bytes, *, mode: int) -> int:
+    descriptor = -1
     try:
-        os.mkdir(name, mode, dir_fd=parent_fd)
-    except FileExistsError:
-        pass
-    flags = (
-        os.O_RDONLY
-        | os.O_DIRECTORY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    try:
-        descriptor = os.open(name, flags, dir_fd=parent_fd)
-    except OSError as error:
-        raise MaterializationError("verified source snapshot directory is unsafe") from error
-    try:
-        info = os.fstat(descriptor)
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != mode
-        ):
-            raise MaterializationError("verified source snapshot directory is unsafe")
-    except (MaterializationError, OSError):
-        os.close(descriptor)
-        raise
-    return descriptor
-
-
-def _write_snapshot_file(parent_fd: int, name: str, contents: bytes) -> None:
-    flags = (
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    try:
-        descriptor = os.open(name, flags, 0o400, dir_fd=parent_fd)
-    except OSError as error:
-        raise MaterializationError("verified source snapshot file cannot be created") from error
-    try:
-        view = memoryview(contents)
+        creator = getattr(os, "memfd_create", None)
+        if callable(creator):
+            descriptor = creator(name, _MFD_CLOEXEC | _MFD_ALLOW_SEALING)
+        else:
+            syscall_number = _MEMFD_CREATE_SYSCALLS.get(platform.machine().lower())
+            if sys.platform != "linux" or syscall_number is None:
+                raise OSError("memfd_create is unavailable")
+            libc = ctypes.CDLL(None, use_errno=True)
+            ctypes.set_errno(0)
+            descriptor = int(
+                libc.syscall(
+                    ctypes.c_long(syscall_number),
+                    ctypes.c_char_p(name.encode("ascii")),
+                    ctypes.c_uint(_MFD_CLOEXEC | _MFD_ALLOW_SEALING),
+                )
+            )
+            if descriptor < 0:
+                error = ctypes.get_errno()
+                raise OSError(error, os.strerror(error))
+        view = memoryview(value)
         while view:
             written = os.write(descriptor, view)
             if written <= 0:
-                raise MaterializationError("verified source snapshot file write failed")
+                raise OSError("sealed memfd write made no progress")
             view = view[written:]
-        os.fsync(descriptor)
-        os.fchmod(descriptor, 0o400)
-    except MaterializationError:
-        os.close(descriptor)
-        raise
+        os.fchmod(descriptor, mode)
+        fcntl.fcntl(descriptor, _F_ADD_SEALS, _ALL_SEALS)
+        _sealed_descriptor_state(descriptor, mode)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return descriptor
     except OSError as error:
-        os.close(descriptor)
-        raise MaterializationError("verified source snapshot file write failed") from error
-    os.close(descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise MaterializationError("sealed memory sources are unavailable") from error
 
 
-def _seal_snapshot_directories(root: Path) -> None:
-    for current, _, _ in os.walk(root, topdown=False, followlinks=False):
-        directory = Path(current)
-        if directory == root:
-            continue
-        try:
-            directory.chmod(0o500)
-        except OSError as error:
-            raise MaterializationError("verified source snapshot directory cannot be sealed") from error
-
-
-def _write_verified_source_snapshot(
-    staging_root: Path, policy: dict[str, object], verified_bytes: dict[str, bytes]
-) -> VerifiedSourceSnapshot:
-    if set(verified_bytes) != set(POLICY_SOURCE_PATHS):
-        raise MaterializationError("verified source snapshot inputs are incomplete")
-    stage_flags = (
-        os.O_RDONLY
-        | os.O_DIRECTORY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    try:
-        stage_fd = os.open(staging_root, stage_flags)
-    except OSError as error:
-        raise MaterializationError("verified source snapshot staging root is unsafe") from error
-    snapshot_name = "verified-source-snapshot"
-    try:
-        snapshot_fd = _open_snapshot_directory(stage_fd, snapshot_name, 0o700)
-        try:
-            paths: dict[str, Path] = {}
-            for source_name, relative in POLICY_SOURCE_PATHS.items():
-                if policy[source_name] != relative:
-                    raise MaterializationError("verified source snapshot policy path drifted")
-                parts = _policy_relative_parts(relative, source_name)
-                parent_fd = snapshot_fd
-                opened_fds: list[int] = []
-                try:
-                    for part in parts[:-1]:
-                        child_fd = _open_snapshot_directory(parent_fd, part, 0o700)
-                        if parent_fd != snapshot_fd:
-                            opened_fds.append(parent_fd)
-                        parent_fd = child_fd
-                    _write_snapshot_file(parent_fd, parts[-1], verified_bytes[source_name])
-                finally:
-                    if parent_fd != snapshot_fd:
-                        os.close(parent_fd)
-                    for descriptor in reversed(opened_fds):
-                        os.close(descriptor)
-                paths[source_name] = staging_root / snapshot_name / Path(*parts)
-            os.fsync(snapshot_fd)
-        finally:
-            os.close(snapshot_fd)
-    finally:
-        os.close(stage_fd)
-    snapshot = VerifiedSourceSnapshot(
-        root=staging_root / snapshot_name,
-        paths=paths,
-        source_bytes=dict(verified_bytes),
-    )
-    _seal_snapshot_directories(snapshot.root)
-    _verify_verified_source_snapshot(snapshot)
-    return snapshot
-
-
-def _snapshot_file_bytes(path: Path) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as error:
-        raise MaterializationError("verified source snapshot file is unsafe") from error
+def _sealed_descriptor_state(descriptor: int, mode: int) -> int:
     try:
         info = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_nlink != 1
-            or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o400
-        ):
-            raise MaterializationError("verified source snapshot file is unsafe")
-        chunks: list[bytes] = []
-        while True:
-            block = os.read(descriptor, 1024 * 1024)
-            if not block:
-                break
-            chunks.append(block)
-        return b"".join(chunks)
-    except (MaterializationError, OSError):
-        raise
-    finally:
-        os.close(descriptor)
-
-
-def _verify_verified_source_snapshot(snapshot: VerifiedSourceSnapshot) -> None:
-    try:
-        root_info = snapshot.root.lstat()
+        seals = fcntl.fcntl(descriptor, _F_GET_SEALS)
     except OSError as error:
-        raise MaterializationError("verified source snapshot root is unsafe") from error
+        raise MaterializationError("sealed memory source is unavailable") from error
     if (
-        snapshot.root.is_symlink()
-        or not stat.S_ISDIR(root_info.st_mode)
-        or root_info.st_uid != os.geteuid()
-        or stat.S_IMODE(root_info.st_mode) != 0o700
-        or set(snapshot.paths) != set(POLICY_SOURCE_PATHS)
-        or set(snapshot.source_bytes) != set(POLICY_SOURCE_PATHS)
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != mode
+        or seals != _ALL_SEALS
     ):
-        raise MaterializationError("verified source snapshot root is unsafe")
-    expected_files = set(POLICY_SOURCE_PATHS.values())
-    observed_files: set[str] = set()
-    for current, directories, files in os.walk(snapshot.root, topdown=True, followlinks=False):
-        current_path = Path(current)
-        for name in directories:
-            directory = current_path / name
-            info = directory.lstat()
-            if (
-                directory.is_symlink()
-                or not stat.S_ISDIR(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o500
-            ):
-                raise MaterializationError("verified source snapshot directory is unsafe")
-        for name in files:
-            path = current_path / name
-            if path.is_symlink():
-                raise MaterializationError("verified source snapshot file is unsafe")
-            observed_files.add(path.relative_to(snapshot.root).as_posix())
-    if observed_files != expected_files:
-        raise MaterializationError("verified source snapshot inventory drifted")
-    for source_name, relative in POLICY_SOURCE_PATHS.items():
-        path = snapshot.paths[source_name]
-        if path != snapshot.root.joinpath(*_policy_relative_parts(relative, source_name)):
-            raise MaterializationError("verified source snapshot path is unsafe")
-        if _snapshot_file_bytes(path) != snapshot.source_bytes[source_name]:
-            raise MaterializationError("verified source snapshot digest drifted")
+        raise MaterializationError("sealed memory source is unsafe")
+    return seals
 
 
-def _snapshot_path(snapshot: VerifiedSourceSnapshot, source_name: str) -> Path:
-    _verify_verified_source_snapshot(snapshot)
+def _create_verified_source_bundle(
+    policy: dict[str, object], verified_bytes: dict[str, bytes]
+) -> VerifiedSourceBundle:
+    if set(verified_bytes) != set(POLICY_SOURCE_PATHS):
+        raise MaterializationError("verified source bundle inputs are incomplete")
+    descriptors: dict[str, int] = {}
+    digests: dict[str, str] = {}
+    sizes: dict[str, int] = {}
     try:
-        path = snapshot.paths[source_name]
-    except KeyError as error:
-        raise MaterializationError("verified source snapshot path is unavailable") from error
-    if not path.is_relative_to(snapshot.root):
-        raise MaterializationError("verified source snapshot path is unsafe")
-    return path
+        for source_name in POLICY_SOURCE_PATHS:
+            if policy[source_name] != POLICY_SOURCE_PATHS[source_name]:
+                raise MaterializationError("verified source bundle policy path drifted")
+            value = verified_bytes[source_name]
+            descriptor = _sealed_memfd(f"sealed-uv-{source_name}", value, mode=0o400)
+            descriptors[source_name] = descriptor
+            digests[source_name] = hashlib.sha256(value).hexdigest()
+            sizes[source_name] = len(value)
+        return VerifiedSourceBundle(descriptors, digests, sizes)
+    except BaseException:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        raise
 
 
-def _load_local_tool(
-    path: Path, module_name: str, source_snapshot: VerifiedSourceSnapshot
+def _load_verified_tool(
+    source_bundle: VerifiedSourceBundle, source_name: str, module_name: str
 ) -> Any:
-    if path not in source_snapshot.paths.values() or not path.is_relative_to(source_snapshot.root):
-        raise MaterializationError("toolchain validator is outside the verified source snapshot")
-    _verify_verified_source_snapshot(source_snapshot)
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise MaterializationError(f"cannot load {module_name}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    if source_name not in {
+        "rust_toolchain_validator",
+        "llvm_toolchain_validator",
+        "input_cache_validator",
+    }:
+        raise MaterializationError("toolchain validator is outside the verified source bundle")
+    logical_name = f"<sealed:{POLICY_SOURCE_PATHS[source_name]}>"
+    module = types.ModuleType(module_name)
+    module.__file__ = logical_name
+    module.__package__ = ""
+    try:
+        exec(compile(source_bundle.read(source_name), logical_name, "exec"), module.__dict__)
+    except (OSError, SyntaxError, ValueError) as error:
+        raise MaterializationError(f"cannot load {module_name}") from error
     return module
+
+
+def _rust_toolchain_manifest_from_bytes(raw: bytes) -> dict[str, object]:
+    try:
+        document = json.loads(raw.decode("utf-8"))
+        rust = document["rust"]
+        if not isinstance(rust, dict) or not isinstance(rust["components"], dict):
+            raise ValueError("invalid Rust toolchain policy")
+        channel_url = rust["channel_manifest_url"]
+        channel_sha256 = rust["channel_manifest_sha256"]
+        materialized = rust["materialized_toolchain"]
+        if not isinstance(channel_url, str) or not isinstance(channel_sha256, str):
+            raise ValueError("invalid Rust toolchain policy")
+        if (
+            not isinstance(materialized, dict)
+            or set(materialized) != {"tree_sha256", "file_count"}
+            or not isinstance(materialized["tree_sha256"], str)
+            or len(materialized["tree_sha256"]) != _SHA256_LENGTH
+            or not isinstance(materialized["file_count"], int)
+            or isinstance(materialized["file_count"], bool)
+            or materialized["file_count"] <= 0
+        ):
+            raise ValueError("invalid Rust toolchain policy")
+        return {
+            "rust_version": rust["version"],
+            "materialized_toolchain": materialized,
+            "channel_manifest": {
+                "filename": Path(channel_url).name,
+                "sha256": channel_sha256,
+                "url": channel_url,
+            },
+            "components": {
+                name: {**item, "filename": Path(item["url"]).name}
+                for name, item in rust["components"].items()
+            },
+        }
+    except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise MaterializationError("verified Rust toolchain policy is invalid") from error
+
+
+def _json_policy_from_bundle(source_bundle: VerifiedSourceBundle, source_name: str) -> dict[str, object]:
+    try:
+        document = json.loads(source_bundle.read(source_name).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MaterializationError("verified toolchain policy is invalid") from error
+    if not isinstance(document, dict):
+        raise MaterializationError("verified toolchain policy is invalid")
+    return document
 
 
 def _verify_toolchains(
     policy: dict[str, object],
     cargo: Path,
     llvm_toolchain: Path,
-    source_snapshot: VerifiedSourceSnapshot,
+    source_bundle: VerifiedSourceBundle,
 ) -> None:
     cargo = _lexical_absolute(cargo, "cargo")
     llvm_toolchain = _lexical_absolute(llvm_toolchain, "LLVM toolchain")
     if cargo.name != "cargo" or cargo.parent.name != "bin":
         raise MaterializationError("toolchain verification failed")
     try:
-        rust_tool = _load_local_tool(
-            _snapshot_path(source_snapshot, "rust_toolchain_validator"),
-            "sealed_uv_exec_rust",
-            source_snapshot,
+        rust_tool = _load_verified_tool(
+            source_bundle, "rust_toolchain_validator", "sealed_uv_exec_rust"
         )
-        llvm_tool = _load_local_tool(
-            _snapshot_path(source_snapshot, "llvm_toolchain_validator"),
-            "sealed_uv_exec_llvm",
-            source_snapshot,
+        llvm_tool = _load_verified_tool(
+            source_bundle, "llvm_toolchain_validator", "sealed_uv_exec_llvm"
         )
-        input_tool = _load_local_tool(
-            _snapshot_path(source_snapshot, "input_cache_validator"),
-            "sealed_uv_exec_input",
-            source_snapshot,
+        input_tool = _load_verified_tool(
+            source_bundle, "input_cache_validator", "sealed_uv_exec_input"
         )
-        rust_policy = rust_tool.load_manifest(
-            _snapshot_path(source_snapshot, "rust_toolchain_policy")
+        rust_tool.verify_materialized_toolchain(
+            cargo.parent.parent,
+            _rust_toolchain_manifest_from_bytes(source_bundle.read("rust_toolchain_policy")),
         )
-        rust_tool.verify_materialized_toolchain(cargo.parent.parent, rust_policy)
-        llvm_policy = llvm_tool.load_policy(
-            _snapshot_path(source_snapshot, "llvm_toolchain_policy")
+        llvm_tool.verify_materialized(
+            llvm_toolchain,
+            _json_policy_from_bundle(source_bundle, "llvm_toolchain_policy"),
         )
-        llvm_tool.verify_materialized(llvm_toolchain, llvm_policy)
         input_tool.validate_private_cargo(cargo, "1.95.0")
         input_tool.validate_private_rustc(cargo.with_name("rustc"), "1.95.0")
     except (MaterializationError, OSError, ValueError) as error:
@@ -577,150 +580,278 @@ def _cleanup_staging(stage: Path) -> None:
     shutil.rmtree(stage)
 
 
-def _create_build_root(stage: Path, label: str) -> Path:
-    root = stage / label
-    root.mkdir(mode=0o700)
-    for name in ("cargo-home", "target", "tmp"):
-        (root / name).mkdir(mode=0o700)
-    return root
-
-
-def _build_once(
-    policy: dict[str, object],
-    build_root: Path,
-    cargo: Path,
-    llvm_toolchain: Path,
-    source_snapshot: VerifiedSourceSnapshot,
-) -> Path:
-    cargo_manifest = _snapshot_path(source_snapshot, "cargo_manifest")
-    cargo_lock = _snapshot_path(source_snapshot, "cargo_lock")
-    rust_source = _snapshot_path(source_snapshot, "rust_source")
-    project_root = cargo_manifest.parent
-    if cargo_lock.parent != project_root or rust_source.parent.parent != project_root:
-        raise MaterializationError("verified source snapshot Cargo project is invalid")
-    rustc = cargo.with_name("rustc")
-    clang = llvm_toolchain / "bin/clang"
-    environment = {
-        "CARGO_HOME": str(build_root / "cargo-home"),
-        "CARGO_INCREMENTAL": "0",
-        "CARGO_NET_OFFLINE": "true",
-        "CARGO_TARGET_DIR": str(build_root / "target"),
-        "HOME": str(build_root),
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "PATH": f"{cargo.parent}:{llvm_toolchain / 'bin'}:/usr/bin:/bin",
-        "RUSTC": str(rustc),
-        "RUSTFLAGS": (
-            f"-C linker={clang} -C link-arg=-fuse-ld=lld "
-            "-C link-arg=-Wl,--build-id=none"
-        ),
-        "SOURCE_DATE_EPOCH": "0",
-        "TEMP": str(build_root / "tmp"),
-        "TMP": str(build_root / "tmp"),
-        "TMPDIR": str(build_root / "tmp"),
-    }
+def _read_bound_sandbox(policy: dict[str, object]) -> bytes:
+    path = _lexical_absolute(Path(str(policy["sandbox_path"])), "Bubblewrap")
+    _reject_symlink_ancestors(path, "Bubblewrap")
     try:
-        subprocess.run(
-            [
-                str(cargo),
-                "build",
-                "--manifest-path",
-                str(cargo_manifest),
-                "--locked",
-                "--offline",
-                "--release",
-                "--target",
-                str(policy["target_triple"]),
-            ],
-            check=True,
-            cwd=project_root,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=180,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise MaterializationError("sealed UV executor offline build failed") from error
-    binary = build_root / "target" / str(policy["target_triple"]) / "release" / str(policy["binary_name"])
-    info = _require_build_output(binary, "built sealed UV executor")
-    if info.st_size <= 0:
-        raise MaterializationError("built sealed UV executor is empty")
-    return binary
-
-
-def _require_build_output(path: Path, label: str) -> os.stat_result:
-    try:
-        info = path.lstat()
+        named = path.lstat()
     except OSError as error:
-        raise MaterializationError(f"{label} is missing") from error
+        raise MaterializationError("Bubblewrap is unavailable") from error
     if (
         path.is_symlink()
-        or not stat.S_ISREG(info.st_mode)
-        or info.st_nlink < 1
-        or info.st_uid != os.geteuid()
-        or not info.st_mode & stat.S_IXUSR
-        or info.st_mode & 0o022
+        or not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1
+        or named.st_uid != policy["sandbox_uid"]
+        or named.st_gid != policy["sandbox_gid"]
+        or stat.S_IMODE(named.st_mode) != int(str(policy["sandbox_mode"]), 8)
+        or not named.st_mode & stat.S_IXUSR
+        or named.st_mode & 0o022
     ):
-        raise MaterializationError(f"{label} is not a private release output")
-    return info
-
-
-def _open_build_output(path: Path, build_root: Path, policy: dict[str, object]) -> tuple[int, int, str]:
-    expected = (
-        build_root
-        / "target"
-        / str(policy["target_triple"])
-        / "release"
-        / str(policy["binary_name"])
-    )
-    if path != expected:
-        raise MaterializationError("built sealed UV executor path is not the expected release output")
+        raise MaterializationError("Bubblewrap identity is unsafe")
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
     except OSError as error:
-        raise MaterializationError("built sealed UV executor cannot be opened safely") from error
+        raise MaterializationError("Bubblewrap cannot be opened safely") from error
     try:
-        info = os.fstat(descriptor)
+        opened = os.fstat(descriptor)
         if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_nlink < 1
-            or info.st_uid != os.geteuid()
-            or not info.st_mode & stat.S_IXUSR
-            or info.st_mode & 0o022
-            or info.st_size <= 0
+            (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+            != (named.st_dev, named.st_ino, named.st_size, named.st_mtime_ns, named.st_ctime_ns)
         ):
-            raise MaterializationError("built sealed UV executor descriptor is unsafe")
-        digest = hashlib.sha256()
-        while True:
-            block = os.read(descriptor, 1024 * 1024)
-            if not block:
-                break
-            digest.update(block)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        return descriptor, info.st_size, digest.hexdigest()
-    except (MaterializationError, OSError):
+            raise MaterializationError("Bubblewrap identity changed while read")
+        raw = bytearray()
+        while block := os.read(descriptor, 1024 * 1024):
+            raw.extend(block)
+        named_after = path.lstat()
+        if (
+            (named_after.st_dev, named_after.st_ino, named_after.st_size,
+             named_after.st_mtime_ns, named_after.st_ctime_ns)
+            != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+            or hashlib.sha256(raw).hexdigest() != policy["sandbox_sha256"]
+        ):
+            raise MaterializationError("Bubblewrap identity changed while read")
+        return bytes(raw)
+    except OSError as error:
+        raise MaterializationError("Bubblewrap cannot be read safely") from error
+    finally:
+        os.close(descriptor)
+
+
+def _verify_sandbox(policy: dict[str, object]) -> int:
+    descriptor = _sealed_memfd("sealed-uv-bwrap", _read_bound_sandbox(policy), mode=0o500)
+    command = f"/proc/self/fd/{descriptor}"
+    common = {
+        "cwd": Path("/"),
+        "env": {},
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "check": False,
+        "close_fds": True,
+        "pass_fds": (descriptor,),
+        "timeout": 5,
+    }
+    try:
+        version = subprocess.run((command, "--version"), **common)
+        help_result = subprocess.run((command, "--help"), **common)
+        expected_version = f"{policy['sandbox_version']}\n".encode("ascii")
+        if (
+            version.returncode != 0
+            or version.stderr != b""
+            or version.stdout != expected_version
+            or help_result.returncode != 0
+            or help_result.stderr != b""
+            or any(
+                capability.encode("ascii") not in help_result.stdout
+                for capability in SANDBOX_CAPABILITIES
+            )
+        ):
+            raise MaterializationError("Bubblewrap identity or capabilities are invalid")
+        return descriptor
+    except (OSError, subprocess.SubprocessError, UnicodeEncodeError) as error:
+        os.close(descriptor)
+        raise MaterializationError("Bubblewrap identity cannot be verified") from error
+    except BaseException:
         os.close(descriptor)
         raise
 
 
-def _copy_open_build_output(source_fd: int, destination: Path) -> None:
+def _sandbox_argv(
+    policy: dict[str, object],
+    source_bundle: VerifiedSourceBundle,
+    *,
+    cargo: Path,
+    llvm_toolchain: Path,
+    sandbox_fd: int,
+) -> tuple[tuple[str, ...], dict[str, str], tuple[int, ...]]:
+    source_targets = (
+        ("cargo_manifest", "/src/Cargo.toml"),
+        ("cargo_lock", "/src/Cargo.lock"),
+        ("rust_source", "/src/src/main.rs"),
+    )
+    for source_name, _target in source_targets:
+        _sealed_descriptor_state(source_bundle.descriptor(source_name), 0o400)
+    _sealed_descriptor_state(sandbox_fd, 0o500)
+    rust_root = cargo.parent.parent
+    cargo_command = (
+        "/toolchain/bin/cargo build --quiet --locked --offline --release --target "
+        f"{policy['target_triple']} && /usr/bin/cat /work/target/"
+        f"{policy['target_triple']}/release/{policy['binary_name']}"
+    )
+    environment_pairs = (
+        ("CARGO_HOME", "/work/cargo-home"),
+        ("CARGO_NET_OFFLINE", "true"),
+        ("CARGO_TARGET_DIR", "/work/target"),
+        ("HOME", "/work/home"),
+        ("LANG", "C.UTF-8"),
+        ("LC_ALL", "C.UTF-8"),
+        ("PATH", "/toolchain/bin:/llvm/bin:/usr/bin:/bin"),
+        ("RUSTC", "/toolchain/bin/rustc"),
+        (
+            "RUSTFLAGS",
+            "-C linker=/llvm/bin/clang -C link-arg=-fuse-ld=lld "
+            "-C link-arg=-Wl,--build-id=none",
+        ),
+        ("SOURCE_DATE_EPOCH", "0"),
+        ("TEMP", "/work/tmp"),
+        ("TMP", "/work/tmp"),
+        ("TMPDIR", "/work/tmp"),
+    )
+    argv: list[str] = [
+        f"/proc/self/fd/{sandbox_fd}",
+        "--die-with-parent",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--new-session",
+        "--clearenv",
+    ]
+    for key, value in environment_pairs:
+        argv.extend(("--setenv", key, value))
+    argv.extend((
+        "--tmpfs", "/",
+        "--dir", "/src",
+        "--dir", "/src/src",
+    ))
+    for source_name, target in source_targets:
+        argv.extend((
+            "--perms", "0400", "--ro-bind-data", str(source_bundle.descriptor(source_name)), target
+        ))
+    argv.extend((
+        "--dir", "/work",
+        "--dir", "/work/cargo-home",
+        "--dir", "/work/home",
+        "--dir", "/work/target",
+        "--dir", "/work/tmp",
+        "--dir", "/toolchain",
+        "--dir", "/llvm",
+        "--dir", "/usr",
+        "--dir", "/etc",
+        "--ro-bind", str(rust_root), "/toolchain",
+        "--ro-bind", str(llvm_toolchain), "/llvm",
+        "--ro-bind", "/usr/bin", "/usr/bin",
+        "--ro-bind", "/usr/lib", "/usr/lib",
+        "--ro-bind", "/usr/lib64", "/usr/lib64",
+        "--ro-bind", "/etc/ld.so.cache", "/etc/ld.so.cache",
+        "--symlink", "usr/lib", "/lib",
+        "--symlink", "usr/lib64", "/lib64",
+        "--symlink", "usr/bin", "/bin",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--chdir", "/src",
+        "/usr/bin/sh", "-c", cargo_command,
+    ))
+    passed = (sandbox_fd, *(source_bundle.descriptor(name) for name, _ in source_targets))
+    return tuple(argv), {}, passed
+
+
+def _run_sandbox(
+    argv: tuple[str, ...], environment: dict[str, str], passed: tuple[int, ...]
+) -> tuple[int, bytes, bytes]:
+    try:
+        for descriptor in passed:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+        process = subprocess.Popen(
+            argv,
+            cwd=Path("/"),
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=passed,
+        )
+    except OSError as error:
+        raise MaterializationError("sealed UV executor sandbox cannot start") from error
+    assert process.stdout is not None and process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    limits = {"stdout": _MAX_BINARY_BYTES, "stderr": _MAX_SANDBOX_STDERR_BYTES}
+    deadline = time.monotonic() + _SANDBOX_TIMEOUT_SECONDS
+    exceeded = False
+    try:
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                raise MaterializationError("sealed UV executor sandbox timed out")
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _event in events:
+                try:
+                    chunk = os.read(key.fileobj.fileno(), 64 * 1024)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                captured[key.data].extend(chunk)
+                if len(captured[key.data]) > limits[key.data]:
+                    exceeded = True
+                    process.kill()
+        returncode = process.wait(timeout=5)
+    except (OSError, subprocess.SubprocessError) as error:
+        process.kill()
+        process.wait()
+        raise MaterializationError("sealed UV executor sandbox output failed") from error
+    finally:
+        selector.close()
+    if exceeded:
+        raise MaterializationError("sealed UV executor sandbox output exceeded its bound")
+    return returncode, bytes(captured["stdout"]), bytes(captured["stderr"])
+
+
+def _build_once(
+    policy: dict[str, object],
+    cargo: Path,
+    llvm_toolchain: Path,
+    source_bundle: VerifiedSourceBundle,
+    sandbox_fd: int,
+) -> bytes:
+    argv, environment, passed = _sandbox_argv(
+        policy,
+        source_bundle,
+        cargo=cargo,
+        llvm_toolchain=llvm_toolchain,
+        sandbox_fd=sandbox_fd,
+    )
+    returncode, output, _stderr = _run_sandbox(argv, environment, passed)
+    if returncode != 0:
+        raise MaterializationError("sealed UV executor isolated offline build failed")
+    if not output.startswith(b"\x7fELF") or len(output) > _MAX_BINARY_BYTES:
+        raise MaterializationError("sealed UV executor sandbox export is invalid")
+    return output
+
+
+def _copy_open_build_output(source: bytes, destination: Path) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
     try:
         destination_fd = os.open(destination, flags, BINARY_MODE)
     except OSError as error:
         raise MaterializationError("sealed UV executor destination cannot be created") from error
     try:
-        while True:
-            block = os.read(source_fd, 1024 * 1024)
-            if not block:
-                break
-            view = memoryview(block)
-            while view:
-                written = os.write(destination_fd, view)
-                if written <= 0:
-                    raise MaterializationError("sealed UV executor destination write failed")
-                view = view[written:]
+        view = memoryview(source)
+        while view:
+            written = os.write(destination_fd, view)
+            if written <= 0:
+                raise MaterializationError("sealed UV executor destination write failed")
+            view = view[written:]
         os.fsync(destination_fd)
     except MaterializationError:
         os.close(destination_fd)
@@ -831,36 +962,28 @@ def materialize(
     *, policy_path: Path, destination: Path, cargo: Path, llvm_toolchain: Path
 ) -> dict[str, object]:
     policy = load_policy(policy_path)
-    verified_bytes = _verify_policy_source_commit(policy)
-    destination, parent_fd, parent_identity = _prepare_destination(destination)
+    source_bundle = _create_verified_source_bundle(
+        policy, _verify_policy_source_commit(policy)
+    )
     stage_name: str | None = None
     stage: Path | None = None
+    parent_fd = -1
+    sandbox_fd = -1
     try:
+        destination, parent_fd, parent_identity = _prepare_destination(destination)
+        _verify_toolchains(policy, cargo, llvm_toolchain, source_bundle)
+        sandbox_fd = _verify_sandbox(policy)
+        first = _build_once(policy, cargo, llvm_toolchain, source_bundle, sandbox_fd)
+        second = _build_once(policy, cargo, llvm_toolchain, source_bundle, sandbox_fd)
+        if (
+            len(first) != len(second)
+            or hashlib.sha256(first).hexdigest() != hashlib.sha256(second).hexdigest()
+        ):
+            raise MaterializationError("sealed UV executor builds are not reproducible")
         stage_name, stage = _create_staging(parent_fd, destination.parent)
-        source_snapshot = _write_verified_source_snapshot(stage, policy, verified_bytes)
-        _verify_toolchains(policy, cargo, llvm_toolchain, source_snapshot)
-        first_root = _create_build_root(stage, "first-build")
-        second_root = _create_build_root(stage, "second-build")
-        first = _build_once(policy, first_root, cargo, llvm_toolchain, source_snapshot)
-        _verify_verified_source_snapshot(source_snapshot)
-        second = _build_once(policy, second_root, cargo, llvm_toolchain, source_snapshot)
-        _verify_verified_source_snapshot(source_snapshot)
-        first_fd, first_size, first_digest = _open_build_output(first, first_root, policy)
-        try:
-            second_fd, second_size, second_digest = _open_build_output(second, second_root, policy)
-            try:
-                if first_size != second_size or first_digest != second_digest:
-                    raise MaterializationError("sealed UV executor builds are not reproducible")
-            finally:
-                os.close(second_fd)
-            binary = stage / str(policy["binary_name"])
-            _copy_open_build_output(first_fd, binary)
-        finally:
-            os.close(first_fd)
+        binary = stage / str(policy["binary_name"])
+        _copy_open_build_output(first, binary)
         binary.chmod(BINARY_MODE)
-        _cleanup_staging(first_root)
-        _cleanup_staging(second_root)
-        _cleanup_staging(source_snapshot.root)
         manifest = _manifest(policy, binary)
         manifest_path = stage / MANIFEST_NAME
         manifest_path.write_bytes(_canonical_json(manifest))
@@ -880,7 +1003,11 @@ def materialize(
     finally:
         if stage is not None:
             _cleanup_staging(stage)
-        os.close(parent_fd)
+        if sandbox_fd >= 0:
+            os.close(sandbox_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        source_bundle.close()
 
 
 def _parser() -> argparse.ArgumentParser:
