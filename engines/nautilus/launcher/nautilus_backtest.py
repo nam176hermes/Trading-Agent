@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 import hashlib
 import hmac
-import importlib.machinery
 import importlib.util
 import json
 import os
@@ -23,7 +22,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Context, Decimal, InvalidOperation, localcontext
 from pathlib import Path
-from types import MappingProxyType
 from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
 
@@ -360,23 +358,6 @@ class _VerifiedStrategyLoader:
         exec(code, module.__dict__)
 
 
-class _SealedWheelFinder:
-    def __init__(self, roots: tuple[Path, ...]) -> None:
-        self._search_path = [str(root) for root in reversed(roots)]
-
-    def find_spec(self, fullname, path=None, target=None):
-        del target
-        if path is not None:
-            return None
-        # This finder owns only modules resolved from its private roots.
-        # An unowned miss is not a terminal policy decision: a sealed wheel
-        # may register another finder for virtual modules it owns. Production
-        # sys.path validation restricts normal lookup to standard-library roots.
-        return importlib.machinery.PathFinder.find_spec(
-            fullname, self._search_path
-        )
-
-
 _TRUSTED_STDLIB_ROOTS = tuple(
     dict.fromkeys(
         Path(value).resolve()
@@ -387,285 +368,58 @@ _TRUSTED_STDLIB_ROOTS = tuple(
         if value
     )
 )
-_TRUSTED_STDLIB_FILE_LOADERS = (
-    importlib.machinery.SourceFileLoader,
-    importlib.machinery.SourcelessFileLoader,
-    importlib.machinery.ExtensionFileLoader,
-)
-_TRUSTED_STDLIB_ALIASES = {
-    "importlib._bootstrap": frozenset({"_frozen_importlib"}),
-    "importlib._bootstrap_external": frozenset(
-        {"_frozen_importlib_external"}
-    ),
-    "os.path": frozenset({"ntpath", "posixpath"}),
-}
-_MISSING_MODULE = object()
-_MISSING_PARENT_ATTRIBUTE = object()
-
-
-def _is_trusted_stdlib_path(value: str) -> bool:
-    candidate = Path(value).resolve()
-    for root in _TRUSTED_STDLIB_ROOTS:
-        try:
-            relative = candidate.relative_to(root)
-        except ValueError:
-            continue
-        if not {"site-packages", "dist-packages"}.intersection(relative.parts):
-            return True
-    return False
-
-
-def _has_trusted_interpreter_provenance(name: str, module: object) -> bool:
-    top_level = name.partition(".")[0]
-    is_sysconfigdata = "." not in name and name.startswith("_sysconfigdata_")
-    if (
-        top_level not in sys.stdlib_module_names
-        and top_level not in sys.builtin_module_names
-        and not is_sysconfigdata
-    ):
-        return False
-    spec = getattr(module, "__spec__", None)
-    if not isinstance(spec, importlib.machinery.ModuleSpec):
-        if name in {"typing.io", "typing.re"}:
-            typing_module = sys.modules.get("typing")
-            return (
-                typing_module is not None
-                and _has_trusted_interpreter_provenance(
-                    "typing", typing_module
-                )
-                and getattr(typing_module, name.partition(".")[2], None)
-                is module
-            )
-        return False
-    if spec.name != name and not (
-        spec.name in _TRUSTED_STDLIB_ALIASES.get(name, ())
-        and sys.modules.get(spec.name) is module
-    ):
-        return False
-    loader = spec.loader
-    if getattr(module, "__loader__", None) is not loader:
-        return False
-    if loader is importlib.machinery.BuiltinImporter:
-        return (
-            spec.origin == "built-in"
-            and importlib.machinery.BuiltinImporter.find_spec(spec.name)
-            is not None
-        )
-    if loader is importlib.machinery.FrozenImporter:
-        return (
-            spec.origin == "frozen"
-            and importlib.machinery.FrozenImporter.find_spec(spec.name)
-            is not None
-        )
-    if not isinstance(loader, _TRUSTED_STDLIB_FILE_LOADERS):
-        return False
-    origin = spec.origin
-    module_file = getattr(module, "__file__", None)
-    loader_path = getattr(loader, "path", None)
-    if (
-        not isinstance(origin, str)
-        or not isinstance(module_file, str)
-        or not isinstance(loader_path, str)
-        or getattr(loader, "name", None) != spec.name
-    ):
-        return False
-    resolved_origin = Path(origin).resolve()
-    return (
-        resolved_origin == Path(module_file).resolve()
-        and resolved_origin == Path(loader_path).resolve()
-        and _is_trusted_stdlib_path(origin)
-    )
-
-
-# This is an import-state repair baseline, not standalone runtime authority.
-# Production may consume it only after the direct isolated entry gate in main.
-_TRUSTED_PRELOADED_INTERPRETER_MODULES = MappingProxyType(
-    {
-        name: module
-        for name, module in tuple(sys.modules.items())
-        if _has_trusted_interpreter_provenance(name, module)
-    }
-)
-_TRUSTED_PRELOADED_INTERPRETER_PARENT_NAMESPACES = MappingProxyType(
-    {
-        name: MappingProxyType(
-            dict(object.__getattribute__(module, "__dict__"))
-        )
-        for name, module in _TRUSTED_PRELOADED_INTERPRETER_MODULES.items()
-        if type(module) is type(sys)
-    }
-)
-
-
-def _snapshot_interpreter_module_parent_namespaces() -> tuple[
-    tuple[object, dict[str, object]], ...
-]:
-    snapshots: list[tuple[object, dict[str, object]]] = []
-    seen: set[int] = set()
-    for parent in _TRUSTED_PRELOADED_INTERPRETER_MODULES.values():
-        identity = id(parent)
-        if identity in seen or type(parent) is not type(sys):
-            continue
-        seen.add(identity)
-        namespace = object.__getattribute__(parent, "__dict__")
-        snapshots.append((parent, dict(namespace)))
-    return tuple(snapshots)
-
-
-def _interpreter_module_parent_attribute_names(
-    module_names: set[str],
-) -> set[str]:
-    names = {name for name in module_names if isinstance(name, str)}
-    for parent_name, parent in _TRUSTED_PRELOADED_INTERPRETER_MODULES.items():
-        if type(parent) is not type(sys):
-            continue
-        baseline = _TRUSTED_PRELOADED_INTERPRETER_PARENT_NAMESPACES.get(
-            parent_name
-        )
-        if baseline is None:
-            continue
-        namespace = object.__getattribute__(parent, "__dict__")
-        for attribute, child in tuple(namespace.items()):
-            if not isinstance(attribute, str):
-                continue
-            if (
-                attribute not in baseline
-                or isinstance(child, type(sys))
-            ):
-                names.add(f"{parent_name}.{attribute}")
-        for attribute, child in baseline.items():
-            if isinstance(attribute, str) and isinstance(child, type(sys)):
-                names.add(f"{parent_name}.{attribute}")
-    return names
-
-
-def _synchronize_interpreter_module_parent_attributes(
-    module_names: set[str],
-) -> None:
-    for name in sorted(module_names):
-        parent_name, separator, attribute = name.rpartition(".")
-        if not separator:
-            continue
-        parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
-            parent_name, _MISSING_MODULE
-        )
-        if parent is _MISSING_MODULE or type(parent) is not type(sys):
-            continue
-        namespace = object.__getattribute__(parent, "__dict__")
-        trusted_child = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
-            name, _MISSING_MODULE
-        )
-        if trusted_child is _MISSING_MODULE:
-            baseline = (
-                _TRUSTED_PRELOADED_INTERPRETER_PARENT_NAMESPACES.get(
-                    parent_name
-                )
-            )
-            original = (
-                _MISSING_PARENT_ATTRIBUTE
-                if baseline is None
-                else baseline.get(attribute, _MISSING_PARENT_ATTRIBUTE)
-            )
-            if original is _MISSING_PARENT_ATTRIBUTE:
-                namespace.pop(attribute, None)
-            else:
-                namespace[attribute] = original
-        else:
-            namespace[attribute] = trusted_child
-
-
-def _restore_interpreter_module_parent_attributes(
-    module_names: set[str],
-    snapshots: tuple[tuple[object, dict[str, object]], ...],
-) -> None:
-    originals = {id(parent): namespace for parent, namespace in snapshots}
-    for name in sorted(module_names):
-        parent_name, separator, attribute = name.rpartition(".")
-        if not separator:
-            continue
-        parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
-            parent_name, _MISSING_MODULE
-        )
-        if parent is _MISSING_MODULE or type(parent) is not type(sys):
-            continue
-        original_namespace = originals.get(id(parent))
-        if original_namespace is None:
-            continue
-        namespace = object.__getattribute__(parent, "__dict__")
-        original = original_namespace.get(
-            attribute, _MISSING_PARENT_ATTRIBUTE
-        )
-        if original is _MISSING_PARENT_ATTRIBUTE:
-            namespace.pop(attribute, None)
-        else:
-            namespace[attribute] = original
-
-
-def _is_active_launcher_module(name: str, module: object) -> bool:
-    return (
-        name in {"__main__", __name__}
-        and type(module) is type(sys)
-        and getattr(module, "__dict__", None) is globals()
-    )
 
 
 @contextmanager
-def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
-    """Resolve top-level dependencies only from sealed roots, then restore."""
-
+def _sealed_dependency_path_scope(roots: tuple[Path, ...]):
     _require_production_stdlib_sys_path()
-    original_meta_path = tuple(sys.meta_path)
-    original_modules = _snapshot_modules_after_restoring_trusted_machinery()
-    parent_namespace_snapshots = _snapshot_interpreter_module_parent_namespaces()
-    parent_attribute_names: set[str] = set()
-    finder = _SealedWheelFinder(roots)
+    original = tuple(sys.path)
+    resolved = tuple(str(root.resolve(strict=True)) for root in roots)
+    if len(resolved) != len(set(resolved)):
+        raise ValueError("sealed dependency roots must be distinct")
+    sys.path[:] = [*original, *resolved]
     try:
-        for name in tuple(sys.modules):
-            module = sys.modules[name]
-            trusted = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
-                name, _MISSING_MODULE
-            )
-            if trusted is module or _is_active_launcher_module(name, module):
-                continue
-            if trusted is not _MISSING_MODULE:
-                sys.modules[name] = trusted
-            else:
-                sys.modules.pop(name, None)
-        sys.modules.update(_TRUSTED_PRELOADED_INTERPRETER_MODULES)
-        parent_attribute_names = _interpreter_module_parent_attribute_names(
-            set(original_modules)
-            | set(_TRUSTED_PRELOADED_INTERPRETER_MODULES)
-        )
-        _synchronize_interpreter_module_parent_attributes(
-            parent_attribute_names
-        )
-        sys.meta_path.insert(0, finder)
         yield
     finally:
-        scoped_module_names: set[str] = set()
-        scoped_parent_attribute_names: set[str] = set()
+        sys.path[:] = original
+
+
+def _extract_sealed_wheels(
+    wheels_root: Path, extraction_root: Path
+) -> tuple[Path, ...]:
+    extraction_root.mkdir(mode=0o700)
+    wheels = tuple(sorted(wheels_root.glob("*.whl"), key=lambda path: path.name))
+    if not wheels:
+        raise ValueError("Nautilus runtime wheel closure is missing")
+    extracted_roots: list[Path] = []
+    for wheel in wheels:
+        destination = extraction_root / hashlib.sha256(
+            wheel.name.encode("ascii")
+        ).hexdigest()
+        destination.mkdir(mode=0o700)
         try:
-            scoped_module_names = set(sys.modules)
-            scoped_parent_attribute_names = (
-                _interpreter_module_parent_attribute_names(
-                    scoped_module_names | parent_attribute_names
-                )
-            )
-        finally:
-            sys.meta_path[:] = original_meta_path
-            for name in tuple(sys.modules):
-                if name not in original_modules:
-                    sys.modules.pop(name, None)
-            sys.modules.update(original_modules)
-            _restore_interpreter_module_parent_attributes(
-                (
-                    set(original_modules)
-                    | set(_TRUSTED_PRELOADED_INTERPRETER_MODULES)
-                    | scoped_module_names
-                    | scoped_parent_attribute_names
-                ),
-                parent_namespace_snapshots,
-            )
+            with zipfile.ZipFile(wheel) as archive:
+                for member in archive.infolist():
+                    relative = Path(member.filename)
+                    if (
+                        relative.is_absolute()
+                        or not member.filename
+                        or ".." in relative.parts
+                        or stat.S_ISLNK(member.external_attr >> 16)
+                        or member.is_dir()
+                    ):
+                        if (
+                            member.is_dir()
+                            and member.filename
+                            and ".." not in relative.parts
+                        ):
+                            continue
+                        raise ValueError("Nautilus wheel has an unsafe member")
+                archive.extractall(destination)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ValueError("Nautilus runtime wheel is unreadable") from exc
+        extracted_roots.append(destination)
+    return tuple(extracted_roots)
 
 
 def _load_target_portfolio_strategy() -> tuple[type, type]:
@@ -2190,39 +1944,8 @@ def _run_nautilus_simulation_fixture(
 
     wheels_root = Path("/engine/wheels")
     extraction_root = Path("/tmp/nautilus-simulation-wheels")
-    extraction_root.mkdir(mode=0o700)
-    wheels = tuple(sorted(wheels_root.glob("*.whl"), key=lambda path: path.name))
-    if not wheels:
-        raise ValueError("Nautilus runtime wheel closure is missing")
-    extracted_roots: list[Path] = []
-    for wheel in wheels:
-        destination = extraction_root / hashlib.sha256(
-            wheel.name.encode("ascii")
-        ).hexdigest()
-        destination.mkdir(mode=0o700)
-        try:
-            with zipfile.ZipFile(wheel) as archive:
-                for member in archive.infolist():
-                    relative = Path(member.filename)
-                    if (
-                        relative.is_absolute()
-                        or not member.filename
-                        or ".." in relative.parts
-                        or stat.S_ISLNK(member.external_attr >> 16)
-                        or member.is_dir()
-                    ):
-                        if (
-                            member.is_dir()
-                            and member.filename
-                            and ".." not in relative.parts
-                        ):
-                            continue
-                        raise ValueError("Nautilus wheel has an unsafe member")
-                archive.extractall(destination)
-        except (OSError, zipfile.BadZipFile) as exc:
-            raise ValueError("Nautilus runtime wheel is unreadable") from exc
-        extracted_roots.append(destination)
-    with _sealed_wheel_import_scope(tuple(extracted_roots)):
+    extracted_roots = _extract_sealed_wheels(wheels_root, extraction_root)
+    with _sealed_dependency_path_scope(extracted_roots):
         return _run_nautilus_simulation_fixture_loaded(fixture)
 
 
@@ -2483,33 +2206,8 @@ def _run_nautilus(
 
     wheels_root = Path("/engine/wheels")
     extraction_root = Path("/tmp/nautilus-wheels")
-    extraction_root.mkdir(mode=0o700)
-    wheels = tuple(sorted(wheels_root.glob("*.whl"), key=lambda path: path.name))
-    if not wheels:
-        raise ValueError("Nautilus runtime wheel closure is missing")
-    extracted_roots: list[Path] = []
-    for wheel in wheels:
-        destination = extraction_root / hashlib.sha256(wheel.name.encode("ascii")).hexdigest()
-        destination.mkdir(mode=0o700)
-        try:
-            with zipfile.ZipFile(wheel) as archive:
-                for member in archive.infolist():
-                    relative = Path(member.filename)
-                    if (
-                        relative.is_absolute()
-                        or not member.filename
-                        or ".." in relative.parts
-                        or stat.S_ISLNK(member.external_attr >> 16)
-                        or member.is_dir()
-                    ):
-                        if member.is_dir() and member.filename and ".." not in relative.parts:
-                            continue
-                        raise ValueError("Nautilus wheel has an unsafe member")
-                archive.extractall(destination)
-        except (OSError, zipfile.BadZipFile) as exc:
-            raise ValueError("Nautilus runtime wheel is unreadable") from exc
-        extracted_roots.append(destination)
-    with _sealed_wheel_import_scope(tuple(extracted_roots)):
+    extracted_roots = _extract_sealed_wheels(wheels_root, extraction_root)
+    with _sealed_dependency_path_scope(extracted_roots):
         return _run_nautilus_loaded(fixture)
 
 
@@ -2675,21 +2373,6 @@ def _simulation_event(
         ).hexdigest(),
         "payload": event_payload,
     }
-
-
-def _snapshot_modules_after_restoring_trusted_machinery() -> dict[str, object]:
-    parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
-        "importlib", _MISSING_MODULE
-    )
-    if parent is _MISSING_MODULE:
-        return dict(sys.modules)
-    child = _TRUSTED_PRELOADED_INTERPRETER_MODULES["importlib.machinery"]
-    namespace = object.__getattribute__(parent, "__dict__")
-    if namespace.get("machinery", _MISSING_PARENT_ATTRIBUTE) is (
-        _MISSING_PARENT_ATTRIBUTE
-    ):
-        namespace["machinery"] = child
-    return dict(sys.modules)
 
 
 def _fail(message: str) -> NoReturn:

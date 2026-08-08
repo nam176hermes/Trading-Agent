@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-import ast
 import hashlib
 import importlib
-import importlib.machinery
 import importlib.util
 import json
 import subprocess
 import sys
-import sysconfig
 import tempfile
 from datetime import UTC, datetime
 from decimal import Context, Decimal, localcontext
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -417,159 +414,216 @@ def test_strategy_loader_never_falls_back_to_an_ambient_bare_import(
     assert not marker.exists()
 
 
-def test_sealed_wheel_scope_resolves_cross_root_dependency_with_legacy_precedence(
+def _run_isolated_path_scope_script(
+    script: str, *arguments: Path, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "python3.12",
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(LAUNCHER.resolve()),
+            *(str(argument) for argument in arguments),
+        ],
+        check=False,
+        capture_output=True,
+        cwd=cwd,
+        env={},
+        text=True,
+        timeout=10,
+    )
+
+
+def test_sealed_dependency_path_is_stdlib_first_and_root_ordered(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
-    (first / "nautilus_trader").mkdir(parents=True)
-    (second / "nautilus_trader").mkdir(parents=True)
-    (first / "nautilus_trader/__init__.py").write_text(
-        "ORIGIN = 'first'\n", encoding="utf-8"
+    (first / "json").mkdir(parents=True)
+    (first / "importlib").mkdir()
+    second.mkdir()
+    (first / "json/__init__.py").write_text(
+        "SEALED_SHADOW = True\n", encoding="utf-8"
     )
-    (first / "sealed_cross_root_dependency.py").write_text(
-        "VALUE = 'dependency-from-first'\n", encoding="utf-8"
+    (first / "importlib/__init__.py").write_text(
+        "SEALED_SHADOW = True\n", encoding="utf-8"
     )
-    (second / "nautilus_trader/__init__.py").write_text(
-        "import sealed_cross_root_dependency\n"
-        "ORIGIN = 'second'\n"
-        "DEPENDENCY = sealed_cross_root_dependency.VALUE\n",
+    (first / "sealed_precedence.py").write_text(
+        "VALUE = 'first'\n", encoding="utf-8"
+    )
+    (second / "sealed_precedence.py").write_text(
+        "VALUE = 'second'\n", encoding="utf-8"
+    )
+    (second / "sealed_dependency.py").write_text(
+        "VALUE = 'sealed'\n",
         encoding="utf-8",
     )
-    script = """
+
+    script = r"""
 import importlib
 import importlib.util
 import sys
+import sysconfig
+from pathlib import Path
+
+stdlib = Path(sysconfig.get_path("stdlib")).resolve()
+expected_initial_path = tuple(dict.fromkeys((
+    stdlib.parent / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
+    stdlib,
+    Path(sysconfig.get_path("platstdlib")).resolve(),
+    Path(sysconfig.get_config_var("DESTSHARED")).resolve(),
+)))
+assert tuple(Path(value).resolve() for value in sys.path) == expected_initial_path
+
+spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module._CLEAN_ISOLATED_ENGINE_ENTRY = True
+scope = module._sealed_dependency_path_scope
+
+before_path = tuple(sys.path)
+first = Path(sys.argv[2]).resolve()
+second = Path(sys.argv[3]).resolve()
+stdlib_importlib = importlib
+for name in tuple(sys.modules):
+    if name == "json" or name.startswith("json."):
+        sys.modules.pop(name)
+with scope((first, second)):
+    assert tuple(sys.path) == (*before_path, str(first), str(second))
+    assert importlib.import_module("sealed_dependency").VALUE == "sealed"
+    assert importlib.import_module("sealed_precedence").VALUE == "first"
+    stdlib_json = importlib.import_module("json")
+    assert not hasattr(stdlib_json, "SEALED_SHADOW")
+    assert Path(stdlib_json.__file__).resolve().is_relative_to(stdlib)
+    assert importlib.import_module("importlib") is stdlib_importlib
+    assert not hasattr(stdlib_importlib, "SEALED_SHADOW")
+assert tuple(sys.path) == before_path
+print("sealed-path-precedence-ok")
+"""
+    result = _run_isolated_path_scope_script(script, first, second)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "sealed-path-precedence-ok\n"
+
+
+def test_sealed_dependency_path_excludes_current_directory(
+    tmp_path: Path,
+) -> None:
+    sealed = tmp_path / "sealed"
+    current = tmp_path / "current"
+    sealed.mkdir()
+    current.mkdir()
+    (current / "ambient_beside_current_directory.py").write_text(
+        "VALUE = 'ambient'\n",
+        encoding="utf-8",
+    )
+
+    script = r"""
+import importlib
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module._CLEAN_ISOLATED_ENGINE_ENTRY = True
+scope = module._sealed_dependency_path_scope
+
+with scope((Path(sys.argv[2]),)):
+    try:
+        importlib.import_module("ambient_beside_current_directory")
+    except ModuleNotFoundError as exc:
+        assert exc.name == "ambient_beside_current_directory"
+    else:
+        raise AssertionError("current directory entered sealed dependency scope")
+print("sealed-current-directory-excluded-ok")
+"""
+    result = _run_isolated_path_scope_script(script, sealed, cwd=current)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "sealed-current-directory-excluded-ok\n"
+
+
+def test_no_module_state_sanitizer_allows_lazy_stdlib_imports(
+    tmp_path: Path,
+) -> None:
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+
+    script = r"""
+import importlib
+import importlib.util
+import sys
+from pathlib import Path
 from types import ModuleType
 
 spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-ambient_module = ModuleType("preloaded_ambient_dependency")
-sys.modules[ambient_module.__name__] = ambient_module
-before_path = list(sys.path)
+module._CLEAN_ISOLATED_ENGINE_ENTRY = True
+scope = module._sealed_dependency_path_scope
+
+sentinel = ModuleType("preloaded_dependency_sentinel")
+sys.modules[sentinel.__name__] = sentinel
+modules_identity = id(sys.modules)
+meta_path_identity = id(sys.meta_path)
 before_meta_path = tuple(sys.meta_path)
-before_modules = dict(sys.modules)
-with module._sealed_wheel_import_scope((module.Path(sys.argv[2]), module.Path(sys.argv[3]))):
-    assert ambient_module.__name__ not in sys.modules
-    assert sys.modules[spec.name] is module
-    resolved = importlib.import_module("nautilus_trader")
-    assert resolved.ORIGIN == "second"
-    assert resolved.DEPENDENCY == "dependency-from-first"
-    assert list(sys.path) == before_path
-assert list(sys.path) == before_path
+import xml
+assert "xml.etree.ElementTree" not in sys.modules
+with scope((Path(sys.argv[2]),)):
+    assert id(sys.modules) == modules_identity
+    assert sys.modules[sentinel.__name__] is sentinel
+    assert id(sys.meta_path) == meta_path_identity
+    assert tuple(sys.meta_path) == before_meta_path
+    element_tree = importlib.import_module("xml.etree.ElementTree")
+    assert xml.etree.ElementTree is element_tree
+assert sys.modules[sentinel.__name__] is sentinel
 assert tuple(sys.meta_path) == before_meta_path
-assert sys.modules == before_modules
-assert sys.modules[ambient_module.__name__] is ambient_module
-print("isolated-cross-root-import-ok")
+print("no-module-state-sanitizer-ok")
 """
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-S",
-            "-c",
-            script,
-            str(LAUNCHER.resolve()),
-            str(first),
-            str(second),
-        ],
-        check=False,
-        capture_output=True,
-        env={},
-        text=True,
-        timeout=10,
-    )
+    result = _run_isolated_path_scope_script(script, sealed)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "isolated-cross-root-import-ok\n"
+    assert result.stdout == "no-module-state-sanitizer-ok\n"
 
 
-def _isolated_stdlib_search_path() -> list[str]:
-    stdlib = Path(sysconfig.get_path("stdlib")).resolve()
-    values = (
-        stdlib.parent / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
-        stdlib,
-        Path(sysconfig.get_path("platstdlib")).resolve(),
-        Path(sysconfig.get_config_var("DESTSHARED")).resolve(),
-    )
-    return list(dict.fromkeys(str(value) for value in values))
-
-
-def test_sealed_wheel_scope_delegates_unowned_import_to_registered_finder(
-    launcher_module,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_sealed_dependency_path_restores_after_error(tmp_path: Path) -> None:
     sealed = tmp_path / "sealed"
     sealed.mkdir()
-    (sealed / "sealed_importer_owner.py").write_text(
-        "import importlib.util\n"
-        "import sys\n"
-        "\n"
-        "class _VirtualLoader:\n"
-        "    def create_module(self, spec):\n"
-        "        return None\n"
-        "\n"
-        "    def exec_module(self, module):\n"
-        "        module.VALUE = 'registered-finder'\n"
-        "\n"
-        "class _VirtualFinder:\n"
-        "    def find_spec(self, fullname, path=None, target=None):\n"
-        "        if fullname == 'sealed_virtual_dependency':\n"
-        "            return importlib.util.spec_from_loader(fullname, _VirtualLoader())\n"
-        "        return None\n"
-        "\n"
-        "sys.meta_path.append(_VirtualFinder())\n"
-        "import sealed_virtual_dependency\n"
-        "VALUE = sealed_virtual_dependency.VALUE\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(sys, "path", _isolated_stdlib_search_path())
-    monkeypatch.setattr(
-        launcher_module, "_CLEAN_ISOLATED_ENGINE_ENTRY", True
-    )
-    before_path = list(sys.path)
-    before_meta_path = tuple(sys.meta_path)
-    before_modules = dict(sys.modules)
+    script = r"""
+import importlib.util
+import sys
+from pathlib import Path
 
-    with launcher_module._sealed_wheel_import_scope((sealed,)):
-        resolved = importlib.import_module("sealed_importer_owner")
-        assert resolved.VALUE == "registered-finder"
-        assert list(sys.path) == before_path
+spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module._CLEAN_ISOLATED_ENGINE_ENTRY = True
+scope = module._sealed_dependency_path_scope
 
-    assert list(sys.path) == before_path
-    assert tuple(sys.meta_path) == before_meta_path
-    assert sys.modules == before_modules
+before_path = tuple(sys.path)
+try:
+    with scope((Path(sys.argv[2]),)):
+        assert tuple(sys.path) == (*before_path, str(Path(sys.argv[2]).resolve()))
+        raise RuntimeError("sealed failure")
+except RuntimeError as exc:
+    assert str(exc) == "sealed failure"
+else:
+    raise AssertionError("sealed dependency scope swallowed the error")
+assert tuple(sys.path) == before_path
+print("sealed-path-error-restoration-ok")
+"""
+    result = _run_isolated_path_scope_script(script, sealed)
 
-
-def test_terminal_sealed_import_failure_preserves_requested_module_name(
-    launcher_module,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sealed = tmp_path / "sealed"
-    sealed.mkdir()
-    (sealed / "sealed_terminal_owner.py").write_text(
-        "import sealed_terminal_missing_dependency\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(sys, "path", _isolated_stdlib_search_path())
-    monkeypatch.setattr(
-        launcher_module, "_CLEAN_ISOLATED_ENGINE_ENTRY", True
-    )
-    before_path = list(sys.path)
-    before_meta_path = tuple(sys.meta_path)
-    before_modules = dict(sys.modules)
-
-    with pytest.raises(ModuleNotFoundError) as caught:
-        with launcher_module._sealed_wheel_import_scope((sealed,)):
-            importlib.import_module("sealed_terminal_owner")
-
-    assert caught.value.name == "sealed_terminal_missing_dependency"
-    assert list(sys.path) == before_path
-    assert tuple(sys.meta_path) == before_meta_path
-    assert sys.modules == before_modules
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "sealed-path-error-restoration-ok\n"
 
 
 def test_launcher_source_requires_direct_isolated_no_site_execution() -> None:
@@ -677,448 +731,6 @@ exec(compile(source, launcher_path, "exec"), launcher.__dict__)
     assert result.stdout == ""
     assert result.stderr == (
         "error: Nautilus engine entry requires direct CPython -I -S execution\n"
-    )
-
-
-def test_sealed_wheel_scope_refuses_ambient_fallback_and_restores_after_error(
-    launcher_module,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sealed = tmp_path / "sealed"
-    ambient = tmp_path / "ambient"
-    (sealed / "nautilus_trader").mkdir(parents=True)
-    ambient.mkdir()
-    (sealed / "nautilus_trader/__init__.py").write_text(
-        "import ambient_only_dependency\n", encoding="utf-8"
-    )
-    (ambient / "ambient_only_dependency.py").write_text(
-        "VALUE = 'must-not-load'\n", encoding="utf-8"
-    )
-    monkeypatch.syspath_prepend(str(ambient))
-    assert "ambient_only_dependency" not in sys.modules
-    ambient_module = importlib.import_module("ambient_only_dependency")
-    sys.modules.pop("ambient_only_dependency")
-    monkeypatch.setitem(
-        sys.modules, "ambient_only_dependency", ambient_module
-    )
-    monkeypatch.setattr(
-        launcher_module, "_CLEAN_ISOLATED_ENGINE_ENTRY", True
-    )
-    before_path = list(sys.path)
-    before_meta_path = tuple(sys.meta_path)
-    before_modules = dict(sys.modules)
-
-    with pytest.raises(ValueError, match="standard-library roots"):
-        with launcher_module._sealed_wheel_import_scope((sealed,)):
-            importlib.import_module("nautilus_trader")
-
-    assert list(sys.path) == before_path
-    assert tuple(sys.meta_path) == before_meta_path
-    assert sys.modules == before_modules
-    assert sys.modules["ambient_only_dependency"] is ambient_module
-    assert "nautilus_trader" not in sys.modules
-
-
-def test_sealed_wheel_scope_refuses_stdlib_key_impersonation_and_restores_after_success(
-    launcher_module,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sealed = tmp_path / "sealed"
-    (sealed / "nautilus_trader").mkdir(parents=True)
-    (sealed / "nautilus_trader/__init__.py").write_text(
-        "import json\n"
-        "import sys\n"
-        "USED_AMBIENT = getattr(json, 'AMBIENT_IMPERSONATOR', False)\n"
-        "SERIALIZED = json.dumps(\n"
-        "    {'trusted': True}, sort_keys=True, separators=(',', ':')\n"
-        ")\n"
-        "BUILTIN_SYS_OK = sys.version_info.major >= 3\n",
-        encoding="utf-8",
-    )
-    real_json = json
-    impersonator = ModuleType("json")
-    impersonator.AMBIENT_IMPERSONATOR = True
-    impersonator.dumps = lambda *_args, **_kwargs: "ambient"
-    for attribute in ("__file__", "__loader__", "__package__", "__spec__"):
-        setattr(impersonator, attribute, getattr(real_json, attribute))
-    real_sys = sys
-    builtin_impersonator = ModuleType("sys")
-    builtin_impersonator.__loader__ = real_sys.__loader__
-    builtin_impersonator.__spec__ = real_sys.__spec__
-    monkeypatch.delitem(sys.modules, "nautilus_trader", raising=False)
-    monkeypatch.setitem(sys.modules, "json", impersonator)
-    monkeypatch.setitem(sys.modules, "sys", builtin_impersonator)
-    before_path = list(sys.path)
-    before_meta_path = tuple(sys.meta_path)
-    before_modules = dict(sys.modules)
-
-    with launcher_module._sealed_wheel_import_scope((sealed,)):
-        resolved = importlib.import_module("nautilus_trader")
-        assert resolved.USED_AMBIENT is False
-        assert resolved.SERIALIZED == '{"trusted":true}'
-        assert resolved.BUILTIN_SYS_OK is True
-        assert sys.modules["json"] is real_json
-        assert sys.modules["sys"] is real_sys
-        assert list(sys.path) == before_path
-
-    assert list(sys.path) == before_path
-    assert tuple(sys.meta_path) == before_meta_path
-    assert sys.modules == before_modules
-    assert sys.modules["json"] is impersonator
-    assert sys.modules["sys"] is builtin_impersonator
-    assert "nautilus_trader" not in sys.modules
-
-
-@pytest.mark.parametrize("mapping_state", ("spoofed", "missing"))
-def test_sealed_wheel_scope_refuses_stdlib_child_key_impersonation_and_restores_after_error(
-    launcher_module,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mapping_state: str,
-) -> None:
-    sealed = tmp_path / "sealed"
-    (sealed / "nautilus_trader").mkdir(parents=True)
-    (sealed / "nautilus_trader/__init__.py").write_text(
-        "from xml import ambient_only_dependency\n", encoding="utf-8"
-    )
-    genuine_stdlib_child = importlib.import_module("json.decoder")
-    child_name = "xml.ambient_only_dependency"
-    assert genuine_stdlib_child.__file__ is not None
-    loader = importlib.machinery.SourceFileLoader(
-        child_name, genuine_stdlib_child.__file__
-    )
-    impersonator = ModuleType(child_name)
-    impersonator.VALUE = "must-not-load"
-    impersonator.__file__ = genuine_stdlib_child.__file__
-    impersonator.__loader__ = loader
-    impersonator.__package__ = "xml"
-    impersonator.__spec__ = importlib.util.spec_from_loader(child_name, loader)
-    xml = importlib.import_module("xml")
-    monkeypatch.delitem(sys.modules, "nautilus_trader", raising=False)
-    if mapping_state == "spoofed":
-        monkeypatch.setitem(sys.modules, child_name, impersonator)
-    else:
-        impersonator.__name__ = "different.claim"
-        monkeypatch.delitem(sys.modules, child_name, raising=False)
-    monkeypatch.setattr(xml, "ambient_only_dependency", impersonator, raising=False)
-    before_path = list(sys.path)
-    before_meta_path = tuple(sys.meta_path)
-    before_modules = dict(sys.modules)
-
-    with pytest.raises(ImportError, match="ambient_only_dependency"):
-        with launcher_module._sealed_wheel_import_scope((sealed,)):
-            importlib.import_module("nautilus_trader")
-
-    assert list(sys.path) == before_path
-    assert tuple(sys.meta_path) == before_meta_path
-    assert sys.modules == before_modules
-    if mapping_state == "spoofed":
-        assert sys.modules[child_name] is impersonator
-    else:
-        assert child_name not in sys.modules
-    assert xml.ambient_only_dependency is impersonator
-    assert "nautilus_trader" not in sys.modules
-
-
-@pytest.mark.parametrize(
-    "child_name",
-    (
-        "json.decoder",
-        "os.path",
-        "importlib._bootstrap",
-        "importlib._bootstrap_external",
-        "typing.io",
-        "typing.re",
-    ),
-)
-def test_sealed_wheel_scope_synchronizes_trusted_child_parent_attributes(
-    launcher_module,
-    child_name: str,
-) -> None:
-    parent_name, _, attribute = child_name.rpartition(".")
-    parent = importlib.import_module(parent_name)
-    trusted_child = launcher_module._TRUSTED_PRELOADED_INTERPRETER_MODULES[
-        child_name
-    ]
-    original_child = sys.modules[child_name]
-    original_parent_attribute = vars(parent)[attribute]
-    impersonator = ModuleType(child_name)
-    impersonator.AMBIENT_IMPERSONATOR = True
-    try:
-        sys.modules[child_name] = impersonator
-        vars(parent)[attribute] = impersonator
-        before_modules = dict(sys.modules)
-
-        with launcher_module._sealed_wheel_import_scope(()):
-            imported_child = importlib.import_module(child_name)
-            namespace: dict[str, object] = {}
-            exec(
-                f"from {parent_name} import {attribute} as imported_from_parent",
-                namespace,
-            )
-            assert imported_child is trusted_child
-            assert namespace["imported_from_parent"] is trusted_child
-            assert vars(parent)[attribute] is trusted_child
-
-        assert sys.modules == before_modules
-        assert sys.modules[child_name] is impersonator
-        assert vars(parent)[attribute] is impersonator
-    finally:
-        sys.modules[child_name] = original_child
-        vars(parent)[attribute] = original_parent_attribute
-
-
-@pytest.mark.parametrize("parent_state", ("missing", "spoofed"))
-def test_sealed_wheel_scope_reseeds_missing_child_mapping_and_parent_attribute(
-    launcher_module,
-    parent_state: str,
-) -> None:
-    child_name = "json.decoder"
-    parent = json
-    trusted_child = launcher_module._TRUSTED_PRELOADED_INTERPRETER_MODULES[
-        child_name
-    ]
-    original_child = sys.modules[child_name]
-    original_parent_attribute = vars(parent)["decoder"]
-    impersonator = ModuleType(child_name)
-    try:
-        sys.modules.pop(child_name)
-        if parent_state == "missing":
-            vars(parent).pop("decoder")
-        else:
-            vars(parent)["decoder"] = impersonator
-        before_modules = dict(sys.modules)
-
-        with launcher_module._sealed_wheel_import_scope(()):
-            namespace: dict[str, object] = {}
-            exec("from json import decoder as imported_from_parent", namespace)
-            exec("import json.decoder", namespace)
-            assert namespace["imported_from_parent"] is trusted_child
-            assert json.decoder is trusted_child
-            assert sys.modules[child_name] is trusted_child
-
-        assert sys.modules == before_modules
-        assert child_name not in sys.modules
-        if parent_state == "missing":
-            assert "decoder" not in vars(parent)
-        else:
-            assert parent.decoder is impersonator
-    finally:
-        sys.modules[child_name] = original_child
-        vars(parent)["decoder"] = original_parent_attribute
-
-
-def test_sealed_wheel_scope_restores_repaired_child_parent_after_import_error(
-    launcher_module,
-    tmp_path: Path,
-) -> None:
-    sealed = tmp_path / "sealed"
-    (sealed / "nautilus_trader").mkdir(parents=True)
-    (sealed / "nautilus_trader/__init__.py").write_text(
-        "from json import decoder\n"
-        "assert not getattr(decoder, 'AMBIENT_IMPERSONATOR', False)\n"
-        "import ambient_only_dependency\n",
-        encoding="utf-8",
-    )
-    child_name = "json.decoder"
-    original_child = sys.modules[child_name]
-    original_parent_attribute = vars(json)["decoder"]
-    impersonator = ModuleType(child_name)
-    impersonator.AMBIENT_IMPERSONATOR = True
-    missing = object()
-    original_nautilus = sys.modules.pop("nautilus_trader", missing)
-    try:
-        sys.modules[child_name] = impersonator
-        vars(json)["decoder"] = impersonator
-        before_modules = dict(sys.modules)
-
-        with pytest.raises(ModuleNotFoundError) as caught:
-            with launcher_module._sealed_wheel_import_scope((sealed,)):
-                importlib.import_module("nautilus_trader")
-
-        assert caught.value.name == "ambient_only_dependency"
-        assert sys.modules == before_modules
-        assert sys.modules[child_name] is impersonator
-        assert json.decoder is impersonator
-        assert "nautilus_trader" not in sys.modules
-    finally:
-        sys.modules[child_name] = original_child
-        vars(json)["decoder"] = original_parent_attribute
-        if original_nautilus is not missing:
-            sys.modules["nautilus_trader"] = original_nautilus
-
-
-def test_sealed_wheel_scope_removes_new_stdlib_child_parent_attribute(
-    launcher_module,
-) -> None:
-    child_name = "json.tool"
-    missing = object()
-    original_child = sys.modules.pop(child_name, missing)
-    original_parent_attribute = vars(json).pop("tool", missing)
-    try:
-        before_modules = dict(sys.modules)
-
-        with launcher_module._sealed_wheel_import_scope(()):
-            imported_child = importlib.import_module(child_name)
-            assert sys.modules[child_name] is imported_child
-            assert json.tool is imported_child
-
-        assert sys.modules == before_modules
-        assert child_name not in sys.modules
-        assert "tool" not in vars(json)
-    finally:
-        sys.modules.pop(child_name, None)
-        vars(json).pop("tool", None)
-        if original_child is not missing:
-            sys.modules[child_name] = original_child
-        if original_parent_attribute is not missing:
-            vars(json)["tool"] = original_parent_attribute
-
-
-def test_sealed_wheel_scope_restores_globals_after_nameless_child_error(
-    launcher_module,
-) -> None:
-    attribute = "ambient_nameless_dependency"
-    child = ModuleType(f"json.{attribute}")
-    vars(child).pop("__name__")
-    missing = object()
-    original_attribute = vars(json).pop(attribute, missing)
-    before_meta_path = tuple(sys.meta_path)
-    before_modules = dict(sys.modules)
-    try:
-        with pytest.raises(RuntimeError, match="sealed failure"):
-            with launcher_module._sealed_wheel_import_scope(()):
-                vars(json)[attribute] = child
-                raise RuntimeError("sealed failure")
-
-        assert tuple(sys.meta_path) == before_meta_path
-        assert sys.modules == before_modules
-        assert attribute not in vars(json)
-    finally:
-        sys.meta_path[:] = before_meta_path
-        for name in tuple(sys.modules):
-            if name not in before_modules:
-                sys.modules.pop(name, None)
-        sys.modules.update(before_modules)
-        vars(json).pop(attribute, None)
-        if original_attribute is not missing:
-            vars(json)[attribute] = original_attribute
-
-
-def test_sealed_wheel_scope_removes_negative_cache_and_restores_after_success(
-    launcher_module,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sealed = tmp_path / "sealed"
-    sealed.mkdir()
-    (sealed / "sealed_negative_cache_dependency.py").write_text(
-        "VALUE = 'sealed'\n", encoding="utf-8"
-    )
-    module_name = "sealed_negative_cache_dependency"
-    monkeypatch.setitem(sys.modules, module_name, None)
-    before_modules = dict(sys.modules)
-
-    with launcher_module._sealed_wheel_import_scope((sealed,)):
-        resolved = importlib.import_module(module_name)
-        assert resolved.VALUE == "sealed"
-
-    assert sys.modules == before_modules
-    assert sys.modules[module_name] is None
-
-
-def test_sealed_wheel_scope_does_not_inspect_launcher_key_impersonator(
-    launcher_module,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class LauncherKeyImpersonator:
-        def __getattribute__(self, _name: str) -> object:
-            raise AssertionError("ambient launcher impersonator was inspected")
-
-    module_name = launcher_module.__name__
-    impersonator = LauncherKeyImpersonator()
-    monkeypatch.setitem(sys.modules, module_name, impersonator)
-    before_modules = dict(sys.modules)
-
-    with launcher_module._sealed_wheel_import_scope(()):
-        assert module_name not in sys.modules
-
-    assert sys.modules == before_modules
-    assert sys.modules[module_name] is impersonator
-
-
-def test_sealed_wheel_scope_preserves_cpython_interpreter_machinery(
-    launcher_module,
-) -> None:
-    names = (
-        "os.path",
-        "importlib._bootstrap",
-        "importlib._bootstrap_external",
-        "typing.io",
-        "typing.re",
-        *(
-            name
-            for name in sys.modules
-            if name.startswith("_sysconfigdata_")
-        ),
-    )
-    assert any(name.startswith("_sysconfigdata_") for name in names)
-    machinery = {name: sys.modules[name] for name in names}
-    before_modules = dict(sys.modules)
-
-    with launcher_module._sealed_wheel_import_scope(()):
-        assert all(sys.modules[name] is module for name, module in machinery.items())
-
-    assert sys.modules == before_modules
-
-
-def test_sealed_wheel_scope_reseeds_missing_interpreter_alias_and_restores(
-    launcher_module,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    alias_name = "os.path"
-    trusted_alias = sys.modules[alias_name]
-    monkeypatch.delitem(sys.modules, alias_name)
-    before_modules = dict(sys.modules)
-
-    with launcher_module._sealed_wheel_import_scope(()):
-        resolved = importlib.import_module(alias_name)
-        assert resolved is trusted_alias
-
-    assert sys.modules == before_modules
-    assert alias_name not in sys.modules
-
-
-def test_launcher_has_no_global_sys_path_mutation_or_bare_strategy_import() -> None:
-    syntax = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
-    mutations: list[ast.AST] = []
-    for node in ast.walk(syntax):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            owner = node.func.value
-            if (
-                isinstance(owner, ast.Attribute)
-                and isinstance(owner.value, ast.Name)
-                and owner.value.id == "sys"
-                and owner.attr == "path"
-            ):
-                mutations.append(node)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                base = target.value if isinstance(target, ast.Subscript) else target
-                if (
-                    isinstance(base, ast.Attribute)
-                    and isinstance(base.value, ast.Name)
-                    and base.value.id == "sys"
-                    and base.attr == "path"
-                ):
-                    mutations.append(node)
-
-    assert mutations == []
-    assert "from target_portfolio_strategy import" not in LAUNCHER.read_text(
-        encoding="utf-8"
     )
 
 
@@ -2396,160 +2008,3 @@ def test_launcher_accepts_only_a_zero_order_04a_catalog_and_04b_target(
                 market_data.replace(b'"101.00"', b'"999.00"'),
             )
         )
-
-
-def test_sealed_wheel_scope_restores_missing_trusted_importlib_binding(
-    tmp_path: Path,
-) -> None:
-    sealed = tmp_path / "sealed"
-    sealed.mkdir()
-    (sealed / "sealed_trusted_child_success.py").write_text(
-        "import importlib\nBOUND_CHILD = importlib.machinery\n",
-        encoding="utf-8",
-    )
-    (sealed / "sealed_trusted_child_error.py").write_text(
-        "import importlib\n"
-        "BOUND_CHILD = importlib.machinery\n"
-        "import ambient_only_dependency\n",
-        encoding="utf-8",
-    )
-    script = r"""
-import importlib
-import importlib.util
-import sys
-
-spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-
-child_name = "importlib.machinery"
-trusted_parent = module._TRUSTED_PRELOADED_INTERPRETER_MODULES["importlib"]
-trusted_child = module._TRUSTED_PRELOADED_INTERPRETER_MODULES[child_name]
-assert importlib is trusted_parent
-assert importlib.machinery is trusted_child
-
-vars(importlib).pop("machinery")
-before_meta_path = tuple(sys.meta_path)
-before_modules = dict(sys.modules)
-with module._sealed_wheel_import_scope((module.Path(sys.argv[2]),)):
-    resolved = importlib.import_module("sealed_trusted_child_success")
-    assert sys.modules[child_name] is trusted_child
-    assert importlib.machinery is trusted_child
-    assert resolved.BOUND_CHILD is trusted_child
-
-assert tuple(sys.meta_path) == before_meta_path
-assert sys.modules == before_modules
-assert importlib.machinery is trusted_child
-
-vars(importlib).pop("machinery")
-before_modules = dict(sys.modules)
-try:
-    with module._sealed_wheel_import_scope((module.Path(sys.argv[2]),)):
-        importlib.import_module("sealed_trusted_child_error")
-except ModuleNotFoundError as exc:
-    assert exc.name == "ambient_only_dependency"
-else:
-    raise AssertionError("ambient dependency unexpectedly resolved")
-
-assert tuple(sys.meta_path) == before_meta_path
-assert sys.modules == before_modules
-assert importlib.machinery is trusted_child
-print("trusted-importlib-binding-ok")
-"""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-S",
-            "-c",
-            script,
-            str(LAUNCHER.resolve()),
-            str(sealed),
-        ],
-        check=False,
-        capture_output=True,
-        env={},
-        text=True,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "trusted-importlib-binding-ok\n"
-
-
-def test_sealed_wheel_scope_tolerates_missing_trusted_importlib_parent() -> None:
-    script = r"""
-import importlib
-import importlib.util
-import sys
-
-spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-
-parent_name = "importlib"
-child_name = "importlib.machinery"
-trusted_parent = module._TRUSTED_PRELOADED_INTERPRETER_MODULES[parent_name]
-trusted_child = module._TRUSTED_PRELOADED_INTERPRETER_MODULES[child_name]
-module._TRUSTED_PRELOADED_INTERPRETER_MODULES = module.MappingProxyType(
-    {
-        name: value
-        for name, value in module._TRUSTED_PRELOADED_INTERPRETER_MODULES.items()
-        if name != parent_name
-    }
-)
-assert parent_name not in module._TRUSTED_PRELOADED_INTERPRETER_MODULES
-assert module._TRUSTED_PRELOADED_INTERPRETER_MODULES[child_name] is trusted_child
-
-sys.modules.pop(parent_name)
-ambient = type(sys)("ambient_only_dependency")
-sys.modules[ambient.__name__] = ambient
-before_meta_path = tuple(sys.meta_path)
-before_modules = dict(sys.modules)
-
-with module._sealed_wheel_import_scope(()):
-    assert parent_name not in sys.modules
-    assert sys.modules[child_name] is trusted_child
-    assert ambient.__name__ not in sys.modules
-
-assert tuple(sys.meta_path) == before_meta_path
-assert sys.modules == before_modules
-assert sys.modules[ambient.__name__] is ambient
-
-try:
-    with module._sealed_wheel_import_scope(()):
-        assert parent_name not in sys.modules
-        assert sys.modules[child_name] is trusted_child
-        assert ambient.__name__ not in sys.modules
-        raise RuntimeError("sealed failure")
-except RuntimeError as exc:
-    assert str(exc) == "sealed failure"
-else:
-    raise AssertionError("sealed scope did not propagate the error")
-
-assert tuple(sys.meta_path) == before_meta_path
-assert sys.modules == before_modules
-assert sys.modules[ambient.__name__] is ambient
-sys.modules[parent_name] = trusted_parent
-print("trusted-importlib-parent-absent-ok")
-"""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-S",
-            "-c",
-            script,
-            str(LAUNCHER.resolve()),
-        ],
-        check=False,
-        capture_output=True,
-        env={},
-        text=True,
-        timeout=10,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == "trusted-importlib-parent-absent-ok\n"
