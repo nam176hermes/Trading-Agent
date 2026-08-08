@@ -378,6 +378,7 @@ is required before any official generation is materialized.
 - Modify: `engines/nautilus/runtime-closure-policy.json`
 - Create: `engines/nautilus/paper-compatibility-runtime-closure-policy.json`
 - Modify: `scripts/generate_contracts.py` and generated contracts through `make generate-contracts`
+- Modify: `tests/engine_contracts/test_contract_generation.py`
 - Modify: `tests/foundation/test_nautilus_native_entry_guard.py`
 - Modify: `tests/foundation/test_nautilus_runtime_closure.py`
 - Modify: `tests/jobs/test_engine_artifacts.py`
