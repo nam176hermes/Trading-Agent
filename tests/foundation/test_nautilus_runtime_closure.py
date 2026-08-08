@@ -36,7 +36,7 @@ PRIVATE_LLVM = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
 )
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
-REPOSITORY_SOURCE_COMMIT = "4648ecaf6169b0886daf47fe27467b0292153cbb"
+REPOSITORY_SOURCE_COMMIT = "8594cc62dfdcbfbef5f42a392b2089cd7b19e38c"
 
 
 def _sha256(path: Path) -> str:

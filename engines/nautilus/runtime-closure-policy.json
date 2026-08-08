@@ -20,7 +20,7 @@
   "launcher_inventory": [
     {
       "mode": "0400",
-      "sha256": "0a994fbcf2e0c5c8b1b5d958fc9144b977ab605abeb2eae862f5403dda92fb2f",
+      "sha256": "f9ded3e8223029022fb8d804196bb7b8f75e692d597f60a4a7cfb0c6e2737396",
       "source": "engines/nautilus/launcher/nautilus_backtest.py",
       "target": "/engine/launcher/nautilus_backtest.py"
     },
@@ -54,6 +54,6 @@
   "result_validator_id": "nautilus-backtest-simulation-result-v1",
   "schema_version": 1,
   "semantic_profile": "nautilus-execution-simulation-v2",
-  "source_commit": "4648ecaf6169b0886daf47fe27467b0292153cbb",
+  "source_commit": "8594cc62dfdcbfbef5f42a392b2089cd7b19e38c",
   "timeout_seconds": 120
 }
