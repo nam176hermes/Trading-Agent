@@ -1091,11 +1091,27 @@ def test_committed_policy_binds_all_task3_sources_and_private_toolchain_policies
     module = _load_materializer()
     document = module.load_policy(POLICY)
 
-    assert document["schema_version"] == 1
+    assert document["schema_version"] == 2
     assert document["source_commit"] == _policy_commit_parent(POLICY)
     assert document["target_triple"] == TARGET
     assert document["binary_name"] == "nautilus-sealed-uv-exec"
     assert document["binary_mode"] == "0500"
+    sandbox = Path("/usr/bin/bwrap")
+    sandbox_info = sandbox.stat()
+    assert document["sandbox_path"] == str(sandbox)
+    assert document["sandbox_sha256"] == _sha256(sandbox)
+    assert document["sandbox_uid"] == sandbox_info.st_uid
+    assert document["sandbox_gid"] == sandbox_info.st_gid
+    assert document["sandbox_mode"] == f"{stat.S_IMODE(sandbox_info.st_mode):04o}"
+    assert document["sandbox_version"] == subprocess.run(
+        [str(sandbox), "--version"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert document["sandbox_capabilities"] == [
+        "--clearenv",
+        "--perms",
+        "--ro-bind-data",
+        "--tmpfs",
+    ]
     for name, relative in module.POLICY_SOURCE_PATHS.items():
         field = f"{name}_sha256"
         assert document[name] == relative
