@@ -8,7 +8,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -496,6 +496,172 @@ def test_artifact_byte_core_matches_the_path_acquisition_wrapper(
     assert direct_manifest == wrapped_manifest
     assert direct_filename == wrapped_wheel.name
     assert direct_wheel == wrapped_wheel.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "materializer_wrapper"),
+    (
+        ("_validate_base_runtime_path_inventory", "base"),
+        ("_validate_artifact_path_inventory", "artifact"),
+    ),
+)
+def test_gate_and_materializer_enforce_stricter_shared_path_inventory_helpers(
+    qualification_inputs: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    helper_name: str,
+    materializer_wrapper: str,
+) -> None:
+    module = _module()
+
+    def reject_path_inventory(*_args, **_kwargs) -> None:
+        raise module._closure.RuntimeClosureMaterializationError(
+            f"shared {helper_name} rejection"
+        )
+
+    monkeypatch.setattr(
+        module._closure,
+        helper_name,
+        reject_path_inventory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        _InertRunner(_probe_document(qualification_inputs)),
+    )
+
+    with pytest.raises(
+        module.SealedImportQualificationError,
+        match=rf"shared {helper_name} rejection",
+    ):
+        _qualify(module, qualification_inputs)
+
+    policy = qualification_inputs["policy_document"]
+    with pytest.raises(
+        module._closure.RuntimeClosureMaterializationError,
+        match=rf"shared {helper_name} rejection",
+    ):
+        if materializer_wrapper == "base":
+            module._closure._validate_base_runtime(
+                qualification_inputs["base"], policy
+            )
+        else:
+            module._closure._validate_artifact(
+                qualification_inputs["artifacts"], policy
+            )
+
+    assert not qualification_inputs["receipt"].exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("ambient-file", "unsafe-directory-mode", "symlinked-directory"),
+)
+def test_shared_base_path_inventory_and_both_wrappers_reject_the_same_mutation(
+    qualification_inputs: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    module = _module()
+    helper = getattr(
+        module._closure,
+        "_validate_base_runtime_path_inventory",
+        None,
+    )
+    assert callable(helper), "shared base-runtime path inventory helper is missing"
+    base = qualification_inputs["base"]
+    files_root = base / "files"
+    if mutation == "ambient-file":
+        files_root.chmod(0o700)
+        ambient = files_root / "ambient.py"
+        ambient.write_bytes(b"ambient")
+        ambient.chmod(0o400)
+        files_root.chmod(0o500)
+    elif mutation == "unsafe-directory-mode":
+        (files_root / "usr/lib").chmod(0o700)
+    else:
+        usr = files_root / "usr"
+        usr.chmod(0o700)
+        original = usr / "lib"
+        displaced = usr / "lib-sealed"
+        original.rename(displaced)
+        original.symlink_to(displaced.name, target_is_directory=True)
+        usr.chmod(0o500)
+    listed = {
+        PurePosixPath(str(record["path"]))
+        for record in qualification_inputs["records"]
+    }
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        _InertRunner(_probe_document(qualification_inputs)),
+    )
+
+    with pytest.raises(
+        module._closure.RuntimeClosureMaterializationError,
+        match="unlisted|directory|unsafe",
+    ):
+        helper(base, listed)
+    with pytest.raises(
+        module._closure.RuntimeClosureMaterializationError,
+        match="unlisted|directory|unsafe",
+    ):
+        module._closure._validate_base_runtime(
+            base,
+            qualification_inputs["policy_document"],
+        )
+    with pytest.raises(
+        module.SealedImportQualificationError,
+        match="unlisted|directory|unsafe",
+    ):
+        _qualify(module, qualification_inputs)
+
+    assert not qualification_inputs["receipt"].exists()
+
+
+def test_shared_artifact_path_inventory_and_both_wrappers_reject_an_extra_file(
+    qualification_inputs: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    helper = getattr(module._closure, "_validate_artifact_path_inventory", None)
+    assert callable(helper), "shared artifact path inventory helper is missing"
+    artifacts = qualification_inputs["artifacts"]
+    artifacts.chmod(0o700)
+    extra = artifacts / "ambient.whl"
+    extra.write_bytes(b"ambient")
+    extra.chmod(0o400)
+    artifacts.chmod(0o500)
+    expected = {
+        qualification_inputs["artifact_manifest_path"],
+        qualification_inputs["engine_wheel"],
+    }
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        _InertRunner(_probe_document(qualification_inputs)),
+    )
+
+    with pytest.raises(
+        module._closure.RuntimeClosureMaterializationError,
+        match="unlisted",
+    ):
+        helper(artifacts, expected)
+    with pytest.raises(
+        module._closure.RuntimeClosureMaterializationError,
+        match="unlisted",
+    ):
+        module._closure._validate_artifact(
+            artifacts,
+            qualification_inputs["policy_document"],
+        )
+    with pytest.raises(
+        module.SealedImportQualificationError,
+        match="unlisted",
+    ):
+        _qualify(module, qualification_inputs)
+
+    assert not qualification_inputs["receipt"].exists()
 
 
 def test_gate_uses_production_fd_topology_and_writes_canonical_digest_receipt(

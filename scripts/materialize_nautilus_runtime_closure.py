@@ -506,6 +506,14 @@ def _validate_base_runtime(
         file_reader=read_base_file,
     )
     listed = {PurePosixPath(path) for path in raw_by_path}
+    _validate_base_runtime_path_inventory(base_runtime, listed)
+    return manifest, files
+
+
+def _validate_base_runtime_path_inventory(
+    base_runtime: Path,
+    listed: set[PurePosixPath],
+) -> None:
     files_root = base_runtime / "files"
     actual = {
         PurePosixPath("files", *path.relative_to(files_root).parts)
@@ -520,7 +528,6 @@ def _validate_base_runtime(
         observed = directory.lstat()
         if stat.S_ISLNK(observed.st_mode) or stat.S_IMODE(observed.st_mode) != 0o500:
             raise RuntimeClosureMaterializationError("base runtime directory mode is unsafe")
-    return manifest, files
 
 
 def _validate_base_runtime_bytes(
@@ -596,11 +603,21 @@ def _validate_artifact(
         ),
     )
     wheel_path = artifact_directory / wheel_filename
-    if set(artifact_directory.iterdir()) != {manifest_path, wheel_path}:
+    _validate_artifact_path_inventory(
+        artifact_directory,
+        {manifest_path, wheel_path},
+    )
+    return manifest, wheel_path
+
+
+def _validate_artifact_path_inventory(
+    artifact_directory: Path,
+    expected: set[Path],
+) -> None:
+    if set(artifact_directory.iterdir()) != expected:
         raise RuntimeClosureMaterializationError(
             "selected artifact directory contains an unlisted file"
         )
-    return manifest, wheel_path
 
 
 def _validate_artifact_bytes(

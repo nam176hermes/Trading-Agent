@@ -283,21 +283,7 @@ def _base_runtime_from_snapshots(
             ),
         )
         listed = {PurePosixPath(path) for path in raw_by_path}
-        files_root = base_runtime / "files"
-        actual = {
-            PurePosixPath("files", *path.relative_to(files_root).parts)
-            for path in files_root.rglob("*")
-            if path.is_file() or path.is_symlink()
-        }
-        if actual != listed:
-            raise ValueError("base runtime inventory contains an unlisted or missing file")
-        for directory in (
-            files_root,
-            *(path for path in files_root.rglob("*") if path.is_dir()),
-        ):
-            observed = directory.lstat()
-            if stat.S_ISLNK(observed.st_mode) or stat.S_IMODE(observed.st_mode) != 0o500:
-                raise ValueError("base runtime directory mode is unsafe")
+        _closure._validate_base_runtime_path_inventory(base_runtime, listed)
         return manifest_raw, records, raw_by_path
     except (OSError, ValueError) as exc:
         raise SealedImportQualificationError(str(exc)) from exc
@@ -328,8 +314,10 @@ def _artifact_from_snapshots(
             ),
         )
         wheel_path = artifact_directory / wheel_filename
-        if set(artifact_directory.iterdir()) != {manifest_path, wheel_path}:
-            raise ValueError("selected artifact directory contains an unlisted file")
+        _closure._validate_artifact_path_inventory(
+            artifact_directory,
+            {manifest_path, wheel_path},
+        )
         return manifest_raw, wheel_path, wheel_raw
     except (OSError, ValueError) as exc:
         raise SealedImportQualificationError(str(exc)) from exc
