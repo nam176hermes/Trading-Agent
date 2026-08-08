@@ -590,15 +590,14 @@ bounded `PATH`, `PYTHONDONTWRITEBYTECODE`, `PYTHONHASHSEED`,
 `PYTHONNOUSERSITE`, and `UV_OFFLINE` values; inherited `PYTHONHOME` and
 `PYTHONPATH` are prohibited.
 
-The Task-8 legacy sync tool is fixed to the regular mode-0755 binary
+The Task-8 legacy sync source is fixed to the regular mode-0755 binary
 `/home/thenam176/.local/bin/uv`, version `0.11.7`, SHA-256
 `cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4`.
-It is not selected through inherited `PATH`. Bash opens it once read-only and
-retains that descriptor across mode/owner/inode/hash verification, the version
-probe, and the sanitized sync; both executions use `/proc/self/fd/<fd>` rather
-than the mutable pathname. Absolute root-owned coreutils perform the checks.
-After sync, the parent rechecks the retained descriptor hash/identity and the
-named inode before closing the descriptor.
+It is not selected through inherited `PATH`, and Task 8 executes it through
+only the materialized sealed-uv-exec-v2 helper. The helper verifies the
+absolute source authority, copies the reviewed bytes to a sealed memfd, and
+executes that immutable image with its fixed environment; no Task-8 shell
+step opens or executes a mutable `uv` pathname directly.
 
 Every campaign destination, scenario directory, and parity provider subroot is
 created mode 0500 before descriptor acquisition. Only the opened inode may be

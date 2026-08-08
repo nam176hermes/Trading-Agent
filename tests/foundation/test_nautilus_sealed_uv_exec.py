@@ -883,3 +883,6 @@ def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     assert "stat -L" not in block
     assert '"${phase4_uv}"' not in block
     assert '"${phase4_uv_exec}"' not in block
+    assert "/proc/self/fd" not in text
+    assert "Bash opens it once" not in text
+    assert "only the materialized sealed-uv-exec-v2 helper" in text
