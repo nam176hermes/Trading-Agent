@@ -224,6 +224,8 @@ does not weaken diagnostic containment or parity rejection.
 - Create: `engines/nautilus/launcher/import_probe.py`
 - Create: `tests/nautilus_backtest/test_sealed_import_qualification.py`
 - Create: `tests/nautilus_backtest/test_import_probe.py`
+- Modify: `scripts/materialize_nautilus_runtime_closure.py`
+- Modify: `tests/foundation/test_nautilus_runtime_closure.py`
 - Modify: `Makefile`
 
 **Interfaces:**
@@ -322,19 +324,30 @@ environment values, timestamps, host identifiers, or mutable PASS claims. Its
 parent must already be an absolute private mode-0700 directory, the receipt
 must be absent, and publication is atomic no-clobber at mode 0400.
 
+Policy, base-manifest/file, and artifact-manifest/wheel validation must use
+the same byte-oriented validation cores as the runtime materializer. Refactor
+the existing materializer validators so both callers supply their own
+path/snapshot acquisition layer to shared cores; do not duplicate schema or
+identity predicates in the qualification script. Preserve all existing
+materializer behavior and path-based public helpers with regressions proving
+byte-core and path-wrapper parity.
+
 - [ ] **Step 3: Run, commit, and review.**
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -q \
   tests/nautilus_backtest/test_sealed_import_qualification.py \
-  tests/nautilus_backtest/test_import_probe.py
+  tests/nautilus_backtest/test_import_probe.py \
+  tests/foundation/test_nautilus_runtime_closure.py
 make audit
 make check-contracts
 git diff --check
 git add scripts/qualify_nautilus_sealed_imports.py \
   engines/nautilus/launcher/import_probe.py \
+  scripts/materialize_nautilus_runtime_closure.py \
   tests/nautilus_backtest/test_sealed_import_qualification.py \
-  tests/nautilus_backtest/test_import_probe.py Makefile
+  tests/nautilus_backtest/test_import_probe.py \
+  tests/foundation/test_nautilus_runtime_closure.py Makefile
 git commit -m "test: qualify sealed Nautilus imports before publication"
 ```
 
