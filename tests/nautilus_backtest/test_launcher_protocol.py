@@ -8,6 +8,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from datetime import UTC, datetime
 from decimal import Context, Decimal, localcontext
@@ -485,6 +486,92 @@ print("isolated-cross-root-import-ok")
     assert result.stdout == "isolated-cross-root-import-ok\n"
 
 
+def _isolated_stdlib_search_path() -> list[str]:
+    stdlib = Path(sysconfig.get_path("stdlib")).resolve()
+    values = (
+        stdlib.parent / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
+        stdlib,
+        Path(sysconfig.get_path("platstdlib")).resolve(),
+        Path(sysconfig.get_config_var("DESTSHARED")).resolve(),
+    )
+    return list(dict.fromkeys(str(value) for value in values))
+
+
+def test_sealed_wheel_scope_delegates_unowned_import_to_registered_finder(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    (sealed / "sealed_importer_owner.py").write_text(
+        "import importlib.util\n"
+        "import sys\n"
+        "\n"
+        "class _VirtualLoader:\n"
+        "    def create_module(self, spec):\n"
+        "        return None\n"
+        "\n"
+        "    def exec_module(self, module):\n"
+        "        module.VALUE = 'registered-finder'\n"
+        "\n"
+        "class _VirtualFinder:\n"
+        "    def find_spec(self, fullname, path=None, target=None):\n"
+        "        if fullname == 'sealed_virtual_dependency':\n"
+        "            return importlib.util.spec_from_loader(fullname, _VirtualLoader())\n"
+        "        return None\n"
+        "\n"
+        "sys.meta_path.append(_VirtualFinder())\n"
+        "import sealed_virtual_dependency\n"
+        "VALUE = sealed_virtual_dependency.VALUE\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "path", _isolated_stdlib_search_path())
+    monkeypatch.setattr(
+        launcher_module, "_CLEAN_ISOLATED_ENGINE_ENTRY", True
+    )
+    before_path = list(sys.path)
+    before_meta_path = tuple(sys.meta_path)
+    before_modules = dict(sys.modules)
+
+    with launcher_module._sealed_wheel_import_scope((sealed,)):
+        resolved = importlib.import_module("sealed_importer_owner")
+        assert resolved.VALUE == "registered-finder"
+        assert list(sys.path) == before_path
+
+    assert list(sys.path) == before_path
+    assert tuple(sys.meta_path) == before_meta_path
+    assert sys.modules == before_modules
+
+
+def test_terminal_sealed_import_failure_preserves_requested_module_name(
+    launcher_module,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    (sealed / "sealed_terminal_owner.py").write_text(
+        "import sealed_terminal_missing_dependency\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys, "path", _isolated_stdlib_search_path())
+    monkeypatch.setattr(
+        launcher_module, "_CLEAN_ISOLATED_ENGINE_ENTRY", True
+    )
+    before_path = list(sys.path)
+    before_meta_path = tuple(sys.meta_path)
+    before_modules = dict(sys.modules)
+
+    with pytest.raises(ModuleNotFoundError) as caught:
+        with launcher_module._sealed_wheel_import_scope((sealed,)):
+            importlib.import_module("sealed_terminal_owner")
+
+    assert caught.value.name == "sealed_terminal_missing_dependency"
+    assert list(sys.path) == before_path
+    assert tuple(sys.meta_path) == before_meta_path
+    assert sys.modules == before_modules
+
+
 def test_launcher_source_requires_direct_isolated_no_site_execution() -> None:
     required_error = (
         "error: Nautilus engine entry requires direct CPython -I -S execution\n"
@@ -615,11 +702,14 @@ def test_sealed_wheel_scope_refuses_ambient_fallback_and_restores_after_error(
     monkeypatch.setitem(
         sys.modules, "ambient_only_dependency", ambient_module
     )
+    monkeypatch.setattr(
+        launcher_module, "_CLEAN_ISOLATED_ENGINE_ENTRY", True
+    )
     before_path = list(sys.path)
     before_meta_path = tuple(sys.meta_path)
     before_modules = dict(sys.modules)
 
-    with pytest.raises(ModuleNotFoundError, match="sealed wheel closure"):
+    with pytest.raises(ValueError, match="standard-library roots"):
         with launcher_module._sealed_wheel_import_scope((sealed,)):
             importlib.import_module("nautilus_trader")
 
@@ -844,10 +934,11 @@ def test_sealed_wheel_scope_restores_repaired_child_parent_after_import_error(
         vars(json)["decoder"] = impersonator
         before_modules = dict(sys.modules)
 
-        with pytest.raises(ModuleNotFoundError, match="sealed wheel closure"):
+        with pytest.raises(ModuleNotFoundError) as caught:
             with launcher_module._sealed_wheel_import_scope((sealed,)):
                 importlib.import_module("nautilus_trader")
 
+        assert caught.value.name == "ambient_only_dependency"
         assert sys.modules == before_modules
         assert sys.modules[child_name] is impersonator
         assert json.decoder is impersonator

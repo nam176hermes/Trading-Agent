@@ -368,13 +368,12 @@ class _SealedWheelFinder:
         del target
         if path is not None:
             return None
-        spec = importlib.machinery.PathFinder.find_spec(
+        # This finder owns only modules resolved from its private roots.
+        # An unowned miss is not a terminal policy decision: a sealed wheel
+        # may register another finder for virtual modules it owns. Production
+        # sys.path validation restricts normal lookup to standard-library roots.
+        return importlib.machinery.PathFinder.find_spec(
             fullname, self._search_path
-        )
-        if spec is not None or fullname in sys.stdlib_module_names:
-            return spec
-        raise ModuleNotFoundError(
-            f"{fullname} is unavailable in the sealed wheel closure"
         )
 
 
@@ -614,6 +613,7 @@ def _is_active_launcher_module(name: str, module: object) -> bool:
 def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
     """Resolve top-level dependencies only from sealed roots, then restore."""
 
+    _require_production_stdlib_sys_path()
     original_meta_path = tuple(sys.meta_path)
     original_modules = dict(sys.modules)
     parent_namespace_snapshots = _snapshot_interpreter_module_parent_namespaces()
@@ -775,6 +775,39 @@ def _load_target_portfolio_strategy() -> tuple[type, type]:
             sys.modules[_TARGET_PORTFOLIO_STRATEGY_MODULE] = previous
         raise ValueError("target portfolio strategy module symbols are invalid")
     return strategy, configuration
+
+
+_TRUSTED_STDLIB_SEARCH_PATHS = frozenset(
+    (
+        Path(sysconfig.get_path("stdlib")).resolve().parent
+        / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
+        *_TRUSTED_STDLIB_ROOTS,
+        *(
+            (Path(shared).resolve(),)
+            if (shared := sysconfig.get_config_var("DESTSHARED"))
+            else ()
+        ),
+    )
+)
+
+
+def _require_production_stdlib_sys_path() -> None:
+    if not _CLEAN_ISOLATED_ENGINE_ENTRY:
+        return
+    try:
+        resolved = tuple(
+            Path(value).resolve() for value in sys.path if isinstance(value, str)
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError(
+            "production sys.path must contain only standard-library roots"
+        ) from exc
+    if len(resolved) != len(sys.path) or any(
+        value not in _TRUSTED_STDLIB_SEARCH_PATHS for value in resolved
+    ):
+        raise ValueError(
+            "production sys.path must contain only standard-library roots"
+        )
 
 
 def _artifact(value: object) -> None:
