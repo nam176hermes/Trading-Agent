@@ -6,11 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -23,25 +21,28 @@ if __package__ in {None, ""}:
 
 from packages.engine_contracts import (
     EngineCommandEnvelope,
+    EngineEvent,
     EngineEventEnvelope,
+    EventAttribute,
+    EventFamily,
     canonical_json_bytes,
+    payload_digest,
 )
 from packages.nautilus_backtest import (
     SCENARIO_IDS,
     BacktestScenarioError,
     BacktestScenarioV1,
     NautilusBacktestError,
-    build_canonical_simulation_fixture,
-    build_simulation_envelope,
     calculate_reference_outcome,
     capture_prepared_engine_process,
     validate_isolated_simulation_result,
 )
 from packages.nautilus_backtest.scenarios import ScenarioId
-from services.job_worker.engine_artifacts import (
-    EngineArtifactBinding,
-    HashBoundArtifactResolver,
+from packages.research_validation.producers import (
+    CampaignEvidenceError,
+    load_verified_campaign,
 )
+from services.job_worker.engine_artifacts import HashBoundArtifactResolver
 from services.job_worker.engine_spawn import (
     EngineSpawnProvider,
     consume_prepared_engine_spawn,
@@ -55,13 +56,6 @@ from services.job_worker.nautilus_closure import (
 
 _CHECKOUT = Path(__file__).resolve().parents[1]
 _RUN_COUNT = 2
-_ARTIFACT_NAMES = (
-    "engine-configuration.json",
-    "instrument-catalog.json",
-    "strategy-configuration.json",
-    "market-data.jsonl",
-    "simulation-scenario.json",
-)
 _SHA256_LENGTH = 64
 
 
@@ -71,18 +65,27 @@ class ParityVerificationError(RuntimeError):
 
 class ScenarioParityRecord(TypedDict):
     scenario_id: ScenarioId
+    engine_configuration_sha256: str
+    instrument_catalog_sha256: str
+    strategy_configuration_sha256: str
+    market_data_sha256: str
+    simulation_scenario_sha256: str
+    independent_reference_result_sha256: str
+    independent_reference_event_sha256: str
+    nautilus_result_sha256: str
+    nautilus_event_sha256: str
     run_1_event_sha256: str
     run_2_event_sha256: str
-    event_digest: str
-    result_payload_digest: str
 
 
 class V12R3ParityRecord(TypedDict):
-    schema_version: Literal["nautilus-v12-r3-parity-evidence-v1"]
-    rollback_closure_sha256: str
+    schema_version: Literal["nautilus-phase4-parity-evidence-v2"]
+    status: Literal["passed"]
+    scenario_campaign_sha256: str
+    strategy_source_sha256: str
     candidate_closure_sha256: str
     candidate_manifest_sha256: str
-    candidate_manifest_schema_version: Literal[5]
+    candidate_manifest_schema_version: Literal[6]
     scenarios: list[ScenarioParityRecord]
 
 
@@ -96,6 +99,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rollback-artifact-directory", required=True, type=Path)
     parser.add_argument("--artifact-directory", required=True, type=Path)
     parser.add_argument("--sandbox", required=True, type=Path)
+    parser.add_argument("--campaign-directory", required=True, type=Path)
     parser.add_argument("--transport-root", required=True, type=Path)
     parser.add_argument("--record", required=True, type=Path)
     return parser
@@ -194,60 +198,6 @@ def _validate_matrix(
         or run_count != _RUN_COUNT
     ):
         raise ParityVerificationError("parity matrix must be exactly eight by two")
-
-
-def _write_sealed_file(path: Path, value: bytes) -> None:
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o400,
-        )
-        os.fchmod(descriptor, 0o400)
-        remaining = memoryview(value)
-        while remaining:
-            written = os.write(descriptor, remaining)
-            if written <= 0:
-                raise OSError("short artifact write")
-            remaining = remaining[written:]
-        os.fsync(descriptor)
-    except OSError as exc:
-        raise ParityVerificationError("canonical artifact cannot be sealed") from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def _scenario_bindings(
-    fixture,
-    envelope: EngineCommandEnvelope,
-    scenario_directory: Path,
-) -> tuple[EngineArtifactBinding, ...]:
-    scenario_directory.mkdir(mode=0o700)
-    scenario_directory.chmod(0o700)
-    references = (
-        envelope.payload.engine_configuration,
-        envelope.payload.instrument_catalog,
-        envelope.payload.strategy_configuration,
-        envelope.payload.market_data,
-        envelope.payload.simulation_scenario,
-    )
-    bindings: list[EngineArtifactBinding] = []
-    for name, value, reference in zip(
-        _ARTIFACT_NAMES,
-        fixture.artifacts,
-        references,
-        strict=True,
-    ):
-        source = scenario_directory / name
-        _write_sealed_file(source, value)
-        bindings.append(EngineArtifactBinding(reference=reference, source=source))
-    return tuple(bindings)
 
 
 def _cleanup_transport_run(
@@ -368,7 +318,71 @@ def _validated_event(
         raise ParityVerificationError(
             "runtime result does not equal the independent oracle"
         ) from exc
-    return event, validated
+    return event, validated, expected
+
+
+def _independent_reference_event(
+    envelope: EngineCommandEnvelope,
+    expected,
+) -> bytes:
+    """Build the expected event without importing or invoking engine code."""
+
+    from uuid import uuid5
+
+    values: tuple[tuple[str, str | int], ...] = (
+        ("input_artifacts_sha256", hashlib.sha256(canonical_json_bytes({
+            name: getattr(envelope.payload, name).sha256
+            for name in (
+                "engine_configuration",
+                "instrument_catalog",
+                "strategy_configuration",
+                "market_data",
+                "simulation_scenario",
+            )
+        })).hexdigest()),
+        ("scenario_digest", expected.scenario_digest),
+        ("scenario_id", expected.scenario_id),
+        ("event_digest", expected.event_digest),
+        ("iterations", expected.iterations),
+        ("total_events", expected.total_events),
+        ("total_orders", expected.total_orders),
+        ("total_fills", expected.total_fills),
+        ("total_positions", expected.total_positions),
+        ("filled_quantity", str(expected.filled_quantity)),
+        ("remaining_quantity", str(expected.remaining_quantity)),
+        ("position_quantity", str(expected.position_quantity)),
+        ("average_entry_price", str(expected.average_entry_price)),
+        ("fees", str(expected.fees)),
+        ("realized_pnl", str(expected.realized_pnl)),
+        ("unrealized_pnl", str(expected.unrealized_pnl)),
+        ("stop_take_profit_precedence", expected.stop_take_profit_precedence),
+    )
+    payload = EngineEvent(
+        event_type="NautilusBacktestSimulationCompleted",
+        family=EventFamily.ENGINE_LIFECYCLE,
+        attributes=tuple(
+            EventAttribute(name=name, value=value) for name, value in values
+        ),
+    )
+    event = EngineEventEnvelope(
+        message_id=uuid5(
+            envelope.message_id,
+            "NautilusBacktestSimulationCompleted",
+        ),
+        correlation_id=envelope.correlation_id,
+        causation_id=envelope.message_id,
+        engine_run_id=envelope.engine_run_id,
+        stream_sequence=envelope.stream_sequence + 1,
+        event_time=envelope.event_time,
+        initialization_time=envelope.initialization_time,
+        schema_version=envelope.schema_version,
+        producer_identity=envelope.producer_identity,
+        source_commit=envelope.source_commit,
+        config_digest=envelope.config_digest,
+        payload_digest=payload_digest(payload),
+        payload=payload,
+    )
+    return canonical_json_bytes(event)
 
 
 def _required_digest(value: object, *, label: str) -> str:
@@ -423,6 +437,7 @@ def verify_nautilus_v12_r3_parity(
     rollback_artifact_directory: Path,
     artifact_directory: Path,
     sandbox: Path,
+    campaign_directory: Path,
     transport_root: Path,
     record: Path,
     scenario_ids: tuple[str, ...] = SCENARIO_IDS,
@@ -432,8 +447,14 @@ def verify_nautilus_v12_r3_parity(
     consume_spawn: Callable[[object], object] = consume_prepared_engine_spawn,
     popen_factory: Callable[..., object] = subprocess.Popen,
 ) -> V12R3ParityRecord:
-    """Run and record the fixed schema-5 simulation parity matrix."""
+    """Run and record the fixed schema-6 simulation parity matrix."""
     _validate_matrix(scenario_ids, run_count)
+    try:
+        campaign = load_verified_campaign(campaign_directory)
+    except CampaignEvidenceError as exc:
+        raise ParityVerificationError("campaign authority is invalid") from exc
+    if tuple(item.scenario_id for item in campaign.scenarios) != scenario_ids:
+        raise ParityVerificationError("campaign matrix must be exactly eight by two")
     _require_private_directory(
         rollback_artifact_directory,
         label="rollback artifact",
@@ -500,11 +521,11 @@ def verify_nautilus_v12_r3_parity(
         "manifest_schema_version",
         None,
     )
-    if type(candidate_schema) is not int or candidate_schema != 5:
-        raise ParityVerificationError("candidate closure must use schema 5")
+    if type(candidate_schema) is not int or candidate_schema != 6:
+        raise ParityVerificationError("candidate closure must use schema 6")
     candidate_manifest = getattr(candidate_attestation, "closure_manifest", None)
     if candidate_manifest is None:
-        raise ParityVerificationError("candidate schema 5 manifest is unavailable")
+        raise ParityVerificationError("candidate schema 6 manifest is unavailable")
 
     def attest_pinned_candidate() -> object:
         observed = attest_closure(
@@ -517,78 +538,95 @@ def verify_nautilus_v12_r3_parity(
             )
         return observed
 
-    task_root = Path(
-        tempfile.mkdtemp(prefix=".v12-r3-parity-", dir=transport_root)
-    )
-    task_root.chmod(0o700)
     scenario_records: list[ScenarioParityRecord] = []
-    try:
-        for scenario_id in scenario_ids:
-            fixture = build_canonical_simulation_fixture(scenario_id)
-            envelope = build_simulation_envelope(fixture)
-            bindings = _scenario_bindings(
-                fixture,
-                envelope,
-                task_root / scenario_id,
-            )
-            provider = provider_factory(
-                transport_root=transport_root,
-                attest_closure=attest_pinned_candidate,
-                expected_manifest_schema_version=5,
-                attest_inputs=HashBoundArtifactResolver(bindings),
-                monotonic_ns=time.monotonic_ns,
-            )
-            event_bytes_by_run: list[bytes] = []
-            event_by_run: list[EngineEventEnvelope] = []
-            validated_by_run: list[object] = []
-            for _run in range(run_count):
-                try:
-                    prepared = provider.prepare(envelope)
-                    built = consume_spawn(prepared)
-                    event_bytes = _launch_once(built, popen_factory=popen_factory)
-                    event, validated = _validated_event(
-                        event_bytes,
-                        envelope=envelope,
-                        fixture=fixture,
-                    )
-                    event_bytes_by_run.append(event_bytes)
-                    event_by_run.append(event)
-                    validated_by_run.append(validated)
-                finally:
+    for campaign_scenario in campaign.scenarios:
+        scenario_id = campaign_scenario.scenario_id
+        fixture = campaign_scenario.fixture
+        envelope = campaign_scenario.envelope
+        provider = provider_factory(
+            transport_root=transport_root,
+            attest_closure=attest_pinned_candidate,
+            expected_manifest_schema_version=6,
+            attest_inputs=HashBoundArtifactResolver(campaign_scenario.bindings),
+            monotonic_ns=time.monotonic_ns,
+        )
+        event_bytes_by_run: list[bytes] = []
+        validated_by_run: list[object] = []
+        expected = None
+        for _run in range(run_count):
+            prepared = None
+            try:
+                prepared = provider.prepare(envelope)
+                built = consume_spawn(prepared)
+                event_bytes = _launch_once(built, popen_factory=popen_factory)
+                _event, validated, expected = _validated_event(
+                    event_bytes,
+                    envelope=envelope,
+                    fixture=fixture,
+                )
+                event_bytes_by_run.append(event_bytes)
+                validated_by_run.append(validated)
+            finally:
+                if prepared is not None:
                     _cleanup_transport_run(transport_root, envelope)
-            if event_bytes_by_run[0] != event_bytes_by_run[1]:
-                raise ParityVerificationError(
-                    "run-1 and run-2 events are non-identical"
-                )
-            event_digest = getattr(validated_by_run[0], "event_digest", None)
-            scenario_records.append(
-                ScenarioParityRecord(
-                    scenario_id=scenario_id,
-                    run_1_event_sha256=hashlib.sha256(
-                        event_bytes_by_run[0]
-                    ).hexdigest(),
-                    run_2_event_sha256=hashlib.sha256(
-                        event_bytes_by_run[1]
-                    ).hexdigest(),
-                    event_digest=_required_digest(
-                        event_digest,
-                        label="validated event",
-                    ),
-                    result_payload_digest=_required_digest(
-                        event_by_run[0].payload_digest,
-                        label="result payload",
-                    ),
-                )
+        if event_bytes_by_run[0] != event_bytes_by_run[1]:
+            raise ParityVerificationError("run-1 and run-2 events are non-identical")
+        assert expected is not None
+        reference_event = _independent_reference_event(envelope, expected)
+        if event_bytes_by_run[0] != reference_event:
+            raise ParityVerificationError(
+                "runtime event bytes do not equal the independent oracle event"
             )
-    finally:
-        shutil.rmtree(task_root)
+        reference_event_sha256 = hashlib.sha256(reference_event).hexdigest()
+        reference_result_sha256 = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "event_sha256": reference_event_sha256,
+                    "input_artifacts_sha256": getattr(
+                        validated_by_run[0], "input_artifacts_sha256"
+                    ),
+                    "request_sha256": hashlib.sha256(
+                        canonical_json_bytes(envelope)
+                    ).hexdigest(),
+                }
+            )
+        ).hexdigest()
+        nautilus_result_sha256 = _required_digest(
+            getattr(validated_by_run[0], "result_sha256", None),
+            label="validated result",
+        )
+        if reference_result_sha256 != nautilus_result_sha256:
+            raise ParityVerificationError(
+                "runtime result does not equal the independent oracle result"
+            )
+        scenario_records.append(
+            ScenarioParityRecord(
+                scenario_id=scenario_id,
+                engine_configuration_sha256=campaign_scenario.engine_configuration_sha256,
+                instrument_catalog_sha256=campaign_scenario.instrument_catalog_sha256,
+                strategy_configuration_sha256=campaign_scenario.strategy_configuration_sha256,
+                market_data_sha256=campaign_scenario.market_data_sha256,
+                simulation_scenario_sha256=campaign_scenario.simulation_scenario_sha256,
+                independent_reference_result_sha256=reference_result_sha256,
+                independent_reference_event_sha256=reference_event_sha256,
+                nautilus_result_sha256=nautilus_result_sha256,
+                nautilus_event_sha256=hashlib.sha256(
+                    event_bytes_by_run[0]
+                ).hexdigest(),
+                run_1_event_sha256=hashlib.sha256(
+                    event_bytes_by_run[0]
+                ).hexdigest(),
+                run_2_event_sha256=hashlib.sha256(
+                    event_bytes_by_run[1]
+                ).hexdigest(),
+            )
+        )
 
     parity_record = V12R3ParityRecord(
-        schema_version="nautilus-v12-r3-parity-evidence-v1",
-        rollback_closure_sha256=_required_digest(
-            getattr(rollback_attestation, "closure_sha256", None),
-            label="rollback closure",
-        ),
+        schema_version="nautilus-phase4-parity-evidence-v2",
+        status="passed",
+        scenario_campaign_sha256=campaign.sha256,
+        strategy_source_sha256=campaign.strategy_source_sha256,
         candidate_closure_sha256=_required_digest(
             getattr(candidate_attestation, "closure_sha256", None),
             label="candidate closure",
@@ -597,7 +635,7 @@ def verify_nautilus_v12_r3_parity(
             getattr(candidate_manifest, "sha256", None),
             label="candidate manifest",
         ),
-        candidate_manifest_schema_version=5,
+        candidate_manifest_schema_version=6,
         scenarios=scenario_records,
     )
     _write_record(record, parity_record)

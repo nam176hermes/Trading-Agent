@@ -30,6 +30,7 @@ from packages.nautilus_backtest import (
 )
 from services.job_worker.engine_spawn_interface import EngineSpawnError
 from scripts import verify_nautilus_v12_r3_parity as verifier
+from packages.research_validation import materialize_phase4_campaign
 
 
 def _input_digest(envelope: EngineCommandEnvelope) -> str:
@@ -126,7 +127,7 @@ class _Harness:
     def __init__(
         self,
         *,
-        candidate_schema: int = 5,
+        candidate_schema: int = 6,
         rollback_schema: int = 3,
         stderr: bytes = b"",
         stdout_transform: Callable[[bytes, int], bytes] | None = None,
@@ -145,6 +146,7 @@ class _Harness:
         self.consume_calls = 0
         self.popen_calls: list[dict[str, object]] = []
         self.provider_kwargs: list[dict[str, object]] = []
+        self.input_sources: list[Path] = []
         self._run_by_scenario: dict[str, int] = {}
 
     def attest(self, config, *, expected_profile: str):
@@ -177,7 +179,8 @@ class _Harness:
         class Provider:
             def prepare(self, envelope: EngineCommandEnvelope):
                 kwargs["attest_closure"]()
-                kwargs["attest_inputs"](envelope.payload)
+                inputs = kwargs["attest_inputs"](envelope.payload)
+                harness.input_sources.extend(item.source for item in inputs)
                 run_directory = (
                     kwargs["transport_root"]
                     / f"run-{envelope.engine_run_id.hex}"
@@ -250,6 +253,7 @@ def external_paths() -> dict[str, Path]:
             "rollback_artifact_directory": root / "rollback-artifacts",
             "artifact_directory": root / "artifacts",
             "sandbox": root / "sandbox",
+            "campaign_directory": root / "campaign",
             "transport_root": root / "transport",
             "record": root / "evidence" / "parity.json",
         }
@@ -267,6 +271,7 @@ def external_paths() -> dict[str, Path]:
             marker.chmod(0o400)
             paths[name].chmod(0o500)
         paths["record"].parent.mkdir(mode=0o700)
+        materialize_phase4_campaign(paths["campaign_directory"])
         yield paths
 
 
@@ -394,19 +399,37 @@ def test_verifier_runs_exact_eight_by_two_matrix_and_writes_digest_only_record(
     assert len(harness.popen_calls) == 16
     assert len(harness.provider_kwargs) == 8
     assert all(
-        item["expected_manifest_schema_version"] == 5
+        item["expected_manifest_schema_version"] == 6
         and item["transport_root"] == external_paths["transport_root"]
         for item in harness.provider_kwargs
     )
     assert list(external_paths["transport_root"].iterdir()) == []
-    assert record["schema_version"] == "nautilus-v12-r3-parity-evidence-v1"
-    assert record["rollback_closure_sha256"] == "a" * 64
+    assert record["schema_version"] == "nautilus-phase4-parity-evidence-v2"
+    assert record["status"] == "passed"
     assert record["candidate_closure_sha256"] == "b" * 64
     assert record["candidate_manifest_sha256"] == "c" * 64
-    assert record["candidate_manifest_schema_version"] == 5
+    assert record["candidate_manifest_schema_version"] == 6
+    campaign_raw = (
+        external_paths["campaign_directory"] / "campaign-manifest.json"
+    ).read_bytes()
+    assert record["scenario_campaign_sha256"] == hashlib.sha256(campaign_raw).hexdigest()
+    assert record["strategy_source_sha256"] == json.loads(campaign_raw)[
+        "strategy_source_sha256"
+    ]
     assert all(
         item["run_1_event_sha256"] == item["run_2_event_sha256"]
+        == item["independent_reference_event_sha256"]
+        == item["nautilus_event_sha256"]
         for item in record["scenarios"]
+    )
+    assert all(
+        item["independent_reference_result_sha256"]
+        == item["nautilus_result_sha256"]
+        for item in record["scenarios"]
+    )
+    assert all(
+        source.is_relative_to(external_paths["campaign_directory"])
+        for source in harness.input_sources
     )
     written = external_paths["record"].read_bytes()
     assert written == canonical_json_bytes(record) + b"\n"
@@ -414,7 +437,7 @@ def test_verifier_runs_exact_eight_by_two_matrix_and_writes_digest_only_record(
     assert not any(
         str(path).encode() in written for path in external_paths.values()
     )
-    assert b"market_data" not in written
+    assert b"open_time" not in written
     assert b"NautilusBacktestSimulationCompleted" not in written
 
 
@@ -441,12 +464,12 @@ def test_verifier_rejects_any_matrix_other_than_exact_eight_by_two(
         )
 
 
-@pytest.mark.parametrize("schema", (1, 2, 3, 4, 5.0, 6))
-def test_verifier_rejects_candidate_other_than_schema_five(
+@pytest.mark.parametrize("schema", (1, 2, 3, 4, 5, 6.0, True))
+def test_verifier_rejects_candidate_other_than_schema_six(
     external_paths: dict[str, Path], schema: object
 ) -> None:
     """Accepting an older closure would bypass the native-entry authority."""
-    with pytest.raises(verifier.ParityVerificationError, match="schema 5"):
+    with pytest.raises(verifier.ParityVerificationError, match="schema 6"):
         _verify(external_paths, _Harness(candidate_schema=schema))
 
 
@@ -627,7 +650,7 @@ def test_verifier_rejects_unsafe_rollback_artifact_authority_before_launch(
     assert harness.popen_calls == []
 
 
-def test_cli_requires_exactly_the_seven_named_arguments(
+def test_cli_requires_exactly_the_eight_named_arguments_including_campaign(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     parser = verifier._parser()
@@ -642,6 +665,8 @@ def test_cli_requires_exactly_the_seven_named_arguments(
         "/tmp/artifacts",
         "--sandbox",
         "/tmp/sandbox",
+        "--campaign-directory",
+        "/tmp/campaign",
         "--transport-root",
         "/tmp/transport",
         "--record",
@@ -655,6 +680,7 @@ def test_cli_requires_exactly_the_seven_named_arguments(
         "rollback_artifact_directory": Path("/tmp/rollback-artifacts"),
         "artifact_directory": Path("/tmp/artifacts"),
         "sandbox": Path("/tmp/sandbox"),
+        "campaign_directory": Path("/tmp/campaign"),
         "transport_root": Path("/tmp/transport"),
         "record": Path("/tmp/record.json"),
     }

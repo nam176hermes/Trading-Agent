@@ -19,6 +19,7 @@ from packages.nautilus_backtest import (
     build_simulation_envelope,
 )
 from services.job_worker.engine_spawn_interface import EngineSpawnError
+from packages.research_validation import materialize_phase4_campaign
 
 
 @pytest.fixture
@@ -40,7 +41,7 @@ class _Harness:
         self,
         *,
         rollback_schema: object = 3,
-        candidate_schema: object = 5,
+        candidate_schema: object = 6,
         returncode: int = 19,
         stdout: bytes | None = None,
         stderr: bytes | None = None,
@@ -168,6 +169,7 @@ def external_paths() -> dict[str, Path]:
             "candidate_closure": root / "candidate",
             "artifact_directory": root / "candidate-artifacts",
             "sandbox": root / "sandbox",
+            "campaign_directory": root / "campaign",
             "transport_root": root / "transport",
             "diagnostic_record": root / "diagnostic" / "failure.json",
         }
@@ -185,6 +187,7 @@ def external_paths() -> dict[str, Path]:
             marker.chmod(0o400)
             paths[name].chmod(0o500)
         paths["diagnostic_record"].parent.mkdir(mode=0o700)
+        materialize_phase4_campaign(paths["campaign_directory"])
         yield paths
 
 
@@ -212,7 +215,7 @@ def _replace_record(path: Path) -> tuple[int, int]:
     return _path_identity(path)
 
 
-def test_cli_requires_exactly_the_seven_named_arguments(diagnostic, capsys) -> None:
+def test_cli_requires_exactly_the_eight_named_arguments_including_campaign(diagnostic, capsys) -> None:
     parser = diagnostic._parser()
     required = [
         "--rollback-closure",
@@ -225,6 +228,8 @@ def test_cli_requires_exactly_the_seven_named_arguments(diagnostic, capsys) -> N
         "/tmp/candidate-artifacts",
         "--sandbox",
         "/tmp/sandbox",
+        "--campaign-directory",
+        "/tmp/campaign",
         "--transport-root",
         "/tmp/transport",
         "--diagnostic-record",
@@ -239,6 +244,7 @@ def test_cli_requires_exactly_the_seven_named_arguments(diagnostic, capsys) -> N
         "candidate_closure": Path("/tmp/candidate"),
         "artifact_directory": Path("/tmp/candidate-artifacts"),
         "sandbox": Path("/tmp/sandbox"),
+        "campaign_directory": Path("/tmp/campaign"),
         "transport_root": Path("/tmp/transport"),
         "diagnostic_record": Path("/tmp/diagnostic.json"),
     }
@@ -277,12 +283,16 @@ def test_diagnostic_runs_one_fixed_long_accounting_launch_through_normal_boundar
         "communicate",
     ]
     assert len(harness.provider_kwargs) == 1
-    assert harness.provider_kwargs[0]["expected_manifest_schema_version"] == 5
+    assert harness.provider_kwargs[0]["expected_manifest_schema_version"] == 6
     assert harness.provider_kwargs[0]["transport_root"] == external_paths[
         "transport_root"
     ]
     assert len(harness.input_sources) == 5
-    assert harness.input_modes == [(0o400, 0o700)] * 5
+    assert harness.input_modes == [(0o400, 0o500)] * 5
+    assert all(
+        source.is_relative_to(external_paths["campaign_directory"])
+        for source in harness.input_sources
+    )
     assert list(external_paths["transport_root"].iterdir()) == []
 
 
@@ -301,7 +311,7 @@ def test_diagnostic_accepts_legacy_zero_order_rollback_schemas_through_prepare(
     assert len(harness.popen_calls) == 1
 
 
-def test_diagnostic_attests_distinct_rollback_v3_and_candidate_v5_authorities(
+def test_diagnostic_attests_distinct_rollback_v3_and_candidate_v6_authorities(
     diagnostic, external_paths: dict[str, Path]
 ) -> None:
     harness = _Harness()
@@ -322,13 +332,14 @@ def test_diagnostic_attests_distinct_rollback_v3_and_candidate_v5_authorities(
 @pytest.mark.parametrize(
     ("rollback_schema", "candidate_schema", "message"),
     (
-        (0, 5, "rollback.*schemas 1, 2, or 3"),
-        (4, 5, "rollback.*schemas 1, 2, or 3"),
-        (True, 5, "rollback.*schemas 1, 2, or 3"),
-        (3.0, 5, "rollback.*schemas 1, 2, or 3"),
-        ("3", 5, "rollback.*schemas 1, 2, or 3"),
-        (3, 4, "candidate.*schema 5"),
-        (3, 5.0, "candidate.*schema 5"),
+        (0, 6, "rollback.*schemas 1, 2, or 3"),
+        (4, 6, "rollback.*schemas 1, 2, or 3"),
+        (True, 6, "rollback.*schemas 1, 2, or 3"),
+        (3.0, 6, "rollback.*schemas 1, 2, or 3"),
+        ("3", 6, "rollback.*schemas 1, 2, or 3"),
+        (3, 5, "candidate.*schema 6"),
+        (3, 6.0, "candidate.*schema 6"),
+        (3, True, "candidate.*schema 6"),
     ),
 )
 def test_diagnostic_rejects_wrong_closure_authority_before_launch_and_record(

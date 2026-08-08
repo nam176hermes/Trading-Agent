@@ -6,11 +6,13 @@ import hashlib
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from packages.data_catalog import MarketDatasetManifestV1
 from packages.engine_contracts import canonical_json_bytes
 from packages.engine_contracts.serialization import CanonicalUtcDateTime, Sha256Hex, SourceCommit
+from packages.nautilus_backtest import PaperCompatibilityResultV1, SCENARIO_IDS
+from packages.nautilus_backtest.scenarios import ScenarioId
 
 
 _SAFE_NAME = Annotated[
@@ -175,6 +177,152 @@ def analysis_output_sha256(
                 "cost_scenarios": cost_scenarios,
                 "minimum_stressed_return": str(minimum_stressed_return),
                 "comparisons": comparisons,
+            }
+        )
+    ).hexdigest()
+
+
+PHASE4_SCENARIO_IDS = SCENARIO_IDS
+
+
+class VerifiedScenarioComparisonV1(ResearchValidationModel):
+    """Digest-only comparison for one fixed campaign member.
+
+    The legacy result is comparison evidence only.  ``legacy_selected`` is
+    deliberately represented and evaluated instead of being inferred from a
+    caller supplied status string.
+    """
+
+    schema_version: Literal["verified-scenario-comparison-v1"] = (
+        "verified-scenario-comparison-v1"
+    )
+    scenario_id: ScenarioId
+    engine_configuration_sha256: Sha256Hex
+    instrument_catalog_sha256: Sha256Hex
+    strategy_configuration_sha256: Sha256Hex
+    market_data_sha256: Sha256Hex
+    simulation_scenario_sha256: Sha256Hex
+    independent_reference_result_sha256: Sha256Hex
+    independent_reference_event_sha256: Sha256Hex
+    nautilus_result_sha256: Sha256Hex
+    nautilus_event_sha256: Sha256Hex
+    legacy_result_sha256: Sha256Hex
+    legacy_event_sha256: Sha256Hex
+    legacy_disposition: Literal["explained-difference"]
+    legacy_classification: Literal["legacy-minimum-50-bars"]
+    legacy_selected: StrictBool
+
+
+class ResearchCampaignEvidenceV2(ResearchValidationModel):
+    """Complete offline evidence for the fixed Phase-4 campaign."""
+
+    schema_version: Literal["research-campaign-evidence-v2"] = (
+        "research-campaign-evidence-v2"
+    )
+    scenario_campaign_sha256: Sha256Hex
+    strategy_source_sha256: Sha256Hex
+    candidate_closure_sha256: Sha256Hex
+    candidate_manifest_sha256: Sha256Hex
+    parity_record_sha256: Sha256Hex
+    paper_record_sha256: Sha256Hex
+    legacy_records_sha256: Sha256Hex
+    comparisons: tuple[VerifiedScenarioComparisonV1, ...] = Field(
+        min_length=8, max_length=8
+    )
+    paper_result: PaperCompatibilityResultV1
+    point_in_time: tuple[PointInTimeObservation, ...] = Field(
+        min_length=1, max_length=4096
+    )
+    recursive_replays: tuple[RecursiveIndicatorReplay, ...] = Field(
+        min_length=1, max_length=1024
+    )
+    walk_forward_folds: tuple[WalkForwardFold, ...] = Field(
+        min_length=2, max_length=2
+    )
+    minimum_walk_forward_return: _RETURN
+    cost_scenarios: tuple[CostScenario, ...] = Field(min_length=4, max_length=4)
+    minimum_stressed_return: _RETURN
+    analysis_output_sha256: Sha256Hex
+    promotion_authority: Literal["reference-and-nautilus"]
+
+    @model_validator(mode="after")
+    def _complete_campaign(self) -> "ResearchCampaignEvidenceV2":
+        scenario_ids = tuple(item.scenario_id for item in self.comparisons)
+        if set(scenario_ids) != set(PHASE4_SCENARIO_IDS):
+            raise ValueError("campaign evidence requires the exact eight-scenario set")
+        if scenario_ids != PHASE4_SCENARIO_IDS:
+            raise ValueError("campaign comparisons must be repository ordered")
+        if self.point_in_time != tuple(
+            sorted(self.point_in_time, key=lambda item: item.observation_id)
+        ):
+            raise ValueError("point-in-time observations must be sorted")
+        if self.recursive_replays != tuple(
+            sorted(self.recursive_replays, key=lambda item: item.indicator_name)
+        ):
+            raise ValueError("recursive replays must be sorted")
+        if len({item.indicator_name for item in self.recursive_replays}) != len(
+            self.recursive_replays
+        ):
+            raise ValueError("recursive replay indicators must be unique")
+        if self.walk_forward_folds != tuple(
+            sorted(
+                self.walk_forward_folds,
+                key=lambda item: item.out_of_sample_start_at,
+            )
+        ):
+            raise ValueError("walk-forward folds must be sorted")
+        if len({item.fold_id for item in self.walk_forward_folds}) != 2:
+            raise ValueError("walk-forward fold identifiers must be unique")
+        if self.cost_scenarios != tuple(
+            sorted(self.cost_scenarios, key=lambda item: item.name)
+        ):
+            raise ValueError("cost scenarios must be sorted")
+        if {item.name for item in self.cost_scenarios} != {
+            "baseline",
+            "combined-stress",
+            "fee-stress",
+            "slippage-stress",
+        }:
+            raise ValueError("campaign cost scenarios must be complete")
+        expected = campaign_analysis_output_sha256(
+            comparisons=self.comparisons,
+            paper_result=self.paper_result,
+            point_in_time=self.point_in_time,
+            recursive_replays=self.recursive_replays,
+            walk_forward_folds=self.walk_forward_folds,
+            minimum_walk_forward_return=self.minimum_walk_forward_return,
+            cost_scenarios=self.cost_scenarios,
+            minimum_stressed_return=self.minimum_stressed_return,
+        )
+        if self.analysis_output_sha256 != expected:
+            raise ValueError("campaign analysis output digest does not match evidence")
+        return self
+
+
+def campaign_analysis_output_sha256(
+    *,
+    comparisons: tuple[VerifiedScenarioComparisonV1, ...],
+    paper_result: PaperCompatibilityResultV1,
+    point_in_time: tuple[PointInTimeObservation, ...],
+    recursive_replays: tuple[RecursiveIndicatorReplay, ...],
+    walk_forward_folds: tuple[WalkForwardFold, ...],
+    minimum_walk_forward_return: Decimal,
+    cost_scenarios: tuple[CostScenario, ...],
+    minimum_stressed_return: Decimal,
+) -> str:
+    """Digest the complete derived campaign trace, excluding outer provenance."""
+
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "comparisons": comparisons,
+                "cost_scenarios": cost_scenarios,
+                "minimum_stressed_return": str(minimum_stressed_return),
+                "minimum_walk_forward_return": str(minimum_walk_forward_return),
+                "paper_result": paper_result,
+                "point_in_time": point_in_time,
+                "recursive_replays": recursive_replays,
+                "walk_forward_folds": walk_forward_folds,
             }
         )
     ).hexdigest()

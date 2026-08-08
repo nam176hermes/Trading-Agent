@@ -5,16 +5,22 @@ from __future__ import annotations
 import hashlib
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from packages.data_catalog import MarketDatasetManifestV1
 from packages.engine_contracts import EngineCommandEnvelope, EngineEventEnvelope, RunBacktest, canonical_json_bytes
 from packages.engine_contracts.serialization import Sha256Hex, SourceCommit
 from packages.nautilus_backtest import validate_isolated_backtest_result
+from packages.nautilus_backtest.scenarios import ScenarioId
 
 from .artifacts import ResearchEvidenceArtifactReference, load_verified_evidence
-from .evaluator import evaluate_research_gates
-from .models import ResearchGateEvidenceV1, ResearchValidationModel
+from .evaluator import evaluate_research_campaign, evaluate_research_gates
+from .models import (
+    PHASE4_SCENARIO_IDS,
+    ResearchCampaignEvidenceV2,
+    ResearchGateEvidenceV1,
+    ResearchValidationModel,
+)
 
 
 class ResearchClosureError(ValueError):
@@ -123,4 +129,121 @@ def close_ws04_research(
         research_analysis_output_sha256=evidence.analysis_output_sha256,
         research_report_sha256=report.report_sha256,
         source_commit=request.source_commit,
+    )
+
+
+class Ws04ScenarioClosureV2(ResearchValidationModel):
+    schema_version: Literal["ws04-scenario-closure-v2"] = "ws04-scenario-closure-v2"
+    scenario_id: ScenarioId
+    engine_configuration_sha256: Sha256Hex
+    instrument_catalog_sha256: Sha256Hex
+    strategy_configuration_sha256: Sha256Hex
+    market_data_sha256: Sha256Hex
+    simulation_scenario_sha256: Sha256Hex
+    reference_result_sha256: Sha256Hex
+    reference_event_sha256: Sha256Hex
+    nautilus_result_sha256: Sha256Hex
+    nautilus_event_sha256: Sha256Hex
+    legacy_result_sha256: Sha256Hex
+    legacy_event_sha256: Sha256Hex
+    legacy_disposition: Literal["explained-difference"]
+    legacy_classification: Literal["legacy-minimum-50-bars"]
+    legacy_selected: Literal[False]
+    closure_sha256: Sha256Hex | None = None
+
+    @model_validator(mode="after")
+    def _complete_digest(self) -> "Ws04ScenarioClosureV2":
+        digest = hashlib.sha256(
+            canonical_json_bytes(
+                self.model_dump(mode="json", exclude={"closure_sha256"})
+            )
+        ).hexdigest()
+        if self.closure_sha256 is not None and self.closure_sha256 != digest:
+            raise ValueError("WS-04 scenario closure digest does not match")
+        object.__setattr__(self, "closure_sha256", digest)
+        return self
+
+
+class Ws04CampaignClosureV2(ResearchValidationModel):
+    schema_version: Literal["ws04-campaign-closure-v2"] = "ws04-campaign-closure-v2"
+    scenario_campaign_sha256: Sha256Hex
+    strategy_source_sha256: Sha256Hex
+    candidate_closure_sha256: Sha256Hex
+    candidate_manifest_sha256: Sha256Hex
+    parity_record_sha256: Sha256Hex
+    paper_record_sha256: Sha256Hex
+    paper_result_sha256: Sha256Hex
+    legacy_records_sha256: Sha256Hex
+    research_evidence_sha256: Sha256Hex
+    research_analysis_output_sha256: Sha256Hex
+    research_report_sha256: Sha256Hex
+    scenarios: tuple[Ws04ScenarioClosureV2, ...] = Field(
+        min_length=8, max_length=8
+    )
+    promotion_authority: Literal["reference-and-nautilus"]
+    closure_sha256: Sha256Hex | None = None
+
+    @model_validator(mode="after")
+    def _complete_digest(self) -> "Ws04CampaignClosureV2":
+        scenario_ids = tuple(item.scenario_id for item in self.scenarios)
+        if set(scenario_ids) != set(PHASE4_SCENARIO_IDS):
+            raise ValueError("WS-04 closure requires the exact eight-scenario set")
+        if scenario_ids != PHASE4_SCENARIO_IDS:
+            raise ValueError("WS-04 closure scenarios must be repository ordered")
+        digest = hashlib.sha256(
+            canonical_json_bytes(
+                self.model_dump(mode="json", exclude={"closure_sha256"})
+            )
+        ).hexdigest()
+        if self.closure_sha256 is not None and self.closure_sha256 != digest:
+            raise ValueError("WS-04 campaign closure digest does not match")
+        object.__setattr__(self, "closure_sha256", digest)
+        return self
+
+
+def close_ws04_research_campaign(
+    evidence: ResearchCampaignEvidenceV2,
+) -> Ws04CampaignClosureV2:
+    """Close the fixed campaign only after all derived 04D gates pass."""
+
+    if type(evidence) is not ResearchCampaignEvidenceV2:
+        raise TypeError("ResearchCampaignEvidenceV2 is required")
+    report = evaluate_research_campaign(evidence)
+    if not report.passed:
+        raise ResearchClosureError("mandatory WS-04 campaign gates did not pass")
+    scenarios = tuple(
+        Ws04ScenarioClosureV2(
+            scenario_id=item.scenario_id,
+            engine_configuration_sha256=item.engine_configuration_sha256,
+            instrument_catalog_sha256=item.instrument_catalog_sha256,
+            strategy_configuration_sha256=item.strategy_configuration_sha256,
+            market_data_sha256=item.market_data_sha256,
+            simulation_scenario_sha256=item.simulation_scenario_sha256,
+            reference_result_sha256=item.independent_reference_result_sha256,
+            reference_event_sha256=item.independent_reference_event_sha256,
+            nautilus_result_sha256=item.nautilus_result_sha256,
+            nautilus_event_sha256=item.nautilus_event_sha256,
+            legacy_result_sha256=item.legacy_result_sha256,
+            legacy_event_sha256=item.legacy_event_sha256,
+            legacy_disposition=item.legacy_disposition,
+            legacy_classification=item.legacy_classification,
+            legacy_selected=False,
+        )
+        for item in evidence.comparisons
+    )
+    assert report.report_sha256 is not None
+    return Ws04CampaignClosureV2(
+        scenario_campaign_sha256=evidence.scenario_campaign_sha256,
+        strategy_source_sha256=evidence.strategy_source_sha256,
+        candidate_closure_sha256=evidence.candidate_closure_sha256,
+        candidate_manifest_sha256=evidence.candidate_manifest_sha256,
+        parity_record_sha256=evidence.parity_record_sha256,
+        paper_record_sha256=evidence.paper_record_sha256,
+        paper_result_sha256=evidence.paper_result.result_sha256,
+        legacy_records_sha256=evidence.legacy_records_sha256,
+        research_evidence_sha256=report.evidence_sha256,
+        research_analysis_output_sha256=evidence.analysis_output_sha256,
+        research_report_sha256=report.report_sha256,
+        scenarios=scenarios,
+        promotion_authority="reference-and-nautilus",
     )

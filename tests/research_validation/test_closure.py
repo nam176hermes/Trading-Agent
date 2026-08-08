@@ -33,6 +33,8 @@ from packages.research_validation import (
     load_verified_evidence,
 )
 from tests.research_validation.test_models import NOW, _digest, evidence
+from tests.research_validation.test_models import _campaign_evidence, _scenario_comparison
+import packages.research_validation as research
 
 
 @pytest.fixture
@@ -329,3 +331,91 @@ def test_evidence_authority_rejects_unsealed_source(secure_tmp_path: Path) -> No
                 root=alias, filename=sealed.filename, sha256=sealed.sha256
             )
         )
+
+
+def _campaign_evidence_value():
+    return _campaign_evidence(
+        tuple(
+            _scenario_comparison(scenario_id, index)
+            for index, scenario_id in enumerate(research.PHASE4_SCENARIO_IDS)
+        )
+    )
+
+
+def test_campaign_closure_returns_eight_scenario_proofs_and_one_stable_digest() -> None:
+    evidence_v2 = _campaign_evidence_value()
+
+    first = research.close_ws04_research_campaign(evidence_v2)
+    second = research.close_ws04_research_campaign(evidence_v2)
+
+    assert first.schema_version == "ws04-campaign-closure-v2"
+    assert first.closure_sha256 == second.closure_sha256
+    assert len(first.scenarios) == 8
+    assert tuple(item.scenario_id for item in first.scenarios) == research.PHASE4_SCENARIO_IDS
+    assert all(item.reference_result_sha256 == item.nautilus_result_sha256 for item in first.scenarios)
+    assert all(item.legacy_selected is False for item in first.scenarios)
+
+
+def test_campaign_closure_contract_requires_repository_ordered_eight_scenarios() -> None:
+    value = research.close_ws04_research_campaign(_campaign_evidence_value())
+    fields = value.model_dump(exclude={"closure_sha256"})
+
+    with pytest.raises(ValueError, match="at least 8|eight-scenario"):
+        research.Ws04CampaignClosureV2(
+            **(fields | {"scenarios": value.scenarios[:-1]})
+        )
+    with pytest.raises(ValueError, match="ordered"):
+        research.Ws04CampaignClosureV2(
+            **(fields | {"scenarios": tuple(reversed(value.scenarios))})
+        )
+
+
+def test_campaign_closure_rejects_parity_drift_or_paper_binding_drift() -> None:
+    value = _campaign_evidence_value()
+    drifted = value.comparisons[0].model_copy(
+        update={"nautilus_event_sha256": _digest("0")}
+    )
+    with pytest.raises(research.ResearchClosureError, match="campaign.*gates"):
+        research.close_ws04_research_campaign(
+            _campaign_evidence((drifted, *value.comparisons[1:]))
+        )
+
+    paper = research.PaperCompatibilityResultV1.create(
+        candidate_closure_sha256=value.paper_result.candidate_closure_sha256,
+        candidate_manifest_sha256=value.paper_result.candidate_manifest_sha256,
+        engine_configuration_sha256=value.paper_result.engine_configuration_sha256,
+        instrument_catalog_sha256=value.paper_result.instrument_catalog_sha256,
+        strategy_configuration_sha256=value.paper_result.strategy_configuration_sha256,
+        strategy_source_sha256=value.paper_result.strategy_source_sha256,
+        scenario_campaign_sha256=_digest("0"),
+        parity_record_sha256=value.paper_result.parity_record_sha256,
+        launcher_result_sha256=value.paper_result.launcher_result_sha256,
+    )
+    with pytest.raises(research.ResearchClosureError, match="campaign.*gates"):
+        research.close_ws04_research_campaign(
+            _campaign_evidence(value.comparisons, paper_result=paper)
+        )
+
+
+def test_v1_closure_semantics_remain_exact_after_campaign_api_is_added(
+    secure_tmp_path: Path,
+) -> None:
+    request = _request()
+    event = _event(request)
+    supplied = _closure_evidence(request, event)
+    before = close_ws04_research(
+        supplied.provenance.dataset,
+        request,
+        event,
+        _authority(secure_tmp_path, supplied),
+    )
+
+    after = close_ws04_research(
+        supplied.provenance.dataset,
+        request,
+        event,
+        _authority(secure_tmp_path / "again", supplied),
+    )
+
+    assert before == after
+    assert before.schema_version == "ws04-closure-v1"

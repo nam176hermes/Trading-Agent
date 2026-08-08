@@ -10,6 +10,8 @@ from packages.research_validation import (
     evaluate_research_gates,
 )
 from tests.research_validation.test_models import NOW, _digest, evidence
+from tests.research_validation.test_models import _campaign_evidence, _scenario_comparison
+import packages.research_validation as research
 
 
 def test_research_gate_evaluator_is_available() -> None:
@@ -140,3 +142,112 @@ def test_benchmark_and_provenance_drift_block() -> None:
     assert next(
         item for item in report.results if item.name == "benchmark-comparison"
     ).failure_codes == ("E_BENCHMARK_FALSE_MATCH_EVENT",)
+
+
+def _campaign():
+    return _campaign_evidence(
+        tuple(
+            _scenario_comparison(scenario_id, index)
+            for index, scenario_id in enumerate(research.PHASE4_SCENARIO_IDS)
+        )
+    )
+
+
+def test_campaign_evaluator_derives_all_six_gate_results_without_pass_flags() -> None:
+    first = research.evaluate_research_campaign(_campaign())
+    second = research.evaluate_research_campaign(_campaign())
+
+    assert first.passed is True
+    assert first.report_sha256 == second.report_sha256
+    assert tuple(item.name for item in first.results) == (
+        "lookahead",
+        "recursive-indicator-stability",
+        "walk-forward",
+        "fee-slippage-sensitivity",
+        "benchmark-comparison",
+        "provenance-verification",
+    )
+
+
+def test_campaign_evaluator_blocks_reference_nautilus_drift_and_legacy_selection() -> None:
+    baseline = _campaign()
+    drifted = baseline.comparisons[0].model_copy(
+        update={"nautilus_result_sha256": _digest("0")}
+    )
+    report = research.evaluate_research_campaign(
+        _campaign_evidence((drifted, *baseline.comparisons[1:]))
+    )
+    assert next(
+        item for item in report.results if item.name == "benchmark-comparison"
+    ).failure_codes == ("E_CAMPAIGN_RESULT_PARITY",)
+
+    selected = baseline.comparisons[0].model_copy(
+        update={"legacy_selected": True}
+    )
+    report = research.evaluate_research_campaign(
+        _campaign_evidence((selected, *baseline.comparisons[1:]))
+    )
+    assert "E_CAMPAIGN_LEGACY_AUTHORITY" in next(
+        item for item in report.results if item.name == "benchmark-comparison"
+    ).failure_codes
+
+
+def test_campaign_evaluator_binds_each_derived_record_to_sealed_inputs() -> None:
+    baseline = _campaign()
+
+    point_in_time = (
+        baseline.point_in_time[0].model_copy(
+            update={"input_artifacts_sha256": _digest("0")}
+        ),
+        *baseline.point_in_time[1:],
+    )
+    report = research.evaluate_research_campaign(
+        _campaign_evidence(baseline.comparisons, point_in_time=point_in_time)
+    )
+    assert next(
+        item for item in report.results if item.name == "lookahead"
+    ).failure_codes == ("E_LOOKAHEAD_INPUT_DRIFT",)
+
+    recursive_replays = (
+        baseline.recursive_replays[0].model_copy(
+            update={"input_artifacts_sha256": _digest("0")}
+        ),
+        *baseline.recursive_replays[1:],
+    )
+    report = research.evaluate_research_campaign(
+        _campaign_evidence(
+            baseline.comparisons,
+            recursive_replays=recursive_replays,
+        )
+    )
+    assert next(
+        item
+        for item in report.results
+        if item.name == "recursive-indicator-stability"
+    ).failure_codes == ("E_RECURSIVE_INPUT_DRIFT",)
+
+    folds = (
+        baseline.walk_forward_folds[0].model_copy(
+            update={"input_artifacts_sha256": _digest("0")}
+        ),
+        baseline.walk_forward_folds[1],
+    )
+    report = research.evaluate_research_campaign(
+        _campaign_evidence(baseline.comparisons, walk_forward_folds=folds)
+    )
+    assert next(
+        item for item in report.results if item.name == "walk-forward"
+    ).failure_codes == ("E_WALK_FORWARD_INPUT_DRIFT",)
+
+    costs = tuple(
+        item.model_copy(update={"input_artifacts_sha256": _digest("0")})
+        if item.name == "combined-stress"
+        else item
+        for item in baseline.cost_scenarios
+    )
+    report = research.evaluate_research_campaign(
+        _campaign_evidence(baseline.comparisons, cost_scenarios=costs)
+    )
+    assert next(
+        item for item in report.results if item.name == "fee-slippage-sensitivity"
+    ).failure_codes == ("E_COST_INPUT_DRIFT",)

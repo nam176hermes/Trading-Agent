@@ -11,7 +11,12 @@ from pydantic import Field, model_validator
 from packages.engine_contracts import canonical_json_bytes
 from packages.engine_contracts.serialization import Sha256Hex
 
-from .models import ResearchGateEvidenceV1, ResearchValidationModel
+from .models import (
+    ResearchCampaignEvidenceV2,
+    ResearchGateEvidenceV1,
+    ResearchValidationModel,
+    VerifiedScenarioComparisonV1,
+)
 
 
 GateName = Literal[
@@ -234,4 +239,169 @@ def evaluate_research_gates(evidence: ResearchGateEvidenceV1) -> ResearchGateRep
             _benchmark_comparison(evidence),
             _provenance_verification(evidence),
         )
+    )
+
+
+def _campaign_lookahead(
+    evidence: ResearchCampaignEvidenceV2,
+) -> ResearchGateResultV1:
+    failures: set[str] = set()
+    for item in evidence.point_in_time:
+        if not item.feature_event_at <= item.known_at <= item.decision_at:
+            failures.add("E_LOOKAHEAD_TIME")
+    if {item.input_artifacts_sha256 for item in evidence.point_in_time} != {
+        _campaign_input_artifacts_sha256(item) for item in evidence.comparisons
+    }:
+        failures.add("E_LOOKAHEAD_INPUT_DRIFT")
+    return _result("lookahead", failures)
+
+
+def _campaign_recursive(
+    evidence: ResearchCampaignEvidenceV2,
+) -> ResearchGateResultV1:
+    failures = {
+        "E_RECURSIVE_STATE_DRIFT"
+        for item in evidence.recursive_replays
+        if item.prefix_state_sha256 != item.replay_state_sha256
+    }
+    if {item.input_artifacts_sha256 for item in evidence.recursive_replays} != {
+        _campaign_input_artifacts_sha256(item) for item in evidence.comparisons
+    }:
+        failures.add("E_RECURSIVE_INPUT_DRIFT")
+    return _result("recursive-indicator-stability", failures)
+
+
+def _campaign_walk_forward(
+    evidence: ResearchCampaignEvidenceV2,
+) -> ResearchGateResultV1:
+    failures: set[str] = set()
+    previous_fold_end = None
+    for fold in evidence.walk_forward_folds:
+        if fold.input_artifacts_sha256 != evidence.scenario_campaign_sha256:
+            failures.add("E_WALK_FORWARD_INPUT_DRIFT")
+        if not (
+            fold.train_start_at
+            <= fold.train_end_at
+            < fold.validation_start_at
+            <= fold.validation_end_at
+            < fold.out_of_sample_start_at
+            <= fold.out_of_sample_end_at
+        ):
+            failures.add("E_WALK_FORWARD_WINDOW")
+        if previous_fold_end is not None and fold.train_start_at <= previous_fold_end:
+            failures.add("E_WALK_FORWARD_FOLD_OVERLAP")
+        previous_fold_end = fold.out_of_sample_end_at
+    if sum(
+        (fold.out_of_sample_return for fold in evidence.walk_forward_folds),
+        Decimal("0"),
+    ) < evidence.minimum_walk_forward_return:
+        failures.add("E_WALK_FORWARD_RETURN")
+    return _result("walk-forward", failures)
+
+
+def _campaign_costs(
+    evidence: ResearchCampaignEvidenceV2,
+) -> ResearchGateResultV1:
+    failures: set[str] = set()
+    scenarios = {item.name: item for item in evidence.cost_scenarios}
+    baseline = scenarios["baseline"]
+    if any(
+        item.input_artifacts_sha256 != evidence.scenario_campaign_sha256
+        for item in evidence.cost_scenarios
+    ):
+        failures.add("E_COST_INPUT_DRIFT")
+    if scenarios["fee-stress"].fee_bps <= baseline.fee_bps:
+        failures.add("E_COST_NO_FEE_STRESS")
+    if scenarios["slippage-stress"].slippage_bps <= baseline.slippage_bps:
+        failures.add("E_COST_NO_SLIPPAGE_STRESS")
+    if (
+        scenarios["combined-stress"].fee_bps <= baseline.fee_bps
+        or scenarios["combined-stress"].slippage_bps <= baseline.slippage_bps
+    ):
+        failures.add("E_COST_NO_COMBINED_STRESS")
+    for name, scenario in scenarios.items():
+        if name != "baseline" and scenario.net_return < evidence.minimum_stressed_return:
+            failures.add("E_COST_STRESSED_RETURN")
+    return _result("fee-slippage-sensitivity", failures)
+
+
+def _campaign_input_artifacts_sha256(item: VerifiedScenarioComparisonV1) -> str:
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "engine_configuration": item.engine_configuration_sha256,
+                "instrument_catalog": item.instrument_catalog_sha256,
+                "market_data": item.market_data_sha256,
+                "simulation_scenario": item.simulation_scenario_sha256,
+                "strategy_configuration": item.strategy_configuration_sha256,
+            }
+        )
+    ).hexdigest()
+
+
+def _campaign_benchmark(
+    evidence: ResearchCampaignEvidenceV2,
+) -> ResearchGateResultV1:
+    failures: set[str] = set()
+    for item in evidence.comparisons:
+        if item.independent_reference_result_sha256 != item.nautilus_result_sha256:
+            failures.add("E_CAMPAIGN_RESULT_PARITY")
+        if item.independent_reference_event_sha256 != item.nautilus_event_sha256:
+            failures.add("E_CAMPAIGN_EVENT_PARITY")
+        if item.legacy_selected:
+            failures.add("E_CAMPAIGN_LEGACY_AUTHORITY")
+        if (
+            item.legacy_disposition != "explained-difference"
+            or item.legacy_classification != "legacy-minimum-50-bars"
+        ):
+            failures.add("E_CAMPAIGN_LEGACY_CLASSIFICATION")
+    return _result("benchmark-comparison", failures)
+
+
+def _campaign_provenance(
+    evidence: ResearchCampaignEvidenceV2,
+) -> ResearchGateResultV1:
+    failures: set[str] = set()
+    paper = evidence.paper_result
+    long_accounting = evidence.comparisons[0]
+    if (
+        paper.scenario_campaign_sha256 != evidence.scenario_campaign_sha256
+        or paper.strategy_source_sha256 != evidence.strategy_source_sha256
+        or paper.candidate_closure_sha256 != evidence.candidate_closure_sha256
+        or paper.candidate_manifest_sha256 != evidence.candidate_manifest_sha256
+        or paper.parity_record_sha256 != evidence.parity_record_sha256
+    ):
+        failures.add("E_PROVENANCE_PAPER_BINDING")
+    if (
+        paper.engine_configuration_sha256
+        != long_accounting.engine_configuration_sha256
+        or paper.instrument_catalog_sha256
+        != long_accounting.instrument_catalog_sha256
+        or paper.strategy_configuration_sha256
+        != long_accounting.strategy_configuration_sha256
+    ):
+        failures.add("E_PROVENANCE_PAPER_SCENARIO")
+    paper_bytes = canonical_json_bytes(paper) + b"\n"
+    if hashlib.sha256(paper_bytes).hexdigest() != evidence.paper_record_sha256:
+        failures.add("E_PROVENANCE_PAPER_RECORD")
+    return _result("provenance-verification", failures)
+
+
+def evaluate_research_campaign(
+    evidence: ResearchCampaignEvidenceV2,
+) -> ResearchGateReportV1:
+    """Derive all six 04D gates from typed campaign evidence."""
+
+    if type(evidence) is not ResearchCampaignEvidenceV2:
+        raise TypeError("ResearchCampaignEvidenceV2 is required")
+    return ResearchGateReportV1(
+        evidence_sha256=hashlib.sha256(canonical_json_bytes(evidence)).hexdigest(),
+        results=(
+            _campaign_lookahead(evidence),
+            _campaign_recursive(evidence),
+            _campaign_walk_forward(evidence),
+            _campaign_costs(evidence),
+            _campaign_benchmark(evidence),
+            _campaign_provenance(evidence),
+        ),
     )

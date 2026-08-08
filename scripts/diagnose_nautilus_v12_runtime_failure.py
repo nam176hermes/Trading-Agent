@@ -7,11 +7,9 @@ import argparse
 import base64
 import hashlib
 import os
-import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -23,14 +21,13 @@ if __package__ in {None, ""}:
 
 from packages.engine_contracts import EngineCommandEnvelope, canonical_json_bytes
 from packages.nautilus_backtest import (
-    build_canonical_simulation_fixture,
-    build_simulation_envelope,
     capture_prepared_engine_process,
 )
-from services.job_worker.engine_artifacts import (
-    EngineArtifactBinding,
-    HashBoundArtifactResolver,
+from packages.research_validation.producers import (
+    CampaignEvidenceError,
+    load_verified_campaign,
 )
+from services.job_worker.engine_artifacts import HashBoundArtifactResolver
 from services.job_worker.engine_spawn import (
     EngineSpawnProvider,
     consume_prepared_engine_spawn,
@@ -44,13 +41,6 @@ from services.job_worker.nautilus_closure import (
 
 _CHECKOUT = Path(__file__).resolve().parents[1]
 _SCENARIO_ID = "long-accounting"
-_ARTIFACT_NAMES = (
-    "engine-configuration.json",
-    "instrument-catalog.json",
-    "strategy-configuration.json",
-    "market-data.jsonl",
-    "simulation-scenario.json",
-)
 
 
 class RuntimeFailureDiagnosticError(RuntimeError):
@@ -86,6 +76,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-closure", required=True, type=Path)
     parser.add_argument("--artifact-directory", required=True, type=Path)
     parser.add_argument("--sandbox", required=True, type=Path)
+    parser.add_argument("--campaign-directory", required=True, type=Path)
     parser.add_argument("--transport-root", required=True, type=Path)
     parser.add_argument("--diagnostic-record", required=True, type=Path)
     return parser
@@ -337,62 +328,6 @@ def _reserve_record(
         raise
 
 
-def _write_sealed_file(path: Path, value: bytes) -> None:
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o400,
-        )
-        os.fchmod(descriptor, 0o400)
-        remaining = memoryview(value)
-        while remaining:
-            written = os.write(descriptor, remaining)
-            if written <= 0:
-                raise OSError("short diagnostic fixture write")
-            remaining = remaining[written:]
-        os.fsync(descriptor)
-    except OSError as exc:
-        raise RuntimeFailureDiagnosticError(
-            "canonical diagnostic fixture cannot be sealed"
-        ) from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def _scenario_bindings(
-    fixture,
-    envelope: EngineCommandEnvelope,
-    scenario_directory: Path,
-) -> tuple[EngineArtifactBinding, ...]:
-    scenario_directory.mkdir(mode=0o700)
-    scenario_directory.chmod(0o700)
-    references = (
-        envelope.payload.engine_configuration,
-        envelope.payload.instrument_catalog,
-        envelope.payload.strategy_configuration,
-        envelope.payload.market_data,
-        envelope.payload.simulation_scenario,
-    )
-    bindings: list[EngineArtifactBinding] = []
-    for name, value, reference in zip(
-        _ARTIFACT_NAMES,
-        fixture.artifacts,
-        references,
-        strict=True,
-    ):
-        source = scenario_directory / name
-        _write_sealed_file(source, value)
-        bindings.append(EngineArtifactBinding(reference=reference, source=source))
-    return tuple(bindings)
-
-
 def _cleanup_transport_run(
     transport_root: Path,
     envelope: EngineCommandEnvelope,
@@ -506,6 +441,7 @@ def diagnose_nautilus_v12_runtime_failure(
     candidate_closure: Path,
     artifact_directory: Path,
     sandbox: Path,
+    campaign_directory: Path,
     transport_root: Path,
     diagnostic_record: Path,
     attest_closure: Callable[..., object] = attest_nautilus_backtest_closure,
@@ -514,6 +450,11 @@ def diagnose_nautilus_v12_runtime_failure(
     popen_factory: Callable[..., object] = subprocess.Popen,
 ) -> None:
     """Run exactly one fixed long-accounting command and seal its diagnostics."""
+    try:
+        campaign = load_verified_campaign(campaign_directory)
+        campaign_scenario = campaign.scenario(_SCENARIO_ID)
+    except CampaignEvidenceError as exc:
+        raise RuntimeFailureDiagnosticError("campaign authority is invalid") from exc
     _require_private_directory(
         rollback_artifact_directory,
         label="rollback artifact",
@@ -551,7 +492,6 @@ def diagnose_nautilus_v12_runtime_failure(
 
     record_reservation: _ReservedRecord | None = None
     record_published = False
-    task_root: Path | None = None
     envelope: EngineCommandEnvelope | None = None
     try:
         record_reservation = _reserve_record(
@@ -586,9 +526,9 @@ def diagnose_nautilus_v12_runtime_failure(
         candidate_schema = getattr(
             candidate_attestation, "manifest_schema_version", None
         )
-        if type(candidate_schema) is not int or candidate_schema != 5:
+        if type(candidate_schema) is not int or candidate_schema != 6:
             raise RuntimeFailureDiagnosticError(
-                "candidate closure must use schema 5"
+                "candidate closure must use schema 6"
             )
 
         def attest_pinned_candidate() -> object:
@@ -602,18 +542,12 @@ def diagnose_nautilus_v12_runtime_failure(
                 )
             return observed
 
-        task_root = Path(
-            tempfile.mkdtemp(prefix=".v12-runtime-diagnostic-", dir=transport_root)
-        )
-        task_root.chmod(0o700)
-        fixture = build_canonical_simulation_fixture(_SCENARIO_ID)
-        envelope = build_simulation_envelope(fixture)
-        bindings = _scenario_bindings(fixture, envelope, task_root / _SCENARIO_ID)
+        envelope = campaign_scenario.envelope
         provider = provider_factory(
             transport_root=transport_root,
             attest_closure=attest_pinned_candidate,
-            expected_manifest_schema_version=5,
-            attest_inputs=HashBoundArtifactResolver(bindings),
+            expected_manifest_schema_version=6,
+            attest_inputs=HashBoundArtifactResolver(campaign_scenario.bindings),
             monotonic_ns=time.monotonic_ns,
         )
         try:
@@ -636,15 +570,11 @@ def diagnose_nautilus_v12_runtime_failure(
         record_published = True
     finally:
         try:
-            if task_root is not None:
-                shutil.rmtree(task_root)
+            if record_reservation is not None and not record_published:
+                _unlink_reserved_record(record_reservation)
         finally:
-            try:
-                if record_reservation is not None and not record_published:
-                    _unlink_reserved_record(record_reservation)
-            finally:
-                if record_reservation is not None:
-                    _close_reserved_record(record_reservation)
+            if record_reservation is not None:
+                _close_reserved_record(record_reservation)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
