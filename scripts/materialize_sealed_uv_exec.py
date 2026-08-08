@@ -72,8 +72,8 @@ POLICY_FIELDS = {
 TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
 BINARY_NAME = "nautilus-sealed-uv-exec"
 BINARY_MODE = 0o500
-PAIR_BINARY_NAME = "sealed-uv-exec-v5.bin"
-PAIR_MANIFEST_NAME = "sealed-uv-exec-v5.manifest.json"
+PAIR_BINARY_NAME = "sealed-uv-exec-v6.bin"
+PAIR_MANIFEST_NAME = "sealed-uv-exec-v6.manifest.json"
 SANDBOX_PATH = "/usr/bin/bwrap"
 SANDBOX_CAPABILITIES = ("--clearenv", "--perms", "--ro-bind-data", "--tmpfs")
 _SHA256_LENGTH = 64
@@ -116,7 +116,7 @@ class MaterializationError(ValueError):
 
 
 class _VerifiedMaterializedPair:
-    """Opened v5 pair whose executable descriptor survives pathname replacement."""
+    """Opened v6 pair whose executable descriptor survives pathname replacement."""
 
     def __init__(
         self,
@@ -1077,7 +1077,7 @@ def _verify_published_binary(
 def _open_verified_materialized_pair(
     destination: Path, policy: dict[str, object]
 ) -> _VerifiedMaterializedPair:
-    """Open and verify the exact v5 pair without retaining a mutable path for exec."""
+    """Open and verify the exact v6 pair without retaining a mutable path for exec."""
     policy = _validate_policy(policy)
     destination = _lexical_absolute(destination, "destination")
     if destination == ROOT or ROOT in destination.parents:
@@ -1260,10 +1260,10 @@ def materialize(
             or len(first) != policy["binary_size"]
         ):
             raise MaterializationError("sealed UV executor output authority does not match")
-        binary_authority_fd = _sealed_memfd("sealed-uv-exec-v5-binary", first, mode=BINARY_MODE)
+        binary_authority_fd = _sealed_memfd("sealed-uv-exec-v6-binary", first, mode=BINARY_MODE)
         manifest_raw = _canonical_json(_manifest(policy))
         manifest_authority_fd = _sealed_memfd(
-            "sealed-uv-exec-v5-manifest", manifest_raw, mode=0o400
+            "sealed-uv-exec-v6-manifest", manifest_raw, mode=0o400
         )
         binary_publish_fd = _open_unlinked_publish_file(
             parent_fd, label="sealed UV executor binary", mode=BINARY_MODE
@@ -1353,10 +1353,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif arguments.execute_pair:
             if arguments.cargo is not None or arguments.llvm_toolchain is not None:
                 raise MaterializationError("pair execution does not accept build toolchains")
+            helper_arguments = arguments.helper_arguments
+            if helper_arguments[:1] == ["--"]:
+                helper_arguments = helper_arguments[1:]
             execute_materialized_pair(
                 arguments.destination,
                 policy,
-                arguments.helper_arguments,
+                helper_arguments,
             )
         else:
             if arguments.helper_arguments:
