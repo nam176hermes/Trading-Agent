@@ -629,6 +629,33 @@ def test_root_harness_rejects_fabricated_or_inconsistent_parity_evidence(
         _unseal_campaign(campaign, parity_path)
 
 
+@pytest.mark.parametrize("schema_version", (True, 6.0, "6"))
+def test_root_harness_requires_integer_six_candidate_manifest_schema(
+    schema_version: object,
+) -> None:
+    harness = _load(
+        HARNESS,
+        f"paper_compat_harness_candidate_schema_{type(schema_version).__name__}",
+    )
+    campaign, parity_path, closure_sha, manifest_sha, _manifest, parity = (
+        _paper_campaign_evidence()
+    )
+    parity["candidate_manifest_schema_version"] = schema_version
+    parity_path.chmod(0o600)
+    parity_path.write_bytes(_canonical(parity) + b"\n")
+    parity_path.chmod(0o400)
+    try:
+        with pytest.raises(harness.PaperCompatibilityVerificationError):
+            harness._campaign_authority(
+                campaign,
+                parity_path,
+                candidate_closure_sha256=closure_sha,
+                candidate_manifest_sha256=manifest_sha,
+            )
+    finally:
+        _unseal_campaign(campaign, parity_path)
+
+
 @pytest.mark.parametrize(
     "mutation", ("missing", "extra", "duplicate", "out-of-order")
 )

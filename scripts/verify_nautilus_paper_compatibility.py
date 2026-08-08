@@ -139,7 +139,13 @@ def _canonical_object(raw: bytes, *, label: str) -> dict[str, object]:
         value = json.loads(raw, object_pairs_hook=reject_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PaperCompatibilityVerificationError(f"{label} JSON is invalid") from exc
-    if not isinstance(value, dict) or canonical_json_bytes(value) != raw:
+    try:
+        canonical = canonical_json_bytes(value)
+    except ValueError as exc:
+        raise PaperCompatibilityVerificationError(
+            f"{label} contains a non-canonical value"
+        ) from exc
+    if not isinstance(value, dict) or canonical != raw:
         raise PaperCompatibilityVerificationError(f"{label} is not canonical")
     return value
 
@@ -510,6 +516,7 @@ def _campaign_authority(
         set(parity) != _PARITY_FIELDS
         or parity.get("schema_version") != "nautilus-phase4-parity-evidence-v2"
         or parity.get("status") != "passed"
+        or type(parity.get("candidate_manifest_schema_version")) is not int
         or parity.get("candidate_manifest_schema_version") != 6
         or parity.get("scenario_campaign_sha256") != campaign_sha256
         or parity.get("strategy_source_sha256") != strategy_source_sha256
