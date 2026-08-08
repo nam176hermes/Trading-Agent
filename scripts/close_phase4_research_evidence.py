@@ -57,8 +57,6 @@ def _publish_closure(transport_root: Path, closure: object) -> None:
     parent_descriptor = -1
     root_descriptor = -1
     descriptor = -1
-    created_identity: tuple[int, ...] | None = None
-    published = False
     try:
         observed = transport_root.lstat()
         resolved = transport_root.resolve(strict=True)
@@ -126,7 +124,6 @@ def _publish_closure(transport_root: Path, closure: object) -> None:
             dir_fd=root_descriptor,
         )
         os.fchmod(descriptor, 0o400)
-        created_identity = _identity(os.fstat(descriptor))
         remaining = memoryview(value)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -163,41 +160,17 @@ def _publish_closure(transport_root: Path, closure: object) -> None:
             and opened.st_size == len(value)
         ):
             raise ResearchClosureError("research closure identity changed")
-        published = True
     except ResearchClosureError:
         raise
     except OSError as exc:
         raise ResearchClosureError("research closure cannot be sealed") from exc
     finally:
-        try:
-            if (
-                descriptor >= 0
-                and root_descriptor >= 0
-                and created_identity is not None
-                and not published
-            ):
-                try:
-                    opened = os.fstat(descriptor)
-                    named = os.stat(
-                        _RESULT_NAME,
-                        dir_fd=root_descriptor,
-                        follow_symlinks=False,
-                    )
-                    if (
-                        _identity(opened) == _identity(named)
-                        and (opened.st_dev, opened.st_ino)
-                        == (created_identity[0], created_identity[1])
-                    ):
-                        os.unlink(_RESULT_NAME, dir_fd=root_descriptor)
-                except OSError:
-                    pass
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if root_descriptor >= 0:
-                os.close(root_descriptor)
-            if parent_descriptor >= 0:
-                os.close(parent_descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

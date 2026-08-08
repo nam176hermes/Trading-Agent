@@ -135,6 +135,16 @@ class _DirectoryHandle:
     identity: tuple[int, ...]
 
 
+@dataclass(slots=True)
+class _AggregateDirectory:
+    parent_descriptor: int
+    parent_identity: tuple[int, int, int, int]
+    root: _DirectoryHandle
+    label: str
+    member_identities: dict[str, tuple[int, ...]]
+    expected_inventory: frozenset[str] | None = None
+
+
 def _is_beneath(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -152,77 +162,6 @@ def _require_external_path(path: Path, *, label: str) -> None:
         or _is_beneath(path, _CHECKOUT)
     ):
         raise CampaignEvidenceError(f"{label} path is unsafe")
-
-
-def _sealed_directory(path: Path, *, label: str) -> tuple[Path, ...]:
-    _require_external_path(path, label=label)
-    try:
-        observed = path.lstat()
-        resolved = path.resolve(strict=True)
-        entries = tuple(path.iterdir())
-    except OSError as exc:
-        raise CampaignEvidenceError(f"{label} is unavailable") from exc
-    if (
-        resolved != path
-        or stat.S_ISLNK(observed.st_mode)
-        or not stat.S_ISDIR(observed.st_mode)
-        or observed.st_uid != os.geteuid()
-        or stat.S_IMODE(observed.st_mode) != 0o500
-    ):
-        raise CampaignEvidenceError(f"{label} is not sealed")
-    return entries
-
-
-def _sealed_bytes(path: Path, *, label: str) -> bytes:
-    descriptor = -1
-    try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-        )
-        opened = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_uid != os.geteuid()
-            or opened.st_nlink != 1
-            or stat.S_IMODE(opened.st_mode) != 0o400
-            or opened.st_size <= 0
-            or opened.st_size > _MAX_ARTIFACT_BYTES
-        ):
-            raise CampaignEvidenceError(f"{label} is not sealed")
-        chunks: list[bytes] = []
-        remaining = opened.st_size
-        while remaining:
-            block = os.read(descriptor, min(65_536, remaining))
-            if not block:
-                raise CampaignEvidenceError(f"{label} read was incomplete")
-            chunks.append(block)
-            remaining -= len(block)
-        if os.read(descriptor, 1):
-            raise CampaignEvidenceError(f"{label} changed while being read")
-        named = path.stat(follow_symlinks=False)
-        identity = (
-            "st_dev",
-            "st_ino",
-            "st_mode",
-            "st_uid",
-            "st_nlink",
-            "st_size",
-            "st_mtime_ns",
-            "st_ctime_ns",
-        )
-        if any(getattr(named, name) != getattr(opened, name) for name in identity):
-            raise CampaignEvidenceError(f"{label} identity changed while being read")
-        return b"".join(chunks)
-    except CampaignEvidenceError:
-        raise
-    except OSError as exc:
-        raise CampaignEvidenceError(f"{label} is unavailable") from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
 
 
 _IDENTITY_FIELDS = (
@@ -419,6 +358,164 @@ def _sealed_bytes_at(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _locator_identity(observed: os.stat_result) -> tuple[int, int, int, int]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_uid,
+    )
+
+
+def _open_aggregate_directory(
+    path: Path,
+    *,
+    label: str,
+    expected_mode: int,
+    expected_inventory: frozenset[str] | None = None,
+) -> _AggregateDirectory:
+    _require_external_path(path, label=label)
+    parent_descriptor = -1
+    root_descriptor = -1
+    try:
+        observed_parent = path.parent.lstat()
+        if (
+            path.parent.resolve(strict=True) != path.parent
+            or stat.S_ISLNK(observed_parent.st_mode)
+            or not stat.S_ISDIR(observed_parent.st_mode)
+        ):
+            raise CampaignEvidenceError(f"{label} parent is unsafe")
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_parent = os.fstat(parent_descriptor)
+        if _locator_identity(opened_parent) != _locator_identity(observed_parent):
+            raise CampaignEvidenceError(f"{label} parent identity changed")
+        root_descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened_root = os.fstat(root_descriptor)
+        named_root = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        full_root = path.lstat()
+        _require_directory_stat(
+            opened_root,
+            label=label,
+            expected_mode=expected_mode,
+        )
+        if not (
+            _identity(opened_root)
+            == _identity(named_root)
+            == _identity(full_root)
+        ):
+            raise CampaignEvidenceError(f"{label} identity changed")
+        if (
+            expected_inventory is not None
+            and set(os.listdir(root_descriptor)) != expected_inventory
+        ):
+            raise CampaignEvidenceError(f"{label} inventory is invalid")
+        return _AggregateDirectory(
+            parent_descriptor=parent_descriptor,
+            parent_identity=_locator_identity(opened_parent),
+            root=_DirectoryHandle(
+                descriptor=root_descriptor,
+                path=path,
+                identity=_identity(opened_root),
+            ),
+            label=label,
+            member_identities={},
+            expected_inventory=expected_inventory,
+        )
+    except CampaignEvidenceError:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        raise
+    except OSError as exc:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        raise CampaignEvidenceError(f"{label} is unavailable") from exc
+
+
+def _read_aggregate_member(
+    directory: _AggregateDirectory,
+    name: str,
+    *,
+    label: str,
+) -> bytes:
+    raw, identity = _sealed_bytes_at(directory.root, name, label=label)
+    if name in directory.member_identities:
+        raise CampaignEvidenceError(f"{directory.label} member was selected twice")
+    directory.member_identities[name] = identity
+    return raw
+
+
+def _verify_aggregate_directory(directory: _AggregateDirectory) -> None:
+    try:
+        parent = os.fstat(directory.parent_descriptor)
+        named_parent = directory.root.path.parent.lstat()
+        opened_root = os.fstat(directory.root.descriptor)
+        named_root = os.stat(
+            directory.root.path.name,
+            dir_fd=directory.parent_descriptor,
+            follow_symlinks=False,
+        )
+        full_root = directory.root.path.lstat()
+        if (
+            _locator_identity(parent) != directory.parent_identity
+            or _locator_identity(named_parent) != directory.parent_identity
+            or _identity(opened_root) != directory.root.identity
+            or _identity(named_root) != directory.root.identity
+            or _identity(full_root) != directory.root.identity
+            or (
+                directory.expected_inventory is not None
+                and set(os.listdir(directory.root.descriptor))
+                != directory.expected_inventory
+            )
+        ):
+            raise CampaignEvidenceError(
+                f"{directory.label} aggregate identity changed"
+            )
+        for name, expected in directory.member_identities.items():
+            observed = os.stat(
+                name,
+                dir_fd=directory.root.descriptor,
+                follow_symlinks=False,
+            )
+            if _identity(observed) != expected:
+                raise CampaignEvidenceError(
+                    f"{directory.label} member identity changed"
+                )
+    except CampaignEvidenceError:
+        raise
+    except OSError as exc:
+        raise CampaignEvidenceError(
+            f"{directory.label} aggregate identity changed"
+        ) from exc
+
+
+def _close_aggregate_directory(directory: _AggregateDirectory) -> None:
+    try:
+        os.close(directory.root.descriptor)
+    finally:
+        os.close(directory.parent_descriptor)
 
 
 def _verify_campaign_snapshot(
@@ -668,7 +765,6 @@ def _write_sealed_file(
     directory_fd: int | None = None,
 ) -> tuple[int, ...]:
     descriptor = -1
-    created_identity: tuple[int, ...] | None = None
     try:
         descriptor = os.open(
             path,
@@ -681,7 +777,6 @@ def _write_sealed_file(
             dir_fd=directory_fd,
         )
         os.fchmod(descriptor, 0o400)
-        created_identity = _identity(os.fstat(descriptor))
         remaining = memoryview(value)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -694,107 +789,34 @@ def _write_sealed_file(
         if _identity(opened) != _identity(named):
             raise CampaignEvidenceError("campaign artifact identity changed")
         return _identity(opened)
-    except Exception:
-        if created_identity is not None:
-            try:
-                named = os.stat(path, dir_fd=directory_fd, follow_symlinks=False)
-                opened = os.fstat(descriptor)
-                if (
-                    _identity(named) == _identity(opened)
-                    and (opened.st_dev, opened.st_ino)
-                    == (created_identity[0], created_identity[1])
-                ):
-                    os.unlink(path, dir_fd=directory_fd)
-            except OSError:
-                pass
-        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
 
 
-def _cleanup_created_campaign(
+def _seal_failed_campaign(
     *,
-    destination: Path,
-    parent_descriptor: int,
-    parent_identity: tuple[int, ...],
     root: _DirectoryHandle,
     scenarios: tuple[_DirectoryHandle, ...],
-    files: dict[int, dict[str, tuple[int, ...]]],
 ) -> None:
-    """Remove only still-named inodes created by this materialization attempt."""
+    """Seal task-owned descriptors as retained forensic state without deletion."""
 
+    failures: list[OSError] = []
+    for scenario in scenarios:
+        try:
+            os.fchmod(scenario.descriptor, 0o500)
+            os.fsync(scenario.descriptor)
+        except OSError as exc:
+            failures.append(exc)
     try:
-        parent = os.fstat(parent_descriptor)
-        named_parent = destination.parent.lstat()
-        named_root = os.stat(
-            destination.name,
-            dir_fd=parent_descriptor,
-            follow_symlinks=False,
-        )
-        full_root = destination.lstat()
-    except OSError:
-        return
-    if not (
-        _identity(parent) == _identity(named_parent) == parent_identity
-        and (named_root.st_dev, named_root.st_ino)
-        == (root.identity[0], root.identity[1])
-        and (full_root.st_dev, full_root.st_ino)
-        == (root.identity[0], root.identity[1])
-    ):
-        return
-    try:
-        os.fchmod(root.descriptor, 0o700)
-    except OSError:
-        return
-    for scenario in reversed(scenarios):
-        try:
-            named_scenario = os.stat(
-                scenario.path.name,
-                dir_fd=root.descriptor,
-                follow_symlinks=False,
-            )
-            opened_scenario = os.fstat(scenario.descriptor)
-        except OSError:
-            continue
-        if not (
-            (named_scenario.st_dev, named_scenario.st_ino)
-            == (scenario.identity[0], scenario.identity[1])
-            == (opened_scenario.st_dev, opened_scenario.st_ino)
-        ):
-            continue
-        try:
-            os.fchmod(scenario.descriptor, 0o700)
-        except OSError:
-            continue
-        for name, expected in files.get(scenario.descriptor, {}).items():
-            try:
-                named = os.stat(
-                    name,
-                    dir_fd=scenario.descriptor,
-                    follow_symlinks=False,
-                )
-                if _identity(named) == expected:
-                    os.unlink(name, dir_fd=scenario.descriptor)
-            except OSError:
-                continue
-        try:
-            if not os.listdir(scenario.descriptor):
-                os.rmdir(scenario.path.name, dir_fd=root.descriptor)
-        except OSError:
-            continue
-    for name, expected in files.get(root.descriptor, {}).items():
-        try:
-            named = os.stat(name, dir_fd=root.descriptor, follow_symlinks=False)
-            if _identity(named) == expected:
-                os.unlink(name, dir_fd=root.descriptor)
-        except OSError:
-            continue
-    try:
-        if not os.listdir(root.descriptor):
-            os.rmdir(destination.name, dir_fd=parent_descriptor)
-    except OSError:
-        pass
+        os.fchmod(root.descriptor, 0o500)
+        os.fsync(root.descriptor)
+    except OSError as exc:
+        failures.append(exc)
+    if failures:
+        raise CampaignEvidenceError(
+            "failed campaign residue could not be sealed"
+        ) from failures[0]
 
 
 def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
@@ -923,15 +945,11 @@ def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
         )
         return verified
     except Exception as exc:
-        if root is not None and parent_identity is not None:
-            _cleanup_created_campaign(
-                destination=destination,
-                parent_descriptor=parent_descriptor,
-                parent_identity=parent_identity,
-                root=root,
-                scenarios=tuple(scenario_handles),
-                files=files,
-            )
+        if root is not None:
+            try:
+                _seal_failed_campaign(root=root, scenarios=tuple(scenario_handles))
+            except CampaignEvidenceError as sealing_error:
+                exc.add_note(str(sealing_error))
         if isinstance(exc, FileExistsError):
             raise CampaignEvidenceError("campaign destination already exists") from exc
         raise
@@ -1032,11 +1050,9 @@ def _reference_digests(item: VerifiedCampaignScenarioV1) -> tuple[str, str]:
 
 
 def _load_parity(
-    path: Path,
+    raw: bytes,
     campaign: VerifiedCampaignV1,
 ) -> tuple[dict[str, object], bytes]:
-    _require_external_path(path, label="parity record")
-    raw = _sealed_bytes(path, label="parity record")
     value = _canonical_line_object(raw, label="parity record")
     if (
         set(value) != _PARITY_FIELDS
@@ -1092,14 +1108,12 @@ def _load_parity(
 
 
 def _load_paper(
-    path: Path,
+    raw: bytes,
     *,
     campaign: VerifiedCampaignV1,
     parity: dict[str, object],
     parity_sha256: str,
 ) -> tuple[PaperCompatibilityResultV1, bytes]:
-    _require_external_path(path, label="paper record")
-    raw = _sealed_bytes(path, label="paper record")
     document = _canonical_line_object(raw, label="paper record")
     try:
         paper = PaperCompatibilityResultV1.model_validate(document)
@@ -1124,21 +1138,16 @@ def _load_paper(
 
 
 def _load_legacy(
-    directory: Path,
+    raw_records: dict[str, bytes],
     campaign: VerifiedCampaignV1,
 ) -> tuple[tuple[dict[str, object], ...], str]:
-    entries = _sealed_directory(directory, label="legacy record directory")
-    if {entry.name for entry in entries} != {
-        f"{scenario_id}.json" for scenario_id in SCENARIO_IDS
-    }:
+    expected_names = {f"{scenario_id}.json" for scenario_id in SCENARIO_IDS}
+    if set(raw_records) != expected_names:
         raise CampaignEvidenceError("legacy record inventory is invalid")
     records: list[dict[str, object]] = []
     raw_digests: list[str] = []
     for campaign_item in campaign.scenarios:
-        raw = _sealed_bytes(
-            directory / f"{campaign_item.scenario_id}.json",
-            label=f"legacy {campaign_item.scenario_id}",
-        )
+        raw = raw_records[f"{campaign_item.scenario_id}.json"]
         record = _canonical_line_object(raw, label="legacy record")
         if (
             set(record) != _LEGACY_FIELDS
@@ -1331,14 +1340,76 @@ def produce_research_campaign_evidence(
     """Derive the complete V2 research evidence from sealed records only."""
 
     campaign = load_verified_campaign(campaign_directory)
-    parity, parity_raw = _load_parity(parity_record, campaign)
-    paper, paper_raw = _load_paper(
-        paper_record,
-        campaign=campaign,
-        parity=parity,
-        parity_sha256=hashlib.sha256(parity_raw).hexdigest(),
-    )
-    legacy, legacy_sha256 = _load_legacy(legacy_record_directory, campaign)
+    aggregate_directories: list[_AggregateDirectory] = []
+    record_directories: dict[Path, _AggregateDirectory] = {}
+    primary_failure: BaseException | None = None
+    try:
+        for path, label in (
+            (parity_record, "parity record"),
+            (paper_record, "paper record"),
+        ):
+            _require_external_path(path, label=label)
+            if path.parent not in record_directories:
+                directory = _open_aggregate_directory(
+                    path.parent,
+                    label=f"{label} parent",
+                    expected_mode=0o700,
+                )
+                record_directories[path.parent] = directory
+                aggregate_directories.append(directory)
+        parity_raw = _read_aggregate_member(
+            record_directories[parity_record.parent],
+            parity_record.name,
+            label="parity record",
+        )
+        paper_raw = _read_aggregate_member(
+            record_directories[paper_record.parent],
+            paper_record.name,
+            label="paper record",
+        )
+        legacy_names = frozenset(
+            f"{scenario_id}.json" for scenario_id in SCENARIO_IDS
+        )
+        legacy_directory = _open_aggregate_directory(
+            legacy_record_directory,
+            label="legacy record directory",
+            expected_mode=0o500,
+            expected_inventory=legacy_names,
+        )
+        aggregate_directories.append(legacy_directory)
+        legacy_raw = {
+            name: _read_aggregate_member(
+                legacy_directory,
+                name,
+                label=f"legacy {name.removesuffix('.json')}",
+            )
+            for name in sorted(legacy_names)
+        }
+        parity, parity_raw = _load_parity(parity_raw, campaign)
+        paper, paper_raw = _load_paper(
+            paper_raw,
+            campaign=campaign,
+            parity=parity,
+            parity_sha256=hashlib.sha256(parity_raw).hexdigest(),
+        )
+        legacy, legacy_sha256 = _load_legacy(legacy_raw, campaign)
+    except BaseException as exc:
+        primary_failure = exc
+        raise
+    finally:
+        verification_failure: CampaignEvidenceError | None = None
+        for directory in aggregate_directories:
+            try:
+                _verify_aggregate_directory(directory)
+            except CampaignEvidenceError as exc:
+                if primary_failure is not None:
+                    primary_failure.add_note(str(exc))
+                elif verification_failure is None:
+                    verification_failure = exc
+        for directory in reversed(aggregate_directories):
+            _close_aggregate_directory(directory)
+        if primary_failure is None and verification_failure is not None:
+            raise verification_failure
     comparisons = tuple(
         VerifiedScenarioComparisonV1(
             scenario_id=campaign_item.scenario_id,

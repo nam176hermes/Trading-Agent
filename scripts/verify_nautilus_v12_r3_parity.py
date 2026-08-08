@@ -99,6 +99,23 @@ class _ReservedRecord:
     identity: tuple[int, int]
 
 
+@dataclass(frozen=True, slots=True)
+class _TransportCampaign:
+    parent_descriptor: int
+    root_descriptor: int
+    path: Path
+    parent_identity: tuple[int, ...]
+    root_identity: tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _RetainedRunSnapshot:
+    root_identity: tuple[int, ...]
+    run_name: str
+    run_identity: tuple[int, ...]
+    member_identities: dict[str, tuple[int, ...]]
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Verify the fixed Nautilus v12-r3 8x2 runtime parity matrix.",
@@ -250,28 +267,6 @@ def _verify_reserved_record(
         raise ParityVerificationError("parity record identity changed")
 
 
-def _unlink_reserved_record(reservation: _ReservedRecord) -> None:
-    try:
-        parent = os.fstat(reservation.parent_descriptor)
-        opened = os.fstat(reservation.descriptor)
-        named = os.stat(
-            reservation.path.name,
-            dir_fd=reservation.parent_descriptor,
-            follow_symlinks=False,
-        )
-    except OSError:
-        return
-    if (
-        (parent.st_dev, parent.st_ino) == reservation.parent_identity
-        and (opened.st_dev, opened.st_ino) == reservation.identity
-        and (named.st_dev, named.st_ino) == reservation.identity
-    ):
-        try:
-            os.unlink(reservation.path.name, dir_fd=reservation.parent_descriptor)
-        except OSError:
-            pass
-
-
 def _close_reserved_record(reservation: _ReservedRecord) -> None:
     try:
         os.close(reservation.descriptor)
@@ -326,7 +321,6 @@ def _reserve_record(
         return reservation
     except OSError as exc:
         if reservation is not None:
-            _unlink_reserved_record(reservation)
             _close_reserved_record(reservation)
         else:
             if descriptor >= 0:
@@ -336,7 +330,6 @@ def _reserve_record(
         raise ParityVerificationError("parity record cannot be reserved") from exc
     except ParityVerificationError:
         if reservation is not None:
-            _unlink_reserved_record(reservation)
             _close_reserved_record(reservation)
         else:
             if descriptor >= 0:
@@ -360,65 +353,357 @@ def _validate_matrix(
         raise ParityVerificationError("parity matrix must be exactly eight by two")
 
 
-def _cleanup_transport_run(
+def _transport_identity(observed: os.stat_result) -> tuple[int, ...]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_uid,
+        observed.st_nlink,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _open_transport_campaign(path: Path) -> _TransportCampaign:
+    parent_descriptor = -1
+    root_descriptor = -1
+    try:
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        root_descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        parent = os.fstat(parent_descriptor)
+        root = os.fstat(root_descriptor)
+        named_parent = path.parent.lstat()
+        named_root = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        full_root = path.lstat()
+        if (
+            _transport_identity(parent) != _transport_identity(named_parent)
+            or _transport_identity(root) != _transport_identity(named_root)
+            or _transport_identity(root) != _transport_identity(full_root)
+            or root.st_uid != os.geteuid()
+            or stat.S_IMODE(root.st_mode) != 0o700
+            or os.listdir(root_descriptor)
+        ):
+            raise ParityVerificationError("transport campaign identity changed")
+        return _TransportCampaign(
+            parent_descriptor=parent_descriptor,
+            root_descriptor=root_descriptor,
+            path=path,
+            parent_identity=_transport_identity(parent),
+            root_identity=(root.st_dev, root.st_ino),
+        )
+    except OSError as exc:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        raise ParityVerificationError("transport campaign is unavailable") from exc
+    except ParityVerificationError:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        raise
+
+
+def _close_transport_campaign(campaign: _TransportCampaign) -> None:
+    try:
+        os.close(campaign.root_descriptor)
+    finally:
+        os.close(campaign.parent_descriptor)
+
+
+def _create_transport_subroot(
+    campaign: _TransportCampaign,
+    *,
+    name: str,
+) -> tuple[Path, tuple[int, int]]:
+    descriptor = -1
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=campaign.root_descriptor)
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=campaign.root_descriptor,
+        )
+        os.fchmod(descriptor, 0o700)
+        os.fsync(descriptor)
+        os.fsync(campaign.root_descriptor)
+        opened = os.fstat(descriptor)
+        named = os.stat(
+            name,
+            dir_fd=campaign.root_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            _transport_identity(opened) != _transport_identity(named)
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+            or os.listdir(descriptor)
+        ):
+            raise ParityVerificationError("transport subroot is unsafe")
+        return campaign.path / name, (opened.st_dev, opened.st_ino)
+    except OSError as exc:
+        raise ParityVerificationError("transport subroot cannot be created") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _verify_transport_campaign(
+    campaign: _TransportCampaign,
+    *,
+    subroots: dict[str, _RetainedRunSnapshot],
+) -> None:
+    subroot_descriptor = -1
+    run_descriptor = -1
+    try:
+        parent = os.fstat(campaign.parent_descriptor)
+        named_parent = campaign.path.parent.lstat()
+        root = os.fstat(campaign.root_descriptor)
+        named_root = os.stat(
+            campaign.path.name,
+            dir_fd=campaign.parent_descriptor,
+            follow_symlinks=False,
+        )
+        full_root = campaign.path.lstat()
+        if (
+            _transport_identity(parent)
+            != _transport_identity(named_parent)
+            or _transport_identity(parent) != campaign.parent_identity
+            or (root.st_dev, root.st_ino) != campaign.root_identity
+            or (named_root.st_dev, named_root.st_ino)
+            != campaign.root_identity
+            or (full_root.st_dev, full_root.st_ino)
+            != campaign.root_identity
+            or root.st_uid != os.geteuid()
+            or stat.S_IMODE(root.st_mode) != 0o700
+            or set(os.listdir(campaign.root_descriptor)) != set(subroots)
+        ):
+            raise ParityVerificationError("transport campaign identity changed")
+        for name, snapshot in subroots.items():
+            observed = os.stat(
+                name,
+                dir_fd=campaign.root_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                _transport_identity(observed) != snapshot.root_identity
+                or not stat.S_ISDIR(observed.st_mode)
+                or observed.st_uid != os.geteuid()
+                or stat.S_IMODE(observed.st_mode) != 0o700
+            ):
+                raise ParityVerificationError(
+                    "transport subroot identity changed"
+                )
+            subroot_descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=campaign.root_descriptor,
+            )
+            if (
+                _transport_identity(os.fstat(subroot_descriptor))
+                != snapshot.root_identity
+                or set(os.listdir(subroot_descriptor)) != {snapshot.run_name}
+            ):
+                raise ParityVerificationError(
+                    "transport subroot inventory changed"
+                )
+            run_descriptor = os.open(
+                snapshot.run_name,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=subroot_descriptor,
+            )
+            if (
+                _transport_identity(os.fstat(run_descriptor))
+                != snapshot.run_identity
+                or set(os.listdir(run_descriptor))
+                != set(snapshot.member_identities)
+            ):
+                raise ParityVerificationError(
+                    "transport run identity changed"
+                )
+            for member, expected in snapshot.member_identities.items():
+                if _transport_identity(
+                    os.stat(
+                        member,
+                        dir_fd=run_descriptor,
+                        follow_symlinks=False,
+                    )
+                ) != expected:
+                    raise ParityVerificationError(
+                        "transport member identity changed"
+                    )
+            os.close(run_descriptor)
+            run_descriptor = -1
+            os.close(subroot_descriptor)
+            subroot_descriptor = -1
+    except OSError as exc:
+        raise ParityVerificationError(
+            "transport campaign cannot be inspected"
+        ) from exc
+    finally:
+        if run_descriptor >= 0:
+            os.close(run_descriptor)
+        if subroot_descriptor >= 0:
+            os.close(subroot_descriptor)
+
+
+def _validate_retained_transport_run(
     transport_root: Path,
     envelope: EngineCommandEnvelope,
-) -> None:
-    """Remove only the exact sealed transport files created for this request."""
-    run_directory = transport_root / f"run-{envelope.engine_run_id.hex}"
+    *,
+    expected_root_identity: tuple[int, int] | None = None,
+) -> _RetainedRunSnapshot:
+    """Validate one retained provider run without mutating shared pathnames."""
+
+    root_descriptor = -1
+    run_descriptor = -1
+    member_identities: dict[str, tuple[int, ...]] = {}
+    run_name = f"run-{envelope.engine_run_id.hex}"
     try:
-        observed_directory = run_directory.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise ParityVerificationError(
-            "provider transport run cannot be inspected"
-        ) from exc
-    if (
-        stat.S_ISLNK(observed_directory.st_mode)
-        or not stat.S_ISDIR(observed_directory.st_mode)
-        or observed_directory.st_uid != os.geteuid()
-        or stat.S_IMODE(observed_directory.st_mode) != 0o700
-    ):
-        raise ParityVerificationError("provider transport run is unsafe")
-    allowed = {"request.json", "request.sha256"}
-    try:
-        entries = tuple(run_directory.iterdir())
-    except OSError as exc:
-        raise ParityVerificationError(
-            "provider transport run cannot be inspected"
-        ) from exc
-    if any(entry.name not in allowed for entry in entries):
-        raise ParityVerificationError(
-            "provider transport run contains an unknown entry"
+        root_descriptor = os.open(
+            transport_root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
         )
-    for entry in entries:
-        try:
-            observed = entry.lstat()
-        except OSError as exc:
-            raise ParityVerificationError(
-                "provider transport file cannot be inspected"
-            ) from exc
+        opened_root = os.fstat(root_descriptor)
         if (
-            stat.S_ISLNK(observed.st_mode)
-            or not stat.S_ISREG(observed.st_mode)
-            or observed.st_uid != os.geteuid()
-            or observed.st_nlink != 1
-            or stat.S_IMODE(observed.st_mode) != 0o400
+            not stat.S_ISDIR(opened_root.st_mode)
+            or opened_root.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_root.st_mode) != 0o700
+            or (
+                expected_root_identity is not None
+                and (opened_root.st_dev, opened_root.st_ino)
+                != expected_root_identity
+            )
         ):
-            raise ParityVerificationError("provider transport file is unsafe")
-        try:
-            entry.unlink()
-        except OSError as exc:
+            raise ParityVerificationError("provider transport root is unsafe")
+        if set(os.listdir(root_descriptor)) != {run_name}:
             raise ParityVerificationError(
-                "provider transport file cannot be removed"
-            ) from exc
-    try:
-        run_directory.rmdir()
+                "provider transport root inventory is invalid"
+            )
+        run_descriptor = os.open(
+            run_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_descriptor,
+        )
+        opened_run = os.fstat(run_descriptor)
+        named_run = os.stat(
+            run_name,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(opened_run.st_mode)
+            or opened_run.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_run.st_mode) != 0o700
+            or _transport_identity(opened_run) != _transport_identity(named_run)
+        ):
+            raise ParityVerificationError("provider transport run is unsafe")
+        members = {"request.json", "request.sha256"}
+        if set(os.listdir(run_descriptor)) != members:
+            raise ParityVerificationError(
+                "provider transport run inventory is invalid"
+            )
+        for name in sorted(members):
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=run_descriptor,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                named = os.stat(
+                    name,
+                    dir_fd=run_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_uid != os.geteuid()
+                    or opened.st_nlink != 1
+                    or stat.S_IMODE(opened.st_mode) != 0o400
+                    or opened.st_size <= 0
+                    or _transport_identity(opened) != _transport_identity(named)
+                ):
+                    raise ParityVerificationError(
+                        "provider transport member is unsafe"
+                    )
+                member_identities[name] = _transport_identity(opened)
+            finally:
+                os.close(descriptor)
+        named_root = transport_root.lstat()
+        if (
+            (named_root.st_dev, named_root.st_ino)
+            != (opened_root.st_dev, opened_root.st_ino)
+            or set(os.listdir(root_descriptor)) != {run_name}
+            or _transport_identity(os.fstat(run_descriptor))
+            != _transport_identity(
+                os.stat(
+                    run_name,
+                    dir_fd=root_descriptor,
+                    follow_symlinks=False,
+                )
+            )
+        ):
+            raise ParityVerificationError("provider transport identity changed")
+        for name, expected in member_identities.items():
+            if _transport_identity(
+                os.stat(name, dir_fd=run_descriptor, follow_symlinks=False)
+            ) != expected:
+                raise ParityVerificationError(
+                    "provider transport member identity changed"
+                )
+        return _RetainedRunSnapshot(
+            root_identity=_transport_identity(os.fstat(root_descriptor)),
+            run_name=run_name,
+            run_identity=_transport_identity(os.fstat(run_descriptor)),
+            member_identities=member_identities,
+        )
     except OSError as exc:
         raise ParityVerificationError(
-            "provider transport run cannot be removed"
+            "provider transport run cannot be inspected"
         ) from exc
+    finally:
+        if run_descriptor >= 0:
+            os.close(run_descriptor)
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
 
 
 def _launch_once(
@@ -563,7 +848,6 @@ def _write_record(
 ) -> None:
     value = canonical_json_bytes(record) + b"\n"
     reservation = _reserve_record(path, parent_identity=parent_identity)
-    published = False
     try:
         _verify_reserved_record(reservation, expected_size=0)
         remaining = memoryview(value)
@@ -574,17 +858,155 @@ def _write_record(
             remaining = remaining[written:]
         os.fsync(reservation.descriptor)
         _verify_reserved_record(reservation, expected_size=len(value))
-        published = True
     except ParityVerificationError:
         raise
     except OSError as exc:
-        raise ParityVerificationError("parity evidence record cannot be sealed") from exc
+        raise ParityVerificationError(
+            "parity evidence record cannot be sealed"
+        ) from exc
     finally:
-        try:
-            if not published:
-                _unlink_reserved_record(reservation)
-        finally:
-            _close_reserved_record(reservation)
+        _close_reserved_record(reservation)
+
+
+def _run_parity_matrix(
+    *,
+    campaign,
+    transport_root: Path,
+    run_count: int,
+    attest_pinned_candidate: Callable[[], object],
+    provider_factory: Callable[..., object],
+    consume_spawn: Callable[[object], object],
+    popen_factory: Callable[..., object],
+) -> list[ScenarioParityRecord]:
+    transport_campaign = _open_transport_campaign(transport_root)
+    subroots: dict[str, _RetainedRunSnapshot] = {}
+    scenario_records: list[ScenarioParityRecord] = []
+    try:
+        for campaign_scenario in campaign.scenarios:
+            scenario_id = campaign_scenario.scenario_id
+            fixture = campaign_scenario.fixture
+            envelope = campaign_scenario.envelope
+            event_bytes_by_run: list[bytes] = []
+            validated_by_run: list[object] = []
+            expected = None
+            for run_number in range(1, run_count + 1):
+                subroot_name = f"parity-{scenario_id}-run-{run_number}"
+                run_transport_root, run_transport_identity = (
+                    _create_transport_subroot(
+                        transport_campaign,
+                        name=subroot_name,
+                    )
+                )
+                provider = provider_factory(
+                    transport_root=run_transport_root,
+                    attest_closure=attest_pinned_candidate,
+                    expected_manifest_schema_version=6,
+                    attest_inputs=HashBoundArtifactResolver(
+                        campaign_scenario.bindings
+                    ),
+                    monotonic_ns=time.monotonic_ns,
+                )
+                primary_failure: BaseException | None = None
+                try:
+                    prepared = provider.prepare(envelope)
+                    built = consume_spawn(prepared)
+                    event_bytes = _launch_once(
+                        built,
+                        popen_factory=popen_factory,
+                    )
+                    _event, validated, expected = _validated_event(
+                        event_bytes,
+                        envelope=envelope,
+                        fixture=fixture,
+                    )
+                    event_bytes_by_run.append(event_bytes)
+                    validated_by_run.append(validated)
+                except BaseException as exc:
+                    primary_failure = exc
+                    raise
+                finally:
+                    try:
+                        snapshot = _validate_retained_transport_run(
+                            run_transport_root,
+                            envelope,
+                            expected_root_identity=run_transport_identity,
+                        )
+                        subroots[subroot_name] = snapshot
+                    except ParityVerificationError as forensic_error:
+                        if primary_failure is None:
+                            raise
+                        primary_failure.add_note(
+                            "secondary forensic validation failure: "
+                            f"{forensic_error}"
+                        )
+            if event_bytes_by_run[0] != event_bytes_by_run[1]:
+                raise ParityVerificationError(
+                    "run-1 and run-2 events are non-identical"
+                )
+            assert expected is not None
+            reference_event = _independent_reference_event(envelope, expected)
+            if event_bytes_by_run[0] != reference_event:
+                raise ParityVerificationError(
+                    "runtime event bytes do not equal the independent oracle event"
+                )
+            reference_event_sha256 = hashlib.sha256(reference_event).hexdigest()
+            reference_result_sha256 = hashlib.sha256(
+                canonical_json_bytes(
+                    {
+                        "event_sha256": reference_event_sha256,
+                        "input_artifacts_sha256": getattr(
+                            validated_by_run[0], "input_artifacts_sha256"
+                        ),
+                        "request_sha256": hashlib.sha256(
+                            canonical_json_bytes(envelope)
+                        ).hexdigest(),
+                    }
+                )
+            ).hexdigest()
+            nautilus_result_sha256 = _required_digest(
+                getattr(validated_by_run[0], "result_sha256", None),
+                label="validated result",
+            )
+            if reference_result_sha256 != nautilus_result_sha256:
+                raise ParityVerificationError(
+                    "runtime result does not equal the independent oracle result"
+                )
+            scenario_records.append(
+                ScenarioParityRecord(
+                    scenario_id=scenario_id,
+                    engine_configuration_sha256=(
+                        campaign_scenario.engine_configuration_sha256
+                    ),
+                    instrument_catalog_sha256=(
+                        campaign_scenario.instrument_catalog_sha256
+                    ),
+                    strategy_configuration_sha256=(
+                        campaign_scenario.strategy_configuration_sha256
+                    ),
+                    market_data_sha256=campaign_scenario.market_data_sha256,
+                    simulation_scenario_sha256=(
+                        campaign_scenario.simulation_scenario_sha256
+                    ),
+                    independent_reference_result_sha256=(
+                        reference_result_sha256
+                    ),
+                    independent_reference_event_sha256=reference_event_sha256,
+                    nautilus_result_sha256=nautilus_result_sha256,
+                    nautilus_event_sha256=hashlib.sha256(
+                        event_bytes_by_run[0]
+                    ).hexdigest(),
+                    run_1_event_sha256=hashlib.sha256(
+                        event_bytes_by_run[0]
+                    ).hexdigest(),
+                    run_2_event_sha256=hashlib.sha256(
+                        event_bytes_by_run[1]
+                    ).hexdigest(),
+                )
+            )
+        _verify_transport_campaign(transport_campaign, subroots=subroots)
+        return scenario_records
+    finally:
+        _close_transport_campaign(transport_campaign)
 
 
 def verify_nautilus_v12_r3_parity(
@@ -698,98 +1120,15 @@ def verify_nautilus_v12_r3_parity(
             )
         return observed
 
-    scenario_records: list[ScenarioParityRecord] = []
-    for campaign_scenario in campaign.scenarios:
-        scenario_id = campaign_scenario.scenario_id
-        fixture = campaign_scenario.fixture
-        envelope = campaign_scenario.envelope
-        provider = provider_factory(
-            transport_root=transport_root,
-            attest_closure=attest_pinned_candidate,
-            expected_manifest_schema_version=6,
-            attest_inputs=HashBoundArtifactResolver(campaign_scenario.bindings),
-            monotonic_ns=time.monotonic_ns,
-        )
-        event_bytes_by_run: list[bytes] = []
-        validated_by_run: list[object] = []
-        expected = None
-        for _run in range(run_count):
-            primary_failure: BaseException | None = None
-            try:
-                prepared = provider.prepare(envelope)
-                built = consume_spawn(prepared)
-                event_bytes = _launch_once(built, popen_factory=popen_factory)
-                _event, validated, expected = _validated_event(
-                    event_bytes,
-                    envelope=envelope,
-                    fixture=fixture,
-                )
-                event_bytes_by_run.append(event_bytes)
-                validated_by_run.append(validated)
-            except BaseException as exc:
-                primary_failure = exc
-                raise
-            finally:
-                try:
-                    _cleanup_transport_run(transport_root, envelope)
-                except ParityVerificationError as cleanup_error:
-                    if primary_failure is None:
-                        raise
-                    primary_failure.add_note(
-                        f"secondary transport cleanup failure: {cleanup_error}"
-                    )
-        if event_bytes_by_run[0] != event_bytes_by_run[1]:
-            raise ParityVerificationError("run-1 and run-2 events are non-identical")
-        assert expected is not None
-        reference_event = _independent_reference_event(envelope, expected)
-        if event_bytes_by_run[0] != reference_event:
-            raise ParityVerificationError(
-                "runtime event bytes do not equal the independent oracle event"
-            )
-        reference_event_sha256 = hashlib.sha256(reference_event).hexdigest()
-        reference_result_sha256 = hashlib.sha256(
-            canonical_json_bytes(
-                {
-                    "event_sha256": reference_event_sha256,
-                    "input_artifacts_sha256": getattr(
-                        validated_by_run[0], "input_artifacts_sha256"
-                    ),
-                    "request_sha256": hashlib.sha256(
-                        canonical_json_bytes(envelope)
-                    ).hexdigest(),
-                }
-            )
-        ).hexdigest()
-        nautilus_result_sha256 = _required_digest(
-            getattr(validated_by_run[0], "result_sha256", None),
-            label="validated result",
-        )
-        if reference_result_sha256 != nautilus_result_sha256:
-            raise ParityVerificationError(
-                "runtime result does not equal the independent oracle result"
-            )
-        scenario_records.append(
-            ScenarioParityRecord(
-                scenario_id=scenario_id,
-                engine_configuration_sha256=campaign_scenario.engine_configuration_sha256,
-                instrument_catalog_sha256=campaign_scenario.instrument_catalog_sha256,
-                strategy_configuration_sha256=campaign_scenario.strategy_configuration_sha256,
-                market_data_sha256=campaign_scenario.market_data_sha256,
-                simulation_scenario_sha256=campaign_scenario.simulation_scenario_sha256,
-                independent_reference_result_sha256=reference_result_sha256,
-                independent_reference_event_sha256=reference_event_sha256,
-                nautilus_result_sha256=nautilus_result_sha256,
-                nautilus_event_sha256=hashlib.sha256(
-                    event_bytes_by_run[0]
-                ).hexdigest(),
-                run_1_event_sha256=hashlib.sha256(
-                    event_bytes_by_run[0]
-                ).hexdigest(),
-                run_2_event_sha256=hashlib.sha256(
-                    event_bytes_by_run[1]
-                ).hexdigest(),
-            )
-        )
+    scenario_records = _run_parity_matrix(
+        campaign=campaign,
+        transport_root=transport_root,
+        run_count=run_count,
+        attest_pinned_candidate=attest_pinned_candidate,
+        provider_factory=provider_factory,
+        consume_spawn=consume_spawn,
+        popen_factory=popen_factory,
+    )
 
     parity_record = V12R3ParityRecord(
         schema_version="nautilus-phase4-parity-evidence-v2",

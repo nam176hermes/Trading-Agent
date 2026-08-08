@@ -45,7 +45,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MATERIALIZER = REPOSITORY_ROOT / "scripts" / "materialize_phase4_campaign_inputs.py"
 RESEARCH_CLOSER = REPOSITORY_ROOT / "scripts" / "close_phase4_research_evidence.py"
 LEGACY_ROOT = REPOSITORY_ROOT / "legacy" / "research-backend"
-LEGACY_ADAPTER = LEGACY_ROOT / "nautilus_parity_adapter.py"
+LEGACY_ADAPTER_COMMAND = (
+    "legacy/research-backend/.venv/bin/python",
+    "legacy/research-backend/nautilus_parity_adapter.py",
+)
 ARTIFACT_NAMES = (
     "engine-configuration.json",
     "instrument-catalog.json",
@@ -130,7 +133,7 @@ def test_materializer_writes_one_no_clobber_exact_eight_scenario_campaign(
             assert record[field] == hashlib.sha256(expected).hexdigest()
 
 
-def test_materializer_removes_its_partial_destination_after_nested_collision(
+def test_materializer_retains_sealed_partial_destination_after_nested_collision(
     private_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -144,7 +147,41 @@ def test_materializer_removes_its_partial_destination_after_nested_collision(
     with pytest.raises(ValueError, match="already exists"):
         research.materialize_phase4_campaign(destination)
 
-    assert not destination.exists()
+    assert destination.exists()
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o500
+    retained = destination / "long-accounting"
+    assert retained.is_dir()
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o500
+    assert list(retained.iterdir()) == []
+
+
+def test_materializer_failure_never_calls_production_unlink_or_rmdir(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = private_root / "campaign"
+    deletion_calls: list[tuple[str, object]] = []
+
+    def collide(_path: Path, _value: bytes, **_kwargs: object) -> None:
+        raise FileExistsError("simulated nested collision")
+
+    monkeypatch.setattr(producers, "_write_sealed_file", collide)
+    monkeypatch.setattr(
+        producers.os,
+        "unlink",
+        lambda path, **_kwargs: deletion_calls.append(("unlink", path)),
+    )
+    monkeypatch.setattr(
+        producers.os,
+        "rmdir",
+        lambda path, **_kwargs: deletion_calls.append(("rmdir", path)),
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        research.materialize_phase4_campaign(destination)
+
+    assert deletion_calls == []
+    assert destination.exists()
 
 
 def test_verified_campaign_rejects_a_self_consistent_noncanonical_artifact(
@@ -586,12 +623,10 @@ def _public_research_authorities(
         check=False,
     )
     assert synced.returncode == 0, synced.stderr.decode("utf-8", errors="replace")
-    legacy_python = LEGACY_ROOT / ".venv" / "bin" / "python"
     for scenario_id in SCENARIO_IDS:
         completed = subprocess.run(
             [
-                str(legacy_python),
-                str(LEGACY_ADAPTER),
+                *LEGACY_ADAPTER_COMMAND,
                 "--campaign-directory",
                 str(campaign),
                 "--transport-root",
@@ -599,7 +634,7 @@ def _public_research_authorities(
                 "--scenario-id",
                 scenario_id,
             ],
-            cwd=LEGACY_ROOT,
+            cwd=REPOSITORY_ROOT,
             env=legacy_environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -640,6 +675,87 @@ def test_research_producer_derives_complete_campaign_evidence_from_sealed_inputs
     }
     assert research.evaluate_research_campaign(evidence).passed is True
     assert evidence.promotion_authority == "reference-and-nautilus"
+
+
+def test_task8_legacy_adapter_command_is_literal_nested_venv_direct_script() -> None:
+    assert LEGACY_ADAPTER_COMMAND == (
+        "legacy/research-backend/.venv/bin/python",
+        "legacy/research-backend/nautilus_parity_adapter.py",
+    )
+    assert "-I" not in LEGACY_ADAPTER_COMMAND
+
+
+def test_research_snapshot_rejects_equivalent_parity_parent_substitution(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign, parity, paper, legacy = _research_authorities(private_root)
+    parity_parent = private_root / "parity-parent"
+    paper_parent = private_root / "paper-parent"
+    parity_parent.mkdir(mode=0o700)
+    paper_parent.mkdir(mode=0o700)
+    parity = parity.rename(parity_parent / parity.name)
+    paper = paper.rename(paper_parent / paper.name)
+    replacement = private_root / "replacement-parity-parent"
+    replacement.mkdir(mode=0o700)
+    shutil.copy2(parity, replacement / parity.name)
+    displaced = private_root / "displaced-parity-parent"
+    real_open = producers.os.open
+    swapped = False
+
+    def swap_after_parity_read(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and os.fspath(path) == paper.name:
+            parity_parent.rename(displaced)
+            replacement.rename(parity_parent)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(producers.os, "open", swap_after_parity_read)
+
+    with pytest.raises(ValueError, match="parity.*identity|aggregate.*identity"):
+        research.produce_research_campaign_evidence(
+            campaign_directory=campaign,
+            parity_record=parity,
+            paper_record=paper,
+            legacy_record_directory=legacy,
+        )
+
+    assert swapped is True
+
+
+def test_research_snapshot_rejects_mixed_equivalent_legacy_generations(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign, parity, paper, legacy = _research_authorities(private_root)
+    replacement = private_root / "replacement-legacy"
+    shutil.copytree(legacy, replacement)
+    replacement.chmod(0o500)
+    displaced = private_root / "displaced-legacy"
+    trigger = legacy / "short-accounting.json"
+    real_open = producers.os.open
+    swapped = False
+
+    def swap_between_legacy_members(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and os.fspath(path) == trigger.name:
+            legacy.rename(displaced)
+            replacement.rename(legacy)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(producers.os, "open", swap_between_legacy_members)
+
+    with pytest.raises(ValueError, match="legacy.*identity|aggregate.*identity"):
+        research.produce_research_campaign_evidence(
+            campaign_directory=campaign,
+            parity_record=parity,
+            paper_record=paper,
+            legacy_record_directory=legacy,
+        )
+
+    assert swapped is True
 
 
 def test_research_derivations_use_independent_replay_and_oracle_oos_values(
@@ -871,6 +987,9 @@ def test_research_closure_publication_rejects_transport_root_substitution(
 
     assert swapped is True
     assert not result.exists()
+    retained = displaced / "ws04-campaign-closure-v2.json"
+    assert retained.exists()
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o400
 
 
 def test_research_closure_publication_preserves_replacement_record_inode(
@@ -903,7 +1022,7 @@ def test_research_closure_publication_preserves_replacement_record_inode(
     assert (observed.st_dev, observed.st_ino) == replacement_identity
 
 
-def test_research_closure_publication_removes_only_its_partial_record(
+def test_research_closure_publication_retains_its_sealed_partial_record(
     private_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -926,7 +1045,39 @@ def test_research_closure_publication_removes_only_its_partial_record(
         research_closer._publish_closure(transport, {"closure": "inert"})
 
     assert calls == 2
-    assert not result.exists()
+    assert result.read_bytes() == canonical_json_bytes({"closure": "inert"})[:3]
+    assert stat.S_IMODE(result.stat().st_mode) == 0o400
+
+
+def test_research_closure_failure_never_calls_production_unlink(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = private_root / "research-transport"
+    transport.mkdir(mode=0o700)
+    real_write = os.write
+    calls = 0
+    unlink_calls: list[object] = []
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, value[:3])
+        raise OSError("inert partial closure write")
+
+    monkeypatch.setattr(research_closer.os, "write", partial_then_fail)
+    monkeypatch.setattr(
+        research_closer.os,
+        "unlink",
+        lambda path, **_kwargs: unlink_calls.append(path),
+    )
+
+    with pytest.raises(ValueError, match="cannot be sealed"):
+        research_closer._publish_closure(transport, {"closure": "inert"})
+
+    assert unlink_calls == []
+    assert (transport / "ws04-campaign-closure-v2.json").exists()
 
 
 def test_authoritative_closer_rejects_missing_or_mismatched_custody_selection(

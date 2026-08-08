@@ -64,6 +64,14 @@ class _ReservedRecord:
     identity: tuple[int, int]
 
 
+@dataclass(frozen=True, slots=True)
+class _RetainedRunSnapshot:
+    root_identity: tuple[int, ...]
+    run_name: str
+    run_identity: tuple[int, ...]
+    member_identities: dict[str, tuple[int, ...]]
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Capture one external Nautilus long-accounting diagnostic.",
@@ -224,31 +232,6 @@ def _verify_reserved_record(
         )
 
 
-def _unlink_reserved_record(reservation: _ReservedRecord) -> None:
-    try:
-        parent = os.fstat(reservation.parent_descriptor)
-        opened = os.fstat(reservation.descriptor)
-        named = os.stat(
-            reservation.path.name,
-            dir_fd=reservation.parent_descriptor,
-            follow_symlinks=False,
-        )
-    except OSError:
-        return
-    if (
-        (parent.st_dev, parent.st_ino) == reservation.parent_identity
-        and (opened.st_dev, opened.st_ino) == reservation.identity
-        and (named.st_dev, named.st_ino) == reservation.identity
-    ):
-        try:
-            os.unlink(
-                reservation.path.name,
-                dir_fd=reservation.parent_descriptor,
-            )
-        except OSError:
-            pass
-
-
 def _close_reserved_record(reservation: _ReservedRecord) -> None:
     try:
         os.close(reservation.descriptor)
@@ -306,7 +289,6 @@ def _reserve_record(
         return reservation
     except OSError as exc:
         if reservation is not None:
-            _unlink_reserved_record(reservation)
             _close_reserved_record(reservation)
         else:
             if descriptor >= 0:
@@ -318,7 +300,6 @@ def _reserve_record(
         ) from exc
     except RuntimeFailureDiagnosticError:
         if reservation is not None:
-            _unlink_reserved_record(reservation)
             _close_reserved_record(reservation)
         else:
             if descriptor >= 0:
@@ -328,66 +309,147 @@ def _reserve_record(
         raise
 
 
-def _cleanup_transport_run(
+def _transport_identity(observed: os.stat_result) -> tuple[int, ...]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_mode,
+        observed.st_uid,
+        observed.st_nlink,
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+    )
+
+
+def _validate_retained_transport_run(
     transport_root: Path,
     envelope: EngineCommandEnvelope,
-) -> None:
-    run_directory = transport_root / f"run-{envelope.engine_run_id.hex}"
+    *,
+    expected_root_identity: tuple[int, int] | None = None,
+) -> _RetainedRunSnapshot:
+    root_descriptor = -1
+    run_descriptor = -1
+    member_identities: dict[str, tuple[int, ...]] = {}
+    run_name = f"run-{envelope.engine_run_id.hex}"
     try:
-        observed_directory = run_directory.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise RuntimeFailureDiagnosticError(
-            "provider transport run cannot be inspected"
-        ) from exc
-    if (
-        stat.S_ISLNK(observed_directory.st_mode)
-        or not stat.S_ISDIR(observed_directory.st_mode)
-        or observed_directory.st_uid != os.geteuid()
-        or stat.S_IMODE(observed_directory.st_mode) != 0o700
-    ):
-        raise RuntimeFailureDiagnosticError("provider transport run is unsafe")
-    allowed = {"request.json", "request.sha256"}
-    try:
-        entries = tuple(run_directory.iterdir())
-    except OSError as exc:
-        raise RuntimeFailureDiagnosticError(
-            "provider transport run cannot be inspected"
-        ) from exc
-    if any(entry.name not in allowed for entry in entries):
-        raise RuntimeFailureDiagnosticError(
-            "provider transport run contains an unknown entry"
+        root_descriptor = os.open(
+            transport_root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
         )
-    for entry in entries:
-        try:
-            observed = entry.lstat()
-        except OSError as exc:
-            raise RuntimeFailureDiagnosticError(
-                "provider transport file cannot be inspected"
-            ) from exc
+        opened_root = os.fstat(root_descriptor)
         if (
-            stat.S_ISLNK(observed.st_mode)
-            or not stat.S_ISREG(observed.st_mode)
-            or observed.st_uid != os.geteuid()
-            or observed.st_nlink != 1
-            or stat.S_IMODE(observed.st_mode) != 0o400
+            not stat.S_ISDIR(opened_root.st_mode)
+            or opened_root.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_root.st_mode) != 0o700
+            or (
+                expected_root_identity is not None
+                and (opened_root.st_dev, opened_root.st_ino)
+                != expected_root_identity
+            )
+        ):
+            raise RuntimeFailureDiagnosticError("provider transport root is unsafe")
+        if set(os.listdir(root_descriptor)) != {run_name}:
+            raise RuntimeFailureDiagnosticError(
+                "provider transport root inventory is invalid"
+            )
+        run_descriptor = os.open(
+            run_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_descriptor,
+        )
+        opened_run = os.fstat(run_descriptor)
+        named_run = os.stat(
+            run_name,
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(opened_run.st_mode)
+            or opened_run.st_uid != os.geteuid()
+            or stat.S_IMODE(opened_run.st_mode) != 0o700
+            or _transport_identity(opened_run) != _transport_identity(named_run)
+        ):
+            raise RuntimeFailureDiagnosticError("provider transport run is unsafe")
+        members = {"request.json", "request.sha256"}
+        if set(os.listdir(run_descriptor)) != members:
+            raise RuntimeFailureDiagnosticError(
+                "provider transport run inventory is invalid"
+            )
+        for name in sorted(members):
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=run_descriptor,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                named = os.stat(
+                    name,
+                    dir_fd=run_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_uid != os.geteuid()
+                    or opened.st_nlink != 1
+                    or stat.S_IMODE(opened.st_mode) != 0o400
+                    or opened.st_size <= 0
+                    or _transport_identity(opened) != _transport_identity(named)
+                ):
+                    raise RuntimeFailureDiagnosticError(
+                        "provider transport member is unsafe"
+                    )
+                member_identities[name] = _transport_identity(opened)
+            finally:
+                os.close(descriptor)
+        named_root = transport_root.lstat()
+        if (
+            (named_root.st_dev, named_root.st_ino)
+            != (opened_root.st_dev, opened_root.st_ino)
+            or set(os.listdir(root_descriptor)) != {run_name}
+            or _transport_identity(os.fstat(run_descriptor))
+            != _transport_identity(
+                os.stat(
+                    run_name,
+                    dir_fd=root_descriptor,
+                    follow_symlinks=False,
+                )
+            )
         ):
             raise RuntimeFailureDiagnosticError(
-                "provider transport file is unsafe"
+                "provider transport identity changed"
             )
-        try:
-            entry.unlink()
-        except OSError as exc:
-            raise RuntimeFailureDiagnosticError(
-                "provider transport file cannot be removed"
-            ) from exc
-    try:
-        run_directory.rmdir()
+        for name, expected in member_identities.items():
+            if _transport_identity(
+                os.stat(name, dir_fd=run_descriptor, follow_symlinks=False)
+            ) != expected:
+                raise RuntimeFailureDiagnosticError(
+                    "provider transport member identity changed"
+                )
+        return _RetainedRunSnapshot(
+            root_identity=_transport_identity(os.fstat(root_descriptor)),
+            run_name=run_name,
+            run_identity=_transport_identity(os.fstat(run_descriptor)),
+            member_identities=member_identities,
+        )
     except OSError as exc:
         raise RuntimeFailureDiagnosticError(
-            "provider transport run cannot be removed"
+            "provider transport run cannot be inspected"
         ) from exc
+    finally:
+        if run_descriptor >= 0:
+            os.close(run_descriptor)
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
 
 
 def _launch_once(
@@ -479,6 +541,11 @@ def diagnose_nautilus_v12_runtime_failure(
         expected_mode=0o700,
         empty=True,
     )
+    observed_transport = transport_root.lstat()
+    transport_identity = (
+        observed_transport.st_dev,
+        observed_transport.st_ino,
+    )
     record_parent_identity = _validate_record_path(
         diagnostic_record,
         transport_root=transport_root,
@@ -491,7 +558,6 @@ def diagnose_nautilus_v12_runtime_failure(
         _require_absolute(path, label=label)
 
     record_reservation: _ReservedRecord | None = None
-    record_published = False
     envelope: EngineCommandEnvelope | None = None
     try:
         record_reservation = _reserve_record(
@@ -551,6 +617,7 @@ def diagnose_nautilus_v12_runtime_failure(
             monotonic_ns=time.monotonic_ns,
         )
         primary_failure: BaseException | None = None
+        transport_snapshot: _RetainedRunSnapshot | None = None
         try:
             prepared = provider.prepare(envelope)
             built = consume_spawn(prepared)
@@ -563,12 +630,17 @@ def diagnose_nautilus_v12_runtime_failure(
             raise
         finally:
             try:
-                _cleanup_transport_run(transport_root, envelope)
-            except RuntimeFailureDiagnosticError as cleanup_error:
+                transport_snapshot = _validate_retained_transport_run(
+                    transport_root,
+                    envelope,
+                    expected_root_identity=transport_identity,
+                )
+            except RuntimeFailureDiagnosticError as forensic_error:
                 if primary_failure is None:
                     raise
                 primary_failure.add_note(
-                    f"secondary transport cleanup failure: {cleanup_error}"
+                    "secondary forensic validation failure: "
+                    f"{forensic_error}"
                 )
         record = RuntimeFailureDiagnosticRecord(
             schema_version="nautilus-v12-runtime-failure-diagnostic-v1",
@@ -578,14 +650,18 @@ def diagnose_nautilus_v12_runtime_failure(
             stderr_base64=base64.b64encode(stderr).decode("ascii"),
         )
         _write_reserved_record(record_reservation, record)
-        record_published = True
+        final_transport_snapshot = _validate_retained_transport_run(
+            transport_root,
+            envelope,
+            expected_root_identity=transport_identity,
+        )
+        if final_transport_snapshot != transport_snapshot:
+            raise RuntimeFailureDiagnosticError(
+                "provider transport identity changed after capture"
+            )
     finally:
-        try:
-            if record_reservation is not None and not record_published:
-                _unlink_reserved_record(record_reservation)
-        finally:
-            if record_reservation is not None:
-                _close_reserved_record(record_reservation)
+        if record_reservation is not None:
+            _close_reserved_record(record_reservation)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

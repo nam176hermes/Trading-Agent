@@ -481,6 +481,9 @@ def test_adapter_rejects_transport_root_substitution_during_publication(
 
     assert swapped is True
     assert not (transport / "long-accounting.json").exists()
+    retained = displaced / "long-accounting.json"
+    assert retained.exists()
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o400
 
 
 def test_adapter_preserves_replacement_record_inode_on_publication_failure(
@@ -516,7 +519,7 @@ def test_adapter_preserves_replacement_record_inode_on_publication_failure(
     assert (observed.st_dev, observed.st_ino) == replacement_identity
 
 
-def test_adapter_removes_its_partial_record_after_short_write_failure(
+def test_adapter_retains_its_sealed_partial_record_after_short_write_failure(
     authority: tuple[Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -541,4 +544,40 @@ def test_adapter_removes_its_partial_record_after_short_write_failure(
         )
 
     assert calls == 2
-    assert not (transport / "long-accounting.json").exists()
+    retained = transport / "long-accounting.json"
+    assert retained.read_bytes() != b""
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o400
+
+
+def test_adapter_failure_never_calls_production_unlink(
+    authority: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign, transport = authority
+    real_write = os.write
+    calls = 0
+    unlink_calls: list[object] = []
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, value[:5])
+        raise OSError("inert partial legacy record write")
+
+    monkeypatch.setattr(adapter.os, "write", partial_then_fail)
+    monkeypatch.setattr(
+        adapter.os,
+        "unlink",
+        lambda path, **_kwargs: unlink_calls.append(path),
+    )
+
+    with pytest.raises(adapter.LegacyParityAdapterError, match="cannot be sealed"):
+        adapter.run_legacy_comparison(
+            campaign_directory=campaign,
+            transport_root=transport,
+            scenario_id="long-accounting",
+        )
+
+    assert unlink_calls == []
+    assert (transport / "long-accounting.json").exists()

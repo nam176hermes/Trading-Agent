@@ -817,8 +817,6 @@ def _publish(transport_root: Path, scenario_id: str, record: dict[str, object]) 
     name = f"{scenario_id}.json"
     value = _canonical(record) + b"\n"
     descriptor = -1
-    created_identity: tuple[int, ...] | None = None
-    published = False
     try:
         allowed = {f"{item}.json" for item in SCENARIO_IDS}
         if any(entry not in allowed for entry in os.listdir(root.descriptor)):
@@ -836,7 +834,6 @@ def _publish(transport_root: Path, scenario_id: str, record: dict[str, object]) 
             dir_fd=root.descriptor,
         )
         os.fchmod(descriptor, 0o400)
-        created_identity = _identity(os.fstat(descriptor))
         remaining = memoryview(value)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -875,7 +872,6 @@ def _publish(transport_root: Path, scenario_id: str, record: dict[str, object]) 
             raise LegacyParityAdapterError(
                 "legacy comparison or transport identity changed"
             )
-        published = True
     except FileExistsError as exc:
         raise LegacyParityAdapterError("legacy comparison already exists") from exc
     except LegacyParityAdapterError:
@@ -883,28 +879,10 @@ def _publish(transport_root: Path, scenario_id: str, record: dict[str, object]) 
     except OSError as exc:
         raise LegacyParityAdapterError("legacy comparison cannot be sealed") from exc
     finally:
-        try:
-            if descriptor >= 0 and created_identity is not None and not published:
-                try:
-                    opened = os.fstat(descriptor)
-                    named = os.stat(
-                        name,
-                        dir_fd=root.descriptor,
-                        follow_symlinks=False,
-                    )
-                    if (
-                        _identity(opened) == _identity(named)
-                        and (opened.st_dev, opened.st_ino)
-                        == (created_identity[0], created_identity[1])
-                    ):
-                        os.unlink(name, dir_fd=root.descriptor)
-                except OSError:
-                    pass
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            os.close(root.descriptor)
-            os.close(parent_descriptor)
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(root.descriptor)
+        os.close(parent_descriptor)
 
 
 def run_legacy_comparison(

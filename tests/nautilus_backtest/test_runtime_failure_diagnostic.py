@@ -48,6 +48,7 @@ class _Harness:
         timeout: bool = False,
         popen_error: OSError | None = None,
         consume_error: EngineSpawnError | None = None,
+        prepare_error_after_transport: EngineSpawnError | None = None,
     ) -> None:
         self.rollback_schema = rollback_schema
         self.candidate_schema = candidate_schema
@@ -61,6 +62,7 @@ class _Harness:
         self.timeout = timeout
         self.popen_error = popen_error
         self.consume_error = consume_error
+        self.prepare_error_after_transport = prepare_error_after_transport
         self.attest_calls: list[tuple[str, Path]] = []
         self.provider_kwargs: list[dict[str, object]] = []
         self.prepare_calls: list[EngineCommandEnvelope] = []
@@ -114,6 +116,8 @@ class _Harness:
                     path = run_directory / name
                     path.write_bytes(b"sealed")
                     path.chmod(0o400)
+                if harness.prepare_error_after_transport is not None:
+                    raise harness.prepare_error_after_transport
                 harness.prepare_calls.append(envelope)
                 return SimpleNamespace(envelope=envelope)
 
@@ -215,6 +219,23 @@ def _replace_record(path: Path) -> tuple[int, int]:
     return _path_identity(path)
 
 
+def _assert_retained_run(transport_root: Path) -> None:
+    runs = list(transport_root.iterdir())
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.name.startswith("run-")
+    assert stat.S_IMODE(run.stat().st_mode) == 0o700
+    assert {item.name for item in run.iterdir()} == {
+        "request.json",
+        "request.sha256",
+    }
+    for member in run.iterdir():
+        observed = member.stat()
+        assert stat.S_ISREG(observed.st_mode)
+        assert stat.S_IMODE(observed.st_mode) == 0o400
+        assert observed.st_nlink == 1
+
+
 def test_cli_requires_exactly_the_eight_named_arguments_including_campaign(diagnostic, capsys) -> None:
     parser = diagnostic._parser()
     required = [
@@ -293,7 +314,7 @@ def test_diagnostic_runs_one_fixed_long_accounting_launch_through_normal_boundar
         source.is_relative_to(external_paths["campaign_directory"])
         for source in harness.input_sources
     )
-    assert list(external_paths["transport_root"].iterdir()) == []
+    _assert_retained_run(external_paths["transport_root"])
 
 
 @pytest.mark.parametrize("rollback_schema", (1, 2, 3))
@@ -360,7 +381,9 @@ def test_diagnostic_rejects_wrong_closure_authority_before_launch_and_record(
     assert harness.prepare_calls == []
     assert harness.provider_kwargs == []
     assert harness.popen_calls == []
-    assert not external_paths["diagnostic_record"].exists()
+    record = external_paths["diagnostic_record"]
+    assert record.read_bytes() == b""
+    assert stat.S_IMODE(record.stat().st_mode) == 0o400
 
 
 def test_completed_process_writes_only_the_canonical_private_diagnostic_record(
@@ -391,7 +414,7 @@ def test_completed_process_writes_only_the_canonical_private_diagnostic_record(
     assert harness.events[-2:] == ["popen", "communicate"]
 
 
-def test_timeout_kills_once_reaps_once_and_leaves_no_diagnostic_record(
+def test_timeout_kills_once_reaps_once_and_retains_forensic_residue(
     diagnostic, external_paths: dict[str, Path]
 ) -> None:
     harness = _Harness(timeout=True)
@@ -403,8 +426,10 @@ def test_timeout_kills_once_reaps_once_and_leaves_no_diagnostic_record(
         _run(diagnostic, external_paths, harness)
 
     assert harness.events[-4:] == ["popen", "communicate", "kill", "communicate"]
-    assert not external_paths["diagnostic_record"].exists()
-    assert list(external_paths["transport_root"].iterdir()) == []
+    record = external_paths["diagnostic_record"]
+    assert record.read_bytes() == b""
+    assert stat.S_IMODE(record.stat().st_mode) == 0o400
+    _assert_retained_run(external_paths["transport_root"])
 
 
 @pytest.mark.parametrize("mutation", ("replace", "remove"))
@@ -543,7 +568,8 @@ def test_diagnostic_rejects_non_0400_reserved_record_before_popen(
         _run(diagnostic, external_paths, harness)
 
     assert harness.popen_calls == []
-    assert not external_paths["diagnostic_record"].exists()
+    assert external_paths["diagnostic_record"].exists()
+    assert stat.S_IMODE(external_paths["diagnostic_record"].stat().st_mode) == 0o600
 
 
 @pytest.mark.parametrize(
@@ -631,7 +657,7 @@ def test_diagnostic_uses_exact_spawn_authority_and_closes_fds_before_reaping(
 
 
 @pytest.mark.parametrize("failure", ("launch", "consume"))
-def test_launch_or_consume_failure_leaves_no_record_and_never_retries(
+def test_launch_or_consume_failure_retains_forensics_and_never_retries(
     diagnostic,
     external_paths: dict[str, Path],
     failure: str,
@@ -652,11 +678,31 @@ def test_launch_or_consume_failure_leaves_no_record_and_never_retries(
     assert len(harness.prepare_calls) == 1
     assert harness.consume_calls == 1
     assert len(harness.popen_calls) == (1 if failure == "launch" else 0)
-    assert not external_paths["diagnostic_record"].exists()
-    assert list(external_paths["transport_root"].iterdir()) == []
+    record = external_paths["diagnostic_record"]
+    assert record.read_bytes() == b""
+    assert stat.S_IMODE(record.stat().st_mode) == 0o400
+    _assert_retained_run(external_paths["transport_root"])
 
 
-def test_diagnostic_preserves_primary_failure_when_transport_cleanup_also_fails(
+def test_partial_prepare_failure_retains_exact_forensic_run_and_record(
+    diagnostic,
+    external_paths: dict[str, Path],
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "partial prepare failure")
+    harness = _Harness(prepare_error_after_transport=primary)
+
+    with pytest.raises(EngineSpawnError, match="partial prepare failure"):
+        _run(diagnostic, external_paths, harness)
+
+    assert harness.prepare_calls == []
+    assert harness.consume_calls == 0
+    record = external_paths["diagnostic_record"]
+    assert record.read_bytes() == b""
+    assert stat.S_IMODE(record.stat().st_mode) == 0o400
+    _assert_retained_run(external_paths["transport_root"])
+
+
+def test_diagnostic_preserves_primary_failure_when_forensic_validation_also_fails(
     diagnostic,
     external_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -665,14 +711,42 @@ def test_diagnostic_preserves_primary_failure_when_transport_cleanup_also_fails(
     harness = _Harness(consume_error=primary)
     monkeypatch.setattr(
         diagnostic,
-        "_cleanup_transport_run",
-        lambda *_args: (_ for _ in ()).throw(
-            diagnostic.RuntimeFailureDiagnosticError("secondary cleanup failure")
+        "_validate_retained_transport_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            diagnostic.RuntimeFailureDiagnosticError("secondary forensic failure")
         ),
+        raising=False,
     )
 
     with pytest.raises(EngineSpawnError, match="primary consume failure") as observed:
         _run(diagnostic, external_paths, harness)
 
-    assert any("cleanup" in note for note in observed.value.__notes__)
-    assert not external_paths["diagnostic_record"].exists()
+    assert any("forensic" in note for note in observed.value.__notes__)
+    record = external_paths["diagnostic_record"]
+    assert record.read_bytes() == b""
+    assert stat.S_IMODE(record.stat().st_mode) == 0o400
+    _assert_retained_run(external_paths["transport_root"])
+
+
+def test_diagnostic_failure_never_invokes_reserved_record_unlink(
+    diagnostic,
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unlink_calls: list[object] = []
+    monkeypatch.setattr(
+        diagnostic,
+        "_unlink_reserved_record",
+        lambda *args: unlink_calls.append(args),
+        raising=False,
+    )
+    harness = _Harness(
+        consume_error=EngineSpawnError("ENGINE_INPUT_STALE", "inert failure")
+    )
+
+    with pytest.raises(EngineSpawnError, match="inert failure"):
+        _run(diagnostic, external_paths, harness)
+
+    assert unlink_calls == []
+    assert external_paths["diagnostic_record"].exists()
+    _assert_retained_run(external_paths["transport_root"])

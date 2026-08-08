@@ -291,6 +291,25 @@ def _verify(paths: dict[str, Path], harness: _Harness, **overrides):
     return verifier.verify_nautilus_v12_r3_parity(**arguments)
 
 
+def _assert_retained_runs(transport_root: Path, *, expected_count: int) -> None:
+    run_directories = tuple(
+        path
+        for path in transport_root.rglob("run-*")
+        if path.is_dir() and not path.is_symlink()
+    )
+    assert len(run_directories) == expected_count
+    for run_directory in run_directories:
+        assert stat.S_IMODE(run_directory.stat().st_mode) == 0o700
+        assert {path.name for path in run_directory.iterdir()} == {
+            "request.json",
+            "request.sha256",
+        }
+        for member in run_directory.iterdir():
+            observed = member.stat()
+            assert stat.S_IMODE(observed.st_mode) == 0o400
+            assert observed.st_nlink == 1
+
+
 def test_launch_uses_exact_built_authority_and_closes_fds_before_wait() -> None:
     """Delaying descriptor closure would retain spawn authority while waiting."""
     read_fd, write_fd = os.pipe()
@@ -401,13 +420,21 @@ def test_verifier_runs_exact_eight_by_two_matrix_and_writes_digest_only_record(
     assert len(harness.prepare_calls) == 16
     assert harness.consume_calls == 16
     assert len(harness.popen_calls) == 16
-    assert len(harness.provider_kwargs) == 8
+    assert len(harness.provider_kwargs) == 16
+    expected_roots = {
+        external_paths["transport_root"] / f"parity-{scenario_id}-run-{run}"
+        for scenario_id in SCENARIO_IDS
+        for run in (1, 2)
+    }
     assert all(
         item["expected_manifest_schema_version"] == 6
-        and item["transport_root"] == external_paths["transport_root"]
         for item in harness.provider_kwargs
     )
-    assert list(external_paths["transport_root"].iterdir()) == []
+    assert {
+        item["transport_root"] for item in harness.provider_kwargs
+    } == expected_roots
+    assert set(external_paths["transport_root"].iterdir()) == expected_roots
+    _assert_retained_runs(external_paths["transport_root"], expected_count=16)
     assert record["schema_version"] == "nautilus-phase4-parity-evidence-v2"
     assert record["status"] == "passed"
     assert record["candidate_closure_sha256"] == "b" * 64
@@ -522,7 +549,7 @@ def test_verifier_rejects_record_beneath_ephemeral_transport(
     assert not record.exists()
 
 
-def test_verifier_cleans_partial_transport_when_prepare_fails_after_publication(
+def test_verifier_retains_partial_transport_when_prepare_fails_after_publication(
     external_paths: dict[str, Path],
 ) -> None:
     primary = EngineSpawnError("ENGINE_INPUT_STALE", "prepare authority changed")
@@ -531,11 +558,11 @@ def test_verifier_cleans_partial_transport_when_prepare_fails_after_publication(
     with pytest.raises(EngineSpawnError, match="prepare authority changed"):
         _verify(external_paths, harness)
 
-    assert list(external_paths["transport_root"].iterdir()) == []
+    _assert_retained_runs(external_paths["transport_root"], expected_count=1)
     assert not external_paths["record"].exists()
 
 
-def test_verifier_preserves_primary_failure_when_transport_cleanup_also_fails(
+def test_verifier_preserves_primary_failure_when_forensic_validation_also_fails(
     external_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -543,16 +570,18 @@ def test_verifier_preserves_primary_failure_when_transport_cleanup_also_fails(
     harness = _Harness(consume_error=primary)
     monkeypatch.setattr(
         verifier,
-        "_cleanup_transport_run",
-        lambda *_args: (_ for _ in ()).throw(
-            verifier.ParityVerificationError("secondary cleanup failure")
+        "_validate_retained_transport_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            verifier.ParityVerificationError("secondary forensic validation failure")
         ),
+        raising=False,
     )
 
     with pytest.raises(EngineSpawnError, match="primary consume failure") as observed:
         _verify(external_paths, harness)
 
-    assert any("cleanup" in note for note in observed.value.__notes__)
+    assert any("forensic" in note for note in observed.value.__notes__)
+    _assert_retained_runs(external_paths["transport_root"], expected_count=1)
 
 
 def test_verifier_rejects_record_parent_substitution_during_publication(
@@ -580,6 +609,9 @@ def test_verifier_rejects_record_parent_substitution_during_publication(
 
     assert swapped is True
     assert not record.exists()
+    retained = displaced / record.name
+    assert retained.exists()
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o400
 
 
 def test_verifier_rejects_record_replacement_and_preserves_replacement_inode(
@@ -610,7 +642,7 @@ def test_verifier_rejects_record_replacement_and_preserves_replacement_inode(
     assert (observed.st_dev, observed.st_ino) == replacement_identity
 
 
-def test_verifier_rejects_partial_record_write_and_removes_its_reserved_inode(
+def test_verifier_rejects_partial_record_write_and_retains_its_reserved_inode(
     external_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -630,7 +662,38 @@ def test_verifier_rejects_partial_record_write_and_removes_its_reserved_inode(
         _verify(external_paths, _Harness())
 
     assert calls == 2
-    assert not external_paths["record"].exists()
+    assert external_paths["record"].exists()
+    assert stat.S_IMODE(external_paths["record"].stat().st_mode) == 0o400
+
+
+def test_verifier_failed_record_publication_never_calls_unlink_reservation(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_write = verifier.os.write
+    calls = 0
+    rollback_calls: list[object] = []
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, value[:7])
+        raise OSError("inert partial evidence write failure")
+
+    monkeypatch.setattr(verifier.os, "write", partial_then_fail)
+    monkeypatch.setattr(
+        verifier,
+        "_unlink_reserved_record",
+        lambda reservation: rollback_calls.append(reservation),
+        raising=False,
+    )
+
+    with pytest.raises(verifier.ParityVerificationError, match="cannot be sealed"):
+        _verify(external_paths, _Harness())
+
+    assert rollback_calls == []
+    assert external_paths["record"].exists()
 
 
 @pytest.mark.parametrize(
