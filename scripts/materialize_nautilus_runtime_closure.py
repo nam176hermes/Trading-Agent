@@ -23,7 +23,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import NoReturn, Sequence
@@ -327,7 +327,11 @@ def _native_guard_provenance(
     return {field: guard[field] for field in sorted(_NATIVE_GUARD_PROVENANCE_FIELDS)}
 
 
-def _validate_native_guard_policy(value: object) -> dict[str, object]:
+def _validate_native_guard_policy(
+    value: object,
+    *,
+    source_reader: Callable[[Path, str], bytes] | None = None,
+) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != _NATIVE_GUARD_POLICY_FIELDS:
         raise RuntimeClosureMaterializationError(
             "native entry guard policy fields are missing or unknown"
@@ -357,16 +361,21 @@ def _validate_native_guard_policy(value: object) -> dict[str, object]:
         "source_sha256",
     ):
         _require_sha256(value[field], label=f"native entry guard {field}")
+    if source_reader is None:
+        source_reader = lambda path, label: _read_file(
+            path,
+            label=label,
+            sealed=False,
+        )
     for path_field, digest_field in (
         ("source", "source_sha256"),
         ("cargo_manifest", "cargo_manifest_sha256"),
         ("cargo_lock", "cargo_lock_sha256"),
     ):
         relative = _safe_relative(value[path_field], label=path_field)
-        raw = _read_file(
+        raw = source_reader(
             _ROOT.joinpath(*relative.parts),
-            label=f"native entry guard {path_field}",
-            sealed=False,
+            f"native entry guard {path_field}",
         )
         if _sha256_bytes(raw) != value[digest_field]:
             raise RuntimeClosureMaterializationError(
@@ -376,7 +385,7 @@ def _validate_native_guard_policy(value: object) -> dict[str, object]:
         (_RUST_TOOLCHAIN_POLICY, "rust_toolchain_policy_sha256"),
         (_LLVM_TOOLCHAIN_POLICY, "llvm_toolchain_policy_sha256"),
     ):
-        raw = _read_file(policy_path, label="native build toolchain policy", sealed=False)
+        raw = source_reader(policy_path, "native build toolchain policy")
         if _sha256_bytes(raw) != value[field]:
             raise RuntimeClosureMaterializationError(
                 "native entry guard toolchain policy digest drifted"
@@ -384,9 +393,13 @@ def _validate_native_guard_policy(value: object) -> dict[str, object]:
     return value
 
 
-def _load_policy(path: Path) -> dict[str, object]:
+def _validate_policy_bytes(
+    raw: bytes,
+    *,
+    source_reader: Callable[[Path, str], bytes],
+) -> dict[str, object]:
     policy = _json_object(
-        _read_file(path, label="runtime closure policy", sealed=False),
+        raw,
         label="runtime closure policy",
     )
     if set(policy) != _POLICY_FIELDS:
@@ -443,10 +456,25 @@ def _load_policy(path: Path) -> dict[str, object]:
         observed_launchers.add((source, target))
     if observed_launchers != set(_LAUNCHER_INVENTORY):
         raise RuntimeClosureMaterializationError("launcher inventory is not the fixed strategy set")
-    _validate_native_guard_policy(policy["native_entry_guard"])
+    _validate_native_guard_policy(
+        policy["native_entry_guard"],
+        source_reader=source_reader,
+    )
     _safe_target(policy["engine_wheel_target"], label="engine wheel target")
     _safe_target(policy["entrypoint"], label="closure entrypoint")
     return policy
+
+
+def _load_policy(path: Path) -> dict[str, object]:
+    raw = _read_file(path, label="runtime closure policy", sealed=False)
+    return _validate_policy_bytes(
+        raw,
+        source_reader=lambda source, label: _read_file(
+            source,
+            label=label,
+            sealed=False,
+        ),
+    )
 
 
 def _validate_base_runtime(
@@ -458,6 +486,49 @@ def _validate_base_runtime(
         label="base runtime manifest",
         sealed=True,
     )
+
+    def read_base_file(relative: PurePosixPath, expected_mode: int) -> bytes:
+        source = base_runtime.joinpath(*relative.parts)
+        raw = _read_file(source, label="base runtime file", sealed=True)
+        observed = source.stat(follow_symlinks=False)
+        if (
+            stat.S_IMODE(observed.st_mode) != expected_mode
+            or observed.st_size != len(raw)
+        ):
+            raise RuntimeClosureMaterializationError(
+                "base runtime inventory bytes, digest, or mode drifted"
+            )
+        return raw
+
+    manifest, files, raw_by_path = _validate_base_runtime_bytes(
+        manifest_raw,
+        policy,
+        file_reader=read_base_file,
+    )
+    listed = {PurePosixPath(path) for path in raw_by_path}
+    files_root = base_runtime / "files"
+    actual = {
+        PurePosixPath("files", *path.relative_to(files_root).parts)
+        for path in files_root.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    if actual != listed:
+        raise RuntimeClosureMaterializationError(
+            "base runtime inventory contains an unlisted or missing file"
+        )
+    for directory in (files_root, *(path for path in files_root.rglob("*") if path.is_dir())):
+        observed = directory.lstat()
+        if stat.S_ISLNK(observed.st_mode) or stat.S_IMODE(observed.st_mode) != 0o500:
+            raise RuntimeClosureMaterializationError("base runtime directory mode is unsafe")
+    return manifest, files
+
+
+def _validate_base_runtime_bytes(
+    manifest_raw: bytes,
+    policy: dict[str, object],
+    *,
+    file_reader: Callable[[PurePosixPath, int], bytes],
+) -> tuple[dict[str, object], list[dict[str, object]], dict[str, bytes]]:
     if _sha256_bytes(manifest_raw) != policy["base_runtime_manifest_sha256"]:
         raise RuntimeClosureMaterializationError("base runtime manifest digest drifted")
     manifest = _json_object(manifest_raw, label="base runtime manifest")
@@ -483,6 +554,7 @@ def _validate_base_runtime(
         raise RuntimeClosureMaterializationError("base runtime inventory digest drifted")
 
     listed: set[PurePosixPath] = set()
+    raw_by_path: dict[str, bytes] = {}
     for record in files:
         if not isinstance(record, dict) or set(record) != _FILE_FIELDS:
             raise RuntimeClosureMaterializationError("base runtime inventory record is invalid")
@@ -493,33 +565,17 @@ def _validate_base_runtime(
         mode_text = record["mode"]
         if mode_text not in {"0400", "0500"}:
             raise RuntimeClosureMaterializationError("base runtime file mode is unsafe")
-        source = base_runtime.joinpath(*relative.parts)
-        raw = _read_file(source, label="base runtime file", sealed=True)
-        observed = source.stat(follow_symlinks=False)
+        raw = file_reader(relative, int(str(mode_text), 8))
         if (
-            stat.S_IMODE(observed.st_mode) != int(str(mode_text), 8)
-            or observed.st_size != record["size"]
+            len(raw) != record["size"]
             or _sha256_bytes(raw) != record["sha256"]
         ):
             raise RuntimeClosureMaterializationError(
                 "base runtime inventory bytes, digest, or mode drifted"
             )
         listed.add(relative)
-    files_root = base_runtime / "files"
-    actual = {
-        PurePosixPath("files", *path.relative_to(files_root).parts)
-        for path in files_root.rglob("*")
-        if path.is_file() or path.is_symlink()
-    }
-    if actual != listed:
-        raise RuntimeClosureMaterializationError(
-            "base runtime inventory contains an unlisted or missing file"
-        )
-    for directory in (files_root, *(path for path in files_root.rglob("*") if path.is_dir())):
-        observed = directory.lstat()
-        if stat.S_ISLNK(observed.st_mode) or stat.S_IMODE(observed.st_mode) != 0o500:
-            raise RuntimeClosureMaterializationError("base runtime directory mode is unsafe")
-    return manifest, files
+        raw_by_path[relative.as_posix()] = raw
+    return manifest, files, raw_by_path
 
 
 def _validate_artifact(
@@ -530,6 +586,29 @@ def _validate_artifact(
     manifest_raw = _read_file(
         manifest_path, label="selected artifact manifest", sealed=True
     )
+    manifest, wheel_filename, _wheel_raw = _validate_artifact_bytes(
+        manifest_raw,
+        policy,
+        wheel_reader=lambda filename: _read_file(
+            artifact_directory / filename,
+            label="selected engine wheel",
+            sealed=True,
+        ),
+    )
+    wheel_path = artifact_directory / wheel_filename
+    if set(artifact_directory.iterdir()) != {manifest_path, wheel_path}:
+        raise RuntimeClosureMaterializationError(
+            "selected artifact directory contains an unlisted file"
+        )
+    return manifest, wheel_path
+
+
+def _validate_artifact_bytes(
+    manifest_raw: bytes,
+    policy: dict[str, object],
+    *,
+    wheel_reader: Callable[[str], bytes],
+) -> tuple[dict[str, object], str, bytes]:
     if _sha256_bytes(manifest_raw) != policy["artifact_manifest_sha256"]:
         raise RuntimeClosureMaterializationError("selected artifact manifest digest drifted")
     manifest = _json_object(manifest_raw, label="selected artifact manifest")
@@ -549,18 +628,14 @@ def _validate_artifact(
         raise RuntimeClosureMaterializationError(
             "selected artifact identity or wheel is invalid"
         )
-    wheel_path = artifact_directory / str(wheel["filename"])
-    wheel_raw = _read_file(wheel_path, label="selected engine wheel", sealed=True)
+    wheel_filename = str(wheel["filename"])
+    wheel_raw = wheel_reader(wheel_filename)
     if (
         wheel.get("size") != len(wheel_raw)
         or wheel.get("sha256") != _sha256_bytes(wheel_raw)
     ):
         raise RuntimeClosureMaterializationError("selected engine wheel digest drifted")
-    if set(artifact_directory.iterdir()) != {manifest_path, wheel_path}:
-        raise RuntimeClosureMaterializationError(
-            "selected artifact directory contains an unlisted file"
-        )
-    return manifest, wheel_path
+    return manifest, wheel_filename, wheel_raw
 
 
 def _verify_native_guard_toolchains(

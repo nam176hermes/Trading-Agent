@@ -409,6 +409,95 @@ def _qualify(module, inputs: dict[str, object]) -> Path:
     )
 
 
+@pytest.mark.parametrize(
+    "core_name",
+    (
+        "_validate_policy_bytes",
+        "_validate_base_runtime_bytes",
+        "_validate_artifact_bytes",
+    ),
+)
+def test_gate_enforces_the_shared_materializer_byte_validation_cores(
+    qualification_inputs: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    core_name: str,
+) -> None:
+    module = _module()
+
+    def reject_snapshot(*_args, **_kwargs):
+        raise module._closure.RuntimeClosureMaterializationError(
+            f"shared {core_name} rejection"
+        )
+
+    monkeypatch.setattr(module._closure, core_name, reject_snapshot, raising=False)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        _InertRunner(_probe_document(qualification_inputs)),
+    )
+
+    with pytest.raises(
+        module.SealedImportQualificationError,
+        match=rf"shared {core_name} rejection",
+    ):
+        _qualify(module, qualification_inputs)
+
+    assert not qualification_inputs["receipt"].exists()
+
+
+def test_base_runtime_byte_core_matches_the_path_acquisition_wrapper(
+    qualification_inputs: dict[str, object],
+) -> None:
+    module = _module()
+    byte_core = getattr(module._closure, "_validate_base_runtime_bytes", None)
+    assert callable(byte_core), "shared base-runtime byte validator is missing"
+    policy = module._closure._load_policy(qualification_inputs["policy"])
+
+    wrapped_manifest, wrapped_records = module._closure._validate_base_runtime(
+        qualification_inputs["base"], policy
+    )
+    direct_manifest, direct_records, direct_files = byte_core(
+        qualification_inputs["base_manifest_path"].read_bytes(),
+        policy,
+        file_reader=lambda relative, _mode: qualification_inputs["base"]
+        .joinpath(*relative.parts)
+        .read_bytes(),
+    )
+
+    assert direct_manifest == wrapped_manifest
+    assert direct_records == wrapped_records
+    assert direct_files == {
+        str(record["path"]): qualification_inputs["base"]
+        .joinpath(*Path(str(record["path"])).parts)
+        .read_bytes()
+        for record in qualification_inputs["records"]
+    }
+
+
+def test_artifact_byte_core_matches_the_path_acquisition_wrapper(
+    qualification_inputs: dict[str, object],
+) -> None:
+    module = _module()
+    byte_core = getattr(module._closure, "_validate_artifact_bytes", None)
+    assert callable(byte_core), "shared artifact byte validator is missing"
+    policy = module._closure._load_policy(qualification_inputs["policy"])
+
+    wrapped_manifest, wrapped_wheel = module._closure._validate_artifact(
+        qualification_inputs["artifacts"], policy
+    )
+    direct_manifest, direct_filename, direct_wheel = byte_core(
+        qualification_inputs["artifact_manifest_path"].read_bytes(),
+        policy,
+        wheel_reader=lambda filename: (
+            qualification_inputs["artifacts"] / filename
+        ).read_bytes(),
+    )
+
+    assert direct_manifest == wrapped_manifest
+    assert direct_filename == wrapped_wheel.name
+    assert direct_wheel == wrapped_wheel.read_bytes()
+
+
 def test_gate_uses_production_fd_topology_and_writes_canonical_digest_receipt(
     qualification_inputs: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:

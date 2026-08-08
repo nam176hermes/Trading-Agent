@@ -234,6 +234,23 @@ def _materialize(inputs: tuple[Path, Path, Path, Path, Path]) -> Path:
     )
 
 
+def test_policy_byte_core_matches_the_path_acquisition_wrapper() -> None:
+    byte_core = getattr(materializer_module, "_validate_policy_bytes", None)
+    assert callable(byte_core), "shared policy byte validator is missing"
+
+    wrapped = materializer_module._load_policy(CHECKED_IN_POLICY)
+    direct = byte_core(
+        CHECKED_IN_POLICY.read_bytes(),
+        source_reader=lambda path, label: materializer_module._read_file(
+            path,
+            label=label,
+            sealed=False,
+        ),
+    )
+
+    assert direct == wrapped
+
+
 def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None:
     base = Path(
         "/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3"

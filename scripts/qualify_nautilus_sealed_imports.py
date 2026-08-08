@@ -238,74 +238,23 @@ def _remember_file(
     return raw
 
 
-def _policy_from_snapshot(raw: bytes) -> dict[str, object]:
+def _policy_from_snapshot(
+    raw: bytes,
+    snapshots: dict[
+        Path,
+        tuple[bytes, tuple[int, ...], str, set[int] | None, bool, bool],
+    ],
+) -> dict[str, object]:
     try:
-        policy = _closure._json_object(raw, label="runtime closure policy")
-        if set(policy) != _closure._POLICY_FIELDS:
-            raise ValueError("runtime closure policy fields are missing or unknown")
-        if (
-            policy["schema_version"] != 1
-            or policy["profile_manifest_schema_version"] != 6
-            or policy["dependency_import_policy"] != _DEPENDENCY_IMPORT_POLICY
-            or policy["profile"] != _PROFILE
-            or tuple(policy["argv_prefix"]) != _closure._ARGV_PREFIX
-            or policy["result_validator_id"] != _closure._VALIDATOR
-            or policy["semantic_profile"] != _closure._SEMANTIC_PROFILE
-            or policy["entrypoint"] != _closure._NATIVE_GUARD_TARGET
-            or policy["engine_wheel_mode"] != "0400"
-            or policy["engine_name"] != "nautilus_trader"
-            or policy["engine_version"] != "1.227.0"
-            or not isinstance(policy["python_identity"], str)
-            or not str(policy["python_identity"]).startswith("CPython 3.12.")
-            or not isinstance(policy["source_commit"], str)
-            or _closure._SOURCE_COMMIT.fullmatch(str(policy["source_commit"])) is None
-            or not isinstance(policy["engine_upstream_commit"], str)
-            or _closure._SOURCE_COMMIT.fullmatch(str(policy["engine_upstream_commit"])) is None
-            or policy["source_commit"] == policy["engine_upstream_commit"]
-            or isinstance(policy["base_file_count"], bool)
-            or not isinstance(policy["base_file_count"], int)
-            or int(policy["base_file_count"]) <= 0
-            or isinstance(policy["timeout_seconds"], bool)
-            or not isinstance(policy["timeout_seconds"], int)
-            or not 0 < int(policy["timeout_seconds"]) <= 3_600
-        ):
-            raise ValueError("runtime closure policy profile or identity is invalid")
-        for field in (
-            "artifact_manifest_sha256",
-            "base_file_inventory_sha256",
-            "base_runtime_manifest_sha256",
-        ):
-            _closure._require_sha256(policy[field], label=f"policy {field}")
-        inventory = policy["launcher_inventory"]
-        if not isinstance(inventory, list) or len(inventory) != len(
-            _closure._LAUNCHER_INVENTORY
-        ):
-            raise ValueError("launcher inventory is invalid")
-        observed_launchers: set[tuple[str, str]] = set()
-        for record in inventory:
-            if not isinstance(record, dict) or set(record) != {
-                "mode",
-                "sha256",
-                "source",
-                "target",
-            }:
-                raise ValueError("launcher inventory record is invalid")
-            if record["mode"] != "0400":
-                raise ValueError("launcher inventory mode is unsafe")
-            _closure._require_sha256(record["sha256"], label="launcher inventory digest")
-            source = _closure._safe_relative(
-                record["source"], label="launcher source"
-            ).as_posix()
-            target = _closure._safe_target(
-                record["target"], label="launcher target"
-            ).as_posix()
-            observed_launchers.add((source, target))
-        if observed_launchers != set(_closure._LAUNCHER_INVENTORY):
-            raise ValueError("launcher inventory is not the fixed strategy set")
-        _closure._validate_native_guard_policy(policy["native_entry_guard"])
-        _closure._safe_target(policy["engine_wheel_target"], label="engine wheel target")
-        _closure._safe_target(policy["entrypoint"], label="closure entrypoint")
-        return policy
+        return _closure._validate_policy_bytes(
+            raw,
+            source_reader=lambda path, label: _remember_file(
+                snapshots,
+                path,
+                label=label,
+                source=True,
+            ),
+        )
     except (OSError, ValueError) as exc:
         raise SealedImportQualificationError(str(exc)) from exc
 
@@ -323,55 +272,17 @@ def _base_runtime_from_snapshots(
             label="base runtime manifest",
             modes={0o400},
         )
-        if _sha256(manifest_raw) != policy["base_runtime_manifest_sha256"]:
-            raise ValueError("base runtime manifest digest drifted")
-        manifest = _closure._json_object(manifest_raw, label="base runtime manifest")
-        if (
-            set(manifest) != _closure._BASE_MANIFEST_FIELDS
-            or manifest["schema_version"] != 1
-            or manifest["engine_name"] != policy["engine_name"]
-            or manifest["engine_version"] != policy["engine_version"]
-            or manifest["python_identity"] != policy["python_identity"]
-            or manifest["source_commit"] != policy["engine_upstream_commit"]
-            or manifest["entrypoint"] != policy["argv_prefix"][0]
-            or tuple(manifest["argv_prefix"])
-            != ("-I", "-S", _closure._LAUNCHER_TARGET)
-            or manifest["result_validator_id"] != "nautilus-backtest-result-v1"
-        ):
-            raise ValueError("base runtime profile or identity is invalid")
-        records = manifest.get("files")
-        if not isinstance(records, list) or len(records) != policy["base_file_count"]:
-            raise ValueError("base runtime inventory is invalid")
-        if _sha256(_canonical(records)) != policy["base_file_inventory_sha256"]:
-            raise ValueError("base runtime inventory digest drifted")
-
-        listed: set[PurePosixPath] = set()
-        raw_by_path: dict[str, bytes] = {}
-        for record in records:
-            if not isinstance(record, dict) or set(record) != _closure._FILE_FIELDS:
-                raise ValueError("base runtime inventory record is invalid")
-            relative = _closure._safe_relative(
-                record["path"], label="base runtime file path"
-            )
-            if not relative.is_relative_to(PurePosixPath("files")) or relative in listed:
-                raise ValueError("base runtime inventory path is invalid")
-            _closure._safe_target(record["target"], label="base runtime target")
-            mode_text = record["mode"]
-            if mode_text not in {"0400", "0500"}:
-                raise ValueError("base runtime file mode is unsafe")
-            raw = _remember_file(
+        _manifest, records, raw_by_path = _closure._validate_base_runtime_bytes(
+            manifest_raw,
+            policy,
+            file_reader=lambda relative, mode: _remember_file(
                 snapshots,
                 base_runtime.joinpath(*relative.parts),
                 label="base runtime file",
-                modes={int(str(mode_text), 8)},
-            )
-            if (
-                len(raw) != record["size"]
-                or _sha256(raw) != record["sha256"]
-            ):
-                raise ValueError("base runtime inventory bytes, digest, or mode drifted")
-            listed.add(relative)
-            raw_by_path[relative.as_posix()] = raw
+                modes={mode},
+            ),
+        )
+        listed = {PurePosixPath(path) for path in raw_by_path}
         files_root = base_runtime / "files"
         actual = {
             PurePosixPath("files", *path.relative_to(files_root).parts)
@@ -406,34 +317,17 @@ def _artifact_from_snapshots(
             label="selected artifact manifest",
             modes={0o400},
         )
-        if _sha256(manifest_raw) != policy["artifact_manifest_sha256"]:
-            raise ValueError("selected artifact manifest digest drifted")
-        manifest = _closure._json_object(manifest_raw, label="selected artifact manifest")
-        wheel = manifest.get("wheel")
-        if (
-            manifest.get("engine_name") != policy["engine_name"]
-            or manifest.get("engine_version") != policy["engine_version"]
-            or manifest.get("python_identity") != policy["python_identity"]
-            or manifest.get("upstream_commit") != policy["engine_upstream_commit"]
-            or not isinstance(wheel, dict)
-            or set(wheel) != {"filename", "sha256", "size"}
-            or not isinstance(wheel.get("filename"), str)
-            or PurePosixPath(str(wheel["filename"])).name != wheel["filename"]
-            or PurePosixPath(str(policy["engine_wheel_target"])).name
-            != wheel["filename"]
-        ):
-            raise ValueError("selected artifact identity or wheel is invalid")
-        wheel_path = artifact_directory / str(wheel["filename"])
-        wheel_raw = _remember_file(
-            snapshots,
-            wheel_path,
-            label="selected engine wheel",
-            modes={0o400},
+        _manifest, wheel_filename, wheel_raw = _closure._validate_artifact_bytes(
+            manifest_raw,
+            policy,
+            wheel_reader=lambda filename: _remember_file(
+                snapshots,
+                artifact_directory / filename,
+                label="selected engine wheel",
+                modes={0o400},
+            ),
         )
-        if wheel.get("size") != len(wheel_raw) or wheel.get("sha256") != _sha256(
-            wheel_raw
-        ):
-            raise ValueError("selected engine wheel digest drifted")
+        wheel_path = artifact_directory / wheel_filename
         if set(artifact_directory.iterdir()) != {manifest_path, wheel_path}:
             raise ValueError("selected artifact directory contains an unlisted file")
         return manifest_raw, wheel_path, wheel_raw
@@ -767,7 +661,7 @@ def qualify_sealed_imports(
             label="runtime closure policy source",
             source=True,
         )
-        policy = _policy_from_snapshot(policy_raw)
+        policy = _policy_from_snapshot(policy_raw, snapshots)
         sandbox_raw = _remember_file(
             snapshots,
             sandbox_executable,
