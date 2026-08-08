@@ -448,7 +448,8 @@ packages/data_catalog/parquet.py|480|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITICAL|OTHER
 packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
-packages/research_validation/producers.py|415|Exception|PRODUCTION_CRITICAL|RAISE
+packages/research_validation/producers.py|697|Exception|PRODUCTION_CRITICAL|RAISE
+packages/research_validation/producers.py|925|Exception|PRODUCTION_CRITICAL|RAISE
 packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
 packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
@@ -511,6 +512,7 @@ scripts/audit_canonical_repo.py|506|BaseException|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
+scripts/diagnose_nautilus_v12_runtime_failure.py|561|BaseException|TOOLING_MIGRATION|RAISE
 scripts/generate_phase4_command_manifest.py|63|Exception|TOOLING_MIGRATION|RETURN
 scripts/generate_phase4_runtime_authority.py|109|Exception|TOOLING_MIGRATION|RETURN
 scripts/import_component_snapshot.py|291|BaseException|TOOLING_MIGRATION|RAISE
@@ -529,6 +531,7 @@ scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
 scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
+scripts/verify_nautilus_v12_r3_parity.py|729|BaseException|TOOLING_MIGRATION|RAISE
 services/job_scheduler/main.py|48|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_scheduler/scheduler.py|92|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_store/config.py|55|Exception|PRODUCTION_CRITICAL|RAISE

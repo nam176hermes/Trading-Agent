@@ -654,3 +654,25 @@ def test_launch_or_consume_failure_leaves_no_record_and_never_retries(
     assert len(harness.popen_calls) == (1 if failure == "launch" else 0)
     assert not external_paths["diagnostic_record"].exists()
     assert list(external_paths["transport_root"].iterdir()) == []
+
+
+def test_diagnostic_preserves_primary_failure_when_transport_cleanup_also_fails(
+    diagnostic,
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary consume failure")
+    harness = _Harness(consume_error=primary)
+    monkeypatch.setattr(
+        diagnostic,
+        "_cleanup_transport_run",
+        lambda *_args: (_ for _ in ()).throw(
+            diagnostic.RuntimeFailureDiagnosticError("secondary cleanup failure")
+        ),
+    )
+
+    with pytest.raises(EngineSpawnError, match="primary consume failure") as observed:
+        _run(diagnostic, external_paths, harness)
+
+    assert any("cleanup" in note for note in observed.value.__notes__)
+    assert not external_paths["diagnostic_record"].exists()

@@ -133,6 +133,7 @@ class _Harness:
         stdout_transform: Callable[[bytes, int], bytes] | None = None,
         consume_error: EngineSpawnError | None = None,
         candidate_drift_after_initial: bool = False,
+        prepare_error_after_transport: EngineSpawnError | None = None,
     ) -> None:
         self.candidate_schema = candidate_schema
         self.rollback_schema = rollback_schema
@@ -140,6 +141,7 @@ class _Harness:
         self.stdout_transform = stdout_transform or (lambda value, _run: value + b"\n")
         self.consume_error = consume_error
         self.candidate_drift_after_initial = candidate_drift_after_initial
+        self.prepare_error_after_transport = prepare_error_after_transport
         self.candidate_attest_calls = 0
         self.attest_calls: list[tuple[str, Path]] = []
         self.prepare_calls: list[EngineCommandEnvelope] = []
@@ -191,6 +193,8 @@ class _Harness:
                     path.write_bytes(b"sealed")
                     path.chmod(0o400)
                 harness.prepare_calls.append(envelope)
+                if harness.prepare_error_after_transport is not None:
+                    raise harness.prepare_error_after_transport
                 return SimpleNamespace(envelope=envelope)
 
         return Provider()
@@ -503,6 +507,130 @@ def test_verifier_rejects_record_inside_checkout(
         _verify(external_paths, _Harness(), record=inside)
 
     assert not inside.exists()
+
+
+def test_verifier_rejects_record_beneath_ephemeral_transport(
+    external_paths: dict[str, Path],
+) -> None:
+    record = external_paths["transport_root"] / "parity.json"
+    harness = _Harness()
+
+    with pytest.raises(verifier.ParityVerificationError, match="record"):
+        _verify(external_paths, harness, record=record)
+
+    assert harness.prepare_calls == []
+    assert not record.exists()
+
+
+def test_verifier_cleans_partial_transport_when_prepare_fails_after_publication(
+    external_paths: dict[str, Path],
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "prepare authority changed")
+    harness = _Harness(prepare_error_after_transport=primary)
+
+    with pytest.raises(EngineSpawnError, match="prepare authority changed"):
+        _verify(external_paths, harness)
+
+    assert list(external_paths["transport_root"].iterdir()) == []
+    assert not external_paths["record"].exists()
+
+
+def test_verifier_preserves_primary_failure_when_transport_cleanup_also_fails(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary consume failure")
+    harness = _Harness(consume_error=primary)
+    monkeypatch.setattr(
+        verifier,
+        "_cleanup_transport_run",
+        lambda *_args: (_ for _ in ()).throw(
+            verifier.ParityVerificationError("secondary cleanup failure")
+        ),
+    )
+
+    with pytest.raises(EngineSpawnError, match="primary consume failure") as observed:
+        _verify(external_paths, harness)
+
+    assert any("cleanup" in note for note in observed.value.__notes__)
+
+
+def test_verifier_rejects_record_parent_substitution_during_publication(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = external_paths["record"]
+    parent = record.parent
+    displaced = parent.parent / "displaced-evidence"
+    real_fsync = os.fsync
+    swapped = False
+
+    def replace_parent(descriptor: int) -> None:
+        nonlocal swapped
+        if not swapped and record.exists():
+            parent.rename(displaced)
+            parent.mkdir(mode=0o700)
+            swapped = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(verifier.os, "fsync", replace_parent)
+
+    with pytest.raises(verifier.ParityVerificationError, match="record.*identity|parent"):
+        _verify(external_paths, _Harness())
+
+    assert swapped is True
+    assert not record.exists()
+
+
+def test_verifier_rejects_record_replacement_and_preserves_replacement_inode(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = external_paths["record"]
+    real_fsync = os.fsync
+    replacement_identity: tuple[int, int] | None = None
+
+    def replace_record(descriptor: int) -> None:
+        nonlocal replacement_identity
+        if replacement_identity is None and record.exists():
+            record.unlink()
+            record.write_bytes(b"replacement")
+            record.chmod(0o400)
+            observed = record.stat()
+            replacement_identity = (observed.st_dev, observed.st_ino)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(verifier.os, "fsync", replace_record)
+
+    with pytest.raises(verifier.ParityVerificationError, match="record.*identity|named"):
+        _verify(external_paths, _Harness())
+
+    assert replacement_identity is not None
+    observed = record.stat()
+    assert (observed.st_dev, observed.st_ino) == replacement_identity
+
+
+def test_verifier_rejects_partial_record_write_and_removes_its_reserved_inode(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_write = verifier.os.write
+    calls = 0
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, value[:7])
+        raise OSError("inert partial evidence write failure")
+
+    monkeypatch.setattr(verifier.os, "write", partial_then_fail)
+
+    with pytest.raises(verifier.ParityVerificationError, match="cannot be sealed"):
+        _verify(external_paths, _Harness())
+
+    assert calls == 2
+    assert not external_paths["record"].exists()
 
 
 @pytest.mark.parametrize(

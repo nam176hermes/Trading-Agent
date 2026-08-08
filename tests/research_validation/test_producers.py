@@ -8,7 +8,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid5
 
 import pytest
@@ -30,11 +32,20 @@ from packages.nautilus_backtest import (
     build_simulation_envelope,
     calculate_reference_outcome,
 )
+from scripts import verify_nautilus_paper_compatibility as paper_verifier
+from scripts import verify_nautilus_v12_r3_parity as parity_verifier
+from scripts import close_phase4_research_evidence as research_closer
+from services.job_worker.engine_artifacts import HashBoundArtifactResolver
+from tests.nautilus_backtest.test_runtime_parity_verifier import (
+    _Harness as ParityHarness,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 MATERIALIZER = REPOSITORY_ROOT / "scripts" / "materialize_phase4_campaign_inputs.py"
 RESEARCH_CLOSER = REPOSITORY_ROOT / "scripts" / "close_phase4_research_evidence.py"
+LEGACY_ROOT = REPOSITORY_ROOT / "legacy" / "research-backend"
+LEGACY_ADAPTER = LEGACY_ROOT / "nautilus_parity_adapter.py"
 ARTIFACT_NAMES = (
     "engine-configuration.json",
     "instrument-catalog.json",
@@ -125,7 +136,7 @@ def test_materializer_removes_its_partial_destination_after_nested_collision(
 ) -> None:
     destination = private_root / "campaign"
 
-    def collide(_path: Path, _value: bytes) -> None:
+    def collide(_path: Path, _value: bytes, **_kwargs: object) -> None:
         raise FileExistsError("simulated nested collision")
 
     monkeypatch.setattr(producers, "_write_sealed_file", collide)
@@ -177,6 +188,129 @@ def test_verified_campaign_exposes_only_fixed_hash_bound_five_artifact_members(
     assert tuple(item.scenario_id for item in campaign.scenarios) == SCENARIO_IDS
     assert all(len(item.bindings) == 5 for item in campaign.scenarios)
     assert tuple(binding.source.name for binding in campaign.scenarios[0].bindings) == ARTIFACT_NAMES
+
+
+def test_campaign_loader_rejects_root_substitution_during_snapshot(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = private_root / "campaign"
+    replacement = private_root / "replacement"
+    displaced = private_root / "displaced"
+    research.materialize_phase4_campaign(campaign)
+    research.materialize_phase4_campaign(replacement)
+    real_open = os.open
+    swapped = False
+
+    def swap_root(path: object, *args: object, **kwargs: object) -> int:
+        nonlocal swapped
+        if not swapped and os.fspath(path).endswith("engine-configuration.json"):
+            campaign.rename(displaced)
+            replacement.rename(campaign)
+            swapped = True
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(producers.os, "open", swap_root)
+
+    with pytest.raises(ValueError, match="identity|changed"):
+        research.load_verified_campaign(campaign)
+
+    assert swapped is True
+
+
+def test_campaign_loader_rejects_scenario_substitution_during_snapshot(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = private_root / "campaign"
+    replacement_campaign = private_root / "replacement"
+    displaced = campaign / "displaced-long-accounting"
+    research.materialize_phase4_campaign(campaign)
+    research.materialize_phase4_campaign(replacement_campaign)
+    real_open = os.open
+    swapped = False
+
+    def swap_scenario(path: object, *args: object, **kwargs: object) -> int:
+        nonlocal swapped
+        if not swapped and os.fspath(path).endswith("engine-configuration.json"):
+            swapped = True
+            campaign.chmod(0o700)
+            staged = campaign / "staged-long-accounting"
+            shutil.copytree(replacement_campaign / "long-accounting", staged)
+            for artifact in staged.iterdir():
+                artifact.chmod(0o400)
+            staged.chmod(0o500)
+            (campaign / "long-accounting").rename(displaced)
+            staged.rename(campaign / "long-accounting")
+            campaign.chmod(0o500)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(producers.os, "open", swap_scenario)
+
+    with pytest.raises(ValueError, match="identity|changed"):
+        research.load_verified_campaign(campaign)
+
+    assert swapped is True
+
+
+def test_campaign_loader_rejects_manifest_mutation_during_snapshot(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = private_root / "campaign"
+    research.materialize_phase4_campaign(campaign)
+    manifest = campaign / "campaign-manifest.json"
+    original = manifest.read_bytes()
+    real_open = os.open
+    mutated = False
+
+    def mutate_manifest(path: object, *args: object, **kwargs: object) -> int:
+        nonlocal mutated
+        if not mutated and os.fspath(path).endswith("engine-configuration.json"):
+            manifest.chmod(0o600)
+            manifest.write_bytes(original)
+            manifest.chmod(0o400)
+            mutated = True
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(producers.os, "open", mutate_manifest)
+
+    with pytest.raises(ValueError, match="manifest.*identity|identity.*changed"):
+        research.load_verified_campaign(campaign)
+
+    assert mutated is True
+
+
+def test_materializer_failure_cleanup_preserves_a_replacement_campaign(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = private_root / "campaign"
+    replacement = private_root / "replacement"
+    displaced = private_root / "displaced-partial"
+    research.materialize_phase4_campaign(replacement)
+    replacement_identity = (replacement.stat().st_dev, replacement.stat().st_ino)
+    real_write = os.write
+    swapped = False
+
+    def replace_then_fail(descriptor: int, value: object) -> int:
+        nonlocal swapped
+        if not swapped:
+            destination.rename(displaced)
+            replacement.rename(destination)
+            swapped = True
+            raise OSError("simulated campaign publication failure")
+        return real_write(descriptor, value)
+
+    monkeypatch.setattr(producers.os, "write", replace_then_fail)
+
+    with pytest.raises(OSError, match="simulated campaign"):
+        research.materialize_phase4_campaign(destination)
+
+    assert swapped is True
+    assert (destination.stat().st_dev, destination.stat().st_ino) == (
+        replacement_identity
+    )
 
 
 def _seal(path: Path, value: bytes) -> None:
@@ -347,10 +481,139 @@ def _research_authorities(private_root: Path) -> tuple[Path, Path, Path, Path]:
     return campaign, parity_path, paper_path, legacy
 
 
+def _public_research_authorities(
+    private_root: Path,
+) -> tuple[Path, Path, Path, Path]:
+    """Exercise every reviewed producer boundary before deriving campaign evidence."""
+
+    campaign = private_root / "campaign"
+    research.materialize_phase4_campaign(campaign)
+    parity_paths = {
+        "rollback_closure": private_root / "rollback",
+        "candidate_closure": private_root / "candidate",
+        "rollback_artifact_directory": private_root / "rollback-artifacts",
+        "artifact_directory": private_root / "candidate-artifacts",
+        "sandbox": private_root / "sandbox",
+        "campaign_directory": campaign,
+        "transport_root": private_root / "parity-transport",
+        "record": private_root / "parity-evidence" / "parity.json",
+    }
+    for name in (
+        "rollback_closure",
+        "candidate_closure",
+        "rollback_artifact_directory",
+        "artifact_directory",
+        "transport_root",
+    ):
+        parity_paths[name].mkdir(mode=0o700)
+    for name in ("rollback_artifact_directory", "artifact_directory"):
+        marker = parity_paths[name] / "artifact-manifest.json"
+        marker.write_bytes(b"{}")
+        marker.chmod(0o400)
+        parity_paths[name].chmod(0o500)
+    parity_paths["record"].parent.mkdir(mode=0o700)
+    parity_harness = ParityHarness()
+    parity_verifier.verify_nautilus_v12_r3_parity(
+        **parity_paths,
+        attest_closure=parity_harness.attest,
+        provider_factory=parity_harness.provider_factory,
+        consume_spawn=parity_harness.consume,
+        popen_factory=parity_harness.popen,
+    )
+    assert len(parity_harness.prepare_calls) == 16
+    parity_path = parity_paths["record"]
+
+    command, bindings, parity_digest = paper_verifier._campaign_authority(
+        campaign,
+        parity_path,
+        candidate_closure_sha256="b" * 64,
+        candidate_manifest_sha256="c" * 64,
+    )
+    resolver = HashBoundArtifactResolver(bindings)
+
+    class InertPaperProvider:
+        def prepare(self, observed_command):
+            assert observed_command is command
+            resolved = resolver(observed_command)
+            assert tuple(item.source for item in resolved) == tuple(
+                item.source for item in bindings
+            )
+            return SimpleNamespace(command=observed_command)
+
+    launcher = {
+        "compatible": True,
+        "engine_configuration_sha256": command.engine_configuration.sha256,
+        "event_type": "PaperCompatibilityValidated",
+        "instrument_catalog_sha256": command.instrument_catalog.sha256,
+        "scenario_campaign_sha256": command.scenario_campaign_sha256,
+        "strategy_configuration_sha256": command.strategy_configuration.sha256,
+        "strategy_source_sha256": command.strategy_source_sha256,
+    }
+    paper_result = paper_verifier.capture_paper_compatibility(
+        provider=InertPaperProvider(),
+        command=command,
+        candidate_closure_sha256="b" * 64,
+        candidate_manifest_sha256="c" * 64,
+        parity_record_sha256=parity_digest,
+        consume=lambda prepared: SimpleNamespace(command=prepared.command),
+        capture=lambda _built, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=canonical_json_bytes(launcher) + b"\n",
+            stderr=b"",
+        ),
+    )
+    paper_transport = private_root / "paper-transport"
+    paper_transport.mkdir(mode=0o700)
+    paper_path = paper_verifier.publish_paper_compatibility_result(
+        paper_transport,
+        paper_result,
+    )
+
+    legacy = private_root / "legacy"
+    legacy.mkdir(mode=0o700)
+    for scenario_id in SCENARIO_IDS:
+        completed = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--project",
+                str(LEGACY_ROOT),
+                "--frozen",
+                "--extra",
+                "test",
+                "python",
+                str(LEGACY_ADAPTER),
+                "--campaign-directory",
+                str(campaign),
+                "--transport-root",
+                str(legacy),
+                "--scenario-id",
+                scenario_id,
+            ],
+            cwd=LEGACY_ROOT,
+            env={
+                "PATH": os.environ["PATH"],
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "UV_OFFLINE": "1",
+            },
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr.decode(
+            "utf-8", errors="replace"
+        )
+        assert completed.stdout == b""
+        assert completed.stderr == b""
+    legacy.chmod(0o500)
+    return campaign, parity_path, paper_path, legacy
+
+
 def test_research_producer_derives_complete_campaign_evidence_from_sealed_inputs(
     private_root: Path,
 ) -> None:
-    campaign, parity, paper, legacy = _research_authorities(private_root)
+    campaign, parity, paper, legacy = _public_research_authorities(private_root)
 
     evidence = research.produce_research_campaign_evidence(
         campaign_directory=campaign,
@@ -371,7 +634,42 @@ def test_research_producer_derives_complete_campaign_evidence_from_sealed_inputs
         "slippage-stress",
     }
     assert research.evaluate_research_campaign(evidence).passed is True
-    assert research.close_ws04_research_campaign(evidence).closure_sha256 is not None
+    assert evidence.promotion_authority == "reference-and-nautilus"
+
+
+def test_research_derivations_use_independent_replay_and_oracle_oos_values(
+    private_root: Path,
+) -> None:
+    campaign, parity, paper, legacy = _research_authorities(private_root)
+
+    evidence = research.produce_research_campaign_evidence(
+        campaign_directory=campaign,
+        parity_record=parity,
+        paper_record=paper,
+        legacy_record_directory=legacy,
+    )
+
+    market_rows = (
+        campaign / "long-accounting" / "market-data.json"
+    ).read_bytes().splitlines()
+    state = bytes.fromhex(hashlib.sha256(b"\n".join(market_rows) + b"\n").hexdigest())
+    for row in market_rows:
+        state = hashlib.sha256(state + canonical_json_bytes(json.loads(row))).digest()
+    replay = evidence.recursive_replays[0]
+    assert replay.prefix_state_sha256 == state.hex()
+    assert replay.replay_state_sha256 == state.hex()
+    assert tuple(item.out_of_sample_return for item in evidence.walk_forward_folds) == (
+        Decimal("-0.649"),
+        Decimal("0.399"),
+    )
+    assert evidence.minimum_walk_forward_return == Decimal("-0.5")
+    assert evidence.walk_forward_folds[0].input_artifacts_sha256 != (
+        evidence.walk_forward_folds[1].input_artifacts_sha256
+    )
+    assert all(
+        item.input_artifacts_sha256 != evidence.scenario_campaign_sha256
+        for item in evidence.walk_forward_folds
+    )
 
 
 def test_research_producer_rejects_caller_authored_status_or_legacy_authority(
@@ -459,19 +757,46 @@ def test_research_producer_rejects_equal_but_caller_chosen_parity_digests(
         )
 
 
-def test_research_cli_has_only_four_inputs_and_emits_one_canonical_closure_line(
+def test_research_cli_requires_custody_digests_and_seals_one_fixed_closure_record(
     private_root: Path,
 ) -> None:
-    campaign, parity, paper, legacy = _research_authorities(private_root)
+    campaign, parity, paper, legacy = _public_research_authorities(private_root)
+    transport = private_root / "research-transport"
+    transport.mkdir(mode=0o700)
+    campaign_sha256 = hashlib.sha256(
+        (campaign / "campaign-manifest.json").read_bytes()
+    ).hexdigest()
+    parity_sha256 = hashlib.sha256(parity.read_bytes()).hexdigest()
+    paper_sha256 = hashlib.sha256(paper.read_bytes()).hexdigest()
+    legacy_sha256 = hashlib.sha256(
+        canonical_json_bytes(
+            [
+                hashlib.sha256(
+                    (legacy / f"{scenario_id}.json").read_bytes()
+                ).hexdigest()
+                for scenario_id in SCENARIO_IDS
+            ]
+        )
+    ).hexdigest()
     required = [
         "--campaign-directory",
         str(campaign),
+        "--campaign-sha256",
+        campaign_sha256,
         "--parity-record",
         str(parity),
+        "--parity-record-sha256",
+        parity_sha256,
         "--paper-record",
         str(paper),
+        "--paper-record-sha256",
+        paper_sha256,
         "--legacy-record-directory",
         str(legacy),
+        "--legacy-records-sha256",
+        legacy_sha256,
+        "--transport-root",
+        str(transport),
     ]
 
     completed = subprocess.run(
@@ -486,10 +811,22 @@ def test_research_cli_has_only_four_inputs_and_emits_one_canonical_closure_line(
 
     assert completed.returncode == 0, completed.stderr.decode("utf-8", errors="replace")
     assert completed.stderr == b""
-    assert completed.stdout.endswith(b"\n") and completed.stdout.count(b"\n") == 1
-    closure = json.loads(completed.stdout)
-    assert completed.stdout == canonical_json_bytes(closure) + b"\n"
+    assert completed.stdout == b""
+    result = transport / "ws04-campaign-closure-v2.json"
+    closure_raw = result.read_bytes()
+    closure = json.loads(closure_raw)
+    assert closure_raw == canonical_json_bytes(closure) + b"\n"
+    assert stat.S_IMODE(result.stat().st_mode) == 0o400
     assert closure["schema_version"] == "ws04-campaign-closure-v2"
+    missing_custody = subprocess.run(
+        [sys.executable, str(RESEARCH_CLOSER), *required[:2], *required[4:]],
+        cwd=REPOSITORY_ROOT,
+        env={"PYTHONDONTWRITEBYTECODE": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert missing_custody.returncode == 2
     rejected = subprocess.run(
         [sys.executable, str(RESEARCH_CLOSER), *required, "--evidence-root", "/tmp/x"],
         cwd=REPOSITORY_ROOT,
@@ -499,3 +836,128 @@ def test_research_cli_has_only_four_inputs_and_emits_one_canonical_closure_line(
         check=False,
     )
     assert rejected.returncode == 2
+
+
+def test_research_closure_publication_rejects_transport_root_substitution(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = private_root / "research-transport"
+    transport.mkdir(mode=0o700)
+    replacement = private_root / "replacement-transport"
+    replacement.mkdir(mode=0o700)
+    displaced = private_root / "displaced-transport"
+    result = transport / "ws04-campaign-closure-v2.json"
+    real_fsync = os.fsync
+    swapped = False
+
+    def swap_transport(descriptor: int) -> None:
+        nonlocal swapped
+        if not swapped and result.exists():
+            transport.rename(displaced)
+            replacement.rename(transport)
+            swapped = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(research_closer.os, "fsync", swap_transport)
+
+    with pytest.raises(ValueError, match="identity|changed"):
+        research_closer._publish_closure(transport, {"closure": "inert"})
+
+    assert swapped is True
+    assert not result.exists()
+
+
+def test_research_closure_publication_preserves_replacement_record_inode(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = private_root / "research-transport"
+    transport.mkdir(mode=0o700)
+    result = transport / "ws04-campaign-closure-v2.json"
+    real_fsync = os.fsync
+    replacement_identity: tuple[int, int] | None = None
+
+    def replace_result(descriptor: int) -> None:
+        nonlocal replacement_identity
+        if replacement_identity is None and result.exists():
+            result.unlink()
+            result.write_bytes(b"replacement")
+            result.chmod(0o400)
+            observed = result.stat()
+            replacement_identity = (observed.st_dev, observed.st_ino)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(research_closer.os, "fsync", replace_result)
+
+    with pytest.raises(ValueError, match="identity|changed"):
+        research_closer._publish_closure(transport, {"closure": "inert"})
+
+    assert replacement_identity is not None
+    observed = result.stat()
+    assert (observed.st_dev, observed.st_ino) == replacement_identity
+
+
+def test_research_closure_publication_removes_only_its_partial_record(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = private_root / "research-transport"
+    transport.mkdir(mode=0o700)
+    result = transport / "ws04-campaign-closure-v2.json"
+    real_write = os.write
+    calls = 0
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return real_write(descriptor, value[:3])
+        raise OSError("inert partial closure write")
+
+    monkeypatch.setattr(research_closer.os, "write", partial_then_fail)
+
+    with pytest.raises(ValueError, match="cannot be sealed"):
+        research_closer._publish_closure(transport, {"closure": "inert"})
+
+    assert calls == 2
+    assert not result.exists()
+
+
+def test_authoritative_closer_rejects_missing_or_mismatched_custody_selection(
+    private_root: Path,
+) -> None:
+    campaign, parity, paper, legacy = _research_authorities(private_root)
+    expected = {
+        "campaign_directory": campaign,
+        "campaign_sha256": hashlib.sha256(
+            (campaign / "campaign-manifest.json").read_bytes()
+        ).hexdigest(),
+        "parity_record": parity,
+        "parity_record_sha256": hashlib.sha256(parity.read_bytes()).hexdigest(),
+        "paper_record": paper,
+        "paper_record_sha256": hashlib.sha256(paper.read_bytes()).hexdigest(),
+        "legacy_record_directory": legacy,
+        "legacy_records_sha256": hashlib.sha256(
+            canonical_json_bytes(
+                [
+                    hashlib.sha256(
+                        (legacy / f"{scenario_id}.json").read_bytes()
+                    ).hexdigest()
+                    for scenario_id in SCENARIO_IDS
+                ]
+            )
+        ).hexdigest(),
+    }
+
+    with pytest.raises(ValueError, match="custody|digest"):
+        research.close_ws04_research_campaign(
+            **(expected | {"parity_record_sha256": "0" * 64})
+        )
+    with pytest.raises(TypeError):
+        research.close_ws04_research_campaign(
+            campaign_directory=campaign,
+            parity_record=parity,
+            paper_record=paper,
+            legacy_record_directory=legacy,
+        )

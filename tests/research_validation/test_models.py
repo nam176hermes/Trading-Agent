@@ -292,6 +292,27 @@ def _campaign_evidence(comparisons: tuple, **updates: object):
         for index, input_sha256 in enumerate(comparison_inputs)
     )
     campaign_sha256 = _digest("7")
+    fold_sha256 = tuple(
+        hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "fold_id": f"campaign-fold-{index + 1}",
+                    "scenario_inputs": [
+                        {
+                            "input_artifacts_sha256": input_sha256,
+                            "scenario_id": item.scenario_id,
+                        }
+                        for item, input_sha256 in zip(
+                            comparisons[index * 4 : (index + 1) * 4],
+                            comparison_inputs[index * 4 : (index + 1) * 4],
+                            strict=True,
+                        )
+                    ],
+                }
+            )
+        ).hexdigest()
+        for index in range(2)
+    )
     values: dict[str, object] = {
         "scenario_campaign_sha256": campaign_sha256,
         "strategy_source_sha256": _digest("6"),
@@ -306,9 +327,9 @@ def _campaign_evidence(comparisons: tuple, **updates: object):
         "recursive_replays": recursive_replays,
         "walk_forward_folds": tuple(
             item.model_copy(
-                update={"input_artifacts_sha256": campaign_sha256}
+                update={"input_artifacts_sha256": fold_sha256[index]}
             )
-            for item in base.walk_forward_folds
+            for index, item in enumerate(base.walk_forward_folds)
         ),
         "minimum_walk_forward_return": base.minimum_walk_forward_return,
         "cost_scenarios": tuple(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -201,7 +202,7 @@ class Ws04CampaignClosureV2(ResearchValidationModel):
         return self
 
 
-def close_ws04_research_campaign(
+def _close_ws04_research_campaign_evidence(
     evidence: ResearchCampaignEvidenceV2,
 ) -> Ws04CampaignClosureV2:
     """Close the fixed campaign only after all derived 04D gates pass."""
@@ -247,3 +248,57 @@ def close_ws04_research_campaign(
         scenarios=scenarios,
         promotion_authority="reference-and-nautilus",
     )
+
+
+def _custody_sha256(value: str, *, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ResearchClosureError(f"{label} custody digest is invalid")
+    return value
+
+
+def close_ws04_research_campaign(
+    *,
+    campaign_directory: Path,
+    campaign_sha256: str,
+    parity_record: Path,
+    parity_record_sha256: str,
+    paper_record: Path,
+    paper_record_sha256: str,
+    legacy_record_directory: Path,
+    legacy_records_sha256: str,
+) -> Ws04CampaignClosureV2:
+    """Reload reviewed sealed inputs and close only their selected custody digests."""
+
+    from .producers import produce_research_campaign_evidence
+
+    evidence = produce_research_campaign_evidence(
+        campaign_directory=campaign_directory,
+        parity_record=parity_record,
+        paper_record=paper_record,
+        legacy_record_directory=legacy_record_directory,
+    )
+    selected = {
+        "campaign": _custody_sha256(campaign_sha256, label="campaign"),
+        "parity record": _custody_sha256(
+            parity_record_sha256, label="parity record"
+        ),
+        "paper record": _custody_sha256(
+            paper_record_sha256, label="paper record"
+        ),
+        "legacy records": _custody_sha256(
+            legacy_records_sha256, label="legacy records"
+        ),
+    }
+    observed = {
+        "campaign": evidence.scenario_campaign_sha256,
+        "parity record": evidence.parity_record_sha256,
+        "paper record": evidence.paper_record_sha256,
+        "legacy records": evidence.legacy_records_sha256,
+    }
+    if selected != observed:
+        raise ResearchClosureError("reviewed custody digest does not match evidence")
+    return _close_ws04_research_campaign_evidence(evidence)

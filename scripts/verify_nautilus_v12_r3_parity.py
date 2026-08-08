@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypedDict
 
@@ -89,6 +90,15 @@ class V12R3ParityRecord(TypedDict):
     scenarios: list[ScenarioParityRecord]
 
 
+@dataclass(frozen=True, slots=True)
+class _ReservedRecord:
+    descriptor: int
+    parent_descriptor: int
+    path: Path
+    parent_identity: tuple[int, int]
+    identity: tuple[int, int]
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Verify the fixed Nautilus v12-r3 8x2 runtime parity matrix.",
@@ -161,7 +171,11 @@ def _require_private_directory(
             raise ParityVerificationError(f"{label} directory must be non-empty")
 
 
-def _validate_record_path(record: Path) -> None:
+def _validate_record_path(
+    record: Path,
+    *,
+    transport_root: Path,
+) -> tuple[int, int]:
     _require_absolute(record, label="record")
     try:
         parent = record.parent.resolve(strict=True)
@@ -171,19 +185,165 @@ def _validate_record_path(record: Path) -> None:
     if (
         parent != record.parent
         or _is_beneath(record, _CHECKOUT)
+        or _is_beneath(record, transport_root)
         or stat.S_ISLNK(observed_parent.st_mode)
         or not stat.S_ISDIR(observed_parent.st_mode)
         or observed_parent.st_uid != os.geteuid()
-        or observed_parent.st_mode & 0o077
+        or stat.S_IMODE(observed_parent.st_mode) != 0o700
     ):
         raise ParityVerificationError("record path is unsafe")
     try:
         record.lstat()
     except FileNotFoundError:
-        return
+        return observed_parent.st_dev, observed_parent.st_ino
     except OSError as exc:
         raise ParityVerificationError("record path cannot be inspected") from exc
     raise ParityVerificationError("record already exists")
+
+
+def _named_record_stat(reservation: _ReservedRecord):
+    try:
+        parent = os.fstat(reservation.parent_descriptor)
+        named_parent = reservation.path.parent.lstat()
+        opened = os.fstat(reservation.descriptor)
+        named = os.stat(
+            reservation.path.name,
+            dir_fd=reservation.parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise ParityVerificationError(
+            "parity record named entry is unavailable"
+        ) from exc
+    if (
+        (parent.st_dev, parent.st_ino) != reservation.parent_identity
+        or (named_parent.st_dev, named_parent.st_ino)
+        != reservation.parent_identity
+        or stat.S_ISLNK(named_parent.st_mode)
+        or not stat.S_ISDIR(named_parent.st_mode)
+        or named_parent.st_uid != os.geteuid()
+        or stat.S_IMODE(named_parent.st_mode) != 0o700
+        or (opened.st_dev, opened.st_ino) != reservation.identity
+        or (named.st_dev, named.st_ino) != reservation.identity
+        or not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or opened.st_uid != os.geteuid()
+        or named.st_uid != os.geteuid()
+        or opened.st_nlink != 1
+        or named.st_nlink != 1
+        or stat.S_IMODE(opened.st_mode) != 0o400
+        or stat.S_IMODE(named.st_mode) != 0o400
+    ):
+        raise ParityVerificationError(
+            "parity record identity or mode 0400 changed"
+        )
+    return opened, named
+
+
+def _verify_reserved_record(
+    reservation: _ReservedRecord,
+    *,
+    expected_size: int,
+) -> None:
+    opened, named = _named_record_stat(reservation)
+    if opened.st_size != expected_size or named.st_size != expected_size:
+        raise ParityVerificationError("parity record identity changed")
+
+
+def _unlink_reserved_record(reservation: _ReservedRecord) -> None:
+    try:
+        parent = os.fstat(reservation.parent_descriptor)
+        opened = os.fstat(reservation.descriptor)
+        named = os.stat(
+            reservation.path.name,
+            dir_fd=reservation.parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError:
+        return
+    if (
+        (parent.st_dev, parent.st_ino) == reservation.parent_identity
+        and (opened.st_dev, opened.st_ino) == reservation.identity
+        and (named.st_dev, named.st_ino) == reservation.identity
+    ):
+        try:
+            os.unlink(reservation.path.name, dir_fd=reservation.parent_descriptor)
+        except OSError:
+            pass
+
+
+def _close_reserved_record(reservation: _ReservedRecord) -> None:
+    try:
+        os.close(reservation.descriptor)
+    finally:
+        os.close(reservation.parent_descriptor)
+
+
+def _reserve_record(
+    path: Path,
+    *,
+    parent_identity: tuple[int, int],
+) -> _ReservedRecord:
+    parent_descriptor = -1
+    descriptor = -1
+    reservation: _ReservedRecord | None = None
+    try:
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        observed_parent = os.fstat(parent_descriptor)
+        if (
+            (observed_parent.st_dev, observed_parent.st_ino) != parent_identity
+            or not stat.S_ISDIR(observed_parent.st_mode)
+            or observed_parent.st_uid != os.geteuid()
+            or stat.S_IMODE(observed_parent.st_mode) != 0o700
+        ):
+            raise ParityVerificationError("parity record parent identity changed")
+        descriptor = os.open(
+            path.name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o400,
+            dir_fd=parent_descriptor,
+        )
+        os.fchmod(descriptor, 0o400)
+        observed = os.fstat(descriptor)
+        reservation = _ReservedRecord(
+            descriptor=descriptor,
+            parent_descriptor=parent_descriptor,
+            path=path,
+            parent_identity=parent_identity,
+            identity=(observed.st_dev, observed.st_ino),
+        )
+        _verify_reserved_record(reservation, expected_size=0)
+        return reservation
+    except OSError as exc:
+        if reservation is not None:
+            _unlink_reserved_record(reservation)
+            _close_reserved_record(reservation)
+        else:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
+        raise ParityVerificationError("parity record cannot be reserved") from exc
+    except ParityVerificationError:
+        if reservation is not None:
+            _unlink_reserved_record(reservation)
+            _close_reserved_record(reservation)
+        else:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if parent_descriptor >= 0:
+                os.close(parent_descriptor)
+        raise
 
 
 def _validate_matrix(
@@ -395,39 +555,36 @@ def _required_digest(value: object, *, label: str) -> str:
     return value
 
 
-def _write_record(path: Path, record: V12R3ParityRecord) -> None:
+def _write_record(
+    path: Path,
+    record: V12R3ParityRecord,
+    *,
+    parent_identity: tuple[int, int],
+) -> None:
     value = canonical_json_bytes(record) + b"\n"
-    descriptor = -1
-    created = False
+    reservation = _reserve_record(path, parent_identity=parent_identity)
+    published = False
     try:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o400,
-        )
-        created = True
-        os.fchmod(descriptor, 0o400)
+        _verify_reserved_record(reservation, expected_size=0)
         remaining = memoryview(value)
         while remaining:
-            written = os.write(descriptor, remaining)
+            written = os.write(reservation.descriptor, remaining)
             if written <= 0:
                 raise OSError("short evidence write")
             remaining = remaining[written:]
-        os.fsync(descriptor)
+        os.fsync(reservation.descriptor)
+        _verify_reserved_record(reservation, expected_size=len(value))
+        published = True
+    except ParityVerificationError:
+        raise
     except OSError as exc:
-        if created:
-            try:
-                path.unlink()
-            except OSError:
-                pass
         raise ParityVerificationError("parity evidence record cannot be sealed") from exc
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        try:
+            if not published:
+                _unlink_reserved_record(reservation)
+        finally:
+            _close_reserved_record(reservation)
 
 
 def verify_nautilus_v12_r3_parity(
@@ -481,7 +638,10 @@ def verify_nautilus_v12_r3_parity(
         empty=True,
         expected_mode=0o700,
     )
-    _validate_record_path(record)
+    record_parent_identity = _validate_record_path(
+        record,
+        transport_root=transport_root,
+    )
     for path, label in (
         (rollback_closure, "rollback closure"),
         (candidate_closure, "candidate closure"),
@@ -554,7 +714,7 @@ def verify_nautilus_v12_r3_parity(
         validated_by_run: list[object] = []
         expected = None
         for _run in range(run_count):
-            prepared = None
+            primary_failure: BaseException | None = None
             try:
                 prepared = provider.prepare(envelope)
                 built = consume_spawn(prepared)
@@ -566,9 +726,18 @@ def verify_nautilus_v12_r3_parity(
                 )
                 event_bytes_by_run.append(event_bytes)
                 validated_by_run.append(validated)
+            except BaseException as exc:
+                primary_failure = exc
+                raise
             finally:
-                if prepared is not None:
+                try:
                     _cleanup_transport_run(transport_root, envelope)
+                except ParityVerificationError as cleanup_error:
+                    if primary_failure is None:
+                        raise
+                    primary_failure.add_note(
+                        f"secondary transport cleanup failure: {cleanup_error}"
+                    )
         if event_bytes_by_run[0] != event_bytes_by_run[1]:
             raise ParityVerificationError("run-1 and run-2 events are non-identical")
         assert expected is not None
@@ -638,7 +807,11 @@ def verify_nautilus_v12_r3_parity(
         candidate_manifest_schema_version=6,
         scenarios=scenario_records,
     )
-    _write_record(record, parity_record)
+    _write_record(
+        record,
+        parity_record,
+        parent_identity=record_parent_identity,
+    )
     return parity_record
 
 

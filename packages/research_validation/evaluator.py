@@ -276,8 +276,25 @@ def _campaign_walk_forward(
 ) -> ResearchGateResultV1:
     failures: set[str] = set()
     previous_fold_end = None
-    for fold in evidence.walk_forward_folds:
-        if fold.input_artifacts_sha256 != evidence.scenario_campaign_sha256:
+    for index, fold in enumerate(evidence.walk_forward_folds):
+        comparison_slice = evidence.comparisons[index * 4 : (index + 1) * 4]
+        expected_input_sha256 = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "fold_id": f"campaign-fold-{index + 1}",
+                    "scenario_inputs": [
+                        {
+                            "input_artifacts_sha256": (
+                                _campaign_input_artifacts_sha256(item)
+                            ),
+                            "scenario_id": item.scenario_id,
+                        }
+                        for item in comparison_slice
+                    ],
+                }
+            )
+        ).hexdigest()
+        if fold.input_artifacts_sha256 != expected_input_sha256:
             failures.add("E_WALK_FORWARD_INPUT_DRIFT")
         if not (
             fold.train_start_at

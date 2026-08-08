@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import stat
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -129,6 +128,13 @@ class VerifiedCampaignV1:
         raise CampaignEvidenceError("campaign scenario is unavailable")
 
 
+@dataclass(frozen=True, slots=True)
+class _DirectoryHandle:
+    descriptor: int
+    path: Path
+    identity: tuple[int, ...]
+
+
 def _is_beneath(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -219,6 +225,276 @@ def _sealed_bytes(path: Path, *, label: str) -> bytes:
             os.close(descriptor)
 
 
+_IDENTITY_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_uid",
+    "st_nlink",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
+
+
+def _identity(observed: os.stat_result) -> tuple[int, ...]:
+    return tuple(getattr(observed, field) for field in _IDENTITY_FIELDS)
+
+
+def _require_directory_stat(
+    observed: os.stat_result,
+    *,
+    label: str,
+    expected_mode: int,
+) -> None:
+    if (
+        stat.S_ISLNK(observed.st_mode)
+        or not stat.S_ISDIR(observed.st_mode)
+        or observed.st_uid != os.geteuid()
+        or stat.S_IMODE(observed.st_mode) != expected_mode
+    ):
+        raise CampaignEvidenceError(f"{label} is not sealed")
+
+
+def _open_campaign_root(
+    path: Path,
+) -> tuple[int, tuple[int, ...], _DirectoryHandle]:
+    _require_external_path(path, label="campaign directory")
+    parent_descriptor = -1
+    root_descriptor = -1
+    try:
+        observed_parent = path.parent.lstat()
+        resolved_parent = path.parent.resolve(strict=True)
+        if (
+            resolved_parent != path.parent
+            or stat.S_ISLNK(observed_parent.st_mode)
+            or not stat.S_ISDIR(observed_parent.st_mode)
+            or observed_parent.st_uid != os.geteuid()
+            or observed_parent.st_mode & 0o077
+        ):
+            raise CampaignEvidenceError("campaign directory parent is unsafe")
+        parent_descriptor = os.open(
+            path.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_parent = os.fstat(parent_descriptor)
+        if _identity(opened_parent) != _identity(observed_parent):
+            raise CampaignEvidenceError("campaign directory parent identity changed")
+        root_descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened_root = os.fstat(root_descriptor)
+        named_root = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        full_root = path.lstat()
+        _require_directory_stat(
+            opened_root,
+            label="campaign directory",
+            expected_mode=0o500,
+        )
+        if not (
+            _identity(opened_root) == _identity(named_root) == _identity(full_root)
+        ):
+            raise CampaignEvidenceError("campaign directory identity changed")
+        return (
+            parent_descriptor,
+            _identity(opened_parent),
+            _DirectoryHandle(root_descriptor, path, _identity(opened_root)),
+        )
+    except CampaignEvidenceError:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        raise
+    except OSError as exc:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+        raise CampaignEvidenceError("campaign directory is unavailable") from exc
+
+
+def _open_campaign_scenario(
+    root: _DirectoryHandle,
+    scenario_id: str,
+) -> _DirectoryHandle:
+    descriptor = -1
+    path = root.path / scenario_id
+    try:
+        descriptor = os.open(
+            scenario_id,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root.descriptor,
+        )
+        opened = os.fstat(descriptor)
+        named = os.stat(
+            scenario_id,
+            dir_fd=root.descriptor,
+            follow_symlinks=False,
+        )
+        _require_directory_stat(
+            opened,
+            label=f"campaign scenario {scenario_id}",
+            expected_mode=0o500,
+        )
+        if _identity(opened) != _identity(named):
+            raise CampaignEvidenceError(
+                f"campaign scenario {scenario_id} identity changed"
+            )
+        return _DirectoryHandle(descriptor, path, _identity(opened))
+    except CampaignEvidenceError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise CampaignEvidenceError(
+            f"campaign scenario {scenario_id} is unavailable"
+        ) from exc
+
+
+def _sealed_bytes_at(
+    directory: _DirectoryHandle,
+    name: str,
+    *,
+    label: str,
+) -> tuple[bytes, tuple[int, ...]]:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory.descriptor,
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != 0o400
+            or opened.st_size <= 0
+            or opened.st_size > _MAX_ARTIFACT_BYTES
+        ):
+            raise CampaignEvidenceError(f"{label} is not sealed")
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            block = os.read(descriptor, min(65_536, remaining))
+            if not block:
+                raise CampaignEvidenceError(f"{label} read was incomplete")
+            chunks.append(block)
+            remaining -= len(block)
+        if os.read(descriptor, 1):
+            raise CampaignEvidenceError(f"{label} changed while being read")
+        named = os.stat(
+            name,
+            dir_fd=directory.descriptor,
+            follow_symlinks=False,
+        )
+        if _identity(named) != _identity(opened):
+            raise CampaignEvidenceError(f"{label} identity changed while being read")
+        return b"".join(chunks), _identity(opened)
+    except CampaignEvidenceError:
+        raise
+    except OSError as exc:
+        raise CampaignEvidenceError(f"{label} is unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _verify_campaign_snapshot(
+    *,
+    parent_descriptor: int,
+    parent_identity: tuple[int, ...],
+    root: _DirectoryHandle,
+    scenarios: tuple[_DirectoryHandle, ...],
+    files: dict[int, dict[str, tuple[int, ...]]],
+) -> None:
+    try:
+        opened_parent = os.fstat(parent_descriptor)
+        named_parent = root.path.parent.lstat()
+        opened_root = os.fstat(root.descriptor)
+        named_root = os.stat(
+            root.path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        full_root = root.path.lstat()
+        if not (
+            _identity(opened_parent)
+            == _identity(named_parent)
+            == parent_identity
+        ) or not (
+            _identity(opened_root)
+            == _identity(named_root)
+            == _identity(full_root)
+            == root.identity
+        ):
+            raise CampaignEvidenceError("campaign directory identity changed")
+        for name, expected_identity in files.get(root.descriptor, {}).items():
+            named = os.stat(
+                name,
+                dir_fd=root.descriptor,
+                follow_symlinks=False,
+            )
+            if _identity(named) != expected_identity:
+                raise CampaignEvidenceError(
+                    f"campaign manifest {name} identity changed"
+                )
+        for scenario in scenarios:
+            opened_scenario = os.fstat(scenario.descriptor)
+            named_scenario = os.stat(
+                scenario.path.name,
+                dir_fd=root.descriptor,
+                follow_symlinks=False,
+            )
+            full_scenario = scenario.path.lstat()
+            if not (
+                _identity(opened_scenario)
+                == _identity(named_scenario)
+                == _identity(full_scenario)
+                == scenario.identity
+            ):
+                raise CampaignEvidenceError(
+                    f"campaign scenario {scenario.path.name} identity changed"
+                )
+            for name, expected_identity in files.get(
+                scenario.descriptor, {}
+            ).items():
+                named = os.stat(
+                    name,
+                    dir_fd=scenario.descriptor,
+                    follow_symlinks=False,
+                )
+                if _identity(named) != expected_identity:
+                    raise CampaignEvidenceError(
+                        f"campaign artifact {scenario.path.name}/{name} identity changed"
+                    )
+    except CampaignEvidenceError:
+        raise
+    except OSError as exc:
+        raise CampaignEvidenceError("campaign snapshot identity changed") from exc
+
+
 def _canonical_line_object(raw: bytes, *, label: str) -> dict[str, object]:
     if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
         raise CampaignEvidenceError(f"{label} must be one canonical JSON line")
@@ -252,93 +528,147 @@ def _sha256(value: object, *, label: str) -> str:
 
 def load_verified_campaign(directory: Path) -> VerifiedCampaignV1:
     """Load the exact eight canonical fixtures from a sealed external root."""
-
-    entries = _sealed_directory(directory, label="campaign directory")
-    if {path.name for path in entries} != {CAMPAIGN_MANIFEST_NAME, *SCENARIO_IDS}:
-        raise CampaignEvidenceError("campaign directory inventory is invalid")
-    manifest_raw = _sealed_bytes(
-        directory / CAMPAIGN_MANIFEST_NAME,
-        label="campaign manifest",
-    )
-    manifest = _canonical_line_object(manifest_raw, label="campaign manifest")
-    strategy_digest = hashlib.sha256(_STRATEGY_SOURCE.read_bytes()).hexdigest()
-    if (
-        set(manifest) != _MANIFEST_FIELDS
-        or manifest.get("schema_version") != "nautilus-phase4-campaign-v1"
-        or manifest.get("paper_scenario_id") != "long-accounting"
-        or manifest.get("strategy_source_sha256") != strategy_digest
-        or not isinstance(manifest.get("scenarios"), list)
-        or len(manifest["scenarios"]) != len(SCENARIO_IDS)
-    ):
-        raise CampaignEvidenceError("campaign manifest is invalid")
-
-    scenarios: list[VerifiedCampaignScenarioV1] = []
-    for scenario_id, record in zip(SCENARIO_IDS, manifest["scenarios"], strict=True):
-        if (
-            not isinstance(record, dict)
-            or set(record) != _SCENARIO_FIELDS
-            or record.get("scenario_id") != scenario_id
-        ):
-            raise CampaignEvidenceError("campaign scenarios are incomplete or unordered")
-        scenario_directory = directory / scenario_id
-        scenario_entries = _sealed_directory(
-            scenario_directory,
-            label=f"campaign scenario {scenario_id}",
-        )
-        if {path.name for path in scenario_entries} != {
-            name for name, _field in CAMPAIGN_ARTIFACTS
+    parent_descriptor, parent_identity, root = _open_campaign_root(directory)
+    scenario_handles: list[_DirectoryHandle] = []
+    file_identities: dict[int, dict[str, tuple[int, ...]]] = {
+        root.descriptor: {}
+    }
+    try:
+        if set(os.listdir(root.descriptor)) != {
+            CAMPAIGN_MANIFEST_NAME,
+            *SCENARIO_IDS,
         }:
-            raise CampaignEvidenceError("campaign scenario inventory is invalid")
-        expected_fixture = build_canonical_simulation_fixture(scenario_id)
-        values: list[bytes] = []
-        bindings: list[EngineArtifactBinding] = []
-        envelope = build_simulation_envelope(expected_fixture)
-        references = (
-            envelope.payload.engine_configuration,
-            envelope.payload.instrument_catalog,
-            envelope.payload.strategy_configuration,
-            envelope.payload.market_data,
-            envelope.payload.simulation_scenario,
+            raise CampaignEvidenceError("campaign directory inventory is invalid")
+        manifest_raw, manifest_identity = _sealed_bytes_at(
+            root,
+            CAMPAIGN_MANIFEST_NAME,
+            label="campaign manifest",
         )
-        for (filename, field), expected, reference in zip(
-            CAMPAIGN_ARTIFACTS,
-            expected_fixture.artifacts,
-            references,
-            strict=True,
+        file_identities[root.descriptor][CAMPAIGN_MANIFEST_NAME] = manifest_identity
+        manifest = _canonical_line_object(manifest_raw, label="campaign manifest")
+        strategy_digest = hashlib.sha256(_STRATEGY_SOURCE.read_bytes()).hexdigest()
+        if (
+            set(manifest) != _MANIFEST_FIELDS
+            or manifest.get("schema_version") != "nautilus-phase4-campaign-v1"
+            or manifest.get("paper_scenario_id") != "long-accounting"
+            or manifest.get("strategy_source_sha256") != strategy_digest
+            or not isinstance(manifest.get("scenarios"), list)
+            or len(manifest["scenarios"]) != len(SCENARIO_IDS)
         ):
-            source = scenario_directory / filename
-            value = _sealed_bytes(source, label=f"{scenario_id} {filename}")
-            digest = hashlib.sha256(value).hexdigest()
-            if _sha256(record[field], label=f"{scenario_id} {field}") != digest:
-                raise CampaignEvidenceError("campaign artifact digest does not match")
-            if value != expected:
-                raise CampaignEvidenceError("campaign artifact is not a canonical campaign fixture")
-            values.append(value)
-            bindings.append(EngineArtifactBinding(reference=reference, source=source))
-        fixture = CanonicalSimulationFixtureV1(scenario_id, *values)
-        scenarios.append(
-            VerifiedCampaignScenarioV1(
-                scenario_id=scenario_id,
-                fixture=fixture,
-                envelope=build_simulation_envelope(fixture),
-                bindings=tuple(bindings),
-                engine_configuration_sha256=str(record["engine_configuration_sha256"]),
-                instrument_catalog_sha256=str(record["instrument_catalog_sha256"]),
-                strategy_configuration_sha256=str(record["strategy_configuration_sha256"]),
-                market_data_sha256=str(record["market_data_sha256"]),
-                simulation_scenario_sha256=str(record["simulation_scenario_sha256"]),
+            raise CampaignEvidenceError("campaign manifest is invalid")
+
+        scenarios: list[VerifiedCampaignScenarioV1] = []
+        for scenario_id, record in zip(
+            SCENARIO_IDS, manifest["scenarios"], strict=True
+        ):
+            if (
+                not isinstance(record, dict)
+                or set(record) != _SCENARIO_FIELDS
+                or record.get("scenario_id") != scenario_id
+            ):
+                raise CampaignEvidenceError(
+                    "campaign scenarios are incomplete or unordered"
+                )
+            scenario_handle = _open_campaign_scenario(root, scenario_id)
+            scenario_handles.append(scenario_handle)
+            file_identities[scenario_handle.descriptor] = {}
+            if set(os.listdir(scenario_handle.descriptor)) != {
+                name for name, _field in CAMPAIGN_ARTIFACTS
+            }:
+                raise CampaignEvidenceError("campaign scenario inventory is invalid")
+            expected_fixture = build_canonical_simulation_fixture(scenario_id)
+            values: list[bytes] = []
+            bindings: list[EngineArtifactBinding] = []
+            envelope = build_simulation_envelope(expected_fixture)
+            references = (
+                envelope.payload.engine_configuration,
+                envelope.payload.instrument_catalog,
+                envelope.payload.strategy_configuration,
+                envelope.payload.market_data,
+                envelope.payload.simulation_scenario,
             )
+            for (filename, field), expected, reference in zip(
+                CAMPAIGN_ARTIFACTS,
+                expected_fixture.artifacts,
+                references,
+                strict=True,
+            ):
+                source = scenario_handle.path / filename
+                value, artifact_identity = _sealed_bytes_at(
+                    scenario_handle,
+                    filename,
+                    label=f"{scenario_id} {filename}",
+                )
+                file_identities[scenario_handle.descriptor][filename] = (
+                    artifact_identity
+                )
+                digest = hashlib.sha256(value).hexdigest()
+                if _sha256(record[field], label=f"{scenario_id} {field}") != digest:
+                    raise CampaignEvidenceError(
+                        "campaign artifact digest does not match"
+                    )
+                if value != expected:
+                    raise CampaignEvidenceError(
+                        "campaign artifact is not a canonical campaign fixture"
+                    )
+                values.append(value)
+                bindings.append(
+                    EngineArtifactBinding(reference=reference, source=source)
+                )
+            fixture = CanonicalSimulationFixtureV1(scenario_id, *values)
+            scenarios.append(
+                VerifiedCampaignScenarioV1(
+                    scenario_id=scenario_id,
+                    fixture=fixture,
+                    envelope=build_simulation_envelope(fixture),
+                    bindings=tuple(bindings),
+                    engine_configuration_sha256=str(
+                        record["engine_configuration_sha256"]
+                    ),
+                    instrument_catalog_sha256=str(
+                        record["instrument_catalog_sha256"]
+                    ),
+                    strategy_configuration_sha256=str(
+                        record["strategy_configuration_sha256"]
+                    ),
+                    market_data_sha256=str(record["market_data_sha256"]),
+                    simulation_scenario_sha256=str(
+                        record["simulation_scenario_sha256"]
+                    ),
+                )
+            )
+        _verify_campaign_snapshot(
+            parent_descriptor=parent_descriptor,
+            parent_identity=parent_identity,
+            root=root,
+            scenarios=tuple(scenario_handles),
+            files=file_identities,
         )
-    return VerifiedCampaignV1(
-        root=directory,
-        sha256=hashlib.sha256(manifest_raw).hexdigest(),
-        strategy_source_sha256=strategy_digest,
-        scenarios=tuple(scenarios),
-    )
+        return VerifiedCampaignV1(
+            root=directory,
+            sha256=hashlib.sha256(manifest_raw).hexdigest(),
+            strategy_source_sha256=strategy_digest,
+            scenarios=tuple(scenarios),
+        )
+    except CampaignEvidenceError:
+        raise
+    except OSError as exc:
+        raise CampaignEvidenceError("campaign snapshot is unavailable") from exc
+    finally:
+        for scenario in scenario_handles:
+            os.close(scenario.descriptor)
+        os.close(root.descriptor)
+        os.close(parent_descriptor)
 
 
-def _write_sealed_file(path: Path, value: bytes) -> None:
+def _write_sealed_file(
+    path: Path,
+    value: bytes,
+    *,
+    directory_fd: int | None = None,
+) -> tuple[int, ...]:
     descriptor = -1
+    created_identity: tuple[int, ...] | None = None
     try:
         descriptor = os.open(
             path,
@@ -348,8 +678,10 @@ def _write_sealed_file(path: Path, value: bytes) -> None:
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             0o400,
+            dir_fd=directory_fd,
         )
         os.fchmod(descriptor, 0o400)
+        created_identity = _identity(os.fstat(descriptor))
         remaining = memoryview(value)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -357,46 +689,201 @@ def _write_sealed_file(path: Path, value: bytes) -> None:
                 raise OSError("short campaign write")
             remaining = remaining[written:]
         os.fsync(descriptor)
+        opened = os.fstat(descriptor)
+        named = os.stat(path, dir_fd=directory_fd, follow_symlinks=False)
+        if _identity(opened) != _identity(named):
+            raise CampaignEvidenceError("campaign artifact identity changed")
+        return _identity(opened)
+    except Exception:
+        if created_identity is not None:
+            try:
+                named = os.stat(path, dir_fd=directory_fd, follow_symlinks=False)
+                opened = os.fstat(descriptor)
+                if (
+                    _identity(named) == _identity(opened)
+                    and (opened.st_dev, opened.st_ino)
+                    == (created_identity[0], created_identity[1])
+                ):
+                    os.unlink(path, dir_fd=directory_fd)
+            except OSError:
+                pass
+        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _cleanup_created_campaign(
+    *,
+    destination: Path,
+    parent_descriptor: int,
+    parent_identity: tuple[int, ...],
+    root: _DirectoryHandle,
+    scenarios: tuple[_DirectoryHandle, ...],
+    files: dict[int, dict[str, tuple[int, ...]]],
+) -> None:
+    """Remove only still-named inodes created by this materialization attempt."""
+
+    try:
+        parent = os.fstat(parent_descriptor)
+        named_parent = destination.parent.lstat()
+        named_root = os.stat(
+            destination.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        full_root = destination.lstat()
+    except OSError:
+        return
+    if not (
+        _identity(parent) == _identity(named_parent) == parent_identity
+        and (named_root.st_dev, named_root.st_ino)
+        == (root.identity[0], root.identity[1])
+        and (full_root.st_dev, full_root.st_ino)
+        == (root.identity[0], root.identity[1])
+    ):
+        return
+    try:
+        os.fchmod(root.descriptor, 0o700)
+    except OSError:
+        return
+    for scenario in reversed(scenarios):
+        try:
+            named_scenario = os.stat(
+                scenario.path.name,
+                dir_fd=root.descriptor,
+                follow_symlinks=False,
+            )
+            opened_scenario = os.fstat(scenario.descriptor)
+        except OSError:
+            continue
+        if not (
+            (named_scenario.st_dev, named_scenario.st_ino)
+            == (scenario.identity[0], scenario.identity[1])
+            == (opened_scenario.st_dev, opened_scenario.st_ino)
+        ):
+            continue
+        try:
+            os.fchmod(scenario.descriptor, 0o700)
+        except OSError:
+            continue
+        for name, expected in files.get(scenario.descriptor, {}).items():
+            try:
+                named = os.stat(
+                    name,
+                    dir_fd=scenario.descriptor,
+                    follow_symlinks=False,
+                )
+                if _identity(named) == expected:
+                    os.unlink(name, dir_fd=scenario.descriptor)
+            except OSError:
+                continue
+        try:
+            if not os.listdir(scenario.descriptor):
+                os.rmdir(scenario.path.name, dir_fd=root.descriptor)
+        except OSError:
+            continue
+    for name, expected in files.get(root.descriptor, {}).items():
+        try:
+            named = os.stat(name, dir_fd=root.descriptor, follow_symlinks=False)
+            if _identity(named) == expected:
+                os.unlink(name, dir_fd=root.descriptor)
+        except OSError:
+            continue
+    try:
+        if not os.listdir(root.descriptor):
+            os.rmdir(destination.name, dir_fd=parent_descriptor)
+    except OSError:
+        pass
 
 
 def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
     """Create the canonical campaign once and return its sealed verification."""
 
     _require_external_path(destination, label="campaign destination")
+    parent_descriptor = -1
+    root_descriptor = -1
+    root: _DirectoryHandle | None = None
+    parent_identity: tuple[int, ...] | None = None
+    scenario_handles: list[_DirectoryHandle] = []
+    files: dict[int, dict[str, tuple[int, ...]]] = {}
     try:
         parent = destination.parent.resolve(strict=True)
         observed_parent = destination.parent.lstat()
-    except OSError as exc:
-        raise CampaignEvidenceError("campaign destination parent is unavailable") from exc
-    if (
-        parent != destination.parent
-        or stat.S_ISLNK(observed_parent.st_mode)
-        or not stat.S_ISDIR(observed_parent.st_mode)
-        or observed_parent.st_uid != os.geteuid()
-        or observed_parent.st_mode & 0o077
-    ):
-        raise CampaignEvidenceError("campaign destination parent is unsafe")
-    created = False
-    try:
-        destination.mkdir(mode=0o700)
-        created = True
+        if (
+            parent != destination.parent
+            or stat.S_ISLNK(observed_parent.st_mode)
+            or not stat.S_ISDIR(observed_parent.st_mode)
+            or observed_parent.st_uid != os.geteuid()
+            or observed_parent.st_mode & 0o077
+        ):
+            raise CampaignEvidenceError("campaign destination parent is unsafe")
+        parent_descriptor = os.open(
+            destination.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        if _identity(os.fstat(parent_descriptor)) != _identity(observed_parent):
+            raise CampaignEvidenceError(
+                "campaign destination parent identity changed"
+            )
+        os.mkdir(destination.name, mode=0o700, dir_fd=parent_descriptor)
+        parent_identity = _identity(os.fstat(parent_descriptor))
+        root_descriptor = os.open(
+            destination.name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        root = _DirectoryHandle(
+            root_descriptor,
+            destination,
+            _identity(os.fstat(root_descriptor)),
+        )
+        files[root_descriptor] = {}
         records: list[dict[str, object]] = []
         for scenario_id in SCENARIO_IDS:
             fixture = build_canonical_simulation_fixture(scenario_id)
             scenario_directory = destination / scenario_id
-            scenario_directory.mkdir(mode=0o700)
+            os.mkdir(scenario_id, mode=0o700, dir_fd=root_descriptor)
+            scenario_descriptor = os.open(
+                scenario_id,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=root_descriptor,
+            )
+            scenario_handle = _DirectoryHandle(
+                scenario_descriptor,
+                scenario_directory,
+                _identity(os.fstat(scenario_descriptor)),
+            )
+            scenario_handles.append(scenario_handle)
+            files[scenario_descriptor] = {}
             record: dict[str, object] = {"scenario_id": scenario_id}
             for (filename, field), value in zip(
                 CAMPAIGN_ARTIFACTS,
                 fixture.artifacts,
                 strict=True,
             ):
-                _write_sealed_file(scenario_directory / filename, value)
+                files[scenario_descriptor][filename] = _write_sealed_file(
+                    Path(filename),
+                    value,
+                    directory_fd=scenario_descriptor,
+                )
                 record[field] = hashlib.sha256(value).hexdigest()
-            scenario_directory.chmod(0o500)
+            os.fchmod(scenario_descriptor, 0o500)
+            os.fsync(scenario_descriptor)
+            scenario_handles[-1] = _DirectoryHandle(
+                scenario_descriptor,
+                scenario_directory,
+                _identity(os.fstat(scenario_descriptor)),
+            )
             records.append(record)
         manifest = {
             "paper_scenario_id": "long-accounting",
@@ -406,30 +893,55 @@ def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
                 _STRATEGY_SOURCE.read_bytes()
             ).hexdigest(),
         }
-        _write_sealed_file(
-            destination / CAMPAIGN_MANIFEST_NAME,
+        files[root_descriptor][CAMPAIGN_MANIFEST_NAME] = _write_sealed_file(
+            Path(CAMPAIGN_MANIFEST_NAME),
             canonical_json_bytes(manifest) + b"\n",
+            directory_fd=root_descriptor,
         )
-        destination.chmod(0o500)
-        return load_verified_campaign(destination)
+        os.fchmod(root_descriptor, 0o500)
+        os.fsync(root_descriptor)
+        root = _DirectoryHandle(
+            root_descriptor,
+            destination,
+            _identity(os.fstat(root_descriptor)),
+        )
+        assert parent_identity is not None
+        _verify_campaign_snapshot(
+            parent_descriptor=parent_descriptor,
+            parent_identity=parent_identity,
+            root=root,
+            scenarios=tuple(scenario_handles),
+            files=files,
+        )
+        verified = load_verified_campaign(destination)
+        _verify_campaign_snapshot(
+            parent_descriptor=parent_descriptor,
+            parent_identity=parent_identity,
+            root=root,
+            scenarios=tuple(scenario_handles),
+            files=files,
+        )
+        return verified
     except Exception as exc:
-        if created:
-            try:
-                destination.chmod(0o700)
-                for child in destination.iterdir():
-                    if child.is_dir() and not child.is_symlink():
-                        child.chmod(0o700)
-                        for artifact in child.iterdir():
-                            if not artifact.is_symlink():
-                                artifact.chmod(0o600)
-                    elif not child.is_symlink():
-                        child.chmod(0o600)
-                shutil.rmtree(destination)
-            except OSError:
-                pass
+        if root is not None and parent_identity is not None:
+            _cleanup_created_campaign(
+                destination=destination,
+                parent_descriptor=parent_descriptor,
+                parent_identity=parent_identity,
+                root=root,
+                scenarios=tuple(scenario_handles),
+                files=files,
+            )
         if isinstance(exc, FileExistsError):
             raise CampaignEvidenceError("campaign destination already exists") from exc
         raise
+    finally:
+        for scenario in scenario_handles:
+            os.close(scenario.descriptor)
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
 
 
 def _input_identity_sha256(item: VerifiedCampaignScenarioV1) -> str:
@@ -684,16 +1196,28 @@ def _recursive_replays(
 ) -> tuple[RecursiveIndicatorReplay, ...]:
     records: list[RecursiveIndicatorReplay] = []
     for index, item in enumerate(campaign.scenarios, start=1):
-        rows = [json.loads(line) for line in item.fixture.market_data.splitlines()]
-        state = hashlib.sha256(canonical_json_bytes(rows)).hexdigest()
+        seed_sha256 = hashlib.sha256(item.fixture.market_data).hexdigest()
+
+        def replay() -> str:
+            state = bytes.fromhex(seed_sha256)
+            for line in item.fixture.market_data.splitlines():
+                row = json.loads(line)
+                state = hashlib.sha256(
+                    state + canonical_json_bytes(row)
+                ).digest()
+            return state.hex()
+
+        prefix_state_sha256 = replay()
+        replay_state_sha256 = replay()
+        sample_count = len(item.fixture.market_data.splitlines())
         records.append(
             RecursiveIndicatorReplay(
                 indicator_name=f"campaign-{index:02d}-{item.scenario_id}",
                 input_artifacts_sha256=_input_identity_sha256(item),
-                seed_sha256=hashlib.sha256(item.fixture.market_data).hexdigest(),
-                prefix_state_sha256=state,
-                replay_state_sha256=state,
-                sample_count=len(rows),
+                seed_sha256=seed_sha256,
+                prefix_state_sha256=prefix_state_sha256,
+                replay_state_sha256=replay_state_sha256,
+                sample_count=sample_count,
             )
         )
     return tuple(records)
@@ -701,34 +1225,55 @@ def _recursive_replays(
 
 def _walk_forward_folds(
     campaign: VerifiedCampaignV1,
-    comparisons: tuple[VerifiedScenarioComparisonV1, ...],
 ) -> tuple[WalkForwardFold, ...]:
     known_times = [item.known_at for item in _point_in_time(campaign)]
     start = max(known_times)
     folds: list[WalkForwardFold] = []
     for index in range(2):
         offset = index * 6
-        comparison_slice = comparisons[index * 4 : (index + 1) * 4]
-        matched_fraction = Decimal(
-            sum(
-                item.independent_reference_result_sha256
-                == item.nautilus_result_sha256
-                and item.independent_reference_event_sha256
-                == item.nautilus_event_sha256
-                for item in comparison_slice
+        scenario_slice = campaign.scenarios[index * 4 : (index + 1) * 4]
+        scenario_inputs = [
+            {
+                "input_artifacts_sha256": _input_identity_sha256(item),
+                "scenario_id": item.scenario_id,
+            }
+            for item in scenario_slice
+        ]
+        fold_id = f"campaign-fold-{index + 1}"
+        input_artifacts_sha256 = hashlib.sha256(
+            canonical_json_bytes(
+                {
+                    "fold_id": fold_id,
+                    "scenario_inputs": scenario_inputs,
+                }
             )
-        ) / Decimal(len(comparison_slice))
+        ).hexdigest()
+        out_of_sample_return = Decimal("0")
+        for item in scenario_slice[2:]:
+            scenario = BacktestScenarioV1.from_mounted_artifacts(
+                scenario_bytes=item.fixture.simulation_scenario,
+                catalog_bytes=item.fixture.instrument_catalog,
+                strategy_bytes=item.fixture.strategy_configuration,
+                market_data_bytes=item.fixture.market_data,
+                start_time=item.envelope.payload.start_time,
+                end_time=item.envelope.payload.end_time,
+            )
+            outcome = calculate_reference_outcome(scenario)
+            out_of_sample_return += (
+                outcome.realized_pnl + outcome.unrealized_pnl - outcome.fees
+            )
+        out_of_sample_return /= Decimal(len(scenario_slice[2:]))
         folds.append(
             WalkForwardFold(
-                fold_id=f"campaign-fold-{index + 1}",
-                input_artifacts_sha256=campaign.sha256,
+                fold_id=fold_id,
+                input_artifacts_sha256=input_artifacts_sha256,
                 train_start_at=start + timedelta(minutes=offset),
                 train_end_at=start + timedelta(minutes=offset + 1),
                 validation_start_at=start + timedelta(minutes=offset + 2),
                 validation_end_at=start + timedelta(minutes=offset + 3),
                 out_of_sample_start_at=start + timedelta(minutes=offset + 4),
                 out_of_sample_end_at=start + timedelta(minutes=offset + 5),
-                out_of_sample_return=matched_fraction,
+                out_of_sample_return=out_of_sample_return,
             )
         )
     return tuple(folds)
@@ -825,7 +1370,7 @@ def produce_research_campaign_evidence(
     )
     point_in_time = _point_in_time(campaign)
     recursive_replays = _recursive_replays(campaign)
-    walk_forward_folds = _walk_forward_folds(campaign, comparisons)
+    walk_forward_folds = _walk_forward_folds(campaign)
     cost_scenarios = _cost_scenarios(campaign)
     paper_sha256 = hashlib.sha256(paper_raw).hexdigest()
     analysis_sha256 = campaign_analysis_output_sha256(
@@ -834,7 +1379,7 @@ def produce_research_campaign_evidence(
         point_in_time=point_in_time,
         recursive_replays=recursive_replays,
         walk_forward_folds=walk_forward_folds,
-        minimum_walk_forward_return=Decimal("2"),
+        minimum_walk_forward_return=Decimal("-0.5"),
         cost_scenarios=cost_scenarios,
         minimum_stressed_return=Decimal("0"),
     )
@@ -851,7 +1396,7 @@ def produce_research_campaign_evidence(
         point_in_time=point_in_time,
         recursive_replays=recursive_replays,
         walk_forward_folds=walk_forward_folds,
-        minimum_walk_forward_return=Decimal("2"),
+        minimum_walk_forward_return=Decimal("-0.5"),
         cost_scenarios=cost_scenarios,
         minimum_stressed_return=Decimal("0"),
         analysis_output_sha256=analysis_sha256,

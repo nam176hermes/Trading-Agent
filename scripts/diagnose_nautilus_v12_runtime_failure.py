@@ -550,6 +550,7 @@ def diagnose_nautilus_v12_runtime_failure(
             attest_inputs=HashBoundArtifactResolver(campaign_scenario.bindings),
             monotonic_ns=time.monotonic_ns,
         )
+        primary_failure: BaseException | None = None
         try:
             prepared = provider.prepare(envelope)
             built = consume_spawn(prepared)
@@ -557,8 +558,18 @@ def diagnose_nautilus_v12_runtime_failure(
                 built,
                 popen_factory=popen_factory,
             )
+        except BaseException as exc:
+            primary_failure = exc
+            raise
         finally:
-            _cleanup_transport_run(transport_root, envelope)
+            try:
+                _cleanup_transport_run(transport_root, envelope)
+            except RuntimeFailureDiagnosticError as cleanup_error:
+                if primary_failure is None:
+                    raise
+                primary_failure.add_note(
+                    f"secondary transport cleanup failure: {cleanup_error}"
+                )
         record = RuntimeFailureDiagnosticRecord(
             schema_version="nautilus-v12-runtime-failure-diagnostic-v1",
             exit_code=returncode,
