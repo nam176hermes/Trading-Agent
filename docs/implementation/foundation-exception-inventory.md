@@ -532,10 +532,15 @@ scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
 scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
-scripts/verify_nautilus_v12_r3_parity.py|626|BaseException|TOOLING_MIGRATION|OTHER
-scripts/verify_nautilus_v12_r3_parity.py|738|BaseException|TOOLING_MIGRATION|OTHER
-scripts/verify_nautilus_v12_r3_parity.py|995|BaseException|TOOLING_MIGRATION|OTHER
-scripts/verify_nautilus_v12_r3_parity.py|1431|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|344|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|464|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|676|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|801|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|886|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|1143|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|1286|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|1461|BaseException|TOOLING_MIGRATION|OTHER
+scripts/verify_nautilus_v12_r3_parity.py|1598|BaseException|TOOLING_MIGRATION|OTHER
 services/job_scheduler/main.py|48|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_scheduler/scheduler.py|92|Exception|PRODUCTION_CRITICAL|RETURN
 services/job_store/config.py|55|Exception|PRODUCTION_CRITICAL|RAISE
@@ -627,5 +632,6 @@ tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
+tests/research_validation/test_producers.py|158|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->
