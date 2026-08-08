@@ -146,6 +146,16 @@ def _build_closure_config(
         "/engine/launcher/nautilus_backtest.py",
         "/engine/lib/python3.12/encodings/__init__.py",
     ]
+    if profile == "paper-compatibility":
+        files.append(
+            _write_file(
+                runtime,
+                runtime / "files/launcher/nautilus_paper_compat.py",
+                b"paper-launcher",
+                0o400,
+            )
+        )
+        targets.append("/engine/launcher/nautilus_paper_compat.py")
     native_guard_record: dict[str, object] | None = None
     if native_guard:
         targets[0] = "/usr/bin/python3.12"
@@ -183,6 +193,16 @@ def _build_closure_config(
                 "execution-simulation",
             ],
             "nautilus-backtest-simulation-result-v1",
+        ),
+        "paper-compatibility": (
+            [
+                "-I",
+                "-S",
+                "/engine/launcher/nautilus_paper_compat.py",
+                "--profile",
+                "paper-compatibility",
+            ],
+            "nautilus-paper-compatibility-result-v1",
         ),
     }
     argv_prefix, validator_id = profiles[profile]
@@ -270,6 +290,60 @@ def test_attestor_binds_only_read_only_launcher_and_python_closure_files(
     }
     assert all(mount.mode & 0o222 == 0 for mount in closure.mounts)
     assert all(mount.source.is_relative_to(closure_config.runtime_root) for mount in closure.mounts)
+
+
+def test_schema_6_attestor_admits_only_the_fixed_paper_compatibility_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        nautilus_closure_module, "_sandbox_proof", _reviewed_sandbox
+    )
+    base = Path(tempfile.mkdtemp(prefix="nautilus-paper-closure-", dir="/tmp"))
+    try:
+        config = _build_closure_config(
+            base,
+            base / "not-invoked-bwrap",
+            profile="paper-compatibility",
+            semantic_profile="nautilus-paper-compatibility-v1",
+            source_commit=REPOSITORY_SOURCE_COMMIT,
+            engine_upstream_commit=SOURCE_COMMIT,
+            native_guard=True,
+            dependency_import_policy=DEPENDENCY_IMPORT_POLICY,
+        )
+
+        closure = attest_nautilus_backtest_closure(
+            config, expected_profile="paper-compatibility"
+        )
+
+        assert closure.profile == "paper-compatibility"
+        assert closure.semantic_profile == "nautilus-paper-compatibility-v1"
+        assert closure.argv_prefix == (
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_paper_compat.py",
+            "--profile",
+            "paper-compatibility",
+        )
+        with pytest.raises(EngineSpawnError, match="profile"):
+            attest_nautilus_backtest_closure(
+                config, expected_profile="execution-simulation"
+            )
+
+        legacy_root = base / "legacy-paper"
+        legacy_root.mkdir()
+        legacy = _build_closure_config(
+            legacy_root,
+            legacy_root / "not-invoked-bwrap",
+            profile="paper-compatibility",
+            semantic_profile="nautilus-paper-compatibility-v1",
+        )
+        with pytest.raises(EngineSpawnError, match="schema-6"):
+            attest_nautilus_backtest_closure(
+                legacy, expected_profile="paper-compatibility"
+            )
+    finally:
+        _remove_test_tree(base)
 
 
 @pytest.mark.parametrize("native_guard", (False, True))

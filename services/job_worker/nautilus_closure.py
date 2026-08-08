@@ -59,6 +59,16 @@ _PROFILES = {
         ),
         "result_validator_id": "nautilus-backtest-simulation-result-v1",
     },
+    "paper-compatibility": {
+        "argv_prefix": (
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_paper_compat.py",
+            "--profile",
+            "paper-compatibility",
+        ),
+        "result_validator_id": "nautilus-paper-compatibility-result-v1",
+    },
 }
 _MANIFEST_FIELDS_V1 = {
     "schema_version",
@@ -100,17 +110,30 @@ _NATIVE_GUARD_TARGET = PurePosixPath("/engine/bin/nautilus-entry-guard")
 _NATIVE_GUARD_SOURCE = "engines/nautilus/native_entry_guard/src/main.rs"
 _NATIVE_GUARD_CARGO_MANIFEST = "engines/nautilus/native_entry_guard/Cargo.toml"
 _NATIVE_GUARD_CARGO_LOCK = "engines/nautilus/native_entry_guard/Cargo.lock"
-_NATIVE_GUARDED_ARGV_PREFIX = (
-    "/usr/bin/python3.12",
-    "-I",
-    "-S",
-    "/engine/launcher/nautilus_backtest.py",
-    "--profile",
-    "execution-simulation",
-)
+_NATIVE_GUARDED_ARGV_PREFIXES = {
+    "execution-simulation": (
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        "/engine/launcher/nautilus_backtest.py",
+        "--profile",
+        "execution-simulation",
+    ),
+    "paper-compatibility": (
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        "/engine/launcher/nautilus_paper_compat.py",
+        "--profile",
+        "paper-compatibility",
+    ),
+}
 _RUST_IDENTITY = re.compile(r"^rustc 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII)
 _CARGO_IDENTITY = re.compile(r"^cargo 1\.95\.0 \([^\x00\r\n]+\)$", re.ASCII)
-_SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
+_SEMANTIC_PROFILES = {
+    "execution-simulation": "nautilus-execution-simulation-v2",
+    "paper-compatibility": "nautilus-paper-compatibility-v1",
+}
 _DEPENDENCY_IMPORT_POLICY = (
     "native-guarded-stdlib-first-sealed-wheel-path-v1"
 )
@@ -401,6 +424,7 @@ def _native_entry_guard(
     mounts: tuple[ReadOnlyClosureMount, ...],
     entrypoint: PurePosixPath,
     argv_prefix: tuple[str, ...],
+    profile: str,
 ) -> NativeEntryGuardAttestation:
     if not isinstance(value, dict) or set(value) != _NATIVE_GUARD_FIELDS:
         _blocked(
@@ -437,7 +461,8 @@ def _native_entry_guard(
     if (
         target != _NATIVE_GUARD_TARGET
         or entrypoint != target
-        or argv_prefix != _NATIVE_GUARDED_ARGV_PREFIX
+        or profile not in _NATIVE_GUARDED_ARGV_PREFIXES
+        or argv_prefix != _NATIVE_GUARDED_ARGV_PREFIXES[profile]
     ):
         _blocked(
             "ENGINE_CLOSURE_INVALID",
@@ -535,9 +560,14 @@ def attest_nautilus_backtest_closure(
         _blocked("ENGINE_CLOSURE_INVALID", "closure manifest fields are missing or unknown")
     if profile != expected_profile or profile not in _PROFILES:
         _blocked("ENGINE_CLOSURE_INVALID", "closure profile does not match explicit authority")
-    if profile == "execution-simulation" and semantic_profile != _SEMANTIC_PROFILE:
+    if profile == "paper-compatibility" and schema_version != 6:
+        _blocked(
+            "ENGINE_CLOSURE_INVALID",
+            "paper compatibility requires the schema-6 closure authority",
+        )
+    if profile in _SEMANTIC_PROFILES and semantic_profile != _SEMANTIC_PROFILES[profile]:
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
-    if schema_version in {3, 4, 5, 6} and profile != "execution-simulation":
+    if schema_version in {3, 4, 5, 6} and profile not in _SEMANTIC_PROFILES:
         _blocked("ENGINE_CLOSURE_INVALID", "closure semantic profile is invalid")
     expected_identity = _PROFILES[profile]
     if (
@@ -563,7 +593,7 @@ def attest_nautilus_backtest_closure(
         != expected_identity["result_validator_id"]
         or tuple(closure_manifest.get("argv_prefix", ()))
         != (
-            _NATIVE_GUARDED_ARGV_PREFIX
+            _NATIVE_GUARDED_ARGV_PREFIXES[profile]
             if schema_version in {5, 6}
             else expected_identity["argv_prefix"]
         )
@@ -622,6 +652,7 @@ def attest_nautilus_backtest_closure(
             mounts=mounts,
             entrypoint=entrypoint,
             argv_prefix=tuple(argv_value),
+            profile=profile,
         )
         if schema_version in {5, 6}
         else None

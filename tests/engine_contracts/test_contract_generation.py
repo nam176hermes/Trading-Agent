@@ -13,6 +13,8 @@ EXPECTED_SCHEMAS = {
     "EngineCommandEnvelope.json",
     "EngineEventEnvelope.json",
     "EngineRunManifest.json",
+    "PaperCompatibilityResultV1.json",
+    "ValidatePaperCompatibility.json",
 }
 EXPECTED_COMMAND_NAMES = (
     "DescribeEngineCapabilities",

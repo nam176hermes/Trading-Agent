@@ -34,7 +34,6 @@ _STRATEGY_TARGET = PurePosixPath(
     "/engine/launcher/target_portfolio_strategy.py"
 )
 _PYTHON_TARGET = PurePosixPath("/usr/bin/python3.12")
-_PROFILE = "execution-simulation"
 _PROBE_SCHEMA = "nautilus-sealed-import-probe-v1"
 _RECEIPT_SCHEMA = "nautilus-sealed-import-qualification-v1"
 _DEPENDENCY_IMPORT_POLICY = "native-guarded-stdlib-first-sealed-wheel-path-v1"
@@ -824,7 +823,7 @@ def qualify_sealed_imports(
         receipt: dict[str, object] = {
             "schema_version": _RECEIPT_SCHEMA,
             "status": "passed",
-            "profile": _PROFILE,
+            "profile": policy["profile"],
             "manifest_schema_version": 6,
             "dependency_import_policy": _DEPENDENCY_IMPORT_POLICY,
             "policy_sha256": _sha256(policy_raw),

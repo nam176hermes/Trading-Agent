@@ -16,6 +16,9 @@ import scripts.materialize_nautilus_runtime_closure as materializer_module
 ROOT = Path(__file__).resolve().parents[2]
 GUARD_PROJECT = ROOT / "engines/nautilus/native_entry_guard"
 RUNTIME_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
+PAPER_POLICY = (
+    ROOT / "engines/nautilus/paper-compatibility-runtime-closure-policy.json"
+)
 PRIVATE_RUST = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/rust-1.95.0"
 )
@@ -25,6 +28,7 @@ PRIVATE_LLVM = Path(
 TARGET = "x86_64-unknown-linux-gnu"
 GUARD_TARGET = "/engine/bin/nautilus-entry-guard"
 LAUNCHER_TARGET = "/engine/launcher/nautilus_backtest.py"
+PAPER_LAUNCHER_TARGET = "/engine/launcher/nautilus_paper_compat.py"
 REQUEST_TARGET = "/inputs/request.json"
 SIDECAR_TARGET = "/inputs/request.sha256"
 
@@ -39,7 +43,12 @@ def secure_build_root() -> Path:
         shutil.rmtree(root)
 
 
-def _build_guard(tmp_path: Path, guarded_executable: Path) -> Path:
+def _build_guard(
+    tmp_path: Path,
+    guarded_executable: Path,
+    *,
+    profile: str = "execution-simulation",
+) -> Path:
     cargo = PRIVATE_RUST / "bin/cargo"
     rustc = PRIVATE_RUST / "bin/rustc"
     linker = PRIVATE_LLVM / "bin/clang"
@@ -60,7 +69,12 @@ def _build_guard(tmp_path: Path, guarded_executable: Path) -> Path:
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "NAUTILUS_GUARD_ENTRYPOINT": GUARD_TARGET,
-        "NAUTILUS_GUARD_LAUNCHER": LAUNCHER_TARGET,
+        "NAUTILUS_GUARD_LAUNCHER": (
+            LAUNCHER_TARGET
+            if profile == "execution-simulation"
+            else PAPER_LAUNCHER_TARGET
+        ),
+        "NAUTILUS_GUARD_PROFILE": profile,
         "NAUTILUS_GUARD_PYTHON": str(guarded_executable),
         "NAUTILUS_GUARD_REQUEST": REQUEST_TARGET,
         "NAUTILUS_GUARD_SIDECAR": SIDECAR_TARGET,
@@ -111,15 +125,23 @@ def _inert_fixture(tmp_path: Path) -> tuple[Path, Path]:
     return executable, marker
 
 
-def _exact_guard_argv(guarded_executable: Path) -> list[str]:
+def _exact_guard_argv(
+    guarded_executable: Path,
+    *,
+    profile: str = "execution-simulation",
+) -> list[str]:
     return [
         GUARD_TARGET,
         str(guarded_executable),
         "-I",
         "-S",
-        LAUNCHER_TARGET,
+        (
+            LAUNCHER_TARGET
+            if profile == "execution-simulation"
+            else PAPER_LAUNCHER_TARGET
+        ),
         "--profile",
-        "execution-simulation",
+        profile,
         REQUEST_TARGET,
         SIDECAR_TARGET,
     ]
@@ -201,8 +223,68 @@ def test_native_guard_rejects_every_non_exact_os_argv_without_exec(
     assert not marker.exists()
 
 
+def test_profile_specific_guards_reject_the_other_fixed_launcher_and_profile(
+    tmp_path: Path,
+) -> None:
+    executable, marker = _inert_fixture(tmp_path)
+    simulation_root = tmp_path / "simulation"
+    paper_root = tmp_path / "paper"
+    simulation_root.mkdir(mode=0o700)
+    paper_root.mkdir(mode=0o700)
+    simulation_guard = _build_guard(
+        simulation_root,
+        executable,
+        profile="execution-simulation",
+    )
+    paper_guard = _build_guard(
+        paper_root,
+        executable,
+        profile="paper-compatibility",
+    )
+
+    for guard, profile in (
+        (simulation_guard, "execution-simulation"),
+        (paper_guard, "paper-compatibility"),
+    ):
+        completed = subprocess.run(
+            _exact_guard_argv(executable, profile=profile),
+            executable=guard,
+            check=False,
+            env={},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        assert completed.returncode == 0
+        assert marker.exists()
+        marker.unlink()
+
+    crossed = (
+        (simulation_guard, "paper-compatibility"),
+        (paper_guard, "execution-simulation"),
+    )
+    for guard, profile in crossed:
+        completed = subprocess.run(
+            _exact_guard_argv(executable, profile=profile),
+            executable=guard,
+            check=False,
+            env={},
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        assert completed.returncode != 0
+        assert completed.stdout == b""
+        assert completed.stderr == b""
+        assert not marker.exists()
+
+
+@pytest.mark.parametrize("policy_path", (RUNTIME_POLICY, PAPER_POLICY))
 def test_materializer_builds_the_policy_bound_guard_reproducibly_offline(
     secure_build_root: Path,
+    policy_path: Path,
 ) -> None:
     if not all(
         path.is_file()
@@ -213,7 +295,7 @@ def test_materializer_builds_the_policy_bound_guard_reproducibly_offline(
         )
     ):
         pytest.skip("sealed private Rust/LLVM toolchains are unavailable")
-    policy = materializer_module._load_policy(RUNTIME_POLICY)
+    policy = materializer_module._load_policy(policy_path)
     guard_policy = policy["native_entry_guard"]
     first_stage = secure_build_root / "first"
     second_stage = secure_build_root / "second"
@@ -240,23 +322,7 @@ def test_materializer_builds_the_policy_bound_guard_reproducibly_offline(
 
     assert isinstance(guard_policy, dict)
     assert first == second
-    assert first["provenance"] == {
-        "binary_sha256": "211d965b9041892ff70692ed16e092d3100052037033aa67378716a6ae47a682",
-        "binary_size": 289400,
-        "cargo_identity": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
-        "cargo_lock": "engines/nautilus/native_entry_guard/Cargo.lock",
-        "cargo_lock_sha256": "ce3f0c6900a6ad4c4f8cb04b2624d76bde6a3424f1a22e19aecf62d1347e12a7",
-        "cargo_manifest": "engines/nautilus/native_entry_guard/Cargo.toml",
-        "cargo_manifest_sha256": "85f5df996a40d673f2a86e4f1e1c0248c1627dfaca06b0979c648b1fe26961bf",
-        "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
-        "mode": "0500",
-        "rust_toolchain_policy_sha256": "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe",
-        "rustc_identity": "rustc 1.95.0 (59807616e 2026-04-14)",
-        "source": "engines/nautilus/native_entry_guard/src/main.rs",
-        "source_sha256": "57754c6b60bf44332477a6d171d64b92466ebf097ff44003a20d26f9c9148ac3",
-        "target": GUARD_TARGET,
-        "target_triple": TARGET,
-    }
+    assert first["provenance"] == guard_policy
     assert first["file"] == {
         "mode": "0500",
         "path": "files/engine/bin/nautilus-entry-guard",

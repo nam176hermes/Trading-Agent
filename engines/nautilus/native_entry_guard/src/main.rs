@@ -9,6 +9,7 @@ use std::ptr;
 const GUARD_ENTRYPOINT: &str = env!("NAUTILUS_GUARD_ENTRYPOINT");
 const GUARDED_PYTHON: &str = env!("NAUTILUS_GUARD_PYTHON");
 const LAUNCHER: &str = env!("NAUTILUS_GUARD_LAUNCHER");
+const PROFILE: &str = env!("NAUTILUS_GUARD_PROFILE");
 const REQUEST: &str = env!("NAUTILUS_GUARD_REQUEST");
 const SIDECAR: &str = env!("NAUTILUS_GUARD_SIDECAR");
 
@@ -31,7 +32,7 @@ fn expected_guard_argv() -> [&'static [u8]; 9] {
         b"-S",
         LAUNCHER.as_bytes(),
         b"--profile",
-        b"execution-simulation",
+        PROFILE.as_bytes(),
         REQUEST.as_bytes(),
         SIDECAR.as_bytes(),
     ]
@@ -58,7 +59,7 @@ fn main() {
         "-S",
         LAUNCHER,
         "--profile",
-        "execution-simulation",
+        PROFILE,
         REQUEST,
         SIDECAR,
     ];

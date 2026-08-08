@@ -29,6 +29,7 @@ from .commands import (
     SubmitTargetPortfolio,
     ValidateEngineConfiguration,
     ValidateInstrumentCatalog,
+    ValidatePaperCompatibility,
     ValidateStrategyConfiguration,
     parse_command,
 )
@@ -81,6 +82,7 @@ __all__ = [
     "SubmitTargetPortfolio",
     "ValidateEngineConfiguration",
     "ValidateInstrumentCatalog",
+    "ValidatePaperCompatibility",
     "ValidateStrategyConfiguration",
     "CURRENT_SCHEMA_VERSION",
     "CanonicalUtcDateTime",

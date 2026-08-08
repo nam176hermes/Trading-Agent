@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "ArtifactReference": {
+      "additionalProperties": false,
+      "description": "Content-addressed, engine-neutral input to a command.",
+      "properties": {
+        "artifact_id": {
+          "format": "uuid",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "media_type": {
+          "enum": [
+            "application/json",
+            "application/jsonl"
+          ],
+          "title": "Media Type",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "sha256",
+        "media_type"
+      ],
+      "title": "ArtifactReference",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Finite research-only compatibility request excluded from job parsing.",
+  "properties": {
+    "command_type": {
+      "const": "ValidatePaperCompatibility",
+      "title": "Command Type",
+      "type": "string"
+    },
+    "engine_configuration": {
+      "$ref": "#/$defs/ArtifactReference"
+    },
+    "instrument_catalog": {
+      "$ref": "#/$defs/ArtifactReference"
+    },
+    "scenario_campaign_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Scenario Campaign Sha256",
+      "type": "string"
+    },
+    "strategy_configuration": {
+      "$ref": "#/$defs/ArtifactReference"
+    },
+    "strategy_source_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Strategy Source Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "command_type",
+    "engine_configuration",
+    "instrument_catalog",
+    "strategy_configuration",
+    "strategy_source_sha256",
+    "scenario_campaign_sha256"
+  ],
+  "title": "ValidatePaperCompatibility",
+  "type": "object"
+}

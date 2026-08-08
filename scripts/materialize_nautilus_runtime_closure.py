@@ -123,11 +123,15 @@ _BASE_MANIFEST_FIELDS = {
 _FILE_FIELDS = {"mode", "path", "sha256", "size", "target"}
 _ARTIFACT_MANIFEST = "artifact-manifest.json"
 _CLOSURE_MANIFEST = "closure-manifest.json"
-_LAUNCHER_INVENTORY = (
+_SIMULATION_LAUNCHER_INVENTORY = (
     ("engines/nautilus/launcher/nautilus_backtest.py", "/engine/launcher/nautilus_backtest.py"),
     ("engines/nautilus/launcher/target_portfolio_strategy.py", "/engine/launcher/target_portfolio_strategy.py"),
 )
-_LAUNCHER_TARGET = _LAUNCHER_INVENTORY[0][1]
+_PAPER_LAUNCHER_INVENTORY = (
+    ("engines/nautilus/launcher/nautilus_paper_compat.py", "/engine/launcher/nautilus_paper_compat.py"),
+    *_SIMULATION_LAUNCHER_INVENTORY,
+)
+_BASE_LAUNCHER_TARGET = _SIMULATION_LAUNCHER_INVENTORY[0][1]
 _NATIVE_GUARD_SOURCE = "engines/nautilus/native_entry_guard/src/main.rs"
 _NATIVE_GUARD_CARGO_MANIFEST = "engines/nautilus/native_entry_guard/Cargo.toml"
 _NATIVE_GUARD_CARGO_LOCK = "engines/nautilus/native_entry_guard/Cargo.lock"
@@ -136,17 +140,39 @@ _NATIVE_GUARD_TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
 _NATIVE_GUARD_BINARY_NAME = "nautilus-entry-guard"
 _EXPECTED_CARGO_IDENTITY = "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
 _EXPECTED_RUSTC_IDENTITY = "rustc 1.95.0 (59807616e 2026-04-14)"
-_PROFILE = "execution-simulation"
-_ARGV_PREFIX = (
-    "/usr/bin/python3.12",
-    "-I",
-    "-S",
-    _LAUNCHER_TARGET,
-    "--profile",
-    _PROFILE,
-)
-_VALIDATOR = "nautilus-backtest-simulation-result-v1"
-_SEMANTIC_PROFILE = "nautilus-execution-simulation-v2"
+_PROFILE_SPECS = {
+    "execution-simulation": {
+        "argv_prefix": (
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_backtest.py",
+            "--profile",
+            "execution-simulation",
+        ),
+        "launcher_inventory": _SIMULATION_LAUNCHER_INVENTORY,
+        "result_validator_id": "nautilus-backtest-simulation-result-v1",
+        "semantic_profile": "nautilus-execution-simulation-v2",
+    },
+    "paper-compatibility": {
+        "argv_prefix": (
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_paper_compat.py",
+            "--profile",
+            "paper-compatibility",
+        ),
+        "launcher_inventory": _PAPER_LAUNCHER_INVENTORY,
+        "result_validator_id": "nautilus-paper-compatibility-result-v1",
+        "semantic_profile": "nautilus-paper-compatibility-v1",
+    },
+}
+_REPOSITORY_LAUNCHER_SOURCES = {
+    _ROOT / source
+    for specification in _PROFILE_SPECS.values()
+    for source, _target in specification["launcher_inventory"]
+}
 _DEPENDENCY_IMPORT_POLICY = (
     "native-guarded-stdlib-first-sealed-wheel-path-v1"
 )
@@ -406,14 +432,19 @@ def _validate_policy_bytes(
         raise RuntimeClosureMaterializationError(
             "runtime closure policy fields are missing or unknown"
         )
+    profile = policy.get("profile")
+    specification = _PROFILE_SPECS.get(str(profile))
+    if specification is None:
+        raise RuntimeClosureMaterializationError(
+            "runtime closure policy profile or identity is invalid"
+        )
     if (
         policy["schema_version"] != 1
         or policy["profile_manifest_schema_version"] != 6
         or policy["dependency_import_policy"] != _DEPENDENCY_IMPORT_POLICY
-        or policy["profile"] != _PROFILE
-        or tuple(policy["argv_prefix"]) != _ARGV_PREFIX
-        or policy["result_validator_id"] != _VALIDATOR
-        or policy["semantic_profile"] != _SEMANTIC_PROFILE
+        or tuple(policy["argv_prefix"]) != specification["argv_prefix"]
+        or policy["result_validator_id"] != specification["result_validator_id"]
+        or policy["semantic_profile"] != specification["semantic_profile"]
         or policy["entrypoint"] != _NATIVE_GUARD_TARGET
         or policy["engine_wheel_mode"] != "0400"
         or policy["engine_name"] != "nautilus_trader"
@@ -442,7 +473,9 @@ def _validate_policy_bytes(
     ):
         _require_sha256(policy[field], label=f"policy {field}")
     inventory = policy["launcher_inventory"]
-    if not isinstance(inventory, list) or len(inventory) != len(_LAUNCHER_INVENTORY):
+    expected_launchers = specification["launcher_inventory"]
+    assert isinstance(expected_launchers, tuple)
+    if not isinstance(inventory, list) or len(inventory) != len(expected_launchers):
         raise RuntimeClosureMaterializationError("launcher inventory is invalid")
     observed_launchers: set[tuple[str, str]] = set()
     for record in inventory:
@@ -454,7 +487,7 @@ def _validate_policy_bytes(
         source = _safe_relative(record["source"], label="launcher source").as_posix()
         target = _safe_target(record["target"], label="launcher target").as_posix()
         observed_launchers.add((source, target))
-    if observed_launchers != set(_LAUNCHER_INVENTORY):
+    if observed_launchers != set(expected_launchers):
         raise RuntimeClosureMaterializationError("launcher inventory is not the fixed strategy set")
     _validate_native_guard_policy(
         policy["native_entry_guard"],
@@ -548,7 +581,7 @@ def _validate_base_runtime_bytes(
         or manifest["source_commit"] != policy["engine_upstream_commit"]
         or manifest["entrypoint"] != policy["argv_prefix"][0]
         or tuple(manifest["argv_prefix"])
-        != ("-I", "-S", _LAUNCHER_TARGET)
+        != ("-I", "-S", _BASE_LAUNCHER_TARGET)
         or manifest["result_validator_id"] != "nautilus-backtest-result-v1"
     ):
         raise RuntimeClosureMaterializationError(
@@ -792,7 +825,8 @@ def _build_native_entry_guard(
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
             "NAUTILUS_GUARD_ENTRYPOINT": str(policy["entrypoint"]),
-            "NAUTILUS_GUARD_LAUNCHER": _LAUNCHER_TARGET,
+            "NAUTILUS_GUARD_LAUNCHER": str(policy["argv_prefix"][3]),
+            "NAUTILUS_GUARD_PROFILE": str(policy["profile"]),
             "NAUTILUS_GUARD_PYTHON": str(policy["argv_prefix"][0]),
             "NAUTILUS_GUARD_REQUEST": "/inputs/request.json",
             "NAUTILUS_GUARD_SIDECAR": "/inputs/request.sha256",
@@ -884,8 +918,11 @@ def _unseal_and_remove(path: Path) -> None:
 
 def _copy_file(source: Path, destination: Path, *, mode: int) -> dict[str, object]:
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    launcher_sources = {_ROOT / source for source, _target in _LAUNCHER_INVENTORY}
-    raw = _read_file(source, label="materialization source file", sealed=source not in launcher_sources)
+    raw = _read_file(
+        source,
+        label="materialization source file",
+        sealed=source not in _REPOSITORY_LAUNCHER_SOURCES,
+    )
     destination.write_bytes(raw)
     destination.chmod(mode)
     return {"sha256": _sha256_bytes(raw), "size": len(raw), "mode": f"{mode:04o}"}
@@ -1054,7 +1091,7 @@ def materialize_runtime_closure(
     cargo: Path,
     llvm_toolchain: Path,
 ) -> Path:
-    """Publish one new execution-simulation closure or fail without selecting it."""
+    """Publish one new fixed-profile closure or fail without selecting it."""
 
     paths = tuple(
         Path(value)
@@ -1085,6 +1122,7 @@ def materialize_runtime_closure(
         raise RuntimeClosureMaterializationError("destination parent is not private")
 
     policy = _load_policy(policy_path)
+    profile = str(policy["profile"])
     _base_manifest, records = _validate_base_runtime(base_runtime, policy)
     _artifact_manifest, selected_wheel = _validate_artifact(
         artifact_directory, policy
@@ -1151,7 +1189,7 @@ def materialize_runtime_closure(
             )
         output_records.append(guard_file)
         if not any(
-            record["target"] == _LAUNCHER_TARGET
+            record["target"] == policy["argv_prefix"][3]
             for record in output_records
         ) or not set(launchers).issubset({str(record["target"]) for record in output_records}) or not any(
             record["target"] == policy["engine_wheel_target"]
@@ -1187,7 +1225,7 @@ def materialize_runtime_closure(
                 artifact_directory=artifact_directory,
                 sandbox_executable=sandbox_executable,
             ),
-            expected_profile=_PROFILE,
+            expected_profile=profile,
         )
         staged_after = staging.lstat()
         if (staged_after.st_dev, staged_after.st_ino) != staged_identity:
@@ -1223,7 +1261,7 @@ def materialize_runtime_closure(
                     artifact_directory=artifact_directory,
                     sandbox_executable=sandbox_executable,
                 ),
-                expected_profile=_PROFILE,
+                expected_profile=profile,
             )
             destination_after_attestation = destination.lstat()
             if (

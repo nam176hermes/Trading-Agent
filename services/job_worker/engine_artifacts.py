@@ -12,6 +12,7 @@ from packages.engine_contracts import (
     ArtifactReference,
     RunBacktest,
     RunBacktestSimulation,
+    ValidatePaperCompatibility,
 )
 
 from .engine_spawn import HashBoundEngineInput
@@ -26,6 +27,7 @@ _ZERO_ORDER_NAMES = (
     "market_data",
 )
 _SIMULATION_NAMES = (*_ZERO_ORDER_NAMES, "simulation_scenario")
+_PAPER_COMPATIBILITY_NAMES = _ZERO_ORDER_NAMES[:3]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,16 +124,19 @@ class HashBoundArtifactResolver:
         )
 
     def __call__(
-        self, request: RunBacktest | RunBacktestSimulation
+        self,
+        request: RunBacktest | RunBacktestSimulation | ValidatePaperCompatibility,
     ) -> tuple[HashBoundEngineInput, ...]:
         if type(request) is RunBacktest:
             names = _ZERO_ORDER_NAMES
         elif type(request) is RunBacktestSimulation:
             names = _SIMULATION_NAMES
+        elif type(request) is ValidatePaperCompatibility:
+            names = _PAPER_COMPATIBILITY_NAMES
         else:
             raise EngineSpawnError(
                 "ENGINE_INPUT_AUTHORITY_INVALID",
-                "exact backtest command is required",
+                "exact supported engine command is required",
             )
         values: list[HashBoundEngineInput] = []
         for name in names:

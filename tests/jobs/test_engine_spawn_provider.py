@@ -26,6 +26,7 @@ from packages.engine_contracts import (
     EngineCommandEnvelope,
     RunBacktest,
     RunBacktestSimulation,
+    ValidatePaperCompatibility,
     canonical_json_bytes,
     payload_digest,
 )
@@ -543,6 +544,85 @@ def _native_simulation_envelope() -> EngineCommandEnvelope:
         for index in range(1, 6)
     )
     return _simulation_envelope(references)
+
+
+def _paper_compatibility_command() -> ValidatePaperCompatibility:
+    references = tuple(
+        ArtifactReference(
+            artifact_id=UUID(
+                f"{index}{index}{index}{index}{index}{index}{index}{index}"
+                "-1111-4111-8111-111111111111"
+            ),
+            sha256=f"{index}" * 64,
+            media_type="application/json",
+        )
+        for index in range(1, 4)
+    )
+    return ValidatePaperCompatibility(
+        command_type="ValidatePaperCompatibility",
+        engine_configuration=references[0],
+        instrument_catalog=references[1],
+        strategy_configuration=references[2],
+        strategy_source_sha256="4" * 64,
+        scenario_campaign_sha256="5" * 64,
+    )
+
+
+def test_provider_admits_paper_command_only_with_the_exact_paper_guard_profile(
+    secure_tmp_path: Path,
+) -> None:
+    simulation = _closure(
+        secure_tmp_path,
+        profile="execution-simulation",
+        with_closure_manifest=True,
+        native_guard=True,
+        manifest_schema_version=6,
+    )
+    paper = replace(
+        simulation,
+        profile="paper-compatibility",
+        argv_prefix=(
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_paper_compat.py",
+            "--profile",
+            "paper-compatibility",
+        ),
+        result_validator_id="nautilus-paper-compatibility-result-v1",
+        semantic_profile="nautilus-paper-compatibility-v1",
+    )
+    command = _paper_compatibility_command()
+
+    with pytest.raises(EngineSpawnError, match="PROFILE_MISMATCH|CLOSURE_INVALID"):
+        _provider(
+            secure_tmp_path,
+            lambda: simulation,
+            expected_manifest_schema_version=6,
+        ).prepare(command)
+
+    spawn = consume_prepared_engine_spawn(
+        _provider(
+            secure_tmp_path,
+            lambda: paper,
+            expected_manifest_schema_version=6,
+        ).prepare(command)
+    )
+    try:
+        assert spawn.argv[-9:] == (
+            "/engine/bin/nautilus-entry-guard",
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_paper_compat.py",
+            "--profile",
+            "paper-compatibility",
+            "/inputs/request.json",
+            "/inputs/request.sha256",
+        )
+        assert dict(spawn.environment) == {}
+    finally:
+        _close_spawn_fds(spawn)
 
 
 def test_provider_spawns_native_guard_with_cpython_as_exact_guarded_argv(

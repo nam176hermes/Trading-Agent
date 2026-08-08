@@ -222,16 +222,33 @@ def _module_record(
     }
 
 
+def _qualification_helpers(launcher: object) -> tuple[object, object, object, Path]:
+    shared = getattr(launcher, "_sealed_import_qualification_helpers", None)
+    if callable(shared):
+        helpers = shared()
+        if (
+            type(helpers) is not tuple
+            or len(helpers) != 4
+            or not all(callable(value) for value in helpers[:3])
+            or not isinstance(helpers[3], Path)
+        ):
+            raise ImportProbeError("reviewed paper launcher helpers are unavailable")
+        return helpers
+    try:
+        return (
+            launcher._extract_sealed_wheels,
+            launcher._sealed_dependency_path_scope,
+            launcher._load_target_portfolio_strategy,
+            Path(launcher._TARGET_PORTFOLIO_STRATEGY_PATH),
+        )
+    except (AttributeError, TypeError) as exc:
+        raise ImportProbeError("reviewed simulation launcher helpers are unavailable") from exc
+
+
 def _probe_import_graph(entry_launcher: Path, wheel_directory: Path) -> dict[str, object]:
     _regular_digest(entry_launcher, expected_mode=0o400)
     launcher = _load_launcher(entry_launcher)
-    try:
-        extract = launcher._extract_sealed_wheels
-        scope = launcher._sealed_dependency_path_scope
-        load_strategy = launcher._load_target_portfolio_strategy
-        strategy_path = Path(launcher._TARGET_PORTFOLIO_STRATEGY_PATH)
-    except (AttributeError, TypeError) as exc:
-        raise ImportProbeError("reviewed simulation launcher helpers are unavailable") from exc
+    extract, scope, load_strategy, strategy_path = _qualification_helpers(launcher)
 
     wheels = tuple(sorted(wheel_directory.glob("*.whl"), key=lambda item: item.name))
     if not wheels:

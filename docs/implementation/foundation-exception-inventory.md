@@ -185,6 +185,8 @@ apps/job_api/app.py|439|Exception|PRODUCTION_CRITICAL|RETURN
 apps/job_api/app.py|452|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|67|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|116|Exception|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/launcher/import_probe.py|158|Exception|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/launcher/import_probe.py|272|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/nautilus_backtest.py|512|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/alert_manager.py|98|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/allocation_engine.py|161|Exception|PRODUCTION_CRITICAL|CONTINUE
@@ -544,11 +546,11 @@ services/job_worker/command_registry.py|308|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|361|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|374|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/command_registry.py|407|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|279|BaseException|PRODUCTION_CRITICAL|PASS
-services/job_worker/engine_spawn.py|933|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|951|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1041|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1130|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|294|BaseException|PRODUCTION_CRITICAL|PASS
+services/job_worker/engine_spawn.py|953|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|972|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1062|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1163|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|83|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|557|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|600|BaseException|PRODUCTION_CRITICAL|RAISE

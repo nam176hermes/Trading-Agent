@@ -91,7 +91,9 @@ from packages.engine_contracts import (
     EngineCommandEnvelope,
     EngineEventEnvelope,
     EngineRunManifest,
+    ValidatePaperCompatibility,
 )
+from packages.nautilus_backtest import PaperCompatibilityResultV1
 from packages.runtime_release import (
     RuntimeAuthority,
     ValidatedJobPlaneAuthority,
@@ -169,6 +171,8 @@ ENGINE_SCHEMA_MODELS = (
     EngineCommandEnvelope,
     EngineEventEnvelope,
     EngineRunManifest,
+    ValidatePaperCompatibility,
+    PaperCompatibilityResultV1,
 )
 HTTP_METHODS = frozenset(
     {"get", "put", "post", "delete", "options", "head", "patch", "trace"}

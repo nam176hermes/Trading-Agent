@@ -9,7 +9,12 @@ from uuid import UUID
 
 import pytest
 
-from packages.engine_contracts import ArtifactReference, RunBacktest, RunBacktestSimulation
+from packages.engine_contracts import (
+    ArtifactReference,
+    RunBacktest,
+    RunBacktestSimulation,
+    ValidatePaperCompatibility,
+)
 from services.job_worker.engine_artifacts import (
     EngineArtifactBinding,
     HashBoundArtifactResolver,
@@ -74,6 +79,19 @@ def _simulation_request(
     )
 
 
+def _paper_request(
+    references: tuple[ArtifactReference, ...]
+) -> ValidatePaperCompatibility:
+    return ValidatePaperCompatibility(
+        command_type="ValidatePaperCompatibility",
+        engine_configuration=references[0],
+        instrument_catalog=references[1],
+        strategy_configuration=references[2],
+        strategy_source_sha256="a" * 64,
+        scenario_campaign_sha256="b" * 64,
+    )
+
+
 def test_resolver_returns_only_request_bound_sealed_artifacts(sealed_artifacts) -> None:
     root, references = sealed_artifacts
     resolver = HashBoundArtifactResolver(
@@ -135,6 +153,26 @@ def test_resolver_requires_the_fifth_simulation_scenario_binding(
         "simulation_scenario",
     )
     assert inputs[-1].sha256 == scenario_reference.sha256
+
+
+def test_resolver_returns_only_three_paper_compatibility_inputs(
+    sealed_artifacts,
+) -> None:
+    root, references = sealed_artifacts
+    resolver = HashBoundArtifactResolver(
+        tuple(
+            EngineArtifactBinding(reference, root / f"artifact-{index}")
+            for index, reference in enumerate(references, start=1)
+        )
+    )
+
+    inputs = resolver(_paper_request(references))
+
+    assert tuple(item.name for item in inputs) == (
+        "engine_configuration",
+        "instrument_catalog",
+        "strategy_configuration",
+    )
 
 
 def test_resolver_rejects_digest_drift(sealed_artifacts) -> None:

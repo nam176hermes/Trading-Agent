@@ -16,6 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/qualify_nautilus_sealed_imports.py"
 LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
+PAPER_LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_paper_compat.py"
 STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
 PROBE = ROOT / "engines/nautilus/launcher/import_probe.py"
 CHECKED_IN_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
@@ -198,6 +199,12 @@ def qualification_inputs() -> dict[str, object]:
     artifact_manifest_path.chmod(0o400)
     artifacts.chmod(0o500)
 
+    native_entry_guard = dict(
+        json.loads(CHECKED_IN_POLICY.read_text("ascii"))["native_entry_guard"]
+    )
+    native_entry_guard["source_sha256"] = _sha256(
+        ROOT / "engines/nautilus/native_entry_guard/src/main.rs"
+    )
     policy = {
         "argv_prefix": [
             "/usr/bin/python3.12",
@@ -232,9 +239,7 @@ def qualification_inputs() -> dict[str, object]:
                 "target": "/engine/launcher/target_portfolio_strategy.py",
             },
         ],
-        "native_entry_guard": json.loads(CHECKED_IN_POLICY.read_text("ascii"))[
-            "native_entry_guard"
-        ],
+        "native_entry_guard": native_entry_guard,
         "profile": "execution-simulation",
         "profile_manifest_schema_version": 6,
         "python_identity": "CPython 3.12.3",
@@ -734,6 +739,56 @@ def test_gate_uses_production_fd_topology_and_writes_canonical_digest_receipt(
         _canonical({key: value for key, value in document.items() if key != "receipt_sha256"})
     )
     assert all("/" not in str(value) for value in document.values())
+
+
+def test_gate_receipt_binds_the_explicit_paper_profile_and_entry_launcher(
+    qualification_inputs: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    policy = qualification_inputs["policy_document"]
+    assert isinstance(policy, dict)
+    policy.update(
+        {
+            "argv_prefix": [
+                "/usr/bin/python3.12",
+                "-I",
+                "-S",
+                "/engine/launcher/nautilus_paper_compat.py",
+                "--profile",
+                "paper-compatibility",
+            ],
+            "launcher_inventory": [
+                {
+                    "mode": "0400",
+                    "sha256": _sha256(PAPER_LAUNCHER),
+                    "source": "engines/nautilus/launcher/nautilus_paper_compat.py",
+                    "target": "/engine/launcher/nautilus_paper_compat.py",
+                },
+                *policy["launcher_inventory"],
+            ],
+            "profile": "paper-compatibility",
+            "result_validator_id": "nautilus-paper-compatibility-result-v1",
+            "semantic_profile": "nautilus-paper-compatibility-v1",
+        }
+    )
+    guard = policy["native_entry_guard"]
+    assert isinstance(guard, dict)
+    guard["source_sha256"] = _sha256(
+        ROOT / "engines/nautilus/native_entry_guard/src/main.rs"
+    )
+    policy_path = qualification_inputs["policy"]
+    assert isinstance(policy_path, Path)
+    policy_path.write_bytes(_canonical(policy) + b"\n")
+    runner = _InertRunner(_probe_document(qualification_inputs))
+    monkeypatch.setattr(module.subprocess, "run", runner)
+
+    _qualify(module, qualification_inputs)
+
+    document = json.loads(qualification_inputs["receipt"].read_bytes())
+    assert document["profile"] == "paper-compatibility"
+    assert document["entry_launcher_sha256"] == _sha256(PAPER_LAUNCHER)
+    assert runner.probe_argv is not None
+    assert "/engine/launcher/nautilus_paper_compat.py" in runner.probe_argv
 
 
 @pytest.mark.parametrize("field", ("policy", "base", "artifacts", "sandbox", "receipt"))

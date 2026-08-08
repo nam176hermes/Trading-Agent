@@ -9,6 +9,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -172,6 +173,21 @@ def test_probe_stdout_write_retries_short_writes(monkeypatch: pytest.MonkeyPatch
 
     assert module.main() == 0
     assert bytes(emitted) == expected
+
+
+def test_probe_uses_the_paper_entrys_shared_sealed_import_helper_contract() -> None:
+    module = _module()
+    helpers = (
+        lambda *_args: (),
+        lambda *_args: None,
+        lambda: (object, object),
+        Path("/engine/launcher/strategy.py"),
+    )
+    launcher = SimpleNamespace(
+        _sealed_import_qualification_helpers=lambda: helpers,
+    )
+
+    assert module._qualification_helpers(launcher) == helpers
 
 
 def test_probe_imports_exact_sealed_graph_and_reports_no_paths(

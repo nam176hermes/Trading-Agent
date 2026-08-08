@@ -27,8 +27,12 @@ from services.job_worker.nautilus_closure import (
 
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
+PAPER_LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_paper_compat.py"
 STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
 CHECKED_IN_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
+PAPER_POLICY = (
+    ROOT / "engines/nautilus/paper-compatibility-runtime-closure-policy.json"
+)
 PRIVATE_CARGO = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/rust-1.95.0/bin/cargo"
 )
@@ -36,7 +40,22 @@ PRIVATE_LLVM = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
 )
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
-REPOSITORY_SOURCE_COMMIT = "a7d9f3e399c979ec9ac61ffbb7d02e0f64ed09ac"
+REPOSITORY_SOURCE_COMMIT = subprocess.run(
+    [
+        "git",
+        "log",
+        "-1",
+        "--format=%H",
+        "--",
+        ".",
+        ":!engines/nautilus/runtime-closure-policy.json",
+        ":!engines/nautilus/paper-compatibility-runtime-closure-policy.json",
+    ],
+    cwd=ROOT,
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
 DEPENDENCY_IMPORT_POLICY = (
     "native-guarded-stdlib-first-sealed-wheel-path-v1"
 )
@@ -251,6 +270,62 @@ def test_policy_byte_core_matches_the_path_acquisition_wrapper() -> None:
     assert direct == wrapped
 
 
+def test_policy_byte_core_admits_two_exact_profiles_without_a_wildcard() -> None:
+    simulation = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    guard = dict(simulation["native_entry_guard"])
+    guard["source_sha256"] = _sha256(
+        ROOT / "engines/nautilus/native_entry_guard/src/main.rs"
+    )
+    paper = {
+        **simulation,
+        "argv_prefix": [
+            "/usr/bin/python3.12",
+            "-I",
+            "-S",
+            "/engine/launcher/nautilus_paper_compat.py",
+            "--profile",
+            "paper-compatibility",
+        ],
+        "launcher_inventory": [
+            {
+                "mode": "0400",
+                "sha256": _sha256(PAPER_LAUNCHER),
+                "source": "engines/nautilus/launcher/nautilus_paper_compat.py",
+                "target": "/engine/launcher/nautilus_paper_compat.py",
+            },
+            {
+                "mode": "0400",
+                "sha256": _sha256(LAUNCHER),
+                "source": "engines/nautilus/launcher/nautilus_backtest.py",
+                "target": "/engine/launcher/nautilus_backtest.py",
+            },
+            {
+                "mode": "0400",
+                "sha256": _sha256(STRATEGY),
+                "source": "engines/nautilus/launcher/target_portfolio_strategy.py",
+                "target": "/engine/launcher/target_portfolio_strategy.py",
+            },
+        ],
+        "native_entry_guard": guard,
+        "profile": "paper-compatibility",
+        "result_validator_id": "nautilus-paper-compatibility-result-v1",
+        "semantic_profile": "nautilus-paper-compatibility-v1",
+    }
+    validate = materializer_module._validate_policy_bytes
+    reader = lambda path, label: materializer_module._read_file(
+        path, label=label, sealed=False
+    )
+
+    validated = validate(_canonical(paper) + b"\n", source_reader=reader)
+
+    assert validated["profile"] == "paper-compatibility"
+    with pytest.raises(RuntimeClosureMaterializationError, match="profile"):
+        validate(
+            _canonical({**paper, "profile": "runtime-selected"}) + b"\n",
+            source_reader=reader,
+        )
+
+
 def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None:
     base = Path(
         "/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3"
@@ -291,6 +366,62 @@ def test_checked_in_policy_binds_reviewed_external_inputs_and_launcher() -> None
     assert guard["cargo_lock_sha256"] == _sha256(
         ROOT / guard["cargo_lock"]
     )
+
+
+@pytest.mark.parametrize(
+    ("policy_path", "profile", "launcher", "semantic_profile", "validator"),
+    (
+        (
+            CHECKED_IN_POLICY,
+            "execution-simulation",
+            "/engine/launcher/nautilus_backtest.py",
+            "nautilus-execution-simulation-v2",
+            "nautilus-backtest-simulation-result-v1",
+        ),
+        (
+            PAPER_POLICY,
+            "paper-compatibility",
+            "/engine/launcher/nautilus_paper_compat.py",
+            "nautilus-paper-compatibility-v1",
+            "nautilus-paper-compatibility-result-v1",
+        ),
+    ),
+)
+def test_checked_in_policies_bind_exact_finite_profile_leaves(
+    policy_path: Path,
+    profile: str,
+    launcher: str,
+    semantic_profile: str,
+    validator: str,
+) -> None:
+    policy = materializer_module._load_policy(policy_path)
+
+    assert policy["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    assert policy["profile_manifest_schema_version"] == 6
+    assert policy["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
+    assert policy["profile"] == profile
+    assert policy["argv_prefix"] == [
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        launcher,
+        "--profile",
+        profile,
+    ]
+    assert policy["semantic_profile"] == semantic_profile
+    assert policy["result_validator_id"] == validator
+    assert policy["native_entry_guard"]["source_sha256"] == _sha256(
+        ROOT / "engines/nautilus/native_entry_guard/src/main.rs"
+    )
+
+
+def test_checked_in_profile_guards_have_distinct_binary_identities() -> None:
+    simulation = materializer_module._load_policy(CHECKED_IN_POLICY)
+    paper = materializer_module._load_policy(PAPER_POLICY)
+
+    assert simulation["native_entry_guard"]["binary_sha256"] != paper[
+        "native_entry_guard"
+    ]["binary_sha256"]
 
 
 def test_checked_in_policy_binds_the_reviewed_final_source_and_launcher_inventory() -> None:

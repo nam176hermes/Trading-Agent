@@ -27,6 +27,7 @@ from packages.engine_contracts import (
     EngineCommandEnvelope,
     RunBacktest,
     RunBacktestSimulation,
+    ValidatePaperCompatibility,
     canonical_json_bytes,
 )
 from .engine_spawn_interface import EnginePreparedSpawnMarker, EngineSpawnError
@@ -45,14 +46,28 @@ _SIDECAR_TARGET = PurePosixPath("/inputs/request.sha256")
 _CLOSURE_MANIFEST_TARGET = PurePosixPath("/engine/closure-manifest.json")
 _NATIVE_GUARD_TARGET = PurePosixPath("/engine/bin/nautilus-entry-guard")
 _NATIVE_GUARDED_EXECUTABLE = PurePosixPath("/usr/bin/python3.12")
-_NATIVE_GUARDED_ARGV_PREFIX = (
-    "/usr/bin/python3.12",
-    "-I",
-    "-S",
-    "/engine/launcher/nautilus_backtest.py",
-    "--profile",
-    "execution-simulation",
-)
+_NATIVE_GUARDED_ARGV_PREFIXES = {
+    "execution-simulation": (
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        "/engine/launcher/nautilus_backtest.py",
+        "--profile",
+        "execution-simulation",
+    ),
+    "paper-compatibility": (
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        "/engine/launcher/nautilus_paper_compat.py",
+        "--profile",
+        "paper-compatibility",
+    ),
+}
+_SEMANTIC_PROFILES = {
+    "execution-simulation": "nautilus-execution-simulation-v2",
+    "paper-compatibility": "nautilus-paper-compatibility-v1",
+}
 _NATIVE_GUARD_SOURCE = "engines/nautilus/native_entry_guard/src/main.rs"
 _NATIVE_GUARD_CARGO_MANIFEST = "engines/nautilus/native_entry_guard/Cargo.toml"
 _NATIVE_GUARD_CARGO_LOCK = "engines/nautilus/native_entry_guard/Cargo.lock"
@@ -240,7 +255,7 @@ class _InputIdentity:
 @dataclass(frozen=True, slots=True)
 class _PreparedRecord:
     closure: CompleteEngineClosureAttestation
-    request: RunBacktest | RunBacktestSimulation
+    request: RunBacktest | RunBacktestSimulation | ValidatePaperCompatibility
     inputs: tuple[HashBoundEngineInput, ...]
     inputs_sha256: str
     request_sha256: str
@@ -564,10 +579,11 @@ def _validate_native_entry_guard(
     )
     if (
         guard.target != _NATIVE_GUARD_TARGET
-        or attestation.profile != "execution-simulation"
+        or attestation.profile not in _NATIVE_GUARDED_ARGV_PREFIXES
         or guard.guarded_executable != _NATIVE_GUARDED_EXECUTABLE
         or attestation.entrypoint != guard.target
-        or attestation.argv_prefix != _NATIVE_GUARDED_ARGV_PREFIX
+        or attestation.argv_prefix
+        != _NATIVE_GUARDED_ARGV_PREFIXES[attestation.profile]
         or attestation.closure_manifest is None
         or guard.mode != 0o500
         or guard.source != _NATIVE_GUARD_SOURCE
@@ -650,14 +666,15 @@ def _validate_closure(
             attestation.manifest_schema_version != 6
             and attestation.dependency_import_policy is not None
         )
-        or attestation.profile not in {"zero-order", "execution-simulation"}
+        or attestation.profile
+        not in {"zero-order", "execution-simulation", "paper-compatibility"}
         or (
-            attestation.semantic_profile
-            not in {None, "nautilus-execution-simulation-v2"}
+            attestation.semantic_profile not in {None, *_SEMANTIC_PROFILES.values()}
         )
         or (
-            attestation.profile == "execution-simulation"
-            and attestation.semantic_profile != "nautilus-execution-simulation-v2"
+            attestation.profile in _SEMANTIC_PROFILES
+            and attestation.semantic_profile
+            != _SEMANTIC_PROFILES[attestation.profile]
         )
         or (
             attestation.profile == "zero-order"
@@ -809,14 +826,17 @@ def _input_mount(value: HashBoundEngineInput) -> ReadOnlyClosureMount:
 
 
 def _validate_inputs(
-    value: object, request: RunBacktest | RunBacktestSimulation
+    value: object,
+    request: RunBacktest | RunBacktestSimulation | ValidatePaperCompatibility,
 ) -> tuple[HashBoundEngineInput, ...]:
     if type(request) is RunBacktest:
         names = _ZERO_ORDER_INPUT_ARTIFACT_NAMES
     elif type(request) is RunBacktestSimulation:
         names = _SIMULATION_INPUT_ARTIFACT_NAMES
+    elif type(request) is ValidatePaperCompatibility:
+        names = _ZERO_ORDER_INPUT_ARTIFACT_NAMES[:3]
     else:
-        _blocked("ENGINE_INPUT_AUTHORITY_INVALID", "exact backtest command is required")
+        _blocked("ENGINE_INPUT_AUTHORITY_INVALID", "exact supported engine command is required")
     if type(value) is not tuple or len(value) != len(names):
         _blocked("ENGINE_INPUT_AUTHORITY_INVALID", "complete hash-bound inputs are required")
     expected_references = tuple(getattr(request, name) for name in names)
@@ -879,7 +899,7 @@ class EngineSpawnProvider:
         attest_closure: Callable[[], CompleteEngineClosureAttestation],
         expected_manifest_schema_version: int,
         attest_inputs: Callable[
-            [RunBacktest | RunBacktestSimulation],
+            [RunBacktest | RunBacktestSimulation | ValidatePaperCompatibility],
             tuple[HashBoundEngineInput, ...],
         ]
         | None = None,
@@ -940,7 +960,8 @@ class EngineSpawnProvider:
         )
 
     def _current_inputs(
-        self, request: RunBacktest | RunBacktestSimulation
+        self,
+        request: RunBacktest | RunBacktestSimulation | ValidatePaperCompatibility,
     ) -> tuple[HashBoundEngineInput, ...]:
         if self._attest_inputs is None:
             return ()
@@ -1045,29 +1066,41 @@ class EngineSpawnProvider:
                 os.close(read_fd)
             raise
 
-    def prepare(self, envelope: EngineCommandEnvelope) -> PreparedEngineSpawn:
-        if type(envelope) is not EngineCommandEnvelope or type(envelope.payload) not in {
+    def prepare(
+        self, envelope: EngineCommandEnvelope | ValidatePaperCompatibility
+    ) -> PreparedEngineSpawn:
+        if type(envelope) is EngineCommandEnvelope and type(envelope.payload) in {
             RunBacktest,
             RunBacktestSimulation,
         }:
-            _blocked("ENGINE_REQUEST_INVALID", "exact backtest envelope is required")
+            request_model = envelope.payload
+        elif type(envelope) is ValidatePaperCompatibility:
+            request_model = envelope
+        else:
+            _blocked("ENGINE_REQUEST_INVALID", "exact supported engine request is required")
         closure = self._current_closure()
         expected_profile = (
             "zero-order"
-            if type(envelope.payload) is RunBacktest
+            if type(request_model) is RunBacktest
             else "execution-simulation"
+            if type(request_model) is RunBacktestSimulation
+            else "paper-compatibility"
         )
         if closure.profile != expected_profile:
             _blocked(
                 "ENGINE_CLOSURE_PROFILE_MISMATCH",
                 "engine closure profile does not match the command",
             )
-        inputs = self._current_inputs(envelope.payload)
+        inputs = self._current_inputs(request_model)
         inputs_sha256 = _inputs_sha256(inputs)
         request = canonical_json_bytes(envelope)
         request_sha256 = hashlib.sha256(request).hexdigest()
         sidecar = request_sha256.encode("ascii") + b"\n"
-        run_name = f"run-{envelope.engine_run_id.hex}"
+        run_name = (
+            f"run-{envelope.engine_run_id.hex}"
+            if type(envelope) is EngineCommandEnvelope
+            else f"paper-{request_sha256[:32]}"
+        )
         root_fd = self._open_transport_root()
         run_fd = request_fd = sidecar_fd = -1
         try:
@@ -1106,7 +1139,7 @@ class EngineSpawnProvider:
             ).hexdigest()
             record = _PreparedRecord(
                 closure,
-                envelope.payload,
+                request_model,
                 inputs,
                 inputs_sha256,
                 request_sha256,

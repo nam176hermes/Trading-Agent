@@ -303,6 +303,32 @@ class ValidateStrategyConfiguration(CommandModel):
     strategy_configuration: ArtifactReference
 
 
+class ValidatePaperCompatibility(CommandModel):
+    """Finite research-only compatibility request excluded from job parsing."""
+
+    command_type: Literal["ValidatePaperCompatibility"]
+    engine_configuration: ArtifactReference
+    instrument_catalog: ArtifactReference
+    strategy_configuration: ArtifactReference
+    strategy_source_sha256: Sha256Hex
+    scenario_campaign_sha256: Sha256Hex
+
+    @model_validator(mode="after")
+    def _validate_artifact_authority(self) -> "ValidatePaperCompatibility":
+        references = (
+            self.engine_configuration,
+            self.instrument_catalog,
+            self.strategy_configuration,
+        )
+        identities = tuple(
+            (reference.artifact_id, reference.sha256, reference.media_type)
+            for reference in references
+        )
+        if len(set(identities)) != len(identities):
+            raise ValueError("paper compatibility contains a duplicate artifact reference")
+        return self
+
+
 class InspectEngineRun(CommandModel):
     command_type: Literal["InspectEngineRun"]
     target_engine_run_id: UUID

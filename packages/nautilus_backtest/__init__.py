@@ -19,6 +19,7 @@ from .runtime_process import (
     CapturedEngineProcess,
     capture_prepared_engine_process,
 )
+from .paper_compat import PaperCompatibilityResultV1
 
 __all__ = [
     "BacktestExpectedOutcomeV1",
@@ -35,4 +36,5 @@ __all__ = [
     "build_simulation_envelope",
     "CapturedEngineProcess",
     "capture_prepared_engine_process",
+    "PaperCompatibilityResultV1",
 ]

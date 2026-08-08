@@ -1,0 +1,82 @@
+{
+  "additionalProperties": false,
+  "description": "Digest-only proof emitted after one captured compatibility process.",
+  "properties": {
+    "candidate_closure_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Candidate Closure Sha256",
+      "type": "string"
+    },
+    "candidate_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Candidate Manifest Sha256",
+      "type": "string"
+    },
+    "compatible": {
+      "const": true,
+      "title": "Compatible",
+      "type": "boolean"
+    },
+    "engine_configuration_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Engine Configuration Sha256",
+      "type": "string"
+    },
+    "instrument_catalog_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Instrument Catalog Sha256",
+      "type": "string"
+    },
+    "launcher_result_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Launcher Result Sha256",
+      "type": "string"
+    },
+    "parity_record_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Parity Record Sha256",
+      "type": "string"
+    },
+    "result_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Result Sha256",
+      "type": "string"
+    },
+    "scenario_campaign_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Scenario Campaign Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "nautilus-paper-compatibility-result-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy_configuration_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Strategy Configuration Sha256",
+      "type": "string"
+    },
+    "strategy_source_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Strategy Source Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "compatible",
+    "candidate_closure_sha256",
+    "candidate_manifest_sha256",
+    "engine_configuration_sha256",
+    "instrument_catalog_sha256",
+    "strategy_configuration_sha256",
+    "strategy_source_sha256",
+    "scenario_campaign_sha256",
+    "parity_record_sha256",
+    "launcher_result_sha256",
+    "result_sha256"
+  ],
+  "title": "PaperCompatibilityResultV1",
+  "type": "object"
+}
