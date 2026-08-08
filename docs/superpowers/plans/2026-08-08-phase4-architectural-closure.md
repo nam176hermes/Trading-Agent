@@ -478,7 +478,9 @@ policy leaves. No known tracked test may remain RED at Task 5 completion.
 - Campaign CLI: `--destination` only; it writes all eight fixed fixtures and rejects an existing destination.
 - Parity CLI adds required `--campaign-directory` to its existing rollback/candidate/artifact/sandbox/transport/record arguments.
 - Diagnostic CLI adds required `--campaign-directory` and consumes only its exact `long-accounting` member.
-- Legacy CLI: `--campaign-directory`, one exact `--scenario-id`, and absent `--record`.
+- Legacy CLI: `--campaign-directory`, private `--transport-root`, one exact
+  `--scenario-id`, and absent `--record`; it writes only the fixed
+  `<transport-root>/<scenario-id>.json` result.
 - Research CLI: `--campaign-directory`, `--parity-record`, `--paper-record`, `--legacy-record-directory`, and absent sealed `--evidence-root`.
 
 - [ ] **Step 1: Materialize one canonical campaign authority.**
@@ -714,8 +716,7 @@ python3.11 -I scripts/verify_nautilus_paper_compatibility.py \
   --sandbox /usr/bin/bwrap \
   --campaign-directory "${phase4_runtime_root}/campaign" \
   --parity-record "${phase4_runtime_root}/parity-record.json" \
-  --transport-root "${phase4_runtime_root}/paper-transport" \
-  --record "${phase4_runtime_root}/paper-record.json"
+  --transport-root "${phase4_runtime_root}/paper-transport"
 ```
 
 Require one finite successful process, `compatible=true`,
@@ -733,13 +734,13 @@ phase4_scenario_ids=(long-accounting short-accounting partial-fill same-bar-stop
 for phase4_scenario_id in "${phase4_scenario_ids[@]}"; do
   legacy/research-backend/.venv/bin/python -I legacy/research-backend/nautilus_parity_adapter.py \
     --campaign-directory "${phase4_runtime_root}/campaign" \
-    --scenario-id "${phase4_scenario_id}" \
-    --record "${phase4_runtime_root}/legacy-records/${phase4_scenario_id}.json"
+    --transport-root "${phase4_runtime_root}/legacy-records" \
+    --scenario-id "${phase4_scenario_id}"
 done
 python3.11 -I scripts/close_phase4_research_evidence.py \
   --campaign-directory "${phase4_runtime_root}/campaign" \
   --parity-record "${phase4_runtime_root}/parity-record.json" \
-  --paper-record "${phase4_runtime_root}/paper-record.json" \
+  --paper-record "${phase4_runtime_root}/paper-transport/paper-compatibility-result.json" \
   --legacy-record-directory "${phase4_runtime_root}/legacy-records" \
   --evidence-root "${phase4_runtime_root}/research-evidence"
 ```
