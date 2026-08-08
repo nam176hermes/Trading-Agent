@@ -689,6 +689,76 @@ def test_materializer_rejects_nonabsolute_paths_before_authority_use(
         )
 
 
+def test_prepare_destination_closes_parent_descriptor_when_inventory_precondition_fails(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing this close leaks the opened private-parent descriptor."""
+    module = _load_materializer()
+    parent = _private_parent(native_tmp_path)
+    destination = _v4_binary(parent)
+    original_open = os.open
+    opened: list[int] = []
+
+    def record_open(*args, **kwargs) -> int:
+        descriptor = original_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(module.os, "open", record_open)
+    monkeypatch.setattr(
+        module,
+        "_verify_destination_parent",
+        lambda *_args: (_ for _ in ()).throw(module.MaterializationError("induced inventory failure")),
+    )
+
+    with pytest.raises(module.MaterializationError, match="induced inventory failure"):
+        module._prepare_destination(destination)
+
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+
+def test_open_unlinked_publish_file_closes_descriptor_when_mode_seal_fails(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing this close leaks the anonymous O_TMPFILE descriptor."""
+    module = _load_materializer()
+    parent = _private_parent(native_tmp_path)
+    parent_fd = os.open(
+        parent,
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    original_open = os.open
+    opened: list[int] = []
+
+    def record_open(*args, **kwargs) -> int:
+        descriptor = original_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    try:
+        monkeypatch.setattr(module.os, "open", record_open)
+        monkeypatch.setattr(
+            module.os,
+            "fchmod",
+            lambda *_args: (_ for _ in ()).throw(OSError(errno.EIO, "induced fchmod failure")),
+        )
+
+        with pytest.raises(module.MaterializationError, match="cannot be created by descriptor") as error:
+            module._open_unlinked_publish_file(
+                parent_fd, label="injected publish file", mode=0o500
+            )
+
+        assert isinstance(error.value.__cause__, OSError)
+        assert error.value.__cause__.errno == errno.EIO
+        assert len(opened) == 1
+        with pytest.raises(OSError):
+            os.fstat(opened[0])
+    finally:
+        os.close(parent_fd)
+
+
 def test_materializer_rejects_existing_destination_without_clobbering(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1257,6 +1327,9 @@ def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
         'sealed-uv-exec-v4.manifest.json'
     ) in block
     assert 'materialize_sealed_uv_exec.py --verify-pair' in block
+    assert (
+        '--policy "${phase4_source_root}/engines/nautilus/sealed-uv-exec-policy.json"'
+    ) in block
     assert block.count('"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv') == 2
     assert "--action version" in block
     assert "--action sync-frozen-test" in block
@@ -1267,3 +1340,32 @@ def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     assert "/proc/self/fd" not in text
     assert "Bash opens it once" not in text
     assert "only the materialized sealed-uv-exec-v4 helper pair" in text
+
+
+def test_task8_pair_verification_invocation_accepts_an_absolute_policy_path(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative Task 8 policy path stops the campaign before verification."""
+    module = _load_materializer()
+    destination = _v4_binary(_private_parent(native_tmp_path))
+    observed: dict[str, object] = {}
+
+    def record_pair_verification(path: Path, policy: dict[str, object]) -> dict[str, object]:
+        observed["path"] = path
+        observed["policy"] = policy
+        return policy
+
+    monkeypatch.setattr(module, "verify_materialized", record_pair_verification)
+    status = module.main(
+        [
+            "--verify-pair",
+            "--policy",
+            str(POLICY),
+            "--destination",
+            str(destination),
+        ]
+    )
+
+    assert status == 0
+    assert observed["path"] == destination
+    assert observed["policy"]["source_commit"] == _policy_commit_parent(POLICY)

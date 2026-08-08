@@ -556,16 +556,29 @@ def _prepare_destination(
     ):
         raise MaterializationError("destination parent must be private mode 0700")
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = -1
     try:
         parent_fd = os.open(destination.parent, flags)
         observed = os.fstat(parent_fd)
+        parent_identity = (observed.st_dev, observed.st_ino)
+        _verify_destination_parent(parent_fd, parent_identity, destination.parent)
+        _require_absent_child(parent_fd, destination.name, "binary destination")
+        _require_absent_child(parent_fd, manifest.name, "manifest destination")
+        return destination, manifest, parent_fd, parent_identity
+    except MaterializationError:
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+        raise
     except OSError as error:
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
         raise MaterializationError("destination parent cannot be opened safely") from error
-    parent_identity = (observed.st_dev, observed.st_ino)
-    _verify_destination_parent(parent_fd, parent_identity, destination.parent)
-    _require_absent_child(parent_fd, destination.name, "binary destination")
-    _require_absent_child(parent_fd, manifest.name, "manifest destination")
-    return destination, manifest, parent_fd, parent_identity
 
 
 def _require_absent_child(parent_fd: int, name: str, label: str) -> None:
@@ -884,6 +897,7 @@ def _open_unlinked_publish_file(parent_fd: int, *, label: str, mode: int) -> int
     flag = getattr(os, "O_TMPFILE", 0)
     if sys.platform != "linux" or flag == 0:
         raise MaterializationError("descriptor-bound publication is unavailable")
+    descriptor = -1
     try:
         descriptor = os.open(
             ".",
@@ -894,6 +908,11 @@ def _open_unlinked_publish_file(parent_fd: int, *, label: str, mode: int) -> int
         os.fchmod(descriptor, mode)
         return descriptor
     except OSError as error:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
         raise MaterializationError(f"{label} cannot be created by descriptor") from error
 
 
