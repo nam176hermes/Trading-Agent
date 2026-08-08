@@ -251,14 +251,14 @@ def _prepare_destination(destination: Path) -> tuple[Path, int, tuple[int, int]]
     return destination, parent_fd, (observed.st_dev, observed.st_ino)
 
 
-def _create_staging(parent_fd: int) -> tuple[str, Path]:
+def _create_staging(parent_fd: int, parent: Path) -> tuple[str, Path]:
     for _ in range(32):
         name = f".sealed-uv-exec-{os.getpid()}-{os.urandom(16).hex()}"
         try:
             os.mkdir(name, 0o700, dir_fd=parent_fd)
         except FileExistsError:
             continue
-        return name, Path(f"/proc/self/fd/{parent_fd}") / name
+        return name, parent / name
     raise MaterializationError("unable to create sealed UV executor staging")
 
 
@@ -526,7 +526,7 @@ def materialize(
     try:
         _verify_policy_sources(policy)
         _verify_toolchains(policy, cargo, llvm_toolchain)
-        stage_name, stage = _create_staging(parent_fd)
+        stage_name, stage = _create_staging(parent_fd, destination.parent)
         first_root = _create_build_root(stage, "first-build")
         second_root = _create_build_root(stage, "second-build")
         first = _build_once(policy, first_root, cargo, llvm_toolchain)

@@ -558,6 +558,12 @@ def test_materializer_accepts_only_the_expected_cargo_hardlinked_release_output(
     assert output.stat().st_nlink == 2
 
 
+def test_materializer_never_passes_a_cloexec_proc_fd_alias_to_the_cargo_child() -> None:
+    source = MATERIALIZER.read_text(encoding="utf-8")
+
+    assert 'Path(f"/proc/self/fd/{parent_fd}") / name' not in source
+
+
 def test_materialized_inventory_rejects_an_extra_file(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
