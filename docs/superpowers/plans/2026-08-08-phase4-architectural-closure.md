@@ -583,7 +583,20 @@ virtual/non-installed, so isolated-mode direct-script startup would remove the
 reviewed component source root before `backtest_engine` can import. Isolation
 here is the dedicated dependency graph plus the adapter's canonical
 repository/external-root boundary; tests and Task 8 use the same literal
-invocation.
+invocation. Task 8 must run an explicit offline `uv sync --frozen --extra
+test` immediately before evidence production and invoke both sync and all
+eight adapters with a replacement environment containing only the reviewed
+bounded `PATH`, `PYTHONDONTWRITEBYTECODE`, `PYTHONHASHSEED`,
+`PYTHONNOUSERSITE`, and `UV_OFFLINE` values; inherited `PYTHONHOME` and
+`PYTHONPATH` are prohibited.
+
+Every campaign destination, scenario directory, and parity provider subroot is
+created mode 0500 before descriptor acquisition. Only the opened inode may be
+made mode 0700 for construction, and every exceptional exit seals it back to
+0500. A parity primary failure performs a final descriptor-bound check of the
+exact ordered prefix of deterministic subroots created so far (including a
+mode-0500 current subroot if creation stopped before open); success requires
+the full 16-subroot inventory.
 
 - [ ] **Step 4: Gate both dependency graphs, commit, and review.**
 
@@ -810,10 +823,26 @@ as `phase4_campaign_sha256`, `phase4_parity_record_sha256`,
 them inside the closer invocation. Then close evidence:
 
 ```bash
+phase4_uv="$(command -v uv)"
+test -n "${phase4_uv}" && test -x "${phase4_uv}"
+phase4_legacy_env=(
+  /usr/bin/env -i
+  PATH=/usr/bin:/bin
+  PYTHONDONTWRITEBYTECODE=1
+  PYTHONHASHSEED=0
+  PYTHONNOUSERSITE=1
+  UV_OFFLINE=1
+)
+(
+  cd legacy/research-backend
+  "${phase4_legacy_env[@]}" "${phase4_uv}" sync --frozen --extra test
+)
 mkdir -m 0700 "${phase4_runtime_root}/legacy-records"
 phase4_scenario_ids=(long-accounting short-accounting partial-fill same-bar-stop-take-profit stale-quote zero-liquidity session-boundary event-digest)
 for phase4_scenario_id in "${phase4_scenario_ids[@]}"; do
-  legacy/research-backend/.venv/bin/python legacy/research-backend/nautilus_parity_adapter.py \
+  "${phase4_legacy_env[@]}" \
+    legacy/research-backend/.venv/bin/python \
+    legacy/research-backend/nautilus_parity_adapter.py \
     --campaign-directory "${phase4_runtime_root}/campaign" \
     --transport-root "${phase4_runtime_root}/legacy-records" \
     --scenario-id "${phase4_scenario_id}"
