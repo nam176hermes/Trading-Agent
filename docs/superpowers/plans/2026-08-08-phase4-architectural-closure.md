@@ -243,15 +243,20 @@ Execute the reviewed launcher import bootstrap through Bubblewrap using this
 exact in-sandbox command:
 
 ```text
-/engine/bin/python3.12 -I -S /qualification/import_probe.py \
+/usr/bin/python3.12 -I -S /qualification/import_probe.py \
   --entry-launcher /qualification/entry-launcher.py \
   --wheel-directory /engine/wheels
 ```
 
-For the schema-6 simulation policy, the probe loads the reviewed backtest
-launcher from the fixed path, calls `_require_production_stdlib_sys_path`,
-`_extract_sealed_wheels`, and `_sealed_dependency_path_scope`, imports exactly
-`numpy`, `pandas`, and `nautilus_trader`, then calls
+The probe is itself a direct CPython entrypoint. Before importing the launcher,
+it must independently require the exact kernel `/proc/self/cmdline`, CPython
+`sys.orig_argv`, and clean `-I -S` flags for that fixed command, and require a
+stdlib-only `sys.path`. It must not mutate the imported launcher's
+`_CLEAN_ISOLATED_ENGINE_ENTRY` flag or use any production/test bypass. For the
+schema-6 simulation policy, the probe loads the reviewed backtest launcher
+from the fixed path, calls `_extract_sealed_wheels` and
+`_sealed_dependency_path_scope`, imports exactly `numpy`, `pandas`, and
+`nautilus_trader`, then calls
 `_load_target_portfolio_strategy`. Task 5 extends the probe for the paper entry
 launcher without changing the already reviewed simulation helper contract. The qualification script builds a
 private canonical minimal manifest containing the exact policy-bound launcher
@@ -262,6 +267,52 @@ qualification script hash-binds the CPython executable, entry launcher, probe,
 strategy, minimal manifest, complete launcher/wheel inventory, and Bubblewrap
 binary into one canonical private mode-0400 receipt. It publishes no official
 runtime root.
+
+The Bubblewrap argv must mirror the production provider rather than inventing
+a second sandbox profile: the verified sandbox FD, then `--die-with-parent`,
+`--unshare-user`, `--unshare-pid`, `--unshare-net`, `--new-session`,
+`--clearenv`; deterministic parent `--dir` entries; sealed memfd snapshots
+mounted one file at a time with `--perms` plus `--ro-bind-data`; then
+`--proc /proc`, `--dev /dev`, `--tmpfs /tmp`, `--chdir /`, and the exact probe
+command above. The child environment is exactly empty. Mount the complete
+validated base-runtime file set, replacing only policy-selected wheel and
+qualification targets; mount wheels at `/engine/wheels/<filename>`, the
+reviewed strategy at `/engine/launcher/target_portfolio_strategy.py`, the
+canonical minimal manifest at `/engine/closure-manifest.json`, the reviewed
+launcher at both its production target and
+`/qualification/entry-launcher.py`, and the probe at
+`/qualification/import_probe.py`. Never bind `/`, a host directory, or a
+writable dependency path.
+
+The probe writes exactly one canonical JSON line to stdout and no stderr. Its
+document has exactly `schema_version`, `status`, `modules`, and
+`strategy_source_sha256`; `schema_version` is
+`nautilus-sealed-import-probe-v1`, `status` is `passed`, and `modules` is a
+name-sorted three-record list. Each module record has exactly `name`,
+`version`, and `source_wheel_sha256`; the source wheel is derived from the
+module origin under one extracted sealed-wheel root and must match the mounted
+wheel inventory. No path is emitted.
+
+The external receipt has exactly these fields:
+
+```text
+schema_version, status, profile, manifest_schema_version,
+dependency_import_policy, policy_sha256,
+base_runtime_manifest_sha256, artifact_manifest_sha256, python_sha256,
+native_entry_guard_policy_sha256, launcher_inventory_sha256,
+entry_launcher_sha256, probe_sha256, strategy_source_sha256,
+minimal_manifest_sha256, wheel_inventory_sha256, sandbox_sha256,
+sandbox_profile_sha256, probe_result_sha256, modules, receipt_sha256
+```
+
+`schema_version` is `nautilus-sealed-import-qualification-v1`; `status` is
+`passed`; `manifest_schema_version` is integer `6`; and `modules` is the exact
+validated probe list. Every `*_sha256` is lowercase SHA-256. Inventory/policy
+digests hash canonical JSON; `receipt_sha256` hashes the canonical document
+with that one field omitted. The receipt contains no paths, raw output,
+environment values, timestamps, host identifiers, or mutable PASS claims. Its
+parent must already be an absolute private mode-0700 directory, the receipt
+must be absent, and publication is atomic no-clobber at mode 0400.
 
 - [ ] **Step 3: Run, commit, and review.**
 
