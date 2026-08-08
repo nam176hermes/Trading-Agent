@@ -302,8 +302,11 @@ is required before any official generation is materialized.
 - Modify: `services/job_worker/engine_artifacts.py`
 - Modify: `services/job_worker/engine_spawn.py`
 - Modify: `services/job_worker/nautilus_closure.py`
+- Modify: `engines/nautilus/runtime-closure-policy.json`
+- Create: `engines/nautilus/paper-compatibility-runtime-closure-policy.json`
 - Modify: `scripts/generate_contracts.py` and generated contracts through `make generate-contracts`
 - Modify: `tests/foundation/test_nautilus_native_entry_guard.py`
+- Modify: `tests/foundation/test_nautilus_runtime_closure.py`
 - Modify: `tests/jobs/test_engine_artifacts.py`
 - Modify: `tests/jobs/test_engine_spawn_provider.py`
 - Modify: `tests/jobs/test_nautilus_closure.py`
@@ -343,7 +346,7 @@ digest-only result record. Its `_qualification_import_graph()` export must use
 the same import-only probe contract as simulation and must not construct paper
 engine state.
 
-- [ ] **Step 4: Generate contracts, gate, commit, and review.**
+- [ ] **Step 4: Generate contracts and create the source commit.**
 
 ```bash
 make generate-contracts
@@ -359,11 +362,21 @@ make check-broad-handler-inventory
 git diff --check
 ```
 
-Commit only the listed source, generated contract, and test files. The review
-must prove same strategy bytes/config semantics, finite execution, exact
-profile-specific native guards, and continued production-worker rejection.
-Checked-in policy identity tests may remain RED only for the explicitly stale
-source/launcher/native-guard leaves that Task 7 replaces.
+Commit only the listed non-policy source, generated contract, and test files.
+
+- [ ] **Step 5: Reproducibly build, rebind, and commit both policies.**
+
+Use only private Rust 1.95.0, verified LLVM, locked/offline Cargo inputs, a
+private temporary Cargo home, and separate target directories. Verify a second
+build of each profile is byte-identical. Bind each guard digest/size and the
+preceding source commit to the simulation and paper schema-6 policies. Run all
+checked-in policy/closure/native-guard tests and require GREEN before creating
+the policy-only commit.
+
+The independent Task 5 review covers both commits and must prove same strategy
+bytes/config semantics, finite execution, exact profile-specific native guards,
+continued production-worker rejection, reproducible guard bytes, and exact
+policy leaves. No known tracked test may remain RED at Task 5 completion.
 
 ---
 
@@ -435,7 +448,7 @@ cd legacy/research-backend
 UV_OFFLINE=1 uv sync --frozen --extra test
 PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 uv run --frozen --extra test pytest -p no:cacheprovider -q \
   tests/test_nautilus_parity_adapter.py
-cd /home/thenam176/projects/trading-agent
+cd ../..
 make audit
 make check-contracts
 git diff --check
@@ -447,33 +460,34 @@ or digest, and that v1 APIs retain their original semantics.
 
 ---
 
-### Task 7: Rebind Both Schema-6 Policies After the Final Source Commit
+### Task 7: Independently Freeze Both Schema-6 Policy Authorities
 
 **Files:**
-- Modify: `engines/nautilus/runtime-closure-policy.json`
-- Create: `engines/nautilus/paper-compatibility-runtime-closure-policy.json`
-- Modify: policy-binding tests in `tests/foundation/test_nautilus_runtime_closure.py`
+- Read only: `engines/nautilus/runtime-closure-policy.json`
+- Read only: `engines/nautilus/paper-compatibility-runtime-closure-policy.json`
+- Read only: policy, materializer, closure, native-guard, and spawn tests
 
 **Interfaces:**
-- Produces: simulation and paper policies bound to the same reviewed final source commit and exact profile-specific native-guard binaries.
+- Produces: one ignored independent no-drift report proving the reviewed Task 5 policy commit still binds the exact runtime-affecting source and profile-specific guards after Task 6.
 
-- [ ] **Step 1: Reproducibly build both native guards in disposable roots.**
+- [ ] **Step 1: Rebuild both guards independently in disposable roots.**
 
 Use only private Rust 1.95.0, verified LLVM, locked/offline Cargo inputs, a
 private temporary Cargo home, and separate target directories. Verify a second
 build of each profile is byte-identical; bind each binary digest and size to
-its policy. Do not write global Rust state or an external runtime closure.
+the already committed policy. Do not write global Rust state, Git files, or an
+external runtime closure.
 
-- [ ] **Step 2: Rebind only reviewed authority leaves.**
+- [ ] **Step 2: Verify no authority drift.**
 
 The simulation policy uses schema 6, profile `execution-simulation`, import
-policy `native-guarded-stdlib-first-sealed-wheel-path-v1`, and final Task 6
-source/launcher/native-guard identities. The paper policy uses schema 6,
+policy `native-guarded-stdlib-first-sealed-wheel-path-v1`, and the reviewed
+Task 5 runtime source/launcher/native-guard identities. The paper policy uses schema 6,
 profile `paper-compatibility`, semantic profile
 `nautilus-paper-compatibility-v1`, its exact launcher inventory and paper guard,
 and the same source/upstream/artifact/toolchain authorities.
 
-- [ ] **Step 3: Gate, policy-only commit, and independent review.**
+- [ ] **Step 3: Gate and write the ignored no-drift report.**
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -q \
@@ -486,8 +500,10 @@ make check-contracts
 git diff --check
 ```
 
-The reviewer compares normalized policy trees and must account for every
-changed leaf. No materialization or Bubblewrap execution belongs to this task.
+The reviewer compares normalized policy trees with the Task 5 review package,
+accounts for every authority leaf, verifies Task 6 did not alter runtime source,
+and requires a clean tracked/index state. This task creates no Git commit. No
+materialization or Bubblewrap execution belongs to it.
 
 ---
 
@@ -502,7 +518,7 @@ changed leaf. No materialization or Bubblewrap execution belongs to this task.
 
 - [ ] **Step 1: Preflight once and prove both destinations absent.**
 
-Pin the exact Task 7 commit; require a clean tracked tree; capture v12 through
+Pin the exact Task 5 policy commit and reviewed Task 7 no-drift report; require a clean tracked tree; capture v12 through
 v12-r8 identities; validate v3 with `artifacts-v1`; validate both selected
 policies/artifacts/toolchains/sandbox; then run exactly:
 
@@ -530,14 +546,15 @@ once for each policy:
 ```bash
 phase4_runtime_root="$(mktemp -d -p /tmp phase4-v12-r9-v13-XXXXXX)"
 chmod 0700 "${phase4_runtime_root}"
+phase4_source_root="$(git rev-parse --show-toplevel)"
 python3.11 -I scripts/qualify_nautilus_sealed_imports.py \
-  --policy /home/thenam176/projects/trading-agent/engines/nautilus/runtime-closure-policy.json \
+  --policy "${phase4_source_root}/engines/nautilus/runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
   --sandbox /usr/bin/bwrap \
   --receipt "${phase4_runtime_root}/simulation-import-receipt.json"
 python3.11 -I scripts/qualify_nautilus_sealed_imports.py \
-  --policy /home/thenam176/projects/trading-agent/engines/nautilus/paper-compatibility-runtime-closure-policy.json \
+  --policy "${phase4_source_root}/engines/nautilus/paper-compatibility-runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
   --sandbox /usr/bin/bwrap \
@@ -551,7 +568,7 @@ contract. Stop before materialization on any failure.
 
 ```bash
 python3.11 -I scripts/materialize_nautilus_runtime_closure.py \
-  --policy /home/thenam176/projects/trading-agent/engines/nautilus/runtime-closure-policy.json \
+  --policy "${phase4_source_root}/engines/nautilus/runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
   --destination /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v12-r9-simulation \
@@ -607,7 +624,7 @@ independent root-oracle equality, no stderr/skip, and stable attestation.
 
 ```bash
 python3.11 -I scripts/materialize_nautilus_runtime_closure.py \
-  --policy /home/thenam176/projects/trading-agent/engines/nautilus/paper-compatibility-runtime-closure-policy.json \
+  --policy "${phase4_source_root}/engines/nautilus/paper-compatibility-runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
   --destination /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v13-paper-compatibility \
@@ -735,6 +752,8 @@ ledger finding, and require a clean tracked/staged tree while preserving all
 untracked operator files. Only after PASS:
 
 ```bash
+cd /home/thenam176/projects/trading-agent
+git merge --ff-only codex/phase4-architectural-closure
 git switch main
 git merge --ff-only codex/ws01-ws04-remediation
 ```
