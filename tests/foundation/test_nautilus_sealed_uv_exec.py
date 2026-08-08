@@ -309,6 +309,25 @@ def _canonical_json(document: dict[str, object]) -> bytes:
     )
 
 
+def _policy_commit_parent(policy: Path) -> str:
+    relative = policy.relative_to(ROOT)
+    policy_commit = subprocess.run(
+        ["git", "log", "-1", "--format=%H", "--", str(relative)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert policy_commit
+    return subprocess.run(
+        ["git", "rev-parse", f"{policy_commit}^"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def _private_parent(tmp_path: Path) -> Path:
     parent = tmp_path / "private"
     parent.mkdir(mode=0o700)
@@ -327,26 +346,13 @@ def _task3_policy(module, *, source_drift: bool = False) -> dict[str, object]:
             capture_output=True,
             text=True,
         ).stdout.strip(),
-        "rust_source": paths["rust_source"],
-        "rust_source_sha256": _sha256(ROOT / paths["rust_source"]),
-        "cargo_manifest": paths["cargo_manifest"],
-        "cargo_manifest_sha256": _sha256(ROOT / paths["cargo_manifest"]),
-        "cargo_lock": paths["cargo_lock"],
-        "cargo_lock_sha256": _sha256(ROOT / paths["cargo_lock"]),
-        "materializer_source": paths["materializer_source"],
-        "materializer_source_sha256": _sha256(ROOT / paths["materializer_source"]),
-        "rust_toolchain_policy": paths["rust_toolchain_policy"],
-        "rust_toolchain_policy_sha256": _sha256(
-            ROOT / paths["rust_toolchain_policy"]
-        ),
-        "llvm_toolchain_policy": paths["llvm_toolchain_policy"],
-        "llvm_toolchain_policy_sha256": _sha256(
-            ROOT / paths["llvm_toolchain_policy"]
-        ),
         "target_triple": TARGET,
         "binary_name": "nautilus-sealed-uv-exec",
         "binary_mode": "0500",
     }
+    for name, relative in paths.items():
+        document[name] = relative
+        document[f"{name}_sha256"] = _sha256(ROOT / relative)
     if source_drift:
         document["rust_source_sha256"] = "0" * 64
     return document
@@ -377,6 +383,61 @@ def _fake_builder(payloads: list[bytes]):
         return output
 
     return build
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    (
+        "rust_toolchain_validator",
+        "llvm_toolchain_validator",
+        "input_cache_validator",
+    ),
+)
+def test_policy_binds_each_dynamically_loaded_private_toolchain_verifier(
+    source_name: str,
+) -> None:
+    module = _load_materializer()
+
+    relative = module.POLICY_SOURCE_PATHS[source_name]
+
+    assert relative.startswith("scripts/")
+    assert (ROOT / relative).is_file()
+
+
+@pytest.mark.parametrize(
+    "source_name",
+    (
+        "rust_toolchain_validator",
+        "llvm_toolchain_validator",
+        "input_cache_validator",
+    ),
+)
+def test_materializer_rejects_drifted_verifier_source_before_toolchain_import(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_name: str
+) -> None:
+    module = _load_materializer()
+    policy = _write_policy(native_tmp_path, module)
+    document = json.loads(policy.read_text(encoding="ascii"))
+    document[f"{source_name}_sha256"] = "0" * 64
+    policy.chmod(0o600)
+    policy.write_bytes(_canonical_json(document))
+    policy.chmod(0o400)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_verify_toolchains",
+        lambda *_args: calls.append("toolchains"),
+    )
+
+    with pytest.raises(module.MaterializationError, match="source digest drift"):
+        module.materialize(
+            policy_path=policy,
+            destination=_private_parent(native_tmp_path) / "sealed-uv-exec",
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert calls == []
 
 
 def test_materializer_rejects_nonabsolute_paths_before_authority_use(
@@ -592,13 +653,7 @@ def test_committed_policy_binds_all_task3_sources_and_private_toolchain_policies
     document = module.load_policy(POLICY)
 
     assert document["schema_version"] == 1
-    assert document["source_commit"] == subprocess.run(
-        ["git", "rev-parse", "HEAD^"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    assert document["source_commit"] == _policy_commit_parent(POLICY)
     assert document["target_triple"] == TARGET
     assert document["binary_name"] == "nautilus-sealed-uv-exec"
     assert document["binary_mode"] == "0500"

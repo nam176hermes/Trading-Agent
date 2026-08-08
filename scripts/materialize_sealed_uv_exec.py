@@ -26,6 +26,9 @@ POLICY_SOURCE_PATHS = {
     "cargo_manifest": "engines/nautilus/sealed_uv_exec/Cargo.toml",
     "cargo_lock": "engines/nautilus/sealed_uv_exec/Cargo.lock",
     "materializer_source": "scripts/materialize_sealed_uv_exec.py",
+    "rust_toolchain_validator": "scripts/prepare_nautilus_toolchain.py",
+    "llvm_toolchain_validator": "scripts/prepare_nautilus_llvm_toolchain.py",
+    "input_cache_validator": "scripts/prepare_nautilus_input_cache.py",
     "rust_toolchain_policy": RUST_TOOLCHAIN_POLICY,
     "llvm_toolchain_policy": LLVM_TOOLCHAIN_POLICY,
 }
@@ -40,6 +43,12 @@ POLICY_FIELDS = {
     "cargo_lock_sha256",
     "materializer_source",
     "materializer_source_sha256",
+    "rust_toolchain_validator",
+    "rust_toolchain_validator_sha256",
+    "llvm_toolchain_validator",
+    "llvm_toolchain_validator_sha256",
+    "input_cache_validator",
+    "input_cache_validator_sha256",
     "rust_toolchain_policy",
     "rust_toolchain_policy_sha256",
     "llvm_toolchain_policy",
@@ -198,13 +207,22 @@ def _verify_toolchains(policy: dict[str, object], cargo: Path, llvm_toolchain: P
         raise MaterializationError("toolchain verification failed")
     try:
         rust_tool = _load_local_tool(
-            ROOT / "scripts/prepare_nautilus_toolchain.py", "sealed_uv_exec_rust"
+            _repository_file(
+                policy["rust_toolchain_validator"], "rust toolchain validator"
+            ),
+            "sealed_uv_exec_rust",
         )
         llvm_tool = _load_local_tool(
-            ROOT / "scripts/prepare_nautilus_llvm_toolchain.py", "sealed_uv_exec_llvm"
+            _repository_file(
+                policy["llvm_toolchain_validator"], "LLVM toolchain validator"
+            ),
+            "sealed_uv_exec_llvm",
         )
         input_tool = _load_local_tool(
-            ROOT / "scripts/prepare_nautilus_input_cache.py", "sealed_uv_exec_input"
+            _repository_file(
+                policy["input_cache_validator"], "input cache validator"
+            ),
+            "sealed_uv_exec_input",
         )
         rust_policy = rust_tool.load_manifest(
             _repository_file(policy["rust_toolchain_policy"], "rust toolchain policy")
