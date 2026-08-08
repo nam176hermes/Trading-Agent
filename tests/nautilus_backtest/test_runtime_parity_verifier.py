@@ -335,10 +335,12 @@ def test_launch_rejects_timeout_after_killing_and_reaping_once() -> None:
 
     class Process:
         returncode = -9
+        communicate_calls = 0
 
-        def communicate(self, *, timeout: int | None = None):
+        def communicate(self, *, timeout: int):
+            self.communicate_calls += 1
             events.append(("communicate", timeout))
-            if timeout is not None:
+            if self.communicate_calls == 1:
                 raise subprocess.TimeoutExpired(built.argv, timeout)
             return b"", b""
 
@@ -351,7 +353,7 @@ def test_launch_rejects_timeout_after_killing_and_reaping_once() -> None:
             popen_factory=lambda *_args, **_kwargs: Process(),
         )
 
-    assert events == [("communicate", 7), "kill", ("communicate", None)]
+    assert events == [("communicate", 7), "kill", ("communicate", 7)]
 
 
 def test_launch_rejects_nonzero_process_completion() -> None:

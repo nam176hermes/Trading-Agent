@@ -16,17 +16,17 @@ Track B P9 current measurement, refreshed on 2026-08-02 after the bounded
 | Metric | Count |
 |---|---:|
 | Tracked Python files | 413 |
-| Broad handlers | 416 |
-| Files containing broad handlers | 116 |
+| Broad handlers | 418 |
+| Files containing broad handlers | 117 |
 | Parse errors | 0 |
 | `Exception` handlers, including tuples | 346 |
-| `BaseException` handlers, including tuples | 70 |
+| `BaseException` handlers, including tuples | 72 |
 | Bare handlers | 0 |
-| First control-flow marker: re-raise | 115 |
+| First control-flow marker: re-raise | 116 |
 | First control-flow marker: return | 114 |
 | First control-flow marker: pass | 36 |
 | First control-flow marker: continue | 15 |
-| Other or log-only handler | 136 |
+| Other or log-only handler | 137 |
 
 The control-flow marker is an inventory aid, not a semantic verdict. Package 05 does not require zero broad handlers. It requires every safety or correctness handler to be remediated or assigned a boundary, owner, and closure condition.
 
@@ -444,6 +444,8 @@ packages/data_catalog/parquet.py|431|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|466|Exception|PRODUCTION_CRITICAL|RAISE
 packages/data_catalog/parquet.py|480|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
+packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITICAL|OTHER
+packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
 packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
@@ -542,11 +544,11 @@ services/job_worker/command_registry.py|308|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|361|Exception|PRODUCTION_CRITICAL|RAISE
 services/job_worker/command_registry.py|374|Exception|PRODUCTION_CRITICAL|OTHER
 services/job_worker/command_registry.py|407|Exception|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|274|BaseException|PRODUCTION_CRITICAL|PASS
-services/job_worker/engine_spawn.py|919|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|937|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1027|BaseException|PRODUCTION_CRITICAL|RAISE
-services/job_worker/engine_spawn.py|1116|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|279|BaseException|PRODUCTION_CRITICAL|PASS
+services/job_worker/engine_spawn.py|933|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|951|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1041|BaseException|PRODUCTION_CRITICAL|RAISE
+services/job_worker/engine_spawn.py|1130|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|83|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|557|BaseException|PRODUCTION_CRITICAL|RAISE
 services/job_worker/process_runner.py|600|BaseException|PRODUCTION_CRITICAL|RAISE

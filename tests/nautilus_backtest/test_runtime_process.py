@@ -76,10 +76,12 @@ def test_capture_timeout_kills_and_reaps_the_process_exactly_once() -> None:
 
     class Process:
         returncode = -9
+        communicate_calls = 0
 
-        def communicate(self, *, timeout: int | None = None):
+        def communicate(self, *, timeout: int):
+            self.communicate_calls += 1
             events.append(("communicate", timeout))
-            if timeout is not None:
+            if self.communicate_calls == 1:
                 raise subprocess.TimeoutExpired(("inert-sandbox",), timeout)
             return b"after-kill", b"timed-out"
 
@@ -91,7 +93,118 @@ def test_capture_timeout_kills_and_reaps_the_process_exactly_once() -> None:
             _built(), popen_factory=lambda *_args, **_kwargs: Process()
         )
 
-    assert events == [("communicate", 13), "kill", ("communicate", None)]
+    assert events == [("communicate", 13), "kill", ("communicate", 13)]
+
+
+def test_capture_non_timeout_base_exception_kills_and_reaps_without_retry() -> None:
+    class InertCancellation(BaseException):
+        pass
+
+    primary = InertCancellation("inert cancellation")
+    events: list[object] = []
+
+    class Process:
+        returncode = -9
+        communicate_calls = 0
+
+        def communicate(self, *, timeout: int):
+            self.communicate_calls += 1
+            events.append(("communicate", timeout))
+            if self.communicate_calls == 1:
+                raise primary
+            return b"", b""
+
+        def kill(self) -> None:
+            events.append("kill")
+
+    def popen(*_args, **_kwargs):
+        events.append("popen")
+        return Process()
+
+    with pytest.raises(InertCancellation) as captured:
+        nautilus_backtest.capture_prepared_engine_process(
+            _built(), popen_factory=popen
+        )
+
+    assert captured.value is primary
+    assert events == [
+        "popen",
+        ("communicate", 13),
+        "kill",
+        ("communicate", 13),
+    ]
+
+
+def test_capture_preserves_primary_exception_when_cleanup_kill_fails() -> None:
+    primary = OSError("inert wait failure")
+    cleanup_failure = RuntimeError("inert kill failure")
+    events: list[object] = []
+
+    class Process:
+        returncode = -9
+        communicate_calls = 0
+
+        def communicate(self, *, timeout: int):
+            self.communicate_calls += 1
+            events.append(("communicate", timeout))
+            if self.communicate_calls == 1:
+                raise primary
+            return b"", b""
+
+        def kill(self) -> None:
+            events.append("kill")
+            raise cleanup_failure
+
+    with pytest.raises(OSError) as captured:
+        nautilus_backtest.capture_prepared_engine_process(
+            _built(), popen_factory=lambda *_args, **_kwargs: Process()
+        )
+
+    assert captured.value is primary
+    assert captured.value.__notes__ == [
+        "engine process kill cleanup failed: RuntimeError"
+    ]
+    assert events == [("communicate", 13), "kill", ("communicate", 13)]
+
+
+@pytest.mark.parametrize(
+    "cleanup_failure",
+    (
+        OSError("inert reap failure"),
+        subprocess.TimeoutExpired(("inert-sandbox",), 13),
+    ),
+)
+def test_capture_preserves_primary_exception_when_bounded_reap_fails(
+    cleanup_failure: BaseException,
+) -> None:
+    primary = ValueError("inert wait failure")
+    events: list[object] = []
+
+    class Process:
+        returncode = -9
+        communicate_calls = 0
+
+        def communicate(self, *, timeout: int):
+            self.communicate_calls += 1
+            events.append(("communicate", timeout))
+            if self.communicate_calls == 1:
+                raise primary
+            raise cleanup_failure
+
+        def kill(self) -> None:
+            events.append("kill")
+
+    with pytest.raises(ValueError) as captured:
+        nautilus_backtest.capture_prepared_engine_process(
+            _built(), popen_factory=lambda *_args, **_kwargs: Process()
+        )
+
+    assert captured.value is primary
+    assert captured.value.__notes__ == [
+        "engine process reap cleanup failed: "
+        f"{type(cleanup_failure).__name__}"
+    ]
+    assert events == [("communicate", 13), "kill", ("communicate", 13)]
 
 
 def test_capture_closes_transfer_descriptors_when_popen_fails() -> None:
