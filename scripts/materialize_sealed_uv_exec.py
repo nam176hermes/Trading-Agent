@@ -80,6 +80,12 @@ _SHA256_LENGTH = 64
 _MFD_ALLOW_SEALING = 0x0002
 _MFD_CLOEXEC = 0x0001
 _AT_EMPTY_PATH = 0x1000
+_EXECVEAT_SYSCALLS = {
+    "x86_64": 322,
+    "amd64": 322,
+    "aarch64": 281,
+    "arm64": 281,
+}
 _MEMFD_CREATE_SYSCALLS = {
     "x86_64": 319,
     "amd64": 319,
@@ -96,10 +102,50 @@ _ALL_SEALS = _F_SEAL_SEAL | _F_SEAL_SHRINK | _F_SEAL_GROW | _F_SEAL_WRITE
 _MAX_BINARY_BYTES = 64 * 1024 * 1024
 _MAX_SANDBOX_STDERR_BYTES = 16 * 1024
 _SANDBOX_TIMEOUT_SECONDS = 180
+_HELPER_EXECUTION_ENVIRONMENT = (
+    b"PATH=/usr/bin:/bin",
+    b"PYTHONDONTWRITEBYTECODE=1",
+    b"PYTHONHASHSEED=0",
+    b"PYTHONNOUSERSITE=1",
+    b"UV_OFFLINE=1",
+)
 
 
 class MaterializationError(ValueError):
     """Raised when one materialization authority or output check fails."""
+
+
+class _VerifiedMaterializedPair:
+    """Opened v4 pair whose executable descriptor survives pathname replacement."""
+
+    def __init__(
+        self,
+        binary_fd: int,
+        manifest_fd: int,
+        parent_fd: int,
+        manifest: dict[str, object],
+    ) -> None:
+        self.binary_fd = binary_fd
+        self.manifest_fd = manifest_fd
+        self.parent_fd = parent_fd
+        self.manifest = manifest
+
+    def close(self) -> None:
+        for descriptor in (self.binary_fd, self.manifest_fd, self.parent_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+        self.binary_fd = -1
+        self.manifest_fd = -1
+        self.parent_fd = -1
+
+    def __enter__(self) -> _VerifiedMaterializedPair:
+        return self
+
+    def __exit__(self, *_arguments: object) -> None:
+        self.close()
 
 
 class VerifiedSourceBundle:
@@ -1028,7 +1074,10 @@ def _verify_published_binary(
         os.close(descriptor)
 
 
-def verify_materialized(destination: Path, policy: dict[str, object]) -> dict[str, object]:
+def _open_verified_materialized_pair(
+    destination: Path, policy: dict[str, object]
+) -> _VerifiedMaterializedPair:
+    """Open and verify the exact v4 pair without retaining a mutable path for exec."""
     policy = _validate_policy(policy)
     destination = _lexical_absolute(destination, "destination")
     if destination == ROOT or ROOT in destination.parents:
@@ -1039,6 +1088,7 @@ def verify_materialized(destination: Path, policy: dict[str, object]) -> dict[st
     _reject_symlink_ancestors(destination, "destination")
     binary_fd = -1
     manifest_fd = -1
+    parent_fd = -1
     try:
         parent_fd = os.open(
             destination.parent,
@@ -1058,12 +1108,6 @@ def verify_materialized(destination: Path, policy: dict[str, object]) -> dict[st
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         binary_fd = os.open(destination.name, flags, dir_fd=parent_fd)
         manifest_fd = os.open(manifest_destination.name, flags, dir_fd=parent_fd)
-    except OSError as error:
-        if binary_fd >= 0:
-            os.close(binary_fd)
-        os.close(parent_fd)
-        raise MaterializationError("materialized sealed UV executor pair is incomplete") from error
-    try:
         _verify_regular_descriptor(
             binary_fd,
             label="materialized sealed UV executor",
@@ -1092,11 +1136,86 @@ def verify_materialized(destination: Path, policy: dict[str, object]) -> dict[st
         expected = _manifest(policy)
         if manifest != expected or manifest_raw != _canonical_json(expected):
             raise MaterializationError("sealed UV executor manifest is not policy-bound")
-        return manifest
+        pair = _VerifiedMaterializedPair(binary_fd, manifest_fd, parent_fd, manifest)
+        binary_fd = -1
+        manifest_fd = -1
+        parent_fd = -1
+        return pair
+    except MaterializationError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MaterializationError("materialized sealed UV executor pair is incomplete") from error
     finally:
-        os.close(binary_fd)
-        os.close(manifest_fd)
-        os.close(parent_fd)
+        for descriptor in (binary_fd, manifest_fd, parent_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def verify_materialized(destination: Path, policy: dict[str, object]) -> dict[str, object]:
+    with _open_verified_materialized_pair(destination, policy) as pair:
+        return pair.manifest
+
+
+def _execveat(binary_fd: int, helper_arguments: Sequence[str]) -> None:
+    """Replace this process with the verified binary descriptor via execveat(2)."""
+    syscall_number = _EXECVEAT_SYSCALLS.get(platform.machine().lower())
+    if sys.platform != "linux" or syscall_number is None:
+        raise MaterializationError("descriptor-bound sealed UV execution is unavailable")
+    if (
+        binary_fd < 0
+        or not isinstance(helper_arguments, (list, tuple))
+        or not helper_arguments
+        or any(not isinstance(argument, str) for argument in helper_arguments)
+    ):
+        raise MaterializationError("sealed UV executor invocation is invalid")
+    try:
+        encoded_arguments = [os.fsencode(PAIR_BINARY_NAME)]
+        encoded_arguments.extend(os.fsencode(argument) for argument in helper_arguments)
+    except (TypeError, ValueError) as error:
+        raise MaterializationError("sealed UV executor invocation is invalid") from error
+    if any(b"\0" in value for value in encoded_arguments):
+        raise MaterializationError("sealed UV executor invocation is invalid")
+    argument_buffers = [ctypes.create_string_buffer(value) for value in encoded_arguments]
+    argument_vector = (ctypes.c_char_p * (len(argument_buffers) + 1))(
+        *(ctypes.cast(value, ctypes.c_char_p) for value in argument_buffers),
+        None,
+    )
+    environment_buffers = [
+        ctypes.create_string_buffer(value) for value in _HELPER_EXECUTION_ENVIRONMENT
+    ]
+    environment_vector = (ctypes.c_char_p * (len(environment_buffers) + 1))(
+        *(ctypes.cast(value, ctypes.c_char_p) for value in environment_buffers),
+        None,
+    )
+    libc = ctypes.CDLL(None, use_errno=True)
+    ctypes.set_errno(0)
+    result = libc.syscall(
+        ctypes.c_long(syscall_number),
+        ctypes.c_int(binary_fd),
+        ctypes.c_char_p(b""),
+        ctypes.cast(argument_vector, ctypes.c_void_p),
+        ctypes.cast(environment_vector, ctypes.c_void_p),
+        ctypes.c_int(_AT_EMPTY_PATH),
+    )
+    if result == -1:
+        error = ctypes.get_errno()
+        raise MaterializationError("verified sealed UV executor cannot be executed") from OSError(
+            error, os.strerror(error)
+        )
+    raise MaterializationError("verified sealed UV executor returned unexpectedly")
+
+
+def execute_materialized_pair(
+    destination: Path, policy: dict[str, object], helper_arguments: Sequence[str]
+) -> None:
+    """Verify policy source and pair, then exec the still-open verified binary."""
+    policy = _validate_policy(policy)
+    _verify_policy_source_commit(policy)
+    with _open_verified_materialized_pair(destination, policy) as pair:
+        _execveat(pair.binary_fd, helper_arguments)
 
 
 def materialize(
@@ -1202,6 +1321,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cargo", type=Path)
     parser.add_argument("--llvm-toolchain", type=Path)
     parser.add_argument("--verify-pair", action="store_true")
+    parser.add_argument("--execute-pair", action="store_true")
+    parser.add_argument("helper_arguments", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -1209,11 +1330,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
         policy = load_policy(arguments.policy)
+        if arguments.verify_pair and arguments.execute_pair:
+            raise MaterializationError("pair verification and execution are exclusive")
         if arguments.verify_pair:
             if arguments.cargo is not None or arguments.llvm_toolchain is not None:
                 raise MaterializationError("pair verification does not accept build toolchains")
+            if arguments.helper_arguments:
+                raise MaterializationError("pair verification does not accept helper arguments")
             verify_materialized(arguments.destination, policy)
+        elif arguments.execute_pair:
+            if arguments.cargo is not None or arguments.llvm_toolchain is not None:
+                raise MaterializationError("pair execution does not accept build toolchains")
+            execute_materialized_pair(
+                arguments.destination,
+                policy,
+                arguments.helper_arguments,
+            )
         else:
+            if arguments.helper_arguments:
+                raise MaterializationError("materialization does not accept helper arguments")
             if arguments.cargo is None or arguments.llvm_toolchain is None:
                 raise MaterializationError("materialization requires both private toolchains")
             materialize(

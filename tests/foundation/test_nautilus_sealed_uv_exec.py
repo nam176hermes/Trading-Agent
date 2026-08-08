@@ -1322,15 +1322,12 @@ def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     end = text.index('mkdir -m 0700 "${phase4_runtime_root}/legacy-records"', start)
     block = text[start:end]
 
-    assert (
-        'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/'
-        'sealed-uv-exec-v4.manifest.json'
-    ) in block
-    assert 'materialize_sealed_uv_exec.py --verify-pair' in block
+    assert block.count('materialize_sealed_uv_exec.py --execute-pair') == 2
     assert (
         '--policy "${phase4_source_root}/engines/nautilus/sealed-uv-exec-policy.json"'
     ) in block
-    assert block.count('"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv') == 2
+    assert block.count('--destination "${phase4_sealed_uv}" \\') == 2
+    assert block.count('--program /home/thenam176/.local/bin/uv') == 2
     assert "--action version" in block
     assert "--action sync-frozen-test" in block
     assert "/proc/self/fd" not in block
@@ -1340,6 +1337,158 @@ def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     assert "/proc/self/fd" not in text
     assert "Bash opens it once" not in text
     assert "only the materialized sealed-uv-exec-v4 helper pair" in text
+
+
+def _write_verified_helper_pair(
+    module, parent: Path, helper: Path, repository: Path, native_tmp_path: Path
+) -> tuple[Path, Path]:
+    """Create an owner-only v4 pair whose policy is bound to a fixture Git root."""
+    destination = _v4_binary(parent)
+    shutil.copyfile(helper, destination)
+    destination.chmod(0o500)
+    policy = _write_policy(
+        native_tmp_path,
+        module,
+        source_root=repository,
+        binary_payload=helper.read_bytes(),
+    )
+    manifest = module._manifest(module.load_policy(policy))
+    manifest_path = _v4_manifest(destination)
+    manifest_path.write_bytes(_canonical_json(manifest))
+    manifest_path.chmod(0o400)
+    return destination, policy
+
+
+def _execute_verified_descriptor_in_child(module, pair, helper_arguments: list[str]) -> int:
+    """Exercise the real kernel primitive without replacing the pytest process."""
+    child = os.fork()
+    if child == 0:
+        try:
+            null = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(null, 1)
+            os.dup2(null, 2)
+            os.close(null)
+            module._execveat(pair.binary_fd, helper_arguments)
+        except BaseException:
+            os._exit(125)
+        os._exit(126)
+    _, status = os.waitpid(child, 0)
+    assert status & 0x7F == 0
+    return status >> 8
+
+
+def _execute_verified_pair_in_child(
+    module, destination: Path, policy: Path, helper_arguments: list[str]
+) -> int:
+    """Exercise the public verify-to-exec operation without replacing pytest."""
+    child = os.fork()
+    if child == 0:
+        try:
+            null = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(null, 1)
+            os.dup2(null, 2)
+            os.close(null)
+            module.execute_materialized_pair(
+                destination, module.load_policy(policy), helper_arguments
+            )
+        except BaseException:
+            os._exit(125)
+        os._exit(126)
+    _, status = os.waitpid(child, 0)
+    assert status & 0x7F == 0
+    return status >> 8
+
+
+def test_execute_pair_runs_the_verified_descriptor_after_same_uid_replacement(
+    helper: Path, native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A binary swapped after verification cannot become the kernel exec image."""
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    destination, policy_path = _write_verified_helper_pair(
+        module, _private_parent(native_tmp_path), helper, repository, native_tmp_path
+    )
+    fixture, fixture_marker = _compile_fixture(native_tmp_path)
+    attacker_marker = native_tmp_path / "attacker-ran"
+    attacker = native_tmp_path / "attacker"
+    attacker.write_text(
+        "#!/bin/sh\n"
+        f"/usr/bin/touch {attacker_marker}\n"
+        "exit 99\n",
+        encoding="ascii",
+    )
+    attacker.chmod(0o500)
+
+    pair = module._open_verified_materialized_pair(
+        destination, module.load_policy(policy_path)
+    )
+    try:
+        os.replace(attacker, destination)
+        assert _execute_verified_descriptor_in_child(
+            module,
+            pair,
+            _command(helper, fixture, native_tmp_path)[1:],
+        ) == 0
+    finally:
+        pair.close()
+
+    assert fixture_marker.exists()
+    assert not attacker_marker.exists()
+    assert destination.read_bytes() != helper.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_status"),
+    (("version", 0), ("sync-frozen-test", 92)),
+)
+def test_execute_pair_supports_each_fixed_helper_action(
+    helper: Path,
+    native_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+    expected_status: int,
+) -> None:
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    destination, policy_path = _write_verified_helper_pair(
+        module, _private_parent(native_tmp_path), helper, repository, native_tmp_path
+    )
+    fixture, marker = _compile_fixture(native_tmp_path)
+
+    assert _execute_verified_pair_in_child(
+        module,
+        destination,
+        policy_path,
+        _command(helper, fixture, native_tmp_path, action=action)[1:],
+    ) == expected_status
+
+    assert marker.exists()
+
+
+def test_execute_pair_rechecks_bound_source_before_opening_the_pair(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    destination = _v4_binary(_private_parent(native_tmp_path))
+    policy = _write_policy(native_tmp_path, module, source_root=repository)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_open_verified_materialized_pair",
+        lambda *_args: calls.append("pair") or None,
+    )
+    _rewrite_policy_source_commit(policy, "0" * 40)
+
+    with pytest.raises(module.MaterializationError, match="source commit"):
+        module.execute_materialized_pair(
+            destination, module.load_policy(policy), ["--program", "/tmp/uv"]
+        )
+
+    assert calls == []
 
 
 def test_task8_pair_verification_invocation_accepts_an_absolute_policy_path(

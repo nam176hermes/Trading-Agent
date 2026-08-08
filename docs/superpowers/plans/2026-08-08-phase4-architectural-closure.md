@@ -845,15 +845,17 @@ them inside the closer invocation. Then close evidence:
 
 ```bash
 phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v4.bin
-phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v4.manifest.json
-python3.11 -I scripts/materialize_sealed_uv_exec.py --verify-pair \
+python3.11 -I scripts/materialize_sealed_uv_exec.py --execute-pair \
   --policy "${phase4_source_root}/engines/nautilus/sealed-uv-exec-policy.json" \
-  --destination "${phase4_sealed_uv}"
-"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv \
+  --destination "${phase4_sealed_uv}" \
+  -- --program /home/thenam176/.local/bin/uv \
   --sha256 cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4 \
   --uid "$(/usr/bin/id -u)" --gid "$(/usr/bin/id -g)" --mode 0755 \
   --cwd "$(git rev-parse --show-toplevel)/legacy/research-backend" --action version
-"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv \
+python3.11 -I scripts/materialize_sealed_uv_exec.py --execute-pair \
+  --policy "${phase4_source_root}/engines/nautilus/sealed-uv-exec-policy.json" \
+  --destination "${phase4_sealed_uv}" \
+  -- --program /home/thenam176/.local/bin/uv \
   --sha256 cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4 \
   --uid "$(/usr/bin/id -u)" --gid "$(/usr/bin/id -g)" --mode 0755 \
   --cwd "$(git rev-parse --show-toplevel)/legacy/research-backend" --action sync-frozen-test
