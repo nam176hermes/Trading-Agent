@@ -139,6 +139,7 @@ class _Harness:
         self.consume_error = consume_error
         self.candidate_drift_after_initial = candidate_drift_after_initial
         self.candidate_attest_calls = 0
+        self.attest_calls: list[tuple[str, Path]] = []
         self.prepare_calls: list[EngineCommandEnvelope] = []
         self.consume_calls = 0
         self.popen_calls: list[dict[str, object]] = []
@@ -147,6 +148,7 @@ class _Harness:
 
     def attest(self, config, *, expected_profile: str):
         assert stat.S_IMODE(config.artifact_directory.stat().st_mode) == 0o500
+        self.attest_calls.append((expected_profile, config.artifact_directory))
         if expected_profile == "zero-order":
             return SimpleNamespace(
                 manifest_schema_version=self.rollback_schema,
@@ -244,6 +246,7 @@ def external_paths() -> dict[str, Path]:
         paths = {
             "rollback_closure": root / "rollback",
             "candidate_closure": root / "candidate",
+            "rollback_artifact_directory": root / "rollback-artifacts",
             "artifact_directory": root / "artifacts",
             "sandbox": root / "sandbox",
             "transport_root": root / "transport",
@@ -252,11 +255,16 @@ def external_paths() -> dict[str, Path]:
         for name in (
             "rollback_closure",
             "candidate_closure",
+            "rollback_artifact_directory",
             "artifact_directory",
             "transport_root",
         ):
             paths[name].mkdir(mode=0o700)
-        paths["artifact_directory"].chmod(0o500)
+        for name in ("rollback_artifact_directory", "artifact_directory"):
+            marker = paths[name] / "artifact-manifest.json"
+            marker.write_text("{}")
+            marker.chmod(0o400)
+            paths[name].chmod(0o500)
         paths["record"].parent.mkdir(mode=0o700)
         yield paths
 
@@ -487,7 +495,80 @@ def test_verifier_rejects_candidate_authority_drift_between_matrix_runs(
         )
 
 
-def test_cli_requires_exactly_the_six_named_arguments(
+def test_verifier_binds_distinct_rollback_and_candidate_artifact_authorities(
+    external_paths: dict[str, Path],
+) -> None:
+    """Binding rollback to candidate artifacts violates v3 and must fail tests."""
+    harness = _Harness()
+
+    _verify(external_paths, harness)
+
+    assert harness.attest_calls[0] == (
+        "zero-order",
+        external_paths["rollback_artifact_directory"],
+    )
+    assert all(
+        profile == "execution-simulation"
+        and artifact_directory == external_paths["artifact_directory"]
+        for profile, artifact_directory in harness.attest_calls[1:]
+    )
+
+
+def test_verifier_rejects_candidate_authority_substituted_for_rollback_before_launch(
+    external_paths: dict[str, Path],
+) -> None:
+    """Candidate authority cannot satisfy the immutable v3 rollback binding."""
+    harness = _Harness()
+
+    with pytest.raises(verifier.ParityVerificationError, match="artifact.*distinct"):
+        _verify(
+            external_paths,
+            harness,
+            rollback_artifact_directory=external_paths["artifact_directory"],
+        )
+
+    assert harness.attest_calls == []
+    assert harness.prepare_calls == []
+    assert harness.popen_calls == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("relative", "noncanonical", "checkout", "empty", "non-private"),
+)
+def test_verifier_rejects_unsafe_rollback_artifact_authority_before_launch(
+    external_paths: dict[str, Path], mutation: str
+) -> None:
+    """Unsafe rollback authority must fail before attestation or process launch."""
+    rollback_artifacts = external_paths["rollback_artifact_directory"]
+    if mutation == "relative":
+        rollback_artifacts = Path("rollback-artifacts")
+    elif mutation == "noncanonical":
+        alias = rollback_artifacts.parent / "rollback-artifacts-alias"
+        alias.symlink_to(rollback_artifacts, target_is_directory=True)
+        rollback_artifacts = alias
+    elif mutation == "checkout":
+        rollback_artifacts = Path.cwd()
+    elif mutation == "empty":
+        rollback_artifacts = external_paths["transport_root"] / "empty-artifacts"
+        rollback_artifacts.mkdir(mode=0o500)
+    else:
+        rollback_artifacts.chmod(0o700)
+    harness = _Harness()
+
+    with pytest.raises(verifier.ParityVerificationError, match="rollback artifact"):
+        _verify(
+            external_paths,
+            harness,
+            rollback_artifact_directory=rollback_artifacts,
+        )
+
+    assert harness.attest_calls == []
+    assert harness.prepare_calls == []
+    assert harness.popen_calls == []
+
+
+def test_cli_requires_exactly_the_seven_named_arguments(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     parser = verifier._parser()
@@ -496,6 +577,8 @@ def test_cli_requires_exactly_the_six_named_arguments(
         "/tmp/rollback",
         "--candidate-closure",
         "/tmp/candidate",
+        "--rollback-artifact-directory",
+        "/tmp/rollback-artifacts",
         "--artifact-directory",
         "/tmp/artifacts",
         "--sandbox",
@@ -510,6 +593,7 @@ def test_cli_requires_exactly_the_six_named_arguments(
     assert vars(parsed) == {
         "rollback_closure": Path("/tmp/rollback"),
         "candidate_closure": Path("/tmp/candidate"),
+        "rollback_artifact_directory": Path("/tmp/rollback-artifacts"),
         "artifact_directory": Path("/tmp/artifacts"),
         "sandbox": Path("/tmp/sandbox"),
         "transport_root": Path("/tmp/transport"),
@@ -517,6 +601,8 @@ def test_cli_requires_exactly_the_six_named_arguments(
     }
     with pytest.raises(SystemExit):
         parser.parse_args([])
+    with pytest.raises(SystemExit):
+        parser.parse_args([*required[:4], *required[6:]])
     with pytest.raises(SystemExit):
         parser.parse_args([*required, "--runs", "2"])
     capsys.readouterr()

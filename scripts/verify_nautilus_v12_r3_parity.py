@@ -92,6 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rollback-closure", required=True, type=Path)
     parser.add_argument("--candidate-closure", required=True, type=Path)
+    parser.add_argument("--rollback-artifact-directory", required=True, type=Path)
     parser.add_argument("--artifact-directory", required=True, type=Path)
     parser.add_argument("--sandbox", required=True, type=Path)
     parser.add_argument("--transport-root", required=True, type=Path)
@@ -123,6 +124,7 @@ def _require_private_directory(
     label: str,
     external: bool,
     empty: bool,
+    nonempty: bool = False,
     expected_mode: int,
 ) -> None:
     _require_absolute(path, label=label)
@@ -140,7 +142,7 @@ def _require_private_directory(
         or (external and _is_beneath(path, _CHECKOUT))
     ):
         raise ParityVerificationError(f"{label} directory is unsafe")
-    if empty:
+    if empty or nonempty:
         try:
             occupied = next(path.iterdir(), None)
         except OSError as exc:
@@ -148,7 +150,10 @@ def _require_private_directory(
                 f"{label} directory cannot be inspected"
             ) from exc
         if occupied is not None:
-            raise ParityVerificationError(f"{label} directory must be empty")
+            if empty:
+                raise ParityVerificationError(f"{label} directory must be empty")
+        elif nonempty:
+            raise ParityVerificationError(f"{label} directory must be non-empty")
 
 
 def _validate_record_path(record: Path) -> None:
@@ -435,6 +440,7 @@ def verify_nautilus_v12_r3_parity(
     *,
     rollback_closure: Path,
     candidate_closure: Path,
+    rollback_artifact_directory: Path,
     artifact_directory: Path,
     sandbox: Path,
     transport_root: Path,
@@ -449,12 +455,24 @@ def verify_nautilus_v12_r3_parity(
     """Run and record the fixed schema-5 simulation parity matrix."""
     _validate_matrix(scenario_ids, run_count)
     _require_private_directory(
+        rollback_artifact_directory,
+        label="rollback artifact",
+        external=True,
+        empty=False,
+        nonempty=True,
+        expected_mode=0o500,
+    )
+    _require_private_directory(
         artifact_directory,
         label="artifact",
         external=True,
         empty=False,
         expected_mode=0o500,
     )
+    if rollback_artifact_directory == artifact_directory:
+        raise ParityVerificationError(
+            "rollback and candidate artifact directories must be distinct"
+        )
     _require_private_directory(
         transport_root,
         label="transport",
@@ -472,7 +490,7 @@ def verify_nautilus_v12_r3_parity(
 
     rollback_config = NautilusClosureConfig(
         runtime_root=rollback_closure,
-        artifact_directory=artifact_directory,
+        artifact_directory=rollback_artifact_directory,
         sandbox_executable=sandbox,
     )
     candidate_config = NautilusClosureConfig(
