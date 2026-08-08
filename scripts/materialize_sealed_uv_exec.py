@@ -403,6 +403,7 @@ def _create_verified_source_bundle(
     descriptors: dict[str, int] = {}
     digests: dict[str, str] = {}
     sizes: dict[str, int] = {}
+    complete = False
     try:
         for source_name in POLICY_SOURCE_PATHS:
             if policy[source_name] != POLICY_SOURCE_PATHS[source_name]:
@@ -412,11 +413,13 @@ def _create_verified_source_bundle(
             descriptors[source_name] = descriptor
             digests[source_name] = hashlib.sha256(value).hexdigest()
             sizes[source_name] = len(value)
-        return VerifiedSourceBundle(descriptors, digests, sizes)
-    except BaseException:
-        for descriptor in descriptors.values():
-            os.close(descriptor)
-        raise
+        bundle = VerifiedSourceBundle(descriptors, digests, sizes)
+        complete = True
+        return bundle
+    finally:
+        if not complete:
+            for descriptor in descriptors.values():
+                os.close(descriptor)
 
 
 def _load_verified_tool(
@@ -632,6 +635,7 @@ def _read_bound_sandbox(policy: dict[str, object]) -> bytes:
 
 def _verify_sandbox(policy: dict[str, object]) -> int:
     descriptor = _sealed_memfd("sealed-uv-bwrap", _read_bound_sandbox(policy), mode=0o500)
+    complete = False
     command = f"/proc/self/fd/{descriptor}"
     common = {
         "cwd": Path("/"),
@@ -660,13 +664,13 @@ def _verify_sandbox(policy: dict[str, object]) -> int:
             )
         ):
             raise MaterializationError("Bubblewrap identity or capabilities are invalid")
+        complete = True
         return descriptor
     except (OSError, subprocess.SubprocessError, UnicodeEncodeError) as error:
-        os.close(descriptor)
         raise MaterializationError("Bubblewrap identity cannot be verified") from error
-    except BaseException:
-        os.close(descriptor)
-        raise
+    finally:
+        if not complete:
+            os.close(descriptor)
 
 
 def _sandbox_argv(
