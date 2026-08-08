@@ -104,6 +104,76 @@ def test_probe_rejects_the_current_nonisolated_test_process() -> None:
         module._require_direct_entry()
 
 
+def test_probe_accepts_only_stdlib_search_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _module()
+    stdlib = Path(module.sysconfig.get_path("stdlib")).resolve(strict=True)
+    platstdlib = Path(module.sysconfig.get_path("platstdlib")).resolve(strict=True)
+    allowed = list(dict.fromkeys((str(stdlib), str(platstdlib))))
+    if shared := module.sysconfig.get_config_var("DESTSHARED"):
+        allowed.append(str(Path(shared).resolve(strict=True)))
+    monkeypatch.setattr(module.sys, "path", allowed)
+
+    module._require_stdlib_only_path()
+
+
+@pytest.mark.parametrize("mutation", ("ambient", "duplicate", "non-string"))
+def test_probe_rejects_non_stdlib_search_path_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    module = _module()
+    stdlib = str(Path(module.sysconfig.get_path("stdlib")).resolve(strict=True))
+    values: list[object] = [stdlib]
+    if mutation == "ambient":
+        ambient = tmp_path / "site-packages"
+        ambient.mkdir()
+        values.append(str(ambient))
+    elif mutation == "duplicate":
+        values.append(stdlib)
+    else:
+        values.append(7)
+    monkeypatch.setattr(module.sys, "path", values)
+
+    with pytest.raises(module.ImportProbeError, match="stdlib-only"):
+        module._require_stdlib_only_path()
+
+
+def test_probe_stdout_write_retries_short_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _module()
+    document = {
+        "modules": [],
+        "schema_version": "nautilus-sealed-import-probe-v1",
+        "status": "passed",
+        "strategy_source_sha256": "a" * 64,
+    }
+    expected = _canonical(document) + b"\n"
+    emitted = bytearray()
+
+    monkeypatch.setattr(module, "_require_direct_entry", lambda: None)
+    monkeypatch.setattr(module, "_require_stdlib_only_path", lambda: None)
+    monkeypatch.setattr(module, "_probe_import_graph", lambda *_args: document)
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "/qualification/import_probe.py",
+            "--entry-launcher",
+            "/qualification/entry-launcher.py",
+            "--wheel-directory",
+            "/engine/wheels",
+        ],
+    )
+
+    def short_write(_descriptor: int, value: bytes) -> int:
+        block = bytes(value[:3])
+        emitted.extend(block)
+        return len(block)
+
+    monkeypatch.setattr(module.os, "write", short_write)
+
+    assert module.main() == 0
+    assert bytes(emitted) == expected
+
+
 def test_probe_imports_exact_sealed_graph_and_reports_no_paths(
     secure_tmp_path: Path,
 ) -> None:

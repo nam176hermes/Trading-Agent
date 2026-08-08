@@ -246,11 +246,13 @@ def qualification_inputs() -> dict[str, object]:
     }
     policy_path = packet / "runtime-closure-policy.json"
     policy_path.write_bytes(_canonical(policy) + b"\n")
-    policy_path.chmod(0o400)
+    policy_path.chmod(0o644)
     sandbox = packet / "bwrap"
     sandbox.write_bytes(b"reviewed-bubblewrap")
-    sandbox.chmod(0o500)
-    receipt = packet / "import-receipt.json"
+    sandbox.chmod(0o755)
+    receipt_parent = packet / "receipts"
+    receipt_parent.mkdir(mode=0o700)
+    receipt = receipt_parent / "import-receipt.json"
     try:
         yield {
             "packet": packet,
@@ -265,6 +267,7 @@ def qualification_inputs() -> dict[str, object]:
             "artifact_manifest_path": artifact_manifest_path,
             "engine_wheel": engine_wheel,
             "sandbox": sandbox,
+            "receipt_parent": receipt_parent,
             "receipt": receipt,
         }
     finally:
@@ -525,13 +528,13 @@ def test_gate_rejects_an_ambient_base_runtime_file(
     assert not qualification_inputs["receipt"].exists()
 
 
-@pytest.mark.parametrize("mutation", ("writable-policy", "symlinked-sandbox"))
-def test_gate_rejects_writable_or_symlinked_named_inputs(
+@pytest.mark.parametrize("mutation", ("group-writable-policy", "symlinked-sandbox"))
+def test_gate_rejects_group_writable_or_symlinked_named_inputs(
     qualification_inputs: dict[str, object], mutation: str
 ) -> None:
     module = _module()
-    if mutation == "writable-policy":
-        qualification_inputs["policy"].chmod(0o600)
+    if mutation == "group-writable-policy":
+        qualification_inputs["policy"].chmod(0o664)
     else:
         sandbox = qualification_inputs["sandbox"]
         real_sandbox = sandbox.with_name("bwrap-real")
@@ -542,6 +545,202 @@ def test_gate_rejects_writable_or_symlinked_named_inputs(
         _qualify(module, qualification_inputs)
 
     assert not qualification_inputs["receipt"].exists()
+
+
+def _rewrite_named_file(path: Path, value: bytes, *, mode: int) -> None:
+    parent_mode = stat.S_IMODE(path.parent.stat().st_mode)
+    path.parent.chmod(0o700)
+    path.chmod(0o600)
+    path.write_bytes(value)
+    path.chmod(mode)
+    path.parent.chmod(parent_mode)
+
+
+@pytest.mark.parametrize(
+    "authority",
+    ("policy", "base-manifest", "artifact-manifest", "base-file", "selected-wheel"),
+)
+def test_gate_rejects_validation_to_snapshot_change_restore(
+    qualification_inputs: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    authority: str,
+) -> None:
+    module = _module()
+    qualification_inputs["policy"].chmod(0o400)
+    qualification_inputs["sandbox"].chmod(0o500)
+    policy = qualification_inputs["policy"]
+    base_manifest = qualification_inputs["base_manifest_path"]
+    artifact_manifest = qualification_inputs["artifact_manifest_path"]
+    base_file = qualification_inputs["base"] / "files/usr/lib/python3.12/os.py"
+    selected_wheel = qualification_inputs["engine_wheel"]
+    paths = {
+        "policy": policy,
+        "base-manifest": base_manifest,
+        "artifact-manifest": artifact_manifest,
+        "base-file": base_file,
+        "selected-wheel": selected_wheel,
+    }
+    modes = {
+        "policy": 0o400,
+        "base-manifest": 0o400,
+        "artifact-manifest": 0o400,
+        "base-file": 0o400,
+        "selected-wheel": 0o400,
+    }
+    target = paths[authority]
+    original = target.read_bytes()
+    altered = (
+        original[:-1] + b" \n"
+        if authority in {"policy", "base-manifest", "artifact-manifest"}
+        else b"qualification-race-altered-bytes"
+    )
+
+    original_open = module.os.open
+    target_opens = 0
+
+    def change_before_second_open(path, flags, *args, **kwargs):
+        nonlocal target_opens
+        if Path(path) == target:
+            target_opens += 1
+            if target_opens == 2:
+                _rewrite_named_file(target, altered, mode=modes[authority])
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", change_before_second_open)
+
+    document = _probe_document(qualification_inputs)
+    runner = None
+
+    def restore() -> None:
+        _rewrite_named_file(target, original, mode=modes[authority])
+        if authority == "selected-wheel":
+            assert runner is not None
+            runner.probe_document["modules"][0]["source_wheel_sha256"] = _sha256_bytes(
+                altered
+            )
+
+    runner = _InertRunner(document, before_probe=restore)
+    monkeypatch.setattr(module.subprocess, "run", runner)
+
+    with pytest.raises(module.SealedImportQualificationError, match="stale|bound|drift"):
+        _qualify(module, qualification_inputs)
+
+    assert not qualification_inputs["receipt"].exists()
+
+
+def test_gate_rejects_receipt_parent_replaced_during_staging(
+    qualification_inputs: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    qualification_inputs["policy"].chmod(0o400)
+    qualification_inputs["sandbox"].chmod(0o500)
+    runner = _InertRunner(_probe_document(qualification_inputs))
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    parent = qualification_inputs["receipt_parent"]
+    displaced = parent.with_name("receipts-displaced")
+    original_open = module.os.open
+    replaced = False
+
+    def replace_then_create(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if not replaced and kwargs.get("dir_fd") is not None and flags & os.O_CREAT:
+            replaced = True
+            parent.rename(displaced)
+            parent.mkdir(mode=0o700)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", replace_then_create)
+
+    with pytest.raises(module.SealedImportQualificationError, match="parent|stale"):
+        _qualify(module, qualification_inputs)
+
+
+def test_gate_rejects_receipt_parent_replaced_after_link(
+    qualification_inputs: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    qualification_inputs["policy"].chmod(0o400)
+    qualification_inputs["sandbox"].chmod(0o500)
+    runner = _InertRunner(_probe_document(qualification_inputs))
+    monkeypatch.setattr(module.subprocess, "run", runner)
+    parent = qualification_inputs["receipt_parent"]
+    receipt = qualification_inputs["receipt"]
+    displaced = parent.with_name("receipts-linked")
+    original_link = module.os.link
+
+    def link_then_replace(source, destination, **kwargs):
+        result = original_link(source, destination, **kwargs)
+        temporary_name = Path(source).name
+        parent.rename(displaced)
+        parent.mkdir(mode=0o700)
+        replacement_temp = parent / temporary_name
+        replacement_temp.write_bytes(b"replacement-temp")
+        replacement_temp.chmod(0o400)
+        receipt.write_bytes(b"replacement-receipt")
+        receipt.chmod(0o400)
+        return result
+
+    monkeypatch.setattr(module.os, "link", link_then_replace)
+
+    with pytest.raises(module.SealedImportQualificationError, match="parent|stale"):
+        _qualify(module, qualification_inputs)
+
+
+def test_gate_accepts_owner_writable_source_and_trusted_0755_sandbox(
+    qualification_inputs: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        _InertRunner(_probe_document(qualification_inputs)),
+    )
+
+    assert _qualify(module, qualification_inputs) == qualification_inputs["receipt"]
+
+
+def test_gate_rejects_group_writable_sandbox(
+    qualification_inputs: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    qualification_inputs["policy"].chmod(0o400)
+    qualification_inputs["sandbox"].chmod(0o775)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        _InertRunner(_probe_document(qualification_inputs)),
+    )
+
+    with pytest.raises(module.SealedImportQualificationError, match="Bubblewrap|sandbox"):
+        _qualify(module, qualification_inputs)
+
+
+def test_gate_rejects_group_writable_checked_in_probe_source(
+    qualification_inputs: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _module()
+    qualification_inputs["policy"].chmod(0o400)
+    qualification_inputs["sandbox"].chmod(0o500)
+    probe = qualification_inputs["packet"] / "import_probe.py"
+    probe.write_bytes(PROBE.read_bytes())
+    probe.chmod(0o664)
+    monkeypatch.setattr(module, "_PROBE", probe)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        _InertRunner(_probe_document(qualification_inputs)),
+    )
+
+    with pytest.raises(module.SealedImportQualificationError, match="probe|source|mode"):
+        _qualify(module, qualification_inputs)
+
+
+def test_trusted_system_owner_accepts_root_or_effective_uid_only() -> None:
+    module = _module()
+
+    assert module._trusted_system_owner(0, 1000) is True
+    assert module._trusted_system_owner(1000, 1000) is True
+    assert module._trusted_system_owner(1001, 1000) is False
 
 
 def test_gate_rejects_artifact_hash_drift_and_preexisting_receipt(

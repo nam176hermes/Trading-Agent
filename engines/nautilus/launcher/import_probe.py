@@ -273,6 +273,15 @@ def _canonical(value: object) -> bytes:
     ).encode("ascii")
 
 
+def _write_all(descriptor: int, value: bytes) -> None:
+    remaining = memoryview(value)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise ImportProbeError("probe stdout write made no progress")
+        remaining = remaining[written:]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entry-launcher", required=True, type=Path)
@@ -281,7 +290,7 @@ def main() -> int:
     _require_direct_entry()
     _require_stdlib_only_path()
     document = _probe_import_graph(arguments.entry_launcher, arguments.wheel_directory)
-    os.write(sys.stdout.fileno(), _canonical(document) + b"\n")
+    _write_all(sys.stdout.fileno(), _canonical(document) + b"\n")
     return 0
 
 
