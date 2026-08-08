@@ -590,6 +590,12 @@ bounded `PATH`, `PYTHONDONTWRITEBYTECODE`, `PYTHONHASHSEED`,
 `PYTHONNOUSERSITE`, and `UV_OFFLINE` values; inherited `PYTHONHOME` and
 `PYTHONPATH` are prohibited.
 
+The Task-8 legacy sync tool is fixed to the regular mode-0755 binary
+`/home/thenam176/.local/bin/uv`, version `0.11.7`, SHA-256
+`cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4`.
+It is not selected through inherited `PATH`; preflight rechecks its canonical
+absolute path, owner, mode, digest, and version before the sanitized sync.
+
 Every campaign destination, scenario directory, and parity provider subroot is
 created mode 0500 before descriptor acquisition. Only the opened inode may be
 made mode 0700 for construction, and every exceptional exit seals it back to
@@ -597,6 +603,13 @@ made mode 0700 for construction, and every exceptional exit seals it back to
 exact ordered prefix of deterministic subroots created so far (including a
 mode-0500 current subroot if creation stopped before open); success requires
 the full 16-subroot inventory.
+
+Every parity exceptional exit reseals the entire retained ordered prefix,
+including all previously completed subroots, to mode 0500 before the final
+inventory check. Descriptor-close failures may only become type-only notes on
+the original primary failure; they cannot mask it or skip the final campaign
+validation. Any descriptor acquired before a later identity check is always
+closed, including the campaign scenario-open pre-append path.
 
 - [ ] **Step 4: Gate both dependency graphs, commit, and review.**
 
@@ -823,8 +836,13 @@ as `phase4_campaign_sha256`, `phase4_parity_record_sha256`,
 them inside the closer invocation. Then close evidence:
 
 ```bash
-phase4_uv="$(command -v uv)"
-test -n "${phase4_uv}" && test -x "${phase4_uv}"
+phase4_uv=/home/thenam176/.local/bin/uv
+test "$(realpath -e -- "${phase4_uv}")" = "${phase4_uv}"
+test -f "${phase4_uv}" && test -x "${phase4_uv}"
+test "$(stat -c '%a:%u:%g' -- "${phase4_uv}")" = "755:$(id -u):$(id -g)"
+test "$(sha256sum -- "${phase4_uv}" | cut -d ' ' -f 1)" = \
+  cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4
+test "$("${phase4_uv}" --version)" = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 phase4_legacy_env=(
   /usr/bin/env -i
   PATH=/usr/bin:/bin
