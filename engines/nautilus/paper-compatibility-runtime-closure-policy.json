@@ -61,6 +61,6 @@
   "result_validator_id": "nautilus-paper-compatibility-result-v1",
   "schema_version": 1,
   "semantic_profile": "nautilus-paper-compatibility-v1",
-  "source_commit": "d738178178f029b59d1e9f2dcc604be1122bd7b8",
+  "source_commit": "6301a931907c548f35152fe375a4f6db5d25e027",
   "timeout_seconds": 120
 }
