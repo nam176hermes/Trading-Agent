@@ -571,17 +571,26 @@ def _public_research_authorities(
 
     legacy = private_root / "legacy"
     legacy.mkdir(mode=0o700)
+    legacy_environment = {
+        "PATH": os.environ["PATH"],
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "UV_OFFLINE": "1",
+    }
+    synced = subprocess.run(
+        ["uv", "sync", "--frozen", "--extra", "test"],
+        cwd=LEGACY_ROOT,
+        env=legacy_environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert synced.returncode == 0, synced.stderr.decode("utf-8", errors="replace")
+    legacy_python = LEGACY_ROOT / ".venv" / "bin" / "python"
     for scenario_id in SCENARIO_IDS:
         completed = subprocess.run(
             [
-                "uv",
-                "run",
-                "--project",
-                str(LEGACY_ROOT),
-                "--frozen",
-                "--extra",
-                "test",
-                "python",
+                str(legacy_python),
                 str(LEGACY_ADAPTER),
                 "--campaign-directory",
                 str(campaign),
@@ -591,11 +600,7 @@ def _public_research_authorities(
                 scenario_id,
             ],
             cwd=LEGACY_ROOT,
-            env={
-                "PATH": os.environ["PATH"],
-                "PYTHONDONTWRITEBYTECODE": "1",
-                "UV_OFFLINE": "1",
-            },
+            env=legacy_environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
