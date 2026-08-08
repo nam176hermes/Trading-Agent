@@ -361,9 +361,11 @@ is required before any official generation is materialized.
 **Files:**
 - Create: `engines/nautilus/launcher/nautilus_paper_compat.py`
 - Create: `packages/nautilus_backtest/paper_compat.py`
+- Modify: `packages/nautilus_backtest/__init__.py`
 - Create: `scripts/verify_nautilus_paper_compatibility.py`
 - Create: `tests/nautilus_backtest/test_paper_compat.py`
 - Modify: `engines/nautilus/launcher/import_probe.py`
+- Modify: `scripts/qualify_nautilus_sealed_imports.py`
 - Modify: `tests/nautilus_backtest/test_import_probe.py`
 - Modify: `tests/nautilus_backtest/test_sealed_import_qualification.py`
 - Modify: `engines/nautilus/native_entry_guard/src/main.rs`
