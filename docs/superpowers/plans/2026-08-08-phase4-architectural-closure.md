@@ -512,7 +512,16 @@ policy leaves. No known tracked test may remain RED at Task 5 completion.
 - Legacy CLI: `--campaign-directory`, private `--transport-root`, one exact
   `--scenario-id`, and absent `--record`; it writes only the fixed
   `<transport-root>/<scenario-id>.json` result.
-- Research CLI: `--campaign-directory`, `--parity-record`, `--paper-record`, `--legacy-record-directory`, and absent sealed `--evidence-root`.
+- Research CLI: `--campaign-directory`, `--campaign-sha256`,
+  `--parity-record`, `--parity-record-sha256`, `--paper-record`,
+  `--paper-record-sha256`, `--legacy-record-directory`,
+  `--legacy-records-sha256`, and private `--transport-root`. It writes only the
+  fixed `<transport-root>/ws04-campaign-closure-v2.json` record; it has no
+  caller-selected record path or sealed `--evidence-root`.
+- The four expected digests are packet authority returned by an independent
+  custody review after the parity, paper, and legacy producers finish. The
+  closer may not derive its own expected values from the same files and then
+  immediately trust them.
 
 - [ ] **Step 1: Materialize one canonical campaign authority.**
 
@@ -541,6 +550,26 @@ and legacy dispositions. `close_ws04_research_campaign` returns eight scenario
 closures plus one campaign digest only when reference and Nautilus match
 field-for-field, paper binds the same strategy/config/campaign, all six 04D
 gates pass, and legacy is never selected.
+
+The public authoritative close entry accepts only the four sealed path/digest
+references above and re-loads and re-derives the complete evidence chain. The
+data-object-only closure calculation remains private; a caller-constructed
+`ResearchCampaignEvidenceV2` is not an authoritative close input. Positive
+tests must create parity, paper, and legacy records by exercising their public
+producer boundaries (inert process fakes are permitted for source-only root
+tests), then close them with separately selected expected digests. An
+oracle-equal caller-authored record without that custody selection must fail.
+
+Recursive replay computes two independent passes through the same sealed rows
+from the same sealed seed. Walk-forward uses two non-overlapping deterministic
+folds derived from sealed observations and computes each out-of-sample value
+from that fold's inputs; parity-counting is not a walk-forward calculation.
+All campaign, parity, and legacy snapshot/publication/rollback paths retain
+directory descriptors and inode identities, reject ancestor substitution, and
+never remove a replacement object. Prepared and partially prepared engine
+transport is cleaned with primary-error preservation. The legacy checkout
+boundary covers the canonical repository root and all malformed input/engine
+failures use the finite generic error envelope.
 
 - [ ] **Step 4: Gate both dependency graphs, commit, and review.**
 
@@ -756,8 +785,13 @@ and unchanged simulation/forensic generations.
 
 - [ ] **Step 6: Produce legacy comparisons and close campaign-v2 evidence.**
 
-Run the legacy adapter exactly once for each manifest scenario ID, then close
-evidence:
+Run the legacy adapter exactly once for each manifest scenario ID. Before the
+close command, an independent custody reviewer verifies the campaign,
+parity, paper, and eight legacy records came from the reviewed producer
+invocations and returns their exact four expected digests. Bind those values
+as `phase4_campaign_sha256`, `phase4_parity_record_sha256`,
+`phase4_paper_record_sha256`, and `phase4_legacy_records_sha256`; do not derive
+them inside the closer invocation. Then close evidence:
 
 ```bash
 mkdir -m 0700 "${phase4_runtime_root}/legacy-records"
@@ -768,17 +802,22 @@ for phase4_scenario_id in "${phase4_scenario_ids[@]}"; do
     --transport-root "${phase4_runtime_root}/legacy-records" \
     --scenario-id "${phase4_scenario_id}"
 done
+mkdir -m 0700 "${phase4_runtime_root}/research-transport"
 python3.11 -I scripts/close_phase4_research_evidence.py \
   --campaign-directory "${phase4_runtime_root}/campaign" \
+  --campaign-sha256 "${phase4_campaign_sha256}" \
   --parity-record "${phase4_runtime_root}/parity-record.json" \
+  --parity-record-sha256 "${phase4_parity_record_sha256}" \
   --paper-record "${phase4_runtime_root}/paper-transport/paper-compatibility-result.json" \
+  --paper-record-sha256 "${phase4_paper_record_sha256}" \
   --legacy-record-directory "${phase4_runtime_root}/legacy-records" \
-  --evidence-root "${phase4_runtime_root}/research-evidence"
+  --legacy-records-sha256 "${phase4_legacy_records_sha256}" \
+  --transport-root "${phase4_runtime_root}/research-transport"
 ```
 
 Require eight scenario closures, six 04D gates PASS, one deterministic campaign
-closure, and legacy authority false. Run the exact 01D command from Step 1
-again.
+closure in the fixed mode-0400 no-clobber record, empty stdout, and legacy
+authority false. Run the exact 01D command from Step 1 again.
 
 - [ ] **Step 7: Independent runtime/evidence-source review.**
 
