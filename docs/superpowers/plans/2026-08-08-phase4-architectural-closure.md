@@ -248,13 +248,12 @@ exact in-sandbox command:
   --wheel-directory /engine/wheels
 ```
 
-The probe loads the policy-selected entry launcher from the fixed path and
-calls its `_qualification_import_graph()` export. For the simulation launcher,
-that export calls `_require_production_stdlib_sys_path`,
+For the schema-6 simulation policy, the probe loads the reviewed backtest
+launcher from the fixed path, calls `_require_production_stdlib_sys_path`,
 `_extract_sealed_wheels`, and `_sealed_dependency_path_scope`, imports exactly
 `numpy`, `pandas`, and `nautilus_trader`, then calls
-`_load_target_portfolio_strategy`. Task 5 adds the same export to the paper
-launcher using the shared support path. The qualification script builds a
+`_load_target_portfolio_strategy`. Task 5 extends the probe for the paper entry
+launcher without changing the already reviewed simulation helper contract. The qualification script builds a
 private canonical minimal manifest containing the exact policy-bound launcher
 and strategy records and mounts it read-only at
 `/engine/closure-manifest.json`; it mounts all launchers at their production
@@ -342,8 +341,8 @@ boundary, proves initialization and disposal, emits exactly one canonical
 `PaperCompatibilityValidated` line, and exits. It never starts a persistent
 `TradingNode`, provider, broker, account, or background service. The root
 harness owns one prepare/consume/captured-process call and writes only a sealed
-digest-only result record. Its `_qualification_import_graph()` export must use
-the same import-only probe contract as simulation and must not construct paper
+digest-only result record. Its import-only qualification path must reuse the
+same sealed dependency helpers as simulation and must not construct paper
 engine state.
 
 - [ ] **Step 4: Generate contracts and create the source commit.**
