@@ -2396,3 +2396,83 @@ def test_launcher_accepts_only_a_zero_order_04a_catalog_and_04b_target(
                 market_data.replace(b'"101.00"', b'"999.00"'),
             )
         )
+
+
+def test_sealed_wheel_scope_restores_missing_trusted_importlib_binding(
+    tmp_path: Path,
+) -> None:
+    sealed = tmp_path / "sealed"
+    sealed.mkdir()
+    (sealed / "sealed_trusted_child_success.py").write_text(
+        "import importlib\nBOUND_CHILD = importlib.machinery\n",
+        encoding="utf-8",
+    )
+    (sealed / "sealed_trusted_child_error.py").write_text(
+        "import importlib\n"
+        "BOUND_CHILD = importlib.machinery\n"
+        "import ambient_only_dependency\n",
+        encoding="utf-8",
+    )
+    script = r"""
+import importlib
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+child_name = "importlib.machinery"
+trusted_parent = module._TRUSTED_PRELOADED_INTERPRETER_MODULES["importlib"]
+trusted_child = module._TRUSTED_PRELOADED_INTERPRETER_MODULES[child_name]
+assert importlib is trusted_parent
+assert importlib.machinery is trusted_child
+
+vars(importlib).pop("machinery")
+before_meta_path = tuple(sys.meta_path)
+before_modules = dict(sys.modules)
+with module._sealed_wheel_import_scope((module.Path(sys.argv[2]),)):
+    resolved = importlib.import_module("sealed_trusted_child_success")
+    assert sys.modules[child_name] is trusted_child
+    assert importlib.machinery is trusted_child
+    assert resolved.BOUND_CHILD is trusted_child
+
+assert tuple(sys.meta_path) == before_meta_path
+assert sys.modules == before_modules
+assert importlib.machinery is trusted_child
+
+vars(importlib).pop("machinery")
+before_modules = dict(sys.modules)
+try:
+    with module._sealed_wheel_import_scope((module.Path(sys.argv[2]),)):
+        importlib.import_module("sealed_trusted_child_error")
+except ModuleNotFoundError as exc:
+    assert exc.name == "ambient_only_dependency"
+else:
+    raise AssertionError("ambient dependency unexpectedly resolved")
+
+assert tuple(sys.meta_path) == before_meta_path
+assert sys.modules == before_modules
+assert importlib.machinery is trusted_child
+print("trusted-importlib-binding-ok")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(LAUNCHER.resolve()),
+            str(sealed),
+        ],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "trusted-importlib-binding-ok\n"

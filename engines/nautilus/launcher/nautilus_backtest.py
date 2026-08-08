@@ -615,7 +615,7 @@ def _sealed_wheel_import_scope(roots: tuple[Path, ...]):
 
     _require_production_stdlib_sys_path()
     original_meta_path = tuple(sys.meta_path)
-    original_modules = dict(sys.modules)
+    original_modules = _snapshot_modules_after_restoring_trusted_machinery()
     parent_namespace_snapshots = _snapshot_interpreter_module_parent_namespaces()
     parent_attribute_names: set[str] = set()
     finder = _SealedWheelFinder(roots)
@@ -2675,6 +2675,17 @@ def _simulation_event(
         ).hexdigest(),
         "payload": event_payload,
     }
+
+
+def _snapshot_modules_after_restoring_trusted_machinery() -> dict[str, object]:
+    parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES["importlib"]
+    child = _TRUSTED_PRELOADED_INTERPRETER_MODULES["importlib.machinery"]
+    namespace = object.__getattribute__(parent, "__dict__")
+    if namespace.get("machinery", _MISSING_PARENT_ATTRIBUTE) is (
+        _MISSING_PARENT_ATTRIBUTE
+    ):
+        namespace["machinery"] = child
+    return dict(sys.modules)
 
 
 def _fail(message: str) -> NoReturn:
