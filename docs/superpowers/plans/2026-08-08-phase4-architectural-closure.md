@@ -593,8 +593,12 @@ bounded `PATH`, `PYTHONDONTWRITEBYTECODE`, `PYTHONHASHSEED`,
 The Task-8 legacy sync tool is fixed to the regular mode-0755 binary
 `/home/thenam176/.local/bin/uv`, version `0.11.7`, SHA-256
 `cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4`.
-It is not selected through inherited `PATH`; preflight rechecks its canonical
-absolute path, owner, mode, digest, and version before the sanitized sync.
+It is not selected through inherited `PATH`. Bash opens it once read-only and
+retains that descriptor across mode/owner/inode/hash verification, the version
+probe, and the sanitized sync; both executions use `/proc/self/fd/<fd>` rather
+than the mutable pathname. Absolute root-owned coreutils perform the checks.
+After sync, the parent rechecks the retained descriptor hash/identity and the
+named inode before closing the descriptor.
 
 Every campaign destination, scenario directory, and parity provider subroot is
 created mode 0500 before descriptor acquisition. Only the opened inode may be
@@ -606,10 +610,15 @@ the full 16-subroot inventory.
 
 Every parity exceptional exit reseals the entire retained ordered prefix,
 including all previously completed subroots, to mode 0500 before the final
-inventory check. Descriptor-close failures may only become type-only notes on
-the original primary failure; they cannot mask it or skip the final campaign
-validation. Any descriptor acquired before a later identity check is always
-closed, including the campaign scenario-open pre-append path.
+inventory check. This includes every nested provider run directory; the two
+request files remain mode 0400. Every descriptor close in the parity verifier,
+including transport-open, retained-run, record reservation/write, sealing,
+validation, and outer campaign paths, goes through one bounded collector.
+Descriptor-close failures may only become type-only notes on the original
+primary failure; they cannot mask it, stop later descriptor closes, or skip the
+final campaign validation. With no earlier primary they normalize to the
+finite parity error envelope. Any descriptor acquired before a later identity
+check is always closed, including the campaign scenario-open pre-append path.
 
 - [ ] **Step 4: Gate both dependency graphs, commit, and review.**
 
@@ -837,12 +846,18 @@ them inside the closer invocation. Then close evidence:
 
 ```bash
 phase4_uv=/home/thenam176/.local/bin/uv
-test "$(realpath -e -- "${phase4_uv}")" = "${phase4_uv}"
+test "$(/usr/bin/realpath -e -- "${phase4_uv}")" = "${phase4_uv}"
 test -f "${phase4_uv}" && test -x "${phase4_uv}"
-test "$(stat -c '%a:%u:%g' -- "${phase4_uv}")" = "755:$(id -u):$(id -g)"
-test "$(sha256sum -- "${phase4_uv}" | cut -d ' ' -f 1)" = \
+exec {phase4_uv_fd}<"${phase4_uv}"
+phase4_uv_exec="/proc/self/fd/${phase4_uv_fd}"
+phase4_uv_identity="$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv_exec}")"
+test "${phase4_uv_identity}" = \
+  "$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv}")"
+test "$(/usr/bin/stat -Lc '%a:%u:%g' -- "${phase4_uv_exec}")" = \
+  "755:$(/usr/bin/id -u):$(/usr/bin/id -g)"
+test "$(/usr/bin/sha256sum -- "${phase4_uv_exec}" | /usr/bin/cut -d ' ' -f 1)" = \
   cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4
-test "$("${phase4_uv}" --version)" = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
+test "$("${phase4_uv_exec}" --version)" = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 phase4_legacy_env=(
   /usr/bin/env -i
   PATH=/usr/bin:/bin
@@ -853,8 +868,15 @@ phase4_legacy_env=(
 )
 (
   cd legacy/research-backend
-  "${phase4_legacy_env[@]}" "${phase4_uv}" sync --frozen --extra test
+  "${phase4_legacy_env[@]}" "${phase4_uv_exec}" sync --frozen --extra test
 )
+test "${phase4_uv_identity}" = \
+  "$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv_exec}")"
+test "${phase4_uv_identity}" = \
+  "$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv}")"
+test "$(/usr/bin/sha256sum -- "${phase4_uv_exec}" | /usr/bin/cut -d ' ' -f 1)" = \
+  cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4
+exec {phase4_uv_fd}<&-
 mkdir -m 0700 "${phase4_runtime_root}/legacy-records"
 phase4_scenario_ids=(long-accounting short-accounting partial-fill same-bar-stop-take-profit stale-quote zero-liquidity session-boundary event-digest)
 for phase4_scenario_id in "${phase4_scenario_ids[@]}"; do
