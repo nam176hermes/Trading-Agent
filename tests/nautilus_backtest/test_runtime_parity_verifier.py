@@ -134,6 +134,7 @@ class _Harness:
         consume_error: EngineSpawnError | None = None,
         candidate_drift_after_initial: bool = False,
         prepare_error_after_transport: EngineSpawnError | None = None,
+        transport_mutation: Callable[[Path], None] | None = None,
     ) -> None:
         self.candidate_schema = candidate_schema
         self.rollback_schema = rollback_schema
@@ -142,6 +143,7 @@ class _Harness:
         self.consume_error = consume_error
         self.candidate_drift_after_initial = candidate_drift_after_initial
         self.prepare_error_after_transport = prepare_error_after_transport
+        self.transport_mutation = transport_mutation
         self.candidate_attest_calls = 0
         self.attest_calls: list[tuple[str, Path]] = []
         self.prepare_calls: list[EngineCommandEnvelope] = []
@@ -192,6 +194,8 @@ class _Harness:
                     path = run_directory / name
                     path.write_bytes(b"sealed")
                     path.chmod(0o400)
+                if harness.transport_mutation is not None:
+                    harness.transport_mutation(run_directory)
                 harness.prepare_calls.append(envelope)
                 if harness.prepare_error_after_transport is not None:
                     raise harness.prepare_error_after_transport
@@ -667,6 +671,71 @@ def test_verifier_retains_partial_transport_when_prepare_fails_after_publication
     assert retained_subroot.name == "parity-long-accounting-run-1"
     assert stat.S_IMODE(retained_subroot.stat().st_mode) == 0o500
     assert not external_paths["record"].exists()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_members", "expected_modes", "raw_secondary_text"),
+    (
+        pytest.param(
+            lambda run: (run / "request.sha256").unlink(),
+            {"request.json"},
+            {"request.json": 0o400},
+            "provider transport run inventory is invalid",
+            id="partial_residue",
+        ),
+        pytest.param(
+            lambda run: (run / "unexpected").write_bytes(b"unexpected"),
+            {"request.json", "request.sha256", "unexpected"},
+            {
+                "request.json": 0o400,
+                "request.sha256": 0o400,
+                "unexpected": 0o644,
+            },
+            "provider transport run inventory is invalid",
+            id="extra_member",
+        ),
+        pytest.param(
+            lambda run: (run / "request.json").chmod(0o600),
+            {"request.json", "request.sha256"},
+            {"request.json": 0o600, "request.sha256": 0o400},
+            "provider transport member identity changed",
+            id="wrong_member_mode",
+        ),
+    ),
+)
+def test_verifier_reseals_malformed_failed_provider_prefix_before_inventory_validation(
+    external_paths: dict[str, Path],
+    mutation: Callable[[Path], None],
+    expected_members: set[str],
+    expected_modes: dict[str, int],
+    raw_secondary_text: str,
+) -> None:
+    """Inventory failure must not leave a writable forensic prefix behind."""
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary prepare failure")
+    harness = _Harness(
+        prepare_error_after_transport=primary,
+        transport_mutation=mutation,
+    )
+
+    with pytest.raises(EngineSpawnError, match="primary prepare failure") as observed:
+        _verify(external_paths, harness)
+
+    assert observed.value is primary
+    retained_subroot = next(external_paths["transport_root"].iterdir())
+    retained_run = next(retained_subroot.iterdir())
+    assert stat.S_IMODE(retained_subroot.stat().st_mode) == 0o500
+    assert stat.S_IMODE(retained_run.stat().st_mode) == 0o500
+    surviving_members = {path.name: path for path in retained_run.iterdir()}
+    assert set(surviving_members) == expected_members
+    assert {
+        name: stat.S_IMODE(path.stat().st_mode)
+        for name, path in surviving_members.items()
+    } == expected_modes
+    assert all(path.read_bytes() for path in surviving_members.values())
+    assert all(
+        raw_secondary_text not in note
+        for note in getattr(primary, "__notes__", ())
+    )
 
 
 def test_verifier_seals_mode_0500_subroot_when_open_fails_after_mkdir(

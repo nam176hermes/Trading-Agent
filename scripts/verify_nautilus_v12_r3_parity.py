@@ -408,9 +408,33 @@ def _close_descriptors(
                 close_primary = ParityVerificationError(
                     f"{label} descriptor close failure: {type(exc).__name__}"
                 )
+                close_primary.add_note(
+                    "secondary descriptor close failure: "
+                    f"{type(exc).__name__}"
+                )
             else:
                 close_primary.add_note(note)
     return primary if primary is not None else close_primary
+
+
+def _bounded_secondary_summary(error: BaseException) -> str:
+    """Return error classes only, never a secondary error message."""
+
+    error_types = [type(error).__name__]
+    for note in getattr(error, "__notes__", ()):
+        if note.endswith(": OSError"):
+            error_types.append("OSError")
+    return ", ".join(dict.fromkeys(error_types))
+
+
+def _reseal_directory(descriptor: int, *, label: str) -> None:
+    """Make one opened forensic directory immutable before inspecting it."""
+
+    try:
+        os.fchmod(descriptor, 0o500)
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise ParityVerificationError(f"{label} cannot be resealed") from exc
 
 
 def _open_transport_campaign(path: Path) -> _TransportCampaign:
@@ -569,10 +593,6 @@ def _seal_provider_run(
     refreshed_run: tuple[int, ...] | None = None
     failure: BaseException | None = None
     try:
-        if set(os.listdir(subroot_descriptor)) != {run_name}:
-            raise ParityVerificationError(
-                "provider transport subroot inventory is invalid"
-            )
         run_descriptor = os.open(
             run_name,
             os.O_RDONLY
@@ -599,6 +619,26 @@ def _seal_provider_run(
             )
         ):
             raise ParityVerificationError("provider transport run identity changed")
+        _reseal_directory(run_descriptor, label="provider transport run")
+        os.fsync(subroot_descriptor)
+        opened_run = os.fstat(run_descriptor)
+        named_run = os.stat(
+            run_name,
+            dir_fd=subroot_descriptor,
+            follow_symlinks=False,
+        )
+        refreshed_run = _transport_identity(opened_run)
+        if (
+            refreshed_run != _transport_identity(named_run)
+            or stat.S_IMODE(opened_run.st_mode) != 0o500
+        ):
+            raise ParityVerificationError(
+                "provider transport run could not be sealed"
+            )
+        if set(os.listdir(subroot_descriptor)) != {run_name}:
+            raise ParityVerificationError(
+                "provider transport subroot inventory is invalid"
+            )
         members = {"request.json", "request.sha256"}
         if set(os.listdir(run_descriptor)) != members:
             raise ParityVerificationError(
@@ -639,18 +679,14 @@ def _seal_provider_run(
                     "provider transport member identity changed"
                 )
             member_identities[member] = identity
-        os.fchmod(run_descriptor, 0o500)
-        os.fsync(run_descriptor)
-        os.fsync(subroot_descriptor)
         opened_run = os.fstat(run_descriptor)
         named_run = os.stat(
             run_name,
             dir_fd=subroot_descriptor,
             follow_symlinks=False,
         )
-        refreshed_run = _transport_identity(opened_run)
         if (
-            refreshed_run != _transport_identity(named_run)
+            _transport_identity(opened_run) != _transport_identity(named_run)
             or stat.S_IMODE(opened_run.st_mode) != 0o500
             or set(os.listdir(run_descriptor)) != members
         ):
@@ -723,22 +759,7 @@ def _seal_failed_subroot(
                 raise ParityVerificationError(
                     "failed transport subroot identity changed"
                 )
-            subroot_entries = set(os.listdir(descriptor))
-            if subroot_entries:
-                run_name = f"run-{envelope.engine_run_id.hex}"
-                run_identity, member_identities, close_failure = (
-                    _seal_provider_run(
-                        descriptor,
-                        run_name=run_name,
-                        expected_snapshot=custody.snapshot,
-                    )
-                )
-            else:
-                run_name = ""
-                run_identity = ()
-                member_identities = {}
-            os.fchmod(descriptor, 0o500)
-            os.fsync(descriptor)
+            _reseal_directory(descriptor, label="failed transport subroot")
             os.fsync(campaign.root_descriptor)
             opened = os.fstat(descriptor)
             named = os.stat(
@@ -754,6 +775,20 @@ def _seal_failed_subroot(
                     "failed transport subroot could not be sealed"
                 )
             custody.identity = _transport_identity(opened)
+            subroot_entries = set(os.listdir(descriptor))
+            if subroot_entries:
+                run_name = f"run-{envelope.engine_run_id.hex}"
+                run_identity, member_identities, close_failure = (
+                    _seal_provider_run(
+                        descriptor,
+                        run_name=run_name,
+                        expected_snapshot=custody.snapshot,
+                    )
+                )
+            else:
+                run_name = ""
+                run_identity = ()
+                member_identities = {}
             if subroot_entries:
                 custody.snapshot = _RetainedRunSnapshot(
                     root_identity=custody.identity,
@@ -1605,7 +1640,7 @@ def _run_parity_matrix(
         except ParityVerificationError as forensic_error:
             primary_failure.add_note(
                 "secondary completed-prefix sealing failure: "
-                f"{forensic_error}"
+                f"{_bounded_secondary_summary(forensic_error)}"
             )
         if current is not None:
             try:
@@ -1617,7 +1652,7 @@ def _run_parity_matrix(
             except ParityVerificationError as forensic_error:
                 primary_failure.add_note(
                     "secondary forensic sealing failure: "
-                    f"{forensic_error}"
+                    f"{_bounded_secondary_summary(forensic_error)}"
                 )
         try:
             _verify_transport_campaign(
@@ -1629,7 +1664,7 @@ def _run_parity_matrix(
         except ParityVerificationError as forensic_error:
             primary_failure.add_note(
                 "secondary forensic validation failure: "
-                f"{forensic_error}"
+                f"{_bounded_secondary_summary(forensic_error)}"
             )
     try:
         _close_transport_campaign(transport_campaign)
@@ -1638,7 +1673,7 @@ def _run_parity_matrix(
             raise
         primary_failure.add_note(
             "secondary transport-campaign close failure: "
-            f"{close_error}"
+            f"{_bounded_secondary_summary(close_error)}"
         )
     if primary_failure is not None:
         raise primary_failure
