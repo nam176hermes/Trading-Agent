@@ -1359,21 +1359,6 @@ def _write_verified_helper_pair(
     return destination, policy
 
 
-def _execute_verified_descriptor_in_child(module, pair, helper_arguments: list[str]) -> int:
-    """Exercise the real kernel primitive without replacing the pytest process."""
-    child = os.fork()
-    if child == 0:
-        null = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(null, 1)
-        os.dup2(null, 2)
-        os.close(null)
-        module._execveat(pair.binary_fd, helper_arguments)
-        os._exit(126)
-    _, status = os.waitpid(child, 0)
-    assert status & 0x7F == 0
-    return status >> 8
-
-
 def _execute_verified_pair_in_child(
     module, destination: Path, policy: Path, helper_arguments: list[str]
 ) -> int:
@@ -1388,6 +1373,36 @@ def _execute_verified_pair_in_child(
             destination, module.load_policy(policy), helper_arguments
         )
         os._exit(126)
+    _, status = os.waitpid(child, 0)
+    assert status & 0x7F == 0
+    return status >> 8
+
+
+def _execute_pair_after_replacement_in_child(
+    module,
+    destination: Path,
+    policy_path: Path,
+    attacker: Path,
+    helper_arguments: list[str],
+) -> int:
+    """Replace the path after pair verification, before its descriptor is execed."""
+    child = os.fork()
+    if child == 0:
+        null = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(null, 1)
+        os.dup2(null, 2)
+        os.close(null)
+        policy = module.load_policy(policy_path)
+        module._verify_policy_source_commit(policy)
+        exit_status = 126
+        try:
+            def replace_then_execute(binary_fd: int) -> None:
+                os.replace(attacker, destination)
+                module._execveat(binary_fd, helper_arguments)
+
+            module._verify_then_execute_pair(destination, policy, replace_then_execute)
+        finally:
+            os._exit(exit_status)
     _, status = os.waitpid(child, 0)
     assert status & 0x7F == 0
     return status >> 8
@@ -1414,18 +1429,13 @@ def test_execute_pair_runs_the_verified_descriptor_after_same_uid_replacement(
     )
     attacker.chmod(0o500)
 
-    pair = module._open_verified_materialized_pair(
-        destination, module.load_policy(policy_path)
-    )
-    try:
-        os.replace(attacker, destination)
-        assert _execute_verified_descriptor_in_child(
-            module,
-            pair,
-            _command(helper, fixture, native_tmp_path)[1:],
-        ) == 0
-    finally:
-        pair.close()
+    assert _execute_pair_after_replacement_in_child(
+        module,
+        destination,
+        policy_path,
+        attacker,
+        _command(helper, fixture, native_tmp_path)[1:],
+    ) == 0
 
     assert fixture_marker.exists()
     assert not attacker_marker.exists()

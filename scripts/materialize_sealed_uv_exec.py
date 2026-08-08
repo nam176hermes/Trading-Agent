@@ -17,7 +17,7 @@ import sys
 import time
 import types
 from pathlib import Path, PurePosixPath
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1208,14 +1208,26 @@ def _execveat(binary_fd: int, helper_arguments: Sequence[str]) -> None:
     raise MaterializationError("verified sealed UV executor returned unexpectedly")
 
 
+def _verify_then_execute_pair(
+    destination: Path, policy: dict[str, object], executor: Callable[[int], None]
+) -> None:
+    """Keep the verified binary descriptor open until the kernel exec boundary."""
+    with _open_verified_materialized_pair(destination, policy) as pair:
+        executor(pair.binary_fd)
+    raise MaterializationError("verified sealed UV executor returned unexpectedly")
+
+
 def execute_materialized_pair(
     destination: Path, policy: dict[str, object], helper_arguments: Sequence[str]
 ) -> None:
     """Verify policy source and pair, then exec the still-open verified binary."""
     policy = _validate_policy(policy)
     _verify_policy_source_commit(policy)
-    with _open_verified_materialized_pair(destination, policy) as pair:
-        _execveat(pair.binary_fd, helper_arguments)
+    _verify_then_execute_pair(
+        destination,
+        policy,
+        lambda binary_fd: _execveat(binary_fd, helper_arguments),
+    )
 
 
 def materialize(
