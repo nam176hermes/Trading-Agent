@@ -421,6 +421,33 @@ digest-only result record. Its import-only qualification path must reuse the
 same sealed dependency helpers as simulation and must not construct paper
 engine state.
 
+The campaign manifest accepted by the harness has exactly
+`schema_version`, `paper_scenario_id`, `strategy_source_sha256`, and
+`scenarios`. Its schema is `nautilus-phase4-campaign-v1`, its paper scenario
+is `long-accounting`, and `scenarios` is the exact unique ordered eight-ID
+campaign from the repository scenario authority. Each scenario record has
+exactly `scenario_id` plus the five SHA-256 fields
+`engine_configuration_sha256`, `instrument_catalog_sha256`,
+`strategy_configuration_sha256`, `market_data_sha256`, and
+`simulation_scenario_sha256`. The five sealed files live under the fixed
+`<campaign>/<scenario-id>/` directory; no manifest path is caller-selected.
+
+The reviewed parity record accepted by the harness has exactly
+`schema_version`, `status`, `scenario_campaign_sha256`,
+`strategy_source_sha256`, `candidate_closure_sha256`,
+`candidate_manifest_sha256`, `candidate_manifest_schema_version`, and
+`scenarios`. Its schema is `nautilus-phase4-parity-evidence-v2`, status is
+`passed`, candidate schema is integer 6, and it contains the same exact ordered
+eight scenario records. Each parity scenario record contains the six campaign
+identity fields above plus `independent_reference_result_sha256`,
+`independent_reference_event_sha256`, `nautilus_result_sha256`,
+`nautilus_event_sha256`, `run_1_event_sha256`, and
+`run_2_event_sha256`. All are lowercase SHA-256; campaign identities must
+match the manifest; both run event digests, the Nautilus event digest, and the
+independent event digest must be equal; and Nautilus/reference result digests
+must be equal. Reject missing/extra/duplicate/out-of-order scenarios and any
+caller-created PASS-shaped record that does not satisfy this grammar.
+
 - [ ] **Step 4: Generate contracts and create the source commit.**
 
 ```bash
