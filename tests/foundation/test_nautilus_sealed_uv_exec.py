@@ -389,13 +389,22 @@ def _write_policy(
     return policy
 
 
-def _fake_verified_toolchains(_policy: dict[str, object], _cargo: Path, _llvm: Path) -> None:
+def _fake_verified_toolchains(
+    _policy: dict[str, object], _cargo: Path, _llvm: Path, _snapshot
+) -> None:
     return None
 
 
 def _fake_builder(payloads: list[bytes]):
-    def build(_policy: dict[str, object], build_root: Path, _cargo: Path, _llvm: Path) -> Path:
+    def build(
+        _policy: dict[str, object],
+        build_root: Path,
+        _cargo: Path,
+        _llvm: Path,
+        snapshot,
+    ) -> Path:
         assert stat.S_IMODE(build_root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(snapshot.root.stat().st_mode) == 0o700
         for name in ("cargo-home", "target", "tmp"):
             directory = build_root / name
             assert directory.is_dir()
@@ -797,7 +806,12 @@ def test_materializer_accepts_only_the_expected_cargo_hardlinked_release_output(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
-    policy = _task3_policy(module)
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    policy = module.load_policy(_write_policy(native_tmp_path, module))
+    snapshot = module._write_verified_source_snapshot(
+        native_tmp_path, policy, module._verify_policy_source_commit(policy)
+    )
     build_root = module._create_build_root(native_tmp_path, "private-build")
 
     def cargo_build(*_args, **_kwargs):
@@ -817,6 +831,7 @@ def test_materializer_accepts_only_the_expected_cargo_hardlinked_release_output(
         build_root,
         cargo=Path("/tmp/cargo"),
         llvm_toolchain=Path("/tmp/llvm"),
+        source_snapshot=snapshot,
     )
 
     assert output.stat().st_nlink == 2
@@ -826,6 +841,181 @@ def test_materializer_never_passes_a_cloexec_proc_fd_alias_to_the_cargo_child() 
     source = MATERIALIZER.read_text(encoding="utf-8")
 
     assert 'Path(f"/proc/self/fd/{parent_fd}") / name' not in source
+
+
+def _substitute_checkout_sources_after_verification(
+    repository: Path, module
+) -> None:
+    replacements = {
+        "cargo_manifest": b"[package]\nname = \"checkout-substitution\"\nversion = \"9.9.9\"\n",
+        "rust_source": b'compile_error!("checkout Rust source was reopened");\n',
+        "rust_toolchain_validator": b'raise RuntimeError("checkout rust validator was imported")\n',
+        "llvm_toolchain_validator": b'raise RuntimeError("checkout LLVM validator was imported")\n',
+        "input_cache_validator": b'raise RuntimeError("checkout input validator was imported")\n',
+    }
+    for source_name, replacement in replacements.items():
+        source = repository / module.POLICY_SOURCE_PATHS[source_name]
+        source.chmod(0o600)
+        source.write_bytes(replacement)
+        source.chmod(0o600)
+
+
+def _assert_only_verified_snapshot_files(snapshot, module, source_bytes: dict[str, bytes]) -> None:
+    assert stat.S_IMODE(snapshot.root.stat().st_mode) == 0o700
+    observed_files = {
+        path.relative_to(snapshot.root).as_posix()
+        for path in snapshot.root.rglob("*")
+        if path.is_file()
+    }
+    assert observed_files == set(module.POLICY_SOURCE_PATHS.values())
+    for source_name, relative in module.POLICY_SOURCE_PATHS.items():
+        path = snapshot.paths[source_name]
+        assert path == snapshot.root / relative
+        assert path.read_bytes() == source_bytes[relative]
+        assert stat.S_IMODE(path.stat().st_mode) == 0o400
+
+
+def test_verified_git_blob_snapshot_contains_only_verified_read_only_sources(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, source_bytes = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    policy = module.load_policy(_write_policy(native_tmp_path, module))
+
+    verified = module._verify_policy_source_commit(policy)
+    _substitute_checkout_sources_after_verification(repository, module)
+    snapshot = module._write_verified_source_snapshot(native_tmp_path, policy, verified)
+
+    _assert_only_verified_snapshot_files(snapshot, module, source_bytes)
+
+    poisoned = snapshot.paths["rust_source"]
+    poisoned.parent.chmod(0o700)
+    poisoned.chmod(0o600)
+    poisoned.write_bytes(b"unbound snapshot mutation")
+    poisoned.chmod(0o400)
+    poisoned.parent.chmod(0o500)
+    with pytest.raises(module.MaterializationError, match="snapshot"):
+        module._verify_verified_source_snapshot(snapshot)
+
+
+def test_cargo_uses_verified_snapshot_after_checkout_substitution(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, source_bytes = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    policy = module.load_policy(_write_policy(native_tmp_path, module))
+    verified = module._verify_policy_source_commit(policy)
+    snapshot = module._write_verified_source_snapshot(native_tmp_path, policy, verified)
+    _substitute_checkout_sources_after_verification(repository, module)
+    build_root = module._create_build_root(native_tmp_path, "snapshot-build")
+    calls: dict[str, Path] = {}
+
+    def cargo_build(arguments, **kwargs):
+        manifest_index = arguments.index("--manifest-path") + 1
+        calls["manifest"] = Path(arguments[manifest_index])
+        calls["cwd"] = Path(kwargs["cwd"])
+        output = build_root / "target" / TARGET / "release" / "nautilus-sealed-uv-exec"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"snapshot cargo output")
+        output.chmod(0o500)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", cargo_build)
+    output = module._build_once(
+        policy,
+        build_root,
+        Path("/tmp/cargo"),
+        Path("/tmp/llvm"),
+        snapshot,
+    )
+
+    assert output.read_bytes() == b"snapshot cargo output"
+    assert calls == {
+        "manifest": snapshot.paths["cargo_manifest"],
+        "cwd": snapshot.paths["cargo_manifest"].parent,
+    }
+    assert all(path.is_relative_to(snapshot.root) for path in calls.values())
+    _assert_only_verified_snapshot_files(snapshot, module, source_bytes)
+
+
+def test_dynamic_verifiers_import_only_verified_snapshot_after_checkout_substitution(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cargo, _, _ = _require_private_toolchains()
+    module = _load_materializer()
+    repository, source_bytes = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    policy = module.load_policy(_write_policy(native_tmp_path, module))
+    verified = module._verify_policy_source_commit(policy)
+    snapshot = module._write_verified_source_snapshot(native_tmp_path, policy, verified)
+    _substitute_checkout_sources_after_verification(repository, module)
+    loaded: list[Path] = []
+    original_loader = module._load_local_tool
+
+    def record_snapshot_import(path: Path, module_name: str, source_snapshot):
+        loaded.append(path)
+        return original_loader(path, module_name, source_snapshot)
+
+    monkeypatch.setattr(module, "_load_local_tool", record_snapshot_import)
+    module._verify_toolchains(policy, cargo, PRIVATE_LLVM, snapshot)
+
+    assert loaded == [
+        snapshot.paths["rust_toolchain_validator"],
+        snapshot.paths["llvm_toolchain_validator"],
+        snapshot.paths["input_cache_validator"],
+    ]
+    assert all(path.is_relative_to(snapshot.root) for path in loaded)
+    _assert_only_verified_snapshot_files(snapshot, module, source_bytes)
+
+
+def test_materializer_rejects_snapshot_identity_drift_before_publication(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    policy = _write_policy(native_tmp_path, module)
+    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
+    calls = 0
+
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+
+    def mutate_after_first_build(
+        _policy: dict[str, object],
+        build_root: Path,
+        _cargo: Path,
+        _llvm: Path,
+        snapshot,
+    ) -> Path:
+        nonlocal calls
+        calls += 1
+        output = build_root / "target" / TARGET / "release" / "nautilus-sealed-uv-exec"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"same")
+        output.chmod(0o500)
+        if calls == 1:
+            source = snapshot.paths["rust_source"]
+            source.parent.chmod(0o700)
+            source.chmod(0o600)
+            source.write_bytes(b"unbound mutation")
+            source.chmod(0o400)
+            source.parent.chmod(0o500)
+        return output
+
+    monkeypatch.setattr(module, "_build_once", mutate_after_first_build)
+
+    with pytest.raises(module.MaterializationError, match="snapshot"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert calls == 1
+    assert not destination.exists()
 
 
 def test_materialized_inventory_rejects_an_extra_file(
@@ -870,11 +1060,11 @@ def test_committed_policy_binds_all_task3_sources_and_private_toolchain_policies
 
 def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
-    start = text.index("phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/")
+    start = text.index("phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v3/")
     end = text.index('mkdir -m 0700 "${phase4_runtime_root}/legacy-records"', start)
     block = text[start:end]
 
-    assert 'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/' in block
+    assert 'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v3/' in block
     assert 'test -x "${phase4_sealed_uv}" && test -r "${phase4_sealed_uv_manifest}"' in block
     assert block.count('"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv') == 2
     assert "--action version" in block
@@ -885,4 +1075,4 @@ def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     assert '"${phase4_uv_exec}"' not in block
     assert "/proc/self/fd" not in text
     assert "Bash opens it once" not in text
-    assert "only the materialized sealed-uv-exec-v2 helper" in text
+    assert "only the materialized sealed-uv-exec-v3 helper" in text

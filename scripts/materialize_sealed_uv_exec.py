@@ -69,6 +69,17 @@ class MaterializationError(ValueError):
     """Raised when one materialization authority or output check fails."""
 
 
+class VerifiedSourceSnapshot:
+    """A private copy of the exact Git-blob bytes bound by the policy."""
+
+    def __init__(
+        self, *, root: Path, paths: dict[str, Path], source_bytes: dict[str, bytes]
+    ) -> None:
+        self.root = root
+        self.paths = paths
+        self.source_bytes = source_bytes
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -158,6 +169,20 @@ def _repository_file(
     return path
 
 
+def _policy_relative_parts(relative: object, label: str) -> tuple[str, ...]:
+    if not isinstance(relative, str):
+        raise MaterializationError(f"{label} path is invalid")
+    pure = PurePosixPath(relative)
+    if (
+        not relative
+        or pure.is_absolute()
+        or pure.as_posix() != relative
+        or any(part in {"", ".", ".."} for part in pure.parts)
+    ):
+        raise MaterializationError(f"{label} path is invalid")
+    return pure.parts
+
+
 def _validate_policy(document: object) -> dict[str, object]:
     if not isinstance(document, dict) or set(document) != POLICY_FIELDS:
         raise MaterializationError("sealed UV executor policy fields are invalid")
@@ -208,13 +233,14 @@ def _git_source_commit_output(repository_root: Path, arguments: list[str]) -> by
 
 def _verify_policy_source_commit(
     policy: dict[str, object], *, repository_root: Path | None = None
-) -> None:
+) -> dict[str, bytes]:
     root = ROOT if repository_root is None else repository_root
     source_commit = str(policy["source_commit"])
     _git_source_commit_output(
         root,
         ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
     )
+    verified_bytes: dict[str, bytes] = {}
     for name in POLICY_SOURCE_PATHS:
         source = _repository_file(policy[name], name, repository_root=root)
         expected_digest = str(policy[f"{name}_sha256"])
@@ -228,9 +254,222 @@ def _verify_policy_source_commit(
             raise MaterializationError(
                 f"sealed UV executor {name} source commit digest drifted"
             )
+        verified_bytes[name] = source_at_commit
+    return verified_bytes
 
 
-def _load_local_tool(path: Path, module_name: str) -> Any:
+def _open_snapshot_directory(parent_fd: int, name: str, mode: int) -> int:
+    try:
+        os.mkdir(name, mode, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as error:
+        raise MaterializationError("verified source snapshot directory is unsafe") from error
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != mode
+        ):
+            raise MaterializationError("verified source snapshot directory is unsafe")
+    except (MaterializationError, OSError):
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _write_snapshot_file(parent_fd: int, name: str, contents: bytes) -> None:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(name, flags, 0o400, dir_fd=parent_fd)
+    except OSError as error:
+        raise MaterializationError("verified source snapshot file cannot be created") from error
+    try:
+        view = memoryview(contents)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise MaterializationError("verified source snapshot file write failed")
+            view = view[written:]
+        os.fsync(descriptor)
+        os.fchmod(descriptor, 0o400)
+    except MaterializationError:
+        os.close(descriptor)
+        raise
+    except OSError as error:
+        os.close(descriptor)
+        raise MaterializationError("verified source snapshot file write failed") from error
+    os.close(descriptor)
+
+
+def _seal_snapshot_directories(root: Path) -> None:
+    for current, _, _ in os.walk(root, topdown=False, followlinks=False):
+        directory = Path(current)
+        if directory == root:
+            continue
+        try:
+            directory.chmod(0o500)
+        except OSError as error:
+            raise MaterializationError("verified source snapshot directory cannot be sealed") from error
+
+
+def _write_verified_source_snapshot(
+    staging_root: Path, policy: dict[str, object], verified_bytes: dict[str, bytes]
+) -> VerifiedSourceSnapshot:
+    if set(verified_bytes) != set(POLICY_SOURCE_PATHS):
+        raise MaterializationError("verified source snapshot inputs are incomplete")
+    stage_flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        stage_fd = os.open(staging_root, stage_flags)
+    except OSError as error:
+        raise MaterializationError("verified source snapshot staging root is unsafe") from error
+    snapshot_name = "verified-source-snapshot"
+    try:
+        snapshot_fd = _open_snapshot_directory(stage_fd, snapshot_name, 0o700)
+        try:
+            paths: dict[str, Path] = {}
+            for source_name, relative in POLICY_SOURCE_PATHS.items():
+                if policy[source_name] != relative:
+                    raise MaterializationError("verified source snapshot policy path drifted")
+                parts = _policy_relative_parts(relative, source_name)
+                parent_fd = snapshot_fd
+                opened_fds: list[int] = []
+                try:
+                    for part in parts[:-1]:
+                        child_fd = _open_snapshot_directory(parent_fd, part, 0o700)
+                        if parent_fd != snapshot_fd:
+                            opened_fds.append(parent_fd)
+                        parent_fd = child_fd
+                    _write_snapshot_file(parent_fd, parts[-1], verified_bytes[source_name])
+                finally:
+                    if parent_fd != snapshot_fd:
+                        os.close(parent_fd)
+                    for descriptor in reversed(opened_fds):
+                        os.close(descriptor)
+                paths[source_name] = staging_root / snapshot_name / Path(*parts)
+            os.fsync(snapshot_fd)
+        finally:
+            os.close(snapshot_fd)
+    finally:
+        os.close(stage_fd)
+    snapshot = VerifiedSourceSnapshot(
+        root=staging_root / snapshot_name,
+        paths=paths,
+        source_bytes=dict(verified_bytes),
+    )
+    _seal_snapshot_directories(snapshot.root)
+    _verify_verified_source_snapshot(snapshot)
+    return snapshot
+
+
+def _snapshot_file_bytes(path: Path) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise MaterializationError("verified source snapshot file is unsafe") from error
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o400
+        ):
+            raise MaterializationError("verified source snapshot file is unsafe")
+        chunks: list[bytes] = []
+        while True:
+            block = os.read(descriptor, 1024 * 1024)
+            if not block:
+                break
+            chunks.append(block)
+        return b"".join(chunks)
+    except (MaterializationError, OSError):
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def _verify_verified_source_snapshot(snapshot: VerifiedSourceSnapshot) -> None:
+    try:
+        root_info = snapshot.root.lstat()
+    except OSError as error:
+        raise MaterializationError("verified source snapshot root is unsafe") from error
+    if (
+        snapshot.root.is_symlink()
+        or not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.geteuid()
+        or stat.S_IMODE(root_info.st_mode) != 0o700
+        or set(snapshot.paths) != set(POLICY_SOURCE_PATHS)
+        or set(snapshot.source_bytes) != set(POLICY_SOURCE_PATHS)
+    ):
+        raise MaterializationError("verified source snapshot root is unsafe")
+    expected_files = set(POLICY_SOURCE_PATHS.values())
+    observed_files: set[str] = set()
+    for current, directories, files in os.walk(snapshot.root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for name in directories:
+            directory = current_path / name
+            info = directory.lstat()
+            if (
+                directory.is_symlink()
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) != 0o500
+            ):
+                raise MaterializationError("verified source snapshot directory is unsafe")
+        for name in files:
+            path = current_path / name
+            if path.is_symlink():
+                raise MaterializationError("verified source snapshot file is unsafe")
+            observed_files.add(path.relative_to(snapshot.root).as_posix())
+    if observed_files != expected_files:
+        raise MaterializationError("verified source snapshot inventory drifted")
+    for source_name, relative in POLICY_SOURCE_PATHS.items():
+        path = snapshot.paths[source_name]
+        if path != snapshot.root.joinpath(*_policy_relative_parts(relative, source_name)):
+            raise MaterializationError("verified source snapshot path is unsafe")
+        if _snapshot_file_bytes(path) != snapshot.source_bytes[source_name]:
+            raise MaterializationError("verified source snapshot digest drifted")
+
+
+def _snapshot_path(snapshot: VerifiedSourceSnapshot, source_name: str) -> Path:
+    _verify_verified_source_snapshot(snapshot)
+    try:
+        path = snapshot.paths[source_name]
+    except KeyError as error:
+        raise MaterializationError("verified source snapshot path is unavailable") from error
+    if not path.is_relative_to(snapshot.root):
+        raise MaterializationError("verified source snapshot path is unsafe")
+    return path
+
+
+def _load_local_tool(
+    path: Path, module_name: str, source_snapshot: VerifiedSourceSnapshot
+) -> Any:
+    if path not in source_snapshot.paths.values() or not path.is_relative_to(source_snapshot.root):
+        raise MaterializationError("toolchain validator is outside the verified source snapshot")
+    _verify_verified_source_snapshot(source_snapshot)
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise MaterializationError(f"cannot load {module_name}")
@@ -239,36 +478,38 @@ def _load_local_tool(path: Path, module_name: str) -> Any:
     return module
 
 
-def _verify_toolchains(policy: dict[str, object], cargo: Path, llvm_toolchain: Path) -> None:
+def _verify_toolchains(
+    policy: dict[str, object],
+    cargo: Path,
+    llvm_toolchain: Path,
+    source_snapshot: VerifiedSourceSnapshot,
+) -> None:
     cargo = _lexical_absolute(cargo, "cargo")
     llvm_toolchain = _lexical_absolute(llvm_toolchain, "LLVM toolchain")
     if cargo.name != "cargo" or cargo.parent.name != "bin":
         raise MaterializationError("toolchain verification failed")
     try:
         rust_tool = _load_local_tool(
-            _repository_file(
-                policy["rust_toolchain_validator"], "rust toolchain validator"
-            ),
+            _snapshot_path(source_snapshot, "rust_toolchain_validator"),
             "sealed_uv_exec_rust",
+            source_snapshot,
         )
         llvm_tool = _load_local_tool(
-            _repository_file(
-                policy["llvm_toolchain_validator"], "LLVM toolchain validator"
-            ),
+            _snapshot_path(source_snapshot, "llvm_toolchain_validator"),
             "sealed_uv_exec_llvm",
+            source_snapshot,
         )
         input_tool = _load_local_tool(
-            _repository_file(
-                policy["input_cache_validator"], "input cache validator"
-            ),
+            _snapshot_path(source_snapshot, "input_cache_validator"),
             "sealed_uv_exec_input",
+            source_snapshot,
         )
         rust_policy = rust_tool.load_manifest(
-            _repository_file(policy["rust_toolchain_policy"], "rust toolchain policy")
+            _snapshot_path(source_snapshot, "rust_toolchain_policy")
         )
         rust_tool.verify_materialized_toolchain(cargo.parent.parent, rust_policy)
         llvm_policy = llvm_tool.load_policy(
-            _repository_file(policy["llvm_toolchain_policy"], "LLVM toolchain policy")
+            _snapshot_path(source_snapshot, "llvm_toolchain_policy")
         )
         llvm_tool.verify_materialized(llvm_toolchain, llvm_policy)
         input_tool.validate_private_cargo(cargo, "1.95.0")
@@ -345,8 +586,18 @@ def _create_build_root(stage: Path, label: str) -> Path:
 
 
 def _build_once(
-    policy: dict[str, object], build_root: Path, cargo: Path, llvm_toolchain: Path
+    policy: dict[str, object],
+    build_root: Path,
+    cargo: Path,
+    llvm_toolchain: Path,
+    source_snapshot: VerifiedSourceSnapshot,
 ) -> Path:
+    cargo_manifest = _snapshot_path(source_snapshot, "cargo_manifest")
+    cargo_lock = _snapshot_path(source_snapshot, "cargo_lock")
+    rust_source = _snapshot_path(source_snapshot, "rust_source")
+    project_root = cargo_manifest.parent
+    if cargo_lock.parent != project_root or rust_source.parent.parent != project_root:
+        raise MaterializationError("verified source snapshot Cargo project is invalid")
     rustc = cargo.with_name("rustc")
     clang = llvm_toolchain / "bin/clang"
     environment = {
@@ -374,7 +625,7 @@ def _build_once(
                 str(cargo),
                 "build",
                 "--manifest-path",
-                str(ROOT / str(policy["cargo_manifest"])),
+                str(cargo_manifest),
                 "--locked",
                 "--offline",
                 "--release",
@@ -382,7 +633,7 @@ def _build_once(
                 str(policy["target_triple"]),
             ],
             check=True,
-            cwd=ROOT / "engines/nautilus/sealed_uv_exec",
+            cwd=project_root,
             env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -580,17 +831,20 @@ def materialize(
     *, policy_path: Path, destination: Path, cargo: Path, llvm_toolchain: Path
 ) -> dict[str, object]:
     policy = load_policy(policy_path)
-    _verify_policy_source_commit(policy)
+    verified_bytes = _verify_policy_source_commit(policy)
     destination, parent_fd, parent_identity = _prepare_destination(destination)
     stage_name: str | None = None
     stage: Path | None = None
     try:
-        _verify_toolchains(policy, cargo, llvm_toolchain)
         stage_name, stage = _create_staging(parent_fd, destination.parent)
+        source_snapshot = _write_verified_source_snapshot(stage, policy, verified_bytes)
+        _verify_toolchains(policy, cargo, llvm_toolchain, source_snapshot)
         first_root = _create_build_root(stage, "first-build")
         second_root = _create_build_root(stage, "second-build")
-        first = _build_once(policy, first_root, cargo, llvm_toolchain)
-        second = _build_once(policy, second_root, cargo, llvm_toolchain)
+        first = _build_once(policy, first_root, cargo, llvm_toolchain, source_snapshot)
+        _verify_verified_source_snapshot(source_snapshot)
+        second = _build_once(policy, second_root, cargo, llvm_toolchain, source_snapshot)
+        _verify_verified_source_snapshot(source_snapshot)
         first_fd, first_size, first_digest = _open_build_output(first, first_root, policy)
         try:
             second_fd, second_size, second_digest = _open_build_output(second, second_root, policy)
@@ -606,6 +860,7 @@ def materialize(
         binary.chmod(BINARY_MODE)
         _cleanup_staging(first_root)
         _cleanup_staging(second_root)
+        _cleanup_staging(source_snapshot.root)
         manifest = _manifest(policy, binary)
         manifest_path = stage / MANIFEST_NAME
         manifest_path.write_bytes(_canonical_json(manifest))

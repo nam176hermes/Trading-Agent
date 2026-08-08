@@ -594,7 +594,7 @@ The Task-8 legacy sync source is fixed to the regular mode-0755 binary
 `/home/thenam176/.local/bin/uv`, version `0.11.7`, SHA-256
 `cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4`.
 It is not selected through inherited `PATH`, and Task 8 executes it through
-only the materialized sealed-uv-exec-v2 helper. The helper verifies the
+only the materialized sealed-uv-exec-v3 helper. The helper verifies the
 absolute source authority, copies the reviewed bytes to a sealed memfd, and
 executes that immutable image with its fixed environment; no Task-8 shell
 step opens or executes a mutable `uv` pathname directly.
@@ -844,8 +844,8 @@ as `phase4_campaign_sha256`, `phase4_parity_record_sha256`,
 them inside the closer invocation. Then close evidence:
 
 ```bash
-phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/nautilus-sealed-uv-exec
-phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v2/sealed-uv-exec-manifest.json
+phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v3/nautilus-sealed-uv-exec
+phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v3/sealed-uv-exec-manifest.json
 test -x "${phase4_sealed_uv}" && test -r "${phase4_sealed_uv_manifest}"
 "${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv \
   --sha256 cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4 \
