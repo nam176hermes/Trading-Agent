@@ -278,6 +278,21 @@ def test_diagnostic_runs_one_fixed_long_accounting_launch_through_normal_boundar
     assert list(external_paths["transport_root"].iterdir()) == []
 
 
+@pytest.mark.parametrize("rollback_schema", (1, 2, 3))
+def test_diagnostic_accepts_legacy_zero_order_rollback_schemas_through_prepare(
+    diagnostic,
+    external_paths: dict[str, Path],
+    rollback_schema: int,
+) -> None:
+    harness = _Harness(rollback_schema=rollback_schema)
+
+    _run(diagnostic, external_paths, harness)
+
+    assert len(harness.provider_kwargs) == 1
+    assert harness.prepare_calls
+    assert len(harness.popen_calls) == 1
+
+
 def test_diagnostic_attests_distinct_rollback_v3_and_candidate_v5_authorities(
     diagnostic, external_paths: dict[str, Path]
 ) -> None:
@@ -299,8 +314,11 @@ def test_diagnostic_attests_distinct_rollback_v3_and_candidate_v5_authorities(
 @pytest.mark.parametrize(
     ("rollback_schema", "candidate_schema", "message"),
     (
-        (2, 5, "rollback.*schema 3"),
-        (3.0, 5, "rollback.*schema 3"),
+        (0, 5, "rollback.*schemas 1, 2, or 3"),
+        (4, 5, "rollback.*schemas 1, 2, or 3"),
+        (True, 5, "rollback.*schemas 1, 2, or 3"),
+        (3.0, 5, "rollback.*schemas 1, 2, or 3"),
+        ("3", 5, "rollback.*schemas 1, 2, or 3"),
         (3, 4, "candidate.*schema 5"),
         (3, 5.0, "candidate.*schema 5"),
     ),
@@ -321,6 +339,7 @@ def test_diagnostic_rejects_wrong_closure_authority_before_launch_and_record(
         _run(diagnostic, external_paths, harness)
 
     assert harness.prepare_calls == []
+    assert harness.provider_kwargs == []
     assert harness.popen_calls == []
     assert not external_paths["diagnostic_record"].exists()
 

@@ -602,9 +602,9 @@ def diagnose_nautilus_v12_runtime_failure(
         rollback_schema = getattr(
             rollback_attestation, "manifest_schema_version", None
         )
-        if type(rollback_schema) is not int or rollback_schema != 3:
+        if type(rollback_schema) is not int or rollback_schema not in {1, 2, 3}:
             raise RuntimeFailureDiagnosticError(
-                "rollback closure must use schema 3"
+                "rollback closure must use schemas 1, 2, or 3"
             )
         candidate_attestation = attest_closure(
             candidate_config,
