@@ -3,9 +3,9 @@
     "/usr/bin/python3.12",
     "-I",
     "-S",
-    "/engine/launcher/nautilus_backtest.py",
+    "/engine/launcher/nautilus_paper_compat.py",
     "--profile",
-    "execution-simulation"
+    "paper-compatibility"
   ],
   "artifact_manifest_sha256": "105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2",
   "base_file_count": 88,
@@ -21,6 +21,12 @@
   "launcher_inventory": [
     {
       "mode": "0400",
+      "sha256": "85bea7b3ee03b3bd4f70ac436f9b3829cf919ca974a29e8977ce385b79076d4c",
+      "source": "engines/nautilus/launcher/nautilus_paper_compat.py",
+      "target": "/engine/launcher/nautilus_paper_compat.py"
+    },
+    {
+      "mode": "0400",
       "sha256": "9939a613dd380e156daf32602fba58f42c801090fcdc2a08974ceb196c6a666b",
       "source": "engines/nautilus/launcher/nautilus_backtest.py",
       "target": "/engine/launcher/nautilus_backtest.py"
@@ -33,8 +39,8 @@
     }
   ],
   "native_entry_guard": {
-    "binary_sha256": "151b1570623253295ae36ea4b0933ad1f051fa56277ac9d1f54edcedc2c60c9a",
-    "binary_size": 289400,
+    "binary_sha256": "2b17f496472473b746e9ac2cf96971b8999e7c94f796580b17c32310372f61a3",
+    "binary_size": 289416,
     "cargo_identity": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
     "cargo_lock": "engines/nautilus/native_entry_guard/Cargo.lock",
     "cargo_lock_sha256": "ce3f0c6900a6ad4c4f8cb04b2624d76bde6a3424f1a22e19aecf62d1347e12a7",
@@ -49,12 +55,12 @@
     "target": "/engine/bin/nautilus-entry-guard",
     "target_triple": "x86_64-unknown-linux-gnu"
   },
-  "profile": "execution-simulation",
+  "profile": "paper-compatibility",
   "profile_manifest_schema_version": 6,
   "python_identity": "CPython 3.12.3",
-  "result_validator_id": "nautilus-backtest-simulation-result-v1",
+  "result_validator_id": "nautilus-paper-compatibility-result-v1",
   "schema_version": 1,
-  "semantic_profile": "nautilus-execution-simulation-v2",
+  "semantic_profile": "nautilus-paper-compatibility-v1",
   "source_commit": "7e6d25f6ad941d619fab32f740921e251a39a7ed",
   "timeout_seconds": 120
 }
