@@ -25,6 +25,7 @@ from packages.engine_contracts import EngineCommandEnvelope, canonical_json_byte
 from packages.nautilus_backtest import (
     build_canonical_simulation_fixture,
     build_simulation_envelope,
+    capture_prepared_engine_process,
 )
 from services.job_worker.engine_artifacts import (
     EngineArtifactBinding,
@@ -392,14 +393,6 @@ def _scenario_bindings(
     return tuple(bindings)
 
 
-def _close_descriptors(descriptors: tuple[int, ...]) -> None:
-    for descriptor in descriptors:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-
-
 def _cleanup_transport_run(
     transport_root: Path,
     envelope: EngineCommandEnvelope,
@@ -468,39 +461,19 @@ def _launch_once(
     popen_factory: Callable[..., object],
 ) -> tuple[int, bytes, bytes]:
     try:
-        process = popen_factory(
-            built.argv,
-            cwd=built.cwd,
-            env=built.environment,
-            pass_fds=built.pass_fds,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            close_fds=True,
+        captured = capture_prepared_engine_process(
+            built,
+            popen_factory=popen_factory,
         )
-    finally:
-        _close_descriptors(built.close_after_spawn_fds)
-    try:
-        stdout, stderr = process.communicate(timeout=built.timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        try:
-            process.kill()
-            process.communicate()
-        except (OSError, ValueError, subprocess.SubprocessError):
-            pass
         raise RuntimeFailureDiagnosticError(
             "diagnostic runtime exceeded the attested timeout"
         ) from exc
-    returncode = process.returncode
-    if (
-        type(returncode) is not int
-        or not isinstance(stdout, bytes)
-        or not isinstance(stderr, bytes)
-    ):
+    except TypeError as exc:
         raise RuntimeFailureDiagnosticError(
             "diagnostic runtime completion is invalid"
-        )
-    return returncode, stdout, stderr
+        ) from exc
+    return captured.returncode, captured.stdout, captured.stderr
 
 
 def _write_reserved_record(

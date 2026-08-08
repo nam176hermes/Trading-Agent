@@ -6,6 +6,7 @@ import importlib
 import json
 import os
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,7 @@ class _Harness:
         returncode: int = 19,
         stdout: bytes | None = None,
         stderr: bytes | None = None,
+        timeout: bool = False,
         popen_error: OSError | None = None,
         consume_error: EngineSpawnError | None = None,
     ) -> None:
@@ -55,6 +57,7 @@ class _Harness:
             else stdout
         )
         self.stderr = _simulated_stderr() if stderr is None else stderr
+        self.timeout = timeout
         self.popen_error = popen_error
         self.consume_error = consume_error
         self.attest_calls: list[tuple[str, Path]] = []
@@ -139,10 +142,15 @@ class _Harness:
         class Process:
             returncode = harness.returncode
 
-            def communicate(self, *, timeout: int):
+            def communicate(self, *, timeout: int | None = None):
                 harness.events.append("communicate")
-                assert timeout == 11
+                if harness.timeout and timeout is not None:
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                assert timeout in {11, None}
                 return harness.stdout, harness.stderr
+
+            def kill(self) -> None:
+                harness.events.append("kill")
 
         return Process()
 
@@ -370,6 +378,22 @@ def test_completed_process_writes_only_the_canonical_private_diagnostic_record(
     assert record_path.read_bytes() == canonical_json_bytes(record) + b"\n"
     assert stat.S_IMODE(record_path.stat().st_mode) == 0o400
     assert harness.events[-2:] == ["popen", "communicate"]
+
+
+def test_timeout_kills_once_reaps_once_and_leaves_no_diagnostic_record(
+    diagnostic, external_paths: dict[str, Path]
+) -> None:
+    harness = _Harness(timeout=True)
+
+    with pytest.raises(
+        diagnostic.RuntimeFailureDiagnosticError,
+        match="attested timeout",
+    ):
+        _run(diagnostic, external_paths, harness)
+
+    assert harness.events[-4:] == ["popen", "communicate", "kill", "communicate"]
+    assert not external_paths["diagnostic_record"].exists()
+    assert list(external_paths["transport_root"].iterdir()) == []
 
 
 @pytest.mark.parametrize("mutation", ("replace", "remove"))

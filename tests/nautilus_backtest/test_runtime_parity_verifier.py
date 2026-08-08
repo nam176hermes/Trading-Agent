@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import stat
+import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -319,6 +320,62 @@ def test_launch_uses_exact_built_authority_and_closes_fds_before_wait() -> None:
             os.close(read_fd)
         except OSError:
             pass
+
+
+def test_launch_rejects_timeout_after_killing_and_reaping_once() -> None:
+    events: list[object] = []
+    built = SimpleNamespace(
+        argv=("inert-sandbox", "event-digest", "1"),
+        cwd=Path("/"),
+        environment={},
+        pass_fds=(),
+        close_after_spawn_fds=(),
+        timeout_seconds=7,
+    )
+
+    class Process:
+        returncode = -9
+
+        def communicate(self, *, timeout: int | None = None):
+            events.append(("communicate", timeout))
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(built.argv, timeout)
+            return b"", b""
+
+        def kill(self) -> None:
+            events.append("kill")
+
+    with pytest.raises(verifier.ParityVerificationError, match="timeout"):
+        verifier._launch_once(
+            built,
+            popen_factory=lambda *_args, **_kwargs: Process(),
+        )
+
+    assert events == [("communicate", 7), "kill", ("communicate", None)]
+
+
+def test_launch_rejects_nonzero_process_completion() -> None:
+    built = SimpleNamespace(
+        argv=("inert-sandbox", "event-digest", "1"),
+        cwd=Path("/"),
+        environment={},
+        pass_fds=(),
+        close_after_spawn_fds=(),
+        timeout_seconds=7,
+    )
+
+    class Process:
+        returncode = 41
+
+        def communicate(self, *, timeout: int):
+            assert timeout == 7
+            return b"valid-looking-event\n", b""
+
+    with pytest.raises(verifier.ParityVerificationError, match="unsuccessfully"):
+        verifier._launch_once(
+            built,
+            popen_factory=lambda *_args, **_kwargs: Process(),
+        )
 
 
 def test_verifier_runs_exact_eight_by_two_matrix_and_writes_digest_only_record(

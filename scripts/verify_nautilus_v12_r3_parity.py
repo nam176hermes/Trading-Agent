@@ -34,6 +34,7 @@ from packages.nautilus_backtest import (
     build_canonical_simulation_fixture,
     build_simulation_envelope,
     calculate_reference_outcome,
+    capture_prepared_engine_process,
     validate_isolated_simulation_result,
 )
 from packages.nautilus_backtest.scenarios import ScenarioId
@@ -249,14 +250,6 @@ def _scenario_bindings(
     return tuple(bindings)
 
 
-def _close_descriptors(descriptors: tuple[int, ...]) -> None:
-    for descriptor in descriptors:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-
-
 def _cleanup_transport_run(
     transport_root: Path,
     envelope: EngineCommandEnvelope,
@@ -324,34 +317,21 @@ def _launch_once(
     popen_factory: Callable[..., object],
 ) -> bytes:
     try:
-        process = popen_factory(
-            built.argv,
-            cwd=built.cwd,
-            env=built.environment,
-            pass_fds=built.pass_fds,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            close_fds=True,
+        captured = capture_prepared_engine_process(
+            built,
+            popen_factory=popen_factory,
         )
-    finally:
-        _close_descriptors(built.close_after_spawn_fds)
-    try:
-        stdout, stderr = process.communicate(timeout=built.timeout_seconds)
     except subprocess.TimeoutExpired as exc:
-        try:
-            process.kill()
-            process.communicate()
-        except (OSError, ValueError, subprocess.SubprocessError):
-            pass
         raise ParityVerificationError("runtime exceeded the attested timeout") from exc
-    if process.returncode != 0:
+    except TypeError as exc:
+        raise ParityVerificationError("runtime process completion is invalid") from exc
+    if captured.returncode != 0:
         raise ParityVerificationError("runtime process exited unsuccessfully")
-    if stderr != b"":
+    if captured.stderr != b"":
         raise ParityVerificationError("runtime process emitted stderr")
+    stdout = captured.stdout
     if (
-        not isinstance(stdout, bytes)
-        or not stdout.endswith(b"\n")
+        not stdout.endswith(b"\n")
         or stdout.count(b"\n") != 1
         or stdout == b"\n"
     ):

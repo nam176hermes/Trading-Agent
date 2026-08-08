@@ -15,6 +15,10 @@ from .fixtures import (
 )
 from .scenarios import BacktestScenarioError, BacktestScenarioV1
 from .reference import calculate_reference_outcome
+from .runtime_process import (
+    CapturedEngineProcess,
+    capture_prepared_engine_process,
+)
 
 __all__ = [
     "BacktestExpectedOutcomeV1",
@@ -29,4 +33,6 @@ __all__ = [
     "CanonicalSimulationFixtureV1",
     "build_canonical_simulation_fixture",
     "build_simulation_envelope",
+    "CapturedEngineProcess",
+    "capture_prepared_engine_process",
 ]
