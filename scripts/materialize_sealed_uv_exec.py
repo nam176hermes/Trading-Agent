@@ -391,7 +391,7 @@ def _open_build_output(path: Path, build_root: Path, policy: dict[str, object]) 
             digest.update(block)
         os.lseek(descriptor, 0, os.SEEK_SET)
         return descriptor, info.st_size, digest.hexdigest()
-    except BaseException:
+    except (MaterializationError, OSError):
         os.close(descriptor)
         raise
 
@@ -414,9 +414,12 @@ def _copy_open_build_output(source_fd: int, destination: Path) -> None:
                     raise MaterializationError("sealed UV executor destination write failed")
                 view = view[written:]
         os.fsync(destination_fd)
-    except BaseException:
+    except MaterializationError:
         os.close(destination_fd)
         raise
+    except OSError as error:
+        os.close(destination_fd)
+        raise MaterializationError("sealed UV executor destination write failed") from error
     os.close(destination_fd)
 
 
