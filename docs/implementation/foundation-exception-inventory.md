@@ -448,6 +448,7 @@ packages/data_catalog/parquet.py|480|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/result.py|227|Exception|PRODUCTION_CRITICAL|RAISE
 packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITICAL|OTHER
 packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
+packages/research_validation/producers.py|415|Exception|PRODUCTION_CRITICAL|RAISE
 packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
 packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
