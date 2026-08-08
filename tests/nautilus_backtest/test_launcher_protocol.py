@@ -27,6 +27,11 @@ from packages.engine_contracts import (
     canonical_json_bytes,
     payload_digest,
 )
+from packages.nautilus_backtest.fixtures import (
+    SCENARIO_IDS,
+    build_canonical_simulation_fixture,
+    build_simulation_envelope,
+)
 
 
 LAUNCHER = Path("engines/nautilus/launcher/nautilus_backtest.py")
@@ -1102,7 +1107,9 @@ def _canonical(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _simulation_fixture(scenario_id: str) -> tuple[bytes, bytes, bytes, bytes, bytes]:
+def _golden_simulation_fixture(
+    scenario_id: str,
+) -> tuple[bytes, bytes, bytes, bytes, bytes]:
     assert scenario_id in _SCENARIO_IDS
     target_quantity = "-2" if scenario_id == "short-accounting" else "1"
     if scenario_id == "long-accounting":
@@ -1248,6 +1255,10 @@ def _simulation_fixture(scenario_id: str) -> tuple[bytes, bytes, bytes, bytes, b
     return configuration, catalog, strategy, market, scenario
 
 
+def _simulation_fixture(scenario_id: str) -> tuple[bytes, bytes, bytes, bytes, bytes]:
+    return build_canonical_simulation_fixture(scenario_id).artifacts
+
+
 def _simulation_request(
     artifacts: tuple[bytes, bytes, bytes, bytes, bytes],
 ) -> EngineCommandEnvelope:
@@ -1284,6 +1295,23 @@ def _simulation_request(
             "payload": command,
         }
     )
+
+
+@pytest.mark.parametrize("scenario_id", _SCENARIO_IDS)
+def test_package_fixture_api_preserves_every_canonical_byte_and_envelope_field(
+    scenario_id: str,
+) -> None:
+    """Changing package-owned fixtures must not drift existing sealed goldens."""
+    expected_artifacts = _golden_simulation_fixture(scenario_id)
+    expected_envelope = _simulation_request(expected_artifacts)
+
+    fixture = build_canonical_simulation_fixture(scenario_id)
+    envelope = build_simulation_envelope(fixture)
+
+    assert SCENARIO_IDS == _SCENARIO_IDS
+    assert fixture.scenario_id == scenario_id
+    assert fixture.artifacts == expected_artifacts
+    assert envelope.model_dump(mode="json") == expected_envelope.model_dump(mode="json")
 
 
 def _with_simulation_target(

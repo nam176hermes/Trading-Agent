@@ -10,7 +10,11 @@ from pathlib import Path
 
 import pytest
 
-from test_launcher_protocol import _simulation_fixture
+from packages.nautilus_backtest import build_canonical_simulation_fixture
+
+
+def _simulation_fixture(scenario_id: str) -> tuple[bytes, bytes, bytes, bytes, bytes]:
+    return build_canonical_simulation_fixture(scenario_id).artifacts
 
 
 LAUNCHER = Path("engines/nautilus/launcher/nautilus_backtest.py")

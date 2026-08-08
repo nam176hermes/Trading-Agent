@@ -10,8 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from test_launcher_protocol import _simulation_fixture
-from test_launcher_protocol import _simulation_request
+from packages.nautilus_backtest import (
+    build_canonical_simulation_fixture,
+    build_simulation_envelope,
+)
+
+
+def _simulation_fixture(scenario_id: str) -> tuple[bytes, bytes, bytes, bytes, bytes]:
+    return build_canonical_simulation_fixture(scenario_id).artifacts
 
 
 _GOLDENS = {
@@ -173,8 +179,9 @@ def test_launcher_event_equals_independent_reference_and_root_validator(
     from packages.nautilus_backtest.result import validate_isolated_simulation_result
 
     launcher = _launcher_module()
-    artifacts = _simulation_fixture(scenario_id)
-    request = _simulation_request(artifacts)
+    canonical_fixture = build_canonical_simulation_fixture(scenario_id)
+    artifacts = canonical_fixture.artifacts
+    request = build_simulation_envelope(canonical_fixture)
     raw_request = canonical_json_bytes(request)
     accepted = launcher._validate_request(
         json.loads(raw_request), raw_request, profile="execution-simulation"

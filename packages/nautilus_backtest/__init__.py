@@ -7,6 +7,12 @@ from .result import (
     validate_isolated_backtest_result,
     validate_isolated_simulation_result,
 )
+from .fixtures import (
+    SCENARIO_IDS,
+    CanonicalSimulationFixtureV1,
+    build_canonical_simulation_fixture,
+    build_simulation_envelope,
+)
 from .scenarios import BacktestScenarioError, BacktestScenarioV1
 from .reference import calculate_reference_outcome
 
@@ -19,4 +25,8 @@ __all__ = [
     "validate_isolated_backtest_result",
     "validate_isolated_simulation_result",
     "calculate_reference_outcome",
+    "SCENARIO_IDS",
+    "CanonicalSimulationFixtureV1",
+    "build_canonical_simulation_fixture",
+    "build_simulation_envelope",
 ]
