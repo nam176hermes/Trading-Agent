@@ -49,6 +49,11 @@ LEGACY_ADAPTER_COMMAND = (
     "legacy/research-backend/.venv/bin/python",
     "legacy/research-backend/nautilus_parity_adapter.py",
 )
+LEGACY_UV_PATH = Path("/home/thenam176/.local/bin/uv")
+LEGACY_UV_SHA256 = (
+    "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
+)
+LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 LEGACY_ENV_COMMAND = (
     "/usr/bin/env",
     "-i",
@@ -73,6 +78,72 @@ DIGEST_FIELDS = (
     "market_data_sha256",
     "simulation_scenario_sha256",
 )
+
+
+def _preflight_legacy_uv() -> Path:
+    path = LEGACY_UV_PATH
+    resolved = path.resolve(strict=True)
+    named_before = path.lstat()
+    if (
+        resolved != path
+        or not stat.S_ISREG(named_before.st_mode)
+        or stat.S_IMODE(named_before.st_mode) != 0o755
+        or named_before.st_uid != os.geteuid()
+        or named_before.st_gid != os.getegid()
+    ):
+        raise AssertionError("legacy uv authority is unsafe")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened_before = os.fstat(descriptor)
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        opened_after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    named_after = path.lstat()
+
+    def identity(observed: os.stat_result) -> tuple[int, ...]:
+        return (
+            observed.st_dev,
+            observed.st_ino,
+            observed.st_mode,
+            observed.st_uid,
+            observed.st_gid,
+            observed.st_size,
+            observed.st_mtime_ns,
+            observed.st_ctime_ns,
+        )
+    if (
+        identity(named_before)
+        != identity(opened_before)
+        or identity(opened_before) != identity(opened_after)
+        or identity(opened_after) != identity(named_after)
+        or digest.hexdigest() != LEGACY_UV_SHA256
+    ):
+        raise AssertionError("legacy uv authority identity changed")
+    version = subprocess.run(
+        (str(path), "--version"),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if (
+        version.returncode != 0
+        or version.stdout != f"{LEGACY_UV_VERSION}\n".encode("ascii")
+        or version.stderr != b""
+    ):
+        raise AssertionError("legacy uv authority version changed")
+    return path
 
 
 @pytest.fixture
@@ -242,6 +313,55 @@ def test_materializer_open_gap_retains_only_mode_0500_directories_without_delete
     assert set(retained) == expected_directories
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o500 for path in retained.values())
     assert deletion_calls == []
+
+
+def test_materializer_closes_scenario_descriptor_when_initial_identity_read_fails(
+    private_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = private_root / "campaign"
+    real_open = producers.os.open
+    real_fstat = producers.os.fstat
+    real_close = producers.os.close
+    scenario_descriptor = -1
+    injected = False
+    production_close_calls = 0
+
+    def tracked_open(path, flags, *args, **kwargs):
+        nonlocal scenario_descriptor
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if os.fspath(path) == "long-accounting" and kwargs.get("dir_fd") is not None:
+            scenario_descriptor = descriptor
+        return descriptor
+
+    def fail_initial_scenario_fstat(descriptor: int):
+        nonlocal injected
+        if descriptor == scenario_descriptor and not injected:
+            injected = True
+            raise OSError("inert scenario identity failure")
+        return real_fstat(descriptor)
+
+    def tracked_close(descriptor: int) -> None:
+        nonlocal production_close_calls
+        if descriptor == scenario_descriptor:
+            production_close_calls += 1
+        real_close(descriptor)
+
+    monkeypatch.setattr(producers.os, "open", tracked_open)
+    monkeypatch.setattr(producers.os, "fstat", fail_initial_scenario_fstat)
+    monkeypatch.setattr(producers.os, "close", tracked_close)
+
+    try:
+        with pytest.raises(OSError, match="scenario identity failure"):
+            research.materialize_phase4_campaign(destination)
+    finally:
+        if scenario_descriptor >= 0 and production_close_calls == 0:
+            real_close(scenario_descriptor)
+
+    assert injected is True
+    assert production_close_calls == 1
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o500
+    assert stat.S_IMODE((destination / "long-accounting").stat().st_mode) == 0o500
 
 
 def test_verified_campaign_rejects_a_self_consistent_noncanonical_artifact(
@@ -668,12 +788,7 @@ def _public_research_authorities(
 
     legacy = private_root / "legacy"
     legacy.mkdir(mode=0o700)
-    discovered_uv = shutil.which("uv")
-    assert discovered_uv is not None
-    uv_path = Path(discovered_uv).resolve(strict=True)
-    assert uv_path.is_absolute()
-    assert uv_path.is_file()
-    assert os.access(uv_path, os.X_OK)
+    uv_path = _preflight_legacy_uv()
     sync_command = (*LEGACY_ENV_COMMAND, str(uv_path), *LEGACY_SYNC_ARGUMENTS)
     synced = subprocess.run(
         sync_command,
@@ -753,6 +868,12 @@ def test_research_producer_derives_complete_campaign_evidence_from_sealed_inputs
 
 
 def test_task8_legacy_adapter_command_is_literal_nested_venv_direct_script() -> None:
+    assert LEGACY_UV_PATH == Path("/home/thenam176/.local/bin/uv")
+    assert LEGACY_UV_SHA256 == (
+        "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
+    )
+    assert LEGACY_UV_VERSION == "uv 0.11.7 (x86_64-unknown-linux-gnu)"
+    assert _preflight_legacy_uv() == LEGACY_UV_PATH
     assert LEGACY_ENV_COMMAND == (
         "/usr/bin/env",
         "-i",

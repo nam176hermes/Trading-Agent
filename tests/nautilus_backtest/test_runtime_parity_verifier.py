@@ -310,6 +310,41 @@ def _assert_retained_runs(transport_root: Path, *, expected_count: int) -> None:
             assert observed.st_nlink == 1
 
 
+def _assert_sealed_retained_prefix(
+    transport_root: Path,
+    *,
+    expected_names: tuple[str, ...],
+) -> None:
+    subroots = {path.name: path for path in transport_root.iterdir()}
+    assert set(subroots) == set(expected_names)
+    for name in expected_names:
+        subroot = subroots[name]
+        first = subroot.stat()
+        assert stat.S_IMODE(first.st_mode) == 0o500
+        run_directories = tuple(subroot.iterdir())
+        assert len(run_directories) == 1
+        run_directory = run_directories[0]
+        assert stat.S_IMODE(run_directory.stat().st_mode) == 0o700
+        members = {path.name: path for path in run_directory.iterdir()}
+        assert set(members) == {"request.json", "request.sha256"}
+        for member in members.values():
+            descriptor = os.open(
+                member,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                opened = os.fstat(descriptor)
+                named = member.stat(follow_symlinks=False)
+                assert (opened.st_dev, opened.st_ino) == (
+                    named.st_dev,
+                    named.st_ino,
+                )
+                assert opened.st_nlink == 1
+                assert stat.S_IMODE(opened.st_mode) == 0o400
+            finally:
+                os.close(descriptor)
+
+
 def test_launch_uses_exact_built_authority_and_closes_fds_before_wait() -> None:
     """Delaying descriptor closure would retain spawn authority while waiting."""
     read_fd, write_fd = os.pipe()
@@ -674,6 +709,210 @@ def test_verifier_preserves_primary_failure_when_forensic_validation_also_fails(
     _assert_retained_runs(external_paths["transport_root"], expected_count=1)
 
 
+def _assert_type_only_close_note(error: BaseException) -> None:
+    notes = getattr(error, "__notes__", ())
+    assert any("OSError" in note for note in notes)
+    assert all("inert secret close detail" not in note for note in notes)
+
+
+def test_verifier_preserves_primary_when_current_subroot_close_fails_and_validates_once(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary prepare failure")
+    harness = _Harness(prepare_error_after_transport=primary)
+    real_open = verifier.os.open
+    real_close = verifier.os.close
+    real_seal = verifier._seal_failed_subroot
+    real_verify = verifier._verify_transport_campaign
+    target_descriptor = -1
+    in_seal = False
+    close_failed = False
+    validation_calls = 0
+
+    def tracked_seal(*args, **kwargs):
+        nonlocal in_seal
+        in_seal = True
+        try:
+            return real_seal(*args, **kwargs)
+        finally:
+            in_seal = False
+
+    def tracked_open(path, flags, *args, **kwargs):
+        nonlocal target_descriptor
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if (
+            in_seal
+            and os.fspath(path) == "parity-long-accounting-run-1"
+            and kwargs.get("dir_fd") is not None
+            and target_descriptor < 0
+        ):
+            target_descriptor = descriptor
+        return descriptor
+
+    def fail_target_close(descriptor: int) -> None:
+        nonlocal close_failed
+        if descriptor == target_descriptor and not close_failed:
+            close_failed = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    def counted_verify(*args, **kwargs):
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_seal_failed_subroot", tracked_seal)
+    monkeypatch.setattr(verifier, "_verify_transport_campaign", counted_verify)
+    monkeypatch.setattr(verifier.os, "open", tracked_open)
+    monkeypatch.setattr(verifier.os, "close", fail_target_close)
+
+    with pytest.raises(EngineSpawnError) as observed:
+        _verify(external_paths, harness)
+
+    assert observed.value is primary
+    assert close_failed is True
+    assert validation_calls == 1
+    _assert_type_only_close_note(primary)
+
+
+def test_verifier_preserves_primary_when_final_prefix_close_fails_and_validates_once(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary prepare failure")
+    harness = _Harness(prepare_error_after_transport=primary)
+    real_open = verifier.os.open
+    real_close = verifier.os.close
+    real_verify = verifier._verify_transport_campaign
+    target_descriptor = -1
+    in_validation = False
+    close_failed = False
+    validation_calls = 0
+
+    def tracked_verify(*args, **kwargs):
+        nonlocal in_validation, validation_calls
+        validation_calls += 1
+        in_validation = True
+        try:
+            return real_verify(*args, **kwargs)
+        finally:
+            in_validation = False
+
+    def tracked_open(path, flags, *args, **kwargs):
+        nonlocal target_descriptor
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if (
+            in_validation
+            and os.fspath(path).startswith("run-")
+            and target_descriptor < 0
+        ):
+            target_descriptor = descriptor
+        return descriptor
+
+    def fail_target_close(descriptor: int) -> None:
+        nonlocal close_failed
+        if descriptor == target_descriptor and not close_failed:
+            close_failed = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    monkeypatch.setattr(verifier, "_verify_transport_campaign", tracked_verify)
+    monkeypatch.setattr(verifier.os, "open", tracked_open)
+    monkeypatch.setattr(verifier.os, "close", fail_target_close)
+
+    with pytest.raises(EngineSpawnError) as observed:
+        _verify(external_paths, harness)
+
+    assert observed.value is primary
+    assert close_failed is True
+    assert validation_calls == 1
+    _assert_type_only_close_note(primary)
+
+
+def test_verifier_preserves_primary_when_transport_campaign_close_fails(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary prepare failure")
+    harness = _Harness(prepare_error_after_transport=primary)
+    real_close = verifier.os.close
+    real_close_campaign = verifier._close_transport_campaign
+    real_verify = verifier._verify_transport_campaign
+    in_campaign_close = False
+    close_failed = False
+    validation_calls = 0
+
+    def tracked_close_campaign(*args, **kwargs):
+        nonlocal in_campaign_close
+        in_campaign_close = True
+        try:
+            return real_close_campaign(*args, **kwargs)
+        finally:
+            in_campaign_close = False
+
+    def fail_first_campaign_close(descriptor: int) -> None:
+        nonlocal close_failed
+        if in_campaign_close and not close_failed:
+            close_failed = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    def counted_verify(*args, **kwargs):
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_verify(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "_close_transport_campaign", tracked_close_campaign)
+    monkeypatch.setattr(verifier, "_verify_transport_campaign", counted_verify)
+    monkeypatch.setattr(verifier.os, "close", fail_first_campaign_close)
+
+    with pytest.raises(EngineSpawnError) as observed:
+        _verify(external_paths, harness)
+
+    assert observed.value is primary
+    assert close_failed is True
+    assert validation_calls == 1
+    _assert_type_only_close_note(primary)
+
+
+def test_verifier_normalizes_transport_campaign_close_failure_without_primary(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_close = verifier.os.close
+    real_close_campaign = verifier._close_transport_campaign
+    in_campaign_close = False
+    close_failed = False
+
+    def tracked_close_campaign(*args, **kwargs):
+        nonlocal in_campaign_close
+        in_campaign_close = True
+        try:
+            return real_close_campaign(*args, **kwargs)
+        finally:
+            in_campaign_close = False
+
+    def fail_first_campaign_close(descriptor: int) -> None:
+        nonlocal close_failed
+        if in_campaign_close and not close_failed:
+            close_failed = True
+            real_close(descriptor)
+            raise OSError("inert secret close detail")
+        real_close(descriptor)
+
+    monkeypatch.setattr(verifier, "_close_transport_campaign", tracked_close_campaign)
+    monkeypatch.setattr(verifier.os, "close", fail_first_campaign_close)
+
+    with pytest.raises(verifier.ParityVerificationError, match="descriptor"):
+        _verify(external_paths, _Harness())
+
+    assert close_failed is True
+
+
 def test_verifier_rejects_record_parent_substitution_during_publication(
     external_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -811,14 +1050,24 @@ def test_verifier_rejects_oracle_mismatch(
     external_paths: dict[str, Path],
 ) -> None:
     harness = _Harness(
-        stdout_transform=lambda _value, _run: _event_bytes(
-            harness.prepare_calls[-1], mismatch=True
+        stdout_transform=lambda value, run: (
+            value
+            if run == 1
+            else _event_bytes(harness.prepare_calls[-1], mismatch=True)
         )
         + b"\n"
     )
 
     with pytest.raises(verifier.ParityVerificationError, match="oracle"):
         _verify(external_paths, harness)
+
+    _assert_sealed_retained_prefix(
+        external_paths["transport_root"],
+        expected_names=(
+            "parity-long-accounting-run-1",
+            "parity-long-accounting-run-2",
+        ),
+    )
 
 
 def test_verifier_rejects_different_valid_event_bytes_between_runs(
@@ -835,6 +1084,14 @@ def test_verifier_rejects_different_valid_event_bytes_between_runs(
 
     with pytest.raises(verifier.ParityVerificationError, match="non-identical"):
         _verify(external_paths, harness)
+
+    _assert_sealed_retained_prefix(
+        external_paths["transport_root"],
+        expected_names=(
+            "parity-long-accounting-run-1",
+            "parity-long-accounting-run-2",
+        ),
+    )
 
 
 @pytest.mark.parametrize("reason", ("ENGINE_CLOSURE_STALE", "ENGINE_INPUT_STALE"))

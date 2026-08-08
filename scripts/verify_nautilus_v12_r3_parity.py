@@ -377,6 +377,34 @@ def _transport_identity(observed: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _close_descriptors(
+    descriptors: Sequence[tuple[str, int]],
+    *,
+    primary: BaseException | None = None,
+) -> BaseException | None:
+    """Close every unique descriptor without exposing close-error details."""
+
+    observed: set[int] = set()
+    close_primary: ParityVerificationError | None = None
+    for label, descriptor in descriptors:
+        if descriptor < 0 or descriptor in observed:
+            continue
+        observed.add(descriptor)
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            note = f"secondary {label} descriptor close failure: {type(exc).__name__}"
+            if primary is not None:
+                primary.add_note(note)
+            elif close_primary is None:
+                close_primary = ParityVerificationError(
+                    f"{label} descriptor close failure: {type(exc).__name__}"
+                )
+            else:
+                close_primary.add_note(note)
+    return primary if primary is not None else close_primary
+
+
 def _open_transport_campaign(path: Path) -> _TransportCampaign:
     parent_descriptor = -1
     root_descriptor = -1
@@ -436,10 +464,14 @@ def _open_transport_campaign(path: Path) -> _TransportCampaign:
 
 
 def _close_transport_campaign(campaign: _TransportCampaign) -> None:
-    try:
-        os.close(campaign.root_descriptor)
-    finally:
-        os.close(campaign.parent_descriptor)
+    failure = _close_descriptors(
+        (
+            ("transport campaign root", campaign.root_descriptor),
+            ("transport campaign parent", campaign.parent_descriptor),
+        )
+    )
+    if failure is not None:
+        raise failure
 
 
 def _create_transport_subroot(
@@ -511,8 +543,8 @@ def _seal_failed_subroot(
     if not custody.created:
         return
     descriptor = custody.descriptor
-    opened_here = False
     inspection_descriptor = -1
+    failure: BaseException | None = None
     try:
         if descriptor < 0 and custody.construction_complete:
             descriptor = os.open(
@@ -523,7 +555,6 @@ def _seal_failed_subroot(
                 | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=campaign.root_descriptor,
             )
-            opened_here = True
         if descriptor >= 0:
             opened = os.fstat(descriptor)
             if (
@@ -586,18 +617,171 @@ def _seal_failed_subroot(
                 expected_root_identity=(custody.identity[0], custody.identity[1]),
                 expected_root_mode=0o500,
             )
+    except ParityVerificationError as exc:
+        failure = exc
     except OSError as exc:
-        raise ParityVerificationError(
+        failure = ParityVerificationError(
             "failed transport subroot cannot be inspected"
-        ) from exc
+        )
+    except BaseException as exc:
+        failure = exc
     finally:
-        if inspection_descriptor >= 0 and inspection_descriptor != descriptor:
-            os.close(inspection_descriptor)
-        if custody.descriptor >= 0:
-            os.close(custody.descriptor)
-            custody.descriptor = -1
-        elif opened_here and descriptor >= 0:
-            os.close(descriptor)
+        custody.descriptor = -1
+        failure = _close_descriptors(
+            (
+                ("failed subroot inspection", inspection_descriptor),
+                ("failed subroot custody", descriptor),
+            ),
+            primary=failure,
+        )
+    if failure is not None:
+        raise failure
+
+
+def _seal_completed_subroot(
+    campaign: _TransportCampaign,
+    *,
+    name: str,
+    snapshot: _RetainedRunSnapshot,
+) -> tuple[_RetainedRunSnapshot, ParityVerificationError | None]:
+    subroot_descriptor = -1
+    run_descriptor = -1
+    refreshed: _RetainedRunSnapshot | None = None
+    failure: BaseException | None = None
+    try:
+        named = os.stat(
+            name,
+            dir_fd=campaign.root_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            _transport_identity(named) != snapshot.root_identity
+            or not stat.S_ISDIR(named.st_mode)
+            or named.st_uid != os.geteuid()
+            or stat.S_IMODE(named.st_mode) != 0o700
+        ):
+            raise ParityVerificationError(
+                "completed transport subroot identity changed"
+            )
+        subroot_descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=campaign.root_descriptor,
+        )
+        if (
+            _transport_identity(os.fstat(subroot_descriptor))
+            != snapshot.root_identity
+            or set(os.listdir(subroot_descriptor)) != {snapshot.run_name}
+        ):
+            raise ParityVerificationError(
+                "completed transport subroot inventory changed"
+            )
+        os.fchmod(subroot_descriptor, 0o500)
+        os.fsync(subroot_descriptor)
+        os.fsync(campaign.root_descriptor)
+        opened = os.fstat(subroot_descriptor)
+        named = os.stat(
+            name,
+            dir_fd=campaign.root_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            _transport_identity(opened) != _transport_identity(named)
+            or stat.S_IMODE(opened.st_mode) != 0o500
+        ):
+            raise ParityVerificationError(
+                "completed transport subroot could not be sealed"
+            )
+        run_descriptor = os.open(
+            snapshot.run_name,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=subroot_descriptor,
+        )
+        if (
+            _transport_identity(os.fstat(run_descriptor))
+            != snapshot.run_identity
+            or set(os.listdir(run_descriptor))
+            != set(snapshot.member_identities)
+        ):
+            raise ParityVerificationError(
+                "completed transport run identity changed"
+            )
+        for member, expected in snapshot.member_identities.items():
+            if _transport_identity(
+                os.stat(
+                    member,
+                    dir_fd=run_descriptor,
+                    follow_symlinks=False,
+                )
+            ) != expected:
+                raise ParityVerificationError(
+                    "completed transport member identity changed"
+                )
+        refreshed = _RetainedRunSnapshot(
+            root_identity=_transport_identity(opened),
+            run_name=snapshot.run_name,
+            run_identity=snapshot.run_identity,
+            member_identities=snapshot.member_identities,
+        )
+    except ParityVerificationError as exc:
+        failure = exc
+    except OSError:
+        failure = ParityVerificationError(
+            "completed transport subroot cannot be sealed"
+        )
+    except BaseException as exc:
+        failure = exc
+    finally:
+        failure = _close_descriptors(
+            (
+                ("completed transport run", run_descriptor),
+                ("completed transport subroot", subroot_descriptor),
+            ),
+            primary=failure,
+        )
+    if failure is not None and refreshed is None:
+        raise failure
+    assert refreshed is not None
+    if failure is None:
+        return refreshed, None
+    assert isinstance(failure, ParityVerificationError)
+    return refreshed, failure
+
+
+def _seal_completed_subroots(
+    campaign: _TransportCampaign,
+    *,
+    subroots: dict[str, _RetainedRunSnapshot],
+) -> None:
+    failures: list[ParityVerificationError] = []
+    for name, snapshot in tuple(subroots.items()):
+        try:
+            refreshed, close_failure = _seal_completed_subroot(
+                campaign,
+                name=name,
+                snapshot=snapshot,
+            )
+            subroots[name] = refreshed
+            if close_failure is not None:
+                failures.append(close_failure)
+        except ParityVerificationError as exc:
+            failures.append(exc)
+    if failures:
+        failure = ParityVerificationError(
+            "completed transport prefix could not be sealed"
+        )
+        for observed in failures:
+            failure.add_note(
+                "secondary completed-subroot failure: "
+                f"{type(observed).__name__}"
+            )
+        raise failure
 
 
 def _verify_transport_campaign(
@@ -605,9 +789,11 @@ def _verify_transport_campaign(
     *,
     subroots: dict[str, _RetainedRunSnapshot],
     current: _SubrootCustody | None = None,
+    completed_root_mode: int = 0o700,
 ) -> None:
     subroot_descriptor = -1
     run_descriptor = -1
+    failure: BaseException | None = None
     try:
         parent = os.fstat(campaign.parent_descriptor)
         named_parent = campaign.path.parent.lstat()
@@ -654,7 +840,7 @@ def _verify_transport_campaign(
                 _transport_identity(observed) != snapshot.root_identity
                 or not stat.S_ISDIR(observed.st_mode)
                 or observed.st_uid != os.geteuid()
-                or stat.S_IMODE(observed.st_mode) != 0o700
+                or stat.S_IMODE(observed.st_mode) != completed_root_mode
             ):
                 raise ParityVerificationError(
                     "transport subroot identity changed"
@@ -703,10 +889,20 @@ def _verify_transport_campaign(
                     raise ParityVerificationError(
                         "transport member identity changed"
                     )
-            os.close(run_descriptor)
+            descriptor_to_close = run_descriptor
             run_descriptor = -1
-            os.close(subroot_descriptor)
+            close_failure = _close_descriptors(
+                (("verified transport run", descriptor_to_close),)
+            )
+            if close_failure is not None:
+                raise close_failure
+            descriptor_to_close = subroot_descriptor
             subroot_descriptor = -1
+            close_failure = _close_descriptors(
+                (("verified transport subroot", descriptor_to_close),)
+            )
+            if close_failure is not None:
+                raise close_failure
         if current is not None and current.created:
             if current.identity is None:
                 raise ParityVerificationError(
@@ -776,19 +972,38 @@ def _verify_transport_campaign(
                         raise ParityVerificationError(
                             "failed transport member identity changed"
                         )
-                os.close(run_descriptor)
+                descriptor_to_close = run_descriptor
                 run_descriptor = -1
-            os.close(subroot_descriptor)
+                close_failure = _close_descriptors(
+                    (("failed transport run", descriptor_to_close),)
+                )
+                if close_failure is not None:
+                    raise close_failure
+            descriptor_to_close = subroot_descriptor
             subroot_descriptor = -1
+            close_failure = _close_descriptors(
+                (("failed transport subroot", descriptor_to_close),)
+            )
+            if close_failure is not None:
+                raise close_failure
+    except ParityVerificationError as exc:
+        failure = exc
     except OSError as exc:
-        raise ParityVerificationError(
+        failure = ParityVerificationError(
             "transport campaign cannot be inspected"
-        ) from exc
+        )
+    except BaseException as exc:
+        failure = exc
     finally:
-        if run_descriptor >= 0:
-            os.close(run_descriptor)
-        if subroot_descriptor >= 0:
-            os.close(subroot_descriptor)
+        failure = _close_descriptors(
+            (
+                ("transport campaign run", run_descriptor),
+                ("transport campaign subroot", subroot_descriptor),
+            ),
+            primary=failure,
+        )
+    if failure is not None:
+        raise failure
 
 
 def _validate_retained_transport_run(
@@ -1098,6 +1313,7 @@ def _run_parity_matrix(
     subroots: dict[str, _RetainedRunSnapshot] = {}
     scenario_records: list[ScenarioParityRecord] = []
     current: _SubrootCustody | None = None
+    primary_failure: BaseException | None = None
     try:
         for campaign_scenario in campaign.scenarios:
             scenario_id = campaign_scenario.scenario_id
@@ -1212,8 +1428,18 @@ def _run_parity_matrix(
                 )
             )
         _verify_transport_campaign(transport_campaign, subroots=subroots)
-        return scenario_records
-    except BaseException as primary_failure:
+    except BaseException as exc:
+        primary_failure = exc
+        try:
+            _seal_completed_subroots(
+                transport_campaign,
+                subroots=subroots,
+            )
+        except ParityVerificationError as forensic_error:
+            primary_failure.add_note(
+                "secondary completed-prefix sealing failure: "
+                f"{forensic_error}"
+            )
         if current is not None:
             try:
                 _seal_failed_subroot(
@@ -1231,15 +1457,25 @@ def _run_parity_matrix(
                 transport_campaign,
                 subroots=subroots,
                 current=current,
+                completed_root_mode=0o500,
             )
         except ParityVerificationError as forensic_error:
             primary_failure.add_note(
                 "secondary forensic validation failure: "
                 f"{forensic_error}"
             )
-        raise
-    finally:
+    try:
         _close_transport_campaign(transport_campaign)
+    except ParityVerificationError as close_error:
+        if primary_failure is None:
+            raise
+        primary_failure.add_note(
+            "secondary transport-campaign close failure: "
+            f"{close_error}"
+        )
+    if primary_failure is not None:
+        raise primary_failure
+    return scenario_records
 
 
 def verify_nautilus_v12_r3_parity(

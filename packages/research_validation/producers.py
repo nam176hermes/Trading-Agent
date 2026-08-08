@@ -886,10 +886,21 @@ def materialize_phase4_campaign(destination: Path) -> VerifiedCampaignV1:
                 | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=root_descriptor,
             )
+            try:
+                scenario_identity = _identity(os.fstat(scenario_descriptor))
+            except BaseException as exc:
+                try:
+                    os.close(scenario_descriptor)
+                except OSError as close_error:
+                    exc.add_note(
+                        "secondary scenario descriptor close failure: "
+                        f"{type(close_error).__name__}"
+                    )
+                raise
             scenario_handle = _DirectoryHandle(
                 scenario_descriptor,
                 scenario_directory,
-                _identity(os.fstat(scenario_descriptor)),
+                scenario_identity,
             )
             scenario_handles.append(scenario_handle)
             os.fchmod(scenario_descriptor, 0o700)
