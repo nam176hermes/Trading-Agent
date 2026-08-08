@@ -235,7 +235,15 @@ does not weaken diagnostic containment or parity rejection.
 Require absolute sealed paths, exact artifact manifest/wheel hashes, private
 roots, empty environment, exact `-I -S`, no network mode, bounded timeout,
 empty stderr, and a canonical digest-only import receipt. Reject relative,
-symlinked, writable, stale, and ambient dependency inputs.
+symlinked, stale, and ambient dependency inputs. External base-runtime and
+artifact files remain sealed at their manifest-declared modes. Checked-in
+policy, launcher, strategy, and probe source are Git source authority and may
+have the repository's normal owner-writable mode 0644, but must be owned by the
+effective UID, regular one-link files, not group/other writable, digest-bound,
+and revalidated for freshness. The OS sandbox is a separate trusted-system
+input: accept only a regular executable owned by root or the effective UID
+with no group/other write bits, including the production root-owned mode-0755
+`/usr/bin/bwrap`; bind its exact bytes and capabilities into the receipt.
 
 - [ ] **Step 2: Implement the import-only gate.**
 
