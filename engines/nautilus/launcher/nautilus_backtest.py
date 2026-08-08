@@ -2678,7 +2678,11 @@ def _simulation_event(
 
 
 def _snapshot_modules_after_restoring_trusted_machinery() -> dict[str, object]:
-    parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES["importlib"]
+    parent = _TRUSTED_PRELOADED_INTERPRETER_MODULES.get(
+        "importlib", _MISSING_MODULE
+    )
+    if parent is _MISSING_MODULE:
+        return dict(sys.modules)
     child = _TRUSTED_PRELOADED_INTERPRETER_MODULES["importlib.machinery"]
     namespace = object.__getattribute__(parent, "__dict__")
     if namespace.get("machinery", _MISSING_PARENT_ATTRIBUTE) is (

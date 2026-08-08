@@ -2476,3 +2476,80 @@ print("trusted-importlib-binding-ok")
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "trusted-importlib-binding-ok\n"
+
+
+def test_sealed_wheel_scope_tolerates_missing_trusted_importlib_parent() -> None:
+    script = r"""
+import importlib
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("isolated_launcher", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+parent_name = "importlib"
+child_name = "importlib.machinery"
+trusted_parent = module._TRUSTED_PRELOADED_INTERPRETER_MODULES[parent_name]
+trusted_child = module._TRUSTED_PRELOADED_INTERPRETER_MODULES[child_name]
+module._TRUSTED_PRELOADED_INTERPRETER_MODULES = module.MappingProxyType(
+    {
+        name: value
+        for name, value in module._TRUSTED_PRELOADED_INTERPRETER_MODULES.items()
+        if name != parent_name
+    }
+)
+assert parent_name not in module._TRUSTED_PRELOADED_INTERPRETER_MODULES
+assert module._TRUSTED_PRELOADED_INTERPRETER_MODULES[child_name] is trusted_child
+
+sys.modules.pop(parent_name)
+ambient = type(sys)("ambient_only_dependency")
+sys.modules[ambient.__name__] = ambient
+before_meta_path = tuple(sys.meta_path)
+before_modules = dict(sys.modules)
+
+with module._sealed_wheel_import_scope(()):
+    assert parent_name not in sys.modules
+    assert sys.modules[child_name] is trusted_child
+    assert ambient.__name__ not in sys.modules
+
+assert tuple(sys.meta_path) == before_meta_path
+assert sys.modules == before_modules
+assert sys.modules[ambient.__name__] is ambient
+
+try:
+    with module._sealed_wheel_import_scope(()):
+        assert parent_name not in sys.modules
+        assert sys.modules[child_name] is trusted_child
+        assert ambient.__name__ not in sys.modules
+        raise RuntimeError("sealed failure")
+except RuntimeError as exc:
+    assert str(exc) == "sealed failure"
+else:
+    raise AssertionError("sealed scope did not propagate the error")
+
+assert tuple(sys.meta_path) == before_meta_path
+assert sys.modules == before_modules
+assert sys.modules[ambient.__name__] is ambient
+sys.modules[parent_name] = trusted_parent
+print("trusted-importlib-parent-absent-ok")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            script,
+            str(LAUNCHER.resolve()),
+        ],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "trusted-importlib-parent-absent-ok\n"
