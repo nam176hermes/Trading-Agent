@@ -132,9 +132,6 @@ enum Action {
 }
 
 fn parse_arguments() -> Result<Invocation, Failure> {
-    if std::env::vars_os().next().is_some() {
-        return Err(Failure::Authority);
-    }
     let arguments = std::env::args().collect::<Vec<_>>();
     if arguments.len() != 15
         || arguments[1] != "--program"

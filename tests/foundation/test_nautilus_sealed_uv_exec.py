@@ -112,11 +112,16 @@ def _compile_fixture(tmp_path: Path) -> tuple[Path, Path]:
     source.write_text(
         "#include <stdio.h>\n"
         "#include <stdlib.h>\n"
+        "#include <unistd.h>\n"
         "extern char **environ;\n"
         "int main(int argc, char **argv) {\n"
         f'  FILE *marker = fopen("{marker}", "w");\n'
         "  if (marker == NULL) return 91;\n"
-        "  fprintf(marker, \"%s\\n\", argv[0]);\n"
+        "  char executable[4096];\n"
+        "  ssize_t executable_length = readlink(\"/proc/self/exe\", executable, sizeof(executable) - 1);\n"
+        "  if (executable_length < 0) return 93;\n"
+        "  executable[executable_length] = '\\0';\n"
+        "  fprintf(marker, \"exe=%s\\nargv=%s\\n\", executable, argv[0]);\n"
         "  fclose(marker);\n"
         "  for (char **entry = environ; *entry != NULL; ++entry)\n"
         "    puts(*entry);\n"
@@ -225,25 +230,38 @@ def test_native_helper_executes_a_sealed_image_with_exact_fixed_environment(
 ) -> None:
     fixture, marker = _compile_fixture(native_tmp_path)
 
-    completed = _run(_command(helper, fixture, native_tmp_path), poison=False)
+    completed = _run(_command(helper, fixture, native_tmp_path), poison=True)
 
     assert completed.returncode == 0
     assert completed.stderr == b""
-    assert marker.read_text(encoding="ascii") == "uv\n"
+    marker_lines = marker.read_text(encoding="ascii").splitlines()
+    assert marker_lines[0].startswith("exe=/memfd:nautilus-sealed-uv")
+    assert str(fixture) not in marker_lines[0]
+    assert marker_lines[1] == "argv=uv"
     assert completed.stdout.decode("ascii").splitlines() == list(FIXED_ENVIRONMENT)
 
 
-def test_native_helper_rejects_inherited_poison_without_executing_fixture(
+def test_native_helper_discards_inherited_poison_before_exec(
     helper: Path, native_tmp_path: Path
 ) -> None:
     fixture, marker = _compile_fixture(native_tmp_path)
 
     completed = _run(_command(helper, fixture, native_tmp_path), poison=True)
 
-    assert completed.returncode != 0
-    assert completed.stdout == b""
-    assert len(completed.stderr) <= 256
-    assert not marker.exists()
+    assert completed.returncode == 0
+    assert completed.stderr == b""
+    assert marker.exists()
+    assert completed.stdout.decode("ascii").splitlines() == list(FIXED_ENVIRONMENT)
+
+
+def test_native_helper_source_uses_only_execveat_for_the_sealed_image() -> None:
+    source = (PROJECT / "src/main.rs").read_text(encoding="utf-8")
+
+    assert "/proc/self/fd" not in source
+    assert "fn execve(" not in source
+    assert "SYS_EXECVEAT" in source
+    assert "SYS_EXECVEAT,\n                fd," in source
+    assert "AT_EMPTY_PATH," in source
 
 
 def test_native_helper_build_is_reproducible_across_private_build_roots(
