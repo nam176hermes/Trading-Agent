@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import json
+import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -11,6 +15,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT = ROOT / "engines/nautilus/sealed_uv_exec"
+POLICY = ROOT / "engines/nautilus/sealed-uv-exec-policy.json"
+MATERIALIZER = ROOT / "scripts/materialize_sealed_uv_exec.py"
+ARCHITECTURE_PLAN = (
+    ROOT / "docs/superpowers/plans/2026-08-08-phase4-architectural-closure.md"
+)
 PRIVATE_RUST = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/rust-1.95.0"
 )
@@ -101,6 +110,13 @@ def native_tmp_path() -> Path:
     try:
         yield root
     finally:
+        for current, directories, files in os.walk(root, topdown=False):
+            current_path = Path(current)
+            for name in files:
+                (current_path / name).chmod(0o600)
+            for name in directories:
+                (current_path / name).chmod(0o700)
+            current_path.chmod(0o700)
         shutil.rmtree(root)
 
 
@@ -277,3 +293,298 @@ def test_native_helper_build_is_reproducible_across_private_build_roots(
 
     assert first.stat().st_size == second.stat().st_size
     assert _sha256(first) == _sha256(second)
+
+
+def _load_materializer():
+    spec = importlib.util.spec_from_file_location("materialize_sealed_uv_exec", MATERIALIZER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _canonical_json(document: dict[str, object]) -> bytes:
+    return (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "ascii"
+    )
+
+
+def _private_parent(tmp_path: Path) -> Path:
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    return parent
+
+
+def _task3_policy(module, *, source_drift: bool = False) -> dict[str, object]:
+    paths = module.POLICY_SOURCE_PATHS
+    document: dict[str, object] = {
+        "schema_version": 1,
+        "source_commit": subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip(),
+        "rust_source": paths["rust_source"],
+        "rust_source_sha256": _sha256(ROOT / paths["rust_source"]),
+        "cargo_manifest": paths["cargo_manifest"],
+        "cargo_manifest_sha256": _sha256(ROOT / paths["cargo_manifest"]),
+        "cargo_lock": paths["cargo_lock"],
+        "cargo_lock_sha256": _sha256(ROOT / paths["cargo_lock"]),
+        "materializer_source": paths["materializer_source"],
+        "materializer_source_sha256": _sha256(ROOT / paths["materializer_source"]),
+        "rust_toolchain_policy": paths["rust_toolchain_policy"],
+        "rust_toolchain_policy_sha256": _sha256(
+            ROOT / paths["rust_toolchain_policy"]
+        ),
+        "llvm_toolchain_policy": paths["llvm_toolchain_policy"],
+        "llvm_toolchain_policy_sha256": _sha256(
+            ROOT / paths["llvm_toolchain_policy"]
+        ),
+        "target_triple": TARGET,
+        "binary_name": "nautilus-sealed-uv-exec",
+        "binary_mode": "0500",
+    }
+    if source_drift:
+        document["rust_source_sha256"] = "0" * 64
+    return document
+
+
+def _write_policy(tmp_path: Path, module, *, source_drift: bool = False) -> Path:
+    policy = tmp_path / "sealed-uv-exec-policy.json"
+    policy.write_bytes(_canonical_json(_task3_policy(module, source_drift=source_drift)))
+    policy.chmod(0o400)
+    return policy
+
+
+def _fake_verified_toolchains(_policy: dict[str, object], _cargo: Path, _llvm: Path) -> None:
+    return None
+
+
+def _fake_builder(payloads: list[bytes]):
+    def build(_policy: dict[str, object], build_root: Path, _cargo: Path, _llvm: Path) -> Path:
+        assert stat.S_IMODE(build_root.stat().st_mode) == 0o700
+        for name in ("cargo-home", "target", "tmp"):
+            directory = build_root / name
+            assert directory.is_dir()
+            assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+        output = build_root / "target" / TARGET / "release" / "nautilus-sealed-uv-exec"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(payloads.pop(0))
+        output.chmod(0o500)
+        return output
+
+    return build
+
+
+def test_materializer_rejects_nonabsolute_paths_before_authority_use(
+    native_tmp_path: Path,
+) -> None:
+    module = _load_materializer()
+    policy = _write_policy(native_tmp_path, module)
+
+    with pytest.raises(module.MaterializationError, match="policy must be absolute"):
+        module.load_policy(Path("relative-policy.json"))
+    with pytest.raises(module.MaterializationError, match="destination must be absolute"):
+        module.materialize(
+            policy_path=policy,
+            destination=Path("relative-destination"),
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+
+def test_materializer_rejects_existing_destination_without_clobbering(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    parent = _private_parent(native_tmp_path)
+    destination = parent / "sealed-uv-exec"
+    destination.mkdir(mode=0o700)
+    sentinel = destination / "sentinel"
+    sentinel.write_text("retain", encoding="ascii")
+    policy = _write_policy(native_tmp_path, module)
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+    monkeypatch.setattr(module, "_build_once", _fake_builder([b"same", b"same"]))
+
+    with pytest.raises(module.MaterializationError, match="destination already exists"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert sentinel.read_text(encoding="ascii") == "retain"
+
+
+def test_materializer_rejects_policy_source_drift_before_build(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    policy = _write_policy(native_tmp_path, module, source_drift=True)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_verify_toolchains",
+        lambda *_args: calls.append("toolchains"),
+    )
+
+    with pytest.raises(module.MaterializationError, match="source digest drift"):
+        module.materialize(
+            policy_path=policy,
+            destination=_private_parent(native_tmp_path) / "sealed-uv-exec",
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert calls == []
+
+
+def test_materializer_rejects_unverified_toolchain_before_build(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    policy = _write_policy(native_tmp_path, module)
+    called: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_build_once",
+        lambda *_args: called.append("build") or Path("/tmp/never"),
+    )
+
+    with pytest.raises(module.MaterializationError, match="toolchain verification failed"):
+        module.materialize(
+            policy_path=policy,
+            destination=_private_parent(native_tmp_path) / "sealed-uv-exec",
+            cargo=native_tmp_path / "unverified-cargo",
+            llvm_toolchain=native_tmp_path / "unverified-llvm",
+        )
+
+    assert called == []
+
+
+def test_materializer_requires_two_identical_private_builds(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    policy = _write_policy(native_tmp_path, module)
+    parent = _private_parent(native_tmp_path)
+    destination = parent / "sealed-uv-exec"
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+    monkeypatch.setattr(module, "_build_once", _fake_builder([b"first", b"second"]))
+
+    with pytest.raises(module.MaterializationError, match="not reproducible"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert not destination.exists()
+
+
+def test_materializer_publishes_only_exact_sealed_inventory_atomically(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    policy = _write_policy(native_tmp_path, module)
+    parent = _private_parent(native_tmp_path)
+    destination = parent / "sealed-uv-exec"
+    payload = b"reproducible-sealed-uv-exec"
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+    monkeypatch.setattr(module, "_build_once", _fake_builder([payload, payload]))
+
+    manifest = module.materialize(
+        policy_path=policy,
+        destination=destination,
+        cargo=Path("/tmp/cargo"),
+        llvm_toolchain=Path("/tmp/llvm"),
+    )
+
+    assert set(path.name for path in destination.iterdir()) == {
+        "nautilus-sealed-uv-exec",
+        "sealed-uv-exec-manifest.json",
+    }
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o500
+    binary = destination / "nautilus-sealed-uv-exec"
+    manifest_path = destination / "sealed-uv-exec-manifest.json"
+    assert stat.S_IMODE(binary.stat().st_mode) == 0o500
+    assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o400
+    assert json.loads(manifest_path.read_text(encoding="ascii")) == manifest
+    assert manifest_path.read_bytes() == _canonical_json(manifest)
+    binary_sha256 = _sha256(binary)
+
+    with pytest.raises(module.MaterializationError, match="destination already exists"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert _sha256(binary) == binary_sha256
+
+
+def test_materialized_inventory_rejects_an_extra_file(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    policy = _write_policy(native_tmp_path, module)
+    parent = _private_parent(native_tmp_path)
+    destination = parent / "sealed-uv-exec"
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+    monkeypatch.setattr(module, "_build_once", _fake_builder([b"same", b"same"]))
+    module.materialize(
+        policy_path=policy,
+        destination=destination,
+        cargo=Path("/tmp/cargo"),
+        llvm_toolchain=Path("/tmp/llvm"),
+    )
+    destination.chmod(0o700)
+    (destination / "extra").write_bytes(b"unexpected")
+    destination.chmod(0o500)
+
+    with pytest.raises(module.MaterializationError, match="inventory"):
+        module.verify_materialized(destination, module.load_policy(policy))
+
+
+def test_committed_policy_binds_all_task3_sources_and_private_toolchain_policies() -> None:
+    module = _load_materializer()
+    document = module.load_policy(POLICY)
+
+    assert document["schema_version"] == 1
+    assert document["source_commit"] == subprocess.run(
+        ["git", "rev-parse", "HEAD^"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert document["target_triple"] == TARGET
+    assert document["binary_name"] == "nautilus-sealed-uv-exec"
+    assert document["binary_mode"] == "0500"
+    for name, relative in module.POLICY_SOURCE_PATHS.items():
+        field = f"{name}_sha256"
+        assert document[name] == relative
+        assert document[field] == _sha256(ROOT / relative)
+
+
+def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
+    text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
+    start = text.index("phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/")
+    end = text.index('mkdir -m 0700 "${phase4_runtime_root}/legacy-records"', start)
+    block = text[start:end]
+
+    assert 'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/' in block
+    assert 'test -x "${phase4_sealed_uv}" && test -r "${phase4_sealed_uv_manifest}"' in block
+    assert block.count('"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv') == 2
+    assert "--action version" in block
+    assert "--action sync-frozen-test" in block
+    assert "/proc/self/fd" not in block
+    assert "stat -L" not in block
+    assert '"${phase4_uv}"' not in block
+    assert '"${phase4_uv_exec}"' not in block

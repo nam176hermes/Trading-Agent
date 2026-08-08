@@ -845,19 +845,17 @@ as `phase4_campaign_sha256`, `phase4_parity_record_sha256`,
 them inside the closer invocation. Then close evidence:
 
 ```bash
-phase4_uv=/home/thenam176/.local/bin/uv
-test "$(/usr/bin/realpath -e -- "${phase4_uv}")" = "${phase4_uv}"
-test -f "${phase4_uv}" && test -x "${phase4_uv}"
-exec {phase4_uv_fd}<"${phase4_uv}"
-phase4_uv_exec="/proc/self/fd/${phase4_uv_fd}"
-phase4_uv_identity="$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv_exec}")"
-test "${phase4_uv_identity}" = \
-  "$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv}")"
-test "$(/usr/bin/stat -Lc '%a:%u:%g' -- "${phase4_uv_exec}")" = \
-  "755:$(/usr/bin/id -u):$(/usr/bin/id -g)"
-test "$(/usr/bin/sha256sum -- "${phase4_uv_exec}" | /usr/bin/cut -d ' ' -f 1)" = \
-  cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4
-test "$("${phase4_uv_exec}" --version)" = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
+phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/nautilus-sealed-uv-exec
+phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v1/sealed-uv-exec-manifest.json
+test -x "${phase4_sealed_uv}" && test -r "${phase4_sealed_uv_manifest}"
+"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv \
+  --sha256 cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4 \
+  --uid "$(/usr/bin/id -u)" --gid "$(/usr/bin/id -g)" --mode 0755 \
+  --cwd "$(git rev-parse --show-toplevel)/legacy/research-backend" --action version
+"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv \
+  --sha256 cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4 \
+  --uid "$(/usr/bin/id -u)" --gid "$(/usr/bin/id -g)" --mode 0755 \
+  --cwd "$(git rev-parse --show-toplevel)/legacy/research-backend" --action sync-frozen-test
 phase4_legacy_env=(
   /usr/bin/env -i
   PATH=/usr/bin:/bin
@@ -866,17 +864,6 @@ phase4_legacy_env=(
   PYTHONNOUSERSITE=1
   UV_OFFLINE=1
 )
-(
-  cd legacy/research-backend
-  "${phase4_legacy_env[@]}" "${phase4_uv_exec}" sync --frozen --extra test
-)
-test "${phase4_uv_identity}" = \
-  "$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv_exec}")"
-test "${phase4_uv_identity}" = \
-  "$(/usr/bin/stat -Lc '%d:%i:%s:%a:%u:%g' -- "${phase4_uv}")"
-test "$(/usr/bin/sha256sum -- "${phase4_uv_exec}" | /usr/bin/cut -d ' ' -f 1)" = \
-  cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4
-exec {phase4_uv_fd}<&-
 mkdir -m 0700 "${phase4_runtime_root}/legacy-records"
 phase4_scenario_ids=(long-accounting short-accounting partial-fill same-bar-stop-take-profit stale-quote zero-liquidity session-boundary event-digest)
 for phase4_scenario_id in "${phase4_scenario_ids[@]}"; do
