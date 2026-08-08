@@ -16,6 +16,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal, TypedDict
 
+from pydantic import ValidationError
+
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -26,7 +28,9 @@ from packages.engine_contracts import (
 )
 from packages.nautilus_backtest import (
     SCENARIO_IDS,
+    BacktestScenarioError,
     BacktestScenarioV1,
+    NautilusBacktestError,
     build_canonical_simulation_fixture,
     build_simulation_envelope,
     calculate_reference_outcome,
@@ -41,6 +45,7 @@ from services.job_worker.engine_spawn import (
     EngineSpawnProvider,
     consume_prepared_engine_spawn,
 )
+from services.job_worker.engine_spawn_interface import EngineSpawnError
 from services.job_worker.nautilus_closure import (
     NautilusClosureConfig,
     attest_nautilus_backtest_closure,
@@ -332,7 +337,7 @@ def _launch_once(
         try:
             process.kill()
             process.communicate()
-        except BaseException:
+        except (OSError, ValueError, subprocess.SubprocessError):
             pass
         raise ParityVerificationError("runtime exceeded the attested timeout") from exc
     if process.returncode != 0:
@@ -359,7 +364,7 @@ def _validated_event(
 ):
     try:
         event = EngineEventEnvelope.model_validate_json(event_bytes)
-    except Exception as exc:
+    except ValidationError as exc:
         raise ParityVerificationError("runtime stdout event is invalid") from exc
     if canonical_json_bytes(event) != event_bytes:
         raise ParityVerificationError("runtime stdout event is not canonical")
@@ -374,7 +379,7 @@ def _validated_event(
         )
         expected = calculate_reference_outcome(scenario)
         validated = validate_isolated_simulation_result(envelope, event, expected)
-    except Exception as exc:
+    except (BacktestScenarioError, NautilusBacktestError) as exc:
         raise ParityVerificationError(
             "runtime result does not equal the independent oracle"
         ) from exc
@@ -605,7 +610,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
         verify_nautilus_v12_r3_parity(**vars(arguments))
-    except Exception as exc:
+    except (
+        ParityVerificationError,
+        EngineSpawnError,
+        OSError,
+        subprocess.SubprocessError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
