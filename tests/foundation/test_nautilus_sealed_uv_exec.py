@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import errno
 import shutil
 import stat
 import subprocess
@@ -335,12 +336,21 @@ def _private_parent(tmp_path: Path) -> Path:
     return parent
 
 
+def _v4_binary(parent: Path) -> Path:
+    return parent / "sealed-uv-exec-v4.bin"
+
+
+def _v4_manifest(binary: Path) -> Path:
+    return binary.with_name("sealed-uv-exec-v4.manifest.json")
+
+
 def _task3_policy(
     module,
     *,
     source_drift: bool = False,
     source_root: Path | None = None,
     source_commit: str | None = None,
+    binary_payload: bytes = b"same",
 ) -> dict[str, object]:
     paths = module.POLICY_SOURCE_PATHS
     source_root = source_root or module.ROOT
@@ -359,6 +369,8 @@ def _task3_policy(
         "target_triple": TARGET,
         "binary_name": "nautilus-sealed-uv-exec",
         "binary_mode": "0500",
+        "binary_sha256": hashlib.sha256(binary_payload).hexdigest(),
+        "binary_size": len(binary_payload),
         "sandbox_path": str(sandbox),
         "sandbox_sha256": _sha256(sandbox),
         "sandbox_uid": sandbox_info.st_uid,
@@ -389,6 +401,7 @@ def _write_policy(
     source_drift: bool = False,
     source_root: Path | None = None,
     source_commit: str | None = None,
+    binary_payload: bytes = b"same",
 ) -> Path:
     policy = tmp_path / "sealed-uv-exec-policy.json"
     policy.write_bytes(
@@ -398,6 +411,7 @@ def _write_policy(
                 source_drift=source_drift,
                 source_root=source_root,
                 source_commit=source_commit,
+                binary_payload=binary_payload,
             )
         )
     )
@@ -487,8 +501,6 @@ def _forbid_materialization_authority(
 
     monkeypatch.setattr(module, "_verify_toolchains", forbidden("importer"))
     monkeypatch.setattr(module, "_build_once", forbidden("cargo"))
-    monkeypatch.setattr(module, "_create_staging", forbidden("staging"))
-    monkeypatch.setattr(module, "_renameat2_noreplace", forbidden("destination"))
     return calls
 
 
@@ -509,7 +521,7 @@ def test_materializer_rejects_nonexistent_source_commit_before_authority_use(
     policy = _write_policy(native_tmp_path, module, source_root=repository)
     _rewrite_policy_source_commit(policy, "0" * 40)
     calls = _forbid_materialization_authority(monkeypatch, module)
-    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
+    destination = _v4_binary(_private_parent(native_tmp_path))
 
     with pytest.raises(module.MaterializationError, match="source commit"):
         module.materialize(
@@ -553,7 +565,7 @@ def test_materializer_rejects_source_commit_bytes_mismatch_before_authority_use(
         source_commit=source_commit,
     )
     calls = _forbid_materialization_authority(monkeypatch, module)
-    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
+    destination = _v4_binary(_private_parent(native_tmp_path))
 
     with pytest.raises(module.MaterializationError, match="source commit"):
         module.materialize(
@@ -587,7 +599,7 @@ def test_materializer_rejects_source_commit_worktree_only_source_before_authorit
         source_commit=source_commit,
     )
     calls = _forbid_materialization_authority(monkeypatch, module)
-    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
+    destination = _v4_binary(_private_parent(native_tmp_path))
 
     with pytest.raises(module.MaterializationError, match="source commit"):
         module.materialize(
@@ -650,7 +662,7 @@ def test_materializer_rejects_drifted_verifier_source_before_toolchain_import(
     with pytest.raises(module.MaterializationError, match="source digest drift"):
         module.materialize(
             policy_path=policy,
-            destination=_private_parent(native_tmp_path) / "sealed-uv-exec",
+            destination=_v4_binary(_private_parent(native_tmp_path)),
             cargo=Path("/tmp/cargo"),
             llvm_toolchain=Path("/tmp/llvm"),
         )
@@ -684,9 +696,9 @@ def test_materializer_rejects_existing_destination_without_clobbering(
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
     parent = _private_parent(native_tmp_path)
-    destination = parent / "sealed-uv-exec"
-    destination.mkdir(mode=0o700)
-    sentinel = destination / "sentinel"
+    destination = _v4_binary(parent)
+    destination.write_bytes(b"retain")
+    sentinel = destination
     sentinel.write_text("retain", encoding="ascii")
     policy = _write_policy(native_tmp_path, module)
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
@@ -720,7 +732,7 @@ def test_materializer_rejects_policy_source_drift_before_build(
     with pytest.raises(module.MaterializationError, match="source digest drift"):
         module.materialize(
             policy_path=policy,
-            destination=_private_parent(native_tmp_path) / "sealed-uv-exec",
+            destination=_v4_binary(_private_parent(native_tmp_path)),
             cargo=Path("/tmp/cargo"),
             llvm_toolchain=Path("/tmp/llvm"),
         )
@@ -745,7 +757,7 @@ def test_materializer_rejects_unverified_toolchain_before_build(
     with pytest.raises(module.MaterializationError, match="toolchain verification failed"):
         module.materialize(
             policy_path=policy,
-            destination=_private_parent(native_tmp_path) / "sealed-uv-exec",
+            destination=_v4_binary(_private_parent(native_tmp_path)),
             cargo=native_tmp_path / "unverified-cargo",
             llvm_toolchain=native_tmp_path / "unverified-llvm",
         )
@@ -761,7 +773,7 @@ def test_materializer_requires_two_identical_private_builds(
     monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
     parent = _private_parent(native_tmp_path)
-    destination = parent / "sealed-uv-exec"
+    destination = _v4_binary(parent)
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(module, "_build_once", _fake_builder([b"first", b"second"]))
 
@@ -782,10 +794,10 @@ def test_materializer_publishes_only_exact_sealed_inventory_atomically(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module)
     parent = _private_parent(native_tmp_path)
-    destination = parent / "sealed-uv-exec"
     payload = b"reproducible-sealed-uv-exec"
+    policy = _write_policy(native_tmp_path, module, binary_payload=payload)
+    destination = _v4_binary(parent)
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(module, "_build_once", _fake_builder([payload, payload]))
 
@@ -796,18 +808,18 @@ def test_materializer_publishes_only_exact_sealed_inventory_atomically(
         llvm_toolchain=Path("/tmp/llvm"),
     )
 
-    assert set(path.name for path in destination.iterdir()) == {
-        "nautilus-sealed-uv-exec",
-        "sealed-uv-exec-manifest.json",
+    manifest_path = _v4_manifest(destination)
+    assert destination.is_file()
+    assert manifest_path.is_file()
+    assert set(path.name for path in parent.iterdir()) == {
+        "sealed-uv-exec-v4.bin",
+        "sealed-uv-exec-v4.manifest.json",
     }
     assert stat.S_IMODE(destination.stat().st_mode) == 0o500
-    binary = destination / "nautilus-sealed-uv-exec"
-    manifest_path = destination / "sealed-uv-exec-manifest.json"
-    assert stat.S_IMODE(binary.stat().st_mode) == 0o500
     assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o400
     assert json.loads(manifest_path.read_text(encoding="ascii")) == manifest
     assert manifest_path.read_bytes() == _canonical_json(manifest)
-    binary_sha256 = _sha256(binary)
+    assert _sha256(destination) == hashlib.sha256(payload).hexdigest()
 
     with pytest.raises(module.MaterializationError, match="destination already exists"):
         module.materialize(
@@ -817,7 +829,123 @@ def test_materializer_publishes_only_exact_sealed_inventory_atomically(
             llvm_toolchain=Path("/tmp/llvm"),
         )
 
-    assert _sha256(binary) == binary_sha256
+    assert _sha256(destination) == hashlib.sha256(payload).hexdigest()
+    assert not hasattr(module, "_create_staging")
+    assert not hasattr(module, "_cleanup_staging")
+    assert not hasattr(module, "_renameat2_noreplace")
+
+
+def test_materializer_rejects_a_reproducible_output_not_bound_by_policy(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    approved = b"reviewed-two-build-output"
+    policy = _write_policy(native_tmp_path, module, binary_payload=approved)
+    destination = _v4_binary(_private_parent(native_tmp_path))
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+    monkeypatch.setattr(module, "_build_once", _fake_builder([b"unbound", b"unbound"]))
+
+    with pytest.raises(module.MaterializationError, match="output authority"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert not destination.exists()
+    assert not _v4_manifest(destination).exists()
+
+
+def test_descriptor_publication_ignores_a_replacement_left_at_an_old_staging_name(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    payload = b"reviewed-two-build-output"
+    policy = _write_policy(native_tmp_path, module, binary_payload=payload)
+    parent = _private_parent(native_tmp_path)
+    destination = _v4_binary(parent)
+    replacement = parent / ".sealed-uv-exec-attacker-replacement"
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+    monkeypatch.setattr(module, "_build_once", _fake_builder([payload, payload]))
+    original_link = module._linkat_empty_path
+    calls: list[str] = []
+
+    def interposed_link(source_fd: int, parent_fd: int, name: str) -> None:
+        if not calls:
+            replacement.mkdir(mode=0o700)
+            (replacement / "sentinel").write_text("retain", encoding="ascii")
+        calls.append(name)
+        original_link(source_fd, parent_fd, name)
+
+    monkeypatch.setattr(module, "_linkat_empty_path", interposed_link)
+
+    module.materialize(
+        policy_path=policy,
+        destination=destination,
+        cargo=Path("/tmp/cargo"),
+        llvm_toolchain=Path("/tmp/llvm"),
+    )
+
+    assert calls == [module.PAIR_BINARY_NAME, module.PAIR_MANIFEST_NAME]
+    assert replacement.is_dir()
+    assert (replacement / "sentinel").read_text(encoding="ascii") == "retain"
+    assert _sha256(destination) == hashlib.sha256(payload).hexdigest()
+
+
+def test_manifest_link_failure_retains_binary_orphan_and_never_removes_replacement(
+    native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_materializer()
+    repository, _ = _provenance_repository(native_tmp_path, module)
+    monkeypatch.setattr(module, "ROOT", repository)
+    payload = b"reviewed-two-build-output"
+    policy = _write_policy(native_tmp_path, module, binary_payload=payload)
+    parent = _private_parent(native_tmp_path)
+    destination = _v4_binary(parent)
+    replacement = parent / ".sealed-uv-exec-attacker-replacement"
+    monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
+    monkeypatch.setattr(module, "_build_once", _fake_builder([payload, payload]))
+    original_link = module._linkat_empty_path
+
+    def interposed_link(source_fd: int, parent_fd: int, name: str) -> None:
+        if name == module.PAIR_MANIFEST_NAME:
+            replacement.mkdir(mode=0o700)
+            (replacement / "sentinel").write_text("retain", encoding="ascii")
+            raise OSError(errno.EEXIST, "manifest destination replaced")
+        original_link(source_fd, parent_fd, name)
+
+    monkeypatch.setattr(module, "_linkat_empty_path", interposed_link)
+
+    with pytest.raises(module.MaterializationError, match="manifest publication"):
+        module.materialize(
+            policy_path=policy,
+            destination=destination,
+            cargo=Path("/tmp/cargo"),
+            llvm_toolchain=Path("/tmp/llvm"),
+        )
+
+    assert destination.read_bytes() == payload
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o500
+    assert not _v4_manifest(destination).exists()
+    assert replacement.is_dir()
+    assert (replacement / "sentinel").read_text(encoding="ascii") == "retain"
+    with pytest.raises(module.MaterializationError, match="pair"):
+        module.verify_materialized(destination, module.load_policy(policy))
+
+
+def test_materializer_source_has_no_staging_rename_or_recursive_cleanup_paths() -> None:
+    source = MATERIALIZER.read_text(encoding="utf-8")
+
+    assert "_create_staging" not in source
+    assert "_cleanup_staging" not in source
+    assert "_renameat2_noreplace" not in source
+    assert "shutil.rmtree" not in source
+    assert ".unlink(" not in source
 
 
 def _substitute_checkout_sources_after_verification(
@@ -1030,15 +1158,14 @@ def test_sandbox_output_capture_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
 
-def test_sandbox_failure_never_creates_staging_or_publishes(
+def test_sandbox_failure_never_attempts_direct_pair_publication(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
-    destination = _private_parent(native_tmp_path) / "sealed-uv-exec"
-    calls: list[str] = []
+    destination = _v4_binary(_private_parent(native_tmp_path))
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(
         module, "_verify_sandbox", lambda _policy: module._sealed_memfd("test", b"bwrap", mode=0o500)
@@ -1048,8 +1175,6 @@ def test_sandbox_failure_never_creates_staging_or_publishes(
         "_build_once",
         lambda *_args: (_ for _ in ()).throw(module.MaterializationError("sandbox failed")),
     )
-    monkeypatch.setattr(module, "_create_staging", lambda *_args: calls.append("staging"))
-
     with pytest.raises(module.MaterializationError, match="sandbox failed"):
         module.materialize(
             policy_path=policy,
@@ -1058,11 +1183,11 @@ def test_sandbox_failure_never_creates_staging_or_publishes(
             llvm_toolchain=Path("/tmp/llvm"),
         )
 
-    assert calls == []
     assert not destination.exists()
+    assert not _v4_manifest(destination).exists()
 
 
-def test_materialized_inventory_rejects_an_extra_file(
+def test_materialized_pair_rejects_an_orphan_binary(
     native_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = _load_materializer()
@@ -1070,7 +1195,7 @@ def test_materialized_inventory_rejects_an_extra_file(
     monkeypatch.setattr(module, "ROOT", repository)
     policy = _write_policy(native_tmp_path, module)
     parent = _private_parent(native_tmp_path)
-    destination = parent / "sealed-uv-exec"
+    destination = _v4_binary(parent)
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(module, "_build_once", _fake_builder([b"same", b"same"]))
     module.materialize(
@@ -1079,11 +1204,9 @@ def test_materialized_inventory_rejects_an_extra_file(
         cargo=Path("/tmp/cargo"),
         llvm_toolchain=Path("/tmp/llvm"),
     )
-    destination.chmod(0o700)
-    (destination / "extra").write_bytes(b"unexpected")
-    destination.chmod(0o500)
+    _v4_manifest(destination).unlink()
 
-    with pytest.raises(module.MaterializationError, match="inventory"):
+    with pytest.raises(module.MaterializationError, match="pair"):
         module.verify_materialized(destination, module.load_policy(policy))
 
 
@@ -1096,6 +1219,9 @@ def test_committed_policy_binds_all_task3_sources_and_private_toolchain_policies
     assert document["target_triple"] == TARGET
     assert document["binary_name"] == "nautilus-sealed-uv-exec"
     assert document["binary_mode"] == "0500"
+    assert len(document["binary_sha256"]) == 64
+    assert isinstance(document["binary_size"], int)
+    assert document["binary_size"] > 0
     sandbox = Path("/usr/bin/bwrap")
     sandbox_info = sandbox.stat()
     assert document["sandbox_path"] == str(sandbox)
@@ -1120,12 +1246,17 @@ def test_committed_policy_binds_all_task3_sources_and_private_toolchain_policies
 
 def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
-    start = text.index("phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v3/")
+    start = text.index(
+        "phase4_sealed_uv=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v4.bin"
+    )
     end = text.index('mkdir -m 0700 "${phase4_runtime_root}/legacy-records"', start)
     block = text[start:end]
 
-    assert 'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/sealed-uv-exec-v3/' in block
-    assert 'test -x "${phase4_sealed_uv}" && test -r "${phase4_sealed_uv_manifest}"' in block
+    assert (
+        'phase4_sealed_uv_manifest=/home/thenam176/.cache/trading-agent/nautilus/'
+        'sealed-uv-exec-v4.manifest.json'
+    ) in block
+    assert 'materialize_sealed_uv_exec.py --verify-pair' in block
     assert block.count('"${phase4_sealed_uv}" --program /home/thenam176/.local/bin/uv') == 2
     assert "--action version" in block
     assert "--action sync-frozen-test" in block
@@ -1135,4 +1266,4 @@ def test_task8_recipe_uses_only_the_materialized_sealed_uv_executor() -> None:
     assert '"${phase4_uv_exec}"' not in block
     assert "/proc/self/fd" not in text
     assert "Bash opens it once" not in text
-    assert "only the materialized sealed-uv-exec-v3 helper" in text
+    assert "only the materialized sealed-uv-exec-v4 helper pair" in text

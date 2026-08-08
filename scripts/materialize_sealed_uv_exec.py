@@ -11,7 +11,6 @@ import json
 import os
 import platform
 import selectors
-import shutil
 import stat
 import subprocess
 import sys
@@ -60,6 +59,8 @@ POLICY_FIELDS = {
     "target_triple",
     "binary_name",
     "binary_mode",
+    "binary_sha256",
+    "binary_size",
     "sandbox_path",
     "sandbox_sha256",
     "sandbox_uid",
@@ -68,16 +69,17 @@ POLICY_FIELDS = {
     "sandbox_version",
     "sandbox_capabilities",
 }
-MANIFEST_NAME = "sealed-uv-exec-manifest.json"
 TARGET_TRIPLE = "x86_64-unknown-linux-gnu"
 BINARY_NAME = "nautilus-sealed-uv-exec"
 BINARY_MODE = 0o500
+PAIR_BINARY_NAME = "sealed-uv-exec-v4.bin"
+PAIR_MANIFEST_NAME = "sealed-uv-exec-v4.manifest.json"
 SANDBOX_PATH = "/usr/bin/bwrap"
 SANDBOX_CAPABILITIES = ("--clearenv", "--perms", "--ro-bind-data", "--tmpfs")
 _SHA256_LENGTH = 64
-_RENAME_NOREPLACE = 1
 _MFD_ALLOW_SEALING = 0x0002
 _MFD_CLOEXEC = 0x0001
+_AT_EMPTY_PATH = 0x1000
 _MEMFD_CREATE_SYSCALLS = {
     "x86_64": 319,
     "amd64": 319,
@@ -265,6 +267,14 @@ def _validate_policy(document: object) -> dict[str, object]:
         raise MaterializationError("sealed UV executor target is invalid")
     if document["binary_name"] != BINARY_NAME or document["binary_mode"] != "0500":
         raise MaterializationError("sealed UV executor output identity is invalid")
+    if (
+        not _is_digest(document["binary_sha256"])
+        or not isinstance(document["binary_size"], int)
+        or isinstance(document["binary_size"], bool)
+        or document["binary_size"] <= 0
+        or document["binary_size"] > _MAX_BINARY_BYTES
+    ):
+        raise MaterializationError("sealed UV executor output authority is invalid")
     if (
         document["sandbox_path"] != SANDBOX_PATH
         or not _is_digest(document["sandbox_sha256"])
@@ -524,10 +534,15 @@ def _verify_toolchains(
         raise MaterializationError("toolchain verification failed") from error
 
 
-def _prepare_destination(destination: Path) -> tuple[Path, int, tuple[int, int]]:
+def _prepare_destination(
+    destination: Path,
+) -> tuple[Path, Path, int, tuple[int, int]]:
     destination = _lexical_absolute(destination, "destination")
     if destination == ROOT or ROOT in destination.parents:
         raise MaterializationError("destination must remain external to the checkout")
+    if destination.name != PAIR_BINARY_NAME:
+        raise MaterializationError("destination must name the fixed sealed UV executor binary")
+    manifest = destination.with_name(PAIR_MANIFEST_NAME)
     _reject_symlink_ancestors(destination, "destination", include_leaf=False)
     try:
         parent_info = destination.parent.lstat()
@@ -540,47 +555,27 @@ def _prepare_destination(destination: Path) -> tuple[Path, int, tuple[int, int]]
         or stat.S_IMODE(parent_info.st_mode) != 0o700
     ):
         raise MaterializationError("destination parent must be private mode 0700")
-    try:
-        destination.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        raise MaterializationError("destination already exists")
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         parent_fd = os.open(destination.parent, flags)
         observed = os.fstat(parent_fd)
     except OSError as error:
         raise MaterializationError("destination parent cannot be opened safely") from error
-    return destination, parent_fd, (observed.st_dev, observed.st_ino)
+    parent_identity = (observed.st_dev, observed.st_ino)
+    _verify_destination_parent(parent_fd, parent_identity, destination.parent)
+    _require_absent_child(parent_fd, destination.name, "binary destination")
+    _require_absent_child(parent_fd, manifest.name, "manifest destination")
+    return destination, manifest, parent_fd, parent_identity
 
 
-def _create_staging(parent_fd: int, parent: Path) -> tuple[str, Path]:
-    for _ in range(32):
-        name = f".sealed-uv-exec-{os.getpid()}-{os.urandom(16).hex()}"
-        try:
-            os.mkdir(name, 0o700, dir_fd=parent_fd)
-        except FileExistsError:
-            continue
-        return name, parent / name
-    raise MaterializationError("unable to create sealed UV executor staging")
-
-
-def _cleanup_staging(stage: Path) -> None:
-    if not stage.exists() or stage.is_symlink():
+def _require_absent_child(parent_fd: int, name: str, label: str) -> None:
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
         return
-    for current, directories, files in os.walk(stage, topdown=False, followlinks=False):
-        current_path = Path(current)
-        for name in files:
-            candidate = current_path / name
-            if not candidate.is_symlink():
-                candidate.chmod(0o600)
-        for name in directories:
-            candidate = current_path / name
-            if not candidate.is_symlink():
-                candidate.chmod(0o700)
-        current_path.chmod(0o700)
-    shutil.rmtree(stage)
+    except OSError as error:
+        raise MaterializationError(f"{label} cannot be inspected") from error
+    raise MaterializationError(f"{label} already exists")
 
 
 def _read_bound_sandbox(policy: dict[str, object]) -> bytes:
@@ -843,74 +838,175 @@ def _build_once(
     return output
 
 
-def _copy_open_build_output(source: bytes, destination: Path) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+def _digest_descriptor(descriptor: int, *, limit: int) -> tuple[str, int]:
     try:
-        destination_fd = os.open(destination, flags, BINARY_MODE)
-    except OSError as error:
-        raise MaterializationError("sealed UV executor destination cannot be created") from error
-    try:
-        view = memoryview(source)
-        while view:
-            written = os.write(destination_fd, view)
-            if written <= 0:
-                raise MaterializationError("sealed UV executor destination write failed")
-            view = view[written:]
-        os.fsync(destination_fd)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        size = 0
+        while block := os.read(descriptor, 1024 * 1024):
+            size += len(block)
+            if size > limit:
+                raise MaterializationError("sealed UV executor publish input exceeds its bound")
+            digest.update(block)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return digest.hexdigest(), size
     except MaterializationError:
-        os.close(destination_fd)
         raise
     except OSError as error:
-        os.close(destination_fd)
-        raise MaterializationError("sealed UV executor destination write failed") from error
-    os.close(destination_fd)
+        raise MaterializationError("sealed UV executor publish input cannot be read") from error
 
 
-def _renameat2_noreplace(parent_fd: int, source_name: bytes, destination_name: bytes) -> None:
-    if sys.platform != "linux":
-        raise OSError(errno.ENOSYS, "renameat2 is unavailable")
-    libc = ctypes.CDLL(None, use_errno=True)
+def _verify_regular_descriptor(
+    descriptor: int,
+    *,
+    label: str,
+    mode: int,
+    digest: str,
+    size: int,
+    require_link: bool,
+) -> None:
     try:
-        renameat2 = libc.renameat2
-    except AttributeError as error:
-        raise OSError(errno.ENOSYS, "renameat2 is unavailable") from error
-    renameat2.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    renameat2.restype = ctypes.c_int
+        info = os.fstat(descriptor)
+    except OSError as error:
+        raise MaterializationError(f"{label} cannot be inspected") from error
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != mode
+        or (require_link and info.st_nlink != 1)
+        or info.st_size != size
+        or _digest_descriptor(descriptor, limit=max(size, 1)) != (digest, size)
+    ):
+        raise MaterializationError(f"{label} is not the bound direct regular file")
+
+
+def _open_unlinked_publish_file(parent_fd: int, *, label: str, mode: int) -> int:
+    flag = getattr(os, "O_TMPFILE", 0)
+    if sys.platform != "linux" or flag == 0:
+        raise MaterializationError("descriptor-bound publication is unavailable")
+    try:
+        descriptor = os.open(
+            ".",
+            os.O_RDWR | flag | getattr(os, "O_CLOEXEC", 0),
+            mode,
+            dir_fd=parent_fd,
+        )
+        os.fchmod(descriptor, mode)
+        return descriptor
+    except OSError as error:
+        raise MaterializationError(f"{label} cannot be created by descriptor") from error
+
+
+def _copy_sealed_descriptor(
+    source_fd: int, destination_fd: int, *, label: str, mode: int
+) -> tuple[str, int]:
+    _sealed_descriptor_state(source_fd, mode)
+    try:
+        os.lseek(source_fd, 0, os.SEEK_SET)
+        while block := os.read(source_fd, 1024 * 1024):
+            view = memoryview(block)
+            while view:
+                written = os.write(destination_fd, view)
+                if written <= 0:
+                    raise OSError("descriptor copy made no progress")
+                view = view[written:]
+        os.fsync(destination_fd)
+        digest, size = _digest_descriptor(destination_fd, limit=_MAX_BINARY_BYTES)
+        _verify_regular_descriptor(
+            destination_fd,
+            label=label,
+            mode=mode,
+            digest=digest,
+            size=size,
+            require_link=False,
+        )
+        return digest, size
+    except OSError as error:
+        raise MaterializationError(f"{label} cannot be copied by descriptor") from error
+
+
+def _linkat_empty_path(source_fd: int, parent_fd: int, name: str) -> None:
+    if sys.platform != "linux" or not name or "/" in name:
+        raise OSError(errno.ENOSYS, "linkat AT_EMPTY_PATH is unavailable")
+    libc = ctypes.CDLL(None, use_errno=True)
+    linkat = libc.linkat
+    linkat.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int)
+    linkat.restype = ctypes.c_int
     ctypes.set_errno(0)
-    if renameat2(parent_fd, source_name, parent_fd, destination_name, _RENAME_NOREPLACE) != 0:
+    if linkat(source_fd, b"", parent_fd, os.fsencode(name), _AT_EMPTY_PATH) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
 
-def _manifest(policy: dict[str, object], binary: Path) -> dict[str, object]:
+def _manifest(policy: dict[str, object]) -> dict[str, object]:
     return {
         "schema_version": 1,
         "policy_sha256": hashlib.sha256(_canonical_json(policy)).hexdigest(),
         "source_commit": policy["source_commit"],
         "binary": {
-            "name": policy["binary_name"],
-            "sha256": _sha256(binary),
-            "size": binary.stat().st_size,
+            "name": PAIR_BINARY_NAME,
+            "sha256": policy["binary_sha256"],
+            "size": policy["binary_size"],
             "mode": policy["binary_mode"],
         },
     }
 
 
-def _verify_destination_parent(parent_fd: int, identity: tuple[int, int]) -> None:
-    observed = os.fstat(parent_fd)
+def _verify_destination_parent(
+    parent_fd: int, identity: tuple[int, int], parent: Path
+) -> None:
+    try:
+        observed = os.fstat(parent_fd)
+        named = parent.lstat()
+    except OSError as error:
+        raise MaterializationError("destination parent identity changed before publish") from error
     if (
         not stat.S_ISDIR(observed.st_mode)
         or (observed.st_dev, observed.st_ino) != identity
         or observed.st_uid != os.geteuid()
         or stat.S_IMODE(observed.st_mode) != 0o700
+        or parent.is_symlink()
+        or not stat.S_ISDIR(named.st_mode)
+        or (named.st_dev, named.st_ino) != identity
+        or named.st_uid != os.geteuid()
+        or stat.S_IMODE(named.st_mode) != 0o700
     ):
         raise MaterializationError("destination parent identity changed before publish")
+
+
+def _verify_published_binary(
+    parent_fd: int,
+    parent_identity: tuple[int, int],
+    parent: Path,
+    name: str,
+    policy: dict[str, object],
+) -> None:
+    _verify_destination_parent(parent_fd, parent_identity, parent)
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+    except OSError as error:
+        raise MaterializationError("published sealed UV executor binary is unavailable") from error
+    try:
+        opened = os.fstat(descriptor)
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+            raise MaterializationError("published sealed UV executor binary identity changed")
+        _verify_regular_descriptor(
+            descriptor,
+            label="published sealed UV executor binary",
+            mode=BINARY_MODE,
+            digest=str(policy["binary_sha256"]),
+            size=int(policy["binary_size"]),
+            require_link=True,
+        )
+    except OSError as error:
+        raise MaterializationError("published sealed UV executor binary cannot be verified") from error
+    finally:
+        os.close(descriptor)
 
 
 def verify_materialized(destination: Path, policy: dict[str, object]) -> dict[str, object]:
@@ -918,48 +1014,70 @@ def verify_materialized(destination: Path, policy: dict[str, object]) -> dict[st
     destination = _lexical_absolute(destination, "destination")
     if destination == ROOT or ROOT in destination.parents:
         raise MaterializationError("destination must remain external to the checkout")
+    if destination.name != PAIR_BINARY_NAME:
+        raise MaterializationError("materialized sealed UV executor pair name is invalid")
+    manifest_destination = destination.with_name(PAIR_MANIFEST_NAME)
     _reject_symlink_ancestors(destination, "destination")
+    binary_fd = -1
+    manifest_fd = -1
     try:
-        root_info = destination.lstat()
+        parent_fd = os.open(
+            destination.parent,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
     except OSError as error:
-        raise MaterializationError("materialized sealed UV executor is missing") from error
-    if (
-        destination.is_symlink()
-        or not stat.S_ISDIR(root_info.st_mode)
-        or root_info.st_uid != os.geteuid()
-        or stat.S_IMODE(root_info.st_mode) != 0o500
-    ):
-        raise MaterializationError("materialized sealed UV executor root is unsafe")
-    expected_names = {str(policy["binary_name"]), MANIFEST_NAME}
+        raise MaterializationError("materialized sealed UV executor pair is unavailable") from error
     try:
-        entries = {entry.name for entry in destination.iterdir()}
+        parent_info = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_info.st_mode) != 0o700
+        ):
+            raise MaterializationError("materialized sealed UV executor parent is unsafe")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        binary_fd = os.open(destination.name, flags, dir_fd=parent_fd)
+        manifest_fd = os.open(manifest_destination.name, flags, dir_fd=parent_fd)
     except OSError as error:
-        raise MaterializationError("materialized sealed UV executor inventory is unreadable") from error
-    if entries != expected_names:
-        raise MaterializationError("materialized sealed UV executor inventory mismatch")
-    binary = destination / str(policy["binary_name"])
-    manifest_path = destination / MANIFEST_NAME
-    binary_info = _require_direct_file(binary, "materialized sealed UV executor", mode=BINARY_MODE)
-    _require_direct_file(manifest_path, "sealed UV executor manifest", mode=0o400)
+        if binary_fd >= 0:
+            os.close(binary_fd)
+        os.close(parent_fd)
+        raise MaterializationError("materialized sealed UV executor pair is incomplete") from error
     try:
-        manifest_raw = manifest_path.read_bytes()
-        manifest = json.loads(manifest_raw.decode("ascii"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise MaterializationError("sealed UV executor manifest is invalid") from error
-    expected = {
-        "schema_version": 1,
-        "policy_sha256": hashlib.sha256(_canonical_json(policy)).hexdigest(),
-        "source_commit": policy["source_commit"],
-        "binary": {
-            "name": policy["binary_name"],
-            "sha256": _sha256(binary),
-            "size": binary_info.st_size,
-            "mode": policy["binary_mode"],
-        },
-    }
-    if manifest != expected or manifest_raw != _canonical_json(expected):
-        raise MaterializationError("sealed UV executor manifest is not policy-bound")
-    return manifest
+        _verify_regular_descriptor(
+            binary_fd,
+            label="materialized sealed UV executor",
+            mode=BINARY_MODE,
+            digest=str(policy["binary_sha256"]),
+            size=int(policy["binary_size"]),
+            require_link=True,
+        )
+        manifest_digest, manifest_size = _digest_descriptor(manifest_fd, limit=_MAX_BINARY_BYTES)
+        _verify_regular_descriptor(
+            manifest_fd,
+            label="sealed UV executor manifest",
+            mode=0o400,
+            digest=manifest_digest,
+            size=manifest_size,
+            require_link=True,
+        )
+        try:
+            os.lseek(manifest_fd, 0, os.SEEK_SET)
+            manifest_raw = b"".join(
+                iter(lambda: os.read(manifest_fd, 1024 * 1024), b"")
+            )
+            manifest = json.loads(manifest_raw.decode("ascii"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise MaterializationError("sealed UV executor manifest is invalid") from error
+        expected = _manifest(policy)
+        if manifest != expected or manifest_raw != _canonical_json(expected):
+            raise MaterializationError("sealed UV executor manifest is not policy-bound")
+        return manifest
+    finally:
+        os.close(binary_fd)
+        os.close(manifest_fd)
+        os.close(parent_fd)
 
 
 def materialize(
@@ -969,12 +1087,14 @@ def materialize(
     source_bundle = _create_verified_source_bundle(
         policy, _verify_policy_source_commit(policy)
     )
-    stage_name: str | None = None
-    stage: Path | None = None
     parent_fd = -1
     sandbox_fd = -1
+    binary_authority_fd = -1
+    manifest_authority_fd = -1
+    binary_publish_fd = -1
+    manifest_publish_fd = -1
     try:
-        destination, parent_fd, parent_identity = _prepare_destination(destination)
+        destination, manifest_destination, parent_fd, parent_identity = _prepare_destination(destination)
         _verify_toolchains(policy, cargo, llvm_toolchain, source_bundle)
         sandbox_fd = _verify_sandbox(policy)
         first = _build_once(policy, cargo, llvm_toolchain, source_bundle, sandbox_fd)
@@ -984,29 +1104,71 @@ def materialize(
             or hashlib.sha256(first).hexdigest() != hashlib.sha256(second).hexdigest()
         ):
             raise MaterializationError("sealed UV executor builds are not reproducible")
-        stage_name, stage = _create_staging(parent_fd, destination.parent)
-        binary = stage / str(policy["binary_name"])
-        _copy_open_build_output(first, binary)
-        binary.chmod(BINARY_MODE)
-        manifest = _manifest(policy, binary)
-        manifest_path = stage / MANIFEST_NAME
-        manifest_path.write_bytes(_canonical_json(manifest))
-        manifest_path.chmod(0o400)
-        stage.chmod(0o500)
-        _verify_destination_parent(parent_fd, parent_identity)
+        first_digest = hashlib.sha256(first).hexdigest()
+        if (
+            first_digest != policy["binary_sha256"]
+            or len(first) != policy["binary_size"]
+        ):
+            raise MaterializationError("sealed UV executor output authority does not match")
+        binary_authority_fd = _sealed_memfd("sealed-uv-exec-v4-binary", first, mode=BINARY_MODE)
+        manifest_raw = _canonical_json(_manifest(policy))
+        manifest_authority_fd = _sealed_memfd(
+            "sealed-uv-exec-v4-manifest", manifest_raw, mode=0o400
+        )
+        binary_publish_fd = _open_unlinked_publish_file(
+            parent_fd, label="sealed UV executor binary", mode=BINARY_MODE
+        )
+        copied_digest, copied_size = _copy_sealed_descriptor(
+            binary_authority_fd,
+            binary_publish_fd,
+            label="sealed UV executor binary",
+            mode=BINARY_MODE,
+        )
+        if copied_digest != policy["binary_sha256"] or copied_size != policy["binary_size"]:
+            raise MaterializationError("sealed UV executor binary copy authority changed")
+        manifest_publish_fd = _open_unlinked_publish_file(
+            parent_fd, label="sealed UV executor manifest", mode=0o400
+        )
+        copied_manifest_digest, copied_manifest_size = _copy_sealed_descriptor(
+            manifest_authority_fd,
+            manifest_publish_fd,
+            label="sealed UV executor manifest",
+            mode=0o400,
+        )
+        if (copied_manifest_digest, copied_manifest_size) != (
+            hashlib.sha256(manifest_raw).hexdigest(),
+            len(manifest_raw),
+        ):
+            raise MaterializationError("sealed UV executor manifest copy authority changed")
+        _verify_destination_parent(parent_fd, parent_identity, destination.parent)
+        _require_absent_child(parent_fd, destination.name, "binary destination")
         try:
-            _renameat2_noreplace(
-                parent_fd, os.fsencode(stage_name), os.fsencode(destination.name)
-            )
+            _linkat_empty_path(binary_publish_fd, parent_fd, destination.name)
         except OSError as error:
             if error.errno == errno.EEXIST:
-                raise MaterializationError("destination already exists at atomic publish") from error
-            raise MaterializationError("atomic no-clobber publish failed") from error
-        stage = None
+                raise MaterializationError("binary destination already exists at publication") from error
+            raise MaterializationError("sealed UV executor binary publication failed") from error
+        _verify_published_binary(
+            parent_fd, parent_identity, destination.parent, destination.name, policy
+        )
+        _verify_destination_parent(parent_fd, parent_identity, destination.parent)
+        _require_absent_child(parent_fd, manifest_destination.name, "manifest destination")
+        try:
+            _linkat_empty_path(manifest_publish_fd, parent_fd, manifest_destination.name)
+        except OSError as error:
+            if error.errno == errno.EEXIST:
+                raise MaterializationError("sealed UV executor manifest publication failed") from error
+            raise MaterializationError("sealed UV executor manifest publication failed") from error
         return verify_materialized(destination, policy)
     finally:
-        if stage is not None:
-            _cleanup_staging(stage)
+        for descriptor in (
+            manifest_publish_fd,
+            binary_publish_fd,
+            manifest_authority_fd,
+            binary_authority_fd,
+        ):
+            if descriptor >= 0:
+                os.close(descriptor)
         if sandbox_fd >= 0:
             os.close(sandbox_fd)
         if parent_fd >= 0:
@@ -1018,20 +1180,29 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--policy", required=True, type=Path)
     parser.add_argument("--destination", required=True, type=Path)
-    parser.add_argument("--cargo", required=True, type=Path)
-    parser.add_argument("--llvm-toolchain", required=True, type=Path)
+    parser.add_argument("--cargo", type=Path)
+    parser.add_argument("--llvm-toolchain", type=Path)
+    parser.add_argument("--verify-pair", action="store_true")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
-        materialize(
-            policy_path=arguments.policy,
-            destination=arguments.destination,
-            cargo=arguments.cargo,
-            llvm_toolchain=arguments.llvm_toolchain,
-        )
+        policy = load_policy(arguments.policy)
+        if arguments.verify_pair:
+            if arguments.cargo is not None or arguments.llvm_toolchain is not None:
+                raise MaterializationError("pair verification does not accept build toolchains")
+            verify_materialized(arguments.destination, policy)
+        else:
+            if arguments.cargo is None or arguments.llvm_toolchain is None:
+                raise MaterializationError("materialization requires both private toolchains")
+            materialize(
+                policy_path=arguments.policy,
+                destination=arguments.destination,
+                cargo=arguments.cargo,
+                llvm_toolchain=arguments.llvm_toolchain,
+            )
     except (MaterializationError, OSError, ValueError) as error:
         print(f"sealed UV executor materialization: FAIL: {error}", file=sys.stderr)
         return 2
