@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,11 +15,26 @@ from pydantic import ValidationError
 
 import packages.engine_contracts as contracts
 import packages.nautilus_backtest as backtest
+from services.job_worker.engine_spawn_interface import EngineSpawnError
 
 
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_paper_compat.py"
 HARNESS = ROOT / "scripts/verify_nautilus_paper_compatibility.py"
+CAMPAIGN_FILES = (
+    "engine-configuration.json",
+    "instrument-catalog.json",
+    "strategy-configuration.json",
+    "market-data.json",
+    "simulation-scenario.json",
+)
+CAMPAIGN_DIGEST_FIELDS = (
+    "engine_configuration_sha256",
+    "instrument_catalog_sha256",
+    "strategy_configuration_sha256",
+    "market_data_sha256",
+    "simulation_scenario_sha256",
+)
 
 
 def _canonical(value: object) -> bytes:
@@ -69,6 +85,101 @@ def _load(path: Path, name: str):
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
+
+
+def _paper_campaign_evidence() -> tuple[
+    Path, Path, str, str, dict[str, object], dict[str, object]
+]:
+    evidence_root = Path(
+        tempfile.mkdtemp(prefix="paper-campaign-evidence-test-", dir="/tmp")
+    )
+    evidence_root.chmod(0o700)
+    campaign = evidence_root / "campaign"
+    campaign.mkdir(mode=0o700)
+    scenario_records: list[dict[str, object]] = []
+    for scenario_id in backtest.SCENARIO_IDS:
+        scenario = campaign / scenario_id
+        scenario.mkdir(mode=0o700)
+        record: dict[str, object] = {"scenario_id": scenario_id}
+        for filename, field in zip(
+            CAMPAIGN_FILES, CAMPAIGN_DIGEST_FIELDS, strict=True
+        ):
+            raw = _canonical(
+                {"filename": filename, "scenario_id": scenario_id}
+            ) + b"\n"
+            path = scenario / filename
+            path.write_bytes(raw)
+            path.chmod(0o400)
+            record[field] = hashlib.sha256(raw).hexdigest()
+        scenario.chmod(0o500)
+        scenario_records.append(record)
+    manifest: dict[str, object] = {
+        "paper_scenario_id": "long-accounting",
+        "scenarios": scenario_records,
+        "schema_version": "nautilus-phase4-campaign-v1",
+        "strategy_source_sha256": "4" * 64,
+    }
+    manifest_raw = _canonical(manifest) + b"\n"
+    manifest_path = campaign / "campaign-manifest.json"
+    manifest_path.write_bytes(manifest_raw)
+    manifest_path.chmod(0o400)
+    campaign.chmod(0o500)
+    campaign_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+    candidate_closure_sha256 = "a" * 64
+    candidate_manifest_sha256 = "b" * 64
+    parity_scenarios: list[dict[str, object]] = []
+    for record in scenario_records:
+        event_sha256 = hashlib.sha256(
+            f"event:{record['scenario_id']}".encode("ascii")
+        ).hexdigest()
+        result_sha256 = hashlib.sha256(
+            f"result:{record['scenario_id']}".encode("ascii")
+        ).hexdigest()
+        parity_scenarios.append(
+            {
+                **record,
+                "independent_reference_event_sha256": event_sha256,
+                "independent_reference_result_sha256": result_sha256,
+                "nautilus_event_sha256": event_sha256,
+                "nautilus_result_sha256": result_sha256,
+                "run_1_event_sha256": event_sha256,
+                "run_2_event_sha256": event_sha256,
+            }
+        )
+    parity: dict[str, object] = {
+        "candidate_closure_sha256": candidate_closure_sha256,
+        "candidate_manifest_schema_version": 6,
+        "candidate_manifest_sha256": candidate_manifest_sha256,
+        "scenario_campaign_sha256": campaign_sha256,
+        "scenarios": parity_scenarios,
+        "schema_version": "nautilus-phase4-parity-evidence-v2",
+        "status": "passed",
+        "strategy_source_sha256": "4" * 64,
+    }
+    parity_path = evidence_root / "parity-record.json"
+    parity_path.write_bytes(_canonical(parity) + b"\n")
+    parity_path.chmod(0o400)
+    return (
+        campaign,
+        parity_path,
+        candidate_closure_sha256,
+        candidate_manifest_sha256,
+        manifest,
+        parity,
+    )
+
+
+def _unseal_campaign(campaign: Path, parity: Path) -> None:
+    parity.chmod(0o600)
+    campaign.chmod(0o700)
+    for child in campaign.iterdir():
+        if child.is_dir():
+            child.chmod(0o700)
+            for artifact in child.iterdir():
+                artifact.chmod(0o600)
+        else:
+            child.chmod(0o600)
+    shutil.rmtree(campaign.parent)
 
 
 def test_paper_command_is_strict_read_only_and_not_job_parseable() -> None:
@@ -396,12 +507,14 @@ def test_root_harness_owns_exactly_one_prepare_consume_and_capture() -> None:
         popen_factory="inert-popen",
         consume=consume,
         capture=capture,
+        cleanup=lambda: calls.append("cleanup"),
     )
 
     assert calls == [
         ("prepare", command),
         ("consume", "prepared"),
         ("capture", "built", "inert-popen"),
+        "cleanup",
     ]
     assert result.compatible is True
     assert result.launcher_result_sha256 == hashlib.sha256(_canonical(event)).hexdigest()
@@ -437,4 +550,283 @@ def test_root_harness_publishes_only_one_sealed_fixed_result() -> None:
     finally:
         for candidate in transport.iterdir():
             candidate.chmod(0o600)
+        shutil.rmtree(root)
+
+
+def test_root_harness_requires_exact_eight_scenario_parity_and_selects_long_accounting() -> None:
+    harness = _load(HARNESS, "paper_compat_harness_campaign")
+    campaign, parity_path, closure_sha, manifest_sha, manifest, _parity = (
+        _paper_campaign_evidence()
+    )
+    try:
+        command, bindings, parity_sha = harness._campaign_authority(
+            campaign,
+            parity_path,
+            candidate_closure_sha256=closure_sha,
+            candidate_manifest_sha256=manifest_sha,
+        )
+
+        assert tuple(
+            record["scenario_id"] for record in manifest["scenarios"]
+        ) == backtest.SCENARIO_IDS
+        assert len(bindings) == 3
+        assert all(
+            binding.source.parent.name == "long-accounting" for binding in bindings
+        )
+        assert tuple(binding.source.name for binding in bindings) == CAMPAIGN_FILES[:3]
+        assert command.strategy_source_sha256 == "4" * 64
+        assert parity_sha == hashlib.sha256(parity_path.read_bytes()).hexdigest()
+    finally:
+        _unseal_campaign(campaign, parity_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "pass-shaped",
+        "out-of-order",
+        "campaign-identity",
+        "candidate-identity",
+        "event-mismatch",
+        "result-mismatch",
+    ),
+)
+def test_root_harness_rejects_fabricated_or_inconsistent_parity_evidence(
+    mutation: str,
+) -> None:
+    harness = _load(HARNESS, f"paper_compat_harness_bad_parity_{mutation}")
+    campaign, parity_path, closure_sha, manifest_sha, _manifest, parity = (
+        _paper_campaign_evidence()
+    )
+    try:
+        if mutation == "pass-shaped":
+            parity = {
+                "scenario_campaign_sha256": parity["scenario_campaign_sha256"],
+                "status": "passed",
+            }
+        elif mutation == "out-of-order":
+            parity["scenarios"] = list(reversed(parity["scenarios"]))
+        elif mutation == "campaign-identity":
+            parity["scenarios"][0]["market_data_sha256"] = "0" * 64
+        elif mutation == "candidate-identity":
+            parity["candidate_closure_sha256"] = "0" * 64
+        elif mutation == "event-mismatch":
+            parity["scenarios"][0]["run_2_event_sha256"] = "0" * 64
+        else:
+            parity["scenarios"][0]["nautilus_result_sha256"] = "0" * 64
+        parity_path.chmod(0o600)
+        parity_path.write_bytes(_canonical(parity) + b"\n")
+        parity_path.chmod(0o400)
+
+        with pytest.raises(harness.PaperCompatibilityVerificationError):
+            harness._campaign_authority(
+                campaign,
+                parity_path,
+                candidate_closure_sha256=closure_sha,
+                candidate_manifest_sha256=manifest_sha,
+            )
+    finally:
+        _unseal_campaign(campaign, parity_path)
+
+
+@pytest.mark.parametrize(
+    "mutation", ("missing", "extra", "duplicate", "out-of-order")
+)
+def test_root_harness_rejects_non_exact_campaign_scenario_inventory(
+    mutation: str,
+) -> None:
+    harness = _load(HARNESS, f"paper_compat_harness_bad_campaign_{mutation}")
+    campaign, parity_path, closure_sha, manifest_sha, manifest, _parity = (
+        _paper_campaign_evidence()
+    )
+    scenarios = manifest["scenarios"]
+    assert isinstance(scenarios, list)
+    if mutation == "missing":
+        scenarios.pop()
+    elif mutation == "extra":
+        scenarios.append(dict(scenarios[-1]))
+    elif mutation == "duplicate":
+        scenarios[1] = dict(scenarios[0])
+    else:
+        scenarios[0], scenarios[1] = scenarios[1], scenarios[0]
+    manifest_path = campaign / "campaign-manifest.json"
+    manifest_path.chmod(0o600)
+    manifest_path.write_bytes(_canonical(manifest) + b"\n")
+    manifest_path.chmod(0o400)
+    try:
+        with pytest.raises(harness.PaperCompatibilityVerificationError):
+            harness._campaign_authority(
+                campaign,
+                parity_path,
+                candidate_closure_sha256=closure_sha,
+                candidate_manifest_sha256=manifest_sha,
+            )
+    finally:
+        _unseal_campaign(campaign, parity_path)
+
+
+def test_sealed_evidence_reader_uses_descriptor_snapshot_not_path_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load(HARNESS, "paper_compat_harness_descriptor_snapshot")
+    root = Path(tempfile.mkdtemp(prefix="paper-sealed-reader-test-", dir="/tmp"))
+    root.chmod(0o700)
+    evidence = root / "evidence.json"
+    raw = b'{"schema_version":"evidence"}\n'
+    evidence.write_bytes(raw)
+    evidence.chmod(0o400)
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("path-based evidence read is forbidden")
+        ),
+    )
+    try:
+        assert harness._sealed_bytes(evidence, label="test evidence") == raw
+    finally:
+        evidence.chmod(0o600)
+        shutil.rmtree(root)
+
+
+def test_capture_cleans_transport_after_consume_failure_without_masking_primary() -> None:
+    harness = _load(HARNESS, "paper_compat_harness_cleanup")
+    command, _values = _command()
+    calls: list[str] = []
+
+    class Provider:
+        def prepare(self, _command: object) -> object:
+            calls.append("prepare")
+            return object()
+
+    def fail_consume(_prepared: object) -> object:
+        calls.append("consume")
+        raise EngineSpawnError("ENGINE_SPAWN_BLOCKED", "expected failure")
+
+    def fail_cleanup() -> None:
+        calls.append("cleanup")
+        raise harness.PaperCompatibilityVerificationError("cleanup also failed")
+
+    with pytest.raises(
+        harness.PaperCompatibilityVerificationError, match="expected failure"
+    ) as observed:
+        harness.capture_paper_compatibility(
+            provider=Provider(),
+            command=command,
+            candidate_closure_sha256="a" * 64,
+            candidate_manifest_sha256="b" * 64,
+            parity_record_sha256="c" * 64,
+            consume=fail_consume,
+            cleanup=fail_cleanup,
+        )
+
+    assert calls == ["prepare", "consume", "cleanup"]
+    assert any("cleanup" in note for note in observed.value.__notes__)
+
+
+def test_capture_cleans_transport_after_subprocess_failure() -> None:
+    harness = _load(HARNESS, "paper_compat_harness_process_cleanup")
+    command, _values = _command()
+    calls: list[str] = []
+
+    class Provider:
+        def prepare(self, _command: object) -> object:
+            calls.append("prepare")
+            return object()
+
+    def consume(_prepared: object) -> object:
+        calls.append("consume")
+        return object()
+
+    def capture(_built: object, *, popen_factory: object) -> object:
+        calls.append("capture")
+        raise subprocess.TimeoutExpired("paper", 120)
+
+    with pytest.raises(harness.PaperCompatibilityVerificationError):
+        harness.capture_paper_compatibility(
+            provider=Provider(),
+            command=command,
+            candidate_closure_sha256="a" * 64,
+            candidate_manifest_sha256="b" * 64,
+            parity_record_sha256="c" * 64,
+            consume=consume,
+            capture=capture,
+            cleanup=lambda: calls.append("cleanup"),
+        )
+
+    assert calls == ["prepare", "consume", "capture", "cleanup"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        EngineSpawnError("ENGINE_CLOSURE_INVALID", "attestation rejected"),
+        OSError("OS snapshot rejected"),
+        subprocess.TimeoutExpired("paper", 120),
+        ValueError("model rejected"),
+    ),
+)
+def test_main_normalizes_expected_attestation_failure_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: BaseException,
+) -> None:
+    harness = _load(HARNESS, "paper_compat_harness_main_failure")
+    monkeypatch.setattr(
+        harness,
+        "verify_paper_compatibility",
+        lambda **_arguments: (_ for _ in ()).throw(failure),
+    )
+    monkeypatch.setattr(
+        harness,
+        "_parser",
+        lambda: SimpleNamespace(
+            parse_args=lambda: SimpleNamespace(
+                candidate_closure=Path("/candidate"),
+                artifact_directory=Path("/artifacts"),
+                sandbox=Path("/sandbox"),
+                campaign_directory=Path("/campaign"),
+                parity_record=Path("/parity"),
+                transport_root=Path("/transport"),
+            )
+        ),
+    )
+
+    assert harness.main() == 1
+    captured = capsys.readouterr()
+    assert "paper compatibility failed:" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_failed_result_write_removes_partial_final_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _load(HARNESS, "paper_compat_harness_short_write")
+    result = backtest.PaperCompatibilityResultV1.create(
+        candidate_closure_sha256="1" * 64,
+        candidate_manifest_sha256="2" * 64,
+        engine_configuration_sha256="3" * 64,
+        instrument_catalog_sha256="4" * 64,
+        strategy_configuration_sha256="5" * 64,
+        strategy_source_sha256="6" * 64,
+        scenario_campaign_sha256="7" * 64,
+        parity_record_sha256="8" * 64,
+        launcher_result_sha256="9" * 64,
+    )
+    root = Path(tempfile.mkdtemp(prefix="paper-short-write-test-", dir="/tmp"))
+    root.chmod(0o700)
+    transport = root / "transport"
+    transport.mkdir(mode=0o700)
+    monkeypatch.setattr(harness.os, "write", lambda _descriptor, _raw: 0)
+
+    try:
+        with pytest.raises(
+            harness.PaperCompatibilityVerificationError, match="published"
+        ):
+            harness.publish_paper_compatibility_result(transport, result)
+
+        assert not harness.paper_record_path(transport).exists()
+    finally:
+        for child in transport.iterdir():
+            child.chmod(0o600)
         shutil.rmtree(root)

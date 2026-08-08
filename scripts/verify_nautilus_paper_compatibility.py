@@ -25,6 +25,7 @@ from packages.engine_contracts import (
 )
 from packages.nautilus_backtest import (
     PaperCompatibilityResultV1,
+    SCENARIO_IDS,
     capture_prepared_engine_process,
 )
 from services.job_worker.engine_artifacts import (
@@ -35,6 +36,7 @@ from services.job_worker.engine_spawn import (
     EngineSpawnProvider,
     consume_prepared_engine_spawn,
 )
+from services.job_worker.engine_spawn_interface import EngineSpawnError
 from services.job_worker.nautilus_closure import (
     NautilusClosureConfig,
     attest_nautilus_backtest_closure,
@@ -44,21 +46,43 @@ from services.job_worker.nautilus_closure import (
 _CHECKOUT = Path(__file__).resolve().parents[1]
 _RESULT_NAME = "paper-compatibility-result.json"
 _CAMPAIGN_MANIFEST = "campaign-manifest.json"
-_ARTIFACT_FILES = (
-    "engine-configuration.json",
-    "instrument-catalog.json",
-    "strategy-configuration.json",
+_CAMPAIGN_ARTIFACTS = (
+    ("engine-configuration.json", "engine_configuration_sha256"),
+    ("instrument-catalog.json", "instrument_catalog_sha256"),
+    ("strategy-configuration.json", "strategy_configuration_sha256"),
+    ("market-data.json", "market_data_sha256"),
+    ("simulation-scenario.json", "simulation_scenario_sha256"),
 )
-_ARTIFACT_FIELDS = (
-    "engine_configuration_sha256",
-    "instrument_catalog_sha256",
-    "strategy_configuration_sha256",
-)
+_PAPER_ARTIFACTS = _CAMPAIGN_ARTIFACTS[:3]
+_CAMPAIGN_IDENTITY_FIELDS = {
+    "scenario_id",
+    *(field for _name, field in _CAMPAIGN_ARTIFACTS),
+}
 _CAMPAIGN_FIELDS = {
-    *_ARTIFACT_FIELDS,
+    "paper_scenario_id",
+    "scenarios",
     "schema_version",
     "strategy_source_sha256",
 }
+_PARITY_FIELDS = {
+    "candidate_closure_sha256",
+    "candidate_manifest_schema_version",
+    "candidate_manifest_sha256",
+    "scenario_campaign_sha256",
+    "scenarios",
+    "schema_version",
+    "status",
+    "strategy_source_sha256",
+}
+_PARITY_RESULT_FIELDS = {
+    "independent_reference_event_sha256",
+    "independent_reference_result_sha256",
+    "nautilus_event_sha256",
+    "nautilus_result_sha256",
+    "run_1_event_sha256",
+    "run_2_event_sha256",
+}
+_PARITY_SCENARIO_FIELDS = _CAMPAIGN_IDENTITY_FIELDS | _PARITY_RESULT_FIELDS
 _EVENT_FIELDS = {
     "compatible",
     "engine_configuration_sha256",
@@ -68,10 +92,21 @@ _EVENT_FIELDS = {
     "strategy_configuration_sha256",
     "strategy_source_sha256",
 }
+_MAX_SEALED_BYTES = 8 * 1024 * 1024
 
 
 class PaperCompatibilityVerificationError(RuntimeError):
     """The finite compatibility proof or its publication is unsafe."""
+
+
+_EXPECTED_FAILURES = (
+    EngineSpawnError,
+    OSError,
+    subprocess.SubprocessError,
+    TypeError,
+    ValueError,
+)
+_ALL_EXPECTED_FAILURES = (PaperCompatibilityVerificationError, *_EXPECTED_FAILURES)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -139,48 +174,72 @@ def capture_paper_compatibility(
     popen_factory: object = subprocess.Popen,
     consume: Callable[[object], object] = consume_prepared_engine_spawn,
     capture: Callable[..., object] = capture_prepared_engine_process,
+    cleanup: Callable[[], None] = lambda: None,
 ) -> PaperCompatibilityResultV1:
     """Own exactly one prepare, consume, and bounded captured-process call."""
 
-    prepared = provider.prepare(command)
-    built = consume(prepared)
     try:
-        completed = capture(built, popen_factory=popen_factory)
-    except subprocess.TimeoutExpired as exc:
+        prepared = provider.prepare(command)
+    except _EXPECTED_FAILURES as exc:
         raise PaperCompatibilityVerificationError(
-            "paper compatibility process exceeded its attested timeout"
+            f"paper compatibility prepare failed: {exc}"
         ) from exc
-    if completed.returncode != 0:
-        raise PaperCompatibilityVerificationError(
-            "paper compatibility process exited unsuccessfully"
+    primary: PaperCompatibilityVerificationError | None = None
+    try:
+        built = consume(prepared)
+        completed = capture(built, popen_factory=popen_factory)
+        if completed.returncode != 0:
+            raise PaperCompatibilityVerificationError(
+                "paper compatibility process exited unsuccessfully"
+            )
+        if completed.stderr != b"":
+            raise PaperCompatibilityVerificationError(
+                "paper compatibility process emitted stderr"
+            )
+        stdout = completed.stdout
+        if (
+            not isinstance(stdout, bytes)
+            or not stdout.endswith(b"\n")
+            or stdout.count(b"\n") != 1
+            or stdout == b"\n"
+        ):
+            raise PaperCompatibilityVerificationError(
+                "paper compatibility stdout must contain exactly one canonical line"
+            )
+        launcher_raw = stdout[:-1]
+        _validate_launcher_result(launcher_raw, command)
+        return PaperCompatibilityResultV1.create(
+            candidate_closure_sha256=candidate_closure_sha256,
+            candidate_manifest_sha256=candidate_manifest_sha256,
+            engine_configuration_sha256=command.engine_configuration.sha256,
+            instrument_catalog_sha256=command.instrument_catalog.sha256,
+            strategy_configuration_sha256=command.strategy_configuration.sha256,
+            strategy_source_sha256=command.strategy_source_sha256,
+            scenario_campaign_sha256=command.scenario_campaign_sha256,
+            parity_record_sha256=parity_record_sha256,
+            launcher_result_sha256=hashlib.sha256(launcher_raw).hexdigest(),
         )
-    if completed.stderr != b"":
-        raise PaperCompatibilityVerificationError(
-            "paper compatibility process emitted stderr"
+    except PaperCompatibilityVerificationError as exc:
+        primary = exc
+        raise
+    except _EXPECTED_FAILURES as exc:
+        primary = PaperCompatibilityVerificationError(
+            f"paper compatibility process failed: {exc}"
         )
-    stdout = completed.stdout
-    if (
-        not isinstance(stdout, bytes)
-        or not stdout.endswith(b"\n")
-        or stdout.count(b"\n") != 1
-        or stdout == b"\n"
-    ):
-        raise PaperCompatibilityVerificationError(
-            "paper compatibility stdout must contain exactly one canonical line"
-        )
-    launcher_raw = stdout[:-1]
-    _validate_launcher_result(launcher_raw, command)
-    return PaperCompatibilityResultV1.create(
-        candidate_closure_sha256=candidate_closure_sha256,
-        candidate_manifest_sha256=candidate_manifest_sha256,
-        engine_configuration_sha256=command.engine_configuration.sha256,
-        instrument_catalog_sha256=command.instrument_catalog.sha256,
-        strategy_configuration_sha256=command.strategy_configuration.sha256,
-        strategy_source_sha256=command.strategy_source_sha256,
-        scenario_campaign_sha256=command.scenario_campaign_sha256,
-        parity_record_sha256=parity_record_sha256,
-        launcher_result_sha256=hashlib.sha256(launcher_raw).hexdigest(),
-    )
+        raise primary from exc
+    finally:
+        try:
+            cleanup()
+        except _ALL_EXPECTED_FAILURES as cleanup_error:
+            if primary is not None:
+                primary.add_note(
+                    "paper compatibility transport cleanup failed: "
+                    f"{type(cleanup_error).__name__}"
+                )
+            else:
+                raise PaperCompatibilityVerificationError(
+                    "paper compatibility transport cleanup failed"
+                ) from cleanup_error
 
 
 def _private_directory(path: Path, *, mode: int, label: str) -> None:
@@ -213,6 +272,7 @@ def publish_paper_compatibility_result(
     raw = canonical_json_bytes(result) + b"\n"
     parent_fd = -1
     descriptor = -1
+    created = False
     try:
         parent_fd = os.open(
             transport_root,
@@ -231,6 +291,7 @@ def publish_paper_compatibility_result(
             0o400,
             dir_fd=parent_fd,
         )
+        created = True
         os.fchmod(descriptor, 0o400)
         remaining = memoryview(raw)
         while remaining:
@@ -244,6 +305,25 @@ def publish_paper_compatibility_result(
             "paper compatibility result already exists"
         ) from exc
     except OSError as exc:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError as close_error:
+                exc.add_note(
+                    "paper result descriptor cleanup failed: "
+                    f"{type(close_error).__name__}"
+                )
+            descriptor = -1
+        if created and parent_fd >= 0:
+            try:
+                os.unlink(path.name, dir_fd=parent_fd)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_error:
+                exc.add_note(
+                    "partial paper result cleanup failed: "
+                    f"{type(cleanup_error).__name__}"
+                )
         raise PaperCompatibilityVerificationError(
             "paper compatibility result cannot be published"
         ) from exc
@@ -256,73 +336,232 @@ def publish_paper_compatibility_result(
 
 
 def _sealed_bytes(path: Path, *, label: str) -> bytes:
+    descriptor = -1
     try:
-        observed = path.lstat()
-        raw = path.read_bytes()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != 0o400
+            or opened.st_size <= 0
+            or opened.st_size > _MAX_SEALED_BYTES
+        ):
+            raise PaperCompatibilityVerificationError(f"{label} is not sealed")
+        remaining = opened.st_size
+        chunks: list[bytes] = []
+        while remaining:
+            block = os.read(descriptor, min(65_536, remaining))
+            if not block:
+                raise PaperCompatibilityVerificationError(
+                    f"{label} read was incomplete"
+                )
+            chunks.append(block)
+            remaining -= len(block)
+        if os.read(descriptor, 1) != b"":
+            raise PaperCompatibilityVerificationError(
+                f"{label} changed while being read"
+            )
+        named = path.stat(follow_symlinks=False)
+        identity = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if any(getattr(named, field) != getattr(opened, field) for field in identity):
+            raise PaperCompatibilityVerificationError(
+                f"{label} identity changed while being read"
+            )
+        return b"".join(chunks)
+    except PaperCompatibilityVerificationError:
+        raise
     except OSError as exc:
         raise PaperCompatibilityVerificationError(f"{label} is unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _canonical_line_object(raw: bytes, *, label: str) -> dict[str, object]:
+    if not raw.endswith(b"\n") or raw.count(b"\n") != 1:
+        raise PaperCompatibilityVerificationError(
+            f"{label} must contain one canonical JSON line"
+        )
+    return _canonical_object(raw[:-1], label=label)
+
+
+def _sha256(value: object, *, label: str) -> str:
     if (
-        stat.S_ISLNK(observed.st_mode)
-        or not stat.S_ISREG(observed.st_mode)
-        or observed.st_uid != os.geteuid()
-        or observed.st_nlink != 1
-        or stat.S_IMODE(observed.st_mode) != 0o400
-        or not raw
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise PaperCompatibilityVerificationError(f"{label} is not sealed")
-    return raw
+        raise PaperCompatibilityVerificationError(f"{label} is not SHA-256")
+    return value
+
+
+def _scenario_records(
+    value: object,
+    *,
+    fields: set[str],
+    label: str,
+) -> tuple[dict[str, object], ...]:
+    if not isinstance(value, list) or len(value) != len(SCENARIO_IDS):
+        raise PaperCompatibilityVerificationError(
+            f"{label} is not the exact eight-scenario campaign"
+        )
+    records: list[dict[str, object]] = []
+    for expected_id, record in zip(SCENARIO_IDS, value, strict=True):
+        if (
+            not isinstance(record, dict)
+            or set(record) != fields
+            or record.get("scenario_id") != expected_id
+        ):
+            raise PaperCompatibilityVerificationError(
+                f"{label} is missing, duplicated, or out of order"
+            )
+        for field in fields - {"scenario_id"}:
+            _sha256(record[field], label=f"{label} {field}")
+        records.append(record)
+    return tuple(records)
 
 
 def _campaign_authority(
-    campaign_directory: Path, parity_record: Path
+    campaign_directory: Path,
+    parity_record: Path,
+    *,
+    candidate_closure_sha256: str,
+    candidate_manifest_sha256: str,
 ) -> tuple[ValidatePaperCompatibility, tuple[EngineArtifactBinding, ...], str]:
     _private_directory(campaign_directory, mode=0o500, label="campaign directory")
     manifest_raw = _sealed_bytes(
         campaign_directory / _CAMPAIGN_MANIFEST, label="campaign manifest"
     )
-    manifest = _canonical_object(manifest_raw[:-1], label="campaign manifest")
-    if set(manifest) != _CAMPAIGN_FIELDS or manifest.get("schema_version") != "nautilus-phase4-campaign-v1":
-        raise PaperCompatibilityVerificationError("campaign manifest is invalid")
-    campaign_sha256 = hashlib.sha256(manifest_raw).hexdigest()
-    parity_raw = _sealed_bytes(parity_record, label="parity record")
-    parity = _canonical_object(parity_raw[:-1], label="parity record")
+    manifest = _canonical_line_object(manifest_raw, label="campaign manifest")
     if (
-        parity.get("scenario_campaign_sha256") != campaign_sha256
-        or any(parity.get(field) != manifest.get(field) for field in _ARTIFACT_FIELDS)
-        or parity.get("strategy_source_sha256")
-        != manifest.get("strategy_source_sha256")
+        set(manifest) != _CAMPAIGN_FIELDS
+        or manifest.get("schema_version") != "nautilus-phase4-campaign-v1"
+        or manifest.get("paper_scenario_id") != "long-accounting"
     ):
-        raise PaperCompatibilityVerificationError(
-            "parity record is not bound to the exact campaign"
-        )
+        raise PaperCompatibilityVerificationError("campaign manifest is invalid")
+    strategy_source_sha256 = _sha256(
+        manifest["strategy_source_sha256"], label="campaign strategy source"
+    )
+    campaign_records = _scenario_records(
+        manifest["scenarios"],
+        fields=_CAMPAIGN_IDENTITY_FIELDS,
+        label="campaign scenarios",
+    )
+    campaign_sha256 = hashlib.sha256(manifest_raw).hexdigest()
     references: list[ArtifactReference] = []
     bindings: list[EngineArtifactBinding] = []
-    for number, (filename, field) in enumerate(
-        zip(_ARTIFACT_FILES, _ARTIFACT_FIELDS, strict=True), start=1
-    ):
-        path = campaign_directory / filename
-        raw = _sealed_bytes(path, label=filename)
-        digest = hashlib.sha256(raw).hexdigest()
-        if manifest.get(field) != digest:
-            raise PaperCompatibilityVerificationError(
-                "campaign artifact digest does not match its manifest"
-            )
-        reference = ArtifactReference(
-            artifact_id=UUID(
-                f"{number}{number}{number}{number}{number}{number}{number}{number}"
-                "-1111-4111-8111-111111111111"
-            ),
-            sha256=digest,
-            media_type="application/json",
+    for record in campaign_records:
+        scenario_id = str(record["scenario_id"])
+        scenario_directory = campaign_directory / scenario_id
+        _private_directory(
+            scenario_directory,
+            mode=0o500,
+            label=f"campaign scenario {scenario_id}",
         )
-        references.append(reference)
-        bindings.append(EngineArtifactBinding(reference=reference, source=path))
+        for filename, field in _CAMPAIGN_ARTIFACTS:
+            path = scenario_directory / filename
+            raw = _sealed_bytes(path, label=f"{scenario_id} {filename}")
+            digest = hashlib.sha256(raw).hexdigest()
+            if record[field] != digest:
+                raise PaperCompatibilityVerificationError(
+                    "campaign artifact digest does not match its manifest"
+                )
+            if (
+                scenario_id == "long-accounting"
+                and (filename, field) in _PAPER_ARTIFACTS
+            ):
+                number = len(references) + 1
+                reference = ArtifactReference(
+                    artifact_id=UUID(
+                        f"{number}{number}{number}{number}{number}{number}{number}{number}"
+                        "-1111-4111-8111-111111111111"
+                    ),
+                    sha256=digest,
+                    media_type="application/json",
+                )
+                references.append(reference)
+                bindings.append(
+                    EngineArtifactBinding(reference=reference, source=path)
+                )
+    if len(references) != 3:
+        raise PaperCompatibilityVerificationError(
+            "paper scenario artifacts are incomplete"
+        )
+
+    parity_raw = _sealed_bytes(parity_record, label="parity record")
+    parity = _canonical_line_object(parity_raw, label="parity record")
+    if (
+        set(parity) != _PARITY_FIELDS
+        or parity.get("schema_version") != "nautilus-phase4-parity-evidence-v2"
+        or parity.get("status") != "passed"
+        or parity.get("candidate_manifest_schema_version") != 6
+        or parity.get("scenario_campaign_sha256") != campaign_sha256
+        or parity.get("strategy_source_sha256") != strategy_source_sha256
+        or parity.get("candidate_closure_sha256")
+        != _sha256(candidate_closure_sha256, label="candidate closure")
+        or parity.get("candidate_manifest_sha256")
+        != _sha256(candidate_manifest_sha256, label="candidate manifest")
+    ):
+        raise PaperCompatibilityVerificationError(
+            "parity record is not bound to the exact candidate campaign"
+        )
+    parity_records = _scenario_records(
+        parity["scenarios"],
+        fields=_PARITY_SCENARIO_FIELDS,
+        label="parity scenarios",
+    )
+    for campaign_record, parity_scenario in zip(
+        campaign_records, parity_records, strict=True
+    ):
+        if any(
+            parity_scenario[field] != campaign_record[field]
+            for field in _CAMPAIGN_IDENTITY_FIELDS
+        ):
+            raise PaperCompatibilityVerificationError(
+                "parity scenario identity differs from the campaign"
+            )
+        event_digests = {
+            parity_scenario[field]
+            for field in (
+                "independent_reference_event_sha256",
+                "nautilus_event_sha256",
+                "run_1_event_sha256",
+                "run_2_event_sha256",
+            )
+        }
+        if len(event_digests) != 1:
+            raise PaperCompatibilityVerificationError(
+                "parity scenario event digests differ"
+            )
+        if (
+            parity_scenario["independent_reference_result_sha256"]
+            != parity_scenario["nautilus_result_sha256"]
+        ):
+            raise PaperCompatibilityVerificationError(
+                "parity scenario result digests differ"
+            )
     command = ValidatePaperCompatibility(
         command_type="ValidatePaperCompatibility",
         engine_configuration=references[0],
         instrument_catalog=references[1],
         strategy_configuration=references[2],
-        strategy_source_sha256=manifest["strategy_source_sha256"],
+        strategy_source_sha256=strategy_source_sha256,
         scenario_campaign_sha256=campaign_sha256,
     )
     return command, tuple(bindings), hashlib.sha256(parity_raw).hexdigest()
@@ -356,42 +595,51 @@ def verify_paper_compatibility(
     parity_record: Path,
     transport_root: Path,
 ) -> Path:
-    _private_directory(transport_root, mode=0o700, label="paper transport root")
-    if next(transport_root.iterdir(), None) is not None:
-        raise PaperCompatibilityVerificationError("paper transport root must be empty")
-    command, bindings, parity_digest = _campaign_authority(
-        campaign_directory, parity_record
-    )
-    config = NautilusClosureConfig(
-        runtime_root=candidate_closure,
-        artifact_directory=artifact_directory,
-        sandbox_executable=sandbox,
-    )
-
-    def attest():
-        return attest_nautilus_backtest_closure(
+    try:
+        _private_directory(transport_root, mode=0o700, label="paper transport root")
+        if next(transport_root.iterdir(), None) is not None:
+            raise PaperCompatibilityVerificationError(
+                "paper transport root must be empty"
+            )
+        config = NautilusClosureConfig(
+            runtime_root=candidate_closure,
+            artifact_directory=artifact_directory,
+            sandbox_executable=sandbox,
+        )
+        closure = attest_nautilus_backtest_closure(
             config, expected_profile="paper-compatibility"
         )
-
-    closure = attest()
-    manifest_path = candidate_closure / "closure-manifest.json"
-    result = capture_paper_compatibility(
-        provider=EngineSpawnProvider(
-            transport_root=transport_root,
-            attest_closure=attest,
-            attest_inputs=HashBoundArtifactResolver(bindings),
-            expected_manifest_schema_version=6,
-            monotonic_ns=time.monotonic_ns,
-        ),
-        command=command,
-        candidate_closure_sha256=closure.closure_sha256,
-        candidate_manifest_sha256=hashlib.sha256(
+        manifest_path = candidate_closure / "closure-manifest.json"
+        candidate_manifest_sha256 = hashlib.sha256(
             _sealed_bytes(manifest_path, label="candidate closure manifest")
-        ).hexdigest(),
-        parity_record_sha256=parity_digest,
-    )
-    _cleanup_provider_transport(transport_root, command)
-    return publish_paper_compatibility_result(transport_root, result)
+        ).hexdigest()
+        command, bindings, parity_digest = _campaign_authority(
+            campaign_directory,
+            parity_record,
+            candidate_closure_sha256=closure.closure_sha256,
+            candidate_manifest_sha256=candidate_manifest_sha256,
+        )
+        result = capture_paper_compatibility(
+            provider=EngineSpawnProvider(
+                transport_root=transport_root,
+                attest_closure=lambda: closure,
+                attest_inputs=HashBoundArtifactResolver(bindings),
+                expected_manifest_schema_version=6,
+                monotonic_ns=time.monotonic_ns,
+            ),
+            command=command,
+            candidate_closure_sha256=closure.closure_sha256,
+            candidate_manifest_sha256=candidate_manifest_sha256,
+            parity_record_sha256=parity_digest,
+            cleanup=lambda: _cleanup_provider_transport(transport_root, command),
+        )
+        return publish_paper_compatibility_result(transport_root, result)
+    except PaperCompatibilityVerificationError:
+        raise
+    except _EXPECTED_FAILURES as exc:
+        raise PaperCompatibilityVerificationError(
+            f"paper compatibility verification failed: {exc}"
+        ) from exc
 
 
 def main() -> int:
@@ -405,7 +653,7 @@ def main() -> int:
             parity_record=arguments.parity_record,
             transport_root=arguments.transport_root,
         )
-    except PaperCompatibilityVerificationError as exc:
+    except _ALL_EXPECTED_FAILURES as exc:
         print(f"paper compatibility failed: {exc}", file=sys.stderr)
         return 1
     print(f"paper compatibility result sealed: {result.name}")
