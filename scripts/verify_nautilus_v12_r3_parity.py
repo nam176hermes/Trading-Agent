@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Produce finite digest-only evidence for Nautilus v12-r3 runtime parity."""
+"""Produce sealed parity evidence and private rejected-event provenance."""
 
 from __future__ import annotations
 
@@ -61,6 +61,7 @@ _RUN_COUNT = 2
 _SHA256_LENGTH = 64
 _FAILURE_RECEIPT_SUFFIX = ".failure.json"
 _EVENT_FAILURE_RECEIPT_SUFFIX = ".event-failure.json"
+_EVENT_PROVENANCE_SUFFIX = ".event-provenance.json"
 
 _CanonicalFieldType: TypeAlias = Literal[
     "string",
@@ -70,6 +71,10 @@ _CanonicalFieldType: TypeAlias = Literal[
 _EXACT_COMMAND_TYPE_MATCH_TAG = "exact-type-match"
 _EXACT_COMMAND_TYPE_MISMATCH_TAG = "exact-type-mismatch"
 _REFERENCE_EXACT_COMMAND_TYPE_TAG = "exact-type-match"
+_ActualCommandTypeTag: TypeAlias = Literal[
+    "exact-type-match",
+    "exact-type-mismatch",
+]
 _EVENT_VALIDATION_FIELD_INVENTORY: tuple[
     tuple[str, _CanonicalFieldType], ...
 ] = (
@@ -164,13 +169,24 @@ class V12R3ParityFailureReceipt(TypedDict):
 class V12R3ParityEventFailureReceipt(TypedDict):
     """Digest-only observation of a rejected canonical runtime event."""
 
-    schema_version: Literal["phase4-parity-event-validation-failure-v2"]
+    schema_version: Literal["phase4-parity-event-validation-failure-v3"]
+    provenance_schema_version: Literal["phase4-parity-event-provenance-v1"]
+    provenance_sha256: str
     scenario_id: ScenarioId
     failure_class: Literal["independent-event-validation-mismatch"]
     actual_event_sha256: str
     reference_event_sha256: str
     mismatching_fields: tuple[str, ...]
     field_commitments: tuple[dict[str, str], ...]
+
+
+class V12R3ParityEventProvenance(TypedDict):
+    """Private canonical inputs for independently reproducing commitments."""
+
+    schema_version: Literal["phase4-parity-event-provenance-v1"]
+    actual_event: dict[str, object]
+    reference_event: dict[str, object]
+    actual_command_type_tag: _ActualCommandTypeTag
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,21 +216,21 @@ class _ResultDigestMismatch(ParityVerificationError):
 
 
 class _EventValidationMismatch(ParityVerificationError):
-    """Carry only bounded event commitments across forensic transport sealing."""
+    """Carry canonical event provenance across forensic transport sealing."""
 
     def __init__(
         self,
         *,
         scenario_id: ScenarioId,
-        actual_event_sha256: str,
-        independent_reference_event_sha256: str,
-        field_commitments: tuple[_EventFieldCommitment, ...],
+        actual_event_bytes: bytes,
+        reference_event_bytes: bytes,
+        actual_command_type_tag: _ActualCommandTypeTag,
     ) -> None:
         super().__init__("runtime result does not equal the independent oracle")
         self.scenario_id = scenario_id
-        self.actual_event_sha256 = actual_event_sha256
-        self.independent_reference_event_sha256 = independent_reference_event_sha256
-        self.field_commitments = field_commitments
+        self.actual_event_bytes = actual_event_bytes
+        self.reference_event_bytes = reference_event_bytes
+        self.actual_command_type_tag = actual_command_type_tag
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,6 +382,12 @@ def _event_failure_receipt_path(record: Path) -> Path:
     """Keep a rejected-event observation distinct from result-digest evidence."""
 
     return record.with_name(f"{record.name}{_EVENT_FAILURE_RECEIPT_SUFFIX}")
+
+
+def _event_provenance_path(record: Path) -> Path:
+    """Keep raw rejected-event provenance in a distinct private sibling."""
+
+    return record.with_name(f"{record.name}{_EVENT_PROVENANCE_SUFFIX}")
 
 
 def _named_record_stat(reservation: _ReservedRecord):
@@ -1581,34 +1603,63 @@ def _event_validation_field_values(
     return values
 
 
-def _event_field_commitments(
-    envelope: EngineCommandEnvelope,
-    actual: EngineEventEnvelope,
-    reference: EngineEventEnvelope,
-) -> tuple[_EventFieldCommitment, ...]:
+def _event_provenance(
+    mismatch: _EventValidationMismatch,
+) -> V12R3ParityEventProvenance:
+    """Project only canonical events and a predicate-derived command tag."""
+
+    return V12R3ParityEventProvenance(
+        schema_version="phase4-parity-event-provenance-v1",
+        actual_event=EngineEventEnvelope.model_validate_json(
+            mismatch.actual_event_bytes
+        ).model_dump(mode="json"),
+        reference_event=EngineEventEnvelope.model_validate_json(
+            mismatch.reference_event_bytes
+        ).model_dump(mode="json"),
+        actual_command_type_tag=mismatch.actual_command_type_tag,
+    )
+
+
+def _event_provenance_sha256(
+    provenance: V12R3ParityEventProvenance,
+) -> str:
+    """Bind the exact newline-terminated private artifact bytes."""
+
+    return hashlib.sha256(canonical_json_bytes(provenance) + b"\n").hexdigest()
+
+
+def _event_field_commitments_from_provenance(
+    provenance: V12R3ParityEventProvenance,
+) -> Sequence[_EventFieldCommitment]:
+    """Recompute every mismatch commitment from retained private provenance."""
+
+    actual = EngineEventEnvelope.model_validate_json(
+        canonical_json_bytes(provenance["actual_event"])
+    )
+    reference = EngineEventEnvelope.model_validate_json(
+        canonical_json_bytes(provenance["reference_event"])
+    )
     actual_values = {
-        "command_type": (
-            _EXACT_COMMAND_TYPE_MATCH_TAG
-            if type(envelope.payload) is RunBacktestSimulation
-            else _EXACT_COMMAND_TYPE_MISMATCH_TAG
-        ),
+        "command_type": provenance["actual_command_type_tag"],
         **_event_validation_field_values(actual),
     }
     reference_values = {
         "command_type": _REFERENCE_EXACT_COMMAND_TYPE_TAG,
         **_event_validation_field_values(reference),
     }
-    mismatches: list[_EventFieldCommitment] = []
-    for field_name, canonical_type in _EVENT_VALIDATION_FIELD_INVENTORY:
-        commitment = _field_commitment(
-            field_name=field_name,
-            canonical_type=canonical_type,
-            actual=actual_values[field_name],
-            reference=reference_values[field_name],
-        )
-        if commitment.actual_sha256 != commitment.reference_sha256:
-            mismatches.append(commitment)
-    return tuple(mismatches)
+    return tuple(
+        commitment
+        for field_name, canonical_type in _EVENT_VALIDATION_FIELD_INVENTORY
+        if (
+            commitment := _field_commitment(
+                field_name=field_name,
+                canonical_type=canonical_type,
+                actual=actual_values[field_name],
+                reference=reference_values[field_name],
+            )
+        ).actual_sha256
+        != commitment.reference_sha256
+    )
 
 
 def _validated_event(
@@ -1641,20 +1692,16 @@ def _validated_event(
     try:
         validated = validate_isolated_simulation_result(envelope, event, expected)
     except (BacktestScenarioError, NautilusBacktestError) as exc:
-        reference_event_envelope = EngineEventEnvelope.model_validate_json(
-            reference_event
+        actual_command_type_tag: _ActualCommandTypeTag = (
+            _EXACT_COMMAND_TYPE_MATCH_TAG
+            if type(envelope.payload) is RunBacktestSimulation
+            else _EXACT_COMMAND_TYPE_MISMATCH_TAG
         )
         raise _EventValidationMismatch(
             scenario_id=expected.scenario_id,
-            actual_event_sha256=hashlib.sha256(event_bytes).hexdigest(),
-            independent_reference_event_sha256=hashlib.sha256(
-                reference_event
-            ).hexdigest(),
-            field_commitments=_event_field_commitments(
-                envelope,
-                event,
-                reference_event_envelope,
-            ),
+            actual_event_bytes=event_bytes,
+            reference_event_bytes=reference_event,
+            actual_command_type_tag=actual_command_type_tag,
         ) from exc
     return event, validated, expected
 
@@ -1739,6 +1786,7 @@ def _write_sealed_record(
         V12R3ParityRecord
         | V12R3ParityFailureReceipt
         | V12R3ParityEventFailureReceipt
+        | V12R3ParityEventProvenance
     ),
     *,
     parent_identity: tuple[int, int],
@@ -1825,19 +1873,28 @@ def _write_failure_receipt(
 
 def _event_failure_receipt(
     mismatch: _EventValidationMismatch,
+    *,
+    provenance: V12R3ParityEventProvenance | None = None,
 ) -> V12R3ParityEventFailureReceipt:
     """Project a rejected event into the approved digest-only vocabulary."""
 
+    if provenance is None:
+        provenance = _event_provenance(mismatch)
+    field_commitments = tuple(
+        _event_field_commitments_from_provenance(provenance)
+    )
     return V12R3ParityEventFailureReceipt(
-        schema_version="phase4-parity-event-validation-failure-v2",
+        schema_version="phase4-parity-event-validation-failure-v3",
+        provenance_schema_version="phase4-parity-event-provenance-v1",
+        provenance_sha256=_event_provenance_sha256(provenance),
         scenario_id=mismatch.scenario_id,
         failure_class="independent-event-validation-mismatch",
-        actual_event_sha256=mismatch.actual_event_sha256,
-        reference_event_sha256=(
-            mismatch.independent_reference_event_sha256
-        ),
+        actual_event_sha256=hashlib.sha256(mismatch.actual_event_bytes).hexdigest(),
+        reference_event_sha256=hashlib.sha256(
+            mismatch.reference_event_bytes
+        ).hexdigest(),
         mismatching_fields=tuple(
-            commitment.field_name for commitment in mismatch.field_commitments
+            commitment.field_name for commitment in field_commitments
         ),
         field_commitments=tuple(
             {
@@ -1846,8 +1903,22 @@ def _event_failure_receipt(
                 "actual_sha256": commitment.actual_sha256,
                 "reference_sha256": commitment.reference_sha256,
             }
-            for commitment in mismatch.field_commitments
+            for commitment in field_commitments
         ),
+    )
+
+
+def _write_event_provenance(
+    path: Path,
+    provenance: V12R3ParityEventProvenance,
+    *,
+    parent_identity: tuple[int, int],
+) -> None:
+    _write_sealed_record(
+        path,
+        provenance,
+        parent_identity=parent_identity,
+        label="parity event provenance",
     )
 
 
@@ -1855,11 +1926,12 @@ def _write_event_failure_receipt(
     path: Path,
     mismatch: _EventValidationMismatch,
     *,
+    provenance: V12R3ParityEventProvenance | None = None,
     parent_identity: tuple[int, int],
 ) -> None:
     _write_sealed_record(
         path,
-        _event_failure_receipt(mismatch),
+        _event_failure_receipt(mismatch, provenance=provenance),
         parent_identity=parent_identity,
         label="parity event failure receipt",
     )
@@ -2123,6 +2195,11 @@ def verify_nautilus_v12_r3_parity(
         failure_receipt,
         transport_root=transport_root,
     )
+    event_provenance = _event_provenance_path(record)
+    event_provenance_parent_identity = _validate_record_path(
+        event_provenance,
+        transport_root=transport_root,
+    )
     event_failure_receipt = _event_failure_receipt_path(record)
     event_failure_receipt_parent_identity = _validate_record_path(
         event_failure_receipt,
@@ -2209,16 +2286,30 @@ def verify_nautilus_v12_r3_parity(
         raise
     except _EventValidationMismatch as primary_failure:
         try:
-            _write_event_failure_receipt(
-                event_failure_receipt,
-                primary_failure,
-                parent_identity=event_failure_receipt_parent_identity,
+            provenance = _event_provenance(primary_failure)
+            _write_event_provenance(
+                event_provenance,
+                provenance,
+                parent_identity=event_provenance_parent_identity,
             )
-        except ParityVerificationError as receipt_failure:
+        except ParityVerificationError as provenance_failure:
             primary_failure.add_note(
-                "secondary event failure receipt sealing failure: "
-                f"{_bounded_secondary_summary(receipt_failure)}"
+                "secondary event provenance sealing failure: "
+                f"{_bounded_secondary_summary(provenance_failure)}"
             )
+        else:
+            try:
+                _write_event_failure_receipt(
+                    event_failure_receipt,
+                    primary_failure,
+                    provenance=provenance,
+                    parent_identity=event_failure_receipt_parent_identity,
+                )
+            except ParityVerificationError as receipt_failure:
+                primary_failure.add_note(
+                    "secondary event failure receipt sealing failure: "
+                    f"{_bounded_secondary_summary(receipt_failure)}"
+                )
         raise
 
     parity_record = V12R3ParityRecord(

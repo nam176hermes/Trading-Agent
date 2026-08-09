@@ -1449,6 +1449,240 @@ def test_verifier_rejects_oracle_mismatch(
     )
 
 
+def test_event_validation_failure_writes_private_provenance_before_v3_receipt(
+    external_paths: dict[str, Path],
+) -> None:
+    """Missing or misbound provenance would make v3 commitments unreproducible."""
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(
+            harness.prepare_calls[-1],
+            attribute_overrides={"total_events": 987654321},
+        )
+        + b"\n"
+    )
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle"):
+        _verify(external_paths, harness)
+
+    provenance_path = verifier._event_provenance_path(external_paths["record"])
+    receipt_path = verifier._event_failure_receipt_path(external_paths["record"])
+    provenance_bytes = provenance_path.read_bytes()
+    provenance = json.loads(provenance_bytes)
+    receipt = json.loads(receipt_path.read_bytes())
+    assert provenance_bytes == canonical_json_bytes(provenance) + b"\n"
+    assert provenance["schema_version"] == "phase4-parity-event-provenance-v1"
+    assert provenance["actual_command_type_tag"] == "exact-type-match"
+    assert canonical_json_bytes(provenance["actual_event"]) == _event_bytes(
+        harness.prepare_calls[0],
+        attribute_overrides={"total_events": 987654321},
+    )
+    assert canonical_json_bytes(provenance["reference_event"]) == _event_bytes(
+        harness.prepare_calls[0]
+    )
+    provenance_stat = provenance_path.stat()
+    assert stat.S_ISREG(provenance_stat.st_mode)
+    assert stat.S_IMODE(provenance_stat.st_mode) == 0o400
+    assert provenance_stat.st_nlink == 1
+    assert receipt["schema_version"] == "phase4-parity-event-validation-failure-v3"
+    assert receipt["provenance_schema_version"] == provenance["schema_version"]
+    assert receipt["provenance_sha256"] == hashlib.sha256(
+        canonical_json_bytes(provenance) + b"\n"
+    ).hexdigest()
+    assert [
+        {
+            "field_name": item.field_name,
+            "canonical_type": item.canonical_type,
+            "actual_sha256": item.actual_sha256,
+            "reference_sha256": item.reference_sha256,
+        }
+        for item in verifier._event_field_commitments_from_provenance(provenance)
+    ] == receipt["field_commitments"]
+
+
+def test_event_validation_v3_receipt_does_not_leak_private_provenance(
+    external_paths: dict[str, Path],
+) -> None:
+    """Embedding provenance or command identity would violate digest-only custody."""
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(
+            harness.prepare_calls[-1],
+            attribute_overrides={"total_events": 987654321},
+        )
+        + b"\n"
+    )
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle"):
+        _verify(external_paths, harness)
+
+    provenance = json.loads(
+        verifier._event_provenance_path(external_paths["record"]).read_bytes()
+    )
+    receipt_bytes = verifier._event_failure_receipt_path(
+        external_paths["record"]
+    ).read_bytes()
+    assert canonical_json_bytes(provenance) not in receipt_bytes
+    assert b"987654321" not in receipt_bytes
+    assert b"request.json" not in receipt_bytes
+    assert b"RunBacktestSimulation" not in receipt_bytes
+    assert b"RunBacktestSimulation" not in canonical_json_bytes(provenance)
+
+
+def test_event_validation_provenance_inode_substitution_preserves_primary_and_replacement(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A swapped provenance name must neither gain authority nor mask rejection."""
+    real_fsync = verifier.os.fsync
+    real_event_provenance = verifier._event_provenance
+    record = external_paths["record"]
+    provenance_path = record.with_name(f"{record.name}.event-provenance.json")
+    replacement = b"replacement-event-provenance"
+    replacement_identity: tuple[int, int] | None = None
+    primary: list[verifier._EventValidationMismatch] = []
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+    )
+
+    def capture_primary(mismatch):
+        primary.append(mismatch)
+        return real_event_provenance(mismatch)
+
+    def replace_provenance(descriptor: int) -> None:
+        nonlocal replacement_identity
+        if replacement_identity is None and provenance_path.exists():
+            provenance_path.unlink()
+            provenance_path.write_bytes(replacement)
+            provenance_path.chmod(0o400)
+            observed = provenance_path.stat()
+            replacement_identity = (observed.st_dev, observed.st_ino)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(verifier, "_event_provenance", capture_primary)
+    monkeypatch.setattr(verifier.os, "fsync", replace_provenance)
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
+        _verify(external_paths, harness)
+
+    assert primary and observed.value is primary[0]
+    assert replacement_identity is not None
+    named = provenance_path.stat()
+    assert (named.st_dev, named.st_ino) == replacement_identity
+    assert provenance_path.read_bytes() == replacement
+    assert getattr(observed.value, "__notes__", ()) == [
+        "secondary event provenance sealing failure: ParityVerificationError"
+    ]
+    assert not verifier._event_failure_receipt_path(record).exists()
+
+
+def test_event_validation_provenance_parent_substitution_preserves_primary(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Replacing the evidence parent must not redirect private provenance."""
+    real_fsync = verifier.os.fsync
+    real_event_provenance = verifier._event_provenance
+    record = external_paths["record"]
+    provenance_path = record.with_name(f"{record.name}.event-provenance.json")
+    parent = record.parent
+    displaced = parent.parent / "displaced-event-provenance"
+    swapped = False
+    primary: list[verifier._EventValidationMismatch] = []
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+    )
+
+    def capture_primary(mismatch):
+        primary.append(mismatch)
+        return real_event_provenance(mismatch)
+
+    def replace_parent(descriptor: int) -> None:
+        nonlocal swapped
+        if not swapped and provenance_path.exists():
+            parent.rename(displaced)
+            parent.mkdir(mode=0o700)
+            swapped = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(verifier, "_event_provenance", capture_primary)
+    monkeypatch.setattr(verifier.os, "fsync", replace_parent)
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
+        _verify(external_paths, harness)
+
+    assert primary and observed.value is primary[0]
+    assert swapped is True
+    assert not provenance_path.exists()
+    retained = displaced / provenance_path.name
+    assert retained.exists()
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o400
+    assert retained.stat().st_nlink == 1
+    assert getattr(observed.value, "__notes__", ()) == [
+        "secondary event provenance sealing failure: ParityVerificationError"
+    ]
+    assert not verifier._event_failure_receipt_path(record).exists()
+
+
+def test_preexisting_event_validation_provenance_blocks_before_transport_publication(
+    external_paths: dict[str, Path],
+) -> None:
+    """Preexisting private provenance must be retained and never overwritten."""
+    record = external_paths["record"]
+    provenance_path = record.with_name(f"{record.name}.event-provenance.json")
+    retained = b"retained-event-provenance"
+    provenance_path.write_bytes(retained)
+    provenance_path.chmod(0o400)
+    harness = _Harness()
+
+    with pytest.raises(verifier.ParityVerificationError, match="record already exists"):
+        _verify(external_paths, harness)
+
+    assert provenance_path.read_bytes() == retained
+    assert harness.prepare_calls == []
+    assert list(external_paths["transport_root"].iterdir()) == []
+    assert not record.exists()
+    assert not verifier._failure_receipt_path(record).exists()
+    assert not verifier._event_failure_receipt_path(record).exists()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ("success", "engine-spawn-error", "result-digest-mismatch"),
+)
+def test_non_event_validation_outcomes_do_not_publish_event_provenance(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    """Activating provenance outside canonical event rejection would over-collect."""
+    record = external_paths["record"]
+    harness = _Harness()
+
+    if outcome == "success":
+        _verify(external_paths, harness)
+    elif outcome == "engine-spawn-error":
+        primary = EngineSpawnError("ENGINE_INPUT_STALE", "authority changed")
+        harness.consume_error = primary
+        with pytest.raises(EngineSpawnError) as observed:
+            _verify(external_paths, harness)
+        assert observed.value is primary
+    else:
+        real_validated_event = verifier._validated_event
+
+        def mismatched_result(*args, **kwargs):
+            event, validated, expected = real_validated_event(*args, **kwargs)
+            return event, replace(validated, result_sha256="f" * 64), expected
+
+        monkeypatch.setattr(verifier, "_validated_event", mismatched_result)
+        with pytest.raises(verifier._ResultDigestMismatch):
+            _verify(external_paths, harness)
+
+    assert not verifier._event_provenance_path(record).exists()
+
+
 def test_event_validation_failure_field_identifies_one_counter_without_raw_values(
     external_paths: dict[str, Path],
 ) -> None:
@@ -1474,6 +1708,8 @@ def test_event_validation_failure_field_identifies_one_counter_without_raw_value
     assert observed.value.args == ("runtime result does not equal the independent oracle",)
     assert set(receipt) == {
         "schema_version",
+        "provenance_schema_version",
+        "provenance_sha256",
         "scenario_id",
         "failure_class",
         "actual_event_sha256",
@@ -1481,7 +1717,10 @@ def test_event_validation_failure_field_identifies_one_counter_without_raw_value
         "mismatching_fields",
         "field_commitments",
     }
-    assert receipt["schema_version"] == "phase4-parity-event-validation-failure-v2"
+    assert receipt["schema_version"] == "phase4-parity-event-validation-failure-v3"
+    assert receipt["provenance_schema_version"] == (
+        "phase4-parity-event-provenance-v1"
+    )
     assert receipt["scenario_id"] == "long-accounting"
     assert receipt["failure_class"] == "independent-event-validation-mismatch"
     assert receipt["actual_event_sha256"] == hashlib.sha256(
@@ -1710,43 +1949,115 @@ def test_event_validation_failure_no_raw_event_path_stderr_or_exception_text(
         assert forbidden not in written
 
 
-def test_event_failure_receipt_partial_publication_preserves_primary_and_custody(
+def test_event_validation_v3_receipt_partial_publication_preserves_provenance_and_primary(
     external_paths: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sealing failure cannot hide event validation failure or discard its prefix."""
+    """A partial v3 receipt must retain earlier sealed provenance and rejection."""
+    real_reserve = verifier._reserve_record
     real_write = verifier.os.write
-    failed = False
+    real_event_provenance = verifier._event_provenance
+    record = external_paths["record"]
+    receipt_path = verifier._event_failure_receipt_path(record)
+    provenance_path = record.with_name(f"{record.name}.event-provenance.json")
+    active_path: Path | None = None
+    receipt_write_calls = 0
+    primary: list[verifier._EventValidationMismatch] = []
     harness = _Harness()
     harness.stdout_transform = lambda _value, _run: (
         _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
     )
 
-    def partial_then_fail(descriptor: int, value) -> int:
-        nonlocal failed
-        if not failed:
-            failed = True
-            return real_write(descriptor, value[:11])
-        raise OSError("inert event failure receipt write error")
+    def tracked_reserve(path: Path, **kwargs):
+        nonlocal active_path
+        active_path = path
+        return real_reserve(path, **kwargs)
 
+    def capture_primary(mismatch):
+        primary.append(mismatch)
+        return real_event_provenance(mismatch)
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal receipt_write_calls
+        if active_path == receipt_path:
+            receipt_write_calls += 1
+            if receipt_write_calls == 1:
+                return real_write(descriptor, value[:11])
+            raise OSError("inert event failure receipt write error")
+        return real_write(descriptor, value)
+
+    monkeypatch.setattr(verifier, "_event_provenance", capture_primary)
+    monkeypatch.setattr(verifier, "_reserve_record", tracked_reserve)
     monkeypatch.setattr(verifier.os, "write", partial_then_fail)
 
     with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
         _verify(external_paths, harness)
 
-    receipt_path = external_paths["record"].with_name(
-        f"{external_paths['record'].name}.event-failure.json"
-    )
+    assert primary and observed.value is primary[0]
+    assert receipt_write_calls == 2
     assert receipt_path.exists()
     assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o400
     assert receipt_path.stat().st_nlink == 1
-    assert any("event failure receipt" in note for note in observed.value.__notes__)
-    assert not external_paths["record"].exists()
-    assert not verifier._failure_receipt_path(external_paths["record"]).exists()
+    assert getattr(observed.value, "__notes__", ()) == [
+        "secondary event failure receipt sealing failure: ParityVerificationError"
+    ]
+    provenance = json.loads(provenance_path.read_bytes())
+    assert provenance_path.read_bytes() == canonical_json_bytes(provenance) + b"\n"
+    assert stat.S_IMODE(provenance_path.stat().st_mode) == 0o400
+    assert provenance_path.stat().st_nlink == 1
+    assert not record.exists()
+    assert not verifier._failure_receipt_path(record).exists()
     _assert_sealed_retained_prefix(
         external_paths["transport_root"],
         expected_names=("parity-long-accounting-run-1",),
     )
+
+
+def test_event_validation_provenance_partial_publication_preserves_primary_and_prefix(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partial provenance write must remain sealed without masking rejection."""
+    real_write = verifier.os.write
+    real_event_provenance = verifier._event_provenance
+    record = external_paths["record"]
+    provenance_path = record.with_name(f"{record.name}.event-provenance.json")
+    write_calls = 0
+    primary: list[verifier._EventValidationMismatch] = []
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+    )
+
+    def capture_primary(mismatch):
+        primary.append(mismatch)
+        return real_event_provenance(mismatch)
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 1:
+            return real_write(descriptor, value[:11])
+        raise OSError("inert event provenance write error")
+
+    monkeypatch.setattr(verifier, "_event_provenance", capture_primary)
+    monkeypatch.setattr(verifier.os, "write", partial_then_fail)
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
+        _verify(external_paths, harness)
+
+    assert primary and observed.value is primary[0]
+    assert write_calls == 2
+    assert provenance_path.exists()
+    assert provenance_path.stat().st_size == 11
+    assert stat.S_IMODE(provenance_path.stat().st_mode) == 0o400
+    assert provenance_path.stat().st_nlink == 1
+    assert getattr(observed.value, "__notes__", ()) == [
+        "secondary event provenance sealing failure: ParityVerificationError"
+    ]
+    assert not verifier._event_failure_receipt_path(record).exists()
+    assert not record.exists()
+    assert not verifier._failure_receipt_path(record).exists()
 
 
 def test_preexisting_event_failure_receipt_blocks_before_transport_publication(
