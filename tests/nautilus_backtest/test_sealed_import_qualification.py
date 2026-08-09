@@ -18,6 +18,14 @@ SCRIPT = ROOT / "scripts/qualify_nautilus_sealed_imports.py"
 ARCHITECTURE_PLAN = (
     ROOT / "docs/superpowers/plans/2026-08-08-phase4-architectural-closure.md"
 )
+FINAL_PARITY_PLAN = (
+    ROOT / "docs/superpowers/plans/2026-08-09-phase4-final-parity-and-evidence-closure.md"
+)
+TASK5_BRIEF = (
+    ROOT
+    / ".superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure"
+    / "task-5-brief.md"
+)
 TASK8_ROOT_CONTROLLER_SCRIPTS = {
     "qualify_nautilus_sealed_imports.py": 2,
     "materialize_nautilus_runtime_closure.py": 2,
@@ -1231,3 +1239,59 @@ def test_task8_root_package_controllers_use_the_locked_python() -> None:
 
         assert result.returncode == 0, f"{script}: {result.stderr}"
         assert "usage:" in result.stdout
+
+
+def test_task5_and_task8_controller_bootstrap_reinstalls_and_binds_current_source() -> None:
+    """The isolated controller must be the freshly installed current worktree copy."""
+    architecture_text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
+    task8_start = architecture_text.index(
+        "### Task 8: Qualify, Publish v12-r9/v13, Run Parity, and Close 04D"
+    )
+    task8_end = architecture_text.index("---\n\n### Task 9:", task8_start)
+    task8_block = architecture_text[task8_start:task8_end]
+    final_plan_text = FINAL_PARITY_PLAN.read_text(encoding="utf-8")
+    task5_start = final_plan_text.index("## Task 5: Close simulation qualification")
+    task5_end = final_plan_text.index("## Task 6:", task5_start)
+    task5_block = final_plan_text[task5_start:task5_end]
+    task5_brief = TASK5_BRIEF.read_text(encoding="utf-8")
+
+    required_recipe = (
+        "UV_OFFLINE=1 uv sync --frozen "
+        "--reinstall-package trading-agent-control-api"
+    )
+    for recipe in (task8_block, task5_block, task5_brief):
+        assert required_recipe in recipe
+        assert 'services/job_worker/nautilus_closure.py' in recipe
+        assert "hashlib.sha256" in recipe
+        assert 'is_relative_to(worktree / ".venv")' in recipe
+        assert "_MANIFEST_FIELDS_V6" in recipe
+
+    root_python = ROOT / ".venv/bin/python"
+    source = ROOT / "services/job_worker/nautilus_closure.py"
+    probe = subprocess.run(
+        (
+            str(root_python),
+            "-I",
+            "-B",
+            "-c",
+            "import hashlib, importlib, pathlib, sys; "
+            "worktree = pathlib.Path(sys.argv[1]).resolve(); "
+            "source = worktree / 'services/job_worker/nautilus_closure.py'; "
+            "module = importlib.import_module('services.job_worker.nautilus_closure'); "
+            "installed = pathlib.Path(module.__file__).resolve(); "
+            "assert installed.is_relative_to(worktree / '.venv'), installed; "
+            "assert hashlib.sha256(source.read_bytes()).digest() == "
+            "hashlib.sha256(installed.read_bytes()).digest(); "
+            "assert module._MANIFEST_FIELDS_V6",
+            str(ROOT),
+        ),
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+
+    assert source.is_file()
+    assert probe.returncode == 0, probe.stderr

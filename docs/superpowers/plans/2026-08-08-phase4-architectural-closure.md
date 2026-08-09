@@ -740,11 +740,26 @@ chmod 0700 "${phase4_runtime_root}"
 phase4_source_root="$(git rev-parse --show-toplevel)"
 (
   cd "${phase4_source_root}"
-  UV_OFFLINE=1 uv sync --frozen
+  UV_OFFLINE=1 uv sync --frozen --reinstall-package trading-agent-control-api
 )
 phase4_root_python="${phase4_source_root}/.venv/bin/python"
 test -x "${phase4_root_python}"
 "${phase4_root_python}" -I -B -c 'import pydantic; assert pydantic.__version__ == "2.13.4"'
+"${phase4_root_python}" -I -B - "${phase4_source_root}" <<'PY'
+import hashlib
+import importlib
+from pathlib import Path
+import sys
+
+worktree = Path(sys.argv[1]).resolve()
+source = worktree / "services/job_worker/nautilus_closure.py"
+module = importlib.import_module("services.job_worker.nautilus_closure")
+installed = Path(module.__file__).resolve()
+assert installed.is_relative_to(worktree / ".venv"), installed
+assert hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(installed.read_bytes()).digest()
+assert module._MANIFEST_FIELDS_V6
+PY
+"${phase4_root_python}" -I -B scripts/diagnose_nautilus_v12_runtime_failure.py --help >/dev/null
 "${phase4_root_python}" -I scripts/qualify_nautilus_sealed_imports.py \
   --policy "${phase4_source_root}/engines/nautilus/runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \

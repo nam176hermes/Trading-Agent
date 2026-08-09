@@ -275,6 +275,39 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 
 - [ ] Snapshot all retained closure/helper identities and assert the selected destination state.
 - [ ] Run 01D preflight exactly once.
+- [ ] Before any root-package controller, establish the current-worktree controller
+  binding exactly once. The root project is wheel-installed, so ordinary frozen
+  sync can retain stale project code and is insufficient:
+
+```bash
+phase4_source_root="$(git rev-parse --show-toplevel)"
+(
+  cd "${phase4_source_root}"
+  UV_OFFLINE=1 uv sync --frozen --reinstall-package trading-agent-control-api
+)
+phase4_root_python="${phase4_source_root}/.venv/bin/python"
+test -x "${phase4_root_python}"
+"${phase4_root_python}" -I -B - "${phase4_source_root}" <<'PY'
+import hashlib
+import importlib
+from pathlib import Path
+import sys
+
+worktree = Path(sys.argv[1]).resolve()
+source = worktree / "services/job_worker/nautilus_closure.py"
+module = importlib.import_module("services.job_worker.nautilus_closure")
+installed = Path(module.__file__).resolve()
+assert installed.is_relative_to(worktree / ".venv"), installed
+assert hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(installed.read_bytes()).digest()
+assert module._MANIFEST_FIELDS_V6
+PY
+"${phase4_root_python}" -I -B scripts/diagnose_nautilus_v12_runtime_failure.py --help >/dev/null
+```
+
+  This read-only proof rejects a canonical-checkout or other foreign installed
+  module, requires byte-identical source and installed closure-attestor bytes,
+  and requires the schema-6 attestor plus controller-help import. It does not
+  materialize or execute a runtime.
 - [ ] If r10 is required, run both reviewed import qualifications, independently review receipts, materialize r10 exactly once no-clobber, and independently attest schema 6/profile/source/policy/guard/launcher/mount inventory.
 - [ ] After the r10 attestation PASS, create one fresh private mode-0700 packet campaign destination that is absent immediately before publication; materialize the canonical campaign exactly once, require the fixed repository-ordered eight-scenario manifest, mode-0500 scenario roots, mode-0400 members, descriptor/no-clobber custody, and retain the sanitized campaign digest only outside Git/evidence.
 - [ ] Run exactly one `long-accounting` diagnostic through normal EngineSpawnProvider against that reviewed campaign; require exit 0, empty stderr, one prepare/consume/process, and request-only sealed transport.
