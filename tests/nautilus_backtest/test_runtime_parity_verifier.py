@@ -356,6 +356,17 @@ def _assert_sealed_retained_prefix(
             os.unlink(run_directory / "request.json")
 
 
+def _write_forensic_extra_member(run: Path) -> None:
+    """Create the deliberate foreign member with its contract mode explicitly."""
+
+    unexpected = run / "unexpected"
+    unexpected.write_bytes(b"unexpected")
+    # The malformed member is retained as forensic state.  Its mode is part of
+    # the test fixture, so it must not vary with the process umask used by a
+    # clean-clone gate.
+    unexpected.chmod(0o644)
+
+
 def test_launch_uses_exact_built_authority_and_closes_fds_before_wait() -> None:
     """Delaying descriptor closure would retain spawn authority while waiting."""
     read_fd, write_fd = os.pipe()
@@ -684,7 +695,7 @@ def test_verifier_retains_partial_transport_when_prepare_fails_after_publication
             id="partial_residue",
         ),
         pytest.param(
-            lambda run: (run / "unexpected").write_bytes(b"unexpected"),
+            _write_forensic_extra_member,
             {"request.json", "request.sha256", "unexpected"},
             {
                 "request.json": 0o400,
@@ -710,7 +721,7 @@ def test_verifier_reseals_malformed_failed_provider_prefix_before_inventory_vali
     expected_modes: dict[str, int],
     raw_secondary_text: str,
 ) -> None:
-    """Inventory failure must not leave a writable forensic prefix behind."""
+    """Retain malformed bytes while sealing their enclosing namespace."""
     primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary prepare failure")
     harness = _Harness(
         prepare_error_after_transport=primary,
@@ -732,9 +743,46 @@ def test_verifier_reseals_malformed_failed_provider_prefix_before_inventory_vali
         for name, path in surviving_members.items()
     } == expected_modes
     assert all(path.read_bytes() for path in surviving_members.values())
+    # Unknown members are forensic evidence: their bytes and fixture-declared
+    # metadata are retained.  The security boundary is the two owner-read/
+    # execute-only directories, so no new entry can be created or removed.
+    assert all(
+        stat.S_IMODE(path.stat().st_mode) & 0o222 == 0
+        for path in (retained_subroot, retained_run)
+    )
     assert all(
         raw_secondary_text not in note
         for note in getattr(primary, "__notes__", ())
+    )
+
+
+def test_extra_member_forensic_fixture_is_independent_of_restrictive_umask(
+    external_paths: dict[str, Path],
+) -> None:
+    """The malformed-member contract is stable in a clean-clone umask 077."""
+
+    previous_umask = os.umask(0o077)
+    try:
+        primary = EngineSpawnError("ENGINE_INPUT_STALE", "primary prepare failure")
+        harness = _Harness(
+            prepare_error_after_transport=primary,
+            transport_mutation=_write_forensic_extra_member,
+        )
+
+        with pytest.raises(EngineSpawnError, match="primary prepare failure") as observed:
+            _verify(external_paths, harness)
+    finally:
+        os.umask(previous_umask)
+
+    assert observed.value is primary
+    retained_subroot = next(external_paths["transport_root"].iterdir())
+    retained_run = next(retained_subroot.iterdir())
+    unexpected = retained_run / "unexpected"
+    assert unexpected.read_bytes() == b"unexpected"
+    assert stat.S_IMODE(unexpected.stat().st_mode) == 0o644
+    assert all(
+        stat.S_IMODE(path.stat().st_mode) & 0o222 == 0
+        for path in (retained_subroot, retained_run)
     )
 
 
