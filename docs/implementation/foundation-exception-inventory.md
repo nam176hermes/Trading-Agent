@@ -450,7 +450,7 @@ packages/nautilus_backtest/runtime_process.py|47|BaseException|PRODUCTION_CRITIC
 packages/nautilus_backtest/runtime_process.py|94|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|891|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/research_validation/producers.py|970|Exception|PRODUCTION_CRITICAL|RAISE
-packages/research_validation/producers.py|1419|BaseException|PRODUCTION_CRITICAL|RAISE
+packages/research_validation/producers.py|1424|BaseException|PRODUCTION_CRITICAL|RAISE
 packages/restore_proof_failure_codes.py|103|Exception|PRODUCTION_CRITICAL|RETURN
 packages/runtime_release/config.py|236|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/config.py|351|Exception|PRODUCTION_CRITICAL|RAISE
@@ -632,6 +632,6 @@ tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
-tests/research_validation/test_producers.py|158|BaseException|TESTS|RAISE
+tests/research_validation/test_producers.py|159|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->
