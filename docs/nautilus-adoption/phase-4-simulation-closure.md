@@ -1,98 +1,61 @@
 # Phase 4 semantic simulation closure
 
-## Scope
+## Final disposition
 
-Packet 04E1 adds a deterministic execution-simulation implementation to the
-isolated CPython 3.12 launcher. It does not add public-data acquisition,
-network clients, provider or broker configuration, databases, arbitrary
-strategy modules, writable outputs, a persistent paper engine, or live
-execution.
+Phase 4 selected `runtime-closure-v12-r12-simulation` as the only qualified
+execution-simulation generation. Generations `runtime-closure-v12-r9-simulation`,
+`runtime-closure-v12-r10-simulation`, and
+`runtime-closure-v12-r11-simulation` are rejected and preserved unchanged as
+forensic evidence. They are neither rollback authority nor parity evidence.
 
-This source-stabilization packet does not materialize or select an external
-closure. The current 04E0 root result validator intentionally accepts the
-earlier two-digest transport event; Task 4 must add the reviewed expanded-result
-contract before its execution-parity candidate can pass root result validation.
-Until then, the boundary fails closed.
+The selected closure is schema 6, profile `execution-simulation`, semantic
+profile `nautilus-execution-simulation-v2`, and uses the fixed dependency
+policy `native-guarded-stdlib-first-sealed-wheel-path-v1`. It contains 90
+read-only manifest mounts plus its sealed manifest sidecar. Its reviewed
+authority is:
 
-## Closed scenario profile
+| Binding | SHA-256 |
+| --- | --- |
+| Closure | `14d4fd990dccfdbb8b6dfe964a04ae9e80fefb30914cf433de1bc503b8ad03fa` |
+| Manifest | `b143564cf3ad63b4ca01afb9a27e7496c9b1c6ff1f3c46cf10b6c4a047545d20` |
+| Runtime policy | `746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2` |
+| Policy-bound source commit | `1683f1324826b78a715f017a7749fe3d1f7b37f4` |
+| Native guard source | `a25053355abcfece9b7d5c524f4a3d3c06ce727aec8224012ef9b683240fd880` |
+| Simulation native guard binary | `151b1570623253295ae36ea4b0933ad1f051fa56277ac9d1f54edcedc2c60c9a` |
+| Campaign manifest | `6bb32115b6488fe42ffed77448dff894330ddc94b34b6bae44457e668302bf3c` |
+| Strategy source | `6cc129ac9d0c6a09718500eb96d76398bd2925c8fa4f996ac85f37962bc38384` |
+| Parity record | `89d2b127b7972805cce9900d109f8f3696d540aa8abfe11452c6218a221fb9ff` |
 
-The semantic identity is `nautilus-execution-simulation-v2`. Its canonical,
-hash-bound scenario grammar accepts exactly these identifiers:
+The native guard was built reproducibly twice per simulation and paper profile
+offline with the reviewed Rust/Cargo 1.95.0 and LLVM inputs. Bubblewrap is
+root-owned, network is unshared, and runtime inputs are descriptor- and
+digest-bound.
 
-- `long-accounting`
-- `short-accounting`
-- `partial-fill`
-- `same-bar-stop-take-profit`
-- `stale-quote`
-- `zero-liquidity`
-- `session-boundary`
-- `event-digest`
+## Exact qualification
 
-The scenario binds the exact catalog, market-data, and strategy bytes. Events
-must be ordered, fall inside the command window, match the catalog rows, and
-use the fixed BTCUSDT instrument. All prices, quantities, fees, and P&L are
-canonical finite decimal strings, bounded to 38 significant digits and a
-bounded exponent before arithmetic. Price-like values must not exceed
-`17,014,118,346,046`; quantity/capacity values must not exceed
-`34,028,236,692,093`. Every derived operation runs under an isolated
-precision-80 Decimal context. The launcher rejects floats, duplicate or unknown
-keys, unbound inputs, excessive instrument precision, out-of-range fixed-point
-values, unknown stop/take-profit precedence, arbitrary modules,
-provider/execution settings, and output paths before Nautilus setup.
+One `long-accounting` diagnostic ran through the normal
+`EngineSpawnProvider`: one controller invocation, one provider run, exit 0,
+empty error streams, and exactly one sealed request plus sidecar.
 
-For a long same-bar scenario, the stop and take-profit triggers are valid only
-when `stop_price < executable_entry_price < take_profit_price`; executable entry
-includes declared slippage. This prevents ambiguous or reversed trigger causes
-before Nautilus setup.
+The parity controller then ran exactly once and produced one canonical
+`nautilus-phase4-parity-evidence-v2` PASS record. It covered exactly two normal
+provider runs for each repository-ordered scenario:
 
-The sealed engine ingests a finite in-memory bar feed. The bounded Decimal-only
-execution model applies explicit session-open, quote-age, liquidity,
-fee/slippage, partial-fill, and stop-first same-bar rules. It emits exactly one
-canonical completion line containing the five-input digest, scenario and event
-digests, execution counters, position state, average entry, fees, realised and
-unrealised P&L, and the declared precedence.
+1. `long-accounting`
+2. `short-accounting`
+3. `partial-fill`
+4. `same-bar-stop-take-profit`
+5. `stale-quote`
+6. `zero-liquidity`
+7. `session-boundary`
+8. `event-digest`
 
-## External generations
+All 16 runs have run-1/run-2 byte equality, actual event equality with the
+independently rebuilt Decimal reference event, and launcher result-digest
+equality with the independent root result digest. Transport custody is exactly
+16 provider roots and 32 mode-`0400`, single-link request/sidecar members, with
+no response member or failure receipt.
 
-No external closure files are tracked by Git.
-
-| Generation | Disposition | Manifest SHA-256 | Attested closure SHA-256 |
-| --- | --- | --- | --- |
-| `runtime-closure-v3` | zero-order rollback | `69cb87568361ccd6324550fb3823956c64e073b4cf09e674d7eb0883f844c044` | `18c9ba4af073ae953e0115f577423348b6d454c158da59cbcbd3c9e34a22856f` |
-| `runtime-closure-v4-simulation` through `v7` | rejected forensic candidates | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` |
-| `runtime-closure-v8-simulation` | transport-only rollback | `60fa9da972a1bb967f1117318b56e513301e3868536d8efb7f09284b02e5459c` | `f6080176c8a2c742a4f60a92be07a2e9078edaef97572e33c54c4431dd646cf2` |
-| `runtime-closure-v9-simulation` | rejected precision candidate | `2920be39c588d52c54dee735f6bc9dc6507b7650572fa7dcd8a9da84981e90a5` | `30397513e1b4342b4182dfbc143a3b24426e7186f690172bacc0ed7ec9598345` |
-| `runtime-closure-v10-simulation` | rejected pre-grammar-repair candidate | `f2f16b61f46db2ca86b16dc47a13633a9b3aee3c74ed4ecca084e7c453990d0d` | `fed156160b837b75564de15e50236441851376ea67ac3bc60e58a911c81cd386` |
-| `runtime-closure-v11-simulation` | rejected fixed-point/trigger-order candidate | `a0a327420767fc2ad52bb731b1297b9c6ea85d3965bbf53523cd17ca393b6ceb` | `ce70493ede59e19aeda7496da553ea97f7c9265d91ba95bf8a2b73e295de6597` |
-| `runtime-closure-v12-simulation` | reserved for Task 4 real execution-parity candidate | — | — |
-
-V9 passed closure attestation but failed the first real semantic smoke because
-canonical whole-number prices were passed to Nautilus without the fixed
-instrument precision. It remains immutable forensic evidence. V10 remains
-rejected because independent review found scenario-ID ambiguity, ambient
-Decimal-context dependence, and a policy-only semantic label. V11 is also
-immutable forensic evidence: its preserved digests document the candidate, but
-its absent fixed-point and trigger-order checks prohibit its selection. V8
-remains transport-only rollback. V12 is reserved for Task 4 and has not been
-materialized.
-
-## Qualification evidence
-
-- Source launcher SHA-256:
-  `e8012838ba6eca788de98d6520123f769602d28f8f57662395b2e0d54b3dab8f`.
-- Source runtime-closure policy SHA-256:
-  `cf44792684f720cf6cda42f6de86bf7aadd10abbc437efa112fc37c7952aa740`.
-- Selected artifact manifest SHA-256:
-  `105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2`.
-- The source tests prove v2 rejects reversed/equal long trigger order and the
-  two exact fixed-point overflows before engine setup. They also prove a v1
-  semantic manifest cannot be selected under v2.
-- No external closure was materialized, attested, or executed by this packet.
-  Historical v11 observations remain forensic only and are not qualification
-  evidence for v2 or Task 4.
-- V3–v11 inode identities and manifest digests remain preserved; v8 remains
-  transport-only rollback and v12 is reserved.
-
-These checks prove a bounded offline semantic fixture. They do not authorize
-service installation or startup, a scheduler, provider or broker access,
-paper-runtime activation, database mutation, or live trading.
+This is a bounded offline fixture qualification. It grants no service,
+scheduler, provider, broker, account, database, deployment, paper-runtime, or
+live-execution authority.

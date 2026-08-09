@@ -74,6 +74,16 @@ labels estimated provenance.
 Add audited, idempotent jobs for snapshot, debate, replay, and backtest using a
 queue and workers. Persist canonical job state and heartbeats in PostgreSQL.
 
+Status: **COMPLETE AS A REVIEWED LOCAL, PAPER-ONLY SOURCE CANDIDATE.** The
+selected r12 execution-simulation closure passed one diagnostic and the exact
+eight-scenario by two-run independent parity matrix; the distinct v13 finite
+paper-compatibility closure passed once; all eight legacy comparisons remained
+non-authoritative; and the six mandatory 04D research gates passed. Pre/post
+01D and the full frozen/offline clean-clone source/CI gates also passed. See
+`docs/nautilus-adoption/phase-4-final-runtime-verification.md` and
+`docs/nautilus-adoption/phase-4-simulation-closure.md` for the sanitized
+bindings and cardinalities. This status grants no deployment or live authority.
+
 ## Phase 5 - deterministic risk and execution separation
 
 Create `TradeIntent`, `RiskDecision`, and `SignedOrderPlan` boundaries; implement
