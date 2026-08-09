@@ -1525,6 +1525,13 @@ def test_authoritative_closer_rejects_missing_or_mismatched_custody_selection(
         research.close_ws04_research_campaign(
             **(expected | {"parity_record_sha256": "0" * 64})
         )
+    _rewrite_paper_record(
+        paper,
+        candidate_closure_sha256="e" * 64,
+        candidate_manifest_sha256="d" * 64,
+    )
+    with pytest.raises(ValueError, match="custody|digest"):
+        research.close_ws04_research_campaign(**expected)
     with pytest.raises(TypeError):
         research.close_ws04_research_campaign(
             campaign_directory=campaign,
