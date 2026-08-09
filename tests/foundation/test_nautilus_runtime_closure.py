@@ -40,29 +40,138 @@ PRIVATE_LLVM = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
 )
 SOURCE_COMMIT = "280ae1762df51a492a4ce71506a40b5c8706def5"
-REPOSITORY_SOURCE_COMMIT = subprocess.run(
-    [
-        "git",
-        "log",
-        "-1",
-        "--format=%H",
-        "--",
-        ".",
-        ":!engines/nautilus/runtime-closure-policy.json",
-        ":!engines/nautilus/paper-compatibility-runtime-closure-policy.json",
-    ],
-    cwd=ROOT,
-    check=True,
-    capture_output=True,
-    text=True,
-).stdout.strip()
 DEPENDENCY_IMPORT_POLICY = (
     "native-guarded-stdlib-first-sealed-wheel-path-v1"
+)
+RUNTIME_SOURCE_LEAVES = (
+    "engines/nautilus/launcher/nautilus_backtest.py",
+    "engines/nautilus/launcher/nautilus_paper_compat.py",
+    "engines/nautilus/launcher/target_portfolio_strategy.py",
+    "engines/nautilus/native_entry_guard/src/main.rs",
+    "engines/nautilus/native_entry_guard/Cargo.toml",
+    "engines/nautilus/native_entry_guard/Cargo.lock",
+    "scripts/materialize_nautilus_runtime_closure.py",
+    "services/job_worker/engine_spawn.py",
+    "services/job_worker/nautilus_closure.py",
 )
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _git_output(arguments: list[str], *, repository: Path = ROOT) -> bytes:
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        check=False,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode(
+        "utf-8", errors="replace"
+    )
+    return completed.stdout
+
+
+def _git_source_blob(
+    source_commit: str, source_path: str, *, repository: Path = ROOT
+) -> bytes:
+    return _git_output(
+        ["show", f"{source_commit}:{source_path}"], repository=repository
+    )
+
+
+def _checked_in_policy_source_commit() -> str:
+    policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
+    source_commit = policy["source_commit"]
+
+    assert isinstance(source_commit, str)
+    assert re.fullmatch(r"[0-9a-f]{40}", source_commit)
+    return source_commit
+
+
+def _assert_runtime_policy_source_authority(policy: dict[str, object]) -> None:
+    source_commit = policy["source_commit"]
+    assert isinstance(source_commit, str)
+    assert re.fullmatch(r"[0-9a-f]{40}", source_commit)
+    _git_output(["cat-file", "-e", f"{source_commit}^{{commit}}"])
+
+    bound_digests: dict[str, str] = {}
+    launcher_inventory = policy["launcher_inventory"]
+    assert isinstance(launcher_inventory, list)
+    for record in launcher_inventory:
+        assert isinstance(record, dict)
+        source_path = record["source"]
+        source_digest = record["sha256"]
+        assert isinstance(source_path, str)
+        assert isinstance(source_digest, str)
+        bound_digests[source_path] = source_digest
+
+    native_guard = policy["native_entry_guard"]
+    assert isinstance(native_guard, dict)
+    for source_field, digest_field in (
+        ("source", "source_sha256"),
+        ("cargo_manifest", "cargo_manifest_sha256"),
+        ("cargo_lock", "cargo_lock_sha256"),
+    ):
+        source_path = native_guard[source_field]
+        source_digest = native_guard[digest_field]
+        assert isinstance(source_path, str)
+        assert isinstance(source_digest, str)
+        bound_digests[source_path] = source_digest
+
+    for source_path, digest_field in (
+        ("engines/nautilus/toolchain-inputs.json", "rust_toolchain_policy_sha256"),
+        ("engines/nautilus/llvm-toolchain-policy.json", "llvm_toolchain_policy_sha256"),
+    ):
+        source_digest = native_guard[digest_field]
+        assert isinstance(source_digest, str)
+        bound_digests[source_path] = source_digest
+
+    for source_path, expected_digest in bound_digests.items():
+        source_at_commit = _git_source_blob(source_commit, source_path)
+        assert hashlib.sha256(source_at_commit).hexdigest() == expected_digest
+        assert _sha256(ROOT / source_path) == expected_digest
+
+    for source_path in RUNTIME_SOURCE_LEAVES:
+        assert (ROOT / source_path).read_bytes() == _git_source_blob(
+            source_commit, source_path
+        )
+
+
+def test_git_source_blob_remains_bound_after_a_later_nonruntime_commit(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "authority-repository"
+    repository.mkdir()
+    _git_output(["init", "--quiet"], repository=repository)
+    _git_output(
+        ["config", "user.email", "authority-test@local.invalid"],
+        repository=repository,
+    )
+    _git_output(["config", "user.name", "Authority Test"], repository=repository)
+    runtime_leaf = repository / "runtime/entry.py"
+    runtime_leaf.parent.mkdir()
+    runtime_leaf.write_bytes(b"reviewed-runtime-leaf\\n")
+    _git_output(["add", "runtime/entry.py"], repository=repository)
+    _git_output(["commit", "--quiet", "-m", "reviewed runtime"], repository=repository)
+    source_commit = _git_output(["rev-parse", "HEAD"], repository=repository).strip()
+
+    (repository / "docs").mkdir()
+    (repository / "docs/later.md").write_bytes(b"later non-runtime commit\\n")
+    _git_output(["add", "docs/later.md"], repository=repository)
+    _git_output(["commit", "--quiet", "-m", "later documentation"], repository=repository)
+
+    assert source_commit != _git_output(
+        ["rev-parse", "HEAD"], repository=repository
+    ).strip()
+    assert _git_source_blob(
+        source_commit.decode("ascii"),
+        "runtime/entry.py",
+        repository=repository,
+    ) == b"reviewed-runtime-leaf\\n"
 
 
 def _canonical(value: object) -> bytes:
@@ -217,7 +326,7 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
             "result_validator_id": "nautilus-backtest-simulation-result-v1",
             "schema_version": 1,
             "semantic_profile": "nautilus-execution-simulation-v2",
-            "source_commit": REPOSITORY_SOURCE_COMMIT,
+            "source_commit": _checked_in_policy_source_commit(),
             "timeout_seconds": 120,
         }
         policy_path = root / "runtime-closure-policy.json"
@@ -396,7 +505,8 @@ def test_checked_in_policies_bind_exact_finite_profile_leaves(
 ) -> None:
     policy = materializer_module._load_policy(policy_path)
 
-    assert policy["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    assert policy["source_commit"] == _checked_in_policy_source_commit()
+    _assert_runtime_policy_source_authority(policy)
     assert policy["profile_manifest_schema_version"] == 6
     assert policy["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
     assert policy["profile"] == profile
@@ -430,15 +540,7 @@ def test_checked_in_policy_binds_the_reviewed_final_source_and_launcher_inventor
 
     assert isinstance(source_commit, str)
     assert re.fullmatch(r"[0-9a-f]{40}", source_commit)
-    completed = subprocess.run(
-        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
-        cwd=ROOT,
-        check=False,
-        capture_output=True,
-    )
-
-    assert completed.returncode == 0
-    assert source_commit == REPOSITORY_SOURCE_COMMIT
+    _assert_runtime_policy_source_authority(policy)
     assert policy["profile_manifest_schema_version"] == 6
     assert policy["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
     assert policy["launcher_inventory"] == [
@@ -460,7 +562,7 @@ def test_checked_in_policy_separates_repository_and_sealed_engine_identities() -
 
     raw_policy = json.loads(CHECKED_IN_POLICY.read_text(encoding="ascii"))
 
-    assert raw_policy["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    _assert_runtime_policy_source_authority(raw_policy)
     assert raw_policy["engine_upstream_commit"] == SOURCE_COMMIT
     assert raw_policy["source_commit"] != raw_policy["engine_upstream_commit"]
 
@@ -477,7 +579,7 @@ def test_checked_in_policy_separates_repository_and_sealed_engine_identities() -
         materializer_module._validate_artifact(artifacts, changed_engine_identity)
 
     manifest = materializer_module._build_output_manifest(policy, [])
-    assert manifest["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    assert manifest["source_commit"] == raw_policy["source_commit"]
     assert manifest["source_commit"] != policy["engine_upstream_commit"]
 
 
@@ -505,7 +607,7 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
         "python_identity": "CPython 3.12.3",
         "result_validator_id": "nautilus-backtest-simulation-result-v1",
         "semantic_profile": "nautilus-execution-simulation-v2",
-        "source_commit": REPOSITORY_SOURCE_COMMIT,
+        "source_commit": _checked_in_policy_source_commit(),
         "timeout_seconds": 120,
     }
 
@@ -513,7 +615,7 @@ def test_materializer_output_manifest_carries_split_engine_identity() -> None:
 
     assert manifest["schema_version"] == 6
     assert manifest["dependency_import_policy"] == DEPENDENCY_IMPORT_POLICY
-    assert manifest["source_commit"] == REPOSITORY_SOURCE_COMMIT
+    assert manifest["source_commit"] == policy["source_commit"]
     assert manifest["engine_upstream_commit"] == SOURCE_COMMIT
     native_guard = manifest["native_entry_guard"]
     with pytest.raises(
