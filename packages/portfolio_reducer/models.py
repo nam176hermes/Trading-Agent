@@ -17,7 +17,7 @@ from packages.domain.portfolio import (
     NonEmptyText,
     PositionMark,
 )
-from packages.domain.portfolio_events import PortfolioFillEntry
+from packages.domain.portfolio_events import PortfolioFillEntry, PortfolioReconciliationEntry
 from packages.domain.primitives import Currency, FiniteDecimal, Money, Price, Quantity
 
 
@@ -163,6 +163,7 @@ class PortfolioReplayState(DomainModel):
     applied_events: tuple[PortfolioAppliedEvent, ...]
     valuation_rates: tuple[PortfolioValuationRateState, ...] = ()
     active_effects: tuple[PortfolioExecutionEffect, ...] = ()
+    reconciliation: PortfolioReconciliationEntry | None = None
 
     @model_validator(mode="after")
     def _ordered_state(self) -> "PortfolioReplayState":

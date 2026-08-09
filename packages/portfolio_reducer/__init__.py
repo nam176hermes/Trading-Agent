@@ -9,7 +9,7 @@ from .models import (
     PortfolioStreamCursor,
     PortfolioWorkingSnapshot,
 )
-from .reducer import apply_portfolio_event, reduce_portfolio_events
+from .reducer import apply_portfolio_event, derive_account_snapshot, reduce_portfolio_events
 
 __all__ = [
     "PortfolioAppliedEvent",
@@ -20,5 +20,6 @@ __all__ = [
     "PortfolioStreamCursor",
     "PortfolioWorkingSnapshot",
     "apply_portfolio_event",
+    "derive_account_snapshot",
     "reduce_portfolio_events",
 ]
