@@ -66,9 +66,11 @@ _CanonicalFieldType: TypeAlias = Literal[
     "integer",
     "decimal-string",
 ]
+_REFERENCE_COMMAND_TYPE = "RunBacktestSimulation"
 _EVENT_VALIDATION_FIELD_INVENTORY: tuple[
     tuple[str, _CanonicalFieldType], ...
 ] = (
+    ("command_type", "string"),
     ("event_type", "string"),
     ("family", "string"),
     ("payload_digest", "string"),
@@ -1571,17 +1573,24 @@ def _event_validation_field_values(
         "config_digest": event.config_digest,
     }
     for field_name, _canonical_type in _EVENT_VALIDATION_FIELD_INVENTORY:
-        if field_name not in values:
+        if field_name != "command_type" and field_name not in values:
             values[field_name] = attributes.get(field_name, _MISSING_FIELD)
     return values
 
 
 def _event_field_commitments(
+    envelope: EngineCommandEnvelope,
     actual: EngineEventEnvelope,
     reference: EngineEventEnvelope,
 ) -> tuple[_EventFieldCommitment, ...]:
-    actual_values = _event_validation_field_values(actual)
-    reference_values = _event_validation_field_values(reference)
+    actual_values = {
+        "command_type": type(envelope.payload).__name__,
+        **_event_validation_field_values(actual),
+    }
+    reference_values = {
+        "command_type": _REFERENCE_COMMAND_TYPE,
+        **_event_validation_field_values(reference),
+    }
     mismatches: list[_EventFieldCommitment] = []
     for field_name, canonical_type in _EVENT_VALIDATION_FIELD_INVENTORY:
         commitment = _field_commitment(
@@ -1635,6 +1644,7 @@ def _validated_event(
                 reference_event
             ).hexdigest(),
             field_commitments=_event_field_commitments(
+                envelope,
                 event,
                 reference_event_envelope,
             ),

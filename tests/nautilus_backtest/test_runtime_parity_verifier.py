@@ -27,6 +27,7 @@ from packages.nautilus_backtest import (
     SCENARIO_IDS,
     BacktestScenarioV1,
     build_canonical_simulation_fixture,
+    build_simulation_envelope,
     calculate_reference_outcome,
 )
 from services.job_worker.engine_spawn_interface import EngineSpawnError
@@ -1538,6 +1539,56 @@ def test_event_validation_failure_canonical_type_is_bound_before_decimal_hashing
         b'{"type":"decimal-string","value":"1.0"}'
     ).hexdigest()
     assert commitment.actual_sha256 != hashlib.sha256(b"1").hexdigest()
+
+
+def test_event_validation_failure_field_command_type_is_first_and_digest_only() -> None:
+    """Omitting command authority would leave the validator's first reject unclassified."""
+    fixture = build_canonical_simulation_fixture("long-accounting")
+    envelope = build_simulation_envelope(fixture)
+
+    class CommandTypeLeakProbe(type(envelope.payload)):
+        pass
+
+    mismatched_command = CommandTypeLeakProbe.model_validate(
+        envelope.payload.model_dump()
+    )
+    mismatched_envelope = envelope.model_copy(
+        update={"payload": mismatched_command}
+    )
+
+    with pytest.raises(verifier._EventValidationMismatch) as observed:
+        verifier._validated_event(
+            _event_bytes(
+                mismatched_envelope,
+                attribute_overrides={"total_events": 987654321},
+            ),
+            envelope=mismatched_envelope,
+            fixture=fixture,
+        )
+
+    receipt = verifier._event_failure_receipt(observed.value)
+    written = canonical_json_bytes(receipt)
+    assert receipt["mismatching_fields"] == (
+        "command_type",
+        "payload_digest",
+        "total_events",
+    )
+    assert tuple(
+        item["field_name"] for item in receipt["field_commitments"]
+    ) == receipt["mismatching_fields"]
+    assert receipt["field_commitments"][0] == {
+        "field_name": "command_type",
+        "canonical_type": "string",
+        "actual_sha256": hashlib.sha256(
+            b'{"type":"string","value":"CommandTypeLeakProbe"}'
+        ).hexdigest(),
+        "reference_sha256": hashlib.sha256(
+            b'{"type":"string","value":"RunBacktestSimulation"}'
+        ).hexdigest(),
+    }
+    assert b"CommandTypeLeakProbe" not in written
+    assert b"RunBacktestSimulation" not in written
+    assert b"987654321" not in written
 
 
 def test_event_validation_failure_commitment_distinguishes_missing_null_and_zero() -> None:
