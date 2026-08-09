@@ -17,6 +17,7 @@ from packages.domain.portfolio import (
     NonEmptyText,
     PositionMark,
 )
+from packages.domain.portfolio_events import PortfolioFillEntry
 from packages.domain.primitives import Currency, FiniteDecimal, Money, Price, Quantity
 
 
@@ -120,6 +121,8 @@ class PortfolioExecutionEffect(DomainModel):
     account_id: CanonicalPortfolioIdentifier
     strategy_id: CanonicalPortfolioIdentifier
     fill: FillEvent
+    entry: PortfolioFillEntry
+    logical_sequence: Annotated[int, Field(gt=0)]
     cash_deltas: tuple[Money, ...]
     balance_realized_pnl_deltas: tuple[Money, ...]
     balance_fee_deltas: tuple[Money, ...]
@@ -134,6 +137,10 @@ class PortfolioExecutionEffect(DomainModel):
     def _valid_effect(self) -> "PortfolioExecutionEffect":
         if self.execution_id != self.fill.execution_id:
             raise ValueError("effect execution ID must match fill")
+        if self.entry.fill != self.fill:
+            raise ValueError("effect entry must match fill")
+        if self.entry.account_id != self.account_id or self.entry.strategy_id != self.strategy_id:
+            raise ValueError("effect entry scope must match")
         if self.strategy_id != self.position_key[0]:
             raise ValueError("effect position key strategy does not match")
         for name, deltas in (

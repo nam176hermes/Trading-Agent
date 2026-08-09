@@ -211,7 +211,12 @@ def _cash_deltas(fill: FillEvent) -> tuple[Money, ...]:
     )
 
 
-def _fill_effect(state: PortfolioReplayState, entry: PortfolioFillEntry) -> tuple[PortfolioExecutionEffect, PortfolioPositionState]:
+def _fill_effect(
+    state: PortfolioReplayState,
+    entry: PortfolioFillEntry,
+    *,
+    logical_sequence: int,
+) -> tuple[PortfolioExecutionEffect, PortfolioPositionState]:
     fill = entry.fill
     existing = _find_position(state, entry.strategy_id, fill.instrument_definition.instrument_id.canonical)
     position = existing or _new_position(entry, fill)
@@ -274,6 +279,8 @@ def _fill_effect(state: PortfolioReplayState, entry: PortfolioFillEntry) -> tupl
         account_id=entry.account_id,
         strategy_id=entry.strategy_id,
         fill=fill,
+        entry=entry,
+        logical_sequence=logical_sequence,
         cash_deltas=_cash_deltas(fill),
         balance_realized_pnl_deltas=(
             _money(realized_delta, position.settlement_currency, field="balance realized PnL"),
@@ -346,8 +353,11 @@ def _replace_position(snapshot: PortfolioWorkingSnapshot, replacement: Portfolio
     return tuple(sorted(positions, key=lambda item: (item.strategy_id, item.instrument.canonical)))
 
 
-def _apply_normal(state: PortfolioReplayState, event: PortfolioEvent, entry: PortfolioFillEntry) -> PortfolioReplayState:
-    effect, next_position = _fill_effect(state, entry)
+def _with_effect(
+    state: PortfolioReplayState,
+    effect: PortfolioExecutionEffect,
+    next_position: PortfolioPositionState,
+) -> PortfolioReplayState:
     snapshot = PortfolioWorkingSnapshot(
         account_id=state.snapshot.account_id,
         reporting_currency=state.snapshot.reporting_currency,
@@ -356,14 +366,35 @@ def _apply_normal(state: PortfolioReplayState, event: PortfolioEvent, entry: Por
             effect.cash_deltas,
             effect.balance_realized_pnl_deltas,
             effect.balance_fee_deltas,
-            entry.effective_at,
+            effect.entry.effective_at,
         ),
         positions=_replace_position(state.snapshot, next_position),
-        observed_at=entry.effective_at,
+        observed_at=effect.entry.effective_at,
         schema_version=state.snapshot.schema_version,
     )
     active = tuple(sorted((*state.active_effects, effect), key=lambda item: item.execution_id.bytes))
-    return _next_state(state, snapshot=snapshot, event=event, active_effects=active)
+    return PortfolioReplayState(
+        snapshot=snapshot,
+        cursor=state.cursor,
+        applied_events=state.applied_events,
+        valuation_rates=state.valuation_rates,
+        active_effects=active,
+    )
+
+
+def _apply_normal(
+    state: PortfolioReplayState,
+    event: PortfolioEvent,
+    entry: PortfolioFillEntry,
+    *,
+    logical_sequence: int | None = None,
+) -> PortfolioReplayState:
+    effect, next_position = _fill_effect(
+        state,
+        entry,
+        logical_sequence=event.sequence if logical_sequence is None else logical_sequence,
+    )
+    return _next_state(_with_effect(state, effect, next_position), event=event)
 
 
 def _same_economics(left: FillEvent, right: FillEvent) -> bool:
@@ -422,22 +453,68 @@ def _reverse_effect(state: PortfolioReplayState, effect: PortfolioExecutionEffec
     )
 
 
+def _remove_effect(
+    state: PortfolioReplayState,
+    effect: PortfolioExecutionEffect,
+    *,
+    observed_at,
+) -> PortfolioReplayState:
+    return PortfolioReplayState(
+        snapshot=_reverse_effect(state, effect, observed_at),
+        cursor=state.cursor,
+        applied_events=state.applied_events,
+        valuation_rates=state.valuation_rates,
+        active_effects=tuple(
+            item for item in state.active_effects if item.execution_id != effect.execution_id
+        ),
+    )
+
+
+def _rebase_later_effects(
+    state: PortfolioReplayState,
+    effect: PortfolioExecutionEffect,
+    entry: PortfolioFillEntry,
+) -> PortfolioReplayState:
+    """Replace or remove one effect while preserving subsequent same-position fills."""
+
+    later = tuple(
+        sorted(
+            (
+                item
+                for item in state.active_effects
+                if item.position_key == effect.position_key
+                and item.logical_sequence > effect.logical_sequence
+            ),
+            key=lambda item: item.logical_sequence,
+        )
+    )
+    rebased = state
+    for item in reversed((effect, *later)):
+        rebased = _remove_effect(rebased, item, observed_at=entry.effective_at)
+    if entry.fill.status is FillReportStatus.CORRECTION:
+        replacement, next_position = _fill_effect(
+            rebased,
+            entry,
+            logical_sequence=effect.logical_sequence,
+        )
+        rebased = _with_effect(rebased, replacement, next_position)
+    for item in later:
+        replayed, next_position = _fill_effect(
+            rebased,
+            item.entry,
+            logical_sequence=item.logical_sequence,
+        )
+        rebased = _with_effect(rebased, replayed, next_position)
+    return rebased
+
+
 def _consume_effect(state: PortfolioReplayState, event: PortfolioEvent, entry: PortfolioFillEntry, reference) -> PortfolioReplayState:
     effect = next((item for item in state.active_effects if item.execution_id == reference), None)
     if effect is None:
         raise PortfolioReplayError("reference must name an active normal execution")
     if effect.account_id != entry.account_id or effect.strategy_id != entry.strategy_id:
         raise PortfolioReplayError("reference must name an active normal execution in the same account and strategy")
-    reversed_state = PortfolioReplayState(
-        snapshot=_reverse_effect(state, effect, entry.effective_at),
-        cursor=state.cursor,
-        applied_events=state.applied_events,
-        valuation_rates=state.valuation_rates,
-        active_effects=tuple(item for item in state.active_effects if item.execution_id != reference),
-    )
-    if entry.fill.status is FillReportStatus.BUST:
-        return _next_state(reversed_state, event=event)
-    return _apply_normal(reversed_state, event, entry)
+    return _next_state(_rebase_later_effects(state, effect, entry), event=event)
 
 
 def apply_portfolio_event(state: PortfolioReplayState, event: object) -> PortfolioReplayState:

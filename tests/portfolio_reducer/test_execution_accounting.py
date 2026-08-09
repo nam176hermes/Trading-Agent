@@ -206,6 +206,7 @@ def test_short_cash_flow_and_cross_zero_reversal_use_close_first_accounting(open
     assert position.quantity.value == Decimal("1.00")
     assert position.average_entry_price.amount == Decimal("90")
     assert position.realized_pnl.amount == Decimal("20")
+    assert state.snapshot.balances[0].realized_pnl.amount == Decimal("20")
 
 
 def test_multiple_entries_use_exact_weighted_average_and_settlement_fee(opened_state) -> None:
@@ -343,6 +344,55 @@ def test_correction_rejects_missing_or_busted_execution() -> None:
     )
     with pytest.raises(PortfolioReplayError, match="active normal execution"):
         reduce_portfolio_events((opening(), normal, bust, correction))
+
+
+def test_correction_of_an_older_fill_rebases_later_same_position_effects() -> None:
+    older = fill_event(event_number=2, execution_number=20, side=OrderSide.BUY, quantity="2", price="100")
+    newer = fill_event(event_number=3, execution_number=30, side=OrderSide.SELL, quantity="1", price="110")
+    correction = fill_event(
+        event_number=4,
+        execution_number=40,
+        side=OrderSide.BUY,
+        quantity="2",
+        price="90",
+        status=FillReportStatus.CORRECTION,
+        correction_of=older.payload.fill.execution_id,
+    )
+
+    state = reduce_portfolio_events((opening(), older, newer, correction))
+
+    position = state.snapshot.positions[0]
+    assert state.snapshot.balances[0].cash.amount == Decimal("930")
+    assert position.quantity.value == Decimal("1.00")
+    assert position.average_entry_price.amount == Decimal("90")
+    assert position.realized_pnl.amount == Decimal("20")
+    assert state.active_execution_ids == (
+        newer.payload.fill.execution_id,
+        correction.payload.fill.execution_id,
+    )
+
+
+def test_bust_of_an_older_fill_rebases_later_same_position_effects() -> None:
+    older = fill_event(event_number=2, execution_number=20, side=OrderSide.BUY, quantity="2", price="100")
+    newer = fill_event(event_number=3, execution_number=30, side=OrderSide.SELL, quantity="1", price="110")
+    bust = fill_event(
+        event_number=4,
+        execution_number=40,
+        side=OrderSide.BUY,
+        quantity="1",
+        price="100",
+        status=FillReportStatus.BUST,
+        bust_of=older.payload.fill.execution_id,
+    )
+
+    state = reduce_portfolio_events((opening(), older, newer, bust))
+
+    position = state.snapshot.positions[0]
+    assert state.snapshot.balances[0].cash.amount == Decimal("1110")
+    assert position.quantity.value == Decimal("-1.00")
+    assert position.average_entry_price.amount == Decimal("110")
+    assert position.realized_pnl.amount == Decimal("0")
+    assert state.active_execution_ids == (newer.payload.fill.execution_id,)
 
 
 @pytest.mark.parametrize("status,reference", [(FillReportStatus.BUST, "bust_of"), (FillReportStatus.CORRECTION, "correction_of")])
