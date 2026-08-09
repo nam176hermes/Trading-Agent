@@ -19,14 +19,6 @@ SCRIPT = ROOT / "scripts/qualify_nautilus_sealed_imports.py"
 ARCHITECTURE_PLAN = (
     ROOT / "docs/superpowers/plans/2026-08-08-phase4-architectural-closure.md"
 )
-FINAL_PARITY_PLAN = (
-    ROOT / "docs/superpowers/plans/2026-08-09-phase4-final-parity-and-evidence-closure.md"
-)
-TASK5_BRIEF = (
-    ROOT
-    / ".superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure"
-    / "task-5-brief.md"
-)
 TASK8_ROOT_CONTROLLER_SCRIPTS = {
     "qualify_nautilus_sealed_imports.py": 2,
     "materialize_nautilus_runtime_closure.py": 2,
@@ -51,6 +43,38 @@ SANDBOX_PROFILE = (
     b"trading-agent-engine-bwrap-v2:die-with-parent,user,pid,net,new-session,"
     b"clearenv,sealed-file-closure,fd-ro-bind-data-inputs,proc,dev,tmpfs"
 )
+
+
+def _controller_recipe_blocks(root: Path) -> tuple[str, str]:
+    architecture_text = (
+        root / "docs/superpowers/plans/2026-08-08-phase4-architectural-closure.md"
+    ).read_text(encoding="utf-8")
+    task8_start = architecture_text.index(
+        "### Task 8: Qualify, Publish v12-r9/v13, Run Parity, and Close 04D"
+    )
+    task8_end = architecture_text.index("---\n\n### Task 9:", task8_start)
+    task8_block = architecture_text[task8_start:task8_end]
+
+    final_plan_text = (
+        root
+        / "docs/superpowers/plans/2026-08-09-phase4-final-parity-and-evidence-closure.md"
+    ).read_text(encoding="utf-8")
+    task5_start = final_plan_text.index("## Task 5: Close simulation qualification")
+    task5_end = final_plan_text.index("## Task 6:", task5_start)
+    task5_block = final_plan_text[task5_start:task5_end]
+    return task8_block, task5_block
+
+
+def _assert_controller_source_binding_recipe(recipe: str) -> None:
+    required_recipe = (
+        "UV_OFFLINE=1 uv sync --frozen "
+        "--reinstall-package trading-agent-control-api"
+    )
+    assert required_recipe in recipe
+    assert 'services/job_worker/nautilus_closure.py' in recipe
+    assert "hashlib.sha256" in recipe
+    assert 'is_relative_to(worktree / ".venv")' in recipe
+    assert "_MANIFEST_FIELDS_V6" in recipe
 
 
 def _canonical(value: object) -> bytes:
@@ -1244,28 +1268,9 @@ def test_task8_root_package_controllers_use_the_locked_python() -> None:
 
 def test_task5_and_task8_controller_bootstrap_reinstalls_and_binds_current_source() -> None:
     """The isolated controller must be the freshly installed current worktree copy."""
-    architecture_text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
-    task8_start = architecture_text.index(
-        "### Task 8: Qualify, Publish v12-r9/v13, Run Parity, and Close 04D"
-    )
-    task8_end = architecture_text.index("---\n\n### Task 9:", task8_start)
-    task8_block = architecture_text[task8_start:task8_end]
-    final_plan_text = FINAL_PARITY_PLAN.read_text(encoding="utf-8")
-    task5_start = final_plan_text.index("## Task 5: Close simulation qualification")
-    task5_end = final_plan_text.index("## Task 6:", task5_start)
-    task5_block = final_plan_text[task5_start:task5_end]
-    task5_brief = TASK5_BRIEF.read_text(encoding="utf-8")
-
-    required_recipe = (
-        "UV_OFFLINE=1 uv sync --frozen "
-        "--reinstall-package trading-agent-control-api"
-    )
-    for recipe in (task8_block, task5_block, task5_brief):
-        assert required_recipe in recipe
-        assert 'services/job_worker/nautilus_closure.py' in recipe
-        assert "hashlib.sha256" in recipe
-        assert 'is_relative_to(worktree / ".venv")' in recipe
-        assert "_MANIFEST_FIELDS_V6" in recipe
+    task8_block, task5_block = _controller_recipe_blocks(ROOT)
+    for recipe in (task8_block, task5_block):
+        _assert_controller_source_binding_recipe(recipe)
 
     task5_controller_scripts = re.findall(
         r"scripts/([a-z0-9_]+\.py)", task5_block
@@ -1308,3 +1313,21 @@ def test_task5_and_task8_controller_bootstrap_reinstalls_and_binds_current_sourc
 
     assert source.is_file()
     assert probe.returncode == 0, probe.stderr
+
+
+def test_controller_recipe_contract_survives_clean_clone_without_ignored_brief(
+    tmp_path: Path,
+) -> None:
+    for relative in (
+        "docs/superpowers/plans/2026-08-08-phase4-architectural-closure.md",
+        "docs/superpowers/plans/2026-08-09-phase4-final-parity-and-evidence-closure.md",
+    ):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+
+    task8_block, task5_block = _controller_recipe_blocks(tmp_path)
+
+    _assert_controller_source_binding_recipe(task8_block)
+    _assert_controller_source_binding_recipe(task5_block)
+    assert not (tmp_path / ".superpowers").exists()

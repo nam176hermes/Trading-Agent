@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
 import sys
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +20,93 @@ VERIFY = ROOT / "scripts/verify_component_snapshot.py"
 BACKEND_COMMIT = "59578f984b72d5d03583a2c06b15a53a224b31c8"
 BACKEND_TREE = "54e688e9f144aecd2ee204ab95953f7c57069d3c"
 DESTINATION_PREFIX = "legacy/research-backend"
+
+# The approved manifest remains immutable evidence for the atomic backend import.
+# These two Phase 4 files were introduced later in the monorepo, so they are
+# bound separately instead of being misrepresented as members of the source tree.
+POST_IMPORT_EXTENSIONS = {
+    "legacy/research-backend/nautilus_parity_adapter.py": {
+        "git_blob": "8234ea6923216899895338b05897e8b02193c469",
+        "introduced_commit": "9722d838936efae88076d3a04c5f270c2e3db85f",
+        "mode": "100644",
+        "sha256": "7234431eedfd36b03bf449547fd199bf677f26ca383dff179135037b539964e7",
+        "size": 32283,
+    },
+    "legacy/research-backend/tests/test_nautilus_parity_adapter.py": {
+        "git_blob": "df2935c2c355eb3061c0f72d2ec3e4fe24d49785",
+        "introduced_commit": "9722d838936efae88076d3a04c5f270c2e3db85f",
+        "mode": "100644",
+        "sha256": "25e5bee6e4d24bd4f4f29c6f990741fd25452af9191012d0ce56d58cf56fe497",
+        "size": 19641,
+    },
+}
+
+
+def _assert_exact_backend_inventory(
+    *,
+    imported: set[str],
+    extensions: set[str],
+    physical: set[str],
+    tracked: set[str],
+) -> None:
+    assert imported.isdisjoint(extensions)
+    assert imported | extensions == physical == tracked
+
+
+def _assert_extension_bytes(path: Path, record: dict[str, object]) -> None:
+    value = path.read_bytes()
+    assert len(value) == record["size"]
+    assert hashlib.sha256(value).hexdigest() == record["sha256"]
+
+
+def _assert_post_import_extensions(imported: set[str]) -> None:
+    extensions = set(POST_IMPORT_EXTENSIONS)
+    assert extensions == {
+        "legacy/research-backend/nautilus_parity_adapter.py",
+        "legacy/research-backend/tests/test_nautilus_parity_adapter.py",
+    }
+    assert imported.isdisjoint(extensions)
+
+    for relative, record in POST_IMPORT_EXTENSIONS.items():
+        path = ROOT / relative
+        metadata = path.lstat()
+        expected_mode = int(str(record["mode"])[-3:], 8)
+        assert stat.S_ISREG(metadata.st_mode)
+        assert not stat.S_ISLNK(metadata.st_mode)
+        assert metadata.st_nlink == 1
+        assert stat.S_IMODE(metadata.st_mode) == expected_mode
+        _assert_extension_bytes(path, record)
+
+        tree_record = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-tree", "HEAD", "--", relative],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+        metadata_text, observed_path = tree_record.split("\t", 1)
+        mode, object_type, git_blob = metadata_text.split(" ", 2)
+        assert observed_path == relative
+        assert mode == record["mode"]
+        assert object_type == "blob"
+        assert git_blob == record["git_blob"]
+
+        introductions = subprocess.run(
+            [
+                "git", "-C", str(ROOT), "log", "--diff-filter=A", "--format=%H",
+                "HEAD", "--", relative,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.splitlines()
+        assert introductions == [record["introduced_commit"]]
+
+        committed = subprocess.run(
+            ["git", "-C", str(ROOT), "cat-file", "blob", git_blob],
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        assert committed == path.read_bytes()
 
 REQUIRED_SOURCE_PATHS = {
     "CLAUDE.md",
@@ -105,7 +195,7 @@ def test_backend_manifest_is_fixed_complete_and_contains_no_globs_or_gitlink() -
 
 def test_backend_snapshot_is_exact_regular_single_link_reproduction() -> None:
     document = _manifest()
-    expected = {entry["destination_path"] for entry in document["entries"]}
+    imported = {entry["destination_path"] for entry in document["entries"]}
     actual: set[str] = set()
 
     pruned = {
@@ -135,7 +225,13 @@ def test_backend_snapshot_is_exact_regular_single_link_reproduction() -> None:
         stdout=subprocess.PIPE,
     )
     tracked_paths = {raw.decode("utf-8") for raw in tracked.stdout.split(b"\0") if raw}
-    assert expected == actual == tracked_paths
+    _assert_post_import_extensions(imported)
+    _assert_exact_backend_inventory(
+        imported=imported,
+        extensions=set(POST_IMPORT_EXTENSIONS),
+        physical=actual,
+        tracked=tracked_paths,
+    )
     introductions = subprocess.run(
         [
             "git", "-C", str(ROOT), "log", "--diff-filter=A", "--format=%H",
@@ -182,3 +278,34 @@ def test_backend_snapshot_is_exact_regular_single_link_reproduction() -> None:
     assert result.stdout.strip() == (
         f"component=backend revision={backend_introduction} result=PASS"
     )
+
+
+def test_backend_inventory_contract_rejects_unlisted_post_import_path() -> None:
+    with pytest.raises(AssertionError):
+        _assert_exact_backend_inventory(
+            imported={"legacy/research-backend/main.py"},
+            extensions={"legacy/research-backend/nautilus_parity_adapter.py"},
+            physical={
+                "legacy/research-backend/main.py",
+                "legacy/research-backend/nautilus_parity_adapter.py",
+                "legacy/research-backend/unreviewed.py",
+            },
+            tracked={
+                "legacy/research-backend/main.py",
+                "legacy/research-backend/nautilus_parity_adapter.py",
+                "legacy/research-backend/unreviewed.py",
+            },
+        )
+
+
+def test_backend_extension_contract_rejects_byte_drift(tmp_path: Path) -> None:
+    extension = tmp_path / "nautilus_parity_adapter.py"
+    extension.write_bytes(b"drifted adapter bytes\n")
+
+    with pytest.raises(AssertionError):
+        _assert_extension_bytes(
+            extension,
+            POST_IMPORT_EXTENSIONS[
+                "legacy/research-backend/nautilus_parity_adapter.py"
+            ],
+        )
