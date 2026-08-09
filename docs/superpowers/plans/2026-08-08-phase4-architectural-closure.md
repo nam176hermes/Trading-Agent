@@ -820,6 +820,17 @@ Require 8 ordered scenarios × 2 byte-identical normal engine runs, 16/0/0,
 independent root-oracle equality, no stderr/skip, stable attestation, and 16
 sealed retained transport runs with exact request-member inventories.
 
+If the final post-launch result-digest comparison fails, the verifier does not
+write `parity-record.json` and cannot advance the campaign. It instead
+no-clobber publishes the derived sibling
+`parity-record.json.failure.json` as a single-link mode-0400,
+descriptor-identity-bound receipt. That receipt contains only the fixed
+failure class, scenario identifier, SHA-256 algorithm/type/length labels, and
+the launcher-reference, independent-oracle, and actual result digests. It
+never includes stdout, event, fixture, environment, or path bytes. This is
+for root-cause observation only; it neither authorizes a retry nor constitutes
+parity evidence.
+
 - [ ] **Step 5: Materialize and run v13 paper compatibility once.**
 
 ```bash

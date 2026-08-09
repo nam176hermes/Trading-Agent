@@ -58,6 +58,7 @@ from services.job_worker.nautilus_closure import (
 _CHECKOUT = Path(__file__).resolve().parents[1]
 _RUN_COUNT = 2
 _SHA256_LENGTH = 64
+_FAILURE_RECEIPT_SUFFIX = ".failure.json"
 
 
 class ParityVerificationError(RuntimeError):
@@ -88,6 +89,43 @@ class V12R3ParityRecord(TypedDict):
     candidate_manifest_sha256: str
     candidate_manifest_schema_version: Literal[6]
     scenarios: list[ScenarioParityRecord]
+
+
+class V12R3ParityFailureReceipt(TypedDict):
+    """Digest-only observation of the post-launch result mismatch branch."""
+
+    schema_version: Literal["nautilus-phase4-parity-failure-receipt-v1"]
+    status: Literal["failed"]
+    failure_class: Literal["independent-result-digest-mismatch"]
+    digest_algorithm: Literal["sha256"]
+    scenario_id: ScenarioId
+    launcher_reference_result_sha256: str
+    launcher_reference_result_digest_type: Literal["sha256-hex"]
+    launcher_reference_result_digest_length: Literal[64]
+    independent_oracle_result_sha256: str
+    independent_oracle_result_digest_type: Literal["sha256-hex"]
+    independent_oracle_result_digest_length: Literal[64]
+    actual_result_sha256: str
+    actual_result_digest_type: Literal["sha256-hex"]
+    actual_result_digest_length: Literal[64]
+
+
+class _ResultDigestMismatch(ParityVerificationError):
+    """Carry only bounded digest observations across forensic transport sealing."""
+
+    def __init__(
+        self,
+        *,
+        scenario_id: ScenarioId,
+        launcher_reference_result_sha256: str,
+        independent_oracle_result_sha256: str,
+        actual_result_sha256: str,
+    ) -> None:
+        super().__init__("runtime result does not equal the independent oracle result")
+        self.scenario_id = scenario_id
+        self.launcher_reference_result_sha256 = launcher_reference_result_sha256
+        self.independent_oracle_result_sha256 = independent_oracle_result_sha256
+        self.actual_result_sha256 = actual_result_sha256
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +265,12 @@ def _validate_record_path(
     except OSError as exc:
         raise ParityVerificationError("record path cannot be inspected") from exc
     raise ParityVerificationError("record already exists")
+
+
+def _failure_receipt_path(record: Path) -> Path:
+    """Keep the failed observation beside, but separate from, PASS evidence."""
+
+    return record.with_name(f"{record.name}{_FAILURE_RECEIPT_SUFFIX}")
 
 
 def _named_record_stat(reservation: _ReservedRecord):
@@ -1469,11 +1513,12 @@ def _required_digest(value: object, *, label: str) -> str:
     return value
 
 
-def _write_record(
+def _write_sealed_record(
     path: Path,
-    record: V12R3ParityRecord,
+    record: V12R3ParityRecord | V12R3ParityFailureReceipt,
     *,
     parent_identity: tuple[int, int],
+    label: str,
 ) -> None:
     value = canonical_json_bytes(record) + b"\n"
     reservation = _reserve_record(path, parent_identity=parent_identity)
@@ -1489,9 +1534,7 @@ def _write_record(
         os.fsync(reservation.descriptor)
         _verify_reserved_record(reservation, expected_size=len(value))
     except OSError as exc:
-        failure = ParityVerificationError(
-            "parity evidence record cannot be sealed"
-        )
+        failure = ParityVerificationError(f"{label} cannot be sealed")
         failure.__cause__ = exc
     except BaseException as exc:
         failure = exc
@@ -1499,6 +1542,61 @@ def _write_record(
         failure = _close_reserved_record(reservation, primary=failure)
     if failure is not None:
         raise failure
+
+
+def _write_record(
+    path: Path,
+    record: V12R3ParityRecord,
+    *,
+    parent_identity: tuple[int, int],
+) -> None:
+    _write_sealed_record(
+        path,
+        record,
+        parent_identity=parent_identity,
+        label="parity evidence record",
+    )
+
+
+def _failure_receipt(
+    mismatch: _ResultDigestMismatch,
+) -> V12R3ParityFailureReceipt:
+    """Project a mismatch into the approved digest-only forensic vocabulary."""
+
+    return V12R3ParityFailureReceipt(
+        schema_version="nautilus-phase4-parity-failure-receipt-v1",
+        status="failed",
+        failure_class="independent-result-digest-mismatch",
+        digest_algorithm="sha256",
+        scenario_id=mismatch.scenario_id,
+        launcher_reference_result_sha256=(
+            mismatch.launcher_reference_result_sha256
+        ),
+        launcher_reference_result_digest_type="sha256-hex",
+        launcher_reference_result_digest_length=_SHA256_LENGTH,
+        independent_oracle_result_sha256=(
+            mismatch.independent_oracle_result_sha256
+        ),
+        independent_oracle_result_digest_type="sha256-hex",
+        independent_oracle_result_digest_length=_SHA256_LENGTH,
+        actual_result_sha256=mismatch.actual_result_sha256,
+        actual_result_digest_type="sha256-hex",
+        actual_result_digest_length=_SHA256_LENGTH,
+    )
+
+
+def _write_failure_receipt(
+    path: Path,
+    mismatch: _ResultDigestMismatch,
+    *,
+    parent_identity: tuple[int, int],
+) -> None:
+    _write_sealed_record(
+        path,
+        _failure_receipt(mismatch),
+        parent_identity=parent_identity,
+        label="parity failure receipt",
+    )
 
 
 def _run_parity_matrix(
@@ -1576,6 +1674,22 @@ def _run_parity_matrix(
                     "runtime event bytes do not equal the independent oracle event"
                 )
             reference_event_sha256 = hashlib.sha256(reference_event).hexdigest()
+            request_sha256 = hashlib.sha256(
+                canonical_json_bytes(envelope)
+            ).hexdigest()
+            launcher_reference_result_sha256 = hashlib.sha256(
+                canonical_json_bytes(
+                    {
+                        "event_sha256": hashlib.sha256(
+                            event_bytes_by_run[0]
+                        ).hexdigest(),
+                        "input_artifacts_sha256": getattr(
+                            validated_by_run[0], "input_artifacts_sha256"
+                        ),
+                        "request_sha256": request_sha256,
+                    }
+                )
+            ).hexdigest()
             reference_result_sha256 = hashlib.sha256(
                 canonical_json_bytes(
                     {
@@ -1583,9 +1697,7 @@ def _run_parity_matrix(
                         "input_artifacts_sha256": getattr(
                             validated_by_run[0], "input_artifacts_sha256"
                         ),
-                        "request_sha256": hashlib.sha256(
-                            canonical_json_bytes(envelope)
-                        ).hexdigest(),
+                        "request_sha256": request_sha256,
                     }
                 )
             ).hexdigest()
@@ -1594,8 +1706,13 @@ def _run_parity_matrix(
                 label="validated result",
             )
             if reference_result_sha256 != nautilus_result_sha256:
-                raise ParityVerificationError(
-                    "runtime result does not equal the independent oracle result"
+                raise _ResultDigestMismatch(
+                    scenario_id=scenario_id,
+                    launcher_reference_result_sha256=(
+                        launcher_reference_result_sha256
+                    ),
+                    independent_oracle_result_sha256=reference_result_sha256,
+                    actual_result_sha256=nautilus_result_sha256,
                 )
             scenario_records.append(
                 ScenarioParityRecord(
@@ -1735,6 +1852,11 @@ def verify_nautilus_v12_r3_parity(
         record,
         transport_root=transport_root,
     )
+    failure_receipt = _failure_receipt_path(record)
+    failure_receipt_parent_identity = _validate_record_path(
+        failure_receipt,
+        transport_root=transport_root,
+    )
     for path, label in (
         (rollback_closure, "rollback closure"),
         (candidate_closure, "candidate closure"),
@@ -1791,15 +1913,29 @@ def verify_nautilus_v12_r3_parity(
             )
         return observed
 
-    scenario_records = _run_parity_matrix(
-        campaign=campaign,
-        transport_root=transport_root,
-        run_count=run_count,
-        attest_pinned_candidate=attest_pinned_candidate,
-        provider_factory=provider_factory,
-        consume_spawn=consume_spawn,
-        popen_factory=popen_factory,
-    )
+    try:
+        scenario_records = _run_parity_matrix(
+            campaign=campaign,
+            transport_root=transport_root,
+            run_count=run_count,
+            attest_pinned_candidate=attest_pinned_candidate,
+            provider_factory=provider_factory,
+            consume_spawn=consume_spawn,
+            popen_factory=popen_factory,
+        )
+    except _ResultDigestMismatch as primary_failure:
+        try:
+            _write_failure_receipt(
+                failure_receipt,
+                primary_failure,
+                parent_identity=failure_receipt_parent_identity,
+            )
+        except ParityVerificationError as receipt_failure:
+            primary_failure.add_note(
+                "secondary failure receipt sealing failure: "
+                f"{_bounded_secondary_summary(receipt_failure)}"
+            )
+        raise
 
     parity_record = V12R3ParityRecord(
         schema_version="nautilus-phase4-parity-evidence-v2",
