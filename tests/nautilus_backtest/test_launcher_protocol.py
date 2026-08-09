@@ -1810,6 +1810,95 @@ def test_native_venue_uses_base_fill_model_with_bar_matching_disabled(
     assert observed["bar_execution"] is False
 
 
+def test_native_loaded_runner_selects_base_fill_model_from_dependencies(
+    launcher_module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller regression to BestPriceFillModel must fail before venue setup."""
+
+    class ExpectedFillModel:
+        pass
+
+    class PriceImprovingFillModel:
+        pass
+
+    class FakeFeeModel:
+        pass
+
+    class FakeEngine:
+        def __init__(self, _configuration: object) -> None:
+            self.disposed = False
+
+        def dispose(self) -> None:
+            self.disposed = True
+
+    class FakeConfiguration:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class FakeLoggingConfiguration:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+    class StopAfterVenueSetup(Exception):
+        pass
+
+    instrument = SimpleNamespace(id="BTCUSDT.BINANCE")
+    dependencies = SimpleNamespace(
+        AccountType=SimpleNamespace(CASH="CASH"),
+        BTC="BTC",
+        BacktestEngine=FakeEngine,
+        BacktestEngineConfig=FakeConfiguration,
+        Bar=object,
+        BarType=object,
+        BestPriceFillModel=PriceImprovingFillModel,
+        FeeModel=FakeFeeModel,
+        FillModel=ExpectedFillModel,
+        LoggingConfig=FakeLoggingConfiguration,
+        Money=object,
+        OmsType=SimpleNamespace(NETTING="NETTING"),
+        Price=object,
+        Quantity=object,
+        QuoteTick=object,
+        TestInstrumentProvider=SimpleNamespace(
+            btcusdt_binance=lambda: instrument
+        ),
+        USDT="USDT",
+        Venue=lambda name: name,
+    )
+    observed: dict[str, object] = {}
+
+    def observe_venue(**kwargs: object) -> None:
+        observed.update(kwargs)
+        raise StopAfterVenueSetup
+
+    monkeypatch.setattr(
+        launcher_module,
+        "_load_native_simulation_dependencies",
+        lambda: dependencies,
+    )
+    monkeypatch.setattr(
+        launcher_module,
+        "_add_native_simulation_venue",
+        observe_venue,
+    )
+    monkeypatch.setattr(
+        launcher_module,
+        "_load_target_portfolio_strategy",
+        lambda: (object, object),
+    )
+    artifacts = _simulation_fixture("short-accounting")
+    request = _simulation_request(artifacts).model_dump(mode="json")
+    fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
+
+    with pytest.raises(StopAfterVenueSetup):
+        launcher_module._run_nautilus_simulation_fixture_loaded(fixture)
+
+    assert observed["engine"].disposed is True
+    assert observed["fill_model_type"] is ExpectedFillModel
+    assert observed["fill_model_type"] is not PriceImprovingFillModel
+
+
 @pytest.mark.parametrize("scenario_id", _SCENARIO_IDS)
 def test_native_execution_plan_preserves_matrix_with_instrument_quantity_precision(
     launcher_module,

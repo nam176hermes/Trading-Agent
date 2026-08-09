@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Context, Decimal, InvalidOperation, localcontext
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NoReturn, Sequence
 from uuid import UUID, uuid5
 
@@ -2119,9 +2120,9 @@ def _build_simulation_market_data(
     return data
 
 
-def _run_nautilus_simulation_fixture_loaded(
-    fixture: dict[str, object],
-) -> dict[str, object]:
+def _load_native_simulation_dependencies() -> SimpleNamespace:
+    """Load the native classes used by the finite simulation adapter."""
+
     from nautilus_trader.backtest.engine import BacktestEngine
     from nautilus_trader.backtest.models import FeeModel, FillModel
     from nautilus_trader.common.config import LoggingConfig
@@ -2132,6 +2133,49 @@ def _run_nautilus_simulation_fixture_loaded(
     from nautilus_trader.model.identifiers import Venue
     from nautilus_trader.model.objects import Money, Price, Quantity
     from nautilus_trader.test_kit.providers import TestInstrumentProvider
+
+    return SimpleNamespace(
+        AccountType=AccountType,
+        BTC=BTC,
+        BacktestEngine=BacktestEngine,
+        BacktestEngineConfig=BacktestEngineConfig,
+        Bar=Bar,
+        BarType=BarType,
+        FeeModel=FeeModel,
+        FillModel=FillModel,
+        LoggingConfig=LoggingConfig,
+        Money=Money,
+        OmsType=OmsType,
+        Price=Price,
+        Quantity=Quantity,
+        QuoteTick=QuoteTick,
+        TestInstrumentProvider=TestInstrumentProvider,
+        USDT=USDT,
+        Venue=Venue,
+    )
+
+
+def _run_nautilus_simulation_fixture_loaded(
+    fixture: dict[str, object],
+) -> dict[str, object]:
+    dependencies = _load_native_simulation_dependencies()
+    AccountType = dependencies.AccountType
+    BTC = dependencies.BTC
+    BacktestEngine = dependencies.BacktestEngine
+    BacktestEngineConfig = dependencies.BacktestEngineConfig
+    Bar = dependencies.Bar
+    BarType = dependencies.BarType
+    FeeModel = dependencies.FeeModel
+    FillModel = dependencies.FillModel
+    LoggingConfig = dependencies.LoggingConfig
+    Money = dependencies.Money
+    OmsType = dependencies.OmsType
+    Price = dependencies.Price
+    Quantity = dependencies.Quantity
+    QuoteTick = dependencies.QuoteTick
+    TestInstrumentProvider = dependencies.TestInstrumentProvider
+    USDT = dependencies.USDT
+    Venue = dependencies.Venue
     TargetPortfolioStrategy, TargetPortfolioStrategyConfig = (
         _load_target_portfolio_strategy()
     )
