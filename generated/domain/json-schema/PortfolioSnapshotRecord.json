@@ -1,0 +1,1350 @@
+{
+  "$defs": {
+    "AccountBalanceSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "cash": {
+          "$ref": "#/$defs/Money"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "fees": {
+          "$ref": "#/$defs/Money"
+        },
+        "funding": {
+          "$ref": "#/$defs/Money"
+        },
+        "locked_funds": {
+          "$ref": "#/$defs/Money"
+        },
+        "margin_used": {
+          "$ref": "#/$defs/Money"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "realized_pnl": {
+          "$ref": "#/$defs/Money"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "unrealized_pnl": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "account_id",
+        "currency",
+        "cash",
+        "locked_funds",
+        "margin_used",
+        "realized_pnl",
+        "unrealized_pnl",
+        "fees",
+        "funding",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "AccountBalanceSnapshot",
+      "type": "object"
+    },
+    "AccountPortfolioSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "balances": {
+          "items": {
+            "$ref": "#/$defs/AccountBalanceSnapshot"
+          },
+          "title": "Balances",
+          "type": "array"
+        },
+        "instrument_exposures": {
+          "items": {
+            "$ref": "#/$defs/InstrumentExposureSnapshot"
+          },
+          "title": "Instrument Exposures",
+          "type": "array"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/AccountPositionSnapshot"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "reporting_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "strategy_exposures": {
+          "items": {
+            "$ref": "#/$defs/StrategyExposureSnapshot"
+          },
+          "title": "Strategy Exposures",
+          "type": "array"
+        },
+        "total_exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "venue_exposures": {
+          "items": {
+            "$ref": "#/$defs/VenueExposureSnapshot"
+          },
+          "title": "Venue Exposures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "account_id",
+        "reporting_currency",
+        "balances",
+        "positions",
+        "total_exposure",
+        "instrument_exposures",
+        "strategy_exposures",
+        "venue_exposures",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "AccountPortfolioSnapshot",
+      "type": "object"
+    },
+    "AccountPositionSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "average_entry_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fees": {
+          "$ref": "#/$defs/Money"
+        },
+        "funding": {
+          "$ref": "#/$defs/Money"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "mark": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PositionMark"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "realized_pnl": {
+          "$ref": "#/$defs/Money"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "settlement_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "unrealized_pnl": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "account_id",
+        "strategy_id",
+        "instrument",
+        "settlement_currency",
+        "quantity",
+        "mark",
+        "average_entry_price",
+        "realized_pnl",
+        "unrealized_pnl",
+        "fees",
+        "funding",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "AccountPositionSnapshot",
+      "type": "object"
+    },
+    "AssetClass": {
+      "description": "Asset classes with an exact mapping to supported product types.",
+      "enum": [
+        "crypto",
+        "equity"
+      ],
+      "title": "AssetClass",
+      "type": "string"
+    },
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "ExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "gross": {
+          "$ref": "#/$defs/Money"
+        },
+        "net": {
+          "$ref": "#/$defs/Money"
+        },
+        "pending": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "currency",
+        "gross",
+        "net",
+        "pending"
+      ],
+      "title": "ExposureSnapshot",
+      "type": "object"
+    },
+    "FillEvent": {
+      "additionalProperties": false,
+      "description": "Immutable version-2 execution report, independent of any fill reducer.\n\n``execution_id`` is the canonical execution identity.  Correction, bust,\nand duplicate reports carry a typed reference to one prior execution; the\ncontract deliberately rejects the pre-WS-03 ``FillEvent`` wire shape.",
+      "properties": {
+        "average_fill_price": {
+          "$ref": "#/$defs/Price"
+        },
+        "bust_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bust Of Execution Id"
+        },
+        "commission": {
+          "$ref": "#/$defs/Money"
+        },
+        "correction_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correction Of Execution Id"
+        },
+        "cumulative_fill_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "duplicate_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Of Execution Id"
+        },
+        "execution_id": {
+          "format": "uuid",
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "filled_at": {
+          "format": "date-time",
+          "title": "Filled At",
+          "type": "string"
+        },
+        "instrument_definition": {
+          "$ref": "#/$defs/InstrumentDefinition"
+        },
+        "last_fill_price": {
+          "$ref": "#/$defs/Price"
+        },
+        "leaves_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "liquidity_side": {
+          "$ref": "#/$defs/LiquiditySide"
+        },
+        "order_id": {
+          "format": "uuid",
+          "title": "Order Id",
+          "type": "string"
+        },
+        "order_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "reconciliation_source": {
+          "$ref": "#/$defs/ReconciliationSource"
+        },
+        "report_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Report Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "2.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "side": {
+          "$ref": "#/$defs/OrderSide"
+        },
+        "status": {
+          "$ref": "#/$defs/FillReportStatus"
+        },
+        "venue_trade_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Venue Trade Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution_id",
+        "order_id",
+        "report_sequence",
+        "venue_trade_id",
+        "instrument_definition",
+        "side",
+        "liquidity_side",
+        "status",
+        "quantity",
+        "cumulative_fill_quantity",
+        "leaves_quantity",
+        "order_quantity",
+        "last_fill_price",
+        "average_fill_price",
+        "commission",
+        "reconciliation_source",
+        "filled_at",
+        "schema_version"
+      ],
+      "title": "FillEvent",
+      "type": "object"
+    },
+    "FillReportStatus": {
+      "description": "Explicit execution-report lifecycle or correction classification.",
+      "enum": [
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "DUPLICATE",
+        "CORRECTION",
+        "BUST"
+      ],
+      "title": "FillReportStatus",
+      "type": "string"
+    },
+    "InstrumentDefinition": {
+      "description": "Sole immutable source of one instrument's catalog trading constraints.",
+      "properties": {
+        "asset_class": {
+          "$ref": "#/$defs/AssetClass"
+        },
+        "base_currency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Currency"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instrument_id": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MarginRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maximum_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "maximum_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "minimum_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "minimum_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "multiplier": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Multiplier",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "provenance": {
+          "$ref": "#/$defs/InstrumentProvenance"
+        },
+        "quote_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "raw_symbol": {
+          "title": "Raw Symbol",
+          "type": "string"
+        },
+        "session_calendar": {
+          "title": "Session Calendar",
+          "type": "string"
+        },
+        "settlement_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "size_increment": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "tick_size": {
+          "$ref": "#/$defs/Price"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "raw_symbol",
+        "asset_class",
+        "base_currency",
+        "quote_currency",
+        "settlement_currency",
+        "tick_size",
+        "size_increment",
+        "minimum_quantity",
+        "maximum_quantity",
+        "minimum_notional",
+        "maximum_notional",
+        "multiplier",
+        "margin",
+        "session_calendar",
+        "provenance"
+      ],
+      "title": "InstrumentDefinition",
+      "type": "object"
+    },
+    "InstrumentExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        }
+      },
+      "required": [
+        "instrument",
+        "exposure"
+      ],
+      "title": "InstrumentExposureSnapshot",
+      "type": "object"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "InstrumentProvenance": {
+      "description": "Immutable catalog-source evidence with no provider authority.",
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "title": "Source Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_revision",
+        "observed_at"
+      ],
+      "title": "InstrumentProvenance",
+      "type": "object"
+    },
+    "LiquiditySide": {
+      "description": "Closed venue liquidity classification for one execution report.",
+      "enum": [
+        "maker",
+        "taker"
+      ],
+      "title": "LiquiditySide",
+      "type": "string"
+    },
+    "MarginRequirements": {
+      "description": "Optional exact initial and maintenance margin rates.",
+      "properties": {
+        "initial_margin_rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Initial Margin Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "maintenance_margin_rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Maintenance Margin Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "initial_margin_rate",
+        "maintenance_margin_rate"
+      ],
+      "title": "MarginRequirements",
+      "type": "object"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "OrderQuantity": {
+      "description": "An exact non-negative order quantity with declared precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|[1-9]\\d*|(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "OrderQuantity",
+      "type": "object"
+    },
+    "OrderSide": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "OrderSide",
+      "type": "string"
+    },
+    "PortfolioAppliedEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "digest"
+      ],
+      "title": "PortfolioAppliedEvent",
+      "type": "object"
+    },
+    "PortfolioExecutionEffect": {
+      "additionalProperties": false,
+      "description": "Exact normal-execution deltas retained for one correction or bust.",
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "average_after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "average_before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "balance_fee_deltas": {
+          "items": {
+            "$ref": "#/$defs/Money"
+          },
+          "title": "Balance Fee Deltas",
+          "type": "array"
+        },
+        "balance_realized_pnl_deltas": {
+          "items": {
+            "$ref": "#/$defs/Money"
+          },
+          "title": "Balance Realized Pnl Deltas",
+          "type": "array"
+        },
+        "cash_deltas": {
+          "items": {
+            "$ref": "#/$defs/Money"
+          },
+          "title": "Cash Deltas",
+          "type": "array"
+        },
+        "entry": {
+          "$ref": "#/$defs/PortfolioFillEntry"
+        },
+        "execution_id": {
+          "format": "uuid",
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "fees_delta": {
+          "$ref": "#/$defs/Money"
+        },
+        "fill": {
+          "$ref": "#/$defs/FillEvent"
+        },
+        "logical_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Logical Sequence",
+          "type": "integer"
+        },
+        "position_key": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "title": "Position Key",
+          "type": "array"
+        },
+        "quantity_delta": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "realized_pnl_delta": {
+          "$ref": "#/$defs/Money"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution_id",
+        "account_id",
+        "strategy_id",
+        "fill",
+        "entry",
+        "logical_sequence",
+        "cash_deltas",
+        "balance_realized_pnl_deltas",
+        "balance_fee_deltas",
+        "position_key",
+        "quantity_delta",
+        "realized_pnl_delta",
+        "fees_delta",
+        "average_before",
+        "average_after"
+      ],
+      "title": "PortfolioExecutionEffect",
+      "type": "object"
+    },
+    "PortfolioFillEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "effective_at": {
+          "format": "date-time",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "fill": {
+          "$ref": "#/$defs/FillEvent"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "effective_at",
+        "schema_version",
+        "strategy_id",
+        "fill"
+      ],
+      "title": "PortfolioFillEntry",
+      "type": "object"
+    },
+    "PortfolioPositionState": {
+      "additionalProperties": false,
+      "description": "Accounting position state; unlike an observed snapshot it may be unmarked.",
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "average_entry_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fees": {
+          "$ref": "#/$defs/Money"
+        },
+        "funding": {
+          "$ref": "#/$defs/Money"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "instrument_definition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstrumentDefinition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mark": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PositionMark"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "realized_pnl": {
+          "$ref": "#/$defs/Money"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "settlement_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "unrealized_pnl": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "account_id",
+        "strategy_id",
+        "instrument",
+        "instrument_definition",
+        "settlement_currency",
+        "quantity",
+        "realized_pnl",
+        "unrealized_pnl",
+        "fees",
+        "funding",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "PortfolioPositionState",
+      "type": "object"
+    },
+    "PortfolioReconciliationEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "effective_at": {
+          "format": "date-time",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "reconciliation_id": {
+          "format": "uuid",
+          "title": "Reconciliation Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/AccountPortfolioSnapshot"
+        },
+        "source": {
+          "$ref": "#/$defs/PortfolioReconciliationSource"
+        },
+        "source_revision": {
+          "minLength": 1,
+          "title": "Source Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "effective_at",
+        "schema_version",
+        "reconciliation_id",
+        "source",
+        "source_revision",
+        "snapshot"
+      ],
+      "title": "PortfolioReconciliationEntry",
+      "type": "object"
+    },
+    "PortfolioReconciliationSource": {
+      "description": "Closed origins for an account-level portfolio reconciliation.",
+      "enum": [
+        "venue",
+        "drop_copy",
+        "clearing"
+      ],
+      "title": "PortfolioReconciliationSource",
+      "type": "string"
+    },
+    "PortfolioReplayState": {
+      "additionalProperties": false,
+      "properties": {
+        "active_effects": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PortfolioExecutionEffect"
+          },
+          "title": "Active Effects",
+          "type": "array"
+        },
+        "applied_events": {
+          "items": {
+            "$ref": "#/$defs/PortfolioAppliedEvent"
+          },
+          "title": "Applied Events",
+          "type": "array"
+        },
+        "cursor": {
+          "items": {
+            "$ref": "#/$defs/PortfolioStreamCursor"
+          },
+          "title": "Cursor",
+          "type": "array"
+        },
+        "reconciliation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PortfolioReconciliationEntry"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "snapshot": {
+          "$ref": "#/$defs/PortfolioWorkingSnapshot"
+        },
+        "valuation_rates": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PortfolioValuationRateState"
+          },
+          "title": "Valuation Rates",
+          "type": "array"
+        }
+      },
+      "required": [
+        "snapshot",
+        "cursor",
+        "applied_events"
+      ],
+      "title": "PortfolioReplayState",
+      "type": "object"
+    },
+    "PortfolioStreamCursor": {
+      "additionalProperties": false,
+      "properties": {
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "stream_id": {
+          "format": "uuid",
+          "title": "Stream Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stream_id",
+        "sequence"
+      ],
+      "title": "PortfolioStreamCursor",
+      "type": "object"
+    },
+    "PortfolioValuationRateState": {
+      "additionalProperties": false,
+      "description": "Reserved immutable state for a later explicit valuation-rate entry.",
+      "properties": {
+        "provenance_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Provenance Id",
+          "type": "string"
+        },
+        "quoted_at": {
+          "format": "date-time",
+          "title": "Quoted At",
+          "type": "string"
+        },
+        "rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "source_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "target_currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "source_currency",
+        "target_currency",
+        "rate",
+        "quoted_at",
+        "provenance_id"
+      ],
+      "title": "PortfolioValuationRateState",
+      "type": "object"
+    },
+    "PortfolioWorkingSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "balances": {
+          "items": {
+            "$ref": "#/$defs/AccountBalanceSnapshot"
+          },
+          "title": "Balances",
+          "type": "array"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/PortfolioPositionState"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "reporting_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "reporting_currency",
+        "balances",
+        "positions",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "PortfolioWorkingSnapshot",
+      "type": "object"
+    },
+    "PositionMark": {
+      "additionalProperties": false,
+      "properties": {
+        "marked_at": {
+          "format": "date-time",
+          "title": "Marked At",
+          "type": "string"
+        },
+        "price": {
+          "$ref": "#/$defs/Price"
+        },
+        "provenance_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Provenance Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "price",
+        "marked_at",
+        "provenance_id"
+      ],
+      "title": "PositionMark",
+      "type": "object"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    },
+    "Quantity": {
+      "description": "An exact signed quantity with declared fractional precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "Quantity",
+      "type": "object"
+    },
+    "ReconciliationSource": {
+      "description": "Closed provenance source for an execution report reconciliation.",
+      "enum": [
+        "venue",
+        "drop_copy",
+        "clearing"
+      ],
+      "title": "ReconciliationSource",
+      "type": "string"
+    },
+    "StrategyExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "exposure"
+      ],
+      "title": "StrategyExposureSnapshot",
+      "type": "object"
+    },
+    "VenueExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "venue_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Venue Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue_id",
+        "exposure"
+      ],
+      "title": "VenueExposureSnapshot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Hash-bound replay cache for one portfolio stream; it has no I/O authority.",
+  "properties": {
+    "canonical_snapshot": {
+      "$ref": "#/$defs/AccountPortfolioSnapshot"
+    },
+    "canonical_state_json": {
+      "minLength": 2,
+      "title": "Canonical State Json",
+      "type": "string"
+    },
+    "cursor": {
+      "items": {
+        "$ref": "#/$defs/PortfolioStreamCursor"
+      },
+      "title": "Cursor",
+      "type": "array"
+    },
+    "reducer_version": {
+      "const": "portfolio-reducer-v1",
+      "title": "Reducer Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "portfolio-replay-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/PortfolioReplayState"
+    },
+    "state_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "State Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "reducer_version",
+    "state",
+    "canonical_snapshot",
+    "cursor",
+    "canonical_state_json",
+    "state_hash"
+  ],
+  "title": "PortfolioSnapshotRecord",
+  "type": "object"
+}

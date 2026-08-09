@@ -62,6 +62,8 @@ EXPECTED = {
     "PortfolioConversionEntry.json",
     "PortfolioValuationRateEntry.json",
     "PortfolioReconciliationEntry.json",
+    "PortfolioReplayResult.json",
+    "PortfolioSnapshotRecord.json",
     "EventEnvelope_PortfolioOpeningEntry_.json",
     "EventEnvelope_PortfolioFillEntry_.json",
     "EventEnvelope_PortfolioMarkEntry_.json",

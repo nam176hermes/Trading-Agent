@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Final, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -12,6 +12,7 @@ from packages.domain.instruments import InstrumentDefinition, InstrumentId
 from packages.domain.orders import FillEvent
 from packages.domain.portfolio import (
     AccountBalanceSnapshot,
+    AccountPortfolioSnapshot,
     CanonicalPortfolioIdentifier,
     DomainModel,
     NonEmptyText,
@@ -22,6 +23,8 @@ from packages.domain.primitives import Currency, FiniteDecimal, Money, Price, Qu
 
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+PORTFOLIO_REPLAY_SCHEMA_VERSION: Final = "portfolio-replay-v1"
+PORTFOLIO_REDUCER_VERSION: Final = "portfolio-reducer-v1"
 
 
 class PortfolioReplayError(ValueError):
@@ -190,3 +193,27 @@ class PortfolioReplayState(DomainModel):
     @property
     def active_execution_ids(self) -> tuple[UUID, ...]:
         return tuple(effect.execution_id for effect in self.active_effects)
+
+
+class PortfolioReplayResult(DomainModel):
+    """Fully verified, pure portfolio replay output."""
+
+    schema_version: Literal["portfolio-replay-v1"]
+    reducer_version: Literal["portfolio-reducer-v1"]
+    state: PortfolioReplayState
+    canonical_snapshot: AccountPortfolioSnapshot
+    cursor: tuple[PortfolioStreamCursor, ...]
+    canonical_state_json: Annotated[str, Field(min_length=2)]
+    state_hash: Sha256
+
+
+class PortfolioSnapshotRecord(DomainModel):
+    """Hash-bound replay cache for one portfolio stream; it has no I/O authority."""
+
+    schema_version: Literal["portfolio-replay-v1"]
+    reducer_version: Literal["portfolio-reducer-v1"]
+    state: PortfolioReplayState
+    canonical_snapshot: AccountPortfolioSnapshot
+    cursor: tuple[PortfolioStreamCursor, ...]
+    canonical_state_json: Annotated[str, Field(min_length=2)]
+    state_hash: Sha256
