@@ -279,6 +279,33 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 - [ ] After the r10 attestation PASS, create one fresh private mode-0700 packet campaign destination that is absent immediately before publication; materialize the canonical campaign exactly once, require the fixed repository-ordered eight-scenario manifest, mode-0500 scenario roots, mode-0400 members, descriptor/no-clobber custody, and retain the sanitized campaign digest only outside Git/evidence.
 - [ ] Run exactly one `long-accounting` diagnostic through normal EngineSpawnProvider against that reviewed campaign; require exit 0, empty stderr, one prepare/consume/process, and request-only sealed transport.
 - [ ] Run the parity verifier exactly once.
+- [ ] Capture the verifier controller's direct exit before any status write,
+  pipeline, grouping, logging command, or review command can replace `$?`.
+  The packet wrapper is ad hoc rather than source-owned, so use this exact
+  contract (with the reviewed absolute arguments substituted once):
+
+```bash
+set +e
+PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 .venv/bin/python -I -B \
+  scripts/verify_nautilus_v12_r3_parity.py [reviewed-absolute-arguments] \
+  > "$packet/parity-controller.stdout" 2> "$packet/parity-controller.stderr"
+parity_exit=$?
+printf 'parity=%s\n' "$parity_exit" > "$packet/parity-status.txt"
+```
+
+  Do not wrap the verifier in a pipeline, command group, command substitution,
+  `if` condition, or retry loop. `parity-status.txt` is authoritative only
+  when it contains that immediately captured direct controller exit.
+- [ ] Run the source-only exit-contract regression before the packet:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 uv run --frozen pytest -p no:cacheprovider -q \
+  tests/nautilus_backtest/test_runtime_parity_verifier.py \
+  -k 'post_two_run_oracle_event_mismatch or parity_cli_returns_failed_verification_exit_code_directly'
+```
+
+  This plan regression proves the CLI maps a failed verifier invocation to
+  exit 1; it does not authorize a runtime invocation.
 - [ ] Require:
   - exact repository-ordered eight scenarios;
   - exactly two normal EngineSpawnProvider runs per scenario;
