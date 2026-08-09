@@ -722,19 +722,31 @@ python3.11 -I scripts/build_nautilus_engine.py \
 - [ ] **Step 2: Run both import qualifications before publication.**
 
 Create one external private packet root and run the qualification CLI exactly
-once for each policy:
+once for each policy.  Before either CLI starts, synchronize only the root
+project's locked dependency graph offline, select its absolute `.venv` Python,
+and prove the validator dependency imports under `-I`.  The root venv is the
+sole controller interpreter for these two qualifications: ambient
+`python3.11`, user-site packages, and global Python mutation are prohibited.
+The dependency probe does not invoke qualification, Bubblewrap, or a runtime.
 
 ```bash
 phase4_runtime_root="$(mktemp -d -p /tmp phase4-v12-r9-v13-XXXXXX)"
 chmod 0700 "${phase4_runtime_root}"
 phase4_source_root="$(git rev-parse --show-toplevel)"
-python3.11 -I scripts/qualify_nautilus_sealed_imports.py \
+(
+  cd "${phase4_source_root}"
+  UV_OFFLINE=1 uv sync --frozen
+)
+phase4_qualification_python="${phase4_source_root}/.venv/bin/python"
+test -x "${phase4_qualification_python}"
+"${phase4_qualification_python}" -I -B -c 'import pydantic; assert pydantic.__version__ == "2.13.4"'
+"${phase4_qualification_python}" -I scripts/qualify_nautilus_sealed_imports.py \
   --policy "${phase4_source_root}/engines/nautilus/runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
   --sandbox /usr/bin/bwrap \
   --receipt "${phase4_runtime_root}/simulation-import-receipt.json"
-python3.11 -I scripts/qualify_nautilus_sealed_imports.py \
+"${phase4_qualification_python}" -I scripts/qualify_nautilus_sealed_imports.py \
   --policy "${phase4_source_root}/engines/nautilus/paper-compatibility-runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \

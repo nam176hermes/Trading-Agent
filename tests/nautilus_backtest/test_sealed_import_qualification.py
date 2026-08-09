@@ -15,6 +15,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/qualify_nautilus_sealed_imports.py"
+ARCHITECTURE_PLAN = (
+    ROOT / "docs/superpowers/plans/2026-08-08-phase4-architectural-closure.md"
+)
 LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
 PAPER_LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_paper_compat.py"
 STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
@@ -1152,3 +1155,48 @@ def test_make_gate_is_parameterized_by_an_explicit_external_packet(
         ("--receipt", qualification_inputs["receipt"]),
     ):
         assert f'{flag} "{value}"' in result.stdout
+
+
+def test_task8_import_qualification_uses_the_root_locked_python() -> None:
+    """The source recipe must not use the dependency-free host Python."""
+    text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
+    start = text.index('phase4_runtime_root="$(mktemp -d -p /tmp phase4-v12-r9-v13-XXXXXX)"')
+    end = text.index("Independent review must verify both receipts", start)
+    block = text[start:end]
+
+    assert 'phase4_source_root="$(git rev-parse --show-toplevel)"' in block
+    assert 'UV_OFFLINE=1 uv sync --frozen' in block
+    assert (
+        'phase4_qualification_python="${phase4_source_root}/.venv/bin/python"'
+        in block
+    )
+    assert (
+        '"${phase4_qualification_python}" -I -B -c '
+        "'import pydantic; assert pydantic.__version__ == \"2.13.4\"'"
+    ) in block
+    assert (
+        block.count(
+            '"${phase4_qualification_python}" -I '
+            "scripts/qualify_nautilus_sealed_imports.py"
+        )
+        == 2
+    )
+    assert "python3.11" not in block
+
+    result = subprocess.run(
+        (
+            str(ROOT / ".venv/bin/python"),
+            "-I",
+            "-B",
+            "-c",
+            "import pydantic; assert pydantic.__version__ == '2.13.4'",
+        ),
+        cwd=ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
