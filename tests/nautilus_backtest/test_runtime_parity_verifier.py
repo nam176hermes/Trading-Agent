@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid5
@@ -50,6 +51,13 @@ def _input_digest(envelope: EngineCommandEnvelope) -> str:
     ).hexdigest()
 
 
+def _normalized_decimal_text(value: Decimal) -> str:
+    if value.is_zero():
+        return "0"
+    result = format(value, "f")
+    return result.rstrip("0").rstrip(".") if "." in result else result
+
+
 def _event_bytes(
     envelope: EngineCommandEnvelope,
     *,
@@ -85,13 +93,13 @@ def _event_bytes(
         ("total_orders", expected.total_orders),
         ("total_fills", expected.total_fills),
         ("total_positions", expected.total_positions),
-        ("filled_quantity", str(expected.filled_quantity)),
-        ("remaining_quantity", str(expected.remaining_quantity)),
-        ("position_quantity", str(expected.position_quantity)),
-        ("average_entry_price", str(expected.average_entry_price)),
-        ("fees", str(expected.fees)),
-        ("realized_pnl", str(expected.realized_pnl)),
-        ("unrealized_pnl", str(expected.unrealized_pnl)),
+        ("filled_quantity", _normalized_decimal_text(expected.filled_quantity)),
+        ("remaining_quantity", _normalized_decimal_text(expected.remaining_quantity)),
+        ("position_quantity", _normalized_decimal_text(expected.position_quantity)),
+        ("average_entry_price", _normalized_decimal_text(expected.average_entry_price)),
+        ("fees", _normalized_decimal_text(expected.fees)),
+        ("realized_pnl", _normalized_decimal_text(expected.realized_pnl)),
+        ("unrealized_pnl", _normalized_decimal_text(expected.unrealized_pnl)),
         (
             "stop_take_profit_precedence",
             expected.stop_take_profit_precedence,
@@ -129,6 +137,62 @@ def _event_bytes(
         payload=payload,
     )
     return canonical_json_bytes(event)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "filled_quantity",
+        "remaining_quantity",
+        "position_quantity",
+        "average_entry_price",
+        "fees",
+        "realized_pnl",
+        "unrealized_pnl",
+    ),
+)
+def test_independent_reference_event_normalizes_equivalent_decimal_scales(
+    field_name: str,
+) -> None:
+    """Retained Decimal exponents must not change canonical event bytes."""
+    fixture = build_canonical_simulation_fixture("long-accounting")
+    envelope = build_simulation_envelope(fixture)
+    scenario = BacktestScenarioV1.from_mounted_artifacts(
+        scenario_bytes=fixture.simulation_scenario,
+        catalog_bytes=fixture.instrument_catalog,
+        strategy_bytes=fixture.strategy_configuration,
+        market_data_bytes=fixture.market_data,
+        start_time=envelope.payload.start_time,
+        end_time=envelope.payload.end_time,
+    )
+    expected = calculate_reference_outcome(scenario)
+    decimal_value = getattr(expected, field_name)
+    scaled = expected.model_copy(
+        update={
+            field_name: Decimal(
+                f"{decimal_value}.000"
+                if "." not in str(decimal_value)
+                else f"{decimal_value}000"
+            )
+        },
+    )
+
+    reference_event = EngineEventEnvelope.model_validate_json(
+        verifier._independent_reference_event(envelope, scaled)
+    )
+    normalized_runtime_event = EngineEventEnvelope.model_validate_json(
+        _event_bytes(envelope)
+    )
+
+    assert canonical_json_bytes(reference_event) == canonical_json_bytes(
+        normalized_runtime_event
+    )
+    assert reference_event.payload_digest == normalized_runtime_event.payload_digest
+    assert all(
+        type(attribute.value) is str
+        for attribute in reference_event.payload.attributes
+        if attribute.name == field_name
+    )
 
 
 class _Harness:

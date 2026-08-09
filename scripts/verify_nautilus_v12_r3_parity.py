@@ -12,6 +12,7 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal, TypeAlias, TypedDict
 
@@ -1755,13 +1756,13 @@ def _independent_reference_event(
         ("total_orders", expected.total_orders),
         ("total_fills", expected.total_fills),
         ("total_positions", expected.total_positions),
-        ("filled_quantity", str(expected.filled_quantity)),
-        ("remaining_quantity", str(expected.remaining_quantity)),
-        ("position_quantity", str(expected.position_quantity)),
-        ("average_entry_price", str(expected.average_entry_price)),
-        ("fees", str(expected.fees)),
-        ("realized_pnl", str(expected.realized_pnl)),
-        ("unrealized_pnl", str(expected.unrealized_pnl)),
+        ("filled_quantity", _decimal_text(expected.filled_quantity)),
+        ("remaining_quantity", _decimal_text(expected.remaining_quantity)),
+        ("position_quantity", _decimal_text(expected.position_quantity)),
+        ("average_entry_price", _decimal_text(expected.average_entry_price)),
+        ("fees", _decimal_text(expected.fees)),
+        ("realized_pnl", _decimal_text(expected.realized_pnl)),
+        ("unrealized_pnl", _decimal_text(expected.unrealized_pnl)),
         ("stop_take_profit_precedence", expected.stop_take_profit_precedence),
     )
     payload = EngineEvent(
@@ -1790,6 +1791,13 @@ def _independent_reference_event(
         payload=payload,
     )
     return canonical_json_bytes(event)
+
+
+def _decimal_text(value: Decimal) -> str:
+    if value.is_zero():
+        return "0"
+    result = format(value, "f")
+    return result.rstrip("0").rstrip(".") if "." in result else result
 
 
 def _required_digest(value: object, *, label: str) -> str:
