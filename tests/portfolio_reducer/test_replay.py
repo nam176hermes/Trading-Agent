@@ -9,9 +9,11 @@ import pytest
 
 from packages.domain import (
     AccountBalanceSnapshot,
+    AccountPortfolioSnapshot,
     AssetClass,
     Currency,
     EventEnvelope,
+    ExposureSnapshot,
     FillEvent,
     FillReportStatus,
     InstrumentDefinition,
@@ -24,6 +26,8 @@ from packages.domain import (
     PortfolioFillEntry,
     PortfolioMarkEntry,
     PortfolioOpeningEntry,
+    PortfolioReconciliationEntry,
+    PortfolioReconciliationSource,
     PositionMark,
     Price,
     ProductType,
@@ -31,10 +35,12 @@ from packages.domain import (
 )
 from packages.portfolio_reducer import (
     PortfolioReplayError,
+    derive_account_snapshot,
     replay_portfolio,
     snapshot_from_portfolio_result,
 )
 from packages.event_ledger import InMemoryEventLedger
+from packages.event_ledger.replay import _canonical_json, event_digest
 
 
 NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -184,6 +190,72 @@ def mark(*, number: int, stream: UUID = STREAM) -> EventEnvelope[object]:
     )
 
 
+def foreign_reconciliation() -> PortfolioReconciliationEntry:
+    account_id = "account-2"
+    foreign_balance = AccountBalanceSnapshot(
+        account_id=account_id,
+        currency=Currency.USD,
+        cash=money("1000"),
+        locked_funds=money("0"),
+        margin_used=money("0"),
+        realized_pnl=money("0"),
+        unrealized_pnl=money("0"),
+        fees=money("0"),
+        funding=money("0"),
+        observed_at=NOW,
+        schema_version="balance-v1",
+    )
+    zero_exposure = ExposureSnapshot(
+        currency=Currency.USD,
+        gross=money("0"),
+        net=money("0"),
+        pending=money("0"),
+    )
+    return PortfolioReconciliationEntry(
+        account_id=account_id,
+        reconciliation_id=uid(9_000),
+        source=PortfolioReconciliationSource.VENUE,
+        source_revision="r1",
+        snapshot=AccountPortfolioSnapshot(
+            snapshot_id=uid(9_001),
+            account_id=account_id,
+            reporting_currency=Currency.USD,
+            balances=(foreign_balance,),
+            positions=(),
+            total_exposure=zero_exposure,
+            instrument_exposures=(),
+            strategy_exposures=(),
+            venue_exposures=(),
+            observed_at=NOW,
+            schema_version="portfolio-snapshot-v1",
+        ),
+        effective_at=NOW,
+        schema_version="portfolio-entry-v1",
+    )
+
+
+def hash_consistent_record_with_state(record, state):
+    canonical_snapshot = derive_account_snapshot(state, state.snapshot.observed_at)
+    canonical_state_json = _canonical_json(
+        {
+            "schema_version": record.schema_version,
+            "reducer_version": record.reducer_version,
+            "state": state.model_dump(mode="json"),
+            "canonical_snapshot": canonical_snapshot.model_dump(mode="json"),
+            "cursor": [item.model_dump(mode="json") for item in state.cursor],
+        }
+    )
+    return record.model_copy(
+        update={
+            "state": state,
+            "canonical_snapshot": canonical_snapshot,
+            "cursor": state.cursor,
+            "canonical_state_json": canonical_state_json,
+            "state_hash": event_digest(canonical_state_json),
+        }
+    )
+
+
 @pytest.fixture
 def portfolio_events() -> tuple[EventEnvelope[object], ...]:
     return (opening(), fill(number=2), mark(number=3), fill(number=4), mark(number=5))
@@ -242,6 +314,21 @@ def test_snapshot_rejects_tampered_applied_digest_and_effect_index(portfolio_eve
         replay_portfolio((), snapshot=bad_effect)
 
 
+@pytest.mark.parametrize("with_canonical_tail", [False, True])
+def test_snapshot_rejects_hash_consistent_foreign_reconciliation(
+    with_canonical_tail: bool, portfolio_events
+) -> None:
+    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+    foreign_record = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(update={"reconciliation": foreign_reconciliation()}),
+    )
+
+    selected_tail = portfolio_events[3:] if with_canonical_tail else ()
+    with pytest.raises(PortfolioReplayError, match="reconciliation account"):
+        replay_portfolio(selected_tail, snapshot=foreign_record)
+
+
 def test_snapshot_tail_rejects_old_and_conflicting_events(portfolio_events) -> None:
     record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
     old = portfolio_events[2]
@@ -251,6 +338,35 @@ def test_snapshot_tail_rejects_old_and_conflicting_events(portfolio_events) -> N
         replay_portfolio((old,), snapshot=record)
     with pytest.raises(PortfolioReplayError, match="conflicting"):
         replay_portfolio((conflict,), snapshot=record)
+
+
+def test_snapshot_tail_rejects_foreign_scope_gap_and_regression(portfolio_events) -> None:
+    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+
+    with pytest.raises(PortfolioReplayError, match="stream"):
+        replay_portfolio((fill(number=4, stream=OTHER_STREAM),), snapshot=record)
+    with pytest.raises(PortfolioReplayError, match="account"):
+        replay_portfolio((fill(number=4, account="account-2"),), snapshot=record)
+    with pytest.raises(PortfolioReplayError, match="sequence"):
+        replay_portfolio((fill(number=5),), snapshot=record)
+    with pytest.raises(PortfolioReplayError, match="cursor"):
+        replay_portfolio((fill(number=2).model_copy(update={"event_id": uid(9_999)}),), snapshot=record)
+
+
+def test_full_replay_rejects_distinct_canonical_bytes_for_one_event_id(portfolio_events) -> None:
+    conflicting = portfolio_events[1].model_copy(update={"source": "other-source"})
+
+    with pytest.raises(PortfolioReplayError, match="conflicting"):
+        replay_portfolio((portfolio_events[0], portfolio_events[1], conflicting))
+
+
+def test_full_replay_rejects_sequence_regression_with_a_distinct_event_id(
+    portfolio_events,
+) -> None:
+    regressing = portfolio_events[1].model_copy(update={"event_id": uid(9_999)})
+
+    with pytest.raises(PortfolioReplayError, match="sequence"):
+        replay_portfolio((portfolio_events[0], portfolio_events[1], regressing))
 
 
 def test_replay_rejects_caller_reordering(portfolio_events) -> None:

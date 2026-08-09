@@ -106,11 +106,18 @@ def _validated_state(state: object) -> PortfolioReplayState:
         raise PortfolioReplayError("snapshot cursor must contain exactly one portfolio stream")
     if len(state.applied_events) != state.cursor[0].sequence:
         raise PortfolioReplayError("snapshot applied event count does not match cursor")
+    account_id = state.snapshot.account_id
     for effect in state.active_effects:
-        if effect.account_id != state.snapshot.account_id:
+        if effect.account_id != account_id or effect.entry.account_id != account_id:
             raise PortfolioReplayError("snapshot effect account does not match portfolio account")
         if effect.logical_sequence > state.cursor[0].sequence:
             raise PortfolioReplayError("snapshot effect sequence exceeds cursor")
+    reconciliation = state.reconciliation
+    if reconciliation is not None and (
+        reconciliation.account_id != account_id
+        or reconciliation.snapshot.account_id != account_id
+    ):
+        raise PortfolioReplayError("snapshot reconciliation account does not match portfolio account")
     return state
 
 
@@ -128,6 +135,8 @@ def _validate_document(document: object, *, record: bool) -> PortfolioReplayResu
     state = _validated_state(document.state)
     if document.cursor != state.cursor:
         raise PortfolioReplayError("snapshot cursor does not match replay state")
+    if document.canonical_snapshot.account_id != state.snapshot.account_id:
+        raise PortfolioReplayError("snapshot canonical account does not match replay state")
     try:
         expected_snapshot = derive_account_snapshot(state, state.snapshot.observed_at)
     except PortfolioReplayError as exc:
