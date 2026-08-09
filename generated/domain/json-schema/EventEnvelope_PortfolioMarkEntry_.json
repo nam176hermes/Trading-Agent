@@ -35,24 +35,47 @@
       "title": "InstrumentId",
       "type": "object"
     },
-    "Money": {
-      "description": "An exact signed monetary amount.",
+    "PortfolioMarkEntry": {
+      "additionalProperties": false,
       "properties": {
-        "amount": {
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
-          "title": "Amount",
-          "type": "string",
-          "x-canonical-decimal-policy": "decimal-v1"
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
         },
-        "currency": {
-          "$ref": "#/$defs/Currency"
+        "effective_at": {
+          "format": "date-time",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "mark": {
+          "$ref": "#/$defs/PositionMark"
+        },
+        "marked_at": {
+          "format": "date-time",
+          "title": "Marked At",
+          "type": "string"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
         }
       },
       "required": [
-        "amount",
-        "currency"
+        "account_id",
+        "effective_at",
+        "schema_version",
+        "instrument",
+        "mark",
+        "marked_at"
       ],
-      "title": "Money",
+      "title": "PortfolioMarkEntry",
       "type": "object"
     },
     "PositionMark": {
@@ -110,112 +133,100 @@
       ],
       "title": "ProductType",
       "type": "string"
-    },
-    "Quantity": {
-      "description": "An exact signed quantity with declared fractional precision.",
-      "properties": {
-        "precision": {
-          "title": "Precision",
-          "type": "integer"
-        },
-        "value": {
-          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
-          "title": "Value",
-          "type": "string",
-          "x-canonical-decimal-policy": "decimal-v1"
-        }
-      },
-      "required": [
-        "value",
-        "precision"
-      ],
-      "title": "Quantity",
-      "type": "object"
     }
   },
   "additionalProperties": false,
   "properties": {
-    "account_id": {
-      "maxLength": 64,
-      "minLength": 1,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
-      "title": "Account Id",
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
       "type": "string"
     },
-    "average_entry_price": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Price"
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
     },
-    "fees": {
-      "$ref": "#/$defs/Money"
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
     },
-    "funding": {
-      "$ref": "#/$defs/Money"
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
     },
-    "instrument": {
-      "$ref": "#/$defs/InstrumentId"
+    "event_type": {
+      "const": "PortfolioMarkEntry",
+      "type": "string"
     },
-    "mark": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/PositionMark"
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "ingested_at": {
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
     },
     "observed_at": {
       "format": "date-time",
       "title": "Observed At",
       "type": "string"
     },
-    "quantity": {
-      "$ref": "#/$defs/Quantity"
+    "payload": {
+      "$ref": "#/$defs/PortfolioMarkEntry"
     },
-    "realized_pnl": {
-      "$ref": "#/$defs/Money"
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
     },
     "schema_version": {
       "minLength": 1,
       "title": "Schema Version",
       "type": "string"
     },
-    "settlement_currency": {
-      "$ref": "#/$defs/Currency"
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Sequence",
+      "type": "integer"
     },
-    "strategy_id": {
-      "maxLength": 64,
+    "source": {
       "minLength": 1,
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
-      "title": "Strategy Id",
+      "title": "Source",
       "type": "string"
     },
-    "unrealized_pnl": {
-      "$ref": "#/$defs/Money"
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
     }
   },
   "required": [
-    "account_id",
-    "strategy_id",
-    "instrument",
-    "settlement_currency",
-    "quantity",
-    "mark",
-    "average_entry_price",
-    "realized_pnl",
-    "unrealized_pnl",
-    "fees",
-    "funding",
+    "event_id",
+    "event_type",
+    "schema_version",
+    "source",
+    "stream_id",
+    "sequence",
     "observed_at",
-    "schema_version"
+    "ingested_at",
+    "produced_at",
+    "effective_at",
+    "expires_at",
+    "correlation_id",
+    "causation_id",
+    "trace_id",
+    "payload"
   ],
-  "title": "AccountPositionSnapshot",
+  "title": "EventEnvelope[PortfolioMarkEntry]",
   "type": "object"
 }

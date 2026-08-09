@@ -1,0 +1,139 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Account Id",
+      "type": "string"
+    },
+    "amount": {
+      "$ref": "#/$defs/Money"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "funding_id": {
+      "format": "uuid",
+      "title": "Funding Id",
+      "type": "string"
+    },
+    "instrument": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "provenance_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Provenance Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy_id": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Strategy Id"
+    }
+  },
+  "required": [
+    "account_id",
+    "effective_at",
+    "schema_version",
+    "funding_id",
+    "strategy_id",
+    "instrument",
+    "amount",
+    "provenance_id"
+  ],
+  "title": "PortfolioFundingEntry",
+  "type": "object"
+}

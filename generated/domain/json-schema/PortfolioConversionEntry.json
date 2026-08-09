@@ -1,0 +1,103 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "CurrencyConversion": {
+      "description": "An explicit exact conversion from source money to target money.",
+      "properties": {
+        "rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "source": {
+          "$ref": "#/$defs/Money"
+        },
+        "target": {
+          "$ref": "#/$defs/Money"
+        },
+        "target_currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "source",
+        "target_currency",
+        "rate",
+        "target"
+      ],
+      "title": "CurrencyConversion",
+      "type": "object"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Account Id",
+      "type": "string"
+    },
+    "conversion": {
+      "$ref": "#/$defs/CurrencyConversion"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "provenance_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Provenance Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "account_id",
+    "effective_at",
+    "schema_version",
+    "conversion",
+    "provenance_id"
+  ],
+  "title": "PortfolioConversionEntry",
+  "type": "object"
+}

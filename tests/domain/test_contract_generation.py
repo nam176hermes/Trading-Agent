@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from packages.domain.events import EVENT_TYPE_BY_PAYLOAD
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_ROOT = ROOT / "generated" / "domain" / "json-schema"
@@ -53,6 +55,28 @@ EXPECTED = {
     "SnapshotRecord.json",
     "OutboxIntent.json",
     "AppendOutcome.json",
+    "PortfolioOpeningEntry.json",
+    "PortfolioFillEntry.json",
+    "PortfolioMarkEntry.json",
+    "PortfolioFundingEntry.json",
+    "PortfolioConversionEntry.json",
+    "PortfolioValuationRateEntry.json",
+    "PortfolioReconciliationEntry.json",
+    "EventEnvelope_PortfolioOpeningEntry_.json",
+    "EventEnvelope_PortfolioFillEntry_.json",
+    "EventEnvelope_PortfolioMarkEntry_.json",
+    "EventEnvelope_PortfolioFundingEntry_.json",
+    "EventEnvelope_PortfolioConversionEntry_.json",
+    "EventEnvelope_PortfolioValuationRateEntry_.json",
+    "EventEnvelope_PortfolioReconciliationEntry_.json",
+}
+
+LEGACY_EVENT_TYPES = {
+    "SignalProposal", "TargetPortfolio", "RiskDecision", "OrderIntent", "OrderEvent", "FillEvent",
+}
+PORTFOLIO_ENTRY_EVENT_TYPES = {
+    "PortfolioOpeningEntry", "PortfolioFillEntry", "PortfolioMarkEntry", "PortfolioFundingEntry",
+    "PortfolioConversionEntry", "PortfolioValuationRateEntry", "PortfolioReconciliationEntry",
 }
 
 
@@ -67,6 +91,15 @@ def test_contract_generation_is_deterministic_and_current() -> None:
         [sys.executable, "scripts/generate_contracts.py", "--check"], cwd=ROOT, text=True, capture_output=True
     )
     assert check.returncode == 0, check.stdout + check.stderr
+
+
+def test_portfolio_event_schemas_and_registrations_are_additive() -> None:
+    registered_types = set(EVENT_TYPE_BY_PAYLOAD.values())
+    assert LEGACY_EVENT_TYPES <= registered_types
+    assert PORTFOLIO_ENTRY_EVENT_TYPES <= registered_types
+    for event_type in PORTFOLIO_ENTRY_EVENT_TYPES:
+        assert f"{event_type}.json" in EXPECTED
+        assert f"EventEnvelope_{event_type}_.json" in EXPECTED
 
 
 @pytest.mark.parametrize("filename", sorted(EXPECTED))

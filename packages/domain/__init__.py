@@ -54,6 +54,16 @@ from .portfolio import (
     TargetPosition,
     VenueExposureSnapshot,
 )
+from .portfolio_events import (
+    PortfolioConversionEntry,
+    PortfolioFillEntry,
+    PortfolioFundingEntry,
+    PortfolioMarkEntry,
+    PortfolioOpeningEntry,
+    PortfolioReconciliationEntry,
+    PortfolioReconciliationSource,
+    PortfolioValuationRateEntry,
+)
 from .primitives import (
     CANONICAL_DECIMAL_POLICY_VERSION,
     DEFAULT_CURRENCY_REGISTRY,
@@ -125,6 +135,14 @@ __all__ = [
     "OrderStatus",
     "OrderType",
     "PortfolioSnapshot",
+    "PortfolioConversionEntry",
+    "PortfolioFillEntry",
+    "PortfolioFundingEntry",
+    "PortfolioMarkEntry",
+    "PortfolioOpeningEntry",
+    "PortfolioReconciliationEntry",
+    "PortfolioReconciliationSource",
+    "PortfolioValuationRateEntry",
     "PositionMark",
     "PositionSnapshot",
     "Price",

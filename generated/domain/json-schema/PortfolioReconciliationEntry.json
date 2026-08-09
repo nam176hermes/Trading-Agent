@@ -61,6 +61,89 @@
       "title": "AccountBalanceSnapshot",
       "type": "object"
     },
+    "AccountPortfolioSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "balances": {
+          "items": {
+            "$ref": "#/$defs/AccountBalanceSnapshot"
+          },
+          "title": "Balances",
+          "type": "array"
+        },
+        "instrument_exposures": {
+          "items": {
+            "$ref": "#/$defs/InstrumentExposureSnapshot"
+          },
+          "title": "Instrument Exposures",
+          "type": "array"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/AccountPositionSnapshot"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "reporting_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "strategy_exposures": {
+          "items": {
+            "$ref": "#/$defs/StrategyExposureSnapshot"
+          },
+          "title": "Strategy Exposures",
+          "type": "array"
+        },
+        "total_exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "venue_exposures": {
+          "items": {
+            "$ref": "#/$defs/VenueExposureSnapshot"
+          },
+          "title": "Venue Exposures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "account_id",
+        "reporting_currency",
+        "balances",
+        "positions",
+        "total_exposure",
+        "instrument_exposures",
+        "strategy_exposures",
+        "venue_exposures",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "AccountPortfolioSnapshot",
+      "type": "object"
+    },
     "AccountPositionSnapshot": {
       "additionalProperties": false,
       "properties": {
@@ -245,6 +328,16 @@
       "title": "Money",
       "type": "object"
     },
+    "PortfolioReconciliationSource": {
+      "description": "Closed origins for an account-level portfolio reconciliation.",
+      "enum": [
+        "venue",
+        "drop_copy",
+        "clearing"
+      ],
+      "title": "PortfolioReconciliationSource",
+      "type": "string"
+    },
     "PositionMark": {
       "additionalProperties": false,
       "properties": {
@@ -374,76 +467,42 @@
       "title": "Account Id",
       "type": "string"
     },
-    "balances": {
-      "items": {
-        "$ref": "#/$defs/AccountBalanceSnapshot"
-      },
-      "title": "Balances",
-      "type": "array"
-    },
-    "instrument_exposures": {
-      "items": {
-        "$ref": "#/$defs/InstrumentExposureSnapshot"
-      },
-      "title": "Instrument Exposures",
-      "type": "array"
-    },
-    "observed_at": {
+    "effective_at": {
       "format": "date-time",
-      "title": "Observed At",
+      "title": "Effective At",
       "type": "string"
     },
-    "positions": {
-      "items": {
-        "$ref": "#/$defs/AccountPositionSnapshot"
-      },
-      "title": "Positions",
-      "type": "array"
-    },
-    "reporting_currency": {
-      "$ref": "#/$defs/Currency"
+    "reconciliation_id": {
+      "format": "uuid",
+      "title": "Reconciliation Id",
+      "type": "string"
     },
     "schema_version": {
       "minLength": 1,
       "title": "Schema Version",
       "type": "string"
     },
-    "snapshot_id": {
-      "format": "uuid",
-      "title": "Snapshot Id",
+    "snapshot": {
+      "$ref": "#/$defs/AccountPortfolioSnapshot"
+    },
+    "source": {
+      "$ref": "#/$defs/PortfolioReconciliationSource"
+    },
+    "source_revision": {
+      "minLength": 1,
+      "title": "Source Revision",
       "type": "string"
-    },
-    "strategy_exposures": {
-      "items": {
-        "$ref": "#/$defs/StrategyExposureSnapshot"
-      },
-      "title": "Strategy Exposures",
-      "type": "array"
-    },
-    "total_exposure": {
-      "$ref": "#/$defs/ExposureSnapshot"
-    },
-    "venue_exposures": {
-      "items": {
-        "$ref": "#/$defs/VenueExposureSnapshot"
-      },
-      "title": "Venue Exposures",
-      "type": "array"
     }
   },
   "required": [
-    "snapshot_id",
     "account_id",
-    "reporting_currency",
-    "balances",
-    "positions",
-    "total_exposure",
-    "instrument_exposures",
-    "strategy_exposures",
-    "venue_exposures",
-    "observed_at",
-    "schema_version"
+    "effective_at",
+    "schema_version",
+    "reconciliation_id",
+    "source",
+    "source_revision",
+    "snapshot"
   ],
-  "title": "AccountPortfolioSnapshot",
+  "title": "PortfolioReconciliationEntry",
   "type": "object"
 }

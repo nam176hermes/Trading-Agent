@@ -86,6 +86,7 @@ def account_position(**changes: object) -> AccountPositionSnapshot:
         "settlement_currency": Currency.USD,
         "quantity": Quantity(Decimal("1"), 0),
         "mark": position_mark(),
+        "average_entry_price": Price(Decimal("100"), Currency.USD),
         "realized_pnl": money("4"),
         "unrealized_pnl": money("5"),
         "fees": money("1"),
@@ -123,6 +124,7 @@ def position_for(
         "instrument": instrument,
         "settlement_currency": currency,
         "mark": position_mark(price=Price(Decimal("100"), currency)),
+        "average_entry_price": Price(Decimal("100"), currency),
         "realized_pnl": money("4", currency),
         "unrealized_pnl": money("5", currency),
         "fees": money("1", currency),
@@ -218,10 +220,26 @@ def test_nonzero_position_requires_current_provenance_mark() -> None:
         account_position(mark=future_mark())
 
 
+def test_nonzero_position_requires_settlement_cost_basis() -> None:
+    with pytest.raises(ValidationError, match="non-zero position requires an average entry price"):
+        account_position(average_entry_price=None)
+    with pytest.raises(ValidationError, match="average entry price currency"):
+        account_position(average_entry_price=Price(Decimal("100"), Currency.USDT))
+
+
 def test_position_allows_zero_quantity_without_a_mark() -> None:
-    position = account_position(quantity=Quantity(Decimal("0"), 0), mark=None)
+    position = account_position(
+        quantity=Quantity(Decimal("0"), 0), mark=None, average_entry_price=None
+    )
 
     assert position.mark is None
+
+
+def test_zero_position_rejects_mark_and_cost_basis() -> None:
+    with pytest.raises(ValidationError, match="zero position must not retain a mark or average entry price"):
+        account_position(quantity=Quantity(Decimal("0"), 0), average_entry_price=None)
+    with pytest.raises(ValidationError, match="zero position must not retain a mark or average entry price"):
+        account_position(quantity=Quantity(Decimal("0"), 0), mark=None)
 
 
 def test_account_position_requires_settlement_currency_for_money_and_mark() -> None:

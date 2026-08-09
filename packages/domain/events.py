@@ -19,6 +19,15 @@ from pydantic import (
 from .clock import require_utc
 from .orders import FillEvent, OrderEvent, OrderIntent, validate_fill_report_batch
 from .portfolio import TargetPortfolio
+from .portfolio_events import (
+    PortfolioConversionEntry,
+    PortfolioFillEntry,
+    PortfolioFundingEntry,
+    PortfolioMarkEntry,
+    PortfolioOpeningEntry,
+    PortfolioReconciliationEntry,
+    PortfolioValuationRateEntry,
+)
 from .risk import RiskDecision
 from .signals import SignalProposal
 
@@ -33,6 +42,13 @@ EVENT_TYPE_BY_PAYLOAD: dict[type[object], str] = {
     OrderIntent: "OrderIntent",
     OrderEvent: "OrderEvent",
     FillEvent: "FillEvent",
+    PortfolioOpeningEntry: "PortfolioOpeningEntry",
+    PortfolioFillEntry: "PortfolioFillEntry",
+    PortfolioMarkEntry: "PortfolioMarkEntry",
+    PortfolioFundingEntry: "PortfolioFundingEntry",
+    PortfolioConversionEntry: "PortfolioConversionEntry",
+    PortfolioValuationRateEntry: "PortfolioValuationRateEntry",
+    PortfolioReconciliationEntry: "PortfolioReconciliationEntry",
 }
 
 

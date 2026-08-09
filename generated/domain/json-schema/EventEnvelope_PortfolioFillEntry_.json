@@ -1,0 +1,567 @@
+{
+  "$defs": {
+    "AssetClass": {
+      "description": "Asset classes with an exact mapping to supported product types.",
+      "enum": [
+        "crypto",
+        "equity"
+      ],
+      "title": "AssetClass",
+      "type": "string"
+    },
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "FillEvent": {
+      "additionalProperties": false,
+      "description": "Immutable version-2 execution report, independent of any fill reducer.\n\n``execution_id`` is the canonical execution identity.  Correction, bust,\nand duplicate reports carry a typed reference to one prior execution; the\ncontract deliberately rejects the pre-WS-03 ``FillEvent`` wire shape.",
+      "properties": {
+        "average_fill_price": {
+          "$ref": "#/$defs/Price"
+        },
+        "bust_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bust Of Execution Id"
+        },
+        "commission": {
+          "$ref": "#/$defs/Money"
+        },
+        "correction_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Correction Of Execution Id"
+        },
+        "cumulative_fill_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "duplicate_of_execution_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Of Execution Id"
+        },
+        "execution_id": {
+          "format": "uuid",
+          "title": "Execution Id",
+          "type": "string"
+        },
+        "filled_at": {
+          "format": "date-time",
+          "title": "Filled At",
+          "type": "string"
+        },
+        "instrument_definition": {
+          "$ref": "#/$defs/InstrumentDefinition"
+        },
+        "last_fill_price": {
+          "$ref": "#/$defs/Price"
+        },
+        "leaves_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "liquidity_side": {
+          "$ref": "#/$defs/LiquiditySide"
+        },
+        "order_id": {
+          "format": "uuid",
+          "title": "Order Id",
+          "type": "string"
+        },
+        "order_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "reconciliation_source": {
+          "$ref": "#/$defs/ReconciliationSource"
+        },
+        "report_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Report Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "2.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "side": {
+          "$ref": "#/$defs/OrderSide"
+        },
+        "status": {
+          "$ref": "#/$defs/FillReportStatus"
+        },
+        "venue_trade_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Venue Trade Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution_id",
+        "order_id",
+        "report_sequence",
+        "venue_trade_id",
+        "instrument_definition",
+        "side",
+        "liquidity_side",
+        "status",
+        "quantity",
+        "cumulative_fill_quantity",
+        "leaves_quantity",
+        "order_quantity",
+        "last_fill_price",
+        "average_fill_price",
+        "commission",
+        "reconciliation_source",
+        "filled_at",
+        "schema_version"
+      ],
+      "title": "FillEvent",
+      "type": "object"
+    },
+    "FillReportStatus": {
+      "description": "Explicit execution-report lifecycle or correction classification.",
+      "enum": [
+        "PARTIALLY_FILLED",
+        "FILLED",
+        "DUPLICATE",
+        "CORRECTION",
+        "BUST"
+      ],
+      "title": "FillReportStatus",
+      "type": "string"
+    },
+    "InstrumentDefinition": {
+      "description": "Sole immutable source of one instrument's catalog trading constraints.",
+      "properties": {
+        "asset_class": {
+          "$ref": "#/$defs/AssetClass"
+        },
+        "base_currency": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Currency"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instrument_id": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "margin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MarginRequirements"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maximum_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "maximum_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "minimum_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "minimum_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "multiplier": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Multiplier",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "provenance": {
+          "$ref": "#/$defs/InstrumentProvenance"
+        },
+        "quote_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "raw_symbol": {
+          "title": "Raw Symbol",
+          "type": "string"
+        },
+        "session_calendar": {
+          "title": "Session Calendar",
+          "type": "string"
+        },
+        "settlement_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "size_increment": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "tick_size": {
+          "$ref": "#/$defs/Price"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "raw_symbol",
+        "asset_class",
+        "base_currency",
+        "quote_currency",
+        "settlement_currency",
+        "tick_size",
+        "size_increment",
+        "minimum_quantity",
+        "maximum_quantity",
+        "minimum_notional",
+        "maximum_notional",
+        "multiplier",
+        "margin",
+        "session_calendar",
+        "provenance"
+      ],
+      "title": "InstrumentDefinition",
+      "type": "object"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "InstrumentProvenance": {
+      "description": "Immutable catalog-source evidence with no provider authority.",
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "title": "Source Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_revision",
+        "observed_at"
+      ],
+      "title": "InstrumentProvenance",
+      "type": "object"
+    },
+    "LiquiditySide": {
+      "description": "Closed venue liquidity classification for one execution report.",
+      "enum": [
+        "maker",
+        "taker"
+      ],
+      "title": "LiquiditySide",
+      "type": "string"
+    },
+    "MarginRequirements": {
+      "description": "Optional exact initial and maintenance margin rates.",
+      "properties": {
+        "initial_margin_rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Initial Margin Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "maintenance_margin_rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Maintenance Margin Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "initial_margin_rate",
+        "maintenance_margin_rate"
+      ],
+      "title": "MarginRequirements",
+      "type": "object"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "OrderQuantity": {
+      "description": "An exact non-negative order quantity with declared precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|[1-9]\\d*|(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "OrderQuantity",
+      "type": "object"
+    },
+    "OrderSide": {
+      "enum": [
+        "buy",
+        "sell"
+      ],
+      "title": "OrderSide",
+      "type": "string"
+    },
+    "PortfolioFillEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "effective_at": {
+          "format": "date-time",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "fill": {
+          "$ref": "#/$defs/FillEvent"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id",
+        "effective_at",
+        "schema_version",
+        "strategy_id",
+        "fill"
+      ],
+      "title": "PortfolioFillEntry",
+      "type": "object"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    },
+    "ReconciliationSource": {
+      "description": "Closed provenance source for an execution report reconciliation.",
+      "enum": [
+        "venue",
+        "drop_copy",
+        "clearing"
+      ],
+      "title": "ReconciliationSource",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
+      "type": "string"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "PortfolioFillEntry",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "ingested_at": {
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/PortfolioFillEntry"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "source",
+    "stream_id",
+    "sequence",
+    "observed_at",
+    "ingested_at",
+    "produced_at",
+    "effective_at",
+    "expires_at",
+    "correlation_id",
+    "causation_id",
+    "trace_id",
+    "payload"
+  ],
+  "title": "EventEnvelope[PortfolioFillEntry]",
+  "type": "object"
+}

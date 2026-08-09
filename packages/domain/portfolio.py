@@ -143,6 +143,7 @@ class AccountPositionSnapshot(DomainModel):
     settlement_currency: Currency
     quantity: Quantity
     mark: PositionMark | None
+    average_entry_price: Price | None
     realized_pnl: Money
     unrealized_pnl: Money
     fees: Money
@@ -169,6 +170,13 @@ class AccountPositionSnapshot(DomainModel):
                 raise ValueError("mark timestamp must not be after observation")
         elif self.quantity.value != 0:
             raise ValueError("non-zero position requires a mark")
+        if self.quantity.value != 0:
+            if self.average_entry_price is None:
+                raise ValueError("non-zero position requires an average entry price")
+            if self.average_entry_price.currency is not self.settlement_currency:
+                raise ValueError("average entry price currency must match settlement currency")
+        elif self.mark is not None or self.average_entry_price is not None:
+            raise ValueError("zero position must not retain a mark or average entry price")
         return self
 
 
