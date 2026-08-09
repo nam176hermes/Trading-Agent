@@ -111,8 +111,8 @@ git diff --check
 
 **Files:**
 
-- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-2-observation-report.md`
-- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-2-observation-review.md`
+- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-2-observation-report.md`
+- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-2-observation-review.md`
 - Do not change tracked source in this task.
 
 **Preflight:**
