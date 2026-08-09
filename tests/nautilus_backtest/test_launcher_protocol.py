@@ -1402,6 +1402,101 @@ def test_long_accounting_native_adapter_enables_inside_spread_limit_fills() -> N
     assert ast.unparse(fill_model) == "BestPriceFillModel()"
 
 
+def test_launcher_projects_sealed_quote_around_each_bar_for_native_settlement(
+    launcher_module,
+) -> None:
+    """The finite adapter exposes the sealed L1 quote after on_bar's bar."""
+
+    class FakePrice:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        @classmethod
+        def from_str(cls, text: str) -> "FakePrice":
+            return cls(text)
+
+    class FakeQuantity:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        @classmethod
+        def from_str(cls, text: str) -> "FakeQuantity":
+            return cls(text)
+
+    class FakeQuoteTick:
+        def __init__(
+            self,
+            instrument: object,
+            bid_price: FakePrice,
+            ask_price: FakePrice,
+            bid_size: FakeQuantity,
+            ask_size: FakeQuantity,
+            ts_event: int,
+            ts_init: int,
+        ) -> None:
+            self.instrument = instrument
+            self.bid_price = bid_price
+            self.ask_price = ask_price
+            self.bid_size = bid_size
+            self.ask_size = ask_size
+            self.ts_event = ts_event
+            self.ts_init = ts_init
+
+    class FakeBar:
+        def __init__(self, *_args: object) -> None:
+            self.args = _args
+
+    artifacts = _simulation_fixture("long-accounting")
+    request = _simulation_request(artifacts).model_dump(mode="json")
+    fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
+    instrument = object()
+    data = launcher_module._build_simulation_market_data(
+        fixture,
+        instrument=instrument,
+        bar_type="bar-type",
+        quote_tick_type=FakeQuoteTick,
+        bar_type_class=FakeBar,
+        price_type=FakePrice,
+        quantity_type=FakeQuantity,
+    )
+
+    assert len(data) == 2
+    bar, quote = data
+    assert isinstance(quote, FakeQuoteTick)
+    assert isinstance(bar, FakeBar)
+    assert quote.instrument is instrument
+    assert quote.bid_price.text == "99.00"
+    assert quote.ask_price.text == "100.00"
+    assert quote.bid_size.text == "2.000000"
+    assert quote.ask_size.text == "2.000000"
+    assert quote.ts_event == quote.ts_init
+    assert bar.args[0] == "bar-type"
+
+
+@pytest.mark.parametrize("scenario_id", _SCENARIO_IDS)
+def test_native_execution_plan_preserves_matrix_with_instrument_quantity_precision(
+    launcher_module,
+    scenario_id: str,
+) -> None:
+    """Native quantity formatting must not alter any sealed scenario plan."""
+
+    artifacts = _simulation_fixture(scenario_id)
+    request = _simulation_request(artifacts).model_dump(mode="json")
+    fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
+    semantic_plan = launcher_module._build_target_portfolio_execution_plan(fixture)
+    native_plan = launcher_module._build_nautilus_execution_plan(fixture)
+
+    assert len(native_plan) == len(semantic_plan)
+    for semantic, native in zip(semantic_plan, native_plan, strict=True):
+        assert native["eligible"] == semantic["eligible"]
+        assert native["entry_price"] == semantic["entry_price"]
+        assert native["exit_price"] == semantic["exit_price"]
+        assert native["skip_reason"] == semantic["skip_reason"]
+        assert native["fill_quantity"] == (
+            f"{Decimal(semantic['fill_quantity']):.6f}"
+        )
+
+
 def test_canonical_nautilus_result_record_is_json_native_and_run_invariant(
     launcher_module,
 ) -> None:

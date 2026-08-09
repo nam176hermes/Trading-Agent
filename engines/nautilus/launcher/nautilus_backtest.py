@@ -1839,6 +1839,28 @@ def _build_target_portfolio_execution_plan(
         return _build_target_portfolio_execution_plan_in_context(fixture)
 
 
+def _build_nautilus_execution_plan(
+    fixture: dict[str, object],
+) -> tuple[dict[str, object], ...]:
+    """Use instrument-fixed quantities at the native strategy boundary."""
+
+    plan = _build_target_portfolio_execution_plan(fixture)
+    return tuple(
+        {
+            **instruction,
+            "fill_quantity": _nautilus_quantity_text(
+                _decimal(
+                    instruction["fill_quantity"],
+                    label="native execution quantity",
+                ),
+                6,
+                label="native execution quantity",
+            ),
+        }
+        for instruction in plan
+    )
+
+
 def _build_target_portfolio_execution_plan_in_context(
     fixture: dict[str, object],
 ) -> tuple[dict[str, object], ...]:
@@ -1949,6 +1971,99 @@ def _run_nautilus_simulation_fixture(
         return _run_nautilus_simulation_fixture_loaded(fixture)
 
 
+def _build_simulation_market_data(
+    fixture: dict[str, object],
+    *,
+    instrument: object,
+    bar_type: object,
+    quote_tick_type: type,
+    bar_type_class: type,
+    price_type: type,
+    quantity_type: type,
+) -> list[object]:
+    """Project each sealed bar followed by its corresponding L1 quote.
+
+    The strategy submits its finite order from ``on_bar``.  A ``LAST`` bar
+    alone leaves the matching core with a trade-derived book, so the semantic
+    ask/bid must be represented as a real L1 quote in the same finite feed.
+    Quote sizes use the sealed event volume; scenario liquidity and eligibility
+    remain owned by the validated execution plan.
+    """
+
+    events = fixture["events"]
+    assert isinstance(events, tuple)
+    data: list[object] = []
+    for event in events:
+        assert isinstance(event, dict)
+        event_time = event["event_time"]
+        quote_time = event["quote_time"]
+        assert isinstance(event_time, datetime)
+        assert isinstance(quote_time, datetime)
+        event_timestamp_ns = (
+            int(event_time.timestamp()) * 1_000_000_000
+            + event_time.microsecond * 1_000
+        )
+        quote_timestamp_ns = (
+            int(quote_time.timestamp()) * 1_000_000_000
+            + quote_time.microsecond * 1_000
+        )
+        volume = quantity_type.from_str(
+            _nautilus_quantity_text(
+                event["volume"], 6, label="simulation event volume"
+            )
+        )
+        data.append(
+            bar_type_class(
+                bar_type,
+                price_type.from_str(
+                    _nautilus_price_text(
+                        event["open"], 2, label="simulation event open"
+                    )
+                ),
+                price_type.from_str(
+                    _nautilus_price_text(
+                        event["high"], 2, label="simulation event high"
+                    )
+                ),
+                price_type.from_str(
+                    _nautilus_price_text(
+                        event["low"], 2, label="simulation event low"
+                    )
+                ),
+                price_type.from_str(
+                    _nautilus_price_text(
+                        event["close"], 2, label="simulation event close"
+                    )
+                ),
+                volume,
+                event_timestamp_ns,
+                event_timestamp_ns,
+            )
+        )
+        # Keep quote event time bound to the sealed quote while scheduling its
+        # delivery around the corresponding bar, after on_bar submits orders.
+        data.append(
+            quote_tick_type(
+                instrument,
+                price_type.from_str(
+                    _nautilus_price_text(
+                        event["bid"], 2, label="simulation event bid"
+                    )
+                ),
+                price_type.from_str(
+                    _nautilus_price_text(
+                        event["ask"], 2, label="simulation event ask"
+                    )
+                ),
+                volume,
+                volume,
+                quote_timestamp_ns,
+                event_timestamp_ns,
+            )
+        )
+    return data
+
+
 def _run_nautilus_simulation_fixture_loaded(
     fixture: dict[str, object],
 ) -> dict[str, object]:
@@ -1957,7 +2072,7 @@ def _run_nautilus_simulation_fixture_loaded(
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig
     from nautilus_trader.model.currencies import BTC, USDT
-    from nautilus_trader.model.data import Bar, BarType
+    from nautilus_trader.model.data import Bar, BarType, QuoteTick
     from nautilus_trader.model.enums import AccountType, OmsType
     from nautilus_trader.model.identifiers import Venue
     from nautilus_trader.model.objects import Money, Price, Quantity
@@ -2006,7 +2121,7 @@ def _run_nautilus_simulation_fixture_loaded(
             fee_model=ScenarioFeeModel(fixture["fee_rate"]),
         )
         engine.add_instrument(instrument)
-        execution_plan = _build_target_portfolio_execution_plan(fixture)
+        execution_plan = _build_nautilus_execution_plan(fixture)
         bar_type = BarType.from_str("BTCUSDT.BINANCE-1-MINUTE-LAST-EXTERNAL")
         strategy = TargetPortfolioStrategy(
             TargetPortfolioStrategyConfig(
@@ -2053,57 +2168,29 @@ def _run_nautilus_simulation_fixture_loaded(
             )
         )
         engine.add_strategy(strategy)
-        bars = []
+        data = _build_simulation_market_data(
+            fixture,
+            instrument=instrument.id,
+            bar_type=bar_type,
+            quote_tick_type=QuoteTick,
+            bar_type_class=Bar,
+            price_type=Price,
+            quantity_type=Quantity,
+        )
         events = fixture["events"]
         assert isinstance(events, tuple)
-        for event in events:
-            assert isinstance(event, dict)
-            timestamp = event["event_time"]
-            assert isinstance(timestamp, datetime)
-            timestamp_ns = (
-                int(timestamp.timestamp()) * 1_000_000_000
-                + timestamp.microsecond * 1_000
-            )
-            bars.append(
-                Bar(
-                    bar_type,
-                    Price.from_str(
-                        _nautilus_price_text(
-                            event["open"], 2, label="simulation event open"
-                        )
-                    ),
-                    Price.from_str(
-                        _nautilus_price_text(
-                            event["high"], 2, label="simulation event high"
-                        )
-                    ),
-                    Price.from_str(
-                        _nautilus_price_text(
-                            event["low"], 2, label="simulation event low"
-                        )
-                    ),
-                    Price.from_str(
-                        _nautilus_price_text(
-                            event["close"], 2, label="simulation event close"
-                        )
-                    ),
-                    Quantity.from_str(
-                        _nautilus_quantity_text(
-                            event["volume"], 6, label="simulation event volume"
-                        )
-                    ),
-                    timestamp_ns,
-                    timestamp_ns,
-                )
-            )
-        engine.add_data(bars)
+        bars = data[::2]
+        engine.add_data(data)
         engine.run()
         engine_result = engine.get_result()
-        iterations = _result_counter(
+        engine_iterations = _result_counter(
             getattr(engine_result, "iterations", None), label="iteration"
         )
-        if iterations != len(events):
-            raise ValueError("Nautilus simulation fixture iteration count changed")
+        if engine_iterations != len(data):
+            raise ValueError("Nautilus simulation data iteration count changed")
+        # QuoteTicks are transport context; the public result counts only the
+        # sealed semantic event/bar iterations used by the reference oracle.
+        iterations = len(events)
         # The cache/account accesses are intentional: this result is evidence
         # of the strategy-driven Nautilus execution state, not a parallel
         # arithmetic calculation.  Qualification compares it to the root
