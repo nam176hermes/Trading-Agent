@@ -26,6 +26,7 @@ from packages.engine_contracts import (
     EngineEventEnvelope,
     EventAttribute,
     EventFamily,
+    RunBacktestSimulation,
     canonical_json_bytes,
     payload_digest,
 )
@@ -66,7 +67,9 @@ _CanonicalFieldType: TypeAlias = Literal[
     "integer",
     "decimal-string",
 ]
-_REFERENCE_COMMAND_TYPE = "RunBacktestSimulation"
+_EXACT_COMMAND_TYPE_MATCH_TAG = "exact-type-match"
+_EXACT_COMMAND_TYPE_MISMATCH_TAG = "exact-type-mismatch"
+_REFERENCE_EXACT_COMMAND_TYPE_TAG = "exact-type-match"
 _EVENT_VALIDATION_FIELD_INVENTORY: tuple[
     tuple[str, _CanonicalFieldType], ...
 ] = (
@@ -1584,11 +1587,15 @@ def _event_field_commitments(
     reference: EngineEventEnvelope,
 ) -> tuple[_EventFieldCommitment, ...]:
     actual_values = {
-        "command_type": type(envelope.payload).__name__,
+        "command_type": (
+            _EXACT_COMMAND_TYPE_MATCH_TAG
+            if type(envelope.payload) is RunBacktestSimulation
+            else _EXACT_COMMAND_TYPE_MISMATCH_TAG
+        ),
         **_event_validation_field_values(actual),
     }
     reference_values = {
-        "command_type": _REFERENCE_COMMAND_TYPE,
+        "command_type": _REFERENCE_EXACT_COMMAND_TYPE_TAG,
         **_event_validation_field_values(reference),
     }
     mismatches: list[_EventFieldCommitment] = []

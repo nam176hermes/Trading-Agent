@@ -1541,15 +1541,18 @@ def test_event_validation_failure_canonical_type_is_bound_before_decimal_hashing
     assert commitment.actual_sha256 != hashlib.sha256(b"1").hexdigest()
 
 
-def test_event_validation_failure_field_command_type_is_first_and_digest_only() -> None:
+def test_event_validation_failure_field_same_named_command_type_is_first_and_digest_only() -> None:
     """Omitting command authority would leave the validator's first reject unclassified."""
     fixture = build_canonical_simulation_fixture("long-accounting")
     envelope = build_simulation_envelope(fixture)
 
-    class CommandTypeLeakProbe(type(envelope.payload)):
-        pass
+    same_named_distinct_type = type(
+        type(envelope.payload).__name__,
+        (type(envelope.payload),),
+        {},
+    )
 
-    mismatched_command = CommandTypeLeakProbe.model_validate(
+    mismatched_command = same_named_distinct_type.model_validate(
         envelope.payload.model_dump()
     )
     mismatched_envelope = envelope.model_copy(
@@ -1580,15 +1583,21 @@ def test_event_validation_failure_field_command_type_is_first_and_digest_only() 
         "field_name": "command_type",
         "canonical_type": "string",
         "actual_sha256": hashlib.sha256(
-            b'{"type":"string","value":"CommandTypeLeakProbe"}'
+            b'{"type":"string","value":"exact-type-mismatch"}'
         ).hexdigest(),
         "reference_sha256": hashlib.sha256(
-            b'{"type":"string","value":"RunBacktestSimulation"}'
+            b'{"type":"string","value":"exact-type-match"}'
         ).hexdigest(),
     }
-    assert b"CommandTypeLeakProbe" not in written
-    assert b"RunBacktestSimulation" not in written
-    assert b"987654321" not in written
+    for forbidden in (
+        b"RunBacktestSimulation",
+        b"exact-type-mismatch",
+        b"exact-type-match",
+        canonical_json_bytes(mismatched_command),
+        envelope.payload.engine_configuration.sha256.encode(),
+        b"987654321",
+    ):
+        assert forbidden not in written
 
 
 def test_event_validation_failure_commitment_distinguishes_missing_null_and_zero() -> None:
