@@ -54,7 +54,7 @@ class PortfolioPositionState(DomainModel):
     account_id: CanonicalPortfolioIdentifier
     strategy_id: CanonicalPortfolioIdentifier
     instrument: InstrumentId
-    instrument_definition: InstrumentDefinition
+    instrument_definition: InstrumentDefinition | None
     settlement_currency: Currency
     quantity: Quantity
     mark: PositionMark | None = None
@@ -68,10 +68,11 @@ class PortfolioPositionState(DomainModel):
 
     @model_validator(mode="after")
     def _valid_state(self) -> "PortfolioPositionState":
-        if self.instrument_definition.instrument_id != self.instrument:
-            raise ValueError("instrument definition must match position instrument")
-        if self.instrument_definition.settlement_currency is not self.settlement_currency:
-            raise ValueError("instrument definition settlement currency must match position")
+        if self.instrument_definition is not None:
+            if self.instrument_definition.instrument_id != self.instrument:
+                raise ValueError("instrument definition must match position instrument")
+            if self.instrument_definition.settlement_currency is not self.settlement_currency:
+                raise ValueError("instrument definition settlement currency must match position")
         if any(
             value.currency is not self.settlement_currency
             for value in (self.realized_pnl, self.unrealized_pnl, self.fees, self.funding)
@@ -81,6 +82,8 @@ class PortfolioPositionState(DomainModel):
             if self.average_entry_price is not None or self.mark is not None:
                 raise ValueError("zero position must not retain an average entry price or mark")
         else:
+            if self.instrument_definition is None:
+                raise ValueError("non-zero position requires an instrument definition")
             if self.average_entry_price is None:
                 raise ValueError("non-zero position requires an average entry price")
             if self.average_entry_price.currency is not self.settlement_currency:

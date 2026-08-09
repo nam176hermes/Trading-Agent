@@ -250,7 +250,7 @@ def _fill_effect(
     existing = _find_position(state, entry.strategy_id, fill.instrument_definition.instrument_id.canonical)
     position = existing or _new_position(entry, fill)
     definition = fill.instrument_definition
-    if position.instrument_definition != definition:
+    if position.instrument_definition is not None and position.instrument_definition != definition:
         raise PortfolioReplayError("fill instrument definition conflicts with active position")
     signed_fill = fill.quantity.value if fill.side is OrderSide.BUY else -fill.quantity.value
     current = position.quantity.value
@@ -292,7 +292,7 @@ def _fill_effect(
         account_id=position.account_id,
         strategy_id=position.strategy_id,
         instrument=position.instrument,
-        instrument_definition=position.instrument_definition,
+        instrument_definition=definition,
         settlement_currency=position.settlement_currency,
         quantity=_quantity(residual, fill.quantity.precision),
         average_entry_price=next_average,
@@ -604,6 +604,8 @@ def _updated_balance(
 def _apply_mark(
     state: PortfolioReplayState, event: PortfolioEvent, entry: PortfolioMarkEntry
 ) -> PortfolioReplayState:
+    if entry.marked_at > entry.effective_at:
+        raise PortfolioReplayError("mark time must not be after event effective time")
     positions: list[PortfolioPositionState] = []
     for position in state.snapshot.positions:
         if position.instrument != entry.instrument or position.quantity.value == 0:
@@ -615,6 +617,7 @@ def _apply_mark(
             positions.append(position)
             continue
         assert position.average_entry_price is not None
+        assert position.instrument_definition is not None
         unrealized = _product(
             _sum(entry.mark.price.amount, -position.average_entry_price.amount, field="unrealized PnL"),
             position.quantity.value,
@@ -772,7 +775,7 @@ def _apply_reconciliation(
     positions: list[PortfolioPositionState] = []
     for position in entry.snapshot.positions:
         definition = definitions.get((position.strategy_id, position.instrument.canonical))
-        if definition is None:
+        if definition is None and position.quantity.value != 0:
             raise PortfolioReplayError("reconciliation position has no retained instrument definition")
         positions.append(
             PortfolioPositionState(

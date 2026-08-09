@@ -9,6 +9,7 @@ import pytest
 from packages.domain import (
     AccountBalanceSnapshot,
     AccountPortfolioSnapshot,
+    AccountPositionSnapshot,
     AssetClass,
     Currency,
     CurrencyConversion,
@@ -34,6 +35,7 @@ from packages.domain import (
     PositionMark,
     Price,
     ProductType,
+    Quantity,
     ReconciliationSource,
 )
 from packages.portfolio_reducer import (
@@ -242,6 +244,16 @@ def test_mark_rejects_a_settlement_currency_mismatch() -> None:
         apply_portfolio_event(state, invalid)
 
 
+def test_mark_rejects_a_time_after_its_event_effective_time() -> None:
+    state = reduce_portfolio_events((opening(), fill(number=2, execution=20)))
+    future_mark = mark(number=3, price="105", marked_at=NOW + timedelta(seconds=1))
+
+    with pytest.raises(PortfolioReplayError, match="mark time"):
+        apply_portfolio_event(state, future_mark)
+
+    assert state.snapshot.positions[0].mark is None
+
+
 def test_funding_mutates_only_declared_balance_or_matching_position() -> None:
     state = reduce_portfolio_events((opening(currencies=((Currency.USD, "1000"), (Currency.USDT, "0"))), fill(number=2, execution=20)))
     account_funding = envelope(
@@ -408,3 +420,32 @@ def test_reconciliation_replaces_account_state_and_invalidates_old_execution() -
     bust = fill(number=4, execution=40, status=FillReportStatus.BUST, bust_of=normal.payload.fill.execution_id)
     with pytest.raises(PortfolioReplayError, match="active normal execution"):
         apply_portfolio_event(state, bust)
+
+
+def test_reconciliation_preserves_a_zero_position_without_prior_execution() -> None:
+    zero_position = AccountPositionSnapshot(
+        account_id="account-1", strategy_id="strategy-zero", instrument=BTC_USD,
+        settlement_currency=Currency.USD, quantity=Quantity(Decimal("0"), 2), mark=None,
+        average_entry_price=None, realized_pnl=money("0"), unrealized_pnl=money("0"),
+        fees=money("0"), funding=money("0"), observed_at=NOW, schema_version="position-v1",
+    )
+    reconciled = AccountPortfolioSnapshot(
+        snapshot_id=uid(100), account_id="account-1", reporting_currency=Currency.USD,
+        balances=(balance(Currency.USD, "777"),), positions=(zero_position,),
+        total_exposure=ExposureSnapshot(currency=Currency.USD, gross=money("0"), net=money("0"), pending=money("0")),
+        instrument_exposures=(), strategy_exposures=(), venue_exposures=(), observed_at=NOW,
+        schema_version="portfolio-snapshot-v1",
+    )
+    reconciliation = envelope(
+        PortfolioReconciliationEntry(
+            account_id="account-1", reconciliation_id=uid(101), source=PortfolioReconciliationSource.VENUE,
+            source_revision="revision-zero", snapshot=reconciled, effective_at=NOW + timedelta(seconds=10),
+            schema_version="portfolio-entry-v1",
+        ), number=2, effective_at=NOW + timedelta(seconds=10),
+    )
+
+    state = reduce_portfolio_events((opening(), reconciliation))
+    position = state.snapshot.positions[0]
+    assert position.quantity.value == Decimal("0.00")
+    assert position.mark is None
+    assert position.average_entry_price is None
