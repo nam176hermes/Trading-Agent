@@ -1953,7 +1953,7 @@ def _run_nautilus_simulation_fixture_loaded(
     fixture: dict[str, object],
 ) -> dict[str, object]:
     from nautilus_trader.backtest.engine import BacktestEngine
-    from nautilus_trader.backtest.models import FeeModel
+    from nautilus_trader.backtest.models import BestPriceFillModel, FeeModel
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig
     from nautilus_trader.model.currencies import BTC, USDT
@@ -2002,6 +2002,7 @@ def _run_nautilus_simulation_fixture_loaded(
                 Money(amount, currencies[currency])
                 for currency, amount in _starting_balance_plan(target)
             ],
+            fill_model=BestPriceFillModel(),
             fee_model=ScenarioFeeModel(fixture["fee_rate"]),
         )
         engine.add_instrument(instrument)

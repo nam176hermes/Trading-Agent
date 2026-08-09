@@ -1366,6 +1366,42 @@ def test_short_cash_account_starts_with_exact_base_inventory(
     )
 
 
+def test_long_accounting_native_adapter_enables_inside_spread_limit_fills() -> None:
+    """The bar-only engine must fill the validated ask-side limit order."""
+
+    import ast
+
+    module = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
+    venue_calls = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "add_venue"
+    ]
+
+    venue_calls = [
+        node
+        for node in venue_calls
+        if any(
+            keyword.arg == "starting_balances"
+            and isinstance(keyword.value, ast.ListComp)
+            for keyword in node.keywords
+        )
+    ]
+    assert len(venue_calls) == 1
+    fill_model = next(
+        (
+            keyword.value
+            for keyword in venue_calls[0].keywords
+            if keyword.arg == "fill_model"
+        ),
+        None,
+    )
+    assert fill_model is not None
+    assert ast.unparse(fill_model) == "BestPriceFillModel()"
+
+
 def test_canonical_nautilus_result_record_is_json_native_and_run_invariant(
     launcher_module,
 ) -> None:
