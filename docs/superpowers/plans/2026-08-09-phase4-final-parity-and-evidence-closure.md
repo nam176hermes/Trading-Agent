@@ -138,16 +138,19 @@ git diff --check
 **Closed outcomes:**
 
 1. **PASS record exists:** verify exact 8 scenarios x 2 runs, byte parity, independent event equality, independent result-digest equality, and exact transport cardinality; then proceed to Task 5 after independent review.
-2. **Valid event-validation v3 receipt and provenance pair exist:** stop before run 2/paper/r13; independently validate canonical schema, mode-0400/single-link descriptor custody, no-clobber identities, receipt-to-provenance SHA binding, and recompute every actual/reference field commitment from the private provenance. Publish only mismatch field names and fixed class in the sanitized review; proceed to Task 3.
+2. **Valid event-validation receipt/provenance pair exists:** stop before run 2/paper/r13; require sibling canonical schemas `phase4-parity-event-validation-failure-v3` and `phase4-parity-event-provenance-v1`, then independently validate the pair's mode-0400/single-link descriptor custody, no-clobber identities, receipt-to-provenance SHA binding, and recompute every actual/reference field commitment from the private provenance. Publish only mismatch field names and fixed class in the sanitized review; proceed to Task 3.
 3. **Valid result-digest `.failure.json` exists:** validate its canonical schema, descriptor custody, and exit category; stop for a separate result-observation repair. Do not enter Task 3 or modify functional code.
-4. **No valid PASS record, event receipt/provenance pair, or result-digest receipt:** stop. A partial, malformed, preexisting, or custody-invalid file is not an outcome; return to Task 1 with a new reviewed source repair.
-5. **Any launch/provider failure:** stop and classify separately; do not treat it as a parity mismatch.
+
+**Observation incomplete (not an outcome):**
+
+- Missing, partial, malformed, preexisting, or custody-invalid PASS records, event receipt/provenance pairs, or result-digest receipts are observation-incomplete. Stop fail-closed and return to Task 1 with a new reviewed source repair; do not count this stop as a closed outcome.
+- Any launch/provider failure also stops fail-closed and is classified separately; do not treat it as a parity mismatch or a closed outcome.
 
 **Postflight:**
 
 - [ ] Verify all preflight identities unchanged.
 - [ ] Confirm r13 is absent and no Task 8 downstream command ran.
-- [ ] Independent review must produce SPEC PASS / QUALITY PASS for packet cardinality/custody and exactly one closed outcome.
+- [ ] Independent review must produce SPEC PASS / QUALITY PASS for packet cardinality/custody and exactly one valid closed outcome, or an observation-incomplete stop that is not counted as an outcome.
 
 ## Task 3: Root-cause adjudication gate
 
