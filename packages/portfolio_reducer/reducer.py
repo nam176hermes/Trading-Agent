@@ -361,6 +361,12 @@ def _with_effect(
     observed_at=None,
 ) -> PortfolioReplayState:
     applied_at = effect.entry.effective_at if observed_at is None else observed_at
+    position_fields = {
+        name: getattr(next_position, name)
+        for name in PortfolioPositionState.model_fields
+    }
+    position_fields["observed_at"] = applied_at
+    applied_position = PortfolioPositionState(**position_fields)
     snapshot = PortfolioWorkingSnapshot(
         account_id=state.snapshot.account_id,
         reporting_currency=state.snapshot.reporting_currency,
@@ -371,7 +377,7 @@ def _with_effect(
             effect.balance_fee_deltas,
             applied_at,
         ),
-        positions=_replace_position(state.snapshot, next_position),
+        positions=_replace_position(state.snapshot, applied_position),
         observed_at=applied_at,
         schema_version=state.snapshot.schema_version,
     )

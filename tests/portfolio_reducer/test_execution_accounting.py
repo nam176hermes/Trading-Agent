@@ -437,7 +437,9 @@ def test_rebase_keeps_snapshot_time_at_correction_or_bust_time(status, reference
 
     assert state.snapshot.observed_at == adjustment_time
     assert state.snapshot.observed_at > later_time
+    assert state.snapshot.balances[0].observed_at == adjustment_time
     position = state.snapshot.positions[0]
+    assert position.observed_at == adjustment_time
     if status is FillReportStatus.CORRECTION:
         assert position.average_entry_price.amount == Decimal("90")
         assert position.realized_pnl.amount == Decimal("20")
