@@ -172,6 +172,129 @@ class AccountPositionSnapshot(DomainModel):
         return self
 
 
+class ExposureSnapshot(DomainModel):
+    currency: Currency
+    gross: Money
+    net: Money
+    pending: Money
+
+    @model_validator(mode="after")
+    def _valid_exposure(self) -> "ExposureSnapshot":
+        if any(
+            value.currency is not self.currency
+            for value in (self.gross, self.net, self.pending)
+        ):
+            raise ValueError(
+                "exposure money currency must match exposure currency"
+            )
+        if self.gross.amount < 0 or self.pending.amount < 0:
+            raise ValueError("gross and pending exposure must be non-negative")
+        if self.gross.amount < abs(self.net.amount):
+            raise ValueError("gross exposure must cover absolute net exposure")
+        return self
+
+
+class InstrumentExposureSnapshot(DomainModel):
+    instrument: InstrumentId
+    exposure: ExposureSnapshot
+
+
+class StrategyExposureSnapshot(DomainModel):
+    strategy_id: CanonicalPortfolioIdentifier
+    exposure: ExposureSnapshot
+
+
+class VenueExposureSnapshot(DomainModel):
+    venue_id: CanonicalPortfolioIdentifier
+    exposure: ExposureSnapshot
+
+
+class AccountPortfolioSnapshot(DomainModel):
+    snapshot_id: UUID
+    account_id: CanonicalPortfolioIdentifier
+    reporting_currency: Currency
+    balances: tuple[AccountBalanceSnapshot, ...]
+    positions: tuple[AccountPositionSnapshot, ...]
+    total_exposure: ExposureSnapshot
+    instrument_exposures: tuple[InstrumentExposureSnapshot, ...]
+    strategy_exposures: tuple[StrategyExposureSnapshot, ...]
+    venue_exposures: tuple[VenueExposureSnapshot, ...]
+    observed_at: datetime
+    schema_version: NonEmptyText
+
+    @field_validator("observed_at")
+    @classmethod
+    def _utc(cls, value: datetime) -> datetime:
+        return require_utc(value)
+
+    @model_validator(mode="after")
+    def _valid_snapshot(self) -> "AccountPortfolioSnapshot":
+        balance_keys = tuple(balance.currency.code for balance in self.balances)
+        if len(balance_keys) != len(set(balance_keys)):
+            raise ValueError("duplicate balance currency")
+        if balance_keys != tuple(sorted(balance_keys)):
+            raise ValueError("balances must be ordered by currency")
+
+        position_keys = tuple(
+            (position.strategy_id, position.instrument.canonical)
+            for position in self.positions
+        )
+        if len(position_keys) != len(set(position_keys)):
+            raise ValueError("duplicate position key")
+        if position_keys != tuple(sorted(position_keys)):
+            raise ValueError("positions must be ordered by strategy and instrument")
+
+        instrument_keys = tuple(
+            item.instrument.canonical for item in self.instrument_exposures
+        )
+        if len(instrument_keys) != len(set(instrument_keys)):
+            raise ValueError("duplicate instrument exposure key")
+        if instrument_keys != tuple(sorted(instrument_keys)):
+            raise ValueError("instrument_exposures must be ordered by instrument")
+
+        strategy_keys = tuple(
+            item.strategy_id for item in self.strategy_exposures
+        )
+        if len(strategy_keys) != len(set(strategy_keys)):
+            raise ValueError("duplicate strategy exposure key")
+        if strategy_keys != tuple(sorted(strategy_keys)):
+            raise ValueError("strategy_exposures must be ordered by strategy")
+
+        venue_keys = tuple(item.venue_id for item in self.venue_exposures)
+        if len(venue_keys) != len(set(venue_keys)):
+            raise ValueError("duplicate venue exposure key")
+        if venue_keys != tuple(sorted(venue_keys)):
+            raise ValueError("venue_exposures must be ordered by venue")
+
+        if any(balance.account_id != self.account_id for balance in self.balances):
+            raise ValueError("balance account must match portfolio account")
+        if any(position.account_id != self.account_id for position in self.positions):
+            raise ValueError("position account must match portfolio account")
+        if any(balance.observed_at > self.observed_at for balance in self.balances):
+            raise ValueError("balance timestamp must not be after portfolio observation")
+        if any(position.observed_at > self.observed_at for position in self.positions):
+            raise ValueError("position timestamp must not be after portfolio observation")
+
+        if self.total_exposure.currency is not self.reporting_currency:
+            raise ValueError("total exposure currency must match reporting currency")
+        if any(
+            item.exposure.currency is not self.reporting_currency
+            for item in self.instrument_exposures
+        ):
+            raise ValueError("instrument exposure currency must match reporting currency")
+        if any(
+            item.exposure.currency is not self.reporting_currency
+            for item in self.strategy_exposures
+        ):
+            raise ValueError("strategy exposure currency must match reporting currency")
+        if any(
+            item.exposure.currency is not self.reporting_currency
+            for item in self.venue_exposures
+        ):
+            raise ValueError("venue exposure currency must match reporting currency")
+        return self
+
+
 class PortfolioSnapshot(DomainModel):
     snapshot_id: UUID
     positions: tuple[PositionSnapshot, ...]
