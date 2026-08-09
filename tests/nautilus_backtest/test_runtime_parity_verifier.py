@@ -54,6 +54,7 @@ def _event_bytes(
     *,
     mismatch: bool = False,
     reverse_attributes: bool = False,
+    attribute_overrides: dict[str, str | int | bool] | None = None,
 ) -> bytes:
     scenario_id = next(
         candidate
@@ -95,6 +96,11 @@ def _event_bytes(
             expected.stop_take_profit_precedence,
         ),
     ]
+    if attribute_overrides:
+        values = [
+            (name, attribute_overrides.get(name, value))
+            for name, value in values
+        ]
     if reverse_attributes:
         values.reverse()
     payload = EngineEvent(
@@ -1442,13 +1448,17 @@ def test_verifier_rejects_oracle_mismatch(
     )
 
 
-def test_event_validation_mismatch_writes_distinct_sealed_digest_only_receipt(
+def test_event_validation_failure_field_identifies_one_counter_without_raw_values(
     external_paths: dict[str, Path],
 ) -> None:
-    """A rejected canonical event retains only the two event digests."""
+    """Removing field classification would hide the counter that caused rejection."""
     harness = _Harness()
     harness.stdout_transform = lambda _value, _run: (
-        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+        _event_bytes(
+            harness.prepare_calls[-1],
+            attribute_overrides={"total_events": 987654321},
+        )
+        + b"\n"
     )
 
     with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
@@ -1461,22 +1471,38 @@ def test_event_validation_mismatch_writes_distinct_sealed_digest_only_receipt(
     receipt = json.loads(written)
     envelope = harness.prepare_calls[0]
     assert observed.value.args == ("runtime result does not equal the independent oracle",)
-    assert receipt == {
-        "actual_event_digest_length": 64,
-        "actual_event_digest_type": "sha256-hex",
-        "actual_event_sha256": hashlib.sha256(
-            _event_bytes(envelope, mismatch=True)
-        ).hexdigest(),
-        "digest_algorithm": "sha256",
-        "failure_class": "independent-event-validation-mismatch",
-        "independent_reference_event_digest_length": 64,
-        "independent_reference_event_digest_type": "sha256-hex",
-        "independent_reference_event_sha256": hashlib.sha256(
-            _event_bytes(envelope)
-        ).hexdigest(),
-        "scenario_id": "long-accounting",
-        "schema_version": "nautilus-phase4-parity-event-failure-receipt-v1",
-        "status": "failed",
+    assert set(receipt) == {
+        "schema_version",
+        "scenario_id",
+        "failure_class",
+        "actual_event_sha256",
+        "reference_event_sha256",
+        "mismatching_fields",
+        "field_commitments",
+    }
+    assert receipt["schema_version"] == "phase4-parity-event-validation-failure-v2"
+    assert receipt["scenario_id"] == "long-accounting"
+    assert receipt["failure_class"] == "independent-event-validation-mismatch"
+    assert receipt["actual_event_sha256"] == hashlib.sha256(
+        _event_bytes(
+            envelope,
+            attribute_overrides={"total_events": 987654321},
+        )
+    ).hexdigest()
+    assert receipt["reference_event_sha256"] == hashlib.sha256(
+        _event_bytes(envelope)
+    ).hexdigest()
+    assert receipt["mismatching_fields"] == ["payload_digest", "total_events"]
+    assert [item["field_name"] for item in receipt["field_commitments"]] == [
+        "payload_digest",
+        "total_events",
+    ]
+    assert receipt["field_commitments"][1]["canonical_type"] == "integer"
+    assert set(receipt["field_commitments"][1]) == {
+        "field_name",
+        "canonical_type",
+        "actual_sha256",
+        "reference_sha256",
     }
     assert written == canonical_json_bytes(receipt) + b"\n"
     observed_stat = receipt_path.stat()
@@ -1485,12 +1511,143 @@ def test_event_validation_mismatch_writes_distinct_sealed_digest_only_receipt(
     assert not external_paths["record"].exists()
     assert not verifier._failure_receipt_path(external_paths["record"]).exists()
     assert b"NautilusBacktestSimulationCompleted" not in written
+    assert b"987654321" not in written
     assert b"request.json" not in written
     assert str(external_paths["transport_root"]).encode() not in written
     _assert_sealed_retained_prefix(
         external_paths["transport_root"],
         expected_names=("parity-long-accounting-run-1",),
     )
+
+
+def test_event_validation_failure_canonical_type_is_bound_before_decimal_hashing() -> None:
+    """Hashing bare scalar text would collide across JSON and decimal types."""
+    assert hasattr(verifier, "_field_commitment"), "v2 field commitments are missing"
+    commitment = verifier._field_commitment(
+        field_name="fees",
+        canonical_type="decimal-string",
+        actual="1",
+        reference="1.0",
+    )
+
+    assert commitment.canonical_type == "decimal-string"
+    assert commitment.actual_sha256 == hashlib.sha256(
+        b'{"type":"decimal-string","value":"1"}'
+    ).hexdigest()
+    assert commitment.reference_sha256 == hashlib.sha256(
+        b'{"type":"decimal-string","value":"1.0"}'
+    ).hexdigest()
+    assert commitment.actual_sha256 != hashlib.sha256(b"1").hexdigest()
+
+
+def test_event_validation_failure_commitment_distinguishes_missing_null_and_zero() -> None:
+    """Collapsing absent, null, and zero would make the observation ambiguous."""
+    assert hasattr(verifier, "_field_commitment"), "v2 field commitments are missing"
+    assert hasattr(verifier, "_MISSING_FIELD"), "a closed missing-value tag is missing"
+    missing_null = verifier._field_commitment(
+        field_name="total_orders",
+        canonical_type="integer",
+        actual=verifier._MISSING_FIELD,
+        reference=None,
+    )
+    missing_zero = verifier._field_commitment(
+        field_name="total_orders",
+        canonical_type="integer",
+        actual=verifier._MISSING_FIELD,
+        reference=0,
+    )
+
+    assert missing_null.actual_sha256 == missing_zero.actual_sha256 == hashlib.sha256(
+        b'{"type":"missing"}'
+    ).hexdigest()
+    assert missing_null.reference_sha256 == hashlib.sha256(
+        b'{"type":"null","value":null}'
+    ).hexdigest()
+    assert missing_zero.reference_sha256 == hashlib.sha256(
+        b'{"type":"integer","value":0}'
+    ).hexdigest()
+    assert len(
+        {
+            missing_null.actual_sha256,
+            missing_null.reference_sha256,
+            missing_zero.reference_sha256,
+        }
+    ) == 3
+
+
+def test_event_validation_failure_fields_follow_repository_order_not_caller_order(
+    external_paths: dict[str, Path],
+) -> None:
+    """Caller insertion order must not reorder the reviewed field inventory."""
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(
+            harness.prepare_calls[-1],
+            attribute_overrides={"fees": "987.65", "total_orders": 777},
+        )
+        + b"\n"
+    )
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle"):
+        _verify(external_paths, harness)
+
+    receipt = json.loads(
+        verifier._event_failure_receipt_path(external_paths["record"]).read_bytes()
+    )
+    assert receipt["mismatching_fields"] == [
+        "payload_digest",
+        "total_orders",
+        "fees",
+    ]
+    assert [item["field_name"] for item in receipt["field_commitments"]] == [
+        "payload_digest",
+        "total_orders",
+        "fees",
+    ]
+
+
+def test_event_validation_failure_no_raw_event_path_stderr_or_exception_text(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expanding the receipt from fixed digests must never capture diagnostic text."""
+    raw_decimal = "98765.43210"
+    secret_exception = "arbitrary-exception-text-from-stderr"
+    secret_path = str(external_paths["record"])
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(
+            harness.prepare_calls[-1],
+            attribute_overrides={"unrealized_pnl": raw_decimal},
+        )
+        + b"\n"
+    )
+
+    def reject_with_secret(*_args, **_kwargs):
+        raise verifier.NautilusBacktestError(secret_exception)
+
+    monkeypatch.setattr(verifier, "validate_isolated_simulation_result", reject_with_secret)
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle"):
+        _verify(external_paths, harness)
+
+    written = verifier._event_failure_receipt_path(
+        external_paths["record"]
+    ).read_bytes()
+    actual_event = _event_bytes(
+        harness.prepare_calls[0],
+        attribute_overrides={"unrealized_pnl": raw_decimal},
+    )
+    for forbidden in (
+        raw_decimal.encode(),
+        actual_event,
+        b"NautilusBacktestSimulationCompleted",
+        b"request.json",
+        secret_path.encode(),
+        b"stderr",
+        secret_exception.encode(),
+    ):
+        assert forbidden not in written
 
 
 def test_event_failure_receipt_partial_publication_preserves_primary_and_custody(
@@ -1590,6 +1747,43 @@ def test_event_failure_receipt_rejects_parent_substitution_and_preserves_primary
     assert retained.exists()
     assert stat.S_IMODE(retained.stat().st_mode) == 0o400
     assert retained.stat().st_nlink == 1
+    assert not record.exists()
+
+
+def test_event_failure_receipt_rejects_inode_substitution_and_preserves_primary(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A replaced receipt name cannot gain evidence authority or hide rejection."""
+    real_fsync = verifier.os.fsync
+    record = external_paths["record"]
+    receipt_path = verifier._event_failure_receipt_path(record)
+    replacement_identity: tuple[int, int] | None = None
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+    )
+
+    def replace_receipt(descriptor: int) -> None:
+        nonlocal replacement_identity
+        if replacement_identity is None and receipt_path.exists():
+            receipt_path.unlink()
+            receipt_path.write_bytes(b"replacement-event-failure-receipt")
+            receipt_path.chmod(0o400)
+            observed = receipt_path.stat()
+            replacement_identity = (observed.st_dev, observed.st_ino)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(verifier.os, "fsync", replace_receipt)
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
+        _verify(external_paths, harness)
+
+    assert replacement_identity is not None
+    named = receipt_path.stat()
+    assert (named.st_dev, named.st_ino) == replacement_identity
+    assert receipt_path.read_bytes() == b"replacement-event-failure-receipt"
+    assert any("event failure receipt" in note for note in observed.value.__notes__)
     assert not record.exists()
 
 

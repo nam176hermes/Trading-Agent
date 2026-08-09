@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, TypeAlias, TypedDict
 
 from pydantic import ValidationError
 
@@ -60,6 +60,51 @@ _RUN_COUNT = 2
 _SHA256_LENGTH = 64
 _FAILURE_RECEIPT_SUFFIX = ".failure.json"
 _EVENT_FAILURE_RECEIPT_SUFFIX = ".event-failure.json"
+
+_CanonicalFieldType: TypeAlias = Literal[
+    "string",
+    "integer",
+    "decimal-string",
+]
+_EVENT_VALIDATION_FIELD_INVENTORY: tuple[
+    tuple[str, _CanonicalFieldType], ...
+] = (
+    ("event_type", "string"),
+    ("family", "string"),
+    ("payload_digest", "string"),
+    ("correlation_id", "string"),
+    ("causation_id", "string"),
+    ("engine_run_id", "string"),
+    ("stream_sequence", "integer"),
+    ("schema_version", "integer"),
+    ("producer_identity", "string"),
+    ("source_commit", "string"),
+    ("config_digest", "string"),
+    ("input_artifacts_sha256", "string"),
+    ("scenario_digest", "string"),
+    ("scenario_id", "string"),
+    ("event_digest", "string"),
+    ("iterations", "integer"),
+    ("total_events", "integer"),
+    ("total_orders", "integer"),
+    ("total_fills", "integer"),
+    ("total_positions", "integer"),
+    ("filled_quantity", "decimal-string"),
+    ("remaining_quantity", "decimal-string"),
+    ("position_quantity", "decimal-string"),
+    ("average_entry_price", "decimal-string"),
+    ("fees", "decimal-string"),
+    ("realized_pnl", "decimal-string"),
+    ("unrealized_pnl", "decimal-string"),
+    ("stop_take_profit_precedence", "string"),
+)
+
+
+class _MissingField:
+    __slots__ = ()
+
+
+_MISSING_FIELD = _MissingField()
 
 
 class ParityVerificationError(RuntimeError):
@@ -114,17 +159,21 @@ class V12R3ParityFailureReceipt(TypedDict):
 class V12R3ParityEventFailureReceipt(TypedDict):
     """Digest-only observation of a rejected canonical runtime event."""
 
-    schema_version: Literal["nautilus-phase4-parity-event-failure-receipt-v1"]
-    status: Literal["failed"]
-    failure_class: Literal["independent-event-validation-mismatch"]
-    digest_algorithm: Literal["sha256"]
+    schema_version: Literal["phase4-parity-event-validation-failure-v2"]
     scenario_id: ScenarioId
+    failure_class: Literal["independent-event-validation-mismatch"]
     actual_event_sha256: str
-    actual_event_digest_type: Literal["sha256-hex"]
-    actual_event_digest_length: Literal[64]
-    independent_reference_event_sha256: str
-    independent_reference_event_digest_type: Literal["sha256-hex"]
-    independent_reference_event_digest_length: Literal[64]
+    reference_event_sha256: str
+    mismatching_fields: tuple[str, ...]
+    field_commitments: tuple[dict[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _EventFieldCommitment:
+    field_name: str
+    canonical_type: _CanonicalFieldType
+    actual_sha256: str
+    reference_sha256: str
 
 
 class _ResultDigestMismatch(ParityVerificationError):
@@ -146,7 +195,7 @@ class _ResultDigestMismatch(ParityVerificationError):
 
 
 class _EventValidationMismatch(ParityVerificationError):
-    """Carry only canonical event digests across forensic transport sealing."""
+    """Carry only bounded event commitments across forensic transport sealing."""
 
     def __init__(
         self,
@@ -154,11 +203,13 @@ class _EventValidationMismatch(ParityVerificationError):
         scenario_id: ScenarioId,
         actual_event_sha256: str,
         independent_reference_event_sha256: str,
+        field_commitments: tuple[_EventFieldCommitment, ...],
     ) -> None:
         super().__init__("runtime result does not equal the independent oracle")
         self.scenario_id = scenario_id
         self.actual_event_sha256 = actual_event_sha256
         self.independent_reference_event_sha256 = independent_reference_event_sha256
+        self.field_commitments = field_commitments
 
 
 @dataclass(frozen=True, slots=True)
@@ -1448,6 +1499,102 @@ def _launch_once(
     return stdout[:-1]
 
 
+def _scalar_commitment_sha256(
+    value: object,
+    *,
+    canonical_type: _CanonicalFieldType,
+) -> str:
+    if value is _MISSING_FIELD:
+        tagged: dict[str, object] = {"type": "missing"}
+    elif value is None:
+        tagged = {"type": "null", "value": None}
+    elif type(value) is bool:
+        tagged = {"type": "boolean", "value": value}
+    elif type(value) is int:
+        tagged = {"type": "integer", "value": value}
+    elif type(value) is str:
+        tagged = {
+            "type": (
+                "decimal-string"
+                if canonical_type == "decimal-string"
+                else "string"
+            ),
+            "value": value,
+        }
+    else:
+        raise ParityVerificationError(
+            "event validation observation scalar type is invalid"
+        )
+    return hashlib.sha256(canonical_json_bytes(tagged)).hexdigest()
+
+
+def _field_commitment(
+    *,
+    field_name: str,
+    canonical_type: _CanonicalFieldType,
+    actual: object,
+    reference: object,
+) -> _EventFieldCommitment:
+    """Commit one fixed field without retaining either scalar value."""
+
+    return _EventFieldCommitment(
+        field_name=field_name,
+        canonical_type=canonical_type,
+        actual_sha256=_scalar_commitment_sha256(
+            actual,
+            canonical_type=canonical_type,
+        ),
+        reference_sha256=_scalar_commitment_sha256(
+            reference,
+            canonical_type=canonical_type,
+        ),
+    )
+
+
+def _event_validation_field_values(
+    event: EngineEventEnvelope,
+) -> dict[str, object]:
+    attributes = {
+        attribute.name: attribute.value for attribute in event.payload.attributes
+    }
+    values: dict[str, object] = {
+        "event_type": event.payload.event_type,
+        "family": event.payload.family.value,
+        "payload_digest": event.payload_digest,
+        "correlation_id": str(event.correlation_id),
+        "causation_id": str(event.causation_id),
+        "engine_run_id": str(event.engine_run_id),
+        "stream_sequence": event.stream_sequence,
+        "schema_version": event.schema_version,
+        "producer_identity": event.producer_identity,
+        "source_commit": event.source_commit,
+        "config_digest": event.config_digest,
+    }
+    for field_name, _canonical_type in _EVENT_VALIDATION_FIELD_INVENTORY:
+        if field_name not in values:
+            values[field_name] = attributes.get(field_name, _MISSING_FIELD)
+    return values
+
+
+def _event_field_commitments(
+    actual: EngineEventEnvelope,
+    reference: EngineEventEnvelope,
+) -> tuple[_EventFieldCommitment, ...]:
+    actual_values = _event_validation_field_values(actual)
+    reference_values = _event_validation_field_values(reference)
+    mismatches: list[_EventFieldCommitment] = []
+    for field_name, canonical_type in _EVENT_VALIDATION_FIELD_INVENTORY:
+        commitment = _field_commitment(
+            field_name=field_name,
+            canonical_type=canonical_type,
+            actual=actual_values[field_name],
+            reference=reference_values[field_name],
+        )
+        if commitment.actual_sha256 != commitment.reference_sha256:
+            mismatches.append(commitment)
+    return tuple(mismatches)
+
+
 def _validated_event(
     event_bytes: bytes,
     *,
@@ -1478,12 +1625,19 @@ def _validated_event(
     try:
         validated = validate_isolated_simulation_result(envelope, event, expected)
     except (BacktestScenarioError, NautilusBacktestError) as exc:
+        reference_event_envelope = EngineEventEnvelope.model_validate_json(
+            reference_event
+        )
         raise _EventValidationMismatch(
             scenario_id=expected.scenario_id,
             actual_event_sha256=hashlib.sha256(event_bytes).hexdigest(),
             independent_reference_event_sha256=hashlib.sha256(
                 reference_event
             ).hexdigest(),
+            field_commitments=_event_field_commitments(
+                event,
+                reference_event_envelope,
+            ),
         ) from exc
     return event, validated, expected
 
@@ -1658,19 +1812,25 @@ def _event_failure_receipt(
     """Project a rejected event into the approved digest-only vocabulary."""
 
     return V12R3ParityEventFailureReceipt(
-        schema_version="nautilus-phase4-parity-event-failure-receipt-v1",
-        status="failed",
-        failure_class="independent-event-validation-mismatch",
-        digest_algorithm="sha256",
+        schema_version="phase4-parity-event-validation-failure-v2",
         scenario_id=mismatch.scenario_id,
+        failure_class="independent-event-validation-mismatch",
         actual_event_sha256=mismatch.actual_event_sha256,
-        actual_event_digest_type="sha256-hex",
-        actual_event_digest_length=_SHA256_LENGTH,
-        independent_reference_event_sha256=(
+        reference_event_sha256=(
             mismatch.independent_reference_event_sha256
         ),
-        independent_reference_event_digest_type="sha256-hex",
-        independent_reference_event_digest_length=_SHA256_LENGTH,
+        mismatching_fields=tuple(
+            commitment.field_name for commitment in mismatch.field_commitments
+        ),
+        field_commitments=tuple(
+            {
+                "field_name": commitment.field_name,
+                "canonical_type": commitment.canonical_type,
+                "actual_sha256": commitment.actual_sha256,
+                "reference_sha256": commitment.reference_sha256,
+            }
+            for commitment in mismatch.field_commitments
+        ),
     )
 
 
