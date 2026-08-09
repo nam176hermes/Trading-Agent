@@ -1,0 +1,80 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "ExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "gross": {
+          "$ref": "#/$defs/Money"
+        },
+        "net": {
+          "$ref": "#/$defs/Money"
+        },
+        "pending": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "currency",
+        "gross",
+        "net",
+        "pending"
+      ],
+      "title": "ExposureSnapshot",
+      "type": "object"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "exposure": {
+      "$ref": "#/$defs/ExposureSnapshot"
+    },
+    "strategy_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Strategy Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "strategy_id",
+    "exposure"
+  ],
+  "title": "StrategyExposureSnapshot",
+  "type": "object"
+}

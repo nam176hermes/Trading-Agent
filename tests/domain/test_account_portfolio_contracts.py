@@ -7,7 +7,22 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from packages.domain import Currency, InstrumentId, Money, Price, ProductType, Quantity
+from packages.domain import (
+    AccountBalanceSnapshot as PublicAccountBalanceSnapshot,
+    AccountPortfolioSnapshot as PublicAccountPortfolioSnapshot,
+    AccountPositionSnapshot as PublicAccountPositionSnapshot,
+    Currency,
+    ExposureSnapshot as PublicExposureSnapshot,
+    InstrumentExposureSnapshot as PublicInstrumentExposureSnapshot,
+    InstrumentId,
+    Money,
+    PositionMark as PublicPositionMark,
+    Price,
+    ProductType,
+    Quantity,
+    StrategyExposureSnapshot as PublicStrategyExposureSnapshot,
+    VenueExposureSnapshot as PublicVenueExposureSnapshot,
+)
 from packages.domain.portfolio import (
     AccountBalanceSnapshot,
     AccountPortfolioSnapshot,
@@ -170,6 +185,17 @@ def account_portfolio(**changes: object) -> AccountPortfolioSnapshot:
     return AccountPortfolioSnapshot(**values)
 
 
+def test_account_portfolio_contracts_are_public_domain_exports() -> None:
+    assert PublicAccountBalanceSnapshot is AccountBalanceSnapshot
+    assert PublicPositionMark is PositionMark
+    assert PublicAccountPositionSnapshot is AccountPositionSnapshot
+    assert PublicExposureSnapshot is ExposureSnapshot
+    assert PublicInstrumentExposureSnapshot is InstrumentExposureSnapshot
+    assert PublicStrategyExposureSnapshot is StrategyExposureSnapshot
+    assert PublicVenueExposureSnapshot is VenueExposureSnapshot
+    assert PublicAccountPortfolioSnapshot is AccountPortfolioSnapshot
+
+
 def test_account_balance_requires_one_currency_and_nonnegative_locked_margin() -> None:
     balance = account_balance()
 
@@ -244,6 +270,39 @@ def test_account_portfolio_contracts_forbid_extra_fields_and_are_frozen() -> Non
         account_balance(unexpected="value")
     with pytest.raises(ValidationError, match="frozen"):
         balance.account_id = "account-2"  # type: ignore[misc]
+
+
+def test_account_portfolio_aggregate_requires_utc_and_canonical_account_id() -> None:
+    with pytest.raises(ValidationError, match="UTC"):
+        account_portfolio(observed_at=datetime(2026, 8, 9, 12, 0))
+    with pytest.raises(ValidationError):
+        account_portfolio(account_id="invalid account")
+
+
+def test_account_portfolio_wrappers_require_canonical_identifiers() -> None:
+    with pytest.raises(ValidationError):
+        StrategyExposureSnapshot(
+            strategy_id="invalid strategy", exposure=exposure()
+        )
+    with pytest.raises(ValidationError):
+        VenueExposureSnapshot(venue_id="invalid venue", exposure=exposure())
+
+
+def test_account_portfolio_aggregate_and_wrappers_are_strict_and_frozen() -> None:
+    models = (
+        exposure(),
+        InstrumentExposureSnapshot(instrument=INSTRUMENT, exposure=exposure()),
+        StrategyExposureSnapshot(strategy_id="strategy-1", exposure=exposure()),
+        VenueExposureSnapshot(venue_id="ALPACA", exposure=exposure()),
+        account_portfolio(),
+    )
+
+    for model in models:
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            type(model).model_validate({**model.model_dump(), "unexpected": "value"})
+        field = next(iter(type(model).model_fields))
+        with pytest.raises(ValidationError, match="frozen"):
+            setattr(model, field, getattr(model, field))
 
 
 def test_account_portfolio_requires_canonical_unique_ordered_members() -> None:

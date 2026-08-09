@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Account Id",
+      "type": "string"
+    },
+    "cash": {
+      "$ref": "#/$defs/Money"
+    },
+    "currency": {
+      "$ref": "#/$defs/Currency"
+    },
+    "fees": {
+      "$ref": "#/$defs/Money"
+    },
+    "funding": {
+      "$ref": "#/$defs/Money"
+    },
+    "locked_funds": {
+      "$ref": "#/$defs/Money"
+    },
+    "margin_used": {
+      "$ref": "#/$defs/Money"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "realized_pnl": {
+      "$ref": "#/$defs/Money"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "unrealized_pnl": {
+      "$ref": "#/$defs/Money"
+    }
+  },
+  "required": [
+    "account_id",
+    "currency",
+    "cash",
+    "locked_funds",
+    "margin_used",
+    "realized_pnl",
+    "unrealized_pnl",
+    "fees",
+    "funding",
+    "observed_at",
+    "schema_version"
+  ],
+  "title": "AccountBalanceSnapshot",
+  "type": "object"
+}

@@ -40,7 +40,20 @@ from .orders import (
     reduce_order,
     validate_fill_report_batch,
 )
-from .portfolio import PortfolioSnapshot, PositionSnapshot, TargetPortfolio, TargetPosition
+from .portfolio import (
+    AccountBalanceSnapshot,
+    AccountPortfolioSnapshot,
+    AccountPositionSnapshot,
+    ExposureSnapshot,
+    InstrumentExposureSnapshot,
+    PortfolioSnapshot,
+    PositionMark,
+    PositionSnapshot,
+    StrategyExposureSnapshot,
+    TargetPortfolio,
+    TargetPosition,
+    VenueExposureSnapshot,
+)
 from .primitives import (
     CANONICAL_DECIMAL_POLICY_VERSION,
     DEFAULT_CURRENCY_REGISTRY,
@@ -70,6 +83,9 @@ from .signals import (
 __all__ = [
     "CANONICAL_DECIMAL_POLICY_VERSION",
     "AssetClass",
+    "AccountBalanceSnapshot",
+    "AccountPortfolioSnapshot",
+    "AccountPositionSnapshot",
     "Currency",
     "CurrencyConversion",
     "CurrencyRegistry",
@@ -80,6 +96,7 @@ __all__ = [
     "EvidenceLocatorKind",
     "EvidenceReference",
     "EvidenceSource",
+    "ExposureSnapshot",
     "FillEvent",
     "FillReportStatus",
     "FiniteDecimal",
@@ -88,6 +105,7 @@ __all__ = [
     "InstrumentDefinition",
     "InstrumentId",
     "InstrumentProvenance",
+    "InstrumentExposureSnapshot",
     "LiquiditySide",
     "MarginRequirements",
     "Money",
@@ -107,6 +125,7 @@ __all__ = [
     "OrderStatus",
     "OrderType",
     "PortfolioSnapshot",
+    "PositionMark",
     "PositionSnapshot",
     "Price",
     "ProductType",
@@ -120,6 +139,7 @@ __all__ = [
     "SignalDirection",
     "SignalProposal",
     "SystemUtcClock",
+    "StrategyExposureSnapshot",
     "TargetPortfolio",
     "TargetPosition",
     "TERMINAL_ORDER_STATUSES",
@@ -129,6 +149,7 @@ __all__ = [
     "require_utc",
     "validate_event_batch",
     "validate_fill_report_batch",
+    "VenueExposureSnapshot",
     "normalize_market_symbol",
     "reduce_order",
 ]

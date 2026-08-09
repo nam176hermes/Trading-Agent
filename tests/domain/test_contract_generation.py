@@ -23,6 +23,14 @@ EXPECTED = {
     "TargetPortfolio.json",
     "PositionSnapshot.json",
     "PortfolioSnapshot.json",
+    "AccountBalanceSnapshot.json",
+    "PositionMark.json",
+    "AccountPositionSnapshot.json",
+    "ExposureSnapshot.json",
+    "InstrumentExposureSnapshot.json",
+    "StrategyExposureSnapshot.json",
+    "VenueExposureSnapshot.json",
+    "AccountPortfolioSnapshot.json",
     "RiskStateSnapshot.json",
     "RiskDecision.json",
     "OrderIntent.json",
@@ -67,6 +75,25 @@ def test_domain_schema_is_valid_json_and_strict(filename: str) -> None:
     assert path.is_file()
     schema = json.loads(path.read_text(encoding="utf-8"))
     assert schema["additionalProperties"] is False
+
+
+def test_account_portfolio_schemas_publish_strict_exact_contracts() -> None:
+    snapshot = json.loads(
+        (SCHEMA_ROOT / "AccountPortfolioSnapshot.json").read_text(encoding="utf-8")
+    )
+    exposure = json.loads(
+        (SCHEMA_ROOT / "ExposureSnapshot.json").read_text(encoding="utf-8")
+    )
+
+    assert snapshot["additionalProperties"] is False
+    assert {
+        "account_id",
+        "reporting_currency",
+        "balances",
+        "positions",
+        "total_exposure",
+    } <= set(snapshot["required"])
+    assert {"gross", "net", "pending"} <= set(exposure["required"])
 
 
 @pytest.mark.parametrize(

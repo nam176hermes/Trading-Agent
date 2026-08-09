@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "marked_at": {
+      "format": "date-time",
+      "title": "Marked At",
+      "type": "string"
+    },
+    "price": {
+      "$ref": "#/$defs/Price"
+    },
+    "provenance_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Provenance Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "price",
+    "marked_at",
+    "provenance_id"
+  ],
+  "title": "PositionMark",
+  "type": "object"
+}
