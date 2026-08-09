@@ -24,6 +24,7 @@ from packages.domain import (
     OrderQuantity,
     OrderSide,
     PortfolioFillEntry,
+    PortfolioFundingEntry,
     PortfolioMarkEntry,
     PortfolioOpeningEntry,
     PortfolioReconciliationEntry,
@@ -133,32 +134,46 @@ def opening(*, number: int = 1, account: str = "account-1", stream: UUID = STREA
     )
 
 
-def fill(*, number: int, account: str = "account-1", stream: UUID = STREAM) -> EventEnvelope[object]:
+def fill(
+    *,
+    number: int,
+    account: str = "account-1",
+    stream: UUID = STREAM,
+    execution: int | None = None,
+    side: OrderSide = OrderSide.BUY,
+    quantity: str = "1",
+    price: str = "100",
+    status: FillReportStatus = FillReportStatus.FILLED,
+    duplicate_of: UUID | None = None,
+    correction_of: UUID | None = None,
+    bust_of: UUID | None = None,
+) -> EventEnvelope[object]:
     at = NOW + timedelta(minutes=number)
+    execution_number = 1_000 + number if execution is None else execution
     return envelope(
         PortfolioFillEntry(
             account_id=account,
             strategy_id="strategy-1",
             fill=FillEvent(
-                execution_id=uid(1_000 + number),
-                order_id=uid(2_000 + number),
+                execution_id=uid(execution_number),
+                order_id=uid(2_000 + execution_number),
                 report_sequence=1,
-                venue_trade_id=f"trade-{number}",
+                venue_trade_id=f"trade-{execution_number}",
                 instrument_definition=definition(),
-                side=OrderSide.BUY,
+                side=side,
                 liquidity_side=LiquiditySide.MAKER,
-                status=FillReportStatus.FILLED,
-                quantity=OrderQuantity(Decimal("1"), 2),
-                cumulative_fill_quantity=OrderQuantity(Decimal("1"), 2),
+                status=status,
+                quantity=OrderQuantity(Decimal(quantity), 2),
+                cumulative_fill_quantity=OrderQuantity(Decimal(quantity), 2),
                 leaves_quantity=OrderQuantity(Decimal("0"), 2),
-                order_quantity=OrderQuantity(Decimal("1"), 2),
-                last_fill_price=Price(Decimal("100"), Currency.USD),
-                average_fill_price=Price(Decimal("100"), Currency.USD),
+                order_quantity=OrderQuantity(Decimal(quantity), 2),
+                last_fill_price=Price(Decimal(price), Currency.USD),
+                average_fill_price=Price(Decimal(price), Currency.USD),
                 commission=money("0"),
                 reconciliation_source=ReconciliationSource.VENUE,
-                duplicate_of_execution_id=None,
-                correction_of_execution_id=None,
-                bust_of_execution_id=None,
+                duplicate_of_execution_id=duplicate_of,
+                correction_of_execution_id=correction_of,
+                bust_of_execution_id=bust_of,
                 filled_at=at,
                 schema_version="2.0",
             ),
@@ -234,6 +249,60 @@ def foreign_reconciliation() -> PortfolioReconciliationEntry:
     )
 
 
+def funding(*, number: int, funding_id: UUID, amount: str = "7") -> EventEnvelope[object]:
+    at = NOW + timedelta(minutes=number)
+    return envelope(
+        PortfolioFundingEntry(
+            account_id="account-1",
+            funding_id=funding_id,
+            strategy_id=None,
+            instrument=None,
+            amount=money(amount),
+            provenance_id="funding-v1",
+            effective_at=at,
+            schema_version="portfolio-entry-v1",
+        ),
+        number=number,
+    )
+
+
+def reconciliation(
+    *, number: int, reconciliation_id: UUID, cash: str = "777"
+) -> EventEnvelope[object]:
+    at = NOW + timedelta(minutes=number)
+    reconciled_balance = balance().model_copy(update={"cash": money(cash)})
+    zero_exposure = ExposureSnapshot(
+        currency=Currency.USD,
+        gross=money("0"),
+        net=money("0"),
+        pending=money("0"),
+    )
+    return envelope(
+        PortfolioReconciliationEntry(
+            account_id="account-1",
+            reconciliation_id=reconciliation_id,
+            source=PortfolioReconciliationSource.VENUE,
+            source_revision=f"revision-{cash}",
+            snapshot=AccountPortfolioSnapshot(
+                snapshot_id=uid(8_000 + number),
+                account_id="account-1",
+                reporting_currency=Currency.USD,
+                balances=(reconciled_balance,),
+                positions=(),
+                total_exposure=zero_exposure,
+                instrument_exposures=(),
+                strategy_exposures=(),
+                venue_exposures=(),
+                observed_at=NOW,
+                schema_version="portfolio-snapshot-v1",
+            ),
+            effective_at=at,
+            schema_version="portfolio-entry-v1",
+        ),
+        number=number,
+    )
+
+
 def hash_consistent_record_with_state(record, state):
     canonical_snapshot = derive_account_snapshot(state, state.snapshot.observed_at)
     canonical_state_json = _canonical_json(
@@ -270,6 +339,158 @@ def test_snapshot_tail_is_identical_to_full_replay(portfolio_events) -> None:
     assert tail == full
     assert tail.canonical_state_json == full.canonical_state_json
     assert tail.state_hash == full.state_hash
+
+
+def test_post_mark_fill_has_identical_marked_full_and_tail_snapshots() -> None:
+    events = (opening(), fill(number=2), mark(number=3), fill(number=4, price="110"))
+
+    full = replay_portfolio(events)
+    record = snapshot_from_portfolio_result(replay_portfolio(events[:3]))
+    tail = replay_portfolio(events[3:], snapshot=record)
+
+    assert tail == full
+    position = full.canonical_snapshot.positions[0]
+    assert position.mark is not None
+    assert position.mark.price.amount == Decimal("101")
+    assert position.average_entry_price is not None
+    assert position.average_entry_price.amount == Decimal("105")
+    assert position.unrealized_pnl.amount == Decimal("-8")
+    assert full.canonical_snapshot.balances[0].unrealized_pnl.amount == Decimal("-8")
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_quantity", "expected_average", "expected_unrealized", "expected_realized"),
+    [
+        ("close", "0.00", None, "0", "10"),
+        ("correction", "1.00", "90", "11", "0"),
+        ("bust", "0.00", None, "0", "0"),
+    ],
+)
+def test_post_mark_close_correction_and_bust_match_full_and_tail_snapshots(
+    action: str,
+    expected_quantity: str,
+    expected_average: str | None,
+    expected_unrealized: str,
+    expected_realized: str,
+) -> None:
+    normal = fill(number=2)
+    if action == "close":
+        adjustment = fill(number=4, side=OrderSide.SELL, price="110")
+    elif action == "correction":
+        adjustment = fill(
+            number=4,
+            price="90",
+            status=FillReportStatus.CORRECTION,
+            correction_of=normal.payload.fill.execution_id,
+        )
+    else:
+        adjustment = fill(
+            number=4,
+            status=FillReportStatus.BUST,
+            bust_of=normal.payload.fill.execution_id,
+        )
+    events = (opening(), normal, mark(number=3), adjustment)
+
+    full = replay_portfolio(events)
+    record = snapshot_from_portfolio_result(replay_portfolio(events[:3]))
+    tail = replay_portfolio(events[3:], snapshot=record)
+
+    assert tail == full
+    position = full.canonical_snapshot.positions[0]
+    assert position.quantity.value == Decimal(expected_quantity)
+    assert (
+        position.average_entry_price.amount
+        if position.average_entry_price is not None
+        else None
+    ) == (Decimal(expected_average) if expected_average is not None else None)
+    assert (position.mark.price.amount if position.mark is not None else None) == (
+        Decimal("101") if expected_average is not None else None
+    )
+    assert position.unrealized_pnl.amount == Decimal(expected_unrealized)
+    assert position.realized_pnl.amount == Decimal(expected_realized)
+    assert full.canonical_snapshot.balances[0].unrealized_pnl.amount == Decimal(
+        expected_unrealized
+    )
+
+
+def test_canonical_snapshot_retains_closed_position_accounting_without_exposure() -> None:
+    result = replay_portfolio(
+        (
+            opening(),
+            fill(number=2),
+            fill(number=3, side=OrderSide.SELL, price="110"),
+        )
+    )
+
+    assert len(result.canonical_snapshot.positions) == 1
+    position = result.canonical_snapshot.positions[0]
+    assert position.quantity.value == Decimal("0.00")
+    assert position.average_entry_price is None
+    assert position.mark is None
+    assert position.realized_pnl.amount == Decimal("10")
+    assert position.unrealized_pnl.amount == Decimal("0")
+    assert result.canonical_snapshot.total_exposure.gross.amount == Decimal("0")
+    assert result.canonical_snapshot.instrument_exposures == ()
+
+
+def test_snapshot_tail_rejects_exact_and_conflicting_funding_identity_reuse() -> None:
+    original = funding(number=2, funding_id=uid(7_000))
+    record = snapshot_from_portfolio_result(replay_portfolio((opening(), original)))
+    exact_repeat = envelope(original.payload, number=3)
+    conflicting_repeat = funding(number=3, funding_id=uid(7_000), amount="9")
+
+    with pytest.raises(PortfolioReplayError, match="duplicate funding identity"):
+        replay_portfolio((exact_repeat,), snapshot=record)
+    with pytest.raises(PortfolioReplayError, match="conflicting funding identity"):
+        replay_portfolio((conflicting_repeat,), snapshot=record)
+
+
+def test_snapshot_tail_rejects_exact_and_conflicting_reconciliation_identity_reuse() -> None:
+    original = reconciliation(number=2, reconciliation_id=uid(7_100))
+    record = snapshot_from_portfolio_result(replay_portfolio((opening(), original)))
+    exact_repeat = envelope(original.payload, number=3)
+    conflicting_repeat = reconciliation(
+        number=3, reconciliation_id=uid(7_100), cash="778"
+    )
+
+    with pytest.raises(PortfolioReplayError, match="duplicate reconciliation identity"):
+        replay_portfolio((exact_repeat,), snapshot=record)
+    with pytest.raises(PortfolioReplayError, match="conflicting reconciliation identity"):
+        replay_portfolio((conflicting_repeat,), snapshot=record)
+
+
+@pytest.mark.parametrize("terminal", ["bust", "reconciliation"])
+def test_snapshot_tail_rejects_exact_and_conflicting_consumed_execution_reuse(
+    terminal: str,
+) -> None:
+    original = fill(number=2, execution=7_200)
+    if terminal == "bust":
+        terminal_event = fill(
+            number=3,
+            execution=7_201,
+            status=FillReportStatus.BUST,
+            bust_of=original.payload.fill.execution_id,
+        )
+    else:
+        terminal_event = reconciliation(number=3, reconciliation_id=uid(7_202))
+    record = snapshot_from_portfolio_result(
+        replay_portfolio((opening(), original, terminal_event))
+    )
+    exact_repeat = envelope(original.payload, number=4)
+    conflicting_fill = original.payload.fill.model_copy(
+        update={
+            "last_fill_price": Price(Decimal("90"), Currency.USD),
+            "average_fill_price": Price(Decimal("90"), Currency.USD),
+        }
+    )
+    conflicting_repeat = envelope(
+        original.payload.model_copy(update={"fill": conflicting_fill}), number=4
+    )
+
+    with pytest.raises(PortfolioReplayError, match="duplicate execution identity"):
+        replay_portfolio((exact_repeat,), snapshot=record)
+    with pytest.raises(PortfolioReplayError, match="conflicting execution identity"):
+        replay_portfolio((conflicting_repeat,), snapshot=record)
 
 
 def test_tampered_record_hash_fails_closed(portfolio_events) -> None:
@@ -310,8 +531,60 @@ def test_snapshot_rejects_tampered_applied_digest_and_effect_index(portfolio_eve
     bad_effect = record.model_copy(
         update={"state": record.state.model_copy(update={"active_effects": (effect,)})}
     )
-    with pytest.raises(PortfolioReplayError, match="state hash"):
+    with pytest.raises(PortfolioReplayError, match="effect"):
         replay_portfolio((), snapshot=bad_effect)
+
+
+def test_snapshot_rejects_hash_consistent_forged_execution_economics() -> None:
+    normal = fill(number=2)
+    prefix = (opening(), normal, mark(number=3))
+    record = snapshot_from_portfolio_result(replay_portfolio(prefix))
+    effect = record.state.active_effects[0]
+    forged_effect = effect.model_copy(
+        update={"cash_deltas": (money("-1"),)}
+    )
+    forged_record = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(update={"active_effects": (forged_effect,)}),
+    )
+    bust_fill = fill(number=4).payload.fill.model_copy(
+        update={
+            "status": FillReportStatus.BUST,
+            "bust_of_execution_id": normal.payload.fill.execution_id,
+        }
+    )
+    bust = fill(number=4).model_copy(
+        update={
+            "payload": fill(number=4).payload.model_copy(update={"fill": bust_fill})
+        }
+    )
+
+    with pytest.raises(PortfolioReplayError, match="effect"):
+        replay_portfolio((bust,), snapshot=forged_record)
+
+
+def test_snapshot_wraps_nested_position_validation_failures() -> None:
+    record = snapshot_from_portfolio_result(
+        replay_portfolio((opening(), fill(number=2), mark(number=3)))
+    )
+    position = record.state.snapshot.positions[0]
+    assert position.mark is not None
+    future_mark = position.mark.model_copy(
+        update={"marked_at": record.state.snapshot.observed_at + timedelta(seconds=1)}
+    )
+    forged_position = position.model_copy(update={"mark": future_mark})
+    forged_state = record.state.model_copy(
+        update={
+            "snapshot": record.state.snapshot.model_copy(
+                update={"positions": (forged_position,)}
+            )
+        }
+    )
+
+    with pytest.raises(PortfolioReplayError, match="canonical portfolio state"):
+        replay_portfolio(
+            (), snapshot=record.model_copy(update={"state": forged_state})
+        )
 
 
 @pytest.mark.parametrize("with_canonical_tail", [False, True])

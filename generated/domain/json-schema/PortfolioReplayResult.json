@@ -252,6 +252,102 @@
       "type": "string",
       "x-currency-registry-version": "currency-v1"
     },
+    "EventEnvelope_PortfolioFillEntry_": {
+      "additionalProperties": false,
+      "properties": {
+        "causation_id": {
+          "format": "uuid",
+          "title": "Causation Id",
+          "type": "string"
+        },
+        "correlation_id": {
+          "format": "uuid",
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "effective_at": {
+          "format": "date-time",
+          "title": "Effective At",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "PortfolioFillEntry",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "ingested_at": {
+          "format": "date-time",
+          "title": "Ingested At",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "payload": {
+          "$ref": "#/$defs/PortfolioFillEntry"
+        },
+        "produced_at": {
+          "format": "date-time",
+          "title": "Produced At",
+          "type": "string"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "stream_id": {
+          "format": "uuid",
+          "title": "Stream Id",
+          "type": "string"
+        },
+        "trace_id": {
+          "format": "uuid",
+          "title": "Trace Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "event_type",
+        "schema_version",
+        "source",
+        "stream_id",
+        "sequence",
+        "observed_at",
+        "ingested_at",
+        "produced_at",
+        "effective_at",
+        "expires_at",
+        "correlation_id",
+        "causation_id",
+        "trace_id",
+        "payload"
+      ],
+      "title": "EventEnvelope[PortfolioFillEntry]",
+      "type": "object"
+    },
     "ExposureSnapshot": {
       "additionalProperties": false,
       "properties": {
@@ -683,6 +779,52 @@
       "title": "PortfolioAppliedEvent",
       "type": "object"
     },
+    "PortfolioBusinessIdentity": {
+      "additionalProperties": false,
+      "description": "Hash-bound source metadata for one durable payload business identity.",
+      "properties": {
+        "event_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Event Digest",
+          "type": "string"
+        },
+        "event_id": {
+          "format": "uuid",
+          "title": "Event Id",
+          "type": "string"
+        },
+        "identity_id": {
+          "format": "uuid",
+          "title": "Identity Id",
+          "type": "string"
+        },
+        "payload_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Digest",
+          "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "stream_id": {
+          "format": "uuid",
+          "title": "Stream Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity_id",
+        "payload_digest",
+        "event_id",
+        "event_digest",
+        "stream_id",
+        "sequence"
+      ],
+      "title": "PortfolioBusinessIdentity",
+      "type": "object"
+    },
     "PortfolioExecutionEffect": {
       "additionalProperties": false,
       "description": "Exact normal-execution deltas retained for one correction or bust.",
@@ -771,11 +913,17 @@
           "title": "Position Key",
           "type": "array"
         },
+        "quantity_before": {
+          "$ref": "#/$defs/Quantity"
+        },
         "quantity_delta": {
           "$ref": "#/$defs/Quantity"
         },
         "realized_pnl_delta": {
           "$ref": "#/$defs/Money"
+        },
+        "source_event": {
+          "$ref": "#/$defs/EventEnvelope_PortfolioFillEntry_"
         },
         "strategy_id": {
           "maxLength": 64,
@@ -791,11 +939,13 @@
         "strategy_id",
         "fill",
         "entry",
+        "source_event",
         "logical_sequence",
         "cash_deltas",
         "balance_realized_pnl_deltas",
         "balance_fee_deltas",
         "position_key",
+        "quantity_before",
         "quantity_delta",
         "realized_pnl_delta",
         "fees_delta",
@@ -1029,6 +1179,22 @@
           "title": "Cursor",
           "type": "array"
         },
+        "execution_identities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PortfolioBusinessIdentity"
+          },
+          "title": "Execution Identities",
+          "type": "array"
+        },
+        "funding_identities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PortfolioBusinessIdentity"
+          },
+          "title": "Funding Identities",
+          "type": "array"
+        },
         "reconciliation": {
           "anyOf": [
             {
@@ -1039,6 +1205,14 @@
             }
           ],
           "default": null
+        },
+        "reconciliation_identities": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PortfolioBusinessIdentity"
+          },
+          "title": "Reconciliation Identities",
+          "type": "array"
         },
         "snapshot": {
           "$ref": "#/$defs/PortfolioWorkingSnapshot"

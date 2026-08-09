@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pydantic import ValidationError
 
 from packages.domain.events import EventEnvelope
+from packages.domain.orders import FillReportStatus
 from packages.domain.portfolio_events import (
     PortfolioConversionEntry,
     PortfolioFillEntry,
@@ -32,7 +33,14 @@ from .models import (
     PortfolioReplayState,
     PortfolioSnapshotRecord,
 )
-from .reducer import apply_portfolio_event, derive_account_snapshot, reduce_portfolio_events
+from .reducer import (
+    apply_portfolio_event,
+    derive_account_snapshot,
+    reduce_portfolio_events,
+    _payload_digest,
+    _sum,
+    validate_execution_effect,
+)
 
 
 _PORTFOLIO_PAYLOAD_TYPES = (
@@ -107,17 +115,142 @@ def _validated_state(state: object) -> PortfolioReplayState:
     if len(state.applied_events) != state.cursor[0].sequence:
         raise PortfolioReplayError("snapshot applied event count does not match cursor")
     account_id = state.snapshot.account_id
-    for effect in state.active_effects:
-        if effect.account_id != account_id or effect.entry.account_id != account_id:
-            raise PortfolioReplayError("snapshot effect account does not match portfolio account")
-        if effect.logical_sequence > state.cursor[0].sequence:
-            raise PortfolioReplayError("snapshot effect sequence exceeds cursor")
     reconciliation = state.reconciliation
     if reconciliation is not None and (
         reconciliation.account_id != account_id
         or reconciliation.snapshot.account_id != account_id
     ):
-        raise PortfolioReplayError("snapshot reconciliation account does not match portfolio account")
+        raise PortfolioReplayError(
+            "snapshot reconciliation account does not match portfolio account"
+        )
+    applied = {item.event_id: item.digest for item in state.applied_events}
+    identity_event_ids: set[object] = set()
+    identity_sequences: set[int] = set()
+    for identities in (
+        state.execution_identities,
+        state.funding_identities,
+        state.reconciliation_identities,
+    ):
+        for identity in identities:
+            if applied.get(identity.event_id) != identity.event_digest:
+                raise PortfolioReplayError(
+                    "snapshot business identity is not bound to an applied event"
+                )
+            if identity.stream_id != state.cursor[0].stream_id:
+                raise PortfolioReplayError(
+                    "snapshot business identity stream does not match cursor"
+                )
+            if identity.sequence > state.cursor[0].sequence:
+                raise PortfolioReplayError(
+                    "snapshot business identity sequence exceeds cursor"
+                )
+            if (
+                identity.event_id in identity_event_ids
+                or identity.sequence in identity_sequences
+            ):
+                raise PortfolioReplayError("snapshot business identity lineage is duplicated")
+            identity_event_ids.add(identity.event_id)
+            identity_sequences.add(identity.sequence)
+    execution_identities = {
+        item.identity_id: item for item in state.execution_identities
+    }
+    latest_reconciliation = (
+        max(state.reconciliation_identities, key=lambda item: item.sequence)
+        if state.reconciliation_identities
+        else None
+    )
+    if (state.reconciliation is None) != (latest_reconciliation is None):
+        raise PortfolioReplayError("snapshot reconciliation identity is incomplete")
+    if (
+        state.reconciliation is not None
+        and latest_reconciliation is not None
+        and latest_reconciliation.payload_digest
+        != _payload_digest(state.reconciliation)
+    ):
+        raise PortfolioReplayError("snapshot reconciliation identity does not match state")
+    effect_event_ids: set[object] = set()
+    logical_sequences: set[int] = set()
+    for effect in state.active_effects:
+        if effect.account_id != account_id or effect.entry.account_id != account_id:
+            raise PortfolioReplayError("snapshot effect account does not match portfolio account")
+        if effect.logical_sequence > state.cursor[0].sequence:
+            raise PortfolioReplayError("snapshot effect sequence exceeds cursor")
+        source = _canonical_event(effect.source_event)
+        if source != effect.source_event or source.payload != effect.entry:
+            raise PortfolioReplayError("snapshot effect source event is invalid")
+        source_digest = event_digest(serialize_event(source))
+        if applied.get(source.event_id) != source_digest:
+            raise PortfolioReplayError("snapshot effect is not bound to an applied event")
+        if source.stream_id != state.cursor[0].stream_id:
+            raise PortfolioReplayError("snapshot effect stream does not match cursor")
+        if source.sequence > state.cursor[0].sequence:
+            raise PortfolioReplayError("snapshot effect source sequence exceeds cursor")
+        identity = execution_identities.get(effect.execution_id)
+        if (
+            identity is None
+            or identity.event_id != source.event_id
+            or identity.event_digest != source_digest
+            or identity.payload_digest != _payload_digest(effect.entry)
+            or identity.sequence != source.sequence
+        ):
+            raise PortfolioReplayError(
+                "snapshot effect is not bound to its execution identity"
+            )
+        if latest_reconciliation is not None and (
+            source.sequence <= latest_reconciliation.sequence
+            or effect.logical_sequence <= latest_reconciliation.sequence
+        ):
+            raise PortfolioReplayError(
+                "snapshot effect predates the latest reconciliation"
+            )
+        if source.event_id in effect_event_ids or effect.logical_sequence in logical_sequences:
+            raise PortfolioReplayError("snapshot effects have duplicate lineage")
+        effect_event_ids.add(source.event_id)
+        logical_sequences.add(effect.logical_sequence)
+        if source.payload.fill.status in (
+            FillReportStatus.PARTIALLY_FILLED,
+            FillReportStatus.FILLED,
+        ) and effect.logical_sequence != source.sequence:
+            raise PortfolioReplayError("snapshot effect logical sequence does not match source")
+        if (
+            source.payload.fill.status is FillReportStatus.CORRECTION
+            and effect.logical_sequence >= source.sequence
+        ):
+            raise PortfolioReplayError("snapshot correction effect lineage is invalid")
+        validate_execution_effect(effect)
+    effects_by_position: dict[tuple[str, str], list] = {}
+    for effect in state.active_effects:
+        effects_by_position.setdefault(effect.position_key, []).append(effect)
+    for position_key, effects in effects_by_position.items():
+        ordered = sorted(effects, key=lambda item: item.logical_sequence)
+        expected_quantity = ordered[0].quantity_before.value
+        expected_average = ordered[0].average_before
+        for effect in ordered:
+            if (
+                effect.quantity_before.value != expected_quantity
+                or effect.average_before != expected_average
+            ):
+                raise PortfolioReplayError("snapshot effect lineage is not contiguous")
+            expected_quantity = _sum(
+                expected_quantity,
+                effect.quantity_delta.value,
+                field="snapshot effect lineage quantity",
+            )
+            expected_average = effect.average_after
+        position = next(
+            (
+                item
+                for item in state.snapshot.positions
+                if (item.strategy_id, item.instrument.canonical) == position_key
+            ),
+            None,
+        )
+        if (
+            position is None
+            or position.quantity.value != expected_quantity
+            or position.average_entry_price != expected_average
+        ):
+            raise PortfolioReplayError("snapshot effect lineage does not match current position")
     return state
 
 
@@ -139,7 +272,7 @@ def _validate_document(document: object, *, record: bool) -> PortfolioReplayResu
         raise PortfolioReplayError("snapshot canonical account does not match replay state")
     try:
         expected_snapshot = derive_account_snapshot(state, state.snapshot.observed_at)
-    except PortfolioReplayError as exc:
+    except (PortfolioReplayError, ValidationError, ValueError) as exc:
         raise PortfolioReplayError("snapshot canonical portfolio state is invalid") from exc
     expected_json = _canonical_state_document(
         state,

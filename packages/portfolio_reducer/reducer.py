@@ -18,6 +18,7 @@ from packages.domain.portfolio import (
     AccountPositionSnapshot,
     ExposureSnapshot,
     InstrumentExposureSnapshot,
+    PositionMark,
     StrategyExposureSnapshot,
     VenueExposureSnapshot,
 )
@@ -34,6 +35,7 @@ from packages.domain.primitives import Money, Price, Quantity
 
 from .models import (
     PortfolioAppliedEvent,
+    PortfolioBusinessIdentity,
     PortfolioExecutionEffect,
     PortfolioPositionState,
     PortfolioReplayError,
@@ -116,6 +118,83 @@ def _event_digest(event: PortfolioEvent) -> str:
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _payload_digest(payload: object) -> str:
+    try:
+        document = payload.model_dump(mode="json")
+        canonical = json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise PortfolioReplayError("portfolio payload cannot be canonically represented") from exc
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _identity_record(event: PortfolioEvent, identity_id) -> PortfolioBusinessIdentity:
+    return PortfolioBusinessIdentity(
+        identity_id=identity_id,
+        payload_digest=_payload_digest(event.payload),
+        event_id=event.event_id,
+        event_digest=_event_digest(event),
+        stream_id=event.stream_id,
+        sequence=event.sequence,
+    )
+
+
+def _updated_identity_tuple(
+    identities: tuple[PortfolioBusinessIdentity, ...],
+    record: PortfolioBusinessIdentity,
+    *,
+    label: str,
+) -> tuple[PortfolioBusinessIdentity, ...]:
+    existing = next(
+        (item for item in identities if item.identity_id == record.identity_id), None
+    )
+    if existing is not None:
+        if existing.payload_digest == record.payload_digest:
+            raise PortfolioReplayError(f"duplicate {label} identity")
+        raise PortfolioReplayError(f"conflicting {label} identity")
+    return tuple(
+        sorted((*identities, record), key=lambda item: item.identity_id.bytes)
+    )
+
+
+def _business_identities(
+    state: PortfolioReplayState,
+    event: PortfolioEvent,
+) -> tuple[
+    tuple[PortfolioBusinessIdentity, ...],
+    tuple[PortfolioBusinessIdentity, ...],
+    tuple[PortfolioBusinessIdentity, ...],
+]:
+    execution = state.execution_identities
+    funding = state.funding_identities
+    reconciliation = state.reconciliation_identities
+    payload = event.payload
+    if type(payload) is PortfolioFillEntry:
+        execution = _updated_identity_tuple(
+            execution,
+            _identity_record(event, payload.fill.execution_id),
+            label="execution",
+        )
+    elif type(payload) is PortfolioFundingEntry:
+        funding = _updated_identity_tuple(
+            funding,
+            _identity_record(event, payload.funding_id),
+            label="funding",
+        )
+    elif type(payload) is PortfolioReconciliationEntry:
+        reconciliation = _updated_identity_tuple(
+            reconciliation,
+            _identity_record(event, payload.reconciliation_id),
+            label="reconciliation",
+        )
+    return execution, funding, reconciliation
+
+
 def _validate_event(event: object) -> PortfolioEvent:
     if not isinstance(event, EventEnvelope):
         raise PortfolioReplayError("event must be an EventEnvelope")
@@ -152,6 +231,9 @@ def _next_state(
     reconciliation: PortfolioReconciliationEntry | None = None,
 ) -> PortfolioReplayState:
     digest = _event_digest(event)
+    execution_identities, funding_identities, reconciliation_identities = (
+        _business_identities(state, event)
+    )
     applied = {item.event_id: item.digest for item in state.applied_events}
     applied[event.event_id] = digest
     cursor = {item.stream_id: item.sequence for item in state.cursor}
@@ -165,6 +247,9 @@ def _next_state(
         applied_events=_sorted_applied(applied),
         valuation_rates=state.valuation_rates if valuation_rates is None else valuation_rates,
         active_effects=active_effects if active_effects is not None else state.active_effects,
+        execution_identities=execution_identities,
+        funding_identities=funding_identities,
+        reconciliation_identities=reconciliation_identities,
         reconciliation=state.reconciliation if reconciliation is None else reconciliation,
     )
 
@@ -240,35 +325,31 @@ def _cash_deltas(fill: FillEvent) -> tuple[Money, ...]:
     )
 
 
-def _fill_effect(
-    state: PortfolioReplayState,
-    entry: PortfolioFillEntry,
+def _fill_accounting(
+    fill: FillEvent,
     *,
-    logical_sequence: int,
-) -> tuple[PortfolioExecutionEffect, PortfolioPositionState]:
-    fill = entry.fill
-    existing = _find_position(state, entry.strategy_id, fill.instrument_definition.instrument_id.canonical)
-    position = existing or _new_position(entry, fill)
+    current: Decimal,
+    average_before: Price | None,
+) -> tuple[Decimal, Decimal, Price | None, Decimal, Decimal]:
     definition = fill.instrument_definition
-    if position.instrument_definition is not None and position.instrument_definition != definition:
-        raise PortfolioReplayError("fill instrument definition conflicts with active position")
     signed_fill = fill.quantity.value if fill.side is OrderSide.BUY else -fill.quantity.value
-    current = position.quantity.value
     residual = _sum(current, signed_fill, field="position quantity")
     closed = min(abs(current), abs(signed_fill))
     realized_delta = Decimal(0)
     if current > 0 and signed_fill < 0:
-        assert position.average_entry_price is not None
+        if average_before is None:
+            raise PortfolioReplayError("long position requires an average entry price")
         realized_delta = _product(
-            _sum(fill.last_fill_price.amount, -position.average_entry_price.amount, field="realized PnL"),
+            _sum(fill.last_fill_price.amount, -average_before.amount, field="realized PnL"),
             closed,
             definition.multiplier,
             field="realized PnL",
         )
     elif current < 0 and signed_fill > 0:
-        assert position.average_entry_price is not None
+        if average_before is None:
+            raise PortfolioReplayError("short position requires an average entry price")
         realized_delta = _product(
-            _sum(position.average_entry_price.amount, -fill.last_fill_price.amount, field="realized PnL"),
+            _sum(average_before.amount, -fill.last_fill_price.amount, field="realized PnL"),
             closed,
             definition.multiplier,
             field="realized PnL",
@@ -278,26 +359,98 @@ def _fill_effect(
     elif current == 0 or current * residual < 0:
         next_average = fill.last_fill_price
     elif current * signed_fill > 0:
-        assert position.average_entry_price is not None
+        if average_before is None:
+            raise PortfolioReplayError("open position requires an average entry price")
         numerator = _sum(
-            _product(abs(current), position.average_entry_price.amount, field="weighted average"),
+            _product(abs(current), average_before.amount, field="weighted average"),
             _product(abs(signed_fill), fill.last_fill_price.amount, field="weighted average"),
             field="weighted average",
         )
-        next_average = Price(_decimal(_fraction(numerator) / _fraction(abs(residual)), field="weighted average"), definition.settlement_currency)
+        next_average = Price(
+            _decimal(_fraction(numerator) / _fraction(abs(residual)), field="weighted average"),
+            definition.settlement_currency,
+        )
     else:
-        next_average = position.average_entry_price
-    fee_delta = fill.commission.amount if fill.commission.currency is definition.settlement_currency else Decimal(0)
+        next_average = average_before
+    fee_delta = (
+        fill.commission.amount
+        if fill.commission.currency is definition.settlement_currency
+        else Decimal(0)
+    )
+    return signed_fill, residual, next_average, realized_delta, fee_delta
+
+
+def _mark_and_unrealized(
+    position: PortfolioPositionState,
+    *,
+    quantity: Quantity,
+    average_entry_price: Price | None,
+    retained_mark: PositionMark | None = None,
+) -> tuple[PositionMark | None, Money]:
+    if quantity.value == 0:
+        return None, _money(
+            Decimal(0), position.settlement_currency, field="flat position unrealized PnL"
+        )
+    selected_mark = position.mark if retained_mark is None else retained_mark
+    if selected_mark is None:
+        return None, _money(
+            Decimal(0), position.settlement_currency, field="unmarked position unrealized PnL"
+        )
+    if average_entry_price is None or position.instrument_definition is None:
+        raise PortfolioReplayError("marked position requires cost basis and instrument definition")
+    unrealized = _product(
+        _sum(
+            selected_mark.price.amount,
+            -average_entry_price.amount,
+            field="unrealized PnL",
+        ),
+        quantity.value,
+        position.instrument_definition.multiplier,
+        field="unrealized PnL",
+    )
+    return selected_mark, _money(
+        unrealized, position.settlement_currency, field="unrealized PnL"
+    )
+
+
+def _fill_effect(
+    state: PortfolioReplayState,
+    entry: PortfolioFillEntry,
+    *,
+    source_event: PortfolioEvent,
+    logical_sequence: int,
+    retained_mark: PositionMark | None = None,
+) -> tuple[PortfolioExecutionEffect, PortfolioPositionState]:
+    fill = entry.fill
+    existing = _find_position(state, entry.strategy_id, fill.instrument_definition.instrument_id.canonical)
+    position = existing or _new_position(entry, fill)
+    definition = fill.instrument_definition
+    if position.instrument_definition is not None and position.instrument_definition != definition:
+        raise PortfolioReplayError("fill instrument definition conflicts with active position")
+    current = position.quantity.value
+    signed_fill, residual, next_average, realized_delta, fee_delta = _fill_accounting(
+        fill,
+        current=current,
+        average_before=position.average_entry_price,
+    )
+    next_quantity = _quantity(residual, fill.quantity.precision)
+    next_mark, next_unrealized = _mark_and_unrealized(
+        position,
+        quantity=next_quantity,
+        average_entry_price=next_average,
+        retained_mark=retained_mark,
+    )
     next_position = PortfolioPositionState(
         account_id=position.account_id,
         strategy_id=position.strategy_id,
         instrument=position.instrument,
         instrument_definition=definition,
         settlement_currency=position.settlement_currency,
-        quantity=_quantity(residual, fill.quantity.precision),
+        quantity=next_quantity,
+        mark=next_mark,
         average_entry_price=next_average,
         realized_pnl=_money(_sum(position.realized_pnl.amount, realized_delta, field="realized PnL"), position.settlement_currency, field="realized PnL"),
-        unrealized_pnl=position.unrealized_pnl,
+        unrealized_pnl=next_unrealized,
         fees=_money(_sum(position.fees.amount, fee_delta, field="position fees"), position.settlement_currency, field="position fees"),
         funding=position.funding,
         observed_at=entry.effective_at,
@@ -309,6 +462,7 @@ def _fill_effect(
         strategy_id=entry.strategy_id,
         fill=fill,
         entry=entry,
+        source_event=source_event,
         logical_sequence=logical_sequence,
         cash_deltas=_cash_deltas(fill),
         balance_realized_pnl_deltas=(
@@ -316,6 +470,7 @@ def _fill_effect(
         ) if realized_delta != 0 else (),
         balance_fee_deltas=(fill.commission,) if fill.commission.amount != 0 else (),
         position_key=(entry.strategy_id, position.instrument.canonical),
+        quantity_before=position.quantity,
         quantity_delta=_quantity(signed_fill, fill.quantity.precision),
         realized_pnl_delta=_money(realized_delta, position.settlement_currency, field="realized PnL"),
         fees_delta=_money(fee_delta, position.settlement_currency, field="position fees"),
@@ -325,11 +480,51 @@ def _fill_effect(
     return effect, next_position
 
 
+def validate_execution_effect(effect: PortfolioExecutionEffect) -> None:
+    """Reject any retained effect that is not the exact result of its source fill."""
+
+    fill = effect.fill
+    if fill.status not in (
+        FillReportStatus.PARTIALLY_FILLED,
+        FillReportStatus.FILLED,
+        FillReportStatus.CORRECTION,
+    ):
+        raise PortfolioReplayError("snapshot effect source is not an active execution")
+    signed_fill, _residual, average_after, realized_delta, fee_delta = _fill_accounting(
+        fill,
+        current=effect.quantity_before.value,
+        average_before=effect.average_before,
+    )
+    settlement = fill.instrument_definition.settlement_currency
+    expected_realized = (
+        (_money(realized_delta, settlement, field="balance realized PnL"),)
+        if realized_delta != 0
+        else ()
+    )
+    expected_fees = (fill.commission,) if fill.commission.amount != 0 else ()
+    expected = (
+        effect.position_key
+        == (effect.strategy_id, fill.instrument_definition.instrument_id.canonical)
+        and effect.quantity_delta
+        == _quantity(signed_fill, fill.quantity.precision)
+        and effect.cash_deltas == _cash_deltas(fill)
+        and effect.balance_realized_pnl_deltas == expected_realized
+        and effect.balance_fee_deltas == expected_fees
+        and effect.realized_pnl_delta
+        == _money(realized_delta, settlement, field="realized PnL")
+        and effect.fees_delta == _money(fee_delta, settlement, field="position fees")
+        and effect.average_after == average_after
+    )
+    if not expected:
+        raise PortfolioReplayError("snapshot execution effect does not match source fill economics")
+
+
 def _apply_balances(
     balances: tuple[AccountBalanceSnapshot, ...],
     cash_deltas: tuple[Money, ...],
     realized_pnl_deltas: tuple[Money, ...],
     fee_deltas: tuple[Money, ...],
+    unrealized_pnl_deltas: tuple[Money, ...],
     observed_at,
 ) -> tuple[AccountBalanceSnapshot, ...]:
     by_currency = {balance.currency: balance for balance in balances}
@@ -338,13 +533,19 @@ def _apply_balances(
         (0, cash_deltas, "cash delta"),
         (1, realized_pnl_deltas, "balance realized PnL delta"),
         (2, fee_deltas, "balance fee delta"),
+        (3, unrealized_pnl_deltas, "balance unrealized PnL delta"),
     ):
         for delta in deltas:
             current = deltas_by_currency.setdefault(
-                delta.currency, [Decimal(0), Decimal(0), Decimal(0)]
+                delta.currency, [Decimal(0), Decimal(0), Decimal(0), Decimal(0)]
             )
             current[index] = _sum(current[index], delta.amount, field=field)
-    for currency, (cash_delta, realized_pnl_delta, fee_delta) in deltas_by_currency.items():
+    for currency, (
+        cash_delta,
+        realized_pnl_delta,
+        fee_delta,
+        unrealized_pnl_delta,
+    ) in deltas_by_currency.items():
         balance = by_currency.get(currency)
         if balance is None:
             raise PortfolioReplayError(f"missing balance for currency {currency.code}")
@@ -356,7 +557,15 @@ def _apply_balances(
                 locked_funds=balance.locked_funds,
                 margin_used=balance.margin_used,
                 realized_pnl=_money(_sum(balance.realized_pnl.amount, realized_pnl_delta, field="balance realized PnL"), balance.currency, field="balance realized PnL"),
-                unrealized_pnl=balance.unrealized_pnl,
+                unrealized_pnl=_money(
+                    _sum(
+                        balance.unrealized_pnl.amount,
+                        unrealized_pnl_delta,
+                        field="balance unrealized PnL",
+                    ),
+                    balance.currency,
+                    field="balance unrealized PnL",
+                ),
                 fees=_money(_sum(balance.fees.amount, fee_delta, field="balance fees"), balance.currency, field="balance fees"),
                 funding=balance.funding,
                 observed_at=observed_at,
@@ -396,6 +605,16 @@ def _with_effect(
     }
     position_fields["observed_at"] = applied_at
     applied_position = PortfolioPositionState(**position_fields)
+    previous_position = _find_position(
+        state,
+        effect.strategy_id,
+        effect.fill.instrument_definition.instrument_id.canonical,
+    ) or _new_position(effect.entry, effect.fill)
+    unrealized_delta = _sum(
+        applied_position.unrealized_pnl.amount,
+        -previous_position.unrealized_pnl.amount,
+        field="balance unrealized PnL delta",
+    )
     snapshot = PortfolioWorkingSnapshot(
         account_id=state.snapshot.account_id,
         reporting_currency=state.snapshot.reporting_currency,
@@ -404,6 +623,15 @@ def _with_effect(
             effect.cash_deltas,
             effect.balance_realized_pnl_deltas,
             effect.balance_fee_deltas,
+            (
+                _money(
+                    unrealized_delta,
+                    applied_position.settlement_currency,
+                    field="balance unrealized PnL delta",
+                ),
+            )
+            if unrealized_delta != 0
+            else (),
             applied_at,
         ),
         positions=_replace_position(state.snapshot, applied_position),
@@ -417,6 +645,9 @@ def _with_effect(
         applied_events=state.applied_events,
         valuation_rates=state.valuation_rates,
         active_effects=active,
+        execution_identities=state.execution_identities,
+        funding_identities=state.funding_identities,
+        reconciliation_identities=state.reconciliation_identities,
         reconciliation=state.reconciliation,
     )
 
@@ -431,6 +662,7 @@ def _apply_normal(
     effect, next_position = _fill_effect(
         state,
         entry,
+        source_event=event,
         logical_sequence=event.sequence if logical_sequence is None else logical_sequence,
     )
     return _next_state(_with_effect(state, effect, next_position), event=event)
@@ -452,16 +684,23 @@ def _reverse_effect(state: PortfolioReplayState, effect: PortfolioExecutionEffec
     if position is None:
         raise PortfolioReplayError("active normal execution has no position to reverse")
     next_quantity = _sum(position.quantity.value, -effect.quantity_delta.value, field="reversed position quantity")
+    next_quantity_value = _quantity(next_quantity, position.quantity.precision)
+    next_mark, next_unrealized = _mark_and_unrealized(
+        position,
+        quantity=next_quantity_value,
+        average_entry_price=effect.average_before,
+    )
     next_position = PortfolioPositionState(
         account_id=position.account_id,
         strategy_id=position.strategy_id,
         instrument=position.instrument,
         instrument_definition=position.instrument_definition,
         settlement_currency=position.settlement_currency,
-        quantity=_quantity(next_quantity, position.quantity.precision),
+        quantity=next_quantity_value,
+        mark=next_mark,
         average_entry_price=effect.average_before,
         realized_pnl=_money(_sum(position.realized_pnl.amount, -effect.realized_pnl_delta.amount, field="reversed realized PnL"), position.settlement_currency, field="reversed realized PnL"),
-        unrealized_pnl=position.unrealized_pnl,
+        unrealized_pnl=next_unrealized,
         fees=_money(_sum(position.fees.amount, -effect.fees_delta.amount, field="reversed fees"), position.settlement_currency, field="reversed fees"),
         funding=position.funding,
         observed_at=observed_at,
@@ -476,6 +715,11 @@ def _reverse_effect(state: PortfolioReplayState, effect: PortfolioExecutionEffec
         _money(-delta.amount, delta.currency, field="reversed balance fees")
         for delta in effect.balance_fee_deltas
     )
+    unrealized_delta = _sum(
+        next_position.unrealized_pnl.amount,
+        -position.unrealized_pnl.amount,
+        field="reversed balance unrealized PnL",
+    )
     return PortfolioWorkingSnapshot(
         account_id=state.snapshot.account_id,
         reporting_currency=state.snapshot.reporting_currency,
@@ -484,6 +728,15 @@ def _reverse_effect(state: PortfolioReplayState, effect: PortfolioExecutionEffec
             reverse_cash,
             reverse_realized_pnl,
             reverse_fees,
+            (
+                _money(
+                    unrealized_delta,
+                    position.settlement_currency,
+                    field="reversed balance unrealized PnL",
+                ),
+            )
+            if unrealized_delta != 0
+            else (),
             observed_at,
         ),
         positions=_replace_position(state.snapshot, next_position),
@@ -506,6 +759,9 @@ def _remove_effect(
         active_effects=tuple(
             item for item in state.active_effects if item.execution_id != effect.execution_id
         ),
+        execution_identities=state.execution_identities,
+        funding_identities=state.funding_identities,
+        reconciliation_identities=state.reconciliation_identities,
         reconciliation=state.reconciliation,
     )
 
@@ -513,6 +769,7 @@ def _remove_effect(
 def _rebase_later_effects(
     state: PortfolioReplayState,
     effect: PortfolioExecutionEffect,
+    event: PortfolioEvent,
     entry: PortfolioFillEntry,
 ) -> PortfolioReplayState:
     """Replace or remove one effect while preserving subsequent same-position fills."""
@@ -528,6 +785,12 @@ def _rebase_later_effects(
             key=lambda item: item.logical_sequence,
         )
     )
+    current_position = _find_position(
+        state,
+        effect.strategy_id,
+        effect.fill.instrument_definition.instrument_id.canonical,
+    )
+    retained_mark = current_position.mark if current_position is not None else None
     rebased = state
     for item in reversed((effect, *later)):
         rebased = _remove_effect(rebased, item, observed_at=entry.effective_at)
@@ -535,14 +798,18 @@ def _rebase_later_effects(
         replacement, next_position = _fill_effect(
             rebased,
             entry,
+            source_event=event,
             logical_sequence=effect.logical_sequence,
+            retained_mark=retained_mark,
         )
         rebased = _with_effect(rebased, replacement, next_position)
     for item in later:
         replayed, next_position = _fill_effect(
             rebased,
             item.entry,
+            source_event=item.source_event,
             logical_sequence=item.logical_sequence,
+            retained_mark=retained_mark,
         )
         rebased = _with_effect(
             rebased,
@@ -559,7 +826,7 @@ def _consume_effect(state: PortfolioReplayState, event: PortfolioEvent, entry: P
         raise PortfolioReplayError("reference must name an active normal execution")
     if effect.account_id != entry.account_id or effect.strategy_id != entry.strategy_id:
         raise PortfolioReplayError("reference must name an active normal execution in the same account and strategy")
-    return _next_state(_rebase_later_effects(state, effect, entry), event=event)
+    return _next_state(_rebase_later_effects(state, effect, event, entry), event=event)
 
 
 def _working_snapshot(
@@ -615,6 +882,7 @@ def _apply_mark(
     ):
         raise PortfolioReplayError("mark time is older than retained mark")
     positions: list[PortfolioPositionState] = []
+    unrealized_by_currency: dict = {}
     for position in state.snapshot.positions:
         if position.instrument != entry.instrument or position.quantity.value == 0:
             positions.append(position)
@@ -628,6 +896,16 @@ def _apply_mark(
             position.quantity.value,
             position.instrument_definition.multiplier,
             field="unrealized PnL",
+        )
+        unrealized_delta = _sum(
+            unrealized,
+            -position.unrealized_pnl.amount,
+            field="balance unrealized PnL delta",
+        )
+        unrealized_by_currency[position.settlement_currency] = _sum(
+            unrealized_by_currency.get(position.settlement_currency, Decimal(0)),
+            unrealized_delta,
+            field="balance unrealized PnL delta",
         )
         positions.append(
             PortfolioPositionState(
@@ -649,7 +927,29 @@ def _apply_mark(
         )
     return _next_state(
         state,
-        snapshot=_working_snapshot(state, positions=tuple(positions), observed_at=entry.effective_at),
+        snapshot=_working_snapshot(
+            state,
+            balances=_apply_balances(
+                state.snapshot.balances,
+                (),
+                (),
+                (),
+                tuple(
+                    _money(
+                        amount,
+                        currency,
+                        field="balance unrealized PnL delta",
+                    )
+                    for currency, amount in sorted(
+                        unrealized_by_currency.items(), key=lambda item: item[0].code
+                    )
+                    if amount != 0
+                ),
+                entry.effective_at,
+            ),
+            positions=tuple(positions),
+            observed_at=entry.effective_at,
+        ),
         event=event,
     )
 
@@ -837,6 +1137,7 @@ def apply_portfolio_event(state: PortfolioReplayState, event: object) -> Portfol
         raise PortfolioReplayError("portfolio opening may only appear once")
     if payload.account_id != state.snapshot.account_id:
         raise PortfolioReplayError("portfolio event account does not match state account")
+    _business_identities(state, canonical)
     if type(payload) is PortfolioMarkEntry:
         return _apply_mark(state, canonical, payload)
     if type(payload) is PortfolioFundingEntry:
@@ -916,6 +1217,23 @@ def derive_account_snapshot(
     venue_amounts: dict = {}
     positions: list[AccountPositionSnapshot] = []
     for position in state.snapshot.positions:
+        positions.append(
+            AccountPositionSnapshot(
+                account_id=position.account_id,
+                strategy_id=position.strategy_id,
+                instrument=position.instrument,
+                settlement_currency=position.settlement_currency,
+                quantity=position.quantity,
+                mark=position.mark,
+                average_entry_price=position.average_entry_price,
+                realized_pnl=position.realized_pnl,
+                unrealized_pnl=position.unrealized_pnl,
+                fees=position.fees,
+                funding=position.funding,
+                observed_at=position.observed_at,
+                schema_version=position.schema_version,
+            )
+        )
         if position.quantity.value == 0:
             continue
         if position.mark is None:
@@ -941,23 +1259,6 @@ def derive_account_snapshot(
                 _sum(gross, notional, field=f"{field} gross"),
                 _sum(net, signed, field=f"{field} net"),
             )
-        positions.append(
-            AccountPositionSnapshot(
-                account_id=position.account_id,
-                strategy_id=position.strategy_id,
-                instrument=position.instrument,
-                settlement_currency=position.settlement_currency,
-                quantity=position.quantity,
-                mark=position.mark,
-                average_entry_price=position.average_entry_price,
-                realized_pnl=position.realized_pnl,
-                unrealized_pnl=position.unrealized_pnl,
-                fees=position.fees,
-                funding=position.funding,
-                observed_at=position.observed_at,
-                schema_version=position.schema_version,
-            )
-        )
     total_gross = _sum(
         *(amounts[0] for amounts in instrument_amounts.values()), field="total exposure gross"
     )

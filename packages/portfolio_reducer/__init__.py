@@ -4,6 +4,7 @@ from .models import (
     PORTFOLIO_REDUCER_VERSION,
     PORTFOLIO_REPLAY_SCHEMA_VERSION,
     PortfolioAppliedEvent,
+    PortfolioBusinessIdentity,
     PortfolioExecutionEffect,
     PortfolioPositionState,
     PortfolioReplayError,
@@ -18,6 +19,7 @@ from .reducer import apply_portfolio_event, derive_account_snapshot, reduce_port
 
 __all__ = [
     "PortfolioAppliedEvent",
+    "PortfolioBusinessIdentity",
     "PORTFOLIO_REDUCER_VERSION",
     "PORTFOLIO_REPLAY_SCHEMA_VERSION",
     "PortfolioExecutionEffect",

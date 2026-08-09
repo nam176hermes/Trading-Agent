@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import Field, model_validator
 
+from packages.domain.events import EventEnvelope
 from packages.domain.instruments import InstrumentDefinition, InstrumentId
 from packages.domain.orders import FillEvent
 from packages.domain.portfolio import (
@@ -39,6 +40,17 @@ class PortfolioStreamCursor(DomainModel):
 class PortfolioAppliedEvent(DomainModel):
     event_id: UUID
     digest: Sha256
+
+
+class PortfolioBusinessIdentity(DomainModel):
+    """Hash-bound source metadata for one durable payload business identity."""
+
+    identity_id: UUID
+    payload_digest: Sha256
+    event_id: UUID
+    event_digest: Sha256
+    stream_id: UUID
+    sequence: Annotated[int, Field(gt=0)]
 
 
 class PortfolioValuationRateState(DomainModel):
@@ -84,6 +96,8 @@ class PortfolioPositionState(DomainModel):
         if self.quantity.value == 0:
             if self.average_entry_price is not None or self.mark is not None:
                 raise ValueError("zero position must not retain an average entry price or mark")
+            if self.unrealized_pnl.amount != 0:
+                raise ValueError("zero position must not retain unrealized PnL")
         else:
             if self.instrument_definition is None:
                 raise ValueError("non-zero position requires an instrument definition")
@@ -128,11 +142,13 @@ class PortfolioExecutionEffect(DomainModel):
     strategy_id: CanonicalPortfolioIdentifier
     fill: FillEvent
     entry: PortfolioFillEntry
+    source_event: EventEnvelope[PortfolioFillEntry]
     logical_sequence: Annotated[int, Field(gt=0)]
     cash_deltas: tuple[Money, ...]
     balance_realized_pnl_deltas: tuple[Money, ...]
     balance_fee_deltas: tuple[Money, ...]
     position_key: tuple[CanonicalPortfolioIdentifier, str]
+    quantity_before: Quantity
     quantity_delta: Quantity
     realized_pnl_delta: Money
     fees_delta: Money
@@ -145,6 +161,8 @@ class PortfolioExecutionEffect(DomainModel):
             raise ValueError("effect execution ID must match fill")
         if self.entry.fill != self.fill:
             raise ValueError("effect entry must match fill")
+        if self.source_event.payload != self.entry:
+            raise ValueError("effect source event must contain its entry")
         if self.entry.account_id != self.account_id or self.entry.strategy_id != self.strategy_id:
             raise ValueError("effect entry scope must match")
         if self.strategy_id != self.position_key[0]:
@@ -169,6 +187,9 @@ class PortfolioReplayState(DomainModel):
     applied_events: tuple[PortfolioAppliedEvent, ...]
     valuation_rates: tuple[PortfolioValuationRateState, ...] = ()
     active_effects: tuple[PortfolioExecutionEffect, ...] = ()
+    execution_identities: tuple[PortfolioBusinessIdentity, ...] = ()
+    funding_identities: tuple[PortfolioBusinessIdentity, ...] = ()
+    reconciliation_identities: tuple[PortfolioBusinessIdentity, ...] = ()
     reconciliation: PortfolioReconciliationEntry | None = None
 
     @model_validator(mode="after")
@@ -188,6 +209,14 @@ class PortfolioReplayState(DomainModel):
         effect_keys = tuple(item.execution_id.bytes for item in self.active_effects)
         if effect_keys != tuple(sorted(set(effect_keys))):
             raise ValueError("active effects must be sorted and unique")
+        for name, identities in (
+            ("execution identities", self.execution_identities),
+            ("funding identities", self.funding_identities),
+            ("reconciliation identities", self.reconciliation_identities),
+        ):
+            identity_keys = tuple(item.identity_id.bytes for item in identities)
+            if identity_keys != tuple(sorted(set(identity_keys))):
+                raise ValueError(f"{name} must be sorted and unique")
         return self
 
     @property
