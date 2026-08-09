@@ -1497,6 +1497,118 @@ def test_native_execution_plan_preserves_matrix_with_instrument_quantity_precisi
         )
 
 
+def test_same_bar_stop_projects_exit_price_inside_settlement_context(
+    launcher_module,
+) -> None:
+    """The stop-trigger exit must settle at the literal validated stop price."""
+
+    class FakePrice:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        @classmethod
+        def from_str(cls, text: str) -> "FakePrice":
+            return cls(text)
+
+    class FakeQuantity:
+        @classmethod
+        def from_str(cls, text: str) -> str:
+            return text
+
+    class FakeQuoteTick:
+        def __init__(
+            self,
+            _instrument: object,
+            bid_price: FakePrice,
+            ask_price: FakePrice,
+            _bid_size: str,
+            _ask_size: str,
+            _ts_event: int,
+            _ts_init: int,
+        ) -> None:
+            self.bid_price = bid_price
+            self.ask_price = ask_price
+
+    class FakeBar:
+        def __init__(self, *_args: object) -> None:
+            del _args
+
+    artifacts = _simulation_fixture("same-bar-stop-take-profit")
+    request = _simulation_request(artifacts).model_dump(mode="json")
+    fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
+    plan = launcher_module._build_nautilus_execution_plan(fixture)
+    data = launcher_module._build_simulation_market_data(
+        fixture,
+        instrument=object(),
+        bar_type="bar-type",
+        quote_tick_type=FakeQuoteTick,
+        bar_type_class=FakeBar,
+        price_type=FakePrice,
+        quantity_type=FakeQuantity,
+    )
+
+    assert plan[0]["exit_reason"] == "stop"
+    assert plan[0]["exit_price"] == "98"
+    quote = data[1]
+    assert isinstance(quote, FakeQuoteTick)
+    assert quote.bid_price.text == "97.00"
+    assert quote.ask_price.text == "100.00"
+
+
+def test_same_bar_native_settlement_preserves_literal_two_fill_accounting_digest(
+    launcher_module,
+) -> None:
+    """The repaired context retains the sealed stop accounting authority."""
+
+    artifacts = _simulation_fixture("same-bar-stop-take-profit")
+    request = _simulation_request(artifacts).model_dump(mode="json")
+    fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
+    plan = launcher_module._build_nautilus_execution_plan(fixture)
+
+    assert plan[0]["entry_price"] == "100"
+    assert plan[0]["exit_price"] == "98"
+    record = launcher_module._canonical_nautilus_result_record(
+        strategy_events=[
+            {"event_type": "order-created", "quantity": "1", "sequence": 0},
+            {
+                "event_time": "2026-08-05T12:00:00Z",
+                "event_type": "fill",
+                "price": "100",
+                "quantity": "1",
+                "sequence": 1,
+            },
+            {"event_type": "exit-order-created", "reason": "stop", "sequence": 2},
+            {
+                "event_time": "2026-08-05T12:00:00Z",
+                "event_type": "fill",
+                "price": "98",
+                "quantity": "-1",
+                "sequence": 3,
+            },
+            {"event_type": "position-closed", "sequence": 4},
+        ],
+        iterations=1,
+        order_count=2,
+        fill_count=2,
+        filled_quantity=Decimal("1"),
+        position_count=1,
+        position_quantity=Decimal("0"),
+        average_entry_price=Decimal("100"),
+        realized_pnl=Decimal("-2"),
+        unrealized_pnl=Decimal("0"),
+        account_balance_count=2,
+        commissions=Decimal("0.198"),
+    )
+
+    assert launcher_module._canonical_json_bytes(record)
+    assert (
+        launcher_module.hashlib.sha256(
+            launcher_module._canonical_json_bytes(record)
+        ).hexdigest()
+        == "4267c0354ac5b8a03a73c40a39c830f77b33972171a24bfd4db2adc617d1a916"
+    )
+
+
 def test_canonical_nautilus_result_record_is_json_native_and_run_invariant(
     launcher_module,
 ) -> None:

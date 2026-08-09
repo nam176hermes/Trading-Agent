@@ -1991,10 +1991,14 @@ def _build_simulation_market_data(
     """
 
     events = fixture["events"]
+    target = fixture["target_quantity"]
     assert isinstance(events, tuple)
+    assert isinstance(target, Decimal)
+    execution_plan = _build_nautilus_execution_plan(fixture)
     data: list[object] = []
-    for event in events:
+    for event, instruction in zip(events, execution_plan, strict=True):
         assert isinstance(event, dict)
+        assert isinstance(instruction, dict)
         event_time = event["event_time"]
         quote_time = event["quote_time"]
         assert isinstance(event_time, datetime)
@@ -2012,6 +2016,22 @@ def _build_simulation_market_data(
                 event["volume"], 6, label="simulation event volume"
             )
         )
+        settlement_bid = event["bid"]
+        settlement_ask = event["ask"]
+        exit_price = instruction["exit_price"]
+        if exit_price is not None:
+            validated_exit = _decimal(
+                exit_price,
+                label="native settlement exit price",
+            )
+            if target > 0:
+                # Keep a stop/take exit inside the sealed bar's range so the
+                # BestPrice model settles at the validated trigger price.
+                settlement_bid = min(event["bid"], event["low"], validated_exit)
+                settlement_ask = max(event["ask"], validated_exit)
+            else:
+                settlement_bid = min(event["bid"], validated_exit)
+                settlement_ask = max(event["ask"], event["high"], validated_exit)
         data.append(
             bar_type_class(
                 bar_type,
@@ -2047,12 +2067,12 @@ def _build_simulation_market_data(
                 instrument,
                 price_type.from_str(
                     _nautilus_price_text(
-                        event["bid"], 2, label="simulation event bid"
+                        settlement_bid, 2, label="simulation settlement bid"
                     )
                 ),
                 price_type.from_str(
                     _nautilus_price_text(
-                        event["ask"], 2, label="simulation event ask"
+                        settlement_ask, 2, label="simulation settlement ask"
                     )
                 ),
                 volume,
