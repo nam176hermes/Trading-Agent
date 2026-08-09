@@ -357,7 +357,10 @@ def _with_effect(
     state: PortfolioReplayState,
     effect: PortfolioExecutionEffect,
     next_position: PortfolioPositionState,
+    *,
+    observed_at=None,
 ) -> PortfolioReplayState:
+    applied_at = effect.entry.effective_at if observed_at is None else observed_at
     snapshot = PortfolioWorkingSnapshot(
         account_id=state.snapshot.account_id,
         reporting_currency=state.snapshot.reporting_currency,
@@ -366,10 +369,10 @@ def _with_effect(
             effect.cash_deltas,
             effect.balance_realized_pnl_deltas,
             effect.balance_fee_deltas,
-            effect.entry.effective_at,
+            applied_at,
         ),
         positions=_replace_position(state.snapshot, next_position),
-        observed_at=effect.entry.effective_at,
+        observed_at=applied_at,
         schema_version=state.snapshot.schema_version,
     )
     active = tuple(sorted((*state.active_effects, effect), key=lambda item: item.execution_id.bytes))
@@ -504,7 +507,12 @@ def _rebase_later_effects(
             item.entry,
             logical_sequence=item.logical_sequence,
         )
-        rebased = _with_effect(rebased, replayed, next_position)
+        rebased = _with_effect(
+            rebased,
+            replayed,
+            next_position,
+            observed_at=entry.effective_at,
+        )
     return rebased
 
 

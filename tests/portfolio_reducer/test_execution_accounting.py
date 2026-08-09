@@ -85,7 +85,12 @@ def balance(currency: Currency, cash: str) -> AccountBalanceSnapshot:
     )
 
 
-def envelope(payload: object, *, event_number: int) -> EventEnvelope[object]:
+def envelope(
+    payload: object,
+    *,
+    event_number: int,
+    effective_at: datetime = NOW,
+) -> EventEnvelope[object]:
     return EventEnvelope[object](
         event_id=uid(event_number),
         event_type=type(payload).__name__,
@@ -93,11 +98,11 @@ def envelope(payload: object, *, event_number: int) -> EventEnvelope[object]:
         source="portfolio-test",
         stream_id=STREAM,
         sequence=event_number,
-        observed_at=NOW,
-        ingested_at=NOW + timedelta(seconds=1),
-        produced_at=NOW + timedelta(seconds=2),
-        effective_at=NOW + timedelta(seconds=2),
-        expires_at=NOW + timedelta(minutes=5),
+        observed_at=effective_at,
+        ingested_at=effective_at + timedelta(seconds=1),
+        produced_at=effective_at + timedelta(seconds=2),
+        effective_at=effective_at + timedelta(seconds=2),
+        expires_at=effective_at + timedelta(minutes=5),
         correlation_id=uid(500 + event_number),
         causation_id=uid(600 + event_number),
         trace_id=uid(700 + event_number),
@@ -134,6 +139,7 @@ def fill_event(
     duplicate_of: UUID | None = None,
     correction_of: UUID | None = None,
     bust_of: UUID | None = None,
+    effective_at: datetime = NOW,
 ) -> EventEnvelope[object]:
     fill = FillEvent(
         execution_id=uid(execution_number),
@@ -155,7 +161,7 @@ def fill_event(
         duplicate_of_execution_id=duplicate_of,
         correction_of_execution_id=correction_of,
         bust_of_execution_id=bust_of,
-        filled_at=NOW,
+        filled_at=effective_at,
         schema_version="2.0",
     )
     return envelope(
@@ -163,10 +169,11 @@ def fill_event(
             account_id=account_id,
             strategy_id=strategy_id,
             fill=fill,
-            effective_at=NOW,
+            effective_at=effective_at,
             schema_version="portfolio-entry-v1",
         ),
         event_number=event_number,
+        effective_at=effective_at,
     )
 
 
@@ -393,6 +400,50 @@ def test_bust_of_an_older_fill_rebases_later_same_position_effects() -> None:
     assert position.average_entry_price.amount == Decimal("110")
     assert position.realized_pnl.amount == Decimal("0")
     assert state.active_execution_ids == (newer.payload.fill.execution_id,)
+
+
+@pytest.mark.parametrize("status,reference", [(FillReportStatus.CORRECTION, "correction_of"), (FillReportStatus.BUST, "bust_of")])
+def test_rebase_keeps_snapshot_time_at_correction_or_bust_time(status, reference) -> None:
+    later_time = NOW + timedelta(minutes=1)
+    adjustment_time = NOW + timedelta(minutes=2)
+    older = fill_event(
+        event_number=2,
+        execution_number=20,
+        side=OrderSide.BUY,
+        quantity="2",
+        price="100",
+        effective_at=NOW,
+    )
+    newer = fill_event(
+        event_number=3,
+        execution_number=30,
+        side=OrderSide.SELL,
+        quantity="1",
+        price="110",
+        effective_at=later_time,
+    )
+    adjustment = fill_event(
+        event_number=4,
+        execution_number=40,
+        side=OrderSide.BUY,
+        quantity="2",
+        price="90" if status is FillReportStatus.CORRECTION else "100",
+        status=status,
+        effective_at=adjustment_time,
+        **{reference: older.payload.fill.execution_id},
+    )
+
+    state = reduce_portfolio_events((opening(), older, newer, adjustment))
+
+    assert state.snapshot.observed_at == adjustment_time
+    assert state.snapshot.observed_at > later_time
+    position = state.snapshot.positions[0]
+    if status is FillReportStatus.CORRECTION:
+        assert position.average_entry_price.amount == Decimal("90")
+        assert position.realized_pnl.amount == Decimal("20")
+    else:
+        assert position.average_entry_price.amount == Decimal("110")
+        assert position.realized_pnl.amount == Decimal("0")
 
 
 @pytest.mark.parametrize("status,reference", [(FillReportStatus.BUST, "bust_of"), (FillReportStatus.CORRECTION, "correction_of")])
