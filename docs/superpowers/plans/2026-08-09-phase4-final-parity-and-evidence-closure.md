@@ -45,8 +45,8 @@
 - Modify: `scripts/verify_nautilus_v12_r3_parity.py`
 - Modify: `tests/nautilus_backtest/test_runtime_parity_verifier.py`
 - Modify mechanically if required: `docs/implementation/foundation-exception-inventory.md`
-- Create ignored report: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-1-report.md`
-- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-1-review.md`
+- Create ignored report: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-1-report.md`
+- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-1-review.md`
 
 **Interfaces and receipt contract:**
 
@@ -158,7 +158,7 @@ git diff --check
 
 **Files:**
 
-- Create ignored classification: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-3-root-cause-classification.md`
+- Create ignored classification: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-3-root-cause-classification.md`
 - Read: `scripts/verify_nautilus_v12_r3_parity.py`
 - Read: `packages/nautilus_backtest/result.py`
 - Read: `packages/nautilus_backtest/reference.py`
@@ -254,7 +254,7 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 
 - [ ] Commit source with a category-specific subject.
 - [ ] Commit any policy-only rebind separately and prove it is a direct child of the reviewed source commit.
-- [ ] Write `.superpowers/sdd/2026-08-09-phase4-final-parity/task-4-report.md`.
+- [ ] Write `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-4-report.md`.
 - [ ] Obtain an independent SPEC PASS / QUALITY PASS review with zero Critical/Important findings.
 
 ## Task 5: Close simulation qualification
@@ -268,8 +268,8 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 
 **Files:**
 
-- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-5-simulation-report.md`
-- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-5-simulation-review.md`
+- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-5-simulation-report.md`
+- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-5-simulation-review.md`
 
 **Steps:**
 
@@ -297,8 +297,8 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 
 **Files:**
 
-- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-6-paper-report.md`
-- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-6-paper-review.md`
+- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-6-paper-report.md`
+- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-6-paper-review.md`
 
 **Steps:**
 
@@ -317,8 +317,8 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 
 **Files:**
 
-- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-7-research-report.md`
-- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-7-research-review.md`
+- Create ignored execution report: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-7-research-report.md`
+- Create ignored independent review: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-7-research-review.md`
 
 **Steps:**
 
@@ -348,9 +348,9 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 - Create: `docs/nautilus-adoption/phase-4-final-runtime-verification.md`
 - Modify: `docs/nautilus-adoption/phase-4-simulation-closure.md`
 - Modify the canonical Phase 4 program tracker identified by `rg -n 'Phase 4|04D|paper compatibility' docs/nautilus-adoption docs/superpowers`
-- Create ignored gate report: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-8-final-gate-report.md`
-- Create ignored evidence review: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-8-evidence-review.md`
-- Create ignored whole-branch review: `.superpowers/sdd/2026-08-09-phase4-final-parity/task-8-whole-branch-review.md`
+- Create ignored gate report: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-8-final-gate-report.md`
+- Create ignored evidence review: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-8-evidence-review.md`
+- Create ignored whole-branch review: `.superpowers/sdd/2026-08-09-phase4-final-parity-and-evidence-closure/task-8-whole-branch-review.md`
 
 **Evidence content:**
 
