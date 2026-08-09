@@ -27,7 +27,7 @@
     },
     {
       "mode": "0400",
-      "sha256": "7137a100be3b3678c11c21b19bb0734209438102197e563630d5741fc8ac6ba7",
+      "sha256": "26a404020ee920eaa16406aee13185c234785d3eb02fff21c69c44024999d8eb",
       "source": "engines/nautilus/launcher/nautilus_backtest.py",
       "target": "/engine/launcher/nautilus_backtest.py"
     },
@@ -61,6 +61,6 @@
   "result_validator_id": "nautilus-paper-compatibility-result-v1",
   "schema_version": 1,
   "semantic_profile": "nautilus-paper-compatibility-v1",
-  "source_commit": "4ccb793f1176bf68b899c0b7da41a5b68a7a4818",
+  "source_commit": "d4502b19bc206399f363154d7594f4548f760693",
   "timeout_seconds": 120
 }
