@@ -34,9 +34,66 @@ from packages.nautilus_backtest.fixtures import (
 
 
 LAUNCHER = Path("engines/nautilus/launcher/nautilus_backtest.py")
-_NATIVE_NAUTILUS_PYTHON = Path(
-    "/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v1/venv/bin/python3.12"
-)
+RUNTIME_CLOSURE_POLICY = Path("engines/nautilus/runtime-closure-policy.json")
+
+
+def _pinned_native_nautilus_python() -> Path:
+    """Find an offline CPython 3.12 runtime bound to the reviewed wheel identity."""
+
+    policy = json.loads(RUNTIME_CLOSURE_POLICY.read_text(encoding="ascii"))
+    engine_version = policy["engine_version"]
+    wheel_target = policy["engine_wheel_target"]
+    assert isinstance(engine_version, str)
+    assert isinstance(wheel_target, str)
+    override = os.environ.get("TRADING_NAUTILUS_PINNED_PYTHON")
+    candidates = (
+        [Path(override)]
+        if override is not None
+        else sorted(
+            (Path.home() / ".cache/trading-agent/nautilus").glob(
+                "runtime-closure-*/venv/bin/python3.12"
+            )
+        )
+    )
+    for candidate in candidates:
+        manifest_path = candidate.parents[2] / "closure-manifest.json"
+        if (
+            not candidate.is_file()
+            or candidate.is_symlink()
+            or not os.access(candidate, os.X_OK)
+            or not manifest_path.is_file()
+        ):
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        files = manifest.get("files") if isinstance(manifest, dict) else None
+        if (
+            manifest.get("engine_version") != engine_version
+            or not isinstance(files, list)
+            or not any(
+                isinstance(record, dict)
+                and record.get("target") == wheel_target
+                and record.get("mode") == "0400"
+                for record in files
+            )
+        ):
+            continue
+        probe = subprocess.run(
+            [
+                str(candidate),
+                "-c",
+                "import nautilus_trader; print(nautilus_trader.__version__)",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if probe.returncode == 0 and probe.stdout.strip() == engine_version:
+            return candidate
+    pytest.fail("no validated pinned offline Nautilus CPython 3.12 runtime found")
 
 
 @pytest.fixture(scope="module")
@@ -1378,8 +1435,17 @@ def test_short_cash_account_starts_with_exact_base_inventory(
             "long-accounting",
             {
                 "average_entry_price": "100",
+                "event_digest": "c05decc60280b4394e641392dd10a96e72c82da906b7a7a4abb70de1c9f46c78",
                 "fees": "0.2",
                 "filled_quantity": "2",
+                "iterations": 1,
+                "position_quantity": "2",
+                "realized_pnl": "0",
+                "remaining_quantity": "0",
+                "total_events": 2,
+                "total_fills": 1,
+                "total_orders": 1,
+                "total_positions": 1,
                 "unrealized_pnl": "2",
             },
         ),
@@ -1387,19 +1453,126 @@ def test_short_cash_account_starts_with_exact_base_inventory(
             "short-accounting",
             {
                 "average_entry_price": "99",
+                "event_digest": "b13ee6e0432aac3079c3df4cc9447fda37c11bd0adb49b18ef200998941233e6",
                 "fees": "0.198",
                 "filled_quantity": "-2",
+                "iterations": 1,
+                "position_quantity": "-2",
+                "realized_pnl": "0",
+                "remaining_quantity": "0",
+                "total_events": 2,
+                "total_fills": 1,
+                "total_orders": 1,
+                "total_positions": 1,
                 "unrealized_pnl": "-4",
+            },
+        ),
+        (
+            "partial-fill",
+            {
+                "average_entry_price": "100",
+                "event_digest": "10719ca90e0d153ac8d12c4000e679136a7cef0042672ba07deee3c6272b0724",
+                "fees": "0.1",
+                "filled_quantity": "1",
+                "iterations": 1,
+                "position_quantity": "1",
+                "realized_pnl": "0",
+                "remaining_quantity": "2",
+                "total_events": 2,
+                "total_fills": 1,
+                "total_orders": 1,
+                "total_positions": 1,
+                "unrealized_pnl": "1",
             },
         ),
         (
             "same-bar-stop-take-profit",
             {
                 "average_entry_price": "100",
+                "event_digest": "4267c0354ac5b8a03a73c40a39c830f77b33972171a24bfd4db2adc617d1a916",
                 "fees": "0.198",
                 "filled_quantity": "1",
+                "iterations": 1,
+                "position_quantity": "0",
                 "realized_pnl": "-2",
+                "remaining_quantity": "0",
+                "total_events": 5,
+                "total_fills": 2,
+                "total_orders": 2,
+                "total_positions": 1,
                 "unrealized_pnl": "0",
+            },
+        ),
+        (
+            "stale-quote",
+            {
+                "average_entry_price": "0",
+                "event_digest": "27d1ef994a0081cbf2b0839a4624ca1f020911af7a88ab1683adace3a0a91460",
+                "fees": "0",
+                "filled_quantity": "0",
+                "iterations": 1,
+                "position_quantity": "0",
+                "realized_pnl": "0",
+                "remaining_quantity": "1",
+                "total_events": 2,
+                "total_fills": 0,
+                "total_orders": 0,
+                "total_positions": 0,
+                "unrealized_pnl": "0",
+            },
+        ),
+        (
+            "zero-liquidity",
+            {
+                "average_entry_price": "0",
+                "event_digest": "b9e2e9af09fa6cfb58912de49b7502180d7dd9f63c1c263c1c4c3baa21b5147f",
+                "fees": "0",
+                "filled_quantity": "0",
+                "iterations": 1,
+                "position_quantity": "0",
+                "realized_pnl": "0",
+                "remaining_quantity": "1",
+                "total_events": 2,
+                "total_fills": 0,
+                "total_orders": 0,
+                "total_positions": 0,
+                "unrealized_pnl": "0",
+            },
+        ),
+        (
+            "session-boundary",
+            {
+                "average_entry_price": "102",
+                "event_digest": "bbb7995229d7286592cacabf34e6e24117accc4993f7e12b879b621a01d58e48",
+                "fees": "0.102",
+                "filled_quantity": "1",
+                "iterations": 2,
+                "position_quantity": "1",
+                "realized_pnl": "0",
+                "remaining_quantity": "0",
+                "total_events": 3,
+                "total_fills": 1,
+                "total_orders": 1,
+                "total_positions": 1,
+                "unrealized_pnl": "0",
+            },
+        ),
+        (
+            "event-digest",
+            {
+                "average_entry_price": "100",
+                "event_digest": "31ca501f78a3ac250c0fc7d7d8d38d9fb4acbb51bae7c3b15d39c311082c6baa",
+                "fees": "0.1",
+                "filled_quantity": "1",
+                "iterations": 1,
+                "position_quantity": "1",
+                "realized_pnl": "0",
+                "remaining_quantity": "0",
+                "total_events": 2,
+                "total_fills": 1,
+                "total_orders": 1,
+                "total_positions": 1,
+                "unrealized_pnl": "1",
             },
         ),
     ),
@@ -1411,11 +1584,6 @@ def test_native_limit_settlement_preserves_literal_accounting(
     expected: dict[str, str],
 ) -> None:
     """Native fills must retain each sealed limit price, never bar-price improve."""
-
-    if not _NATIVE_NAUTILUS_PYTHON.is_file() or not os.access(
-        _NATIVE_NAUTILUS_PYTHON, os.X_OK
-    ):
-        pytest.skip("pinned native Nautilus CPython 3.12 runtime is unavailable")
 
     artifacts = _simulation_fixture(scenario_id)
     request = _simulation_request(artifacts).model_dump(mode="json")
@@ -1499,7 +1667,7 @@ print(json.dumps(module._run_nautilus_simulation_fixture_loaded(fixture), sort_k
 
     completed = subprocess.run(
         [
-            str(_NATIVE_NAUTILUS_PYTHON),
+            str(_pinned_native_nautilus_python()),
             str(runner),
             str(LAUNCHER.resolve()),
             str(payload),
@@ -1513,13 +1681,19 @@ print(json.dumps(module._run_nautilus_simulation_fixture_loaded(fixture), sort_k
     )
     assert completed.returncode == 0, completed.stderr
     observed = json.loads(completed.stdout)
-    assert observed.items() >= expected.items()
+    assert observed == {
+        **expected,
+        "scenario_id": scenario_id,
+        "stop_take_profit_precedence": "stop-first",
+    }
 
 
-def test_launcher_projects_sealed_quote_around_each_bar_for_native_settlement(
+@pytest.mark.parametrize("scenario_id", _SCENARIO_IDS)
+def test_launcher_projects_each_sealed_quote_before_its_bar_for_native_settlement(
     launcher_module,
+    scenario_id: str,
 ) -> None:
-    """The finite adapter exposes the sealed L1 quote after on_bar's bar."""
+    """An eligible bar must see its own sealed L1 quote, never the prior bar's."""
 
     class FakePrice:
         def __init__(self, text: str) -> None:
@@ -1560,7 +1734,7 @@ def test_launcher_projects_sealed_quote_around_each_bar_for_native_settlement(
         def __init__(self, *_args: object) -> None:
             self.args = _args
 
-    artifacts = _simulation_fixture("long-accounting")
+    artifacts = _simulation_fixture(scenario_id)
     request = _simulation_request(artifacts).model_dump(mode="json")
     fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
     instrument = object()
@@ -1574,17 +1748,66 @@ def test_launcher_projects_sealed_quote_around_each_bar_for_native_settlement(
         quantity_type=FakeQuantity,
     )
 
-    assert len(data) == 2
-    bar, quote = data
+    assert len(data) == 2 * len(fixture["events"])
+    quote, bar = data[:2]
     assert isinstance(quote, FakeQuoteTick)
     assert isinstance(bar, FakeBar)
     assert quote.instrument is instrument
-    assert quote.bid_price.text == "99.00"
-    assert quote.ask_price.text == "100.00"
-    assert quote.bid_size.text == "2.000000"
-    assert quote.ask_size.text == "2.000000"
+    first_event = fixture["events"][0]
+    first_instruction = launcher_module._build_nautilus_execution_plan(fixture)[0]
+    expected_bid = first_event["bid"]
+    expected_ask = first_event["ask"]
+    if first_instruction["exit_price"] is not None:
+        exit_price = Decimal(first_instruction["exit_price"])
+        if fixture["target_quantity"] > 0:
+            expected_bid = exit_price
+            expected_ask = max(expected_ask, exit_price)
+        else:
+            expected_bid = min(expected_bid, exit_price)
+            expected_ask = exit_price
+    assert quote.bid_price.text == f"{expected_bid:.2f}"
+    assert quote.ask_price.text == f"{expected_ask:.2f}"
+    assert quote.bid_size.text == f"{first_event['volume']:.6f}"
+    assert quote.ask_size.text == f"{first_event['volume']:.6f}"
     assert quote.ts_event == quote.ts_init
     assert bar.args[0] == "bar-type"
+
+
+def test_native_venue_uses_base_fill_model_with_bar_matching_disabled(
+    launcher_module,
+) -> None:
+    """The engine boundary reserves bars for strategy callbacks and L1 for fills."""
+
+    observed: dict[str, object] = {}
+
+    class FakeEngine:
+        def add_venue(self, **kwargs: object) -> None:
+            observed.update(kwargs)
+
+    class FakeFillModel:
+        pass
+
+    class FakeMoney:
+        def __init__(self, amount: Decimal, currency: object) -> None:
+            self.amount = amount
+            self.currency = currency
+
+    launcher_module._add_native_simulation_venue(
+        engine=FakeEngine(),
+        venue="BINANCE",
+        oms_type="NETTING",
+        account_type="CASH",
+        target=Decimal("2"),
+        currencies={"USDT": "USDT"},
+        money_type=FakeMoney,
+        fill_model_type=FakeFillModel,
+        fee_model="scenario-fee-model",
+    )
+
+    assert observed["starting_balances"][0].amount == Decimal("1000000")
+    assert isinstance(observed["fill_model"], FakeFillModel)
+    assert observed["fee_model"] == "scenario-fee-model"
+    assert observed["bar_execution"] is False
 
 
 @pytest.mark.parametrize("scenario_id", _SCENARIO_IDS)
@@ -1666,7 +1889,7 @@ def test_same_bar_stop_projects_exit_price_inside_settlement_context(
 
     assert plan[0]["exit_reason"] == "stop"
     assert plan[0]["exit_price"] == "98.00"
-    quote = data[1]
+    quote = data[0]
     assert isinstance(quote, FakeQuoteTick)
     assert quote.bid_price.text == "98.00"
     assert quote.ask_price.text == "100.00"

@@ -1885,6 +1885,34 @@ def _build_nautilus_execution_plan(
     )
 
 
+def _add_native_simulation_venue(
+    *,
+    engine: object,
+    venue: object,
+    oms_type: object,
+    account_type: object,
+    target: Decimal,
+    currencies: dict[str, object],
+    money_type: object,
+    fill_model_type: object,
+    fee_model: object,
+) -> None:
+    """Configure matching so only the finite L1 projection settles orders."""
+
+    engine.add_venue(
+        venue=venue,
+        oms_type=oms_type,
+        account_type=account_type,
+        starting_balances=[
+            money_type(amount, currencies[currency])
+            for currency, amount in _starting_balance_plan(target)
+        ],
+        fill_model=fill_model_type(),
+        fee_model=fee_model,
+        bar_execution=False,
+    )
+
+
 def _build_target_portfolio_execution_plan_in_context(
     fixture: dict[str, object],
 ) -> tuple[dict[str, object], ...]:
@@ -2024,14 +2052,11 @@ def _build_simulation_market_data(
         assert isinstance(event, dict)
         assert isinstance(instruction, dict)
         event_time = event["event_time"]
-        quote_time = event["quote_time"]
         assert isinstance(event_time, datetime)
-        assert isinstance(quote_time, datetime)
         event_timestamp_ns = (
             int(event_time.timestamp()) * 1_000_000_000
             + event_time.microsecond * 1_000
         )
-        delivery_timestamp_ns = event_timestamp_ns + 1
         volume = quantity_type.from_str(
             _nautilus_quantity_text(
                 event["volume"], 6, label="simulation event volume"
@@ -2050,37 +2075,27 @@ def _build_simulation_market_data(
             else:
                 settlement_bid = min(event["bid"], validated_exit)
                 settlement_ask = validated_exit
-        data.append(
-            bar_type_class(
-                bar_type,
-                price_type.from_str(
-                    _nautilus_price_text(
-                        event["open"], 2, label="simulation event open"
-                    )
-                ),
-                price_type.from_str(
-                    _nautilus_price_text(
-                        event["high"], 2, label="simulation event high"
-                    )
-                ),
-                price_type.from_str(
-                    _nautilus_price_text(
-                        event["low"], 2, label="simulation event low"
-                    )
-                ),
-                price_type.from_str(
-                    _nautilus_price_text(
-                        event["close"], 2, label="simulation event close"
-                    )
-                ),
-                volume,
-                event_timestamp_ns,
-                event_timestamp_ns,
-            )
+        bar = bar_type_class(
+            bar_type,
+            price_type.from_str(
+                _nautilus_price_text(event["open"], 2, label="simulation event open")
+            ),
+            price_type.from_str(
+                _nautilus_price_text(event["high"], 2, label="simulation event high")
+            ),
+            price_type.from_str(
+                _nautilus_price_text(event["low"], 2, label="simulation event low")
+            ),
+            price_type.from_str(
+                _nautilus_price_text(event["close"], 2, label="simulation event close")
+            ),
+            volume,
+            event_timestamp_ns,
+            event_timestamp_ns,
         )
-        # The semantic quote is sealed by fixture validation.  Deliver its L1
-        # projection one nanosecond after the bar so on_bar's limit order sees
-        # the sealed bid/ask, rather than a LAST/EXTERNAL bar-derived price.
+        # The semantic quote is sealed by fixture validation.  Ingest its L1
+        # projection immediately before the corresponding bar, so on_bar can
+        # only submit against this event's bid/ask, never a prior event's book.
         data.append(
             quote_tick_type(
                 instrument,
@@ -2096,10 +2111,11 @@ def _build_simulation_market_data(
                 ),
                 volume,
                 volume,
-                delivery_timestamp_ns,
-                delivery_timestamp_ns,
+                event_timestamp_ns,
+                event_timestamp_ns,
             )
         )
+        data.append(bar)
     return data
 
 
@@ -2148,20 +2164,16 @@ def _run_nautilus_simulation_fixture_loaded(
         target = fixture["target_quantity"]
         assert isinstance(target, Decimal)
         currencies = {"BTC": BTC, "USDT": USDT}
-        engine.add_venue(
+        _add_native_simulation_venue(
+            engine=engine,
             venue=Venue("BINANCE"),
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
-            starting_balances=[
-                Money(amount, currencies[currency])
-                for currency, amount in _starting_balance_plan(target)
-            ],
-            fill_model=FillModel(),
+            target=target,
+            currencies=currencies,
+            money_type=Money,
+            fill_model_type=FillModel,
             fee_model=ScenarioFeeModel(fixture["fee_rate"]),
-            # Bars drive the finite strategy only.  Matching receives the
-            # sealed L1 quote that follows each bar, avoiding LAST/EXTERNAL
-            # bar-price participation in settlement.
-            bar_execution=False,
         )
         engine.add_instrument(instrument)
         execution_plan = _build_nautilus_execution_plan(fixture)
@@ -2222,7 +2234,7 @@ def _run_nautilus_simulation_fixture_loaded(
         )
         events = fixture["events"]
         assert isinstance(events, tuple)
-        bars = data[::2]
+        bars = data[1::2]
         engine.add_data(data)
         engine.run()
         engine_result = engine.get_result()
