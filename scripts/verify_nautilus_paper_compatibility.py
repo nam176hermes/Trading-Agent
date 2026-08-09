@@ -450,6 +450,8 @@ def _campaign_authority(
     candidate_closure_sha256: str,
     candidate_manifest_sha256: str,
 ) -> tuple[ValidatePaperCompatibility, tuple[EngineArtifactBinding, ...], str]:
+    _sha256(candidate_closure_sha256, label="paper candidate closure")
+    _sha256(candidate_manifest_sha256, label="paper candidate manifest")
     _private_directory(campaign_directory, mode=0o500, label="campaign directory")
     manifest_raw = _sealed_bytes(
         campaign_directory / _CAMPAIGN_MANIFEST, label="campaign manifest"
@@ -520,14 +522,18 @@ def _campaign_authority(
         or parity.get("candidate_manifest_schema_version") != 6
         or parity.get("scenario_campaign_sha256") != campaign_sha256
         or parity.get("strategy_source_sha256") != strategy_source_sha256
-        or parity.get("candidate_closure_sha256")
-        != _sha256(candidate_closure_sha256, label="candidate closure")
-        or parity.get("candidate_manifest_sha256")
-        != _sha256(candidate_manifest_sha256, label="candidate manifest")
     ):
         raise PaperCompatibilityVerificationError(
             "parity record is not bound to the exact candidate campaign"
         )
+    _sha256(
+        parity.get("candidate_closure_sha256"),
+        label="simulation candidate closure",
+    )
+    _sha256(
+        parity.get("candidate_manifest_sha256"),
+        label="simulation candidate manifest",
+    )
     parity_records = _scenario_records(
         parity["scenarios"],
         fields=_PARITY_SCENARIO_FIELDS,

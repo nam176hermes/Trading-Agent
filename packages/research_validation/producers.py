@@ -999,6 +999,13 @@ def _input_identity_sha256(item: VerifiedCampaignScenarioV1) -> str:
     ).hexdigest()
 
 
+def _decimal_text(value: Decimal) -> str:
+    if value.is_zero():
+        return "0"
+    result = format(value, "f")
+    return result.rstrip("0").rstrip(".") if "." in result else result
+
+
 def _reference_digests(item: VerifiedCampaignScenarioV1) -> tuple[str, str]:
     scenario = BacktestScenarioV1.from_mounted_artifacts(
         scenario_bytes=item.fixture.simulation_scenario,
@@ -1024,13 +1031,13 @@ def _reference_digests(item: VerifiedCampaignScenarioV1) -> tuple[str, str]:
                 ("total_orders", expected.total_orders),
                 ("total_fills", expected.total_fills),
                 ("total_positions", expected.total_positions),
-                ("filled_quantity", str(expected.filled_quantity)),
-                ("remaining_quantity", str(expected.remaining_quantity)),
-                ("position_quantity", str(expected.position_quantity)),
-                ("average_entry_price", str(expected.average_entry_price)),
-                ("fees", str(expected.fees)),
-                ("realized_pnl", str(expected.realized_pnl)),
-                ("unrealized_pnl", str(expected.unrealized_pnl)),
+                ("filled_quantity", _decimal_text(expected.filled_quantity)),
+                ("remaining_quantity", _decimal_text(expected.remaining_quantity)),
+                ("position_quantity", _decimal_text(expected.position_quantity)),
+                ("average_entry_price", _decimal_text(expected.average_entry_price)),
+                ("fees", _decimal_text(expected.fees)),
+                ("realized_pnl", _decimal_text(expected.realized_pnl)),
+                ("unrealized_pnl", _decimal_text(expected.unrealized_pnl)),
                 (
                     "stop_take_profit_precedence",
                     expected.stop_take_profit_precedence,
@@ -1146,8 +1153,6 @@ def _load_paper(
     if (
         paper.scenario_campaign_sha256 != campaign.sha256
         or paper.strategy_source_sha256 != campaign.strategy_source_sha256
-        or paper.candidate_closure_sha256 != parity["candidate_closure_sha256"]
-        or paper.candidate_manifest_sha256 != parity["candidate_manifest_sha256"]
         or paper.parity_record_sha256 != parity_sha256
         or paper.engine_configuration_sha256
         != long_accounting.engine_configuration_sha256

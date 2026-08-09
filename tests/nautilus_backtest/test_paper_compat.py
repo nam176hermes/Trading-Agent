@@ -517,6 +517,9 @@ def test_root_harness_owns_exactly_one_prepare_consume_and_capture() -> None:
         "cleanup",
     ]
     assert result.compatible is True
+    assert result.candidate_closure_sha256 == "a" * 64
+    assert result.candidate_manifest_sha256 == "b" * 64
+    assert result.parity_record_sha256 == "c" * 64
     assert result.launcher_result_sha256 == hashlib.sha256(_canonical(event)).hexdigest()
 
 
@@ -580,6 +583,34 @@ def test_root_harness_requires_exact_eight_scenario_parity_and_selects_long_acco
         _unseal_campaign(campaign, parity_path)
 
 
+def test_root_harness_accepts_distinct_simulation_and_paper_candidates() -> None:
+    harness = _load(HARNESS, "paper_compat_harness_cross_profile_authority")
+    campaign, parity_path, simulation_closure, simulation_manifest, _manifest, parity = (
+        _paper_campaign_evidence()
+    )
+    paper_closure = "1" * 64
+    paper_manifest = "2" * 64
+    assert (simulation_closure, simulation_manifest) != (
+        paper_closure,
+        paper_manifest,
+    )
+    try:
+        command, bindings, parity_sha = harness._campaign_authority(
+            campaign,
+            parity_path,
+            candidate_closure_sha256=paper_closure,
+            candidate_manifest_sha256=paper_manifest,
+        )
+
+        assert parity["candidate_closure_sha256"] == simulation_closure
+        assert parity["candidate_manifest_sha256"] == simulation_manifest
+        assert command.scenario_campaign_sha256 == parity["scenario_campaign_sha256"]
+        assert len(bindings) == 3
+        assert parity_sha == hashlib.sha256(parity_path.read_bytes()).hexdigest()
+    finally:
+        _unseal_campaign(campaign, parity_path)
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -609,7 +640,7 @@ def test_root_harness_rejects_fabricated_or_inconsistent_parity_evidence(
         elif mutation == "campaign-identity":
             parity["scenarios"][0]["market_data_sha256"] = "0" * 64
         elif mutation == "candidate-identity":
-            parity["candidate_closure_sha256"] = "0" * 64
+            parity["candidate_closure_sha256"] = "A" * 64
         elif mutation == "event-mismatch":
             parity["scenarios"][0]["run_2_event_sha256"] = "0" * 64
         else:

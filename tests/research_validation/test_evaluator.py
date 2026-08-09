@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import timedelta
 from decimal import Decimal
 
+import pytest
+
+from packages.engine_contracts import canonical_json_bytes
 from packages.research_validation import (
     CostScenario,
     PointInTimeObservation,
@@ -167,6 +171,96 @@ def test_campaign_evaluator_derives_all_six_gate_results_without_pass_flags() ->
         "benchmark-comparison",
         "provenance-verification",
     )
+    assert first.passed is True
+    campaign = _campaign()
+    assert campaign.candidate_closure_sha256 != (
+        campaign.paper_result.candidate_closure_sha256
+    )
+    assert campaign.candidate_manifest_sha256 != (
+        campaign.paper_result.candidate_manifest_sha256
+    )
+
+
+@pytest.mark.parametrize(
+    "field", ("candidate_closure_sha256", "candidate_manifest_sha256")
+)
+def test_campaign_evaluator_rejects_forged_paper_candidate_self_digest(
+    field: str,
+) -> None:
+    baseline = _campaign()
+    forged_paper = baseline.paper_result.model_copy(update={field: _digest("0")})
+    forged_record_sha256 = hashlib.sha256(
+        canonical_json_bytes(forged_paper) + b"\n"
+    ).hexdigest()
+    forged = baseline.model_copy(
+        update={
+            "paper_record_sha256": forged_record_sha256,
+            "paper_result": forged_paper,
+        }
+    )
+
+    result = next(
+        item
+        for item in research.evaluate_research_campaign(forged).results
+        if item.name == "provenance-verification"
+    )
+
+    assert result.passed is False
+    assert "E_PROVENANCE_PAPER_RESULT" in result.failure_codes
+
+
+@pytest.mark.parametrize(
+    ("field", "failure_code"),
+    (
+        ("scenario_campaign_sha256", "E_PROVENANCE_PAPER_BINDING"),
+        ("strategy_source_sha256", "E_PROVENANCE_PAPER_BINDING"),
+        ("parity_record_sha256", "E_PROVENANCE_PAPER_BINDING"),
+        ("engine_configuration_sha256", "E_PROVENANCE_PAPER_SCENARIO"),
+        ("instrument_catalog_sha256", "E_PROVENANCE_PAPER_SCENARIO"),
+        ("strategy_configuration_sha256", "E_PROVENANCE_PAPER_SCENARIO"),
+    ),
+)
+def test_campaign_evaluator_rejects_paper_common_authority_drift(
+    field: str,
+    failure_code: str,
+) -> None:
+    baseline = _campaign()
+    fields = baseline.paper_result.model_dump(
+        exclude={"compatible", "result_sha256", "schema_version"}
+    )
+    fields[field] = _digest("0")
+    drifted_paper = research.PaperCompatibilityResultV1.create(**fields)
+    drifted_record_sha256 = hashlib.sha256(
+        canonical_json_bytes(drifted_paper) + b"\n"
+    ).hexdigest()
+    drifted = baseline.model_copy(
+        update={
+            "paper_record_sha256": drifted_record_sha256,
+            "paper_result": drifted_paper,
+        }
+    )
+
+    result = next(
+        item
+        for item in research.evaluate_research_campaign(drifted).results
+        if item.name == "provenance-verification"
+    )
+
+    assert result.passed is False
+    assert failure_code in result.failure_codes
+
+
+def test_campaign_evaluator_rejects_exact_paper_record_digest_drift() -> None:
+    baseline = _campaign()
+    drifted = baseline.model_copy(update={"paper_record_sha256": _digest("0")})
+
+    result = next(
+        item
+        for item in research.evaluate_research_campaign(drifted).results
+        if item.name == "provenance-verification"
+    )
+
+    assert result.failure_codes == ("E_PROVENANCE_PAPER_RECORD",)
 
 
 def test_campaign_evaluator_blocks_reference_nautilus_drift_and_legacy_selection() -> None:

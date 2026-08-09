@@ -384,8 +384,6 @@ def _campaign_provenance(
     if (
         paper.scenario_campaign_sha256 != evidence.scenario_campaign_sha256
         or paper.strategy_source_sha256 != evidence.strategy_source_sha256
-        or paper.candidate_closure_sha256 != evidence.candidate_closure_sha256
-        or paper.candidate_manifest_sha256 != evidence.candidate_manifest_sha256
         or paper.parity_record_sha256 != evidence.parity_record_sha256
     ):
         failures.add("E_PROVENANCE_PAPER_BINDING")
@@ -398,6 +396,12 @@ def _campaign_provenance(
         != long_accounting.strategy_configuration_sha256
     ):
         failures.add("E_PROVENANCE_PAPER_SCENARIO")
+    paper_domain = paper.model_dump(exclude={"result_sha256"})
+    if (
+        hashlib.sha256(canonical_json_bytes(paper_domain)).hexdigest()
+        != paper.result_sha256
+    ):
+        failures.add("E_PROVENANCE_PAPER_RESULT")
     paper_bytes = canonical_json_bytes(paper) + b"\n"
     if hashlib.sha256(paper_bytes).hexdigest() != evidence.paper_record_sha256:
         failures.add("E_PROVENANCE_PAPER_RECORD")

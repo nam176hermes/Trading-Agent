@@ -244,8 +244,8 @@ def _scenario_comparison(scenario_id: str, index: int):
 def _campaign_evidence(comparisons: tuple, **updates: object):
     parity_sha256 = _digest("8")
     paper = research.PaperCompatibilityResultV1.create(
-        candidate_closure_sha256=_digest("4"),
-        candidate_manifest_sha256=_digest("5"),
+        candidate_closure_sha256=_digest("e"),
+        candidate_manifest_sha256=_digest("f"),
         engine_configuration_sha256=comparisons[0].engine_configuration_sha256,
         instrument_catalog_sha256=comparisons[0].instrument_catalog_sha256,
         strategy_configuration_sha256=comparisons[0].strategy_configuration_sha256,
@@ -368,6 +368,64 @@ def test_campaign_comparisons_require_exact_sorted_unique_eight_scenarios() -> N
         _campaign_evidence(comparisons[:-1])
     with pytest.raises(ValidationError, match="ordered"):
         _campaign_evidence(tuple(reversed(comparisons)))
+
+
+def test_campaign_model_keeps_distinct_simulation_and_paper_authorities() -> None:
+    comparisons = tuple(
+        _scenario_comparison(scenario_id, index)
+        for index, scenario_id in enumerate(research.PHASE4_SCENARIO_IDS)
+    )
+
+    campaign = _campaign_evidence(comparisons)
+
+    assert campaign.candidate_closure_sha256 == _digest("4")
+    assert campaign.candidate_manifest_sha256 == _digest("5")
+    assert campaign.paper_result.candidate_closure_sha256 == _digest("e")
+    assert campaign.paper_result.candidate_manifest_sha256 == _digest("f")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("scenario_campaign_sha256", _digest("0")),
+        ("strategy_source_sha256", _digest("1")),
+        ("parity_record_sha256", _digest("2")),
+    ),
+)
+def test_campaign_model_rejects_paper_common_authority_drift(
+    field: str,
+    value: str,
+) -> None:
+    comparisons = tuple(
+        _scenario_comparison(scenario_id, index)
+        for index, scenario_id in enumerate(research.PHASE4_SCENARIO_IDS)
+    )
+    baseline = _campaign_evidence(comparisons)
+    paper_fields = baseline.paper_result.model_dump(
+        exclude={"compatible", "result_sha256", "schema_version"}
+    )
+    paper_fields[field] = value
+    paper = research.PaperCompatibilityResultV1.create(**paper_fields)
+
+    with pytest.raises(ValidationError, match="common campaign authority"):
+        _campaign_evidence(comparisons, paper_result=paper)
+
+
+@pytest.mark.parametrize(
+    "field", ("candidate_closure_sha256", "candidate_manifest_sha256")
+)
+def test_paper_result_rejects_forged_candidate_with_stale_self_digest(
+    field: str,
+) -> None:
+    comparisons = tuple(
+        _scenario_comparison(scenario_id, index)
+        for index, scenario_id in enumerate(research.PHASE4_SCENARIO_IDS)
+    )
+    document = _campaign_evidence(comparisons).paper_result.model_dump(mode="json")
+    document[field] = _digest("0")
+
+    with pytest.raises(ValidationError, match="result digest"):
+        research.PaperCompatibilityResultV1.model_validate(document)
 
 
 def test_campaign_v2_is_strict_without_changing_v1_schema_or_digest() -> None:

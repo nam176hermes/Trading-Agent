@@ -39,6 +39,7 @@ from scripts import close_phase4_research_evidence as research_closer
 from services.job_worker.engine_artifacts import HashBoundArtifactResolver
 from tests.nautilus_backtest.test_runtime_parity_verifier import (
     _Harness as ParityHarness,
+    _normalized_decimal_text,
 )
 
 
@@ -627,13 +628,13 @@ def _reference_digests(scenario_id: str) -> tuple[str, str]:
         ("total_orders", expected.total_orders),
         ("total_fills", expected.total_fills),
         ("total_positions", expected.total_positions),
-        ("filled_quantity", str(expected.filled_quantity)),
-        ("remaining_quantity", str(expected.remaining_quantity)),
-        ("position_quantity", str(expected.position_quantity)),
-        ("average_entry_price", str(expected.average_entry_price)),
-        ("fees", str(expected.fees)),
-        ("realized_pnl", str(expected.realized_pnl)),
-        ("unrealized_pnl", str(expected.unrealized_pnl)),
+        ("filled_quantity", _normalized_decimal_text(expected.filled_quantity)),
+        ("remaining_quantity", _normalized_decimal_text(expected.remaining_quantity)),
+        ("position_quantity", _normalized_decimal_text(expected.position_quantity)),
+        ("average_entry_price", _normalized_decimal_text(expected.average_entry_price)),
+        ("fees", _normalized_decimal_text(expected.fees)),
+        ("realized_pnl", _normalized_decimal_text(expected.realized_pnl)),
+        ("unrealized_pnl", _normalized_decimal_text(expected.unrealized_pnl)),
         ("stop_take_profit_precedence", expected.stop_take_profit_precedence),
     )
     payload = EngineEvent(
@@ -713,8 +714,8 @@ def _research_authorities(private_root: Path) -> tuple[Path, Path, Path, Path]:
     _seal(parity_path, parity_raw)
     long_accounting = records[0]
     paper = research.PaperCompatibilityResultV1.create(
-        candidate_closure_sha256=candidate_closure,
-        candidate_manifest_sha256=candidate_manifest,
+        candidate_closure_sha256="d" * 64,
+        candidate_manifest_sha256="e" * 64,
         engine_configuration_sha256=long_accounting["engine_configuration_sha256"],
         instrument_catalog_sha256=long_accounting["instrument_catalog_sha256"],
         strategy_configuration_sha256=long_accounting["strategy_configuration_sha256"],
@@ -752,6 +753,18 @@ def _research_authorities(private_root: Path) -> tuple[Path, Path, Path, Path]:
         )
     legacy.chmod(0o500)
     return campaign, parity_path, paper_path, legacy
+
+
+def _rewrite_paper_record(path: Path, **updates: str) -> None:
+    paper = research.PaperCompatibilityResultV1.model_validate_json(path.read_bytes())
+    fields = paper.model_dump(
+        exclude={"compatible", "result_sha256", "schema_version"}
+    )
+    fields.update(updates)
+    rewritten = research.PaperCompatibilityResultV1.create(**fields)
+    path.chmod(0o600)
+    path.write_bytes(canonical_json_bytes(rewritten) + b"\n")
+    path.chmod(0o400)
 
 
 def _public_research_authorities(
@@ -825,8 +838,8 @@ def _public_research_authorities(
     paper_result = paper_verifier.capture_paper_compatibility(
         provider=InertPaperProvider(),
         command=command,
-        candidate_closure_sha256="b" * 64,
-        candidate_manifest_sha256="c" * 64,
+        candidate_closure_sha256="d" * 64,
+        candidate_manifest_sha256="e" * 64,
         parity_record_sha256=parity_digest,
         consume=lambda prepared: SimpleNamespace(command=prepared.command),
         capture=lambda _built, **_kwargs: SimpleNamespace(
@@ -927,6 +940,10 @@ def test_research_producer_derives_complete_campaign_evidence_from_sealed_inputs
     )
 
     assert evidence.schema_version == "research-campaign-evidence-v2"
+    assert evidence.candidate_closure_sha256 == "b" * 64
+    assert evidence.candidate_manifest_sha256 == "c" * 64
+    assert evidence.paper_result.candidate_closure_sha256 == "d" * 64
+    assert evidence.paper_result.candidate_manifest_sha256 == "e" * 64
     assert tuple(item.scenario_id for item in evidence.comparisons) == SCENARIO_IDS
     assert len(evidence.point_in_time) == 8
     assert len(evidence.recursive_replays) == 8
@@ -939,6 +956,74 @@ def test_research_producer_derives_complete_campaign_evidence_from_sealed_inputs
     }
     assert research.evaluate_research_campaign(evidence).passed is True
     assert evidence.promotion_authority == "reference-and-nautilus"
+
+
+def test_research_producer_accepts_distinct_simulation_and_paper_candidates(
+    private_root: Path,
+) -> None:
+    campaign, parity, paper, legacy = _research_authorities(private_root)
+
+    evidence = research.produce_research_campaign_evidence(
+        campaign_directory=campaign,
+        parity_record=parity,
+        paper_record=paper,
+        legacy_record_directory=legacy,
+    )
+
+    assert evidence.candidate_closure_sha256 == "b" * 64
+    assert evidence.candidate_manifest_sha256 == "c" * 64
+    assert evidence.paper_result.candidate_closure_sha256 == "d" * 64
+    assert evidence.paper_result.candidate_manifest_sha256 == "e" * 64
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "scenario_campaign_sha256",
+        "strategy_source_sha256",
+        "parity_record_sha256",
+        "engine_configuration_sha256",
+        "instrument_catalog_sha256",
+        "strategy_configuration_sha256",
+    ),
+)
+def test_research_producer_rejects_paper_common_authority_drift(
+    private_root: Path,
+    field: str,
+) -> None:
+    campaign, parity, paper, legacy = _research_authorities(private_root)
+    _rewrite_paper_record(paper, **{field: "0" * 64})
+
+    with pytest.raises(ValueError, match="paper record binding drifted"):
+        research.produce_research_campaign_evidence(
+            campaign_directory=campaign,
+            parity_record=parity,
+            paper_record=paper,
+            legacy_record_directory=legacy,
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ("candidate_closure_sha256", "candidate_manifest_sha256")
+)
+def test_research_producer_rejects_forged_paper_candidate_digest(
+    private_root: Path,
+    field: str,
+) -> None:
+    campaign, parity, paper, legacy = _research_authorities(private_root)
+    paper.chmod(0o600)
+    document = json.loads(paper.read_bytes())
+    document[field] = "0" * 64
+    paper.write_bytes(canonical_json_bytes(document) + b"\n")
+    paper.chmod(0o400)
+
+    with pytest.raises(ValueError, match="paper record is invalid"):
+        research.produce_research_campaign_evidence(
+            campaign_directory=campaign,
+            parity_record=parity,
+            paper_record=paper,
+            legacy_record_directory=legacy,
+        )
 
 
 def test_task8_legacy_adapter_command_is_literal_nested_venv_direct_script() -> None:

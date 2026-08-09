@@ -214,7 +214,12 @@ class VerifiedScenarioComparisonV1(ResearchValidationModel):
 
 
 class ResearchCampaignEvidenceV2(ResearchValidationModel):
-    """Complete offline evidence for the fixed Phase-4 campaign."""
+    """Complete offline evidence for the fixed Phase-4 campaign.
+
+    The aggregate ``candidate_*`` fields are the simulation authority from
+    the parity record.  The nested paper result retains its independently
+    attested paper candidate pair.
+    """
 
     schema_version: Literal["research-campaign-evidence-v2"] = (
         "research-campaign-evidence-v2"
@@ -247,6 +252,15 @@ class ResearchCampaignEvidenceV2(ResearchValidationModel):
 
     @model_validator(mode="after")
     def _complete_campaign(self) -> "ResearchCampaignEvidenceV2":
+        if (
+            self.paper_result.scenario_campaign_sha256
+            != self.scenario_campaign_sha256
+            or self.paper_result.strategy_source_sha256
+            != self.strategy_source_sha256
+            or self.paper_result.parity_record_sha256
+            != self.parity_record_sha256
+        ):
+            raise ValueError("paper result common campaign authority does not match")
         scenario_ids = tuple(item.scenario_id for item in self.comparisons)
         if set(scenario_ids) != set(PHASE4_SCENARIO_IDS):
             raise ValueError("campaign evidence requires the exact eight-scenario set")

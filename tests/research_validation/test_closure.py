@@ -355,6 +355,11 @@ def test_campaign_closure_returns_eight_scenario_proofs_and_one_stable_digest() 
     assert tuple(item.scenario_id for item in first.scenarios) == research.PHASE4_SCENARIO_IDS
     assert all(item.reference_result_sha256 == item.nautilus_result_sha256 for item in first.scenarios)
     assert all(item.legacy_selected is False for item in first.scenarios)
+    assert first.candidate_closure_sha256 == evidence_v2.candidate_closure_sha256
+    assert first.candidate_manifest_sha256 == evidence_v2.candidate_manifest_sha256
+    assert first.paper_result_sha256 == evidence_v2.paper_result.result_sha256
+    assert first.candidate_closure_sha256 != evidence_v2.paper_result.candidate_closure_sha256
+    assert first.candidate_manifest_sha256 != evidence_v2.paper_result.candidate_manifest_sha256
 
 
 def test_campaign_closure_contract_requires_repository_ordered_eight_scenarios() -> None:
@@ -394,10 +399,32 @@ def test_campaign_closure_rejects_parity_drift_or_paper_binding_drift() -> None:
         parity_record_sha256=value.paper_result.parity_record_sha256,
         launcher_result_sha256=value.paper_result.launcher_result_sha256,
     )
+    paper_record_sha256 = hashlib.sha256(
+        canonical_json_bytes(paper) + b"\n"
+    ).hexdigest()
+    drifted_paper = value.model_copy(
+        update={
+            "paper_record_sha256": paper_record_sha256,
+            "paper_result": paper,
+        }
+    )
     with pytest.raises(research.ResearchClosureError, match="campaign.*gates"):
-        closure_module._close_ws04_research_campaign_evidence(
-            _campaign_evidence(value.comparisons, paper_result=paper)
-        )
+        closure_module._close_ws04_research_campaign_evidence(drifted_paper)
+
+    forged_paper = value.paper_result.model_copy(
+        update={"candidate_closure_sha256": _digest("0")}
+    )
+    forged_record_sha256 = hashlib.sha256(
+        canonical_json_bytes(forged_paper) + b"\n"
+    ).hexdigest()
+    forged = value.model_copy(
+        update={
+            "paper_record_sha256": forged_record_sha256,
+            "paper_result": forged_paper,
+        }
+    )
+    with pytest.raises(research.ResearchClosureError, match="campaign.*gates"):
+        closure_module._close_ws04_research_campaign_evidence(forged)
 
 
 def test_v1_closure_semantics_remain_exact_after_campaign_api_is_added(
