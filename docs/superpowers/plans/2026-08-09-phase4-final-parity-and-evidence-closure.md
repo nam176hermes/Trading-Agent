@@ -319,7 +319,7 @@ PY
 
 ```bash
 set +e
-PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 .venv/bin/python -I -B \
+PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 "${phase4_root_python}" -I -B \
   scripts/verify_nautilus_v12_r3_parity.py [reviewed-absolute-arguments] \
   > "$packet/parity-controller.stdout" 2> "$packet/parity-controller.stderr"
 parity_exit=$?

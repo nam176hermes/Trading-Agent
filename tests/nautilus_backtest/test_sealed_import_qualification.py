@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1265,6 +1266,18 @@ def test_task5_and_task8_controller_bootstrap_reinstalls_and_binds_current_sourc
         assert "hashlib.sha256" in recipe
         assert 'is_relative_to(worktree / ".venv")' in recipe
         assert "_MANIFEST_FIELDS_V6" in recipe
+
+    task5_controller_scripts = re.findall(
+        r"scripts/([a-z0-9_]+\.py)", task5_block
+    )
+    bound_task5_controllers = re.findall(
+        r'"\$\{phase4_root_python\}"\s+-I\s+-B\s+(?:\\\s*)?'
+        r"scripts/([a-z0-9_]+\.py)",
+        task5_block,
+    )
+    assert task5_controller_scripts
+    assert sorted(task5_controller_scripts) == sorted(bound_task5_controllers)
+    assert not re.search(r"(?<![\"}])\.venv/bin/python\s+-I", task5_block)
 
     root_python = ROOT / ".venv/bin/python"
     source = ROOT / "services/job_worker/nautilus_closure.py"
