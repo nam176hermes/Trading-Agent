@@ -303,6 +303,41 @@ def _verify(paths: dict[str, Path], harness: _Harness, **overrides):
     return verifier.verify_nautilus_v12_r3_parity(**arguments)
 
 
+def test_parity_cli_returns_failed_verification_exit_code_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A packet wrapper must persist the verifier's exit, not a later shell status."""
+    def fail_verification(**_kwargs):
+        raise verifier.ParityVerificationError("inert independent-event mismatch")
+
+    monkeypatch.setattr(
+        verifier,
+        "verify_nautilus_v12_r3_parity",
+        fail_verification,
+    )
+
+    assert verifier.main(
+        [
+            "--rollback-closure",
+            "/inert/rollback",
+            "--candidate-closure",
+            "/inert/candidate",
+            "--rollback-artifact-directory",
+            "/inert/rollback-artifacts",
+            "--artifact-directory",
+            "/inert/artifacts",
+            "--sandbox",
+            "/inert/sandbox",
+            "--campaign-directory",
+            "/inert/campaign",
+            "--transport-root",
+            "/inert/transport",
+            "--record",
+            "/inert/evidence/parity.json",
+        ]
+    ) == 1
+
+
 def _assert_retained_runs(
     transport_root: Path,
     *,
@@ -1440,6 +1475,66 @@ def test_verifier_rejects_oracle_mismatch(
     with pytest.raises(verifier.ParityVerificationError, match="oracle"):
         _verify(external_paths, harness)
 
+    _assert_sealed_retained_prefix(
+        external_paths["transport_root"],
+        expected_names=(
+            "parity-long-accounting-run-1",
+            "parity-long-accounting-run-2",
+        ),
+    )
+
+
+def test_post_two_run_oracle_event_mismatch_writes_v3_forensic_pair(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping the post-two-run publication branch leaves a closed mismatch unobserved."""
+    real_reference_event = verifier._independent_reference_event
+    reference_calls = 0
+
+    def mismatch_only_after_two_validated_runs(envelope, expected):
+        nonlocal reference_calls
+        reference_calls += 1
+        if reference_calls == 3:
+            return _event_bytes(envelope, mismatch=True)
+        return real_reference_event(envelope, expected)
+
+    monkeypatch.setattr(
+        verifier,
+        "_independent_reference_event",
+        mismatch_only_after_two_validated_runs,
+    )
+    harness = _Harness()
+
+    with pytest.raises(
+        verifier._PostTwoRunIndependentEventMismatch,
+        match="independent oracle event",
+    ):
+        _verify(external_paths, harness)
+
+    provenance_path = verifier._event_provenance_path(external_paths["record"])
+    receipt_path = verifier._event_failure_receipt_path(external_paths["record"])
+    provenance = json.loads(provenance_path.read_bytes())
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = json.loads(receipt_bytes)
+    assert reference_calls == 3
+    assert provenance_path.stat().st_nlink == 1
+    assert stat.S_IMODE(provenance_path.stat().st_mode) == 0o400
+    assert receipt_path.stat().st_nlink == 1
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o400
+    assert receipt["schema_version"] == "phase4-parity-event-validation-failure-v3"
+    assert receipt["failure_class"] == "independent-event-validation-mismatch"
+    assert receipt["provenance_sha256"] == hashlib.sha256(
+        canonical_json_bytes(provenance) + b"\n"
+    ).hexdigest()
+    assert [item["field_name"] for item in receipt["field_commitments"]] == [
+        item.field_name
+        for item in verifier._event_field_commitments_from_provenance(provenance)
+    ]
+    assert b"NautilusBacktestSimulationCompleted" not in receipt_bytes
+    assert b"request.json" not in receipt_bytes
+    assert not external_paths["record"].exists()
+    assert not verifier._failure_receipt_path(external_paths["record"]).exists()
     _assert_sealed_retained_prefix(
         external_paths["transport_root"],
         expected_names=(

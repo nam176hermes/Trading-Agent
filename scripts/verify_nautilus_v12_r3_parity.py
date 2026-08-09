@@ -233,6 +233,28 @@ class _EventValidationMismatch(ParityVerificationError):
         self.actual_command_type_tag = actual_command_type_tag
 
 
+class _PostTwoRunIndependentEventMismatch(_EventValidationMismatch):
+    """Bind the completed-run event to its independently rebuilt canonical peer."""
+
+    def __init__(
+        self,
+        *,
+        scenario_id: ScenarioId,
+        actual_event_bytes: bytes,
+        reference_event_bytes: bytes,
+        actual_command_type_tag: _ActualCommandTypeTag,
+    ) -> None:
+        super().__init__(
+            scenario_id=scenario_id,
+            actual_event_bytes=actual_event_bytes,
+            reference_event_bytes=reference_event_bytes,
+            actual_command_type_tag=actual_command_type_tag,
+        )
+        self.args = (
+            "runtime event bytes do not equal the independent oracle event",
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class _ReservedRecord:
     descriptor: int
@@ -2008,8 +2030,16 @@ def _run_parity_matrix(
             assert expected is not None
             reference_event = _independent_reference_event(envelope, expected)
             if event_bytes_by_run[0] != reference_event:
-                raise ParityVerificationError(
-                    "runtime event bytes do not equal the independent oracle event"
+                actual_command_type_tag: _ActualCommandTypeTag = (
+                    _EXACT_COMMAND_TYPE_MATCH_TAG
+                    if type(envelope.payload) is RunBacktestSimulation
+                    else _EXACT_COMMAND_TYPE_MISMATCH_TAG
+                )
+                raise _PostTwoRunIndependentEventMismatch(
+                    scenario_id=scenario_id,
+                    actual_event_bytes=event_bytes_by_run[0],
+                    reference_event_bytes=reference_event,
+                    actual_command_type_tag=actual_command_type_tag,
                 )
             reference_event_sha256 = hashlib.sha256(reference_event).hexdigest()
             request_sha256 = hashlib.sha256(
