@@ -524,6 +524,7 @@ def test_verifier_runs_exact_eight_by_two_matrix_and_writes_digest_only_record(
     assert written == canonical_json_bytes(record) + b"\n"
     assert stat.S_IMODE(external_paths["record"].stat().st_mode) == 0o400
     assert not verifier._failure_receipt_path(external_paths["record"]).exists()
+    assert not verifier._event_failure_receipt_path(external_paths["record"]).exists()
     assert not any(
         str(path).encode() in written for path in external_paths.values()
     )
@@ -1412,6 +1413,10 @@ def test_verifier_rejects_noncanonical_process_output(
     with pytest.raises(verifier.ParityVerificationError, match=message):
         _verify(external_paths, harness)
 
+    assert not external_paths["record"].exists()
+    assert not verifier._failure_receipt_path(external_paths["record"]).exists()
+    assert not verifier._event_failure_receipt_path(external_paths["record"]).exists()
+
 
 def test_verifier_rejects_oracle_mismatch(
     external_paths: dict[str, Path],
@@ -1435,6 +1440,157 @@ def test_verifier_rejects_oracle_mismatch(
             "parity-long-accounting-run-2",
         ),
     )
+
+
+def test_event_validation_mismatch_writes_distinct_sealed_digest_only_receipt(
+    external_paths: dict[str, Path],
+) -> None:
+    """A rejected canonical event retains only the two event digests."""
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+    )
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
+        _verify(external_paths, harness)
+
+    receipt_path = external_paths["record"].with_name(
+        f"{external_paths['record'].name}.event-failure.json"
+    )
+    written = receipt_path.read_bytes()
+    receipt = json.loads(written)
+    envelope = harness.prepare_calls[0]
+    assert observed.value.args == ("runtime result does not equal the independent oracle",)
+    assert receipt == {
+        "actual_event_digest_length": 64,
+        "actual_event_digest_type": "sha256-hex",
+        "actual_event_sha256": hashlib.sha256(
+            _event_bytes(envelope, mismatch=True)
+        ).hexdigest(),
+        "digest_algorithm": "sha256",
+        "failure_class": "independent-event-validation-mismatch",
+        "independent_reference_event_digest_length": 64,
+        "independent_reference_event_digest_type": "sha256-hex",
+        "independent_reference_event_sha256": hashlib.sha256(
+            _event_bytes(envelope)
+        ).hexdigest(),
+        "scenario_id": "long-accounting",
+        "schema_version": "nautilus-phase4-parity-event-failure-receipt-v1",
+        "status": "failed",
+    }
+    assert written == canonical_json_bytes(receipt) + b"\n"
+    observed_stat = receipt_path.stat()
+    assert stat.S_IMODE(observed_stat.st_mode) == 0o400
+    assert observed_stat.st_nlink == 1
+    assert not external_paths["record"].exists()
+    assert not verifier._failure_receipt_path(external_paths["record"]).exists()
+    assert b"NautilusBacktestSimulationCompleted" not in written
+    assert b"request.json" not in written
+    assert str(external_paths["transport_root"]).encode() not in written
+    _assert_sealed_retained_prefix(
+        external_paths["transport_root"],
+        expected_names=("parity-long-accounting-run-1",),
+    )
+
+
+def test_event_failure_receipt_partial_publication_preserves_primary_and_custody(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sealing failure cannot hide event validation failure or discard its prefix."""
+    real_write = verifier.os.write
+    failed = False
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+    )
+
+    def partial_then_fail(descriptor: int, value) -> int:
+        nonlocal failed
+        if not failed:
+            failed = True
+            return real_write(descriptor, value[:11])
+        raise OSError("inert event failure receipt write error")
+
+    monkeypatch.setattr(verifier.os, "write", partial_then_fail)
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
+        _verify(external_paths, harness)
+
+    receipt_path = external_paths["record"].with_name(
+        f"{external_paths['record'].name}.event-failure.json"
+    )
+    assert receipt_path.exists()
+    assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o400
+    assert receipt_path.stat().st_nlink == 1
+    assert any("event failure receipt" in note for note in observed.value.__notes__)
+    assert not external_paths["record"].exists()
+    assert not verifier._failure_receipt_path(external_paths["record"]).exists()
+    _assert_sealed_retained_prefix(
+        external_paths["transport_root"],
+        expected_names=("parity-long-accounting-run-1",),
+    )
+
+
+def test_preexisting_event_failure_receipt_blocks_before_transport_publication(
+    external_paths: dict[str, Path],
+) -> None:
+    """An earlier event observation is never overwritten or treated as PASS evidence."""
+    receipt_path = external_paths["record"].with_name(
+        f"{external_paths['record'].name}.event-failure.json"
+    )
+    retained = b"retained-event-failure-receipt"
+    receipt_path.write_bytes(retained)
+    receipt_path.chmod(0o400)
+    harness = _Harness()
+
+    with pytest.raises(verifier.ParityVerificationError, match="record already exists"):
+        _verify(external_paths, harness)
+
+    assert receipt_path.read_bytes() == retained
+    assert harness.prepare_calls == []
+    assert list(external_paths["transport_root"].iterdir()) == []
+    assert not external_paths["record"].exists()
+    assert not verifier._failure_receipt_path(external_paths["record"]).exists()
+
+
+def test_event_failure_receipt_rejects_parent_substitution_and_preserves_primary(
+    external_paths: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The event receipt cannot be redirected after its identity reserve."""
+    real_fsync = verifier.os.fsync
+    record = external_paths["record"]
+    receipt_path = record.with_name(f"{record.name}.event-failure.json")
+    parent = record.parent
+    displaced = parent.parent / "displaced-event-failure-receipt"
+    swapped = False
+    harness = _Harness()
+    harness.stdout_transform = lambda _value, _run: (
+        _event_bytes(harness.prepare_calls[-1], mismatch=True) + b"\n"
+    )
+
+    def replace_parent(descriptor: int) -> None:
+        nonlocal swapped
+        if not swapped and receipt_path.exists():
+            parent.rename(displaced)
+            parent.mkdir(mode=0o700)
+            swapped = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(verifier.os, "fsync", replace_parent)
+
+    with pytest.raises(verifier.ParityVerificationError, match="oracle") as observed:
+        _verify(external_paths, harness)
+
+    assert swapped is True
+    assert any("event failure receipt" in note for note in observed.value.__notes__)
+    assert not receipt_path.exists()
+    retained = displaced / receipt_path.name
+    assert retained.exists()
+    assert stat.S_IMODE(retained.stat().st_mode) == 0o400
+    assert retained.stat().st_nlink == 1
+    assert not record.exists()
 
 
 def test_result_digest_mismatch_writes_sealed_digest_only_failure_receipt(
@@ -1504,6 +1660,7 @@ def test_result_digest_mismatch_writes_sealed_digest_only_failure_receipt(
     assert stat.S_IMODE(observed_stat.st_mode) == 0o400
     assert observed_stat.st_nlink == 1
     assert not external_paths["record"].exists()
+    assert not verifier._event_failure_receipt_path(external_paths["record"]).exists()
     assert b"NautilusBacktestSimulationCompleted" not in written
     assert b"/tmp/" not in written
     assert b"request.json" not in written
@@ -1658,6 +1815,7 @@ def test_verifier_propagates_prepare_consume_authority_drift(
     assert observed.value is error
     assert not external_paths["record"].exists()
     assert not verifier._failure_receipt_path(external_paths["record"]).exists()
+    assert not verifier._event_failure_receipt_path(external_paths["record"]).exists()
 
 
 def test_verifier_rejects_candidate_authority_drift_between_matrix_runs(

@@ -59,6 +59,7 @@ _CHECKOUT = Path(__file__).resolve().parents[1]
 _RUN_COUNT = 2
 _SHA256_LENGTH = 64
 _FAILURE_RECEIPT_SUFFIX = ".failure.json"
+_EVENT_FAILURE_RECEIPT_SUFFIX = ".event-failure.json"
 
 
 class ParityVerificationError(RuntimeError):
@@ -110,6 +111,22 @@ class V12R3ParityFailureReceipt(TypedDict):
     actual_result_digest_length: Literal[64]
 
 
+class V12R3ParityEventFailureReceipt(TypedDict):
+    """Digest-only observation of a rejected canonical runtime event."""
+
+    schema_version: Literal["nautilus-phase4-parity-event-failure-receipt-v1"]
+    status: Literal["failed"]
+    failure_class: Literal["independent-event-validation-mismatch"]
+    digest_algorithm: Literal["sha256"]
+    scenario_id: ScenarioId
+    actual_event_sha256: str
+    actual_event_digest_type: Literal["sha256-hex"]
+    actual_event_digest_length: Literal[64]
+    independent_reference_event_sha256: str
+    independent_reference_event_digest_type: Literal["sha256-hex"]
+    independent_reference_event_digest_length: Literal[64]
+
+
 class _ResultDigestMismatch(ParityVerificationError):
     """Carry only bounded digest observations across forensic transport sealing."""
 
@@ -126,6 +143,22 @@ class _ResultDigestMismatch(ParityVerificationError):
         self.launcher_reference_result_sha256 = launcher_reference_result_sha256
         self.independent_oracle_result_sha256 = independent_oracle_result_sha256
         self.actual_result_sha256 = actual_result_sha256
+
+
+class _EventValidationMismatch(ParityVerificationError):
+    """Carry only canonical event digests across forensic transport sealing."""
+
+    def __init__(
+        self,
+        *,
+        scenario_id: ScenarioId,
+        actual_event_sha256: str,
+        independent_reference_event_sha256: str,
+    ) -> None:
+        super().__init__("runtime result does not equal the independent oracle")
+        self.scenario_id = scenario_id
+        self.actual_event_sha256 = actual_event_sha256
+        self.independent_reference_event_sha256 = independent_reference_event_sha256
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +304,12 @@ def _failure_receipt_path(record: Path) -> Path:
     """Keep the failed observation beside, but separate from, PASS evidence."""
 
     return record.with_name(f"{record.name}{_FAILURE_RECEIPT_SUFFIX}")
+
+
+def _event_failure_receipt_path(record: Path) -> Path:
+    """Keep a rejected-event observation distinct from result-digest evidence."""
+
+    return record.with_name(f"{record.name}{_EVENT_FAILURE_RECEIPT_SUFFIX}")
 
 
 def _named_record_stat(reservation: _ReservedRecord):
@@ -1431,10 +1470,20 @@ def _validated_event(
             end_time=envelope.payload.end_time,
         )
         expected = calculate_reference_outcome(scenario)
-        validated = validate_isolated_simulation_result(envelope, event, expected)
     except (BacktestScenarioError, NautilusBacktestError) as exc:
         raise ParityVerificationError(
             "runtime result does not equal the independent oracle"
+        ) from exc
+    reference_event = _independent_reference_event(envelope, expected)
+    try:
+        validated = validate_isolated_simulation_result(envelope, event, expected)
+    except (BacktestScenarioError, NautilusBacktestError) as exc:
+        raise _EventValidationMismatch(
+            scenario_id=expected.scenario_id,
+            actual_event_sha256=hashlib.sha256(event_bytes).hexdigest(),
+            independent_reference_event_sha256=hashlib.sha256(
+                reference_event
+            ).hexdigest(),
         ) from exc
     return event, validated, expected
 
@@ -1515,7 +1564,11 @@ def _required_digest(value: object, *, label: str) -> str:
 
 def _write_sealed_record(
     path: Path,
-    record: V12R3ParityRecord | V12R3ParityFailureReceipt,
+    record: (
+        V12R3ParityRecord
+        | V12R3ParityFailureReceipt
+        | V12R3ParityEventFailureReceipt
+    ),
     *,
     parent_identity: tuple[int, int],
     label: str,
@@ -1596,6 +1649,42 @@ def _write_failure_receipt(
         _failure_receipt(mismatch),
         parent_identity=parent_identity,
         label="parity failure receipt",
+    )
+
+
+def _event_failure_receipt(
+    mismatch: _EventValidationMismatch,
+) -> V12R3ParityEventFailureReceipt:
+    """Project a rejected event into the approved digest-only vocabulary."""
+
+    return V12R3ParityEventFailureReceipt(
+        schema_version="nautilus-phase4-parity-event-failure-receipt-v1",
+        status="failed",
+        failure_class="independent-event-validation-mismatch",
+        digest_algorithm="sha256",
+        scenario_id=mismatch.scenario_id,
+        actual_event_sha256=mismatch.actual_event_sha256,
+        actual_event_digest_type="sha256-hex",
+        actual_event_digest_length=_SHA256_LENGTH,
+        independent_reference_event_sha256=(
+            mismatch.independent_reference_event_sha256
+        ),
+        independent_reference_event_digest_type="sha256-hex",
+        independent_reference_event_digest_length=_SHA256_LENGTH,
+    )
+
+
+def _write_event_failure_receipt(
+    path: Path,
+    mismatch: _EventValidationMismatch,
+    *,
+    parent_identity: tuple[int, int],
+) -> None:
+    _write_sealed_record(
+        path,
+        _event_failure_receipt(mismatch),
+        parent_identity=parent_identity,
+        label="parity event failure receipt",
     )
 
 
@@ -1857,6 +1946,11 @@ def verify_nautilus_v12_r3_parity(
         failure_receipt,
         transport_root=transport_root,
     )
+    event_failure_receipt = _event_failure_receipt_path(record)
+    event_failure_receipt_parent_identity = _validate_record_path(
+        event_failure_receipt,
+        transport_root=transport_root,
+    )
     for path, label in (
         (rollback_closure, "rollback closure"),
         (candidate_closure, "candidate closure"),
@@ -1933,6 +2027,19 @@ def verify_nautilus_v12_r3_parity(
         except ParityVerificationError as receipt_failure:
             primary_failure.add_note(
                 "secondary failure receipt sealing failure: "
+                f"{_bounded_secondary_summary(receipt_failure)}"
+            )
+        raise
+    except _EventValidationMismatch as primary_failure:
+        try:
+            _write_event_failure_receipt(
+                event_failure_receipt,
+                primary_failure,
+                parent_identity=event_failure_receipt_parent_identity,
+            )
+        except ParityVerificationError as receipt_failure:
+            primary_failure.add_note(
+                "secondary event failure receipt sealing failure: "
                 f"{_bounded_secondary_summary(receipt_failure)}"
             )
         raise
