@@ -1848,6 +1848,30 @@ def _build_nautilus_execution_plan(
     return tuple(
         {
             **instruction,
+            "entry_price": (
+                None
+                if instruction["entry_price"] is None
+                else _nautilus_price_text(
+                    _decimal(
+                        instruction["entry_price"],
+                        label="native execution entry price",
+                    ),
+                    2,
+                    label="native execution entry price",
+                )
+            ),
+            "exit_price": (
+                None
+                if instruction["exit_price"] is None
+                else _nautilus_price_text(
+                    _decimal(
+                        instruction["exit_price"],
+                        label="native execution exit price",
+                    ),
+                    2,
+                    label="native execution exit price",
+                )
+            ),
             "fill_quantity": _nautilus_quantity_text(
                 _decimal(
                     instruction["fill_quantity"],
@@ -2007,10 +2031,7 @@ def _build_simulation_market_data(
             int(event_time.timestamp()) * 1_000_000_000
             + event_time.microsecond * 1_000
         )
-        quote_timestamp_ns = (
-            int(quote_time.timestamp()) * 1_000_000_000
-            + quote_time.microsecond * 1_000
-        )
+        delivery_timestamp_ns = event_timestamp_ns + 1
         volume = quantity_type.from_str(
             _nautilus_quantity_text(
                 event["volume"], 6, label="simulation event volume"
@@ -2020,18 +2041,15 @@ def _build_simulation_market_data(
         settlement_ask = event["ask"]
         exit_price = instruction["exit_price"]
         if exit_price is not None:
-            validated_exit = _decimal(
-                exit_price,
-                label="native settlement exit price",
-            )
+            validated_exit = Decimal(exit_price)
             if target > 0:
-                # Keep a stop/take exit inside the sealed bar's range so the
-                # BestPrice model settles at the validated trigger price.
-                settlement_bid = min(event["bid"], event["low"], validated_exit)
+                # Make the sell exit marketable at its sealed execution price;
+                # the native base fill model then settles at that order price.
+                settlement_bid = validated_exit
                 settlement_ask = max(event["ask"], validated_exit)
             else:
                 settlement_bid = min(event["bid"], validated_exit)
-                settlement_ask = max(event["ask"], event["high"], validated_exit)
+                settlement_ask = validated_exit
         data.append(
             bar_type_class(
                 bar_type,
@@ -2060,8 +2078,9 @@ def _build_simulation_market_data(
                 event_timestamp_ns,
             )
         )
-        # Keep quote event time bound to the sealed quote while scheduling its
-        # delivery around the corresponding bar, after on_bar submits orders.
+        # The semantic quote is sealed by fixture validation.  Deliver its L1
+        # projection one nanosecond after the bar so on_bar's limit order sees
+        # the sealed bid/ask, rather than a LAST/EXTERNAL bar-derived price.
         data.append(
             quote_tick_type(
                 instrument,
@@ -2077,8 +2096,8 @@ def _build_simulation_market_data(
                 ),
                 volume,
                 volume,
-                quote_timestamp_ns,
-                event_timestamp_ns,
+                delivery_timestamp_ns,
+                delivery_timestamp_ns,
             )
         )
     return data
@@ -2088,7 +2107,7 @@ def _run_nautilus_simulation_fixture_loaded(
     fixture: dict[str, object],
 ) -> dict[str, object]:
     from nautilus_trader.backtest.engine import BacktestEngine
-    from nautilus_trader.backtest.models import BestPriceFillModel, FeeModel
+    from nautilus_trader.backtest.models import FeeModel, FillModel
     from nautilus_trader.common.config import LoggingConfig
     from nautilus_trader.config import BacktestEngineConfig
     from nautilus_trader.model.currencies import BTC, USDT
@@ -2137,8 +2156,12 @@ def _run_nautilus_simulation_fixture_loaded(
                 Money(amount, currencies[currency])
                 for currency, amount in _starting_balance_plan(target)
             ],
-            fill_model=BestPriceFillModel(),
+            fill_model=FillModel(),
             fee_model=ScenarioFeeModel(fixture["fee_rate"]),
+            # Bars drive the finite strategy only.  Matching receives the
+            # sealed L1 quote that follows each bar, avoiding LAST/EXTERNAL
+            # bar-price participation in settlement.
+            bar_execution=False,
         )
         engine.add_instrument(instrument)
         execution_plan = _build_nautilus_execution_plan(fixture)

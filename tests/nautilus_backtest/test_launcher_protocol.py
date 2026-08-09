@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,9 @@ from packages.nautilus_backtest.fixtures import (
 
 
 LAUNCHER = Path("engines/nautilus/launcher/nautilus_backtest.py")
+_NATIVE_NAUTILUS_PYTHON = Path(
+    "/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v1/venv/bin/python3.12"
+)
 
 
 @pytest.fixture(scope="module")
@@ -1366,40 +1370,150 @@ def test_short_cash_account_starts_with_exact_base_inventory(
     )
 
 
-def test_long_accounting_native_adapter_enables_inside_spread_limit_fills() -> None:
-    """The bar-only engine must fill the validated ask-side limit order."""
-
-    import ast
-
-    module = ast.parse(LAUNCHER.read_text(encoding="utf-8"))
-    venue_calls = [
-        node
-        for node in ast.walk(module)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "add_venue"
-    ]
-
-    venue_calls = [
-        node
-        for node in venue_calls
-        if any(
-            keyword.arg == "starting_balances"
-            and isinstance(keyword.value, ast.ListComp)
-            for keyword in node.keywords
-        )
-    ]
-    assert len(venue_calls) == 1
-    fill_model = next(
+@pytest.mark.host_coupled
+@pytest.mark.parametrize(
+    ("scenario_id", "expected"),
+    (
         (
-            keyword.value
-            for keyword in venue_calls[0].keywords
-            if keyword.arg == "fill_model"
+            "long-accounting",
+            {
+                "average_entry_price": "100",
+                "fees": "0.2",
+                "filled_quantity": "2",
+                "unrealized_pnl": "2",
+            },
         ),
-        None,
+        (
+            "short-accounting",
+            {
+                "average_entry_price": "99",
+                "fees": "0.198",
+                "filled_quantity": "-2",
+                "unrealized_pnl": "-4",
+            },
+        ),
+        (
+            "same-bar-stop-take-profit",
+            {
+                "average_entry_price": "100",
+                "fees": "0.198",
+                "filled_quantity": "1",
+                "realized_pnl": "-2",
+                "unrealized_pnl": "0",
+            },
+        ),
+    ),
+)
+def test_native_limit_settlement_preserves_literal_accounting(
+    launcher_module,
+    sealed_strategy_tmp_path: Path,
+    scenario_id: str,
+    expected: dict[str, str],
+) -> None:
+    """Native fills must retain each sealed limit price, never bar-price improve."""
+
+    if not _NATIVE_NAUTILUS_PYTHON.is_file() or not os.access(
+        _NATIVE_NAUTILUS_PYTHON, os.X_OK
+    ):
+        pytest.skip("pinned native Nautilus CPython 3.12 runtime is unavailable")
+
+    artifacts = _simulation_fixture(scenario_id)
+    request = _simulation_request(artifacts).model_dump(mode="json")
+    fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
+    payload = sealed_strategy_tmp_path / "fixture.json"
+    payload.write_text(
+        json.dumps(
+            fixture,
+            default=lambda value: (
+                value.isoformat() if isinstance(value, datetime) else str(value)
+            ),
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        encoding="utf-8",
     )
-    assert fill_model is not None
-    assert ast.unparse(fill_model) == "BestPriceFillModel()"
+    strategy = sealed_strategy_tmp_path / "target_portfolio_strategy.py"
+    strategy.write_bytes(
+        Path("engines/nautilus/launcher/target_portfolio_strategy.py").read_bytes()
+    )
+    strategy.chmod(0o400)
+    strategy_bytes = strategy.read_bytes()
+    manifest = sealed_strategy_tmp_path / "closure-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {
+                        "mode": "0400",
+                        "path": "files/engine/launcher/target_portfolio_strategy.py",
+                        "sha256": hashlib.sha256(strategy_bytes).hexdigest(),
+                        "size": len(strategy_bytes),
+                        "target": "/engine/launcher/target_portfolio_strategy.py",
+                    }
+                ]
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="ascii",
+    )
+    manifest.chmod(0o400)
+    runner = sealed_strategy_tmp_path / "run_native_fixture.py"
+    runner.write_text(
+        """
+import importlib.util
+import json
+import sys
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
+
+launcher_path, payload_path, strategy_path, manifest_path = map(Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location("native_launcher", launcher_path)
+module = importlib.util.module_from_spec(spec)
+assert spec and spec.loader
+spec.loader.exec_module(module)
+fixture = json.loads(payload_path.read_text(encoding="utf-8"))
+for name in ("fee_rate", "liquidity_limit", "slippage_bps", "target_quantity"):
+    fixture[name] = Decimal(fixture[name])
+events = []
+for source in fixture["events"]:
+    event = dict(source)
+    for name in ("ask", "bid", "close", "high", "low", "open", "volume"):
+        event[name] = Decimal(event[name])
+    for name in ("event_time", "quote_time"):
+        event[name] = datetime.fromisoformat(event[name])
+    events.append(event)
+fixture["events"] = tuple(events)
+for name in ("stop_price", "take_profit_price"):
+    if fixture[name] is not None:
+        fixture[name] = Decimal(fixture[name])
+module._TARGET_PORTFOLIO_STRATEGY_PATH = strategy_path
+module._CLOSURE_MANIFEST_PATH = manifest_path
+print(json.dumps(module._run_nautilus_simulation_fixture_loaded(fixture), sort_keys=True))
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            str(_NATIVE_NAUTILUS_PYTHON),
+            str(runner),
+            str(LAUNCHER.resolve()),
+            str(payload),
+            str(strategy),
+            str(manifest),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    assert observed.items() >= expected.items()
 
 
 def test_launcher_projects_sealed_quote_around_each_bar_for_native_settlement(
@@ -1489,8 +1603,11 @@ def test_native_execution_plan_preserves_matrix_with_instrument_quantity_precisi
     assert len(native_plan) == len(semantic_plan)
     for semantic, native in zip(semantic_plan, native_plan, strict=True):
         assert native["eligible"] == semantic["eligible"]
-        assert native["entry_price"] == semantic["entry_price"]
-        assert native["exit_price"] == semantic["exit_price"]
+        for price in ("entry_price", "exit_price"):
+            if semantic[price] is None:
+                assert native[price] is None
+            else:
+                assert native[price] == f"{Decimal(semantic[price]):.2f}"
         assert native["skip_reason"] == semantic["skip_reason"]
         assert native["fill_quantity"] == (
             f"{Decimal(semantic['fill_quantity']):.6f}"
@@ -1548,10 +1665,10 @@ def test_same_bar_stop_projects_exit_price_inside_settlement_context(
     )
 
     assert plan[0]["exit_reason"] == "stop"
-    assert plan[0]["exit_price"] == "98"
+    assert plan[0]["exit_price"] == "98.00"
     quote = data[1]
     assert isinstance(quote, FakeQuoteTick)
-    assert quote.bid_price.text == "97.00"
+    assert quote.bid_price.text == "98.00"
     assert quote.ask_price.text == "100.00"
 
 
@@ -1565,8 +1682,8 @@ def test_same_bar_native_settlement_preserves_literal_two_fill_accounting_digest
     fixture = launcher_module.validate_simulation_fixture_inputs(request, artifacts)
     plan = launcher_module._build_nautilus_execution_plan(fixture)
 
-    assert plan[0]["entry_price"] == "100"
-    assert plan[0]["exit_price"] == "98"
+    assert plan[0]["entry_price"] == "100.00"
+    assert plan[0]["exit_price"] == "98.00"
     record = launcher_module._canonical_nautilus_result_record(
         strategy_events=[
             {"event_type": "order-created", "quantity": "1", "sequence": 0},
