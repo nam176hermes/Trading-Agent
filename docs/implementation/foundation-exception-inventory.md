@@ -187,7 +187,7 @@ apps/job_api/config.py|67|Exception|PRODUCTION_CRITICAL|RAISE
 apps/job_api/config.py|116|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/import_probe.py|158|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/import_probe.py|272|Exception|PRODUCTION_CRITICAL|RAISE
-engines/nautilus/launcher/nautilus_backtest.py|512|BaseException|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/launcher/nautilus_backtest.py|513|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/alert_manager.py|98|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/allocation_engine.py|161|Exception|PRODUCTION_CRITICAL|CONTINUE
 legacy/research-backend/allocation_engine.py|187|Exception|PRODUCTION_CRITICAL|RETURN

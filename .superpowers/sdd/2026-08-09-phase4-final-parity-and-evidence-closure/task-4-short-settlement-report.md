@@ -18,11 +18,17 @@ callbacks only (`bar_execution=False`).  The finite projection also retains
 the literal same-bar stop/take exit bounds.
 
 The direct child
-`2ead1c5d62a3d19ca951fd9a0e76a295e5084194` rebinding is policy-only: it
-updates both simulation and paper compatibility policies with the new launcher
-hash and binds `source_commit` to `d4502b19…`.  This re-authorizes the changed
-launcher authority leaf at policy level.  No runtime closure was materialized,
-no provider was contacted, and no parity controller was run or retried.
+`2ead1c5d62a3d19ca951fd9a0e76a295e5084194` first rebound both simulation and
+paper compatibility policies to `d4502b19…`.  A follow-up review correctly
+required an always-running regression that binds the production loaded-runner,
+not only its injected venue helper, to the base fill model.  Source commit
+`1683f1324826b78a715f017a7749fe3d1f7b37f4` adds the narrow native-dependency
+seam and exercises the actual `_run_nautilus_simulation_fixture_loaded` caller
+through venue setup.  Its direct-child policy-only rebind
+`63271c737c34ee18141297159de360e117402538` updates both profiles' launcher
+hash and `source_commit`.  This is the final policy authority for the changed
+launcher leaf.  No runtime closure was materialized, no provider was
+contacted, and no parity controller was run or retried.
 
 ## TDD and native evidence
 
@@ -46,11 +52,19 @@ an explicit test failure.  An always-running injected-engine test covers base
 `FillModel`, `bar_execution=False`, and the quote-before-bar schedule for all
 eight scenario plans.
 
+The follow-up regression was RED before production editing because the loaded
+runner lacked the injected native-dependency boundary.  Its GREEN execution
+uses the runner's real construction path up to the venue boundary and observes
+the exact type it passes there: the supplied base `FillModel`, never the
+available price-improving `BestPriceFillModel`.  Replacing the production
+caller selection with the latter therefore fails this always-running source
+gate without requiring a host runtime.
+
 ## Fresh verification
 
 ```text
 uv run pytest -q tests/nautilus_backtest
-402 passed in 24.80s
+403 passed in 24.87s
 
 uv run pytest -q tests/foundation/test_nautilus_runtime_closure.py \
   -k 'checked_in_polic or policy_binds'
