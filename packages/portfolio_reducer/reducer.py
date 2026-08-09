@@ -606,6 +606,14 @@ def _apply_mark(
 ) -> PortfolioReplayState:
     if entry.marked_at > entry.effective_at:
         raise PortfolioReplayError("mark time must not be after event effective time")
+    if any(
+        position.instrument == entry.instrument
+        and position.quantity.value != 0
+        and position.mark is not None
+        and entry.marked_at < position.mark.marked_at
+        for position in state.snapshot.positions
+    ):
+        raise PortfolioReplayError("mark time is older than retained mark")
     positions: list[PortfolioPositionState] = []
     for position in state.snapshot.positions:
         if position.instrument != entry.instrument or position.quantity.value == 0:
@@ -613,9 +621,6 @@ def _apply_mark(
             continue
         if entry.mark.price.currency is not position.settlement_currency:
             raise PortfolioReplayError("mark currency must match position settlement currency")
-        if position.mark is not None and entry.mark.marked_at < position.mark.marked_at:
-            positions.append(position)
-            continue
         assert position.average_entry_price is not None
         assert position.instrument_definition is not None
         unrealized = _product(

@@ -201,7 +201,7 @@ def mark(*, number: int, price: str, marked_at: datetime = NOW) -> EventEnvelope
     )
 
 
-def test_mark_updates_every_matching_strategy_and_ignores_an_older_mark() -> None:
+def test_mark_updates_every_matching_strategy_and_rejects_an_older_mark() -> None:
     state = reduce_portfolio_events(
         (
             opening(),
@@ -216,7 +216,8 @@ def test_mark_updates_every_matching_strategy_and_ignores_an_older_mark() -> Non
         Decimal("5"),
     ]
     older = mark(number=5, price="99", marked_at=NOW - timedelta(seconds=1))
-    state = apply_portfolio_event(state, older)
+    with pytest.raises(PortfolioReplayError, match="older than retained mark"):
+        apply_portfolio_event(state, older)
     assert [position.mark.price.amount for position in state.snapshot.positions] == [
         Decimal("105"),
         Decimal("105"),
