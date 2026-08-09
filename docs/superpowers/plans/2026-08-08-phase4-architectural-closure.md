@@ -724,10 +724,15 @@ python3.11 -I scripts/build_nautilus_engine.py \
 Create one external private packet root and run the qualification CLI exactly
 once for each policy.  Before either CLI starts, synchronize only the root
 project's locked dependency graph offline, select its absolute `.venv` Python,
-and prove the validator dependency imports under `-I`.  The root venv is the
-sole controller interpreter for these two qualifications: ambient
-`python3.11`, user-site packages, and global Python mutation are prohibited.
-The dependency probe does not invoke qualification, Bubblewrap, or a runtime.
+and prove the validator dependency imports under `-I`.  Record it as
+`phase4_root_python`: the root venv is the sole controller interpreter for
+every Task 8 controller which imports root packages (the qualification,
+runtime materializer, campaign, diagnostic, parity, paper, and evidence
+closer). Ambient `python3.11`, user-site packages, and global Python mutation
+are prohibited for those controllers. Each later Task 8 packet must establish
+this same frozen, absolute-path contract before its first such controller; it
+must not inherit an ambient or prior-shell runner. The dependency probe does
+not invoke qualification, Bubblewrap, or a runtime.
 
 ```bash
 phase4_runtime_root="$(mktemp -d -p /tmp phase4-v12-r9-v13-XXXXXX)"
@@ -737,16 +742,16 @@ phase4_source_root="$(git rev-parse --show-toplevel)"
   cd "${phase4_source_root}"
   UV_OFFLINE=1 uv sync --frozen
 )
-phase4_qualification_python="${phase4_source_root}/.venv/bin/python"
-test -x "${phase4_qualification_python}"
-"${phase4_qualification_python}" -I -B -c 'import pydantic; assert pydantic.__version__ == "2.13.4"'
-"${phase4_qualification_python}" -I scripts/qualify_nautilus_sealed_imports.py \
+phase4_root_python="${phase4_source_root}/.venv/bin/python"
+test -x "${phase4_root_python}"
+"${phase4_root_python}" -I -B -c 'import pydantic; assert pydantic.__version__ == "2.13.4"'
+"${phase4_root_python}" -I scripts/qualify_nautilus_sealed_imports.py \
   --policy "${phase4_source_root}/engines/nautilus/runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
   --sandbox /usr/bin/bwrap \
   --receipt "${phase4_runtime_root}/simulation-import-receipt.json"
-"${phase4_qualification_python}" -I scripts/qualify_nautilus_sealed_imports.py \
+"${phase4_root_python}" -I scripts/qualify_nautilus_sealed_imports.py \
   --policy "${phase4_source_root}/engines/nautilus/paper-compatibility-runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
@@ -760,7 +765,7 @@ contract. Stop before materialization on any failure.
 - [ ] **Step 3: Materialize and diagnose v12-r9 once.**
 
 ```bash
-python3.11 -I scripts/materialize_nautilus_runtime_closure.py \
+"${phase4_root_python}" -I scripts/materialize_nautilus_runtime_closure.py \
   --policy "${phase4_source_root}/engines/nautilus/runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
@@ -774,10 +779,10 @@ Independently attest schema/profile/import policy and all identities. Run
 the following campaign/diagnostic commands exactly once:
 
 ```bash
-python3.11 -I scripts/materialize_phase4_campaign_inputs.py \
+"${phase4_root_python}" -I scripts/materialize_phase4_campaign_inputs.py \
   --destination "${phase4_runtime_root}/campaign"
 mkdir -m 0700 "${phase4_runtime_root}/diagnostic-transport"
-python3.11 -I scripts/diagnose_nautilus_v12_runtime_failure.py \
+"${phase4_root_python}" -I scripts/diagnose_nautilus_v12_runtime_failure.py \
   --rollback-closure /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --rollback-artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts-v1 \
   --candidate-closure /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v12-r9-simulation \
@@ -800,7 +805,7 @@ In a new packet, invoke:
 
 ```bash
 mkdir -m 0700 "${phase4_runtime_root}/parity-transport"
-python3.11 -I scripts/verify_nautilus_v12_r3_parity.py \
+"${phase4_root_python}" -I scripts/verify_nautilus_v12_r3_parity.py \
   --rollback-closure /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --candidate-closure /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v12-r9-simulation \
   --rollback-artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts-v1 \
@@ -818,7 +823,7 @@ sealed retained transport runs with exact request-member inventories.
 - [ ] **Step 5: Materialize and run v13 paper compatibility once.**
 
 ```bash
-python3.11 -I scripts/materialize_nautilus_runtime_closure.py \
+"${phase4_root_python}" -I scripts/materialize_nautilus_runtime_closure.py \
   --policy "${phase4_source_root}/engines/nautilus/paper-compatibility-runtime-closure-policy.json" \
   --base-runtime /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3 \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
@@ -832,7 +837,7 @@ Independently attest it, then run:
 
 ```bash
 mkdir -m 0700 "${phase4_runtime_root}/paper-transport"
-python3.11 -I scripts/verify_nautilus_paper_compatibility.py \
+"${phase4_root_python}" -I scripts/verify_nautilus_paper_compatibility.py \
   --candidate-closure /home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v13-paper-compatibility \
   --artifact-directory /home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c \
   --sandbox /usr/bin/bwrap \
@@ -890,7 +895,7 @@ for phase4_scenario_id in "${phase4_scenario_ids[@]}"; do
     --scenario-id "${phase4_scenario_id}"
 done
 mkdir -m 0700 "${phase4_runtime_root}/research-transport"
-python3.11 -I scripts/close_phase4_research_evidence.py \
+"${phase4_root_python}" -I scripts/close_phase4_research_evidence.py \
   --campaign-directory "${phase4_runtime_root}/campaign" \
   --campaign-sha256 "${phase4_campaign_sha256}" \
   --parity-record "${phase4_runtime_root}/parity-record.json" \

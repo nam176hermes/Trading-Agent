@@ -18,6 +18,15 @@ SCRIPT = ROOT / "scripts/qualify_nautilus_sealed_imports.py"
 ARCHITECTURE_PLAN = (
     ROOT / "docs/superpowers/plans/2026-08-08-phase4-architectural-closure.md"
 )
+TASK8_ROOT_CONTROLLER_SCRIPTS = {
+    "qualify_nautilus_sealed_imports.py": 2,
+    "materialize_nautilus_runtime_closure.py": 2,
+    "materialize_phase4_campaign_inputs.py": 1,
+    "diagnose_nautilus_v12_runtime_failure.py": 1,
+    "verify_nautilus_v12_r3_parity.py": 1,
+    "verify_nautilus_paper_compatibility.py": 1,
+    "close_phase4_research_evidence.py": 1,
+}
 LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_backtest.py"
 PAPER_LAUNCHER = ROOT / "engines/nautilus/launcher/nautilus_paper_compat.py"
 STRATEGY = ROOT / "engines/nautilus/launcher/target_portfolio_strategy.py"
@@ -1157,35 +1166,43 @@ def test_make_gate_is_parameterized_by_an_explicit_external_packet(
         assert f'{flag} "{value}"' in result.stdout
 
 
-def test_task8_import_qualification_uses_the_root_locked_python() -> None:
-    """The source recipe must not use the dependency-free host Python."""
+def test_task8_root_package_controllers_use_the_locked_python() -> None:
+    """Task 8 uses one isolated root interpreter for every root-package CLI."""
     text = ARCHITECTURE_PLAN.read_text(encoding="utf-8")
+    task8_start = text.index("### Task 8: Qualify, Publish v12-r9/v13, Run Parity, and Close 04D")
     start = text.index('phase4_runtime_root="$(mktemp -d -p /tmp phase4-v12-r9-v13-XXXXXX)"')
-    end = text.index("Independent review must verify both receipts", start)
+    end = text.index("---\n\n### Task 9:", start)
     block = text[start:end]
+    task8_block = text[task8_start:end]
 
     assert 'phase4_source_root="$(git rev-parse --show-toplevel)"' in block
     assert 'UV_OFFLINE=1 uv sync --frozen' in block
     assert (
-        'phase4_qualification_python="${phase4_source_root}/.venv/bin/python"'
+        'phase4_root_python="${phase4_source_root}/.venv/bin/python"'
         in block
     )
     assert (
-        '"${phase4_qualification_python}" -I -B -c '
+        '"${phase4_root_python}" -I -B -c '
         "'import pydantic; assert pydantic.__version__ == \"2.13.4\"'"
     ) in block
+    assert "phase4_qualification_python" not in block
+    for script, expected_count in TASK8_ROOT_CONTROLLER_SCRIPTS.items():
+        root_invocation = f'"${{phase4_root_python}}" -I scripts/{script}'
+        assert block.count(root_invocation) == expected_count
+        assert f"python3.11 -I scripts/{script}" not in block
+
+    # These two controllers are intentionally stdlib-only and retain their
+    # reviewed literal system-Python contracts.
+    assert "python3.11 -I scripts/build_nautilus_engine.py" in task8_block
     assert (
-        block.count(
-            '"${phase4_qualification_python}" -I '
-            "scripts/qualify_nautilus_sealed_imports.py"
-        )
+        task8_block.count("python3.11 -I scripts/materialize_sealed_uv_exec.py")
         == 2
     )
-    assert "python3.11" not in block
 
-    result = subprocess.run(
+    root_python = ROOT / ".venv/bin/python"
+    dependency_probe = subprocess.run(
         (
-            str(ROOT / ".venv/bin/python"),
+            str(root_python),
             "-I",
             "-B",
             "-c",
@@ -1199,4 +1216,18 @@ def test_task8_import_qualification_uses_the_root_locked_python() -> None:
         text=True,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert dependency_probe.returncode == 0, dependency_probe.stderr
+
+    for script in TASK8_ROOT_CONTROLLER_SCRIPTS:
+        result = subprocess.run(
+            (str(root_python), "-I", str(ROOT / "scripts" / script), "--help"),
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"{script}: {result.stderr}"
+        assert "usage:" in result.stdout
