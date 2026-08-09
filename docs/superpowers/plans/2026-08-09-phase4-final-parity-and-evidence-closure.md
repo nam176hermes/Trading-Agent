@@ -276,8 +276,8 @@ Only one branch below is executed. Every branch begins with a behavior-specific 
 - [ ] Snapshot all retained closure/helper identities and assert the selected destination state.
 - [ ] Run 01D preflight exactly once.
 - [ ] If r10 is required, run both reviewed import qualifications, independently review receipts, materialize r10 exactly once no-clobber, and independently attest schema 6/profile/source/policy/guard/launcher/mount inventory.
-- [ ] Run exactly one `long-accounting` diagnostic through normal EngineSpawnProvider; require exit 0, empty stderr, one prepare/consume/process, and request-only sealed transport.
-- [ ] After diagnostic PASS, materialize a fresh canonical campaign exactly once.
+- [ ] After the r10 attestation PASS, create one fresh private mode-0700 packet campaign destination that is absent immediately before publication; materialize the canonical campaign exactly once, require the fixed repository-ordered eight-scenario manifest, mode-0500 scenario roots, mode-0400 members, descriptor/no-clobber custody, and retain the sanitized campaign digest only outside Git/evidence.
+- [ ] Run exactly one `long-accounting` diagnostic through normal EngineSpawnProvider against that reviewed campaign; require exit 0, empty stderr, one prepare/consume/process, and request-only sealed transport.
 - [ ] Run the parity verifier exactly once.
 - [ ] Require:
   - exact repository-ordered eight scenarios;
