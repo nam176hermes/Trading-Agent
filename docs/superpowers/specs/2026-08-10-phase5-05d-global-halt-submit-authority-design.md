@@ -51,7 +51,7 @@ does not write, move, replace, or reinterpret that file. Absence remains
 - recovery validation and generation rotation;
 - submit-permit preparation and one-shot consumption;
 - exact re-attestation of the 05C approval, policy, observation, safety, and
-  authority-stream head.
+  current halt generation and transition lineage.
 
 ### 3.3 05D does not own
 
@@ -135,12 +135,16 @@ Fields:
 - `status`;
 - current transition event ID and canonical event digest;
 - prior transition event ID/digest when generation is greater than one;
-- exact runtime policy, runtime observation, portfolio, and safety digests;
+- exact runtime policy, runtime observation, portfolio, and full safety
+  observation digests that justified the most recent transition;
 - canonical reason tuple;
 - `transitioned_at`;
 - schema version.
 
 The state is a replay result, never a separately writable snapshot authority.
+Its fact digests are transition evidence, not a claim that continuously
+changing market/account observations still equal the facts from the last
+transition.
 
 ### 5.5 `GlobalHaltTransition`
 
@@ -168,8 +172,8 @@ An external operator-authority input with:
 
 - authorization ID and canonical digest;
 - exact halted generation and transition digest;
-- exact safe runtime policy, runtime observation, portfolio, and safety
-  digests;
+- exact safe runtime policy, runtime observation, portfolio, and stable safety
+  binding digests;
 - issued and expiry timestamps;
 - operator-authority digest;
 - schema version.
@@ -189,7 +193,7 @@ approval is outside 05D; the verifier boundary is mandatory and fail-closed.
 - permit ID;
 - exact durable 05C approval-reference digest and event ID;
 - intent, target-policy decision, 05C runtime decision, policy, observation,
-  portfolio, and safety digests;
+  portfolio digest, and stable safety binding digest;
 - exact halt stream ID, generation, transition event ID, and transition
   digest;
 - `prepared_at` and fixed five-second `expires_at`;
@@ -227,6 +231,12 @@ The breaker uses the same exact accounting semantics as 05C:
 - kill switch `ACTIVE` and `UNKNOWN` both fail closed;
 - kill switch `INACTIVE` contributes no breaker reason.
 
+The stable safety binding digest is canonical SHA-256 over only the canonical
+source fingerprint and resolved kill-switch state. `observed_at` remains
+mandatory freshness evidence but is deliberately excluded from that binding,
+so a real consume-time re-read can have a later timestamp without invalidating
+unchanged safety authority.
+
 Multiple simultaneous causes are retained once in canonical reason order.
 
 ### 6.1 Initialization
@@ -238,7 +248,9 @@ Multiple simultaneous causes are retained once in canonical reason order.
 
 ### 6.2 Active state
 
-- Safe facts retain the same generation and append no transition.
+- Safe facts retain the same generation and append no transition. The active
+  state keeps the evidence for its last transition; current safe facts are
+  evaluated and bound by each prepared permit.
 - Any breaker cause appends `ACTIVE -> HALTED`, rotating generation by one.
 
 ### 6.3 Halted state
@@ -257,8 +269,8 @@ Recovery is allowed only when all of the following are exact:
   digest;
 - it is unexpired and has not been used;
 - kill switch is `INACTIVE`;
-- current policy, observation, portfolio, and safety digests match the
-  authorization;
+- current policy, observation, portfolio, and stable safety binding digests
+  match the authorization;
 - daily loss and drawdown no longer breach;
 - append and exact read-back succeed.
 
@@ -292,11 +304,14 @@ their contiguous sequence is the compare-and-append serialization point.
 1. Strictly canonicalize every input.
 2. Verify the durable 05C approval from the trusted event ledger using the
    original intent, target-policy decision, observation, and runtime policy.
-3. Require current policy, observation, portfolio, and safety digests to match
-   the approved bindings exactly. Any drift requires a new 05C approval rather
+3. Require current policy, observation, and portfolio digests to match the
+   approved bindings exactly. Any drift requires a new 05C approval rather
    than silent reuse.
 4. Replay the dedicated halt stream and require an initialized `ACTIVE` state.
-5. Require the state bindings to equal the current inputs and safety evidence.
+5. Re-evaluate the global breaker from the current facts and a fresh safety
+   read. Require no breaker cause, bind the stable safety identity/state, and
+   require `safety.observed_at <= prepared_at`. Current facts need not equal
+   historical facts that caused the last halt transition.
 6. Append a prepared-permit event at the next contiguous sequence, append its
    canonical outbox intent, load back exactly one event, and compare bytes and
    digests.
@@ -307,8 +322,10 @@ their contiguous sequence is the compare-and-append serialization point.
 1. Canonicalize and load the exact prepared permit.
 2. Re-read safety, policy, observation, portfolio, and the authority stream.
 3. Require the permit to be unexpired and unconsumed.
-4. Require all current digests, stream head, generation, status, and transition
-   digest to match the permit.
+4. Require the exact policy/observation/portfolio digests, stable safety
+   binding, generation, status, and transition digest to match the permit.
+   Require `prepared_at <= safety.observed_at <= consumed_at` so consumption
+   proves a new safety read rather than reusing the preparation read.
 5. Append the consumed-permit event at the next contiguous sequence and load it
    back exactly.
 6. Return `ConsumedSubmitAuthority` once.
