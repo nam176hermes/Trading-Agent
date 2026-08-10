@@ -761,6 +761,19 @@
     "PortfolioAppliedEvent": {
       "additionalProperties": false,
       "properties": {
+        "business_identity_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Business Identity Id"
+        },
         "digest": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Digest",
@@ -770,11 +783,25 @@
           "format": "uuid",
           "title": "Event Id",
           "type": "string"
+        },
+        "event_type": {
+          "enum": [
+            "PortfolioOpeningEntry",
+            "PortfolioFillEntry",
+            "PortfolioMarkEntry",
+            "PortfolioFundingEntry",
+            "PortfolioConversionEntry",
+            "PortfolioValuationRateEntry",
+            "PortfolioReconciliationEntry"
+          ],
+          "title": "Event Type",
+          "type": "string"
         }
       },
       "required": [
         "event_id",
-        "digest"
+        "digest",
+        "event_type"
       ],
       "title": "PortfolioAppliedEvent",
       "type": "object"

@@ -12,6 +12,7 @@ from packages.domain import (
     AccountPortfolioSnapshot,
     AssetClass,
     Currency,
+    CurrencyConversion,
     EventEnvelope,
     ExposureSnapshot,
     FillEvent,
@@ -24,11 +25,13 @@ from packages.domain import (
     OrderQuantity,
     OrderSide,
     PortfolioFillEntry,
+    PortfolioConversionEntry,
     PortfolioFundingEntry,
     PortfolioMarkEntry,
     PortfolioOpeningEntry,
     PortfolioReconciliationEntry,
     PortfolioReconciliationSource,
+    PortfolioValuationRateEntry,
     PositionMark,
     Price,
     ProductType,
@@ -55,8 +58,8 @@ def uid(value: int) -> UUID:
     return UUID(int=value)
 
 
-def money(amount: str) -> Money:
-    return Money(Decimal(amount), Currency.USD)
+def money(amount: str, currency: Currency = Currency.USD) -> Money:
+    return Money(Decimal(amount), currency)
 
 
 def definition() -> InstrumentDefinition:
@@ -82,17 +85,19 @@ def definition() -> InstrumentDefinition:
     )
 
 
-def balance() -> AccountBalanceSnapshot:
+def balance(
+    currency: Currency = Currency.USD, cash: str = "1000"
+) -> AccountBalanceSnapshot:
     return AccountBalanceSnapshot(
         account_id="account-1",
-        currency=Currency.USD,
-        cash=money("1000"),
-        locked_funds=money("0"),
-        margin_used=money("0"),
-        realized_pnl=money("0"),
-        unrealized_pnl=money("0"),
-        fees=money("0"),
-        funding=money("0"),
+        currency=currency,
+        cash=money(cash, currency),
+        locked_funds=money("0", currency),
+        margin_used=money("0", currency),
+        realized_pnl=money("0", currency),
+        unrealized_pnl=money("0", currency),
+        fees=money("0", currency),
+        funding=money("0", currency),
         observed_at=NOW,
         schema_version="balance-v1",
     )
@@ -133,6 +138,18 @@ def opening(*, number: int = 1, account: str = "account-1", stream: UUID = STREA
         number=number,
         stream=stream,
     )
+
+
+def opening_with_conversion_balances() -> EventEnvelope[object]:
+    entry = opening().payload.model_copy(
+        update={
+            "balances": (
+                balance(Currency.USD, "1000"),
+                balance(Currency.USDT, "0"),
+            )
+        }
+    )
+    return envelope(entry, number=1)
 
 
 def fill(
@@ -304,6 +321,42 @@ def reconciliation(
     )
 
 
+def conversion(*, number: int) -> EventEnvelope[object]:
+    at = NOW + timedelta(minutes=number)
+    return envelope(
+        PortfolioConversionEntry(
+            account_id="account-1",
+            conversion=CurrencyConversion(
+                money("10"),
+                Currency.USDT,
+                Decimal("2"),
+                money("20", Currency.USDT),
+            ),
+            provenance_id="conversion-v1",
+            effective_at=at,
+            schema_version="portfolio-entry-v1",
+        ),
+        number=number,
+    )
+
+
+def valuation_rate(*, number: int) -> EventEnvelope[object]:
+    at = NOW + timedelta(minutes=number)
+    return envelope(
+        PortfolioValuationRateEntry(
+            account_id="account-1",
+            source_currency=Currency.USDT,
+            target_currency=Currency.USD,
+            rate=Decimal("2"),
+            quoted_at=at,
+            provenance_id="valuation-v1",
+            effective_at=at,
+            schema_version="portfolio-entry-v1",
+        ),
+        number=number,
+    )
+
+
 def hash_consistent_record_with_state(record, state):
     canonical_snapshot = derive_account_snapshot(state, state.snapshot.observed_at)
     canonical_state_json = _canonical_json(
@@ -333,6 +386,45 @@ def checkpoint(events):
         snapshot_from_portfolio_result(result),
         snapshot_authority_from_result(result),
     )
+
+
+def matching_authority_for_record(authority, record):
+    return authority.model_copy(update={"snapshot_state_hash": record.state_hash})
+
+
+def identity_omission_case(identity_kind: str):
+    if identity_kind == "funding":
+        original = funding(number=2, funding_id=uid(7_000))
+        return (opening(), original), (envelope(original.payload, number=3),), "funding_identities"
+    if identity_kind == "execution":
+        original = fill(number=2, execution=7_100)
+        bust = fill(
+            number=3,
+            execution=7_101,
+            status=FillReportStatus.BUST,
+            bust_of=original.payload.fill.execution_id,
+        )
+        return (
+            (opening(), original, bust),
+            (envelope(original.payload, number=4), mark(number=5)),
+            "execution_identities",
+        )
+    original = reconciliation(number=2, reconciliation_id=uid(7_200))
+    return (
+        (opening(), original),
+        (envelope(original.payload, number=3),),
+        "reconciliation_identities",
+    )
+
+
+def non_business_prefix(event_type: str) -> tuple[EventEnvelope[object], ...]:
+    if event_type == "PortfolioOpeningEntry":
+        return (opening(),)
+    if event_type == "PortfolioMarkEntry":
+        return (opening(), fill(number=2), mark(number=3))
+    if event_type == "PortfolioConversionEntry":
+        return (opening_with_conversion_balances(), conversion(number=2))
+    return (opening(), valuation_rate(number=2))
 
 
 @pytest.fixture
@@ -443,6 +535,194 @@ def test_snapshot_authority_issuance_revalidates_result(portfolio_events) -> Non
 
     with pytest.raises(PortfolioReplayError, match="state hash"):
         snapshot_authority_from_result(forged)
+
+
+@pytest.mark.parametrize(
+    "identity_kind", ["funding", "execution", "reconciliation"]
+)
+def test_authority_rejects_hash_consistent_identity_omission(
+    identity_kind: str,
+) -> None:
+    prefix_events, reuse_tail, identity_field = identity_omission_case(identity_kind)
+    prefix = replay_portfolio(prefix_events)
+    record = snapshot_from_portfolio_result(prefix)
+    authority = snapshot_authority_from_result(prefix)
+    forged_state = record.state.model_copy(update={identity_field: ()})
+    forged = hash_consistent_record_with_state(record, forged_state)
+
+    with pytest.raises(PortfolioReplayError, match="authority"):
+        replay_portfolio(reuse_tail, snapshot=forged, authority=authority)
+
+
+@pytest.mark.parametrize(
+    "identity_kind", ["funding", "execution", "reconciliation"]
+)
+def test_snapshot_rejects_business_identity_omission_with_matching_authority(
+    identity_kind: str,
+) -> None:
+    prefix_events, reuse_tail, identity_field = identity_omission_case(identity_kind)
+    prefix = replay_portfolio(prefix_events)
+    record = snapshot_from_portfolio_result(prefix)
+    authority = snapshot_authority_from_result(prefix)
+    forged_state = record.state.model_copy(update={identity_field: ()})
+    forged = hash_consistent_record_with_state(record, forged_state)
+
+    with pytest.raises(PortfolioReplayError, match="identity"):
+        replay_portfolio(
+            reuse_tail,
+            snapshot=forged,
+            authority=matching_authority_for_record(authority, forged),
+        )
+
+
+def test_snapshot_rejects_missing_business_identity_on_applicable_event() -> None:
+    record, authority = checkpoint((opening(), fill(number=2), mark(number=3)))
+    applied = tuple(
+        item.model_copy(update={"business_identity_id": None})
+        if item.event_type == "PortfolioFillEntry"
+        else item
+        for item in record.state.applied_events
+    )
+    forged = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(update={"applied_events": applied}),
+    )
+
+    with pytest.raises(PortfolioReplayError, match="identity"):
+        replay_portfolio(
+            (),
+            snapshot=forged,
+            authority=matching_authority_for_record(authority, forged),
+        )
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "PortfolioOpeningEntry",
+        "PortfolioMarkEntry",
+        "PortfolioConversionEntry",
+        "PortfolioValuationRateEntry",
+    ],
+)
+def test_snapshot_rejects_business_identity_on_non_identity_event(
+    event_type: str,
+) -> None:
+    record, authority = checkpoint(non_business_prefix(event_type))
+    terminal_id = record.cursor[0].sequence
+    applied = tuple(
+        item.model_copy(update={"business_identity_id": uid(9_000)})
+        if item.event_id == uid(terminal_id)
+        else item
+        for item in record.state.applied_events
+    )
+    forged = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(update={"applied_events": applied}),
+    )
+
+    with pytest.raises(PortfolioReplayError, match="identity"):
+        replay_portfolio(
+            (),
+            snapshot=forged,
+            authority=matching_authority_for_record(authority, forged),
+        )
+
+
+@pytest.mark.parametrize(
+    ("update", "events"),
+    [
+        (
+            {"event_type": "PortfolioFundingEntry"},
+            (opening(), fill(number=2), mark(number=3)),
+        ),
+        (
+            {"business_identity_id": uid(7_500)},
+            (
+                opening(),
+                fill(number=2),
+                funding(number=3, funding_id=uid(7_500)),
+                mark(number=4),
+            ),
+        ),
+    ],
+)
+def test_snapshot_rejects_wrong_business_identity_kind_or_event_type(
+    update: dict[str, object], events: tuple[EventEnvelope[object], ...]
+) -> None:
+    record, authority = checkpoint(events)
+    applied = tuple(
+        item.model_copy(update=update) if item.event_id == uid(2) else item
+        for item in record.state.applied_events
+    )
+    forged = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(update={"applied_events": applied}),
+    )
+
+    with pytest.raises(PortfolioReplayError, match="identity"):
+        replay_portfolio(
+            (),
+            snapshot=forged,
+            authority=matching_authority_for_record(authority, forged),
+        )
+
+
+def test_snapshot_rejects_duplicate_business_identity_binding() -> None:
+    record, authority = checkpoint(
+        (
+            opening(),
+            fill(number=2, execution=7_600),
+            fill(number=3, execution=7_601),
+            mark(number=4),
+        )
+    )
+    applied = tuple(
+        item.model_copy(update={"business_identity_id": uid(7_600)})
+        if item.event_id == uid(3)
+        else item
+        for item in record.state.applied_events
+    )
+    forged = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(update={"applied_events": applied}),
+    )
+
+    with pytest.raises(PortfolioReplayError, match="identity"):
+        replay_portfolio(
+            (),
+            snapshot=forged,
+            authority=matching_authority_for_record(authority, forged),
+        )
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"event_id": uid(9_100)},
+        {"event_digest": "0" * 64},
+        {"stream_id": OTHER_STREAM},
+        {"sequence": 3},
+    ],
+)
+def test_snapshot_rejects_business_identity_metadata_not_matching_applied_event(
+    update: dict[str, object],
+) -> None:
+    record, authority = checkpoint(
+        (opening(), funding(number=2, funding_id=uid(7_700)))
+    )
+    identity = record.state.funding_identities[0].model_copy(update=update)
+    forged = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(update={"funding_identities": (identity,)}),
+    )
+
+    with pytest.raises(PortfolioReplayError, match="identity"):
+        replay_portfolio(
+            (),
+            snapshot=forged,
+            authority=matching_authority_for_record(authority, forged),
+        )
 
 
 def test_snapshot_tail_is_identical_to_full_replay(portfolio_events) -> None:
@@ -610,12 +890,13 @@ def test_snapshot_tail_rejects_exact_and_conflicting_consumed_execution_reuse(
 
 def test_tampered_record_hash_fails_closed(portfolio_events) -> None:
     record, authority = checkpoint(portfolio_events[:3])
+    tampered = record.model_copy(update={"state_hash": "0" * 64})
 
     with pytest.raises(PortfolioReplayError, match="state hash"):
         replay_portfolio(
             portfolio_events[3:],
-            snapshot=record.model_copy(update={"state_hash": "0" * 64}),
-            authority=authority,
+            snapshot=tampered,
+            authority=matching_authority_for_record(authority, tampered),
         )
 
 
@@ -677,7 +958,11 @@ def test_snapshot_rejects_hash_consistent_forged_execution_economics() -> None:
     )
 
     with pytest.raises(PortfolioReplayError, match="effect"):
-        replay_portfolio((bust,), snapshot=forged_record, authority=authority)
+        replay_portfolio(
+            (bust,),
+            snapshot=forged_record,
+            authority=matching_authority_for_record(authority, forged_record),
+        )
 
 
 def test_snapshot_wraps_nested_position_validation_failures() -> None:
@@ -716,7 +1001,11 @@ def test_snapshot_rejects_hash_consistent_foreign_reconciliation(
 
     selected_tail = portfolio_events[3:] if with_canonical_tail else ()
     with pytest.raises(PortfolioReplayError, match="reconciliation account"):
-        replay_portfolio(selected_tail, snapshot=foreign_record, authority=authority)
+        replay_portfolio(
+            selected_tail,
+            snapshot=foreign_record,
+            authority=matching_authority_for_record(authority, foreign_record),
+        )
 
 
 def test_snapshot_tail_rejects_old_and_conflicting_events(portfolio_events) -> None:

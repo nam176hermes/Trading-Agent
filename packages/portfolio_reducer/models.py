@@ -40,6 +40,16 @@ class PortfolioStreamCursor(DomainModel):
 class PortfolioAppliedEvent(DomainModel):
     event_id: UUID
     digest: Sha256
+    event_type: Literal[
+        "PortfolioOpeningEntry",
+        "PortfolioFillEntry",
+        "PortfolioMarkEntry",
+        "PortfolioFundingEntry",
+        "PortfolioConversionEntry",
+        "PortfolioValuationRateEntry",
+        "PortfolioReconciliationEntry",
+    ]
+    business_identity_id: UUID | None = None
 
 
 class PortfolioBusinessIdentity(DomainModel):

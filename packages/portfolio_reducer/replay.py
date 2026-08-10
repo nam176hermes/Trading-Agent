@@ -140,6 +140,52 @@ def _validated_state(state: object) -> PortfolioReplayState:
         raise PortfolioReplayError(
             "snapshot reconciliation account does not match portfolio account"
         )
+    expected_identities: dict[str, dict[object, object]] = {
+        "PortfolioFillEntry": {},
+        "PortfolioFundingEntry": {},
+        "PortfolioReconciliationEntry": {},
+    }
+    for item in state.applied_events:
+        expected = expected_identities.get(item.event_type)
+        if expected is None:
+            if item.business_identity_id is not None:
+                raise PortfolioReplayError(
+                    "snapshot business identity is unexpected for applied event type"
+                )
+            continue
+        if item.business_identity_id is None:
+            raise PortfolioReplayError(
+                "snapshot applied event business identity is incomplete"
+            )
+        if item.business_identity_id in expected:
+            raise PortfolioReplayError(
+                "snapshot applied events duplicate a business identity binding"
+            )
+        expected[item.business_identity_id] = item
+    for label, event_type, identities in (
+        ("execution", "PortfolioFillEntry", state.execution_identities),
+        ("funding", "PortfolioFundingEntry", state.funding_identities),
+        (
+            "reconciliation",
+            "PortfolioReconciliationEntry",
+            state.reconciliation_identities,
+        ),
+    ):
+        expected = expected_identities[event_type]
+        actual = {item.identity_id: item for item in identities}
+        if expected.keys() != actual.keys():
+            raise PortfolioReplayError(
+                f"snapshot {label} business identity index is incomplete"
+            )
+        for identity_id, applied_event in expected.items():
+            identity = actual[identity_id]
+            if (
+                identity.event_id != applied_event.event_id
+                or identity.event_digest != applied_event.digest
+            ):
+                raise PortfolioReplayError(
+                    f"snapshot {label} business identity metadata does not match applied event"
+                )
     applied = {item.event_id: item.digest for item in state.applied_events}
     identity_event_ids: set[object] = set()
     identity_sequences: set[int] = set()
@@ -271,12 +317,18 @@ def _validated_state(state: object) -> PortfolioReplayState:
     return state
 
 
-def _validate_document(document: object, *, record: bool) -> PortfolioReplayResult | PortfolioSnapshotRecord:
+def _document_model(
+    document: object, *, record: bool
+) -> PortfolioReplayResult | PortfolioSnapshotRecord:
     model = PortfolioSnapshotRecord if record else PortfolioReplayResult
     try:
-        document = model.model_validate(document)
+        return model.model_validate(document)
     except (AttributeError, ValidationError, ValueError) as exc:
         raise PortfolioReplayError("portfolio snapshot record is invalid") from exc
+
+
+def _validate_document(document: object, *, record: bool) -> PortfolioReplayResult | PortfolioSnapshotRecord:
+    document = _document_model(document, record=record)
     if (
         document.schema_version != PORTFOLIO_REPLAY_SCHEMA_VERSION
         or document.reducer_version != PORTFOLIO_REDUCER_VERSION
@@ -401,6 +453,8 @@ def _validate_authority(
         authority = PortfolioSnapshotAuthority.model_validate(authority)
     except (AttributeError, ValidationError, ValueError) as exc:
         raise PortfolioReplayError("snapshot authority is invalid") from exc
+    if len(snapshot.cursor) != 1:
+        raise PortfolioReplayError("snapshot authority does not match snapshot record")
     cursor = snapshot.cursor[0]
     if (
         authority.schema_version != snapshot.schema_version
@@ -437,9 +491,11 @@ def replay_portfolio(
             raise
         except (ValueError, ValidationError) as exc:
             raise PortfolioReplayError("portfolio replay failed") from exc
-    validated_snapshot = _validate_document(snapshot, record=True)
+    untrusted_snapshot = _document_model(snapshot, record=True)
+    assert isinstance(untrusted_snapshot, PortfolioSnapshotRecord)
+    validated_authority = _validate_authority(authority, untrusted_snapshot)
+    validated_snapshot = _validate_document(untrusted_snapshot, record=True)
     assert isinstance(validated_snapshot, PortfolioSnapshotRecord)
-    validated_authority = _validate_authority(authority, validated_snapshot)
     _validate_tail(batch, validated_snapshot)
     state = validated_snapshot.state
     prefix_history_hash = validated_authority.prefix_history_hash

@@ -8,7 +8,7 @@ from fractions import Fraction
 from hashlib import sha256
 import json
 from typing import TypeAlias
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from packages.domain.events import EventEnvelope
 from packages.domain.orders import FillEvent, FillReportStatus, OrderSide
@@ -144,6 +144,16 @@ def _identity_record(event: PortfolioEvent, identity_id) -> PortfolioBusinessIde
     )
 
 
+def _business_identity(payload: object) -> UUID | None:
+    if type(payload) is PortfolioFillEntry:
+        return payload.fill.execution_id
+    if type(payload) is PortfolioFundingEntry:
+        return payload.funding_id
+    if type(payload) is PortfolioReconciliationEntry:
+        return payload.reconciliation_id
+    return None
+
+
 def _updated_identity_tuple(
     identities: tuple[PortfolioBusinessIdentity, ...],
     record: PortfolioBusinessIdentity,
@@ -214,11 +224,19 @@ def _validate_event(event: object) -> PortfolioEvent:
         raise PortfolioReplayError("event envelope is invalid") from exc
 
 
-def _sorted_applied(items: dict) -> tuple[PortfolioAppliedEvent, ...]:
-    return tuple(
-        PortfolioAppliedEvent(event_id=event_id, digest=digest)
-        for event_id, digest in sorted(items.items(), key=lambda item: item[0].bytes)
+def _applied_event(event: PortfolioEvent, digest: str) -> PortfolioAppliedEvent:
+    return PortfolioAppliedEvent(
+        event_id=event.event_id,
+        digest=digest,
+        event_type=type(event.payload).__name__,
+        business_identity_id=_business_identity(event.payload),
     )
+
+
+def _sorted_applied(
+    items: dict[UUID, PortfolioAppliedEvent],
+) -> tuple[PortfolioAppliedEvent, ...]:
+    return tuple(item for _, item in sorted(items.items(), key=lambda item: item[0].bytes))
 
 
 def _next_state(
@@ -234,8 +252,8 @@ def _next_state(
     execution_identities, funding_identities, reconciliation_identities = (
         _business_identities(state, event)
     )
-    applied = {item.event_id: item.digest for item in state.applied_events}
-    applied[event.event_id] = digest
+    applied = {item.event_id: item for item in state.applied_events}
+    applied[event.event_id] = _applied_event(event, digest)
     cursor = {item.stream_id: item.sequence for item in state.cursor}
     cursor[event.stream_id] = event.sequence
     return PortfolioReplayState(
@@ -270,7 +288,7 @@ def _opening_state(event: PortfolioEvent) -> PortfolioReplayState:
     return PortfolioReplayState(
         snapshot=snapshot,
         cursor=(PortfolioStreamCursor(stream_id=event.stream_id, sequence=event.sequence),),
-        applied_events=(PortfolioAppliedEvent(event_id=event.event_id, digest=digest),),
+        applied_events=(_applied_event(event, digest),),
     )
 
 

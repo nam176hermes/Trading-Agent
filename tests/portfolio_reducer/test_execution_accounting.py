@@ -274,6 +274,24 @@ def test_duplicate_requires_exact_known_economics_without_mutation(opened_state)
         apply_portfolio_event(state, conflicting)
 
 
+def test_applied_events_record_payload_type_and_business_identity_at_ingress() -> None:
+    normal = fill_event(
+        event_number=2,
+        execution_number=20,
+        side=OrderSide.BUY,
+        quantity="1",
+        price="100",
+    )
+
+    state = reduce_portfolio_events((opening(), normal))
+
+    applied = {item.event_id: item for item in state.applied_events}
+    assert applied[uid(1)].event_type == "PortfolioOpeningEntry"
+    assert applied[uid(1)].business_identity_id is None
+    assert applied[uid(2)].event_type == "PortfolioFillEntry"
+    assert applied[uid(2)].business_identity_id == uid(20)
+
+
 def test_correction_reverses_normal_effect_then_applies_replacement() -> None:
     normal = fill_event(event_number=2, execution_number=20, side=OrderSide.BUY, quantity="1", price="100")
     correction = fill_event(
