@@ -279,6 +279,85 @@ def test_runtime_risk_schemas_publish_strict_closed_contracts() -> None:
     assert "authority" not in approval["properties"]
 
 
+def test_every_runtime_risk_schema_has_the_exact_closed_public_shape() -> None:
+    expected_fields = {
+        "RuntimeInstrumentRiskSpec.json": {
+            "instrument", "venue_id", "settlement_currency", "price_increment",
+            "quantity_increment", "min_quantity", "max_quantity", "min_order_notional",
+            "max_order_notional", "initial_margin_rate",
+        },
+        "RuntimeRiskMarketSnapshot.json": {
+            "instrument", "bid", "ask", "last", "observed_at", "provenance_id",
+        },
+        "RuntimeRiskConversionRate.json": {
+            "source_currency", "target_currency", "rate", "observed_at", "provenance_id",
+        },
+        "RuntimeVenueHealthRecord.json": {"venue_id", "health", "observed_at"},
+        "PriorRuntimeCommandIdentity.json": {"intent_id", "client_order_id"},
+        "RuntimeRiskPolicy.json": {
+            "policy_id", "policy_version", "account_id", "market_data_max_age_seconds",
+            "portfolio_max_age_seconds", "max_pending_exposure", "max_gross_exposure",
+            "max_abs_net_exposure", "max_strategy_exposure", "max_venue_exposure",
+            "min_available_funds", "max_daily_loss", "max_drawdown", "command_window_seconds",
+            "max_commands_per_window", "schema_version",
+        },
+        "RuntimeRiskObservation.json": {
+            "observation_id", "state_version", "portfolio", "instrument_specs",
+            "market_snapshots", "conversion_rates", "venue_health", "engine_ready", "daily_pnl",
+            "current_equity", "peak_equity", "command_window_started_at", "commands_in_window",
+            "prior_commands", "observed_at", "schema_version",
+        },
+        "RuntimeOrderRiskDecision.json": {
+            "decision_id", "intent_id", "risk_decision_id", "intent_digest",
+            "policy_risk_decision_digest", "portfolio_snapshot_id", "portfolio_digest",
+            "observation_id", "observation_version", "observation_digest", "policy_id",
+            "policy_version", "policy_digest", "risk_price", "order_notional",
+            "projected_position_quantity", "projected_pending", "projected_gross", "projected_net",
+            "projected_strategy_gross", "projected_venue_gross", "projected_instrument_gross",
+            "projected_margin_used", "projected_available_funds", "outcome", "reason_codes",
+            "decided_at", "schema_version",
+        },
+        "DurableOrderApprovalRef.json": {
+            "decision_outcome", "event_id", "stream_id", "sequence", "event_digest",
+            "decision_id", "decision_digest", "intent_id", "intent_digest", "risk_decision_id",
+            "policy_risk_decision_digest", "portfolio_snapshot_id", "portfolio_digest",
+            "observation_id", "observation_version", "observation_digest", "policy_id",
+            "policy_version", "policy_digest", "schema_version",
+        },
+    }
+
+    for filename, expected in expected_fields.items():
+        schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+        assert schema["additionalProperties"] is False
+        assert set(schema["properties"]) == expected
+        assert set(schema["required"]) == expected
+
+    spec = json.loads(
+        (SCHEMA_ROOT / "RuntimeInstrumentRiskSpec.json").read_text(encoding="utf-8")
+    )
+    conversion = json.loads(
+        (SCHEMA_ROOT / "RuntimeRiskConversionRate.json").read_text(encoding="utf-8")
+    )
+    policy = json.loads(
+        (SCHEMA_ROOT / "RuntimeRiskPolicy.json").read_text(encoding="utf-8")
+    )
+    observation = json.loads(
+        (SCHEMA_ROOT / "RuntimeRiskObservation.json").read_text(encoding="utf-8")
+    )
+    assert spec["properties"]["initial_margin_rate"]["type"] == "string"
+    assert spec["properties"]["initial_margin_rate"]["pattern"]
+    assert conversion["properties"]["rate"]["type"] == "string"
+    assert conversion["properties"]["rate"]["pattern"]
+    assert policy["properties"]["market_data_max_age_seconds"] == {
+        "title": "Market Data Max Age Seconds", "type": "integer"
+    }
+    assert observation["properties"]["engine_ready"] == {
+        "title": "Engine Ready", "type": "boolean"
+    }
+    assert policy["properties"]["schema_version"]["const"] == "runtime-risk-policy-v1"
+    assert observation["properties"]["schema_version"]["const"] == "runtime-risk-observation-v1"
+
+
 def test_decimal_wire_schemas_use_bounded_canonical_strings() -> None:
     signal_schema = json.loads(
         (SCHEMA_ROOT / "SignalProposal.json").read_text(encoding="utf-8")

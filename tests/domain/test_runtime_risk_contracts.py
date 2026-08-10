@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from packages.domain import (
     AccountBalanceSnapshot,
@@ -71,6 +71,25 @@ EXPECTED_REASON_ORDER = (
     "DUPLICATE_COMMAND",
     "WITHIN_LIMITS",
 )
+
+
+class _CanonicalChild(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    amount: int
+
+    @field_validator("amount")
+    @classmethod
+    def _positive_amount(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("amount must be positive")
+        return value
+
+
+class _CanonicalParent(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    child: _CanonicalChild
 
 
 def uid(value: int) -> UUID:
@@ -200,6 +219,21 @@ def test_runtime_contracts_are_strict_frozen_and_export_existing_domain_types() 
         spec.venue_id = "OTHER"  # type: ignore[misc]
 
 
+def test_runtime_contracts_require_exact_decimals_strict_scalars_and_utc_datetimes() -> None:
+    with pytest.raises(ValidationError, match="Decimal"):
+        instrument_spec(initial_margin_rate=0.1)
+    with pytest.raises(ValidationError):
+        policy(max_commands_per_window=True)
+    with pytest.raises(ValidationError):
+        observation(engine_ready=1)
+    with pytest.raises(ValidationError, match="UTC"):
+        RuntimeVenueHealthRecord(
+            venue_id="SIM",
+            health=RuntimeVenueHealth.HEALTHY,
+            observed_at=NOW.astimezone(timezone(timedelta(hours=1))),
+        )
+
+
 def test_instrument_spec_requires_positive_increments_ordered_bounds_and_settlement_currency() -> None:
     with pytest.raises(ValidationError, match="price_increment"):
         instrument_spec(price_increment={"amount": Decimal("0"), "currency": Currency.USD})
@@ -249,6 +283,19 @@ def test_observation_requires_canonical_order_for_each_identity_collection() -> 
     second_venue = RuntimeVenueHealthRecord(venue_id="SIM-2", health=RuntimeVenueHealth.HEALTHY, observed_at=NOW)
     with pytest.raises(ValidationError, match="venue_health must be canonically ordered"):
         observation(venue_health=(second_venue, RuntimeVenueHealthRecord(venue_id="SIM", health=RuntimeVenueHealth.HEALTHY, observed_at=NOW)))
+    second_instrument = InstrumentId("ETH-USD", ProductType.CRYPTO_SPOT, "SIM")
+    btc_market = RuntimeRiskMarketSnapshot(instrument=INSTRUMENT, bid=Price(Decimal("99"), Currency.USD), ask=Price(Decimal("101"), Currency.USD), last=Price(Decimal("100"), Currency.USD), observed_at=NOW, provenance_id="sim-btc-book")
+    eth_market = RuntimeRiskMarketSnapshot(instrument=second_instrument, bid=Price(Decimal("49"), Currency.USD), ask=Price(Decimal("51"), Currency.USD), last=Price(Decimal("50"), Currency.USD), observed_at=NOW, provenance_id="sim-eth-book")
+    with pytest.raises(ValidationError, match="market_snapshots must be canonically ordered"):
+        observation(market_snapshots=(eth_market, btc_market))
+    btc_conversion = RuntimeRiskConversionRate(source_currency=Currency.BTC, target_currency=Currency.USD, rate=Decimal("100"), observed_at=NOW, provenance_id="sim-btc-fx")
+    eth_conversion = RuntimeRiskConversionRate(source_currency=Currency.ETH, target_currency=Currency.USD, rate=Decimal("50"), observed_at=NOW, provenance_id="sim-eth-fx")
+    with pytest.raises(ValidationError, match="conversion_rates must be canonically ordered"):
+        observation(conversion_rates=(eth_conversion, btc_conversion))
+    first_prior = PriorRuntimeCommandIdentity(intent_id=uid(9), client_order_id="client-1")
+    second_prior = PriorRuntimeCommandIdentity(intent_id=uid(10), client_order_id="client-2")
+    with pytest.raises(ValidationError, match="prior_commands must be canonically ordered"):
+        observation(prior_commands=(second_prior, first_prior))
 
 
 def test_runtime_policy_limits_and_margin_rate_include_their_boundaries() -> None:
@@ -285,14 +332,26 @@ def test_approval_reference_is_approval_only_and_model_copy_revalidates() -> Non
         approved_ref.model_copy(update={"decision_outcome": RuntimeRiskOutcome.REJECTED})
 
 
-def test_canonical_identity_is_sorted_deterministic_and_rejects_forged_models() -> None:
-    value = approval_ref()
-    canonical = canonical_model_json(value)
-    assert canonical == canonical_model_json(value)
-    assert canonical.index('"decision_id"') < canonical.index('"event_digest"')
-    assert canonical_model_digest(value) == canonical_model_digest(value)
+def test_canonical_identity_has_stable_json_and_digest_vectors() -> None:
+    value = PriorRuntimeCommandIdentity(intent_id=uid(9), client_order_id="client-1")
+    assert canonical_model_json(value) == (
+        '{"client_order_id":"client-1","intent_id":"00000000-0000-0000-0000-000000000009"}'
+    )
+    assert canonical_model_digest(value) == "5b886f1f3ba909ef35d322209d3797296d4663cd401e923b6d3406d1ac9763ec"
+
+
+def test_canonical_identity_rejects_top_level_and_nested_forged_models() -> None:
     with pytest.raises(ValueError, match="Pydantic model"):
         canonical_model_json("not-a-model")  # type: ignore[arg-type]
     incomplete = DurableOrderApprovalRef.model_construct(decision_outcome=RuntimeRiskOutcome.APPROVED)
     with pytest.raises(ValueError, match="canonically represented"):
         canonical_model_digest(incomplete)
+    forged_child = _CanonicalChild.model_construct(amount=-1)
+    forged_parent = _CanonicalParent(child=forged_child)
+    with pytest.raises(ValueError, match="canonically represented"):
+        canonical_model_json(forged_parent)
+    forged_nested_incomplete = _CanonicalParent.model_construct(
+        child=_CanonicalChild.model_construct()
+    )
+    with pytest.raises(ValueError, match="canonically represented"):
+        canonical_model_digest(forged_nested_incomplete)

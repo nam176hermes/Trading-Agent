@@ -14,8 +14,16 @@ def canonical_model_json(value: BaseModel) -> str:
     if not isinstance(value, BaseModel):
         raise ValueError("value must be a Pydantic model")
     try:
-        fields = {name: getattr(value, name) for name in type(value).model_fields}
-        canonical = type(value).model_validate(fields)
+        tuple(getattr(value, name) for name in type(value).model_fields)
+        primitive_document = value.model_dump(mode="json")
+        primitive_json = json.dumps(
+            primitive_document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        canonical = type(value).model_validate_json(primitive_json)
         document = canonical.model_dump(mode="json")
     except (AttributeError, TypeError, ValidationError, ValueError) as exc:
         raise ValueError("model cannot be canonically represented") from exc

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, Field, StrictInt
 
 from .clock import require_utc
 from .instruments import InstrumentId
@@ -88,7 +89,7 @@ class RuntimeRiskModel(DomainModel):
         values = {name: getattr(self, name) for name in type(self).model_fields}
         if update:
             values.update(update)
-        return type(self).model_validate(values)
+        return type(self).model_validate(deepcopy(values) if deep else values)
 
 
 def _require_positive(value: Decimal, field_name: str) -> None:
