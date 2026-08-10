@@ -117,11 +117,13 @@ an optimistic caller-selected price from reducing risk.
 The policy has a stable policy identity and version plus exact limits for:
 
 - maximum market-data age;
+- maximum portfolio and position-mark age;
 - maximum pending, gross, and absolute net exposure;
 - maximum strategy and venue exposure;
 - minimum available cash or margin buffer;
 - maximum daily loss and drawdown;
 - maximum commands in the closed command window.
+- exact closed command-window duration.
 
 All monetary limits use the account reporting currency. The policy itself does
 not carry a self-asserted digest. A canonical policy digest is derived by the
@@ -146,6 +148,12 @@ Currencies, account identity, timestamps, and ordering must be internally
 consistent. Missing conversion authority, stale observations, unknown
 instruments, or structurally inconsistent facts fail closed.
 
+Portfolio observation time and every retained non-zero position mark must be
+within the policy's portfolio-age bound at decision time. Venue-health records
+must be current for the enclosing observation. The command-window start must
+define the active policy-sized window containing the observation time; an
+expired or future window is invalid state rather than an implicit counter reset.
+
 An instrument or market entry is looked up by exact canonical identity. Its
 absence is a deterministic rejection, not permission to manufacture a default
 instrument or price. A conversion entry is omitted only when settlement and
@@ -158,12 +166,13 @@ It binds:
 
 - decision and intent identities;
 - the canonical `OrderIntent` digest;
-- the target-level `RiskDecision` identity;
+- the target-level `RiskDecision` identity and canonical digest;
 - portfolio snapshot identity and canonical digest;
 - observation identity, version, and canonical digest;
 - policy identity, version, and canonical digest;
-- derived risk price and projected exposure values, which may be absent only
-  on a rejected decision whose missing authority prevents derivation;
+- derived risk price, projected position quantity, and projected exposure
+  values, which may be absent only on a rejected decision whose missing
+  authority prevents derivation;
 - outcome and canonically ordered reason codes;
 - decision time and schema version.
 
@@ -172,11 +181,12 @@ unique reasons in the fixed check order and never contains `WITHIN_LIMITS`.
 
 ### `DurableOrderApprovalRef`
 
-This is a narrow reference, not a bearer secret. It exists only for an approved
-decision and binds the exact ledger event ID, stream ID, sequence, event digest,
-decision digest, intent digest, portfolio digest, observation digest, and policy
-digest. Its fields confer no authority without successful verification against
-the trusted event-ledger repository.
+This is a narrow reference, not a bearer secret. It carries an exact
+`APPROVED` outcome literal and binds the exact ledger event ID, stream ID,
+sequence, event digest, decision digest, intent digest, target-policy decision
+digest, portfolio digest, observation digest, and runtime-policy digest. Its
+fields confer no authority without successful verification against the trusted
+event-ledger repository.
 
 ## Deterministic Evaluation
 
