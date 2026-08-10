@@ -1,0 +1,129 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "decision_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Decision Digest",
+      "type": "string"
+    },
+    "decision_id": {
+      "format": "uuid",
+      "title": "Decision Id",
+      "type": "string"
+    },
+    "decision_outcome": {
+      "const": "APPROVED",
+      "title": "Decision Outcome",
+      "type": "string"
+    },
+    "event_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Event Digest",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "intent_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Intent Digest",
+      "type": "string"
+    },
+    "intent_id": {
+      "format": "uuid",
+      "title": "Intent Id",
+      "type": "string"
+    },
+    "observation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Observation Digest",
+      "type": "string"
+    },
+    "observation_id": {
+      "format": "uuid",
+      "title": "Observation Id",
+      "type": "string"
+    },
+    "observation_version": {
+      "title": "Observation Version",
+      "type": "integer"
+    },
+    "policy_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Digest",
+      "type": "string"
+    },
+    "policy_id": {
+      "format": "uuid",
+      "title": "Policy Id",
+      "type": "string"
+    },
+    "policy_risk_decision_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Risk Decision Digest",
+      "type": "string"
+    },
+    "policy_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "portfolio_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Portfolio Digest",
+      "type": "string"
+    },
+    "portfolio_snapshot_id": {
+      "format": "uuid",
+      "title": "Portfolio Snapshot Id",
+      "type": "string"
+    },
+    "risk_decision_id": {
+      "format": "uuid",
+      "title": "Risk Decision Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "durable-order-approval-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "decision_outcome",
+    "event_id",
+    "stream_id",
+    "sequence",
+    "event_digest",
+    "decision_id",
+    "decision_digest",
+    "intent_id",
+    "intent_digest",
+    "risk_decision_id",
+    "policy_risk_decision_digest",
+    "portfolio_snapshot_id",
+    "portfolio_digest",
+    "observation_id",
+    "observation_version",
+    "observation_digest",
+    "policy_id",
+    "policy_version",
+    "policy_digest",
+    "schema_version"
+  ],
+  "title": "DurableOrderApprovalRef",
+  "type": "object"
+}

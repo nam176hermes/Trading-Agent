@@ -1,0 +1,123 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Account Id",
+      "type": "string"
+    },
+    "command_window_seconds": {
+      "title": "Command Window Seconds",
+      "type": "integer"
+    },
+    "market_data_max_age_seconds": {
+      "title": "Market Data Max Age Seconds",
+      "type": "integer"
+    },
+    "max_abs_net_exposure": {
+      "$ref": "#/$defs/Money"
+    },
+    "max_commands_per_window": {
+      "title": "Max Commands Per Window",
+      "type": "integer"
+    },
+    "max_daily_loss": {
+      "$ref": "#/$defs/Money"
+    },
+    "max_drawdown": {
+      "$ref": "#/$defs/Money"
+    },
+    "max_gross_exposure": {
+      "$ref": "#/$defs/Money"
+    },
+    "max_pending_exposure": {
+      "$ref": "#/$defs/Money"
+    },
+    "max_strategy_exposure": {
+      "$ref": "#/$defs/Money"
+    },
+    "max_venue_exposure": {
+      "$ref": "#/$defs/Money"
+    },
+    "min_available_funds": {
+      "$ref": "#/$defs/Money"
+    },
+    "policy_id": {
+      "format": "uuid",
+      "title": "Policy Id",
+      "type": "string"
+    },
+    "policy_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "portfolio_max_age_seconds": {
+      "title": "Portfolio Max Age Seconds",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "runtime-risk-policy-v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "policy_id",
+    "policy_version",
+    "account_id",
+    "market_data_max_age_seconds",
+    "portfolio_max_age_seconds",
+    "max_pending_exposure",
+    "max_gross_exposure",
+    "max_abs_net_exposure",
+    "max_strategy_exposure",
+    "max_venue_exposure",
+    "min_available_funds",
+    "max_daily_loss",
+    "max_drawdown",
+    "command_window_seconds",
+    "max_commands_per_window",
+    "schema_version"
+  ],
+  "title": "RuntimeRiskPolicy",
+  "type": "object"
+}

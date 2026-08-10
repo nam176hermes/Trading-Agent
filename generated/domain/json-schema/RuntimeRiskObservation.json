@@ -1,0 +1,766 @@
+{
+  "$defs": {
+    "AccountBalanceSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "cash": {
+          "$ref": "#/$defs/Money"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "fees": {
+          "$ref": "#/$defs/Money"
+        },
+        "funding": {
+          "$ref": "#/$defs/Money"
+        },
+        "locked_funds": {
+          "$ref": "#/$defs/Money"
+        },
+        "margin_used": {
+          "$ref": "#/$defs/Money"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "realized_pnl": {
+          "$ref": "#/$defs/Money"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "unrealized_pnl": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "account_id",
+        "currency",
+        "cash",
+        "locked_funds",
+        "margin_used",
+        "realized_pnl",
+        "unrealized_pnl",
+        "fees",
+        "funding",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "AccountBalanceSnapshot",
+      "type": "object"
+    },
+    "AccountPortfolioSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "balances": {
+          "items": {
+            "$ref": "#/$defs/AccountBalanceSnapshot"
+          },
+          "title": "Balances",
+          "type": "array"
+        },
+        "instrument_exposures": {
+          "items": {
+            "$ref": "#/$defs/InstrumentExposureSnapshot"
+          },
+          "title": "Instrument Exposures",
+          "type": "array"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "positions": {
+          "items": {
+            "$ref": "#/$defs/AccountPositionSnapshot"
+          },
+          "title": "Positions",
+          "type": "array"
+        },
+        "reporting_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "format": "uuid",
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "strategy_exposures": {
+          "items": {
+            "$ref": "#/$defs/StrategyExposureSnapshot"
+          },
+          "title": "Strategy Exposures",
+          "type": "array"
+        },
+        "total_exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "venue_exposures": {
+          "items": {
+            "$ref": "#/$defs/VenueExposureSnapshot"
+          },
+          "title": "Venue Exposures",
+          "type": "array"
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "account_id",
+        "reporting_currency",
+        "balances",
+        "positions",
+        "total_exposure",
+        "instrument_exposures",
+        "strategy_exposures",
+        "venue_exposures",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "AccountPortfolioSnapshot",
+      "type": "object"
+    },
+    "AccountPositionSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "account_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Account Id",
+          "type": "string"
+        },
+        "average_entry_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fees": {
+          "$ref": "#/$defs/Money"
+        },
+        "funding": {
+          "$ref": "#/$defs/Money"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "mark": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PositionMark"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "quantity": {
+          "$ref": "#/$defs/Quantity"
+        },
+        "realized_pnl": {
+          "$ref": "#/$defs/Money"
+        },
+        "schema_version": {
+          "minLength": 1,
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "settlement_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "unrealized_pnl": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "account_id",
+        "strategy_id",
+        "instrument",
+        "settlement_currency",
+        "quantity",
+        "mark",
+        "average_entry_price",
+        "realized_pnl",
+        "unrealized_pnl",
+        "fees",
+        "funding",
+        "observed_at",
+        "schema_version"
+      ],
+      "title": "AccountPositionSnapshot",
+      "type": "object"
+    },
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "ExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "gross": {
+          "$ref": "#/$defs/Money"
+        },
+        "net": {
+          "$ref": "#/$defs/Money"
+        },
+        "pending": {
+          "$ref": "#/$defs/Money"
+        }
+      },
+      "required": [
+        "currency",
+        "gross",
+        "net",
+        "pending"
+      ],
+      "title": "ExposureSnapshot",
+      "type": "object"
+    },
+    "InstrumentExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        }
+      },
+      "required": [
+        "instrument",
+        "exposure"
+      ],
+      "title": "InstrumentExposureSnapshot",
+      "type": "object"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "OrderQuantity": {
+      "description": "An exact non-negative order quantity with declared precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|[1-9]\\d*|(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "OrderQuantity",
+      "type": "object"
+    },
+    "PositionMark": {
+      "additionalProperties": false,
+      "properties": {
+        "marked_at": {
+          "format": "date-time",
+          "title": "Marked At",
+          "type": "string"
+        },
+        "price": {
+          "$ref": "#/$defs/Price"
+        },
+        "provenance_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Provenance Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "price",
+        "marked_at",
+        "provenance_id"
+      ],
+      "title": "PositionMark",
+      "type": "object"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "PriorRuntimeCommandIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "client_order_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Client Order Id",
+          "type": "string"
+        },
+        "intent_id": {
+          "format": "uuid",
+          "title": "Intent Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "intent_id",
+        "client_order_id"
+      ],
+      "title": "PriorRuntimeCommandIdentity",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    },
+    "Quantity": {
+      "description": "An exact signed quantity with declared fractional precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "Quantity",
+      "type": "object"
+    },
+    "RuntimeInstrumentRiskSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "initial_margin_rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Initial Margin Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "max_order_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "max_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "min_order_notional": {
+          "$ref": "#/$defs/Money"
+        },
+        "min_quantity": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "price_increment": {
+          "$ref": "#/$defs/Price"
+        },
+        "quantity_increment": {
+          "$ref": "#/$defs/OrderQuantity"
+        },
+        "settlement_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "venue_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Venue Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instrument",
+        "venue_id",
+        "settlement_currency",
+        "price_increment",
+        "quantity_increment",
+        "min_quantity",
+        "max_quantity",
+        "min_order_notional",
+        "max_order_notional",
+        "initial_margin_rate"
+      ],
+      "title": "RuntimeInstrumentRiskSpec",
+      "type": "object"
+    },
+    "RuntimeRiskConversionRate": {
+      "additionalProperties": false,
+      "properties": {
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "provenance_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Provenance Id",
+          "type": "string"
+        },
+        "rate": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Rate",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "source_currency": {
+          "$ref": "#/$defs/Currency"
+        },
+        "target_currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "source_currency",
+        "target_currency",
+        "rate",
+        "observed_at",
+        "provenance_id"
+      ],
+      "title": "RuntimeRiskConversionRate",
+      "type": "object"
+    },
+    "RuntimeRiskMarketSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "ask": {
+          "$ref": "#/$defs/Price"
+        },
+        "bid": {
+          "$ref": "#/$defs/Price"
+        },
+        "instrument": {
+          "$ref": "#/$defs/InstrumentId"
+        },
+        "last": {
+          "$ref": "#/$defs/Price"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "provenance_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Provenance Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instrument",
+        "bid",
+        "ask",
+        "last",
+        "observed_at",
+        "provenance_id"
+      ],
+      "title": "RuntimeRiskMarketSnapshot",
+      "type": "object"
+    },
+    "RuntimeVenueHealth": {
+      "enum": [
+        "HEALTHY",
+        "DEGRADED",
+        "UNKNOWN"
+      ],
+      "title": "RuntimeVenueHealth",
+      "type": "string"
+    },
+    "RuntimeVenueHealthRecord": {
+      "additionalProperties": false,
+      "properties": {
+        "health": {
+          "$ref": "#/$defs/RuntimeVenueHealth"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "venue_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Venue Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue_id",
+        "health",
+        "observed_at"
+      ],
+      "title": "RuntimeVenueHealthRecord",
+      "type": "object"
+    },
+    "StrategyExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "strategy_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Strategy Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "exposure"
+      ],
+      "title": "StrategyExposureSnapshot",
+      "type": "object"
+    },
+    "VenueExposureSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "exposure": {
+          "$ref": "#/$defs/ExposureSnapshot"
+        },
+        "venue_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Venue Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue_id",
+        "exposure"
+      ],
+      "title": "VenueExposureSnapshot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "command_window_started_at": {
+      "format": "date-time",
+      "title": "Command Window Started At",
+      "type": "string"
+    },
+    "commands_in_window": {
+      "title": "Commands In Window",
+      "type": "integer"
+    },
+    "conversion_rates": {
+      "items": {
+        "$ref": "#/$defs/RuntimeRiskConversionRate"
+      },
+      "title": "Conversion Rates",
+      "type": "array"
+    },
+    "current_equity": {
+      "$ref": "#/$defs/Money"
+    },
+    "daily_pnl": {
+      "$ref": "#/$defs/Money"
+    },
+    "engine_ready": {
+      "title": "Engine Ready",
+      "type": "boolean"
+    },
+    "instrument_specs": {
+      "items": {
+        "$ref": "#/$defs/RuntimeInstrumentRiskSpec"
+      },
+      "title": "Instrument Specs",
+      "type": "array"
+    },
+    "market_snapshots": {
+      "items": {
+        "$ref": "#/$defs/RuntimeRiskMarketSnapshot"
+      },
+      "title": "Market Snapshots",
+      "type": "array"
+    },
+    "observation_id": {
+      "format": "uuid",
+      "title": "Observation Id",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "peak_equity": {
+      "$ref": "#/$defs/Money"
+    },
+    "portfolio": {
+      "$ref": "#/$defs/AccountPortfolioSnapshot"
+    },
+    "prior_commands": {
+      "items": {
+        "$ref": "#/$defs/PriorRuntimeCommandIdentity"
+      },
+      "title": "Prior Commands",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "runtime-risk-observation-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "state_version": {
+      "title": "State Version",
+      "type": "integer"
+    },
+    "venue_health": {
+      "items": {
+        "$ref": "#/$defs/RuntimeVenueHealthRecord"
+      },
+      "title": "Venue Health",
+      "type": "array"
+    }
+  },
+  "required": [
+    "observation_id",
+    "state_version",
+    "portfolio",
+    "instrument_specs",
+    "market_snapshots",
+    "conversion_rates",
+    "venue_health",
+    "engine_ready",
+    "daily_pnl",
+    "current_equity",
+    "peak_equity",
+    "command_window_started_at",
+    "commands_in_window",
+    "prior_commands",
+    "observed_at",
+    "schema_version"
+  ],
+  "title": "RuntimeRiskObservation",
+  "type": "object"
+}

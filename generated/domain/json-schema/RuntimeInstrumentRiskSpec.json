@@ -1,0 +1,163 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "InstrumentId": {
+      "description": "A normalized identity whose canonical form includes type and venue.",
+      "properties": {
+        "product_type": {
+          "$ref": "#/$defs/ProductType"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "product_type",
+        "venue"
+      ],
+      "title": "InstrumentId",
+      "type": "object"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "OrderQuantity": {
+      "description": "An exact non-negative order quantity with declared precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|[1-9]\\d*|(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "OrderQuantity",
+      "type": "object"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "ProductType": {
+      "description": "Product classes supported by the canonical domain model.",
+      "enum": [
+        "crypto_spot",
+        "equity"
+      ],
+      "title": "ProductType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "initial_margin_rate": {
+      "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+      "title": "Initial Margin Rate",
+      "type": "string",
+      "x-canonical-decimal-policy": "decimal-v1"
+    },
+    "instrument": {
+      "$ref": "#/$defs/InstrumentId"
+    },
+    "max_order_notional": {
+      "$ref": "#/$defs/Money"
+    },
+    "max_quantity": {
+      "$ref": "#/$defs/OrderQuantity"
+    },
+    "min_order_notional": {
+      "$ref": "#/$defs/Money"
+    },
+    "min_quantity": {
+      "$ref": "#/$defs/OrderQuantity"
+    },
+    "price_increment": {
+      "$ref": "#/$defs/Price"
+    },
+    "quantity_increment": {
+      "$ref": "#/$defs/OrderQuantity"
+    },
+    "settlement_currency": {
+      "$ref": "#/$defs/Currency"
+    },
+    "venue_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Venue Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "instrument",
+    "venue_id",
+    "settlement_currency",
+    "price_increment",
+    "quantity_increment",
+    "min_quantity",
+    "max_quantity",
+    "min_order_notional",
+    "max_order_notional",
+    "initial_margin_rate"
+  ],
+  "title": "RuntimeInstrumentRiskSpec",
+  "type": "object"
+}

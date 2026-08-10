@@ -72,6 +72,15 @@ EXPECTED = {
     "EventEnvelope_PortfolioConversionEntry_.json",
     "EventEnvelope_PortfolioValuationRateEntry_.json",
     "EventEnvelope_PortfolioReconciliationEntry_.json",
+    "RuntimeInstrumentRiskSpec.json",
+    "RuntimeRiskMarketSnapshot.json",
+    "RuntimeRiskConversionRate.json",
+    "RuntimeVenueHealthRecord.json",
+    "PriorRuntimeCommandIdentity.json",
+    "RuntimeRiskPolicy.json",
+    "RuntimeRiskObservation.json",
+    "RuntimeOrderRiskDecision.json",
+    "DurableOrderApprovalRef.json",
 }
 
 LEGACY_EVENT_TYPES = {
@@ -241,6 +250,33 @@ def test_risk_decision_schema_exposes_closed_reasons_and_outcome_invariants() ->
         "portfolio.observed_at <= observed_at",
         "portfolio.positions[*].observed_at <= portfolio.observed_at",
     ]
+
+
+def test_runtime_risk_schemas_publish_strict_closed_contracts() -> None:
+    decision = json.loads(
+        (SCHEMA_ROOT / "RuntimeOrderRiskDecision.json").read_text(encoding="utf-8")
+    )
+    approval = json.loads(
+        (SCHEMA_ROOT / "DurableOrderApprovalRef.json").read_text(encoding="utf-8")
+    )
+
+    assert decision["$defs"]["RuntimeRiskReasonCode"]["enum"] == [
+        "POLICY_RISK_NOT_APPROVED", "ENGINE_NOT_READY", "INSTRUMENT_UNKNOWN",
+        "MARKET_DATA_STALE", "VALUATION_AUTHORITY_MISSING", "PORTFOLIO_STATE_INVALID",
+        "PRICE_PRECISION_INVALID", "QUANTITY_PRECISION_INVALID", "QUANTITY_OUT_OF_BOUNDS",
+        "ORDER_NOTIONAL_LIMIT", "BALANCE_MARGIN_LIMIT", "PENDING_EXPOSURE_LIMIT",
+        "GROSS_EXPOSURE_LIMIT", "NET_EXPOSURE_LIMIT", "STRATEGY_EXPOSURE_LIMIT",
+        "VENUE_EXPOSURE_LIMIT", "DAILY_LOSS_LIMIT", "DRAWDOWN_LIMIT",
+        "REDUCE_ONLY_VIOLATION", "COMMAND_RATE_LIMIT", "VENUE_UNHEALTHY",
+        "DUPLICATE_COMMAND", "WITHIN_LIMITS",
+    ]
+    assert {"policy_risk_decision_digest", "risk_price", "reason_codes"} <= set(decision["required"])
+    assert approval["properties"]["decision_outcome"] == {
+        "const": "APPROVED",
+        "title": "Decision Outcome",
+        "type": "string",
+    }
+    assert "authority" not in approval["properties"]
 
 
 def test_decimal_wire_schemas_use_bounded_canonical_strings() -> None:

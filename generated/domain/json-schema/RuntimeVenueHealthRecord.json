@@ -1,0 +1,38 @@
+{
+  "$defs": {
+    "RuntimeVenueHealth": {
+      "enum": [
+        "HEALTHY",
+        "DEGRADED",
+        "UNKNOWN"
+      ],
+      "title": "RuntimeVenueHealth",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "health": {
+      "$ref": "#/$defs/RuntimeVenueHealth"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "venue_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Venue Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "venue_id",
+    "health",
+    "observed_at"
+  ],
+  "title": "RuntimeVenueHealthRecord",
+  "type": "object"
+}
