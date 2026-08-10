@@ -361,3 +361,33 @@ def test_global_halt_replay_retains_prepared_permit_without_rotating_generation(
     assert result.state == state
     assert result.prepared[0].permit_id == prepared.payload.permit_id
     assert result.consumed_permit_ids == ()
+
+
+def test_global_halt_replay_consumes_prepared_permit_without_rotating_generation() -> None:
+    from packages.event_ledger import InMemoryEventLedger
+    from packages.runtime_risk import replay_global_halt_authority
+    from tests.runtime_risk.test_global_halt import initialize, prepared_event
+    from tests.runtime_risk.test_submit_authority_drills import consumed_event
+
+    repository = InMemoryEventLedger()
+    state = initialize(repository)
+    transition = repository.load_events()[0]
+    prepared = prepared_event(state)
+    prepared_replay = replay_global_halt_authority(
+        events=(transition, prepared), stream_id=state.stream_id
+    )
+    permit = prepared_replay.prepared[0]
+    consumed = consumed_event(
+        permit,
+        event_id=UUID(int=902),
+        sequence=3,
+        consumed_at=permit.prepared_at,
+    )
+
+    result = replay_global_halt_authority(
+        events=(transition, prepared, consumed), stream_id=state.stream_id
+    )
+
+    assert result.state == state
+    assert result.prepared == ()
+    assert result.consumed_permit_ids == (permit.permit_id,)

@@ -11,6 +11,7 @@ import pytest
 import packages.runtime_risk.submit_authority as submit_authority_module
 from packages.domain import EventEnvelope
 from packages.domain.runtime_halt import (
+    ConsumedSubmitAuthority,
     GlobalHaltRecoveryAuthorization,
     GlobalHaltStatus,
     GlobalSafetyObservation,
@@ -30,8 +31,10 @@ from packages.event_ledger import (
 )
 from packages.event_ledger.replay import event_digest
 from packages.runtime_risk import (
+    SubmitPermitConsumptionError,
     SubmitPermitPreparationError,
     canonical_model_digest,
+    consume_submit_permit,
     global_safety_binding_digest,
     prepare_submit_permit,
     record_global_halt_observation,
@@ -218,6 +221,26 @@ def prepared_envelope(ledger: InMemoryEventLedger) -> EventEnvelope[object]:
         for event in ledger.load_events()
         if event.event_id == PREPARED_EVENT_ID
     )
+
+
+def consume(
+    case: PrepareCase,
+    permit: PreparedSubmitPermit,
+    *,
+    repository: EventLedgerRepository | None = None,
+    **changes: object,
+) -> ConsumedSubmitAuthority:
+    arguments: dict[str, object] = {
+        "repository": repository or case.ledger,
+        "permit": permit,
+        "current_observation": case.evaluator.observation,
+        "current_policy": case.evaluator.policy,
+        "current_safety": safety(observed_at=PREPARED_AT + timedelta(seconds=1)),
+        "consumed_event_id": uid(900),
+        "consumed_at": PREPARED_AT + timedelta(seconds=1),
+    }
+    arguments.update(changes)
+    return consume_submit_permit(**arguments)  # type: ignore[arg-type]
 
 
 class RepositoryProxy:
@@ -740,3 +763,195 @@ def test_prepare_submit_permit_does_not_mask_reference_programming_errors(
     monkeypatch.setattr(submit_authority_module, "_prepared_reference", fail_reference)
     with pytest.raises(RuntimeError, match="reference programming defect"):
         prepare(case)
+
+
+def test_consume_submit_permit_persists_exact_flat_content_addressed_authority() -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+
+    authority = consume(case, permit)
+
+    event = next(
+        item for item in case.ledger.load_events() if item.event_id == uid(900)
+    )
+    assert authority == ConsumedSubmitAuthority(
+        permit_id=permit.permit_id,
+        prepared_event_digest=permit.prepared_event_digest,
+        halt_stream_id=permit.halt_stream_id,
+        halt_generation=permit.halt_generation,
+        halt_transition_digest=permit.halt_transition_digest,
+        consumed_at=PREPARED_AT + timedelta(seconds=1),
+        consumed_event_id=uid(900),
+        consumed_event_digest=event_digest(serialize_event(event)),
+        schema_version="consumed-submit-authority-v1",
+    )
+    assert type(event.payload) is SubmitPermitConsumed
+    assert "consumed_event_id" not in type(event.payload).model_fields
+    assert "consumed_event_digest" not in type(event.payload).model_fields
+    assert event.sequence == 3
+    assert event.causation_id == permit.permit_id
+    assert next(
+        item for item in case.ledger.load_outbox() if item.event_id == uid(900)
+    ) == OutboxIntent(
+        event_id=uid(900),
+        topic="runtime-risk.submit-permits-consumed",
+        payload_json=json.dumps(
+            {"permit_id": str(permit.permit_id)},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("offset", "accepted"),
+    (
+        (timedelta(0), True),
+        (timedelta(seconds=5), True),
+        (timedelta(seconds=5, microseconds=1), False),
+    ),
+    ids=("prepared-at", "expires-at", "one-microsecond-after"),
+)
+def test_consume_submit_permit_enforces_inclusive_five_second_window(
+    offset: timedelta,
+    accepted: bool,
+) -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+    consumed_at = PREPARED_AT + offset
+
+    if accepted:
+        authority = consume(
+            case,
+            permit,
+            current_safety=safety(observed_at=consumed_at),
+            consumed_at=consumed_at,
+        )
+        assert authority.consumed_at == consumed_at
+    else:
+        with pytest.raises(SubmitPermitConsumptionError):
+            consume(
+                case,
+                permit,
+                current_safety=safety(observed_at=permit.expires_at),
+                consumed_at=consumed_at,
+            )
+
+
+def test_consume_submit_permit_requires_new_bounded_same_binding_safety_read() -> None:
+    case = approved_active_case()
+    preparation_read = safety(observed_at=NOW)
+    permit = prepare(case, current_safety=preparation_read)
+    consumed_at = PREPARED_AT + timedelta(seconds=1)
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, permit, current_safety=preparation_read)
+    assert consume(
+        case,
+        permit,
+        current_safety=safety(observed_at=consumed_at),
+    ).permit_id == permit.permit_id
+
+
+@pytest.mark.parametrize(
+    "current_safety",
+    (
+        safety(
+            observed_at=PREPARED_AT + timedelta(seconds=1, microseconds=1)
+        ),
+        safety(
+            source_fingerprint="b" * 64,
+            observed_at=PREPARED_AT + timedelta(seconds=1),
+        ),
+        safety(
+            state=CanonicalKillSwitchState.ACTIVE,
+            observed_at=PREPARED_AT + timedelta(seconds=1),
+        ),
+    ),
+    ids=("after-consume", "changed-source", "changed-state"),
+)
+def test_consume_submit_permit_rejects_invalid_current_safety(
+    current_safety: GlobalSafetyObservation,
+) -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, permit, current_safety=current_safety)
+
+
+@pytest.mark.parametrize(
+    ("field", "mutation"),
+    (
+        (
+            "current_observation",
+            lambda case: case.evaluator.observation.model_copy(
+                update={"observation_id": uid(901)}
+            ),
+        ),
+        (
+            "current_policy",
+            lambda case: case.evaluator.policy.model_copy(
+                update={"policy_version": "changed-at-consume"}
+            ),
+        ),
+        (
+            "current_observation",
+            lambda case: case.evaluator.observation.model_copy(
+                update={
+                    "portfolio": case.evaluator.observation.portfolio.model_copy(
+                        update={"snapshot_id": uid(902)}
+                    )
+                }
+            ),
+        ),
+    ),
+    ids=("observation", "policy", "portfolio"),
+)
+def test_consume_submit_permit_rejects_changed_current_authority(
+    field: str,
+    mutation: Callable[[PrepareCase], object],
+) -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, permit, **{field: mutation(case)})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("halt_stream_id", uid(903)),
+        ("halt_generation", 99),
+        ("halt_transition_event_id", uid(904)),
+        ("halt_transition_digest", "f" * 64),
+    ),
+    ids=("stream", "generation", "transition-id", "transition-digest"),
+)
+def test_consume_submit_permit_rejects_wrong_halt_binding(
+    field: str,
+    value: object,
+) -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+    forged = PreparedSubmitPermit.model_construct(
+        **{**permit.model_dump(mode="python"), field: value}
+    )
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, forged)
+
+
+def test_consume_submit_permit_is_strictly_one_shot() -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+    consume(case, permit)
+    prior_events = case.ledger.load_events()
+    prior_outbox = case.ledger.load_outbox()
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, permit, consumed_event_id=uid(905))
+
+    assert case.ledger.load_events() == prior_events
+    assert case.ledger.load_outbox() == prior_outbox
