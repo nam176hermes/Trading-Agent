@@ -105,6 +105,50 @@ def _ordered_reasons(
     return tuple(reason for reason in SandboxReconciliationReason if reason in reasons)
 
 
+def _validate_fill_evidence(
+    *,
+    known: dict[UUID, EventEnvelope[object]],
+    queued_ids: frozenset[UUID],
+    observed: dict[UUID, EventEnvelope[object]],
+) -> dict[UUID, tuple[SandboxReconciliationReason, ...]]:
+    reasons: dict[UUID, list[SandboxReconciliationReason]] = {}
+    delivered_fills = tuple(
+        expected
+        for report_id, expected in known.items()
+        if report_id not in queued_ids and type(expected.payload) is FillEvent
+    )
+    delivered_fill_bytes = {
+        (expected.event_id, serialize_event(expected)) for expected in delivered_fills
+    }
+
+    for actual in observed.values():
+        if type(actual.payload) is not FillEvent:
+            continue
+        if (actual.event_id, serialize_event(actual)) not in delivered_fill_bytes:
+            reasons.setdefault(actual.payload.order_id, []).append(
+                SandboxReconciliationReason.FILL_EVIDENCE_MISMATCH
+            )
+
+    for expected in delivered_fills:
+        actual = observed.get(expected.event_id)
+        exact_identity = (
+            actual is not None
+            and type(actual.payload) is FillEvent
+            and actual.payload.execution_id == expected.payload.execution_id
+            and actual.payload.report_sequence == expected.payload.report_sequence
+            and actual.payload.order_id == expected.payload.order_id
+        )
+        if not exact_identity or serialize_event(actual) != serialize_event(expected):
+            reasons.setdefault(expected.payload.order_id, []).append(
+                SandboxReconciliationReason.FILL_EVIDENCE_MISMATCH
+            )
+
+    return {
+        order_id: _ordered_reasons(values)
+        for order_id, values in sorted(reasons.items(), key=lambda item: item[0].int)
+    }
+
+
 def _reconcile_canonical_request(
     request: SandboxReconciliationRequest,
 ) -> SandboxReconciliationResult:
@@ -115,6 +159,11 @@ def _reconcile_canonical_request(
     delivered_event_ids = _delivered_event_ids(snapshot)
     observed = _observed_by_event_id(request.observed_reports)
     order_ids = frozenset(order.order_id for order in snapshot.orders)
+    fill_reasons = _validate_fill_evidence(
+        known=known,
+        queued_ids=queued_ids,
+        observed=observed,
+    )
 
     unattributed_event_ids: list[UUID] = []
     unattributed_reasons: list[SandboxReconciliationReason] = []
@@ -123,6 +172,7 @@ def _reconcile_canonical_request(
         if event.payload.order_id not in order_ids:
             unattributed_event_ids.append(event_id)
             unattributed_reasons.append(SandboxReconciliationReason.UNKNOWN_ORDER_REPORT)
+            unattributed_reasons.extend(fill_reasons.get(event.payload.order_id, ()))
         elif event_id not in delivered_event_ids:
             unattributed_event_ids.append(event_id)
             unattributed_reasons.append(
@@ -142,6 +192,7 @@ def _reconcile_canonical_request(
             order.order_id, order_observed
         )
         reasons = list(observed_reasons)
+        reasons.extend(fill_reasons.get(order.order_id, ()))
         if not observed_reasons and observed_state != order.observed_state:
             reasons.append(SandboxReconciliationReason.OBSERVED_STATE_MISMATCH)
 

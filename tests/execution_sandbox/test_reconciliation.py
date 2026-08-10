@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import ROUND_UP, localcontext
 from typing import Any
 from uuid import UUID
 
@@ -61,6 +62,7 @@ def fixture_reconciliation_request_factory(
     prepared_case: Any,
     safety_verifier: object,
     submitted_envelope: EventEnvelope[OrderEvent],
+    fill_envelope: EventEnvelope[FillEvent],
 ) -> Callable[[str], SandboxReconciliationRequest]:
     """Build the five later replay cases from 06A's in-memory helpers only."""
 
@@ -79,6 +81,74 @@ def fixture_reconciliation_request_factory(
             order_sequence=2,
             status=OrderStatus.ACCEPTED,
         )
+        if case.startswith("fill_") or case in {
+            "queued_duplicate",
+            "queued_original",
+            "delivered_duplicates",
+        }:
+            fill = fill_report(fill_envelope, event_id=12, sequence=2)
+            original_fill_at = (
+                NOW + timedelta(seconds=2) if case == "queued_original" else NOW
+            )
+            duplicate_fill_at = (
+                NOW + timedelta(seconds=2) if case == "queued_duplicate" else NOW
+            )
+            reports = (
+                original(20, submitted),
+                original(21, fill, at=original_fill_at),
+            )
+            report_ids = (20, 21)
+            if case in {
+                "queued_duplicate",
+                "queued_original",
+                "delivered_duplicates",
+            }:
+                reports += (duplicate(22, 21, at=duplicate_fill_at),)
+                report_ids += (22,)
+            client = client_for(
+                scenario(
+                    commands=(command(100, SandboxCommandKind.SUBMIT, report_ids),),
+                    reports=reports,
+                ),
+                safety_verifier,
+            )
+            client.submit(valid_submit_request(prepared_case))
+            observed = client.drain_reports()
+            snapshot = client.snapshot()
+            if case == "fill_missing_fill":
+                observed = observed[:1]
+            elif case in {
+                "fill_foreign_fill",
+                "fill_wrong_execution_id",
+                "fill_wrong_report_sequence",
+            }:
+                field_name, field_value = {
+                    "fill_foreign_fill": ("order_id", uid(900)),
+                    "fill_wrong_execution_id": ("execution_id", uid(30_012)),
+                    "fill_wrong_report_sequence": ("report_sequence", 3),
+                }[case]
+                altered_payload = FillEvent(
+                    **{
+                        **{
+                            name: getattr(fill.payload, name)
+                            for name in FillEvent.model_fields
+                        },
+                        field_name: field_value,
+                    }
+                )
+                observed = observed[:1] + (
+                    fill.model_copy(update={"payload": altered_payload}),
+                )
+            elif case == "fill_changed_bytes":
+                observed = observed[:1] + (
+                    fill.model_copy(update={"source": "changed-source"}),
+                )
+            elif case == "fill_same_byte_repeat":
+                observed += (observed[-1],)
+            return SandboxReconciliationRequest(
+                snapshot=snapshot,
+                observed_reports=observed,
+            )
         delayed = case in {"delayed_ack", "disconnected_queue"}
         reports = (
             original(20, submitted),
@@ -564,3 +634,145 @@ def test_reconcile_execution_state_replays_command_fill_edges(
     assert result.orders[0].pending_report_ids == ()
     assert request.snapshot == snapshot_before
     assert request.observed_reports == reports_before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_fill", "foreign_fill", "wrong_execution_id", "wrong_report_sequence"],
+)
+def test_reconciliation_rejects_unexplained_fill_evidence(
+    mutation: str,
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Skipping an exact fill identity comparison must accept unexplained evidence."""
+
+    result = reconcile_execution_state(
+        reconciliation_request_factory(f"fill_{mutation}")
+    )
+
+    assert result.status is SandboxReconciliationStatus.MISMATCH
+    assert (
+        SandboxReconciliationReason.FILL_EVIDENCE_MISMATCH
+        in result.orders[0].reason_codes
+    )
+
+
+def test_foreign_fill_is_unattributed_without_creating_an_order_finding(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Assigning a foreign fill to a fabricated order would misstate the snapshot."""
+
+    result = reconcile_execution_state(
+        reconciliation_request_factory("fill_foreign_fill")
+    )
+
+    assert tuple(order.order_id for order in result.orders) == (uid(1),)
+    assert result.unattributed_event_ids == (uid(12),)
+    assert result.unattributed_reason_codes == (
+        SandboxReconciliationReason.UNKNOWN_ORDER_REPORT,
+        SandboxReconciliationReason.FILL_EVIDENCE_MISMATCH,
+    )
+
+
+def test_queued_duplicate_of_delivered_original_is_pending_not_mismatch(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Requiring a second observed event for a queued duplicate would invent evidence."""
+
+    result = reconcile_execution_state(
+        reconciliation_request_factory("queued_duplicate")
+    )
+
+    assert result.status is SandboxReconciliationStatus.DELIVERY_PENDING
+    assert result.orders[0].observed_report_ids == (uid(20), uid(21))
+    assert result.pending_report_ids == (uid(22),)
+
+
+def test_delivered_duplicate_of_queued_original_is_pending_not_mismatch(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Treating a queued original as proof that its delivered duplicate is absent is wrong."""
+
+    result = reconcile_execution_state(
+        reconciliation_request_factory("queued_original")
+    )
+
+    assert result.status is SandboxReconciliationStatus.DELIVERY_PENDING
+    assert result.orders[0].observed_report_ids == (uid(20), uid(22))
+    assert result.pending_report_ids == (uid(21),)
+
+
+def test_exact_same_byte_fill_repeat_is_idempotent(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Counting byte-identical evidence twice would break event idempotency."""
+
+    repeated = reconciliation_request_factory("fill_same_byte_repeat")
+    exact = SandboxReconciliationRequest(
+        snapshot=repeated.snapshot,
+        observed_reports=repeated.observed_reports[:-1],
+    )
+
+    assert reconcile_execution_state(repeated) == reconcile_execution_state(exact)
+
+
+def test_changed_fill_bytes_under_known_event_id_are_a_mismatch(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Comparing only an event ID would accept changed canonical fill evidence."""
+
+    result = reconcile_execution_state(
+        reconciliation_request_factory("fill_changed_bytes")
+    )
+
+    assert result.status is SandboxReconciliationStatus.MISMATCH
+    assert result.orders[0].reason_codes == (
+        SandboxReconciliationReason.FILL_EVIDENCE_MISMATCH,
+    )
+
+
+def test_delivered_duplicate_report_ids_share_one_observed_fill_event(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Collapsing duplicate report identities must not discard their audit identities."""
+
+    result = reconcile_execution_state(
+        reconciliation_request_factory("delivered_duplicates")
+    )
+
+    assert result.status is SandboxReconciliationStatus.RECONCILED
+    assert result.orders[0].observed_report_ids == (uid(20), uid(21), uid(22))
+
+
+def test_fill_duplicate_reconciliation_does_not_mutate_input_evidence(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Evidence validation must remain a pure comparison over immutable input."""
+
+    request = reconciliation_request_factory("queued_duplicate")
+    snapshot_before = request.snapshot
+    reports_before = request.observed_reports
+
+    reconcile_execution_state(request)
+
+    assert request.snapshot == snapshot_before
+    assert request.observed_reports == reports_before
+
+
+def test_fill_reconciliation_digest_is_stable_under_hostile_decimal_context(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Ambient Decimal precision or rounding must not change evidence or its digest."""
+
+    request = reconciliation_request_factory("delivered_duplicates")
+    expected = reconcile_execution_state(request)
+    expected_digest = expected.digest
+
+    with localcontext() as context:
+        context.prec = 1
+        context.rounding = ROUND_UP
+        actual = reconcile_execution_state(request)
+        actual_digest = actual.digest
+
+    assert actual == expected
+    assert actual_digest == expected_digest
