@@ -5,6 +5,7 @@ from typing import Callable
 from uuid import UUID
 
 import pytest
+from pydantic import BaseModel
 
 from packages.domain import EventEnvelope
 from packages.domain.runtime_halt import (
@@ -332,6 +333,55 @@ def test_consume_rejects_concurrent_exact_duplicate_instead_of_sharing_authority
             consumed_event_id=uid(943),
             consumed_at=CONSUMED_AT,
         )
+
+
+class LookalikeAppendOutcome(BaseModel):
+    event_id: UUID
+    inserted: bool
+
+
+class WrongTypeConcurrentDuplicateRepository:
+    def __init__(self, ledger: InMemoryEventLedger) -> None:
+        self.ledger = ledger
+        self.actual_duplicate: AppendOutcome | None = None
+
+    def append(
+        self, event: EventEnvelope[object], outbox: OutboxIntent
+    ) -> LookalikeAppendOutcome:
+        self.ledger.append(event, outbox)
+        self.actual_duplicate = self.ledger.append(event, outbox)
+        return LookalikeAppendOutcome(event_id=event.event_id, inserted=True)
+
+    def load_events(self) -> tuple[EventEnvelope[object], ...]:
+        return self.ledger.load_events()
+
+
+def test_consume_rejects_wrong_type_receipt_for_real_concurrent_duplicate() -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+    repository = WrongTypeConcurrentDuplicateRepository(case.ledger)
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume_submit_permit(
+            repository=repository,  # type: ignore[arg-type]
+            permit=permit,
+            current_observation=case.evaluator.observation,
+            current_policy=case.evaluator.policy,
+            current_safety=safety(observed_at=CONSUMED_AT),
+            consumed_event_id=uid(944),
+            consumed_at=CONSUMED_AT,
+        )
+
+    assert repository.actual_duplicate == AppendOutcome(
+        event_id=uid(944),
+        inserted=False,
+    )
+    replay = audit_submit_authority_stream(
+        repository=case.ledger,
+        stream_id=HALT_STREAM_ID,
+    )
+    assert replay.consumed_permit_ids == (permit.permit_id,)
+    assert replay.prepared == ()
 
 
 class FaultRepository:

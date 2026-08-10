@@ -206,7 +206,7 @@ def prepare(
         "approval_policy": case.evaluator.policy,
         "current_observation": case.evaluator.observation,
         "current_policy": case.evaluator.policy,
-        "current_safety": safety(),
+        "current_safety": safety(observed_at=NOW),
         "permit_id": PERMIT_ID,
         "event_id": PREPARED_EVENT_ID,
         "prepared_at": PREPARED_AT,
@@ -426,20 +426,23 @@ def test_prepare_submit_permit_rejects_changed_approval_observation_or_policy() 
             prepare(case, **mutation)
 
 
-def test_prepare_submit_permit_requires_safety_observed_no_later_than_prepare() -> None:
+def test_prepare_submit_permit_requires_safety_observed_strictly_before_prepare() -> None:
     case = approved_active_case()
-    before = safety(observed_at=PREPARED_AT)
+    before = safety(observed_at=PREPARED_AT - timedelta(microseconds=1))
+    equal = safety(observed_at=PREPARED_AT)
     after = safety(observed_at=PREPARED_AT + timedelta(microseconds=1))
 
     permit = prepare(case, current_safety=before)
+    assert global_safety_binding_digest(before) == global_safety_binding_digest(equal)
     assert global_safety_binding_digest(before) == global_safety_binding_digest(after)
-    with pytest.raises(SubmitPermitPreparationError):
-        prepare(
-            case,
-            current_safety=after,
-            permit_id=uid(823),
-            event_id=uid(824),
-        )
+    for index, invalid in enumerate((equal, after), start=823):
+        with pytest.raises(SubmitPermitPreparationError):
+            prepare(
+                case,
+                current_safety=invalid,
+                permit_id=uid(index),
+                event_id=uid(index + 10),
+            )
     assert permit.safety_binding_digest == global_safety_binding_digest(before)
 
 
@@ -840,16 +843,29 @@ def test_consume_submit_permit_enforces_inclusive_five_second_window(
 
 def test_consume_submit_permit_requires_new_bounded_same_binding_safety_read() -> None:
     case = approved_active_case()
-    preparation_read = safety(observed_at=NOW)
+    preparation_read = safety(
+        observed_at=PREPARED_AT - timedelta(microseconds=1)
+    )
     permit = prepare(case, current_safety=preparation_read)
-    consumed_at = PREPARED_AT + timedelta(seconds=1)
 
-    with pytest.raises(SubmitPermitConsumptionError):
-        consume(case, permit, current_safety=preparation_read)
+    for index, consumed_at in enumerate(
+        (PREPARED_AT, PREPARED_AT + timedelta(seconds=1)),
+        start=906,
+    ):
+        with pytest.raises(SubmitPermitConsumptionError):
+            consume(
+                case,
+                permit,
+                current_safety=preparation_read,
+                consumed_event_id=uid(index),
+                consumed_at=consumed_at,
+            )
     assert consume(
         case,
         permit,
-        current_safety=safety(observed_at=consumed_at),
+        current_safety=safety(observed_at=PREPARED_AT),
+        consumed_event_id=uid(908),
+        consumed_at=PREPARED_AT,
     ).permit_id == permit.permit_id
 
 

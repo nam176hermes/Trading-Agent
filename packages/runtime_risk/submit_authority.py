@@ -165,7 +165,7 @@ def _require_active_exact_authority(
         or state.status is not GlobalHaltStatus.ACTIVE
         or state.transitioned_at > prepared_at
         or observation.observed_at > prepared_at
-        or safety.observed_at > prepared_at
+        or safety.observed_at >= prepared_at
     ):
         raise SubmitPermitPreparationError(_PREPARATION_FAILURE)
     try:
@@ -727,6 +727,8 @@ def _append_consumption_against(
     outbox = _consumed_outbox(event)
     try:
         outcome = repository.append(event, outbox)
+        if type(outcome) is not AppendOutcome:
+            raise ValueError("append receipt has the wrong concrete type")
         canonical_outcome = AppendOutcome.model_validate(
             outcome.model_dump(mode="python")
         )
