@@ -20,6 +20,7 @@ from packages.domain.runtime_halt import (
 )
 from packages.domain.runtime_risk import RuntimeRiskObservation, RuntimeRiskPolicy
 from packages.event_ledger.replay import ReplayError, deserialize_event, serialize_event
+from packages.runtime_risk import canonical_model_digest
 
 
 class SandboxExecutionError(RuntimeError):
@@ -28,6 +29,10 @@ class SandboxExecutionError(RuntimeError):
 
 class SandboxLostResponse(SandboxExecutionError):
     """The closed scenario applied a command but intentionally hid its response."""
+
+
+class SandboxReconciliationError(SandboxExecutionError):
+    """A fail-closed execution-evidence reconciliation boundary error."""
 
 
 class SandboxModel(BaseModel):
@@ -54,6 +59,26 @@ class SandboxCommandKind(str, Enum):
 class SandboxResponseDisposition(str, Enum):
     ACKNOWLEDGED = "ACKNOWLEDGED"
     LOST_RESPONSE = "LOST_RESPONSE"
+
+
+class SandboxReconciliationStatus(str, Enum):
+    """Closed outcome of one deterministic execution-evidence comparison."""
+
+    RECONCILED = "RECONCILED"
+    DELIVERY_PENDING = "DELIVERY_PENDING"
+    MISMATCH = "MISMATCH"
+
+
+class SandboxReconciliationReasonCode(str, Enum):
+    """Closed, descriptive evidence reasons with no repair authority."""
+
+    UNKNOWN_ORDER_REPORT = "UNKNOWN_ORDER_REPORT"
+    OBSERVED_ORDER_REPLAY_FAILED = "OBSERVED_ORDER_REPLAY_FAILED"
+    OBSERVED_STATE_MISMATCH = "OBSERVED_STATE_MISMATCH"
+    PENDING_ORDER_REPLAY_FAILED = "PENDING_ORDER_REPLAY_FAILED"
+    VENUE_STATE_MISMATCH = "VENUE_STATE_MISMATCH"
+    FILL_EVIDENCE_MISMATCH = "FILL_EVIDENCE_MISMATCH"
+    UNEXPECTED_OBSERVED_REPORT = "UNEXPECTED_OBSERVED_REPORT"
 
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -354,12 +379,147 @@ class SandboxSnapshot(SandboxModel):
         return self
 
 
+def _canonical_reason_codes(
+    values: tuple[SandboxReconciliationReasonCode, ...], field_name: str
+) -> tuple[SandboxReconciliationReasonCode, ...]:
+    """Require unique reason codes in their closed public enum order."""
+
+    indices = tuple(list(SandboxReconciliationReasonCode).index(value) for value in values)
+    if len(indices) != len(set(indices)):
+        raise ValueError(f"{field_name} must not contain duplicate reason codes")
+    if indices != tuple(sorted(indices)):
+        raise ValueError(f"{field_name} must follow enum order")
+    return values
+
+
+class SandboxReconciliationRequest(SandboxModel):
+    """Immutable sandbox state plus independently observed execution evidence."""
+
+    snapshot: SandboxSnapshot
+    observed_reports: tuple[EventEnvelope[object], ...]
+
+    @model_validator(mode="after")
+    def _canonical_values(self) -> "SandboxReconciliationRequest":
+        snapshot = _canonical_model(self.snapshot, SandboxSnapshot, "snapshot")
+        reports: list[EventEnvelope[object]] = []
+        report_bytes_by_id: dict[UUID, str] = {}
+        for report in self.observed_reports:
+            try:
+                canonical = _canonical_report_event(report)
+                canonical_bytes = serialize_event(canonical)
+            except (ReplayError, TypeError, ValueError) as exc:
+                raise ValueError("observed_reports must be canonical execution envelopes") from exc
+            previous = report_bytes_by_id.get(canonical.event_id)
+            if previous is not None and previous != canonical_bytes:
+                raise ValueError("conflicting observed event")
+            report_bytes_by_id[canonical.event_id] = canonical_bytes
+            reports.append(canonical)
+        object.__setattr__(self, "snapshot", snapshot)
+        object.__setattr__(self, "observed_reports", tuple(reports))
+        return self
+
+
+class SandboxOrderReconciliation(SandboxModel):
+    """Canonical reconciliation fact for one sandbox order."""
+
+    order_id: UUID
+    observed_state: OrderState
+    expected_state: OrderState
+    observed_report_ids: tuple[UUID, ...]
+    pending_report_ids: tuple[UUID, ...]
+    reason_codes: tuple[SandboxReconciliationReasonCode, ...] = ()
+
+    @model_validator(mode="after")
+    def _canonical_values(self) -> "SandboxOrderReconciliation":
+        observed_state = _canonical_model(self.observed_state, OrderState, "observed_state")
+        expected_state = _canonical_model(self.expected_state, OrderState, "expected_state")
+        if observed_state.order_id != self.order_id or expected_state.order_id != self.order_id:
+            raise ValueError("order states must match reconciliation order_id")
+        if len(self.observed_report_ids) != len(set(self.observed_report_ids)):
+            raise ValueError("observed_report_ids must occur exactly once")
+        if len(self.pending_report_ids) != len(set(self.pending_report_ids)):
+            raise ValueError("pending_report_ids must occur exactly once")
+        if set(self.observed_report_ids) & set(self.pending_report_ids):
+            raise ValueError("report ids cannot be both observed and pending")
+        object.__setattr__(self, "observed_state", observed_state)
+        object.__setattr__(self, "expected_state", expected_state)
+        object.__setattr__(
+            self,
+            "reason_codes",
+            _canonical_reason_codes(self.reason_codes, "reason_codes"),
+        )
+        return self
+
+
+class SandboxReconciliationResult(SandboxModel):
+    """Immutable, digestible evidence outcome; it grants no execution authority."""
+
+    status: SandboxReconciliationStatus
+    snapshot_time: datetime
+    orders: tuple[SandboxOrderReconciliation, ...]
+    pending_report_ids: tuple[UUID, ...]
+    unattributed_event_ids: tuple[UUID, ...]
+    unattributed_reason_codes: tuple[SandboxReconciliationReasonCode, ...]
+
+    @field_validator("snapshot_time")
+    @classmethod
+    def _utc(cls, value: datetime) -> datetime:
+        return require_utc(value)
+
+    @model_validator(mode="after")
+    def _canonical_values(self) -> "SandboxReconciliationResult":
+        orders = tuple(
+            _canonical_model(order, SandboxOrderReconciliation, "orders")
+            for order in self.orders
+        )
+        sorted_orders = tuple(sorted(orders, key=lambda order: order.order_id.int))
+        if len({order.order_id for order in sorted_orders}) != len(sorted_orders):
+            raise ValueError("orders must contain unique order_id values")
+        if len(self.pending_report_ids) != len(set(self.pending_report_ids)):
+            raise ValueError("pending_report_ids must occur exactly once")
+        if len(self.unattributed_event_ids) != len(set(self.unattributed_event_ids)):
+            raise ValueError("unattributed_event_ids must occur exactly once")
+        if self.unattributed_event_ids != tuple(
+            sorted(self.unattributed_event_ids, key=lambda event_id: event_id.int)
+        ):
+            raise ValueError("unattributed_event_ids must be UUID ordered")
+        unattributed_reasons = _canonical_reason_codes(
+            self.unattributed_reason_codes, "unattributed_reason_codes"
+        )
+        has_findings = (
+            any(order.reason_codes for order in sorted_orders)
+            or bool(self.unattributed_event_ids)
+            or bool(unattributed_reasons)
+        )
+        expected_status = (
+            SandboxReconciliationStatus.MISMATCH
+            if has_findings
+            else (
+                SandboxReconciliationStatus.DELIVERY_PENDING
+                if self.pending_report_ids
+                else SandboxReconciliationStatus.RECONCILED
+            )
+        )
+        if self.status is not expected_status:
+            raise ValueError("status does not match reconciliation findings and pending content")
+        object.__setattr__(self, "orders", sorted_orders)
+        object.__setattr__(self, "unattributed_reason_codes", unattributed_reasons)
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_model_digest(self)
+
+
 __all__ = [
     "SandboxExecutionError",
     "SandboxLostResponse",
+    "SandboxReconciliationError",
     "SandboxConnectionState",
     "SandboxCommandKind",
     "SandboxResponseDisposition",
+    "SandboxReconciliationStatus",
+    "SandboxReconciliationReasonCode",
     "SandboxReportPlan",
     "SandboxKnownReport",
     "SandboxCommandPlan",
@@ -370,4 +530,7 @@ __all__ = [
     "SandboxCommandResult",
     "SandboxOrderSnapshot",
     "SandboxSnapshot",
+    "SandboxReconciliationRequest",
+    "SandboxOrderReconciliation",
+    "SandboxReconciliationResult",
 ]
