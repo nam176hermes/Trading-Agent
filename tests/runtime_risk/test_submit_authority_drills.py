@@ -7,8 +7,10 @@ from uuid import UUID
 import pytest
 from pydantic import BaseModel
 
+import packages.runtime_risk.submit_authority as submit_authority_module
 from packages.domain import EventEnvelope
 from packages.domain.runtime_halt import (
+    GlobalHaltRecoveryAuthorization,
     GlobalHaltStatus,
     PreparedSubmitPermit,
     SubmitPermitConsumed,
@@ -23,9 +25,13 @@ from packages.event_ledger import (
 from packages.runtime_risk import (
     GlobalHaltAuthorityError,
     SubmitPermitConsumptionError,
+    SubmitPermitPreparationError,
     audit_submit_authority_stream,
+    canonical_model_digest,
     consume_submit_permit,
+    global_safety_binding_digest,
     record_global_halt_observation,
+    recover_global_halt,
 )
 from packages.safety_evidence import CanonicalKillSwitchState
 
@@ -33,6 +39,8 @@ from tests.runtime_risk.test_evaluator import uid
 from tests.runtime_risk.test_submit_authority import (
     HALT_STREAM_ID,
     PREPARED_AT,
+    ExactSafetyVerifier,
+    ExactRecoveryVerifier,
     PrepareCase,
     approved_active_case,
     prepare,
@@ -157,6 +165,63 @@ class RaceRepository:
         raise NotImplementedError
 
 
+class AppendThenRaisePreparationRepository:
+    def __init__(self, ledger: InMemoryEventLedger) -> None:
+        self.ledger = ledger
+        self.raised = False
+
+    def append(
+        self, event: EventEnvelope[object], outbox: OutboxIntent
+    ) -> AppendOutcome:
+        outcome = self.ledger.append(event, outbox)
+        if event.event_type == "SubmitPermitPrepared" and not self.raised:
+            self.raised = True
+            raise RuntimeError("ambiguous prepared append")
+        return outcome
+
+    def load_events(self) -> tuple[EventEnvelope[object], ...]:
+        return self.ledger.load_events()
+
+
+def test_prepare_append_then_raise_is_singleton_idempotent_and_conflict_safe() -> None:
+    case = approved_active_case()
+    repository = AppendThenRaisePreparationRepository(case.ledger)
+
+    with pytest.raises(SubmitPermitPreparationError):
+        prepare(case, repository=repository)  # type: ignore[arg-type]
+    prepared_events = tuple(
+        event
+        for event in case.ledger.load_events()
+        if event.event_type == "SubmitPermitPrepared"
+    )
+    prepared_outbox = tuple(
+        item
+        for item in case.ledger.load_outbox()
+        if item.event_id == prepared_events[0].event_id
+    )
+    assert len(prepared_events) == 1
+    assert len(prepared_outbox) == 1
+
+    replayed = prepare(case)
+    assert replayed.prepared_event_id == prepared_events[0].event_id
+    assert len(
+        tuple(
+            event
+            for event in case.ledger.load_events()
+            if event.event_type == "SubmitPermitPrepared"
+        )
+    ) == 1
+    with pytest.raises(SubmitPermitPreparationError):
+        prepare(case, event_id=uid(948))
+    assert len(
+        tuple(
+            event
+            for event in case.ledger.load_events()
+            if event.event_type == "SubmitPermitPrepared"
+        )
+    ) == 1
+
+
 def _append(ledger: InMemoryEventLedger, event: EventEnvelope[object]) -> None:
     ledger.append(
         event,
@@ -196,6 +261,7 @@ def prepared_authority_fixture(
                     state=CanonicalKillSwitchState.ACTIVE,
                     observed_at=CONSUMED_AT,
                 ),
+                safety_verifier=ExactSafetyVerifier(),
                 transition_id=uid(932),
                 event_id=uid(933),
                 decided_at=CONSUMED_AT,
@@ -210,11 +276,47 @@ def prepared_authority_fixture(
                     state=CanonicalKillSwitchState.ACTIVE,
                     observed_at=CONSUMED_AT,
                 ),
+                safety_verifier=ExactSafetyVerifier(),
                 transition_id=uid(934),
                 event_id=uid(935),
                 decided_at=CONSUMED_AT,
             )
             assert halted.status is GlobalHaltStatus.HALTED
+            recovered_safety = safety(observed_at=CONSUMED_AT)
+            authorization = GlobalHaltRecoveryAuthorization(
+                authorization_id=uid(945),
+                authorization_digest="b" * 64,
+                halted_generation=halted.generation,
+                halted_transition_digest=halted.transition_digest,
+                runtime_policy_digest=canonical_model_digest(case.evaluator.policy),
+                runtime_observation_digest=canonical_model_digest(
+                    case.evaluator.observation
+                ),
+                portfolio_digest=canonical_model_digest(
+                    case.evaluator.observation.portfolio
+                ),
+                safety_binding_digest=global_safety_binding_digest(
+                    recovered_safety
+                ),
+                issued_at=CONSUMED_AT,
+                expires_at=CONSUMED_AT + timedelta(minutes=1),
+                operator_authority_digest="c" * 64,
+                schema_version="global-halt-recovery-authorization-v1",
+            )
+            recovered = recover_global_halt(
+                repository=ledger,
+                stream_id=HALT_STREAM_ID,
+                observation=case.evaluator.observation,
+                policy=case.evaluator.policy,
+                safety=recovered_safety,
+                safety_verifier=ExactSafetyVerifier(),
+                authorization=authorization,
+                verifier=ExactRecoveryVerifier(),
+                transition_id=uid(946),
+                event_id=uid(947),
+                decided_at=CONSUMED_AT,
+            )
+            assert recovered.status is GlobalHaltStatus.ACTIVE
         elif intervening == "same-permit-consumed":
             _append(
                 ledger,
@@ -266,6 +368,7 @@ def test_consume_classifies_intervening_authority(intervening: str) -> None:
             current_observation=current.evaluator.observation,
             current_policy=current.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
+            safety_verifier=ExactSafetyVerifier(),
             consumed_event_id=UUID(int=900),
             consumed_at=CONSUMED_AT,
         )
@@ -279,6 +382,7 @@ def test_consume_classifies_intervening_authority(intervening: str) -> None:
                 current_observation=current.evaluator.observation,
                 current_policy=current.evaluator.policy,
                 current_safety=safety(observed_at=CONSUMED_AT),
+                safety_verifier=ExactSafetyVerifier(),
                 consumed_event_id=UUID(int=900),
                 consumed_at=CONSUMED_AT,
             )
@@ -297,6 +401,7 @@ def test_consume_bounds_second_sequence_conflict_without_partial_authority() -> 
             current_observation=current.evaluator.observation,
             current_policy=current.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
+            safety_verifier=ExactSafetyVerifier(),
             consumed_event_id=uid(938),
             consumed_at=CONSUMED_AT,
         )
@@ -330,6 +435,7 @@ def test_consume_rejects_concurrent_exact_duplicate_instead_of_sharing_authority
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
+            safety_verifier=ExactSafetyVerifier(),
             consumed_event_id=uid(943),
             consumed_at=CONSUMED_AT,
         )
@@ -368,6 +474,7 @@ def test_consume_rejects_wrong_type_receipt_for_real_concurrent_duplicate() -> N
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
+            safety_verifier=ExactSafetyVerifier(),
             consumed_event_id=uid(944),
             consumed_at=CONSUMED_AT,
         )
@@ -459,6 +566,7 @@ def test_consume_persistence_failure_returns_no_partial_authority(
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
+            safety_verifier=ExactSafetyVerifier(),
             consumed_event_id=uid(940),
             consumed_at=CONSUMED_AT,
         )
@@ -481,6 +589,7 @@ def test_consume_requires_exact_consumed_event_read_back(fault: str) -> None:
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
+            safety_verifier=ExactSafetyVerifier(),
             consumed_event_id=uid(940),
             consumed_at=CONSUMED_AT,
         )
@@ -509,6 +618,7 @@ def test_consume_rejects_missing_or_forged_prepared_event(fault: str) -> None:
             current_observation=case.evaluator.observation,
             current_policy=case.evaluator.policy,
             current_safety=safety(observed_at=CONSUMED_AT),
+            safety_verifier=ExactSafetyVerifier(),
             consumed_event_id=uid(941),
             consumed_at=CONSUMED_AT,
         )
@@ -523,6 +633,7 @@ def test_restart_audit_loads_once_writes_nothing_and_returns_full_replay() -> No
         current_observation=case.evaluator.observation,
         current_policy=case.evaluator.policy,
         current_safety=safety(observed_at=CONSUMED_AT),
+        safety_verifier=ExactSafetyVerifier(),
         consumed_event_id=uid(942),
         consumed_at=CONSUMED_AT,
     )
@@ -538,6 +649,31 @@ def test_restart_audit_loads_once_writes_nothing_and_returns_full_replay() -> No
     assert replay.prepared == ()
     assert repository.load_calls == 1
     assert repository.append_calls == 0
+
+
+@pytest.mark.parametrize("error_type", (RuntimeError, TypeError, AttributeError))
+def test_restart_audit_surfaces_unrelated_programming_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    case = approved_active_case()
+    prepare(case)
+
+    def fail_canonicalization(value: object, expected_type: type[BaseModel]) -> BaseModel:
+        del value, expected_type
+        raise error_type("audit programming defect")
+
+    monkeypatch.setattr(
+        submit_authority_module,
+        "_canonical_audit_model",
+        fail_canonicalization,
+    )
+
+    with pytest.raises(error_type, match="audit programming defect"):
+        audit_submit_authority_stream(
+            repository=case.ledger,
+            stream_id=HALT_STREAM_ID,
+        )
 
 
 @pytest.mark.parametrize("malformed", ("list", "gap", "reordered", "foreign"))
@@ -564,3 +700,69 @@ def test_restart_audit_rejects_malformed_repository_history(malformed: str) -> N
         )
     assert repository.load_calls == 1
     assert repository.append_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("prepared_at", "accepted"),
+    (
+        (PREPARED_AT - timedelta(seconds=1), True),
+        (PREPARED_AT - timedelta(seconds=1, microseconds=1), False),
+    ),
+    ids=("equal-active-transition", "one-microsecond-before-active"),
+)
+def test_restart_audit_matches_replay_prepare_after_active_boundary(
+    prepared_at: datetime,
+    accepted: bool,
+) -> None:
+    case = approved_active_case()
+    prepare(case)
+
+    def transform(
+        events: tuple[EventEnvelope[object], ...]
+    ) -> tuple[EventEnvelope[object], ...]:
+        transformed: list[EventEnvelope[object]] = []
+        for event in events:
+            if event.event_type != "SubmitPermitPrepared":
+                transformed.append(event)
+                continue
+            payload = event.payload
+            assert type(payload) is SubmitPermitPrepared
+            payload = payload.model_copy(
+                update={
+                    "prepared_at": prepared_at,
+                    "expires_at": prepared_at + timedelta(seconds=5),
+                }
+            )
+            transformed.append(
+                EventEnvelope[SubmitPermitPrepared](
+                    event_id=event.event_id,
+                    event_type="SubmitPermitPrepared",
+                    schema_version="submit-permit-prepared-event-v1",
+                    source="runtime-risk",
+                    stream_id=event.stream_id,
+                    sequence=event.sequence,
+                    observed_at=prepared_at,
+                    ingested_at=prepared_at,
+                    produced_at=prepared_at,
+                    effective_at=prepared_at,
+                    expires_at=prepared_at + timedelta(seconds=5),
+                    correlation_id=payload.permit_id,
+                    causation_id=payload.approval_event_id,
+                    trace_id=payload.permit_id,
+                    payload=payload,
+                )
+            )
+        return tuple(transformed)
+
+    repository = FaultRepository(case.ledger, load_transform=transform)
+    if accepted:
+        assert audit_submit_authority_stream(
+            repository=repository,
+            stream_id=HALT_STREAM_ID,
+        ).prepared
+    else:
+        with pytest.raises(GlobalHaltAuthorityError):
+            audit_submit_authority_stream(
+                repository=repository,
+                stream_id=HALT_STREAM_ID,
+            )

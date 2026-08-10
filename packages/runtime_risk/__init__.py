@@ -18,7 +18,14 @@ from .halt import (
     record_global_halt_observation,
     replay_global_halt_authority,
 )
-from .safety import global_safety_binding_digest, observe_global_safety
+from .safety import (
+    FilesystemGlobalSafetyAuthority,
+    GlobalSafetyAuthorityVerifier,
+    canonical_global_safety_authority,
+    global_safety_binding_digest,
+    observe_global_safety,
+    verify_global_safety_observation,
+)
 from .submit_authority import (
     SubmitPermitConsumptionError,
     SubmitPermitPreparationError,
@@ -42,8 +49,12 @@ __all__ = [
     "GlobalHaltRecoveryError",
     "GlobalHaltReplay",
     "evaluate_global_breaker",
+    "FilesystemGlobalSafetyAuthority",
+    "GlobalSafetyAuthorityVerifier",
+    "canonical_global_safety_authority",
     "global_safety_binding_digest",
     "observe_global_safety",
+    "verify_global_safety_observation",
     "recover_global_halt",
     "record_global_halt_observation",
     "replay_global_halt_authority",

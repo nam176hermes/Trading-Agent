@@ -46,7 +46,11 @@ from .halt import (
     evaluate_global_breaker,
     replay_global_halt_authority,
 )
-from .safety import global_safety_binding_digest
+from .safety import (
+    GlobalSafetyAuthorityVerifier,
+    global_safety_binding_digest,
+    verify_global_safety_observation,
+)
 
 
 _EVENT_SCHEMA_VERSION = "submit-permit-prepared-event-v1"
@@ -346,7 +350,10 @@ def _exact_existing_prepared(
     payload: SubmitPermitPrepared,
     event_id: UUID,
 ) -> PreparedSubmitPermit | None:
-    if payload.permit_id in replay.consumed_permit_ids:
+    if (
+        payload.permit_id in replay.consumed_permit_ids
+        or payload.permit_id in replay.retired_permit_ids
+    ):
         raise SubmitPermitPreparationError(_PREPARATION_FAILURE)
     matches = tuple(
         item for item in replay.prepared if item.permit_id == payload.permit_id
@@ -392,6 +399,7 @@ def prepare_submit_permit(
     current_observation: RuntimeRiskObservation,
     current_policy: RuntimeRiskPolicy,
     current_safety: GlobalSafetyObservation,
+    safety_verifier: GlobalSafetyAuthorityVerifier,
     permit_id: UUID,
     event_id: UUID,
     prepared_at: datetime,
@@ -420,6 +428,13 @@ def prepare_submit_permit(
     current_safety = _canonical_model(
         current_safety, GlobalSafetyObservation, "current_safety"
     )
+    try:
+        current_safety = verify_global_safety_observation(
+            verifier=safety_verifier,
+            observation=current_safety,
+        )
+    except GlobalHaltAuthorityError as exc:
+        raise SubmitPermitPreparationError(_PREPARATION_FAILURE) from exc
     _require_prepare_arguments(
         halt_stream_id=halt_stream_id,
         permit_id=permit_id,
@@ -473,6 +488,11 @@ def prepare_submit_permit(
     )
     if existing is not None:
         return existing
+    if (
+        replay.head_authority_at is not None
+        and prepared_at < replay.head_authority_at
+    ):
+        raise SubmitPermitPreparationError(_PREPARATION_FAILURE)
     event = _prepared_event(
         payload,
         sequence=replay.head_sequence + 1,
@@ -576,6 +596,11 @@ def _require_current_consumption_authority(
             raise ValueError("permit is outside its consumption window")
         if not (permit.prepared_at <= safety.observed_at <= consumed_at):
             raise ValueError("safety observation is outside the consumption window")
+        if (
+            replay.head_authority_at is not None
+            and consumed_at < replay.head_authority_at
+        ):
+            raise ValueError("consumption time is behind the authority stream")
         observation_digest = canonical_model_digest(observation)
         policy_digest = canonical_model_digest(policy)
         portfolio_digest = canonical_model_digest(observation.portfolio)
@@ -587,9 +612,6 @@ def _require_current_consumption_authority(
             or state.generation != permit.halt_generation
             or state.transition_event_id != permit.halt_transition_event_id
             or state.transition_digest != permit.halt_transition_digest
-            or state.runtime_policy_digest != permit.runtime_policy_digest
-            or state.runtime_observation_digest != permit.runtime_observation_digest
-            or state.portfolio_digest != permit.portfolio_digest
             or policy_digest != permit.runtime_policy_digest
             or observation_digest != permit.runtime_observation_digest
             or portfolio_digest != permit.portfolio_digest
@@ -846,6 +868,7 @@ def consume_submit_permit(
     current_observation: RuntimeRiskObservation,
     current_policy: RuntimeRiskPolicy,
     current_safety: GlobalSafetyObservation,
+    safety_verifier: GlobalSafetyAuthorityVerifier,
     consumed_event_id: UUID,
     consumed_at: datetime,
 ) -> ConsumedSubmitAuthority:
@@ -861,6 +884,13 @@ def consume_submit_permit(
     safety = _canonical_consumption_model(
         current_safety, GlobalSafetyObservation, "current_safety"
     )
+    try:
+        safety = verify_global_safety_observation(
+            verifier=safety_verifier,
+            observation=safety,
+        )
+    except GlobalHaltAuthorityError as exc:
+        raise SubmitPermitConsumptionError(_CONSUMPTION_FAILURE) from exc
     _require_consume_arguments(
         consumed_event_id=consumed_event_id,
         consumed_at=consumed_at,
@@ -945,13 +975,19 @@ def audit_submit_authority_stream(
 ) -> GlobalHaltReplay:
     """Read and strictly revalidate one complete submit-authority stream once."""
 
+    if type(stream_id) is not UUID:
+        raise GlobalHaltAuthorityError("global halt authority is invalid")
     try:
-        if type(stream_id) is not UUID:
-            raise ValueError("stream_id has the wrong concrete type")
         events = repository.load_events()
         if type(events) is not tuple:
             raise ValueError("ledger read-back must be a tuple")
-        replay = replay_global_halt_authority(events=events, stream_id=stream_id)
+    except _REPOSITORY_ERRORS as exc:
+        raise GlobalHaltAuthorityError(
+            "global halt authority is invalid"
+        ) from exc
+
+    replay = replay_global_halt_authority(events=events, stream_id=stream_id)
+    try:
         if replay.state is not None:
             _canonical_audit_model(replay.state, GlobalHaltState)
         for reference in replay.prepared:
@@ -975,9 +1011,7 @@ def audit_submit_authority_stream(
         elif replay.head_event_id is not None or replay.head_event_digest is not None:
             raise ValueError("empty audit replay has a head identity")
         return replay
-    except GlobalHaltAuthorityError:
-        raise
-    except _REPOSITORY_ERRORS as exc:
+    except (ReplayError, ValueError) as exc:
         raise GlobalHaltAuthorityError(
             "global halt authority is invalid"
         ) from exc

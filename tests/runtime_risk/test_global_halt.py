@@ -28,8 +28,10 @@ from packages.domain.runtime_halt import (
 from packages.event_ledger import AppendOutcome, InMemoryEventLedger, OutboxIntent
 from packages.event_ledger.replay import deserialize_event, event_digest, serialize_event
 from packages.runtime_risk import (
+    FilesystemGlobalSafetyAuthority,
     GlobalHaltAuthorityError,
     GlobalHaltRecoveryError,
+    audit_submit_authority_stream,
     canonical_model_digest,
     evaluate_global_breaker,
     global_safety_binding_digest,
@@ -139,6 +141,11 @@ def safety_observation(
         observed_at=observed_at,
         schema_version="global-safety-observation-v1",
     )
+
+
+class ExactSafetyVerifier:
+    def verify(self, *, observation: GlobalSafetyObservation) -> GlobalSafetyObservation:
+        return observation
 
 
 @pytest.mark.parametrize(
@@ -328,6 +335,7 @@ def initialize(
     transition_id: UUID = uid(701),
     event_id: UUID = uid(702),
     decided_at: datetime = NOW,
+    safety_verifier: object | None = None,
 ) -> GlobalHaltState:
     return record_global_halt_observation(
         repository=ledger,
@@ -335,10 +343,256 @@ def initialize(
         observation=observation or runtime_observation(),
         policy=policy or runtime_policy(),
         safety=safety or safety_observation(),
+        safety_verifier=safety_verifier or ExactSafetyVerifier(),
         transition_id=transition_id,
         event_id=event_id,
         decided_at=decided_at,
     )
+
+
+def _private_active_safety_root(root: Path) -> None:
+    root.mkdir()
+    sentinel = root / ".kill_switch"
+    sentinel.write_text(
+        "2026-08-10T12:00:00Z: final-wave safety test\n",
+        encoding="utf-8",
+    )
+    sentinel.chmod(0o600)
+
+
+@pytest.mark.parametrize("evidence", ("alternate-root", "fabricated"))
+def test_global_halt_initialization_rejects_untrusted_inactive_safety(
+    tmp_path: Path,
+    evidence: str,
+) -> None:
+    canonical_root = tmp_path / "canonical"
+    alternate_root = tmp_path / "alternate"
+    _private_active_safety_root(canonical_root)
+    alternate_root.mkdir()
+    if evidence == "alternate-root":
+        supplied = observe_global_safety(
+            source_root=alternate_root,
+            observed_at=NOW,
+        )
+    else:
+        supplied = GlobalSafetyObservation(
+            source_fingerprint=safety_source_fingerprint(canonical_root),
+            kill_switch_state=CanonicalKillSwitchState.INACTIVE,
+            observed_at=NOW,
+            schema_version="global-safety-observation-v1",
+        )
+
+    ledger = InMemoryEventLedger()
+    with pytest.raises(GlobalHaltAuthorityError):
+        initialize(
+            ledger,
+            safety=supplied,
+            safety_verifier=FilesystemGlobalSafetyAuthority(canonical_root),
+        )
+    assert ledger.load_events() == ()
+
+
+def _freshness_observation(
+    authority: str,
+    *,
+    authority_at: datetime,
+    observation_at: datetime = NOW,
+):
+    observation = evaluator_case(current_quantity="1").observation
+    portfolio = observation.portfolio
+    balances = portfolio.balances
+    positions = portfolio.positions
+    if authority in {"observation", "portfolio"}:
+        balances = tuple(
+            balance.model_copy(update={"observed_at": authority_at})
+            for balance in balances
+        )
+        positions = tuple(
+            position.model_copy(
+                update={
+                    "observed_at": authority_at,
+                    "mark": position.mark.model_copy(
+                        update={"marked_at": authority_at}
+                    )
+                    if position.mark is not None
+                    else None,
+                }
+            )
+            for position in positions
+        )
+        portfolio = portfolio.model_copy(
+            update={
+                "balances": balances,
+                "positions": positions,
+                "observed_at": authority_at,
+            }
+        )
+    elif authority == "balance":
+        balances = (
+            balances[0].model_copy(update={"observed_at": authority_at}),
+            *balances[1:],
+        )
+        portfolio = portfolio.model_copy(update={"balances": balances})
+    elif authority == "position":
+        position = positions[0]
+        positions = (
+            position.model_copy(
+                update={
+                    "observed_at": authority_at,
+                    "mark": position.mark.model_copy(
+                        update={"marked_at": authority_at}
+                    )
+                    if position.mark is not None
+                    else None,
+                }
+            ),
+            *positions[1:],
+        )
+        portfolio = portfolio.model_copy(update={"positions": positions})
+    elif authority == "mark":
+        position = positions[0]
+        assert position.mark is not None
+        positions = (
+            position.model_copy(
+                update={
+                    "mark": position.mark.model_copy(
+                        update={"marked_at": authority_at}
+                    )
+                }
+            ),
+            *positions[1:],
+        )
+        portfolio = portfolio.model_copy(update={"positions": positions})
+    if authority == "observation":
+        observation_at = authority_at
+        market_snapshots = tuple(
+            item.model_copy(update={"observed_at": authority_at})
+            for item in observation.market_snapshots
+        )
+        conversion_rates = tuple(
+            item.model_copy(update={"observed_at": authority_at})
+            for item in observation.conversion_rates
+        )
+        venue_health = tuple(
+            item.model_copy(update={"observed_at": authority_at})
+            for item in observation.venue_health
+        )
+    else:
+        market_snapshots = observation.market_snapshots
+        conversion_rates = observation.conversion_rates
+        venue_health = observation.venue_health
+    return observation.model_copy(
+        update={
+            "portfolio": portfolio,
+            "market_snapshots": market_snapshots,
+            "conversion_rates": conversion_rates,
+            "venue_health": venue_health,
+            "command_window_started_at": min(
+                observation.command_window_started_at,
+                observation_at,
+            ),
+            "observed_at": observation_at,
+        }
+    )
+
+
+def test_safe_global_halt_initialization_accepts_exact_freshness_boundary() -> None:
+    ledger = InMemoryEventLedger()
+    observation = _freshness_observation("mark", authority_at=NOW)
+    state = initialize(
+        ledger,
+        observation=observation,
+        policy=evaluator_case().policy.model_copy(
+            update={"portfolio_max_age_seconds": 10}
+        ),
+        safety=safety_observation(observed_at=NOW),
+        decided_at=NOW + timedelta(seconds=10),
+    )
+    assert state.status is GlobalHaltStatus.ACTIVE
+
+
+def test_safe_global_halt_initialization_accepts_maximum_freshness_policy() -> None:
+    state = initialize(
+        InMemoryEventLedger(),
+        policy=runtime_policy(
+            portfolio_max_age_seconds=86_399_999_999_999,
+        ),
+    )
+    assert state.status is GlobalHaltStatus.ACTIVE
+
+
+@pytest.mark.parametrize(
+    "authority",
+    ("observation", "portfolio", "balance", "position", "mark", "safety"),
+)
+def test_safe_global_halt_initialization_rejects_one_microsecond_stale_authority(
+    authority: str,
+) -> None:
+    stale_at = NOW - timedelta(microseconds=1)
+    observation = _freshness_observation(
+        authority if authority != "safety" else "mark",
+        authority_at=stale_at if authority != "safety" else NOW,
+    )
+    selected_safety = safety_observation(
+        observed_at=stale_at if authority == "safety" else NOW
+    )
+    ledger = InMemoryEventLedger()
+    with pytest.raises(GlobalHaltAuthorityError):
+        initialize(
+            ledger,
+            observation=observation,
+            policy=evaluator_case().policy.model_copy(
+                update={"portfolio_max_age_seconds": 10}
+            ),
+            safety=selected_safety,
+            decided_at=NOW + timedelta(seconds=10),
+        )
+    assert ledger.load_events() == ()
+
+
+@pytest.mark.parametrize("authority", ("observation", "safety"))
+def test_safe_global_halt_initialization_rejects_future_authority(
+    authority: str,
+) -> None:
+    future = NOW + timedelta(microseconds=1)
+    observation = runtime_observation(
+        observed_at=future if authority == "observation" else NOW
+    )
+    selected_safety = safety_observation(
+        observed_at=future if authority == "safety" else NOW
+    )
+    with pytest.raises(GlobalHaltAuthorityError):
+        initialize(
+            InMemoryEventLedger(),
+            observation=observation,
+            safety=selected_safety,
+            decided_at=NOW,
+        )
+
+
+def test_stale_unsafe_global_authority_still_initializes_halted() -> None:
+    stale_at = NOW - timedelta(seconds=60)
+    observation = _freshness_observation(
+        "observation",
+        authority_at=stale_at,
+    ).model_copy(
+        update={
+            "daily_pnl": Money(
+                Decimal("-1001"),
+                evaluator_case().policy.max_daily_loss.currency,
+            )
+        }
+    )
+    state = initialize(
+        InMemoryEventLedger(),
+        observation=observation,
+        policy=evaluator_case().policy.model_copy(
+            update={"portfolio_max_age_seconds": 10}
+        ),
+        safety=safety_observation(observed_at=stale_at),
+        decided_at=NOW,
+    )
+    assert state.status is GlobalHaltStatus.HALTED
 
 
 def test_global_halt_safe_generation_one_is_durable_and_read_back_exactly() -> None:
@@ -528,6 +782,7 @@ def prepared_event(
     *,
     event_id: UUID = uid(735),
     sequence: int = 2,
+    prepared_at: datetime = NOW + timedelta(seconds=1),
 ) -> EventEnvelope[SubmitPermitPrepared]:
     payload = SubmitPermitPrepared(
         permit_id=uid(736),
@@ -544,8 +799,8 @@ def prepared_event(
         halt_generation=state.generation,
         halt_transition_event_id=state.transition_event_id,
         halt_transition_digest=state.transition_digest,
-        prepared_at=NOW + timedelta(seconds=1),
-        expires_at=NOW + timedelta(seconds=6),
+        prepared_at=prepared_at,
+        expires_at=prepared_at + timedelta(seconds=5),
         schema_version="submit-permit-prepared-v1",
     )
     return EventEnvelope[SubmitPermitPrepared](
@@ -565,6 +820,98 @@ def prepared_event(
         trace_id=payload.permit_id,
         payload=payload,
     )
+
+
+@pytest.mark.parametrize(
+    ("prepared_delta", "accepted"),
+    (
+        (timedelta(0), True),
+        (timedelta(microseconds=-1), False),
+    ),
+    ids=("equal-active-transition", "one-microsecond-before-active"),
+)
+def test_global_halt_replay_requires_prepare_after_active_transition(
+    prepared_delta: timedelta,
+    accepted: bool,
+) -> None:
+    active_at = NOW + timedelta(seconds=2)
+    first = transition_event(
+        transition_payload(decided_at=active_at),
+        event_id=uid(760),
+        sequence=1,
+    )
+    state = replay_global_halt_authority(events=(first,), stream_id=STREAM_ID).state
+    assert state is not None
+    permit = prepared_event(
+        state,
+        event_id=uid(761),
+        prepared_at=active_at + prepared_delta,
+    )
+    if accepted:
+        assert replay_global_halt_authority(
+            events=(first, permit),
+            stream_id=STREAM_ID,
+        ).prepared
+    else:
+        with pytest.raises(GlobalHaltAuthorityError):
+            replay_global_halt_authority(
+                events=(first, permit),
+                stream_id=STREAM_ID,
+            )
+
+
+def test_global_halt_replay_rejects_backward_transition_authority_time() -> None:
+    first = transition_event(
+        transition_payload(decided_at=NOW + timedelta(seconds=2)),
+        event_id=uid(762),
+        sequence=1,
+    )
+    first_digest = event_digest(serialize_event(first))
+    second = transition_event(
+        transition_payload(
+            transition_id=uid(763),
+            prior_generation=1,
+            prior_transition_digest=first_digest,
+            next_generation=2,
+            next_status=GlobalHaltStatus.HALTED,
+            reason_codes=(GlobalHaltReasonCode.DAILY_LOSS_LIMIT,),
+            decided_at=NOW + timedelta(seconds=1),
+        ),
+        event_id=uid(764),
+        sequence=2,
+    )
+    with pytest.raises(GlobalHaltAuthorityError):
+        replay_global_halt_authority(events=(first, second), stream_id=STREAM_ID)
+
+
+def test_record_global_halt_rejects_transition_behind_current_stream_head() -> None:
+    ledger = InMemoryEventLedger()
+    active = initialize(
+        ledger,
+        transition_id=uid(765),
+        event_id=uid(766),
+        decided_at=NOW,
+    )
+    prepared = prepared_event(
+        active,
+        event_id=uid(767),
+        prepared_at=NOW + timedelta(seconds=2),
+    )
+    ledger.append(
+        prepared,
+        OutboxIntent(event_id=prepared.event_id, topic="test.prepared"),
+    )
+    before = ledger.load_events()
+    with pytest.raises(GlobalHaltAuthorityError):
+        initialize(
+            ledger,
+            observation=runtime_observation(daily_pnl=money("-1001")),
+            safety=safety_observation(observed_at=NOW + timedelta(seconds=1)),
+            transition_id=uid(768),
+            event_id=uid(769),
+            decided_at=NOW + timedelta(seconds=1),
+        )
+    assert ledger.load_events() == before
 
 
 def consumed_event(
@@ -619,6 +966,152 @@ def test_global_halt_replay_derives_prepared_identity_and_consumes_once() -> Non
     )
     assert consumed_replay.prepared == ()
     assert consumed_replay.consumed_permit_ids == (prepared.permit_id,)
+
+
+def _permit_rotated_through_recovery() -> tuple[
+    tuple[EventEnvelope[object], ...],
+    PreparedSubmitPermit,
+    GlobalHaltState,
+]:
+    first = transition_event(
+        transition_payload(),
+        event_id=uid(770),
+        sequence=1,
+    )
+    active = replay_global_halt_authority(events=(first,), stream_id=STREAM_ID).state
+    assert active is not None
+    prepared_envelope = prepared_event(active, event_id=uid(771), sequence=2)
+    prepared = replay_global_halt_authority(
+        events=(first, prepared_envelope),
+        stream_id=STREAM_ID,
+    ).prepared[0]
+    halted_envelope = transition_event(
+        transition_payload(
+            transition_id=uid(772),
+            prior_generation=1,
+            prior_transition_digest=active.transition_digest,
+            next_generation=2,
+            next_status=GlobalHaltStatus.HALTED,
+            reason_codes=(GlobalHaltReasonCode.KILL_SWITCH_ACTIVE,),
+            decided_at=NOW + timedelta(seconds=2),
+        ),
+        event_id=uid(773),
+        sequence=3,
+    )
+    halted = replay_global_halt_authority(
+        events=(first, prepared_envelope, halted_envelope),
+        stream_id=STREAM_ID,
+    ).state
+    assert halted is not None
+    recovered_envelope = transition_event(
+        transition_payload(
+            transition_id=uid(774),
+            prior_generation=2,
+            prior_transition_digest=halted.transition_digest,
+            next_generation=3,
+            next_status=GlobalHaltStatus.ACTIVE,
+            reason_codes=(GlobalHaltReasonCode.RECOVERY_AUTHORIZED,),
+            recovery_authorization_digest="e" * 64,
+            decided_at=NOW + timedelta(seconds=3),
+        ),
+        event_id=uid(775),
+        sequence=4,
+    )
+    events: tuple[EventEnvelope[object], ...] = (
+        first,
+        prepared_envelope,
+        halted_envelope,
+        recovered_envelope,
+    )
+    recovered = replay_global_halt_authority(
+        events=events,
+        stream_id=STREAM_ID,
+    ).state
+    assert recovered is not None
+    return events, prepared, recovered
+
+
+def test_global_halt_replay_retires_pre_rotation_permits_without_id_reuse() -> None:
+    events, prepared, _ = _permit_rotated_through_recovery()
+    replay = replay_global_halt_authority(events=events, stream_id=STREAM_ID)
+    assert replay.prepared == ()
+    assert replay.retired_permit_ids == (prepared.permit_id,)
+
+
+def test_global_halt_replay_rejects_pre_rotation_permit_rebound_to_recovery() -> None:
+    events, prepared, recovered = _permit_rotated_through_recovery()
+    consumed_at = NOW + timedelta(seconds=4)
+    forged_payload = SubmitPermitConsumed(
+        permit_id=prepared.permit_id,
+        prepared_event_digest=prepared.prepared_event_digest,
+        halt_stream_id=STREAM_ID,
+        halt_generation=recovered.generation,
+        halt_transition_digest=recovered.transition_digest,
+        consumed_at=consumed_at,
+        schema_version="submit-permit-consumed-v1",
+    )
+    forged = EventEnvelope[SubmitPermitConsumed](
+        event_id=uid(776),
+        event_type="SubmitPermitConsumed",
+        schema_version="submit-permit-consumed-event-v1",
+        source="runtime-risk",
+        stream_id=STREAM_ID,
+        sequence=5,
+        observed_at=consumed_at,
+        ingested_at=consumed_at,
+        produced_at=consumed_at,
+        effective_at=consumed_at,
+        expires_at=consumed_at + timedelta(minutes=5),
+        correlation_id=prepared.permit_id,
+        causation_id=prepared.permit_id,
+        trace_id=prepared.permit_id,
+        payload=forged_payload,
+    )
+    with pytest.raises(GlobalHaltAuthorityError):
+        replay_global_halt_authority(
+            events=(*events, forged),
+            stream_id=STREAM_ID,
+        )
+    ledger = InMemoryEventLedger()
+    for event in (*events, forged):
+        ledger.append(
+            event,
+            OutboxIntent(event_id=event.event_id, topic="test.restart-forgery"),
+        )
+    with pytest.raises(GlobalHaltAuthorityError):
+        audit_submit_authority_stream(repository=ledger, stream_id=STREAM_ID)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("prepared_event_digest", "f" * 64),
+        ("halt_stream_id", uid(777)),
+        ("halt_generation", 2),
+        ("halt_transition_digest", "d" * 64),
+    ),
+)
+def test_global_halt_replay_rejects_each_consumed_prepared_binding_mismatch(
+    field: str,
+    value: object,
+) -> None:
+    first = transition_event(transition_payload(), event_id=uid(778), sequence=1)
+    active = replay_global_halt_authority(events=(first,), stream_id=STREAM_ID).state
+    assert active is not None
+    prepared_envelope = prepared_event(active, event_id=uid(779), sequence=2)
+    prepared = replay_global_halt_authority(
+        events=(first, prepared_envelope), stream_id=STREAM_ID
+    ).prepared[0]
+    valid = consumed_event(prepared, event_id=uid(780), sequence=3)
+    payload = SubmitPermitConsumed.model_construct(
+        **{**valid.payload.model_dump(mode="python"), field: value}
+    )
+    forged = valid.model_copy(update={"payload": payload})
+    with pytest.raises(GlobalHaltAuthorityError):
+        replay_global_halt_authority(
+            events=(first, prepared_envelope, forged),
+            stream_id=STREAM_ID,
+        )
 
 
 def test_global_halt_replay_rejects_consume_before_prepare() -> None:
@@ -770,6 +1263,7 @@ def recover(
     transition_id: UUID = uid(741),
     event_id: UUID = uid(742),
     decided_at: datetime = NOW + timedelta(seconds=3),
+    safety_verifier: object | None = None,
 ) -> GlobalHaltState:
     return recover_global_halt(
         repository=ledger,
@@ -777,12 +1271,135 @@ def recover(
         observation=observation or runtime_observation(),
         policy=policy or runtime_policy(),
         safety=safety or safety_observation(observed_at=NOW + timedelta(seconds=2)),
+        safety_verifier=safety_verifier or ExactSafetyVerifier(),
         authorization=authorization,
         verifier=verifier or ExactVerifier(),
         transition_id=transition_id,
         event_id=event_id,
         decided_at=decided_at,
     )
+
+
+@pytest.mark.parametrize("evidence", ("alternate-root", "fabricated"))
+def test_global_halt_recovery_rejects_untrusted_inactive_safety(
+    tmp_path: Path,
+    evidence: str,
+) -> None:
+    canonical_root = tmp_path / "canonical"
+    alternate_root = tmp_path / "alternate"
+    _private_active_safety_root(canonical_root)
+    alternate_root.mkdir()
+    observed_at = NOW + timedelta(seconds=2)
+    if evidence == "alternate-root":
+        supplied = observe_global_safety(
+            source_root=alternate_root,
+            observed_at=observed_at,
+        )
+    else:
+        supplied = GlobalSafetyObservation(
+            source_fingerprint=safety_source_fingerprint(canonical_root),
+            kill_switch_state=CanonicalKillSwitchState.INACTIVE,
+            observed_at=observed_at,
+            schema_version="global-safety-observation-v1",
+        )
+    ledger, halted = halted_ledger()
+    authorization = recovery_authorization(halted, safety=supplied)
+
+    with pytest.raises(GlobalHaltRecoveryError):
+        recover(
+            ledger,
+            authorization,
+            safety=supplied,
+            safety_verifier=FilesystemGlobalSafetyAuthority(canonical_root),
+        )
+    assert len(ledger.load_events()) == 1
+
+
+def _recovery_freshness_case(
+    authority: str,
+    *,
+    authority_at: datetime,
+) -> tuple[
+    InMemoryEventLedger,
+    GlobalHaltRecoveryAuthorization,
+    object,
+    object,
+    GlobalSafetyObservation,
+]:
+    policy = evaluator_case().policy.model_copy(
+        update={"portfolio_max_age_seconds": 10}
+    )
+    breached = evaluator_case(current_quantity="1").observation.model_copy(
+        update={
+            "daily_pnl": Money(
+                Decimal("-1001"),
+                policy.max_daily_loss.currency,
+            )
+        }
+    )
+    ledger = InMemoryEventLedger()
+    halted = initialize(
+        ledger,
+        observation=breached,
+        policy=policy,
+        safety=safety_observation(observed_at=NOW),
+        decided_at=NOW,
+    )
+    safe = _freshness_observation(
+        authority,
+        authority_at=authority_at,
+        observation_at=NOW + timedelta(seconds=7),
+    )
+    selected_safety = safety_observation(observed_at=NOW + timedelta(seconds=8))
+    authorization = recovery_authorization(
+        halted,
+        observation=safe,
+        policy=policy,
+        safety=selected_safety,
+        issued_at=NOW + timedelta(seconds=7),
+        expires_at=NOW + timedelta(seconds=20),
+    )
+    return ledger, authorization, safe, policy, selected_safety
+
+
+@pytest.mark.parametrize("authority", ("portfolio", "balance", "position", "mark"))
+def test_global_halt_recovery_accepts_exact_nested_freshness_boundary(
+    authority: str,
+) -> None:
+    ledger, authorization, observation, policy, selected_safety = (
+        _recovery_freshness_case(authority, authority_at=NOW)
+    )
+    state = recover(
+        ledger,
+        authorization,
+        observation=observation,
+        policy=policy,
+        safety=selected_safety,
+        decided_at=NOW + timedelta(seconds=10),
+    )
+    assert state.status is GlobalHaltStatus.ACTIVE
+
+
+@pytest.mark.parametrize("authority", ("portfolio", "balance", "position", "mark"))
+def test_global_halt_recovery_rejects_one_microsecond_stale_nested_authority(
+    authority: str,
+) -> None:
+    ledger, authorization, observation, policy, selected_safety = (
+        _recovery_freshness_case(
+            authority,
+            authority_at=NOW - timedelta(microseconds=1),
+        )
+    )
+    with pytest.raises(GlobalHaltRecoveryError):
+        recover(
+            ledger,
+            authorization,
+            observation=observation,
+            policy=policy,
+            safety=selected_safety,
+            decided_at=NOW + timedelta(seconds=10),
+        )
+    assert len(ledger.load_events()) == 1
 
 
 def test_safe_observation_cannot_recover_a_halted_stream_without_authority() -> None:
@@ -1006,3 +1623,4 @@ def test_global_halt_trusted_byte_identical_replica_replays_same_state() -> None
     assert replica.load_outbox() != origin.load_outbox()
     assert serialize_event(replica.load_events()[0]) == serialize_event(event)
     assert actual.state == expected
+    audit_submit_authority_stream,

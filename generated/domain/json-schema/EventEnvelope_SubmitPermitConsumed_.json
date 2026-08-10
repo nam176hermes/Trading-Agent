@@ -1,0 +1,152 @@
+{
+  "$defs": {
+    "SubmitPermitConsumed": {
+      "additionalProperties": false,
+      "properties": {
+        "consumed_at": {
+          "format": "date-time",
+          "title": "Consumed At",
+          "type": "string"
+        },
+        "halt_generation": {
+          "exclusiveMinimum": 0,
+          "title": "Halt Generation",
+          "type": "integer"
+        },
+        "halt_stream_id": {
+          "format": "uuid",
+          "title": "Halt Stream Id",
+          "type": "string"
+        },
+        "halt_transition_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Halt Transition Digest",
+          "type": "string"
+        },
+        "permit_id": {
+          "format": "uuid",
+          "title": "Permit Id",
+          "type": "string"
+        },
+        "prepared_event_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Prepared Event Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "submit-permit-consumed-v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "permit_id",
+        "prepared_event_digest",
+        "halt_stream_id",
+        "halt_generation",
+        "halt_transition_digest",
+        "consumed_at",
+        "schema_version"
+      ],
+      "title": "SubmitPermitConsumed",
+      "type": "object",
+      "x-cross-field-invariants": [
+        "permit_id, prepared_event_digest, halt_stream_id, halt_generation, and halt_transition_digest match the stored prepared permit"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
+      "type": "string"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "SubmitPermitConsumed",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "ingested_at": {
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/SubmitPermitConsumed"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "source",
+    "stream_id",
+    "sequence",
+    "observed_at",
+    "ingested_at",
+    "produced_at",
+    "effective_at",
+    "expires_at",
+    "correlation_id",
+    "causation_id",
+    "trace_id",
+    "payload"
+  ],
+  "title": "EventEnvelope[SubmitPermitConsumed]",
+  "type": "object"
+}

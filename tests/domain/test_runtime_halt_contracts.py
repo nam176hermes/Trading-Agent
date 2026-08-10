@@ -220,6 +220,16 @@ def test_global_halt_state_represents_only_canonical_recovered_active_state() ->
         (halt_transition, {"next_generation": 1, "prior_generation": 1, "prior_transition_digest": "d" * 64}),
         (halt_transition, {"event_digest": "d" * 64}),
         (halt_state, {"reason_codes": (GlobalHaltReasonCode.INITIALIZED_SAFE,) * 2}),
+        (
+            halt_state,
+            {
+                "status": GlobalHaltStatus.HALTED,
+                "reason_codes": (
+                    GlobalHaltReasonCode.DRAWDOWN_LIMIT,
+                    GlobalHaltReasonCode.DAILY_LOSS_LIMIT,
+                ),
+            },
+        ),
         (halt_state, {"reason_codes": (GlobalHaltReasonCode.RECOVERY_AUTHORIZED,)}),
         (halt_transition, {"next_status": GlobalHaltStatus.HALTED, "reason_codes": (GlobalHaltReasonCode.RECOVERY_AUTHORIZED,), "recovery_authorization_digest": "d" * 64}),
         (halt_transition, {"next_generation": 2, "prior_generation": 1, "prior_transition_digest": "d" * 64, "reason_codes": (GlobalHaltReasonCode.RECOVERY_AUTHORIZED,), "recovery_authorization_digest": None}),

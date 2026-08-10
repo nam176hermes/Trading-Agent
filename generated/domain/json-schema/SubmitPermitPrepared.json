@@ -107,5 +107,8 @@
     "schema_version"
   ],
   "title": "SubmitPermitPrepared",
-  "type": "object"
+  "type": "object",
+  "x-cross-field-invariants": [
+    "expires_at == prepared_at + 5 seconds"
+  ]
 }

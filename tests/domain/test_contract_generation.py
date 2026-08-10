@@ -82,6 +82,9 @@ EXPECTED = {
     "RuntimeOrderRiskDecision.json",
     "DurableOrderApprovalRef.json",
     "EventEnvelope_RuntimeOrderRiskDecision_.json",
+    "EventEnvelope_GlobalHaltTransition_.json",
+    "EventEnvelope_SubmitPermitPrepared_.json",
+    "EventEnvelope_SubmitPermitConsumed_.json",
     "GlobalSafetyObservation.json",
     "GlobalHaltState.json",
     "GlobalHaltRecoveryAuthorization.json",
@@ -100,6 +103,11 @@ PORTFOLIO_ENTRY_EVENT_TYPES = {
     "PortfolioConversionEntry", "PortfolioValuationRateEntry", "PortfolioReconciliationEntry",
 }
 RUNTIME_RISK_EVENT_TYPES = {"RuntimeOrderRiskDecision"}
+GLOBAL_HALT_EVENT_TYPES = {
+    "GlobalHaltTransition",
+    "SubmitPermitPrepared",
+    "SubmitPermitConsumed",
+}
 
 
 def test_contract_generation_is_deterministic_and_current() -> None:
@@ -128,6 +136,24 @@ def test_runtime_risk_event_schema_and_registration_are_additive() -> None:
     registered_types = set(EVENT_TYPE_BY_PAYLOAD.values())
     assert RUNTIME_RISK_EVENT_TYPES <= registered_types
     assert "EventEnvelope_RuntimeOrderRiskDecision_.json" in EXPECTED
+
+
+def test_every_registered_payload_publishes_a_typed_event_envelope_schema() -> None:
+    for payload_type, event_type in EVENT_TYPE_BY_PAYLOAD.items():
+        assert f"{payload_type.__name__}.json" in EXPECTED
+        assert f"EventEnvelope_{event_type}_.json" in EXPECTED
+
+
+def test_global_halt_event_schema_registration_is_complete() -> None:
+    registered_types = set(EVENT_TYPE_BY_PAYLOAD.values())
+    assert GLOBAL_HALT_EVENT_TYPES <= registered_types
+    for event_type in GLOBAL_HALT_EVENT_TYPES:
+        filename = f"EventEnvelope_{event_type}_.json"
+        schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+        assert schema["properties"]["event_type"] == {
+            "const": event_type,
+            "type": "string",
+        }
 
 
 @pytest.mark.parametrize("filename", sorted(EXPECTED))
@@ -375,6 +401,40 @@ def test_global_halt_and_submit_authority_schemas_publish_closed_bindings() -> N
         "SAFETY_AUTHORITY_UNKNOWN", "KILL_SWITCH_ACTIVE", "DAILY_LOSS_LIMIT",
         "DRAWDOWN_LIMIT", "RECOVERY_AUTHORIZED", "INITIALIZED_SAFE",
     ]
+    for schema in (state, transition):
+        assert schema["properties"]["reason_codes"]["minItems"] == 1
+        assert schema["properties"]["reason_codes"]["uniqueItems"] is True
+    assert state["x-cross-field-invariants"] == [
+        "generation == 1 => prior_transition_event_id == null and prior_transition_digest == null",
+        "generation > 1 => prior_transition_event_id != null and prior_transition_digest != null",
+        "generation == 1 and status == ACTIVE => reason_codes == [INITIALIZED_SAFE]",
+        "generation > 1 and status == ACTIVE => reason_codes == [RECOVERY_AUTHORIZED]",
+        "status == HALTED => reason_codes is a nonempty canonical subset of [SAFETY_AUTHORITY_UNKNOWN, KILL_SWITCH_ACTIVE, DAILY_LOSS_LIMIT, DRAWDOWN_LIMIT]",
+    ]
+    assert transition["x-cross-field-invariants"] == [
+        "next_generation == 1 => prior_generation == 0 and prior_transition_digest == null",
+        "next_generation > 1 => prior_generation > 0 and prior_transition_digest != null",
+        "next_generation > 1 => next_generation == prior_generation + 1",
+        "next_generation == 1 and next_status == ACTIVE => reason_codes == [INITIALIZED_SAFE] and recovery_authorization_digest == null",
+        "next_generation > 1 and next_status == ACTIVE => reason_codes == [RECOVERY_AUTHORIZED] and recovery_authorization_digest != null",
+        "next_status == HALTED => reason_codes is a nonempty canonical subset of [SAFETY_AUTHORITY_UNKNOWN, KILL_SWITCH_ACTIVE, DAILY_LOSS_LIMIT, DRAWDOWN_LIMIT] and recovery_authorization_digest == null",
+    ]
+    recovery = json.loads(
+        (SCHEMA_ROOT / "GlobalHaltRecoveryAuthorization.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert recovery["x-cross-field-invariants"] == ["issued_at < expires_at"]
+    for filename in ("SubmitPermitPrepared.json", "PreparedSubmitPermit.json"):
+        schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+        assert schema["x-cross-field-invariants"] == [
+            "expires_at == prepared_at + 5 seconds"
+        ]
+    for filename in ("SubmitPermitConsumed.json", "ConsumedSubmitAuthority.json"):
+        schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+        assert schema["x-cross-field-invariants"] == [
+            "permit_id, prepared_event_digest, halt_stream_id, halt_generation, and halt_transition_digest match the stored prepared permit"
+        ]
 
 
 def test_every_runtime_risk_schema_has_the_exact_closed_public_shape() -> None:

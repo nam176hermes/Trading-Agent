@@ -310,7 +310,7 @@ their contiguous sequence is the compare-and-append serialization point.
 4. Replay the dedicated halt stream and require an initialized `ACTIVE` state.
 5. Re-evaluate the global breaker from the current facts and a fresh safety
    read. Require no breaker cause, bind the stable safety identity/state, and
-   require `safety.observed_at <= prepared_at`. Current facts need not equal
+   require `safety.observed_at < prepared_at`. Current facts need not equal
    historical facts that caused the last halt transition.
 6. Append a prepared-permit event at the next contiguous sequence, append its
    canonical outbox intent, load back exactly one event, and compare bytes and

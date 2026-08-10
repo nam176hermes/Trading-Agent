@@ -47,5 +47,8 @@
     "schema_version"
   ],
   "title": "SubmitPermitConsumed",
-  "type": "object"
+  "type": "object",
+  "x-cross-field-invariants": [
+    "permit_id, prepared_event_digest, halt_stream_id, halt_generation, and halt_transition_digest match the stored prepared permit"
+  ]
 }

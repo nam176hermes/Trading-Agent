@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "GlobalHaltReasonCode": {
+      "enum": [
+        "SAFETY_AUTHORITY_UNKNOWN",
+        "KILL_SWITCH_ACTIVE",
+        "DAILY_LOSS_LIMIT",
+        "DRAWDOWN_LIMIT",
+        "RECOVERY_AUTHORIZED",
+        "INITIALIZED_SAFE"
+      ],
+      "title": "GlobalHaltReasonCode",
+      "type": "string"
+    },
+    "GlobalHaltStatus": {
+      "enum": [
+        "ACTIVE",
+        "HALTED"
+      ],
+      "title": "GlobalHaltStatus",
+      "type": "string"
+    },
+    "GlobalHaltTransition": {
+      "additionalProperties": false,
+      "properties": {
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "next_generation": {
+          "exclusiveMinimum": 0,
+          "title": "Next Generation",
+          "type": "integer"
+        },
+        "next_status": {
+          "$ref": "#/$defs/GlobalHaltStatus"
+        },
+        "portfolio_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Portfolio Digest",
+          "type": "string"
+        },
+        "prior_generation": {
+          "minimum": 0,
+          "title": "Prior Generation",
+          "type": "integer"
+        },
+        "prior_transition_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Prior Transition Digest"
+        },
+        "reason_codes": {
+          "items": {
+            "$ref": "#/$defs/GlobalHaltReasonCode"
+          },
+          "minItems": 1,
+          "title": "Reason Codes",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "recovery_authorization_digest": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Recovery Authorization Digest"
+        },
+        "runtime_observation_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Runtime Observation Digest",
+          "type": "string"
+        },
+        "runtime_policy_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Runtime Policy Digest",
+          "type": "string"
+        },
+        "safety_observation_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Safety Observation Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "global-halt-transition-v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "transition_id": {
+          "format": "uuid",
+          "title": "Transition Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "transition_id",
+        "prior_generation",
+        "prior_transition_digest",
+        "next_generation",
+        "next_status",
+        "reason_codes",
+        "runtime_policy_digest",
+        "runtime_observation_digest",
+        "portfolio_digest",
+        "safety_observation_digest",
+        "recovery_authorization_digest",
+        "decided_at",
+        "schema_version"
+      ],
+      "title": "GlobalHaltTransition",
+      "type": "object",
+      "x-cross-field-invariants": [
+        "next_generation == 1 => prior_generation == 0 and prior_transition_digest == null",
+        "next_generation > 1 => prior_generation > 0 and prior_transition_digest != null",
+        "next_generation > 1 => next_generation == prior_generation + 1",
+        "next_generation == 1 and next_status == ACTIVE => reason_codes == [INITIALIZED_SAFE] and recovery_authorization_digest == null",
+        "next_generation > 1 and next_status == ACTIVE => reason_codes == [RECOVERY_AUTHORIZED] and recovery_authorization_digest != null",
+        "next_status == HALTED => reason_codes is a nonempty canonical subset of [SAFETY_AUTHORITY_UNKNOWN, KILL_SWITCH_ACTIVE, DAILY_LOSS_LIMIT, DRAWDOWN_LIMIT] and recovery_authorization_digest == null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
+      "type": "string"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "GlobalHaltTransition",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "ingested_at": {
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/GlobalHaltTransition"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "source",
+    "stream_id",
+    "sequence",
+    "observed_at",
+    "ingested_at",
+    "produced_at",
+    "effective_at",
+    "expires_at",
+    "correlation_id",
+    "causation_id",
+    "trace_id",
+    "payload"
+  ],
+  "title": "EventEnvelope[GlobalHaltTransition]",
+  "type": "object"
+}

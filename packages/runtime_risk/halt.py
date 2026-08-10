@@ -36,7 +36,12 @@ from packages.event_ledger.repository import EventLedgerRepository
 from packages.safety_evidence import CanonicalKillSwitchState
 
 from .canonical import canonical_model_digest, canonical_model_json
-from .safety import GlobalHaltAuthorityError, global_safety_binding_digest
+from .safety import (
+    GlobalHaltAuthorityError,
+    GlobalSafetyAuthorityVerifier,
+    global_safety_binding_digest,
+    verify_global_safety_observation,
+)
 
 
 _TRANSITION_EVENT_SCHEMA = "global-halt-transition-event-v1"
@@ -76,9 +81,11 @@ class GlobalHaltReplay:
     state: GlobalHaltState | None
     prepared: tuple[PreparedSubmitPermit, ...]
     consumed_permit_ids: tuple[UUID, ...]
+    retired_permit_ids: tuple[UUID, ...]
     head_sequence: int
     head_event_id: UUID | None
     head_event_digest: str | None
+    head_authority_at: datetime | None
 
 
 def _canonical(value: object, expected_type: type[_ModelT], field: str) -> _ModelT:
@@ -231,6 +238,7 @@ def _state_from_transition(
             payload.prior_generation != prior.generation
             or payload.prior_transition_digest != prior.transition_digest
             or payload.next_generation != prior.generation + 1
+            or payload.decided_at < prior.transitioned_at
             or (
                 prior.status is GlobalHaltStatus.ACTIVE
                 and payload.next_status is not GlobalHaltStatus.HALTED
@@ -275,9 +283,11 @@ def replay_global_halt_authority(
         state: GlobalHaltState | None = None
         prepared: dict[UUID, PreparedSubmitPermit] = {}
         consumed: list[UUID] = []
+        retired: list[UUID] = []
         event_digests: dict[UUID, str] = {}
         head_event_id: UUID | None = None
         head_digest: str | None = None
+        head_authority_at: datetime | None = None
         for expected_sequence, (event, text) in enumerate(selected, start=1):
             if event.sequence != expected_sequence:
                 raise ValueError("global halt authority sequence is not contiguous")
@@ -288,6 +298,19 @@ def replay_global_halt_authority(
             _require_event_bindings(event)
             payload = event.payload
             if type(payload) is GlobalHaltTransition:
+                authority_at = payload.decided_at
+            elif type(payload) is SubmitPermitPrepared:
+                authority_at = payload.prepared_at
+            elif type(payload) is SubmitPermitConsumed:
+                authority_at = payload.consumed_at
+            else:
+                raise ValueError("foreign payload in global halt authority stream")
+            if head_authority_at is not None and authority_at < head_authority_at:
+                raise ValueError("global halt authority time is not nondecreasing")
+            if type(payload) is GlobalHaltTransition:
+                if state is not None:
+                    retired.extend(prepared)
+                    prepared.clear()
                 state = _state_from_transition(
                     stream_id=stream_id,
                     event=event,
@@ -302,8 +325,10 @@ def replay_global_halt_authority(
                     or payload.halt_generation != state.generation
                     or payload.halt_transition_event_id != state.transition_event_id
                     or payload.halt_transition_digest != state.transition_digest
+                    or payload.prepared_at < state.transitioned_at
                     or payload.permit_id in prepared
                     or payload.permit_id in consumed
+                    or payload.permit_id in retired
                 ):
                     raise ValueError("prepared permit contradicts halt authority")
                 prepared[payload.permit_id] = PreparedSubmitPermit(
@@ -321,9 +346,14 @@ def replay_global_halt_authority(
                     or state is None
                     or state.status is not GlobalHaltStatus.ACTIVE
                     or payload.prepared_event_digest != authority.prepared_event_digest
-                    or payload.halt_stream_id != stream_id
-                    or payload.halt_generation != state.generation
-                    or payload.halt_transition_digest != state.transition_digest
+                    or payload.halt_stream_id != authority.halt_stream_id
+                    or payload.halt_generation != authority.halt_generation
+                    or payload.halt_transition_digest != authority.halt_transition_digest
+                    or state.stream_id != authority.halt_stream_id
+                    or state.generation != authority.halt_generation
+                    or state.transition_event_id != authority.halt_transition_event_id
+                    or state.transition_digest != authority.halt_transition_digest
+                    or state.transitioned_at > payload.consumed_at
                     or not (
                         authority.prepared_at
                         <= payload.consumed_at
@@ -337,13 +367,16 @@ def replay_global_halt_authority(
                 raise ValueError("foreign payload in global halt authority stream")
             head_event_id = event.event_id
             head_digest = digest
+            head_authority_at = authority_at
         return GlobalHaltReplay(
             state=state,
             prepared=tuple(prepared.values()),
             consumed_permit_ids=tuple(consumed),
+            retired_permit_ids=tuple(retired),
             head_sequence=len(selected),
             head_event_id=head_event_id,
             head_event_digest=head_digest,
+            head_authority_at=head_authority_at,
         )
     except GlobalHaltAuthorityError:
         raise
@@ -497,11 +530,30 @@ def _new_transition_payload(
     )
 
 
-def _duration_microseconds(value: timedelta) -> int:
-    return (
-        value.days * 86_400_000_000
-        + value.seconds * 1_000_000
-        + value.microseconds
+def _global_authority_is_current(
+    *,
+    observation: RuntimeRiskObservation,
+    policy: RuntimeRiskPolicy,
+    safety: GlobalSafetyObservation,
+    decided_at: datetime,
+) -> bool:
+    portfolio = observation.portfolio
+    timestamps = [
+        observation.observed_at,
+        portfolio.observed_at,
+        *(balance.observed_at for balance in portfolio.balances),
+        *(position.observed_at for position in portfolio.positions),
+        *(
+            position.mark.marked_at
+            for position in portfolio.positions
+            if position.mark is not None
+        ),
+        safety.observed_at,
+    ]
+    maximum_age = timedelta(seconds=policy.portfolio_max_age_seconds)
+    return all(
+        timestamp <= decided_at and decided_at - timestamp <= maximum_age
+        for timestamp in timestamps
     )
 
 
@@ -514,12 +566,6 @@ def _recovery_bindings_match(
     safety: GlobalSafetyObservation,
     decided_at: datetime,
 ) -> bool:
-    observation_age = decided_at - observation.observed_at
-    observation_is_current = (
-        _duration_microseconds(observation_age) >= 0
-        and _duration_microseconds(observation_age)
-        <= policy.portfolio_max_age_seconds * 1_000_000
-    )
     return all(
         (
             authorization.halted_generation == state.generation,
@@ -537,7 +583,12 @@ def _recovery_bindings_match(
             <= safety.observed_at
             <= decided_at,
             authorization.issued_at <= decided_at < authorization.expires_at,
-            observation_is_current,
+            _global_authority_is_current(
+                observation=observation,
+                policy=policy,
+                safety=safety,
+                decided_at=decided_at,
+            ),
             not evaluate_global_breaker(
                 observation=observation,
                 policy=policy,
@@ -669,6 +720,7 @@ def record_global_halt_observation(
     observation: RuntimeRiskObservation,
     policy: RuntimeRiskPolicy,
     safety: GlobalSafetyObservation,
+    safety_verifier: GlobalSafetyAuthorityVerifier,
     transition_id: UUID,
     event_id: UUID,
     decided_at: datetime,
@@ -687,11 +739,23 @@ def record_global_halt_observation(
     observation = _canonical_authority(observation, RuntimeRiskObservation, "observation")
     policy = _canonical_authority(policy, RuntimeRiskPolicy, "policy")
     safety = _canonical_authority(safety, GlobalSafetyObservation, "safety")
-    if safety.observed_at > decided_at or observation.observed_at > decided_at:
-        raise GlobalHaltAuthorityError(_AUTHORITY_FAILURE)
+    try:
+        safety = verify_global_safety_observation(
+            verifier=safety_verifier,
+            observation=safety,
+        )
+    except GlobalHaltAuthorityError as exc:
+        raise GlobalHaltAuthorityError(_AUTHORITY_FAILURE) from exc
     events = _load_events(repository, GlobalHaltAuthorityError)
     replayed = replay_global_halt_authority(events=events, stream_id=stream_id)
     reasons = evaluate_global_breaker(observation=observation, policy=policy, safety=safety)
+    if not reasons and not _global_authority_is_current(
+        observation=observation,
+        policy=policy,
+        safety=safety,
+        decided_at=decided_at,
+    ):
+        raise GlobalHaltAuthorityError(_AUTHORITY_FAILURE)
     if replayed.state is not None:
         if replayed.state.status is GlobalHaltStatus.HALTED or not reasons:
             return replayed.state
@@ -703,6 +767,11 @@ def record_global_halt_observation(
     else:
         status = GlobalHaltStatus.ACTIVE
         transition_reasons = (GlobalHaltReasonCode.INITIALIZED_SAFE,)
+    if (
+        replayed.head_authority_at is not None
+        and decided_at < replayed.head_authority_at
+    ):
+        raise GlobalHaltAuthorityError(_AUTHORITY_FAILURE)
     try:
         payload = _new_transition_payload(
             replayed=replayed,
@@ -742,6 +811,7 @@ def recover_global_halt(
     observation: RuntimeRiskObservation,
     policy: RuntimeRiskPolicy,
     safety: GlobalSafetyObservation,
+    safety_verifier: GlobalSafetyAuthorityVerifier,
     authorization: GlobalHaltRecoveryAuthorization,
     verifier: GlobalHaltRecoveryAuthorityVerifier,
     transition_id: UUID,
@@ -764,6 +834,13 @@ def recover_global_halt(
             authorization, GlobalHaltRecoveryAuthorization, "authorization"
         )
     except _CANONICAL_ERRORS as exc:
+        raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
+    try:
+        safety = verify_global_safety_observation(
+            verifier=safety_verifier,
+            observation=safety,
+        )
+    except GlobalHaltAuthorityError as exc:
         raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
     events = _load_events(repository, GlobalHaltRecoveryError)
     try:
@@ -802,6 +879,11 @@ def recover_global_halt(
         policy=policy,
         safety=safety,
         decided_at=decided_at,
+    ):
+        raise GlobalHaltRecoveryError(_RECOVERY_FAILURE)
+    if (
+        replayed.head_authority_at is not None
+        and decided_at < replayed.head_authority_at
     ):
         raise GlobalHaltRecoveryError(_RECOVERY_FAILURE)
     try:

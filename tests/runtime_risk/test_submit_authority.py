@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
 from typing import Callable
 from uuid import UUID
 
 import pytest
 
 import packages.runtime_risk.submit_authority as submit_authority_module
-from packages.domain import EventEnvelope
+from packages.domain import EventEnvelope, Money
 from packages.domain.runtime_halt import (
     ConsumedSubmitAuthority,
     GlobalHaltRecoveryAuthorization,
@@ -31,18 +33,20 @@ from packages.event_ledger import (
 )
 from packages.event_ledger.replay import event_digest
 from packages.runtime_risk import (
+    FilesystemGlobalSafetyAuthority,
     SubmitPermitConsumptionError,
     SubmitPermitPreparationError,
     canonical_model_digest,
     consume_submit_permit,
     global_safety_binding_digest,
+    observe_global_safety,
     prepare_submit_permit,
     record_global_halt_observation,
     record_runtime_risk_decision,
     recover_global_halt,
     replay_global_halt_authority,
 )
-from packages.safety_evidence import CanonicalKillSwitchState
+from packages.safety_evidence import CanonicalKillSwitchState, safety_source_fingerprint
 
 from tests.runtime_risk.test_approval import matching_reference, runtime_risk_event
 from tests.runtime_risk.test_evaluator import EvaluatorCase, NOW, evaluator_case, uid
@@ -66,6 +70,11 @@ def safety(
         observed_at=observed_at,
         schema_version="global-safety-observation-v1",
     )
+
+
+class ExactSafetyVerifier:
+    def verify(self, *, observation: GlobalSafetyObservation) -> GlobalSafetyObservation:
+        return observation
 
 
 @dataclass(frozen=True)
@@ -97,6 +106,7 @@ def approved_active_case() -> PrepareCase:
         observation=selected.observation,
         policy=selected.policy,
         safety=initial_safety,
+        safety_verifier=ExactSafetyVerifier(),
         transition_id=uid(805),
         event_id=uid(806),
         decided_at=NOW,
@@ -147,6 +157,7 @@ def active_case_with_transition_at(
         observation=selected.observation,
         policy=selected.policy,
         safety=initial_safety,
+        safety_verifier=ExactSafetyVerifier(),
         transition_id=uid(852),
         event_id=uid(853),
         decided_at=NOW if recovered else transitioned_at,
@@ -174,6 +185,7 @@ def active_case_with_transition_at(
             observation=selected.observation,
             policy=selected.policy,
             safety=safe,
+            safety_verifier=ExactSafetyVerifier(),
             authorization=authorization,
             verifier=ExactRecoveryVerifier(),
             transition_id=uid(855),
@@ -188,6 +200,116 @@ def active_case_with_transition_at(
         approval_event=approval_event,
         initial_safety=initial_safety,
     )
+
+
+def approved_case_with_historical_active_facts(*, recovered: bool) -> PrepareCase:
+    ledger = InMemoryEventLedger()
+    current = evaluator_case()
+    approval_event = runtime_risk_event(
+        current,
+        event_id=uid(865),
+        stream_id=uid(866),
+    )
+    approval_reference = record_runtime_risk_decision(
+        repository=ledger,
+        event=approval_event,
+    )
+    assert approval_reference is not None
+    historical_portfolio = current.observation.portfolio.model_copy(
+        update={"snapshot_id": uid(867)}
+    )
+    historical_observation = current.observation.model_copy(
+        update={
+            "observation_id": uid(868),
+            "state_version": current.observation.state_version + 1,
+            "portfolio": historical_portfolio,
+            "daily_pnl": Money(
+                Decimal("1"),
+                current.observation.daily_pnl.currency,
+            ),
+        }
+    )
+    historical_policy = current.policy.model_copy(
+        update={
+            "policy_id": uid(869),
+            "policy_version": "historical-policy",
+        }
+    )
+    initial_safety = safety(
+        state=(
+            CanonicalKillSwitchState.ACTIVE
+            if recovered
+            else CanonicalKillSwitchState.INACTIVE
+        ),
+        observed_at=NOW,
+    )
+    state = record_global_halt_observation(
+        repository=ledger,
+        stream_id=HALT_STREAM_ID,
+        observation=historical_observation,
+        policy=historical_policy,
+        safety=initial_safety,
+        safety_verifier=ExactSafetyVerifier(),
+        transition_id=uid(870),
+        event_id=uid(871),
+        decided_at=NOW,
+    )
+    if recovered:
+        safe = safety(observed_at=NOW)
+        authorization = GlobalHaltRecoveryAuthorization(
+            authorization_id=uid(872),
+            authorization_digest="b" * 64,
+            halted_generation=state.generation,
+            halted_transition_digest=state.transition_digest,
+            runtime_policy_digest=canonical_model_digest(historical_policy),
+            runtime_observation_digest=canonical_model_digest(historical_observation),
+            portfolio_digest=canonical_model_digest(historical_portfolio),
+            safety_binding_digest=global_safety_binding_digest(safe),
+            issued_at=NOW,
+            expires_at=NOW + timedelta(minutes=1),
+            operator_authority_digest="c" * 64,
+            schema_version="global-halt-recovery-authorization-v1",
+        )
+        state = recover_global_halt(
+            repository=ledger,
+            stream_id=HALT_STREAM_ID,
+            observation=historical_observation,
+            policy=historical_policy,
+            safety=safe,
+            safety_verifier=ExactSafetyVerifier(),
+            authorization=authorization,
+            verifier=ExactRecoveryVerifier(),
+            transition_id=uid(873),
+            event_id=uid(874),
+            decided_at=NOW,
+        )
+    assert state.status is GlobalHaltStatus.ACTIVE
+    return PrepareCase(
+        ledger=ledger,
+        evaluator=current,
+        approval_reference=approval_reference,
+        approval_event=approval_event,
+        initial_safety=initial_safety,
+    )
+
+
+@pytest.mark.parametrize("recovered", (False, True), ids=("initialized", "recovered"))
+def test_prepare_and_consume_allow_current_facts_to_differ_from_transition_history(
+    recovered: bool,
+) -> None:
+    case = approved_case_with_historical_active_facts(recovered=recovered)
+    historical = replay_global_halt_authority(
+        events=case.ledger.load_events(),
+        stream_id=HALT_STREAM_ID,
+    ).state
+    assert historical is not None
+    permit = prepare(case)
+    assert historical.runtime_policy_digest != permit.runtime_policy_digest
+    assert historical.runtime_observation_digest != permit.runtime_observation_digest
+    assert historical.portfolio_digest != permit.portfolio_digest
+
+    authority = consume(case, permit)
+    assert authority.permit_id == permit.permit_id
 
 
 def prepare(
@@ -207,12 +329,91 @@ def prepare(
         "current_observation": case.evaluator.observation,
         "current_policy": case.evaluator.policy,
         "current_safety": safety(observed_at=NOW),
+        "safety_verifier": ExactSafetyVerifier(),
         "permit_id": PERMIT_ID,
         "event_id": PREPARED_EVENT_ID,
         "prepared_at": PREPARED_AT,
     }
     arguments.update(changes)
     return prepare_submit_permit(**arguments)  # type: ignore[arg-type]
+
+
+def _activate_private_safety_root(root: Path) -> None:
+    root.mkdir(exist_ok=True)
+    sentinel = root / ".kill_switch"
+    sentinel.write_text(
+        "2026-08-10T12:00:00Z: final-wave safety test\n",
+        encoding="utf-8",
+    )
+    sentinel.chmod(0o600)
+
+
+@pytest.mark.parametrize("evidence", ("alternate-root", "fabricated"))
+def test_prepare_submit_permit_rejects_untrusted_inactive_safety(
+    tmp_path: Path,
+    evidence: str,
+) -> None:
+    case = approved_active_case()
+    canonical_root = tmp_path / "canonical"
+    alternate_root = tmp_path / "alternate"
+    _activate_private_safety_root(canonical_root)
+    alternate_root.mkdir()
+    if evidence == "alternate-root":
+        supplied = observe_global_safety(
+            source_root=alternate_root,
+            observed_at=NOW,
+        )
+    else:
+        supplied = GlobalSafetyObservation(
+            source_fingerprint=safety_source_fingerprint(canonical_root),
+            kill_switch_state=CanonicalKillSwitchState.INACTIVE,
+            observed_at=NOW,
+            schema_version="global-safety-observation-v1",
+        )
+
+    with pytest.raises(SubmitPermitPreparationError):
+        prepare(
+            case,
+            current_safety=supplied,
+            safety_verifier=FilesystemGlobalSafetyAuthority(canonical_root),
+        )
+
+
+@pytest.mark.parametrize("evidence", ("alternate-root", "fabricated"))
+def test_consume_submit_permit_rejects_safety_that_rotated_after_prepare(
+    tmp_path: Path,
+    evidence: str,
+) -> None:
+    case = approved_active_case()
+    canonical_root = tmp_path / "canonical"
+    alternate_root = tmp_path / "alternate"
+    canonical_root.mkdir()
+    alternate_root.mkdir()
+    preparation_root = alternate_root if evidence == "alternate-root" else canonical_root
+    preparation_read = observe_global_safety(
+        source_root=preparation_root,
+        observed_at=NOW,
+    )
+    permit = prepare(
+        case,
+        current_safety=preparation_read,
+        safety_verifier=FilesystemGlobalSafetyAuthority(preparation_root),
+    )
+    _activate_private_safety_root(canonical_root)
+    consume_read = GlobalSafetyObservation(
+        source_fingerprint=preparation_read.source_fingerprint,
+        kill_switch_state=CanonicalKillSwitchState.INACTIVE,
+        observed_at=PREPARED_AT + timedelta(seconds=1),
+        schema_version="global-safety-observation-v1",
+    )
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(
+            case,
+            permit,
+            current_safety=consume_read,
+            safety_verifier=FilesystemGlobalSafetyAuthority(canonical_root),
+        )
 
 
 def prepared_envelope(ledger: InMemoryEventLedger) -> EventEnvelope[object]:
@@ -236,6 +437,7 @@ def consume(
         "current_observation": case.evaluator.observation,
         "current_policy": case.evaluator.policy,
         "current_safety": safety(observed_at=PREPARED_AT + timedelta(seconds=1)),
+        "safety_verifier": ExactSafetyVerifier(),
         "consumed_event_id": uid(900),
         "consumed_at": PREPARED_AT + timedelta(seconds=1),
     }
@@ -463,6 +665,7 @@ def test_prepare_submit_permit_rejects_uninitialized_or_halted_stream() -> None:
         observation=halted.evaluator.observation,
         policy=halted.evaluator.policy,
         safety=safety(state=CanonicalKillSwitchState.ACTIVE),
+        safety_verifier=ExactSafetyVerifier(),
         transition_id=uid(825),
         event_id=uid(826),
         decided_at=PREPARED_AT,
@@ -576,6 +779,7 @@ def test_prepare_submit_permit_rejects_forged_rejected_and_wrong_ledger_approval
         observation=rejected_observation,
         policy=rejected_case.policy,
         safety=safety(observed_at=NOW),
+        safety_verifier=ExactSafetyVerifier(),
         transition_id=uid(829),
         event_id=uid(830),
         decided_at=NOW,
@@ -606,6 +810,7 @@ def test_prepare_submit_permit_rejects_forged_rejected_and_wrong_ledger_approval
         observation=other.evaluator.observation,
         policy=other.evaluator.policy,
         safety=safety(observed_at=NOW),
+        safety_verifier=ExactSafetyVerifier(),
         transition_id=uid(842),
         event_id=uid(843),
         decided_at=NOW,
@@ -672,6 +877,79 @@ def test_prepare_submit_permit_exact_retry_is_idempotent_but_conflicts_reject() 
         prepare(case, event_id=uid(831))
 
 
+@pytest.mark.parametrize(
+    ("delta", "accepted"),
+    (
+        (timedelta(0), True),
+        (timedelta(microseconds=-1), False),
+    ),
+    ids=("equal-stream-head", "one-microsecond-before-stream-head"),
+)
+def test_prepare_submit_permit_requires_nondecreasing_stream_time(
+    delta: timedelta,
+    accepted: bool,
+) -> None:
+    case = approved_active_case()
+    prepare(case)
+    before = case.ledger.load_events()
+    arguments = {
+        "permit_id": uid(875),
+        "event_id": uid(876),
+        "prepared_at": PREPARED_AT + delta,
+        "current_safety": safety(observed_at=NOW),
+    }
+    if accepted:
+        assert prepare(case, **arguments).prepared_at == PREPARED_AT
+    else:
+        with pytest.raises(SubmitPermitPreparationError):
+            prepare(case, **arguments)
+        assert case.ledger.load_events() == before
+
+
+def test_consume_submit_permit_rejects_time_behind_intervening_permit() -> None:
+    case = approved_active_case()
+    permit = prepare(case)
+    later_at = PREPARED_AT + timedelta(seconds=2)
+    unrelated_payload = SubmitPermitPrepared(
+        **{
+            **{
+                name: getattr(permit, name)
+                for name in SubmitPermitPrepared.model_fields
+            },
+            "permit_id": uid(877),
+            "prepared_at": later_at,
+            "expires_at": later_at + timedelta(seconds=5),
+            "schema_version": "submit-permit-prepared-v1",
+        }
+    )
+    unrelated = EventEnvelope[SubmitPermitPrepared](
+        event_id=uid(878),
+        event_type="SubmitPermitPrepared",
+        schema_version="submit-permit-prepared-event-v1",
+        source="runtime-risk",
+        stream_id=HALT_STREAM_ID,
+        sequence=3,
+        observed_at=later_at,
+        ingested_at=later_at,
+        produced_at=later_at,
+        effective_at=later_at,
+        expires_at=later_at + timedelta(seconds=5),
+        correlation_id=unrelated_payload.permit_id,
+        causation_id=unrelated_payload.approval_event_id,
+        trace_id=unrelated_payload.permit_id,
+        payload=unrelated_payload,
+    )
+    case.ledger.append(
+        unrelated,
+        OutboxIntent(event_id=unrelated.event_id, topic="test.unrelated-permit"),
+    )
+    before = case.ledger.load_events()
+
+    with pytest.raises(SubmitPermitConsumptionError):
+        consume(case, permit)
+    assert case.ledger.load_events() == before
+
+
 def test_prepare_submit_permit_changed_halt_generation_cannot_reuse_prior_ids() -> None:
     case = approved_active_case()
     prepare(case)
@@ -681,6 +959,7 @@ def test_prepare_submit_permit_changed_halt_generation_cannot_reuse_prior_ids() 
         observation=case.evaluator.observation,
         policy=case.evaluator.policy,
         safety=safety(state=CanonicalKillSwitchState.ACTIVE),
+        safety_verifier=ExactSafetyVerifier(),
         transition_id=uid(832),
         event_id=uid(833),
         decided_at=PREPARED_AT + timedelta(seconds=1),

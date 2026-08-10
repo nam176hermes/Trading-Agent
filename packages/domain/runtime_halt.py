@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
 
-from pydantic import BaseModel, Field, StrictInt, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 
 from packages.safety_evidence import CanonicalKillSwitchState
 
@@ -42,6 +42,10 @@ _BREAKER_REASONS = frozenset(
 )
 _PositiveGeneration = Annotated[StrictInt, Field(gt=0)]
 _NonNegativeGeneration = Annotated[StrictInt, Field(ge=0)]
+_GlobalHaltReasons = Annotated[
+    tuple[GlobalHaltReasonCode, ...],
+    Field(min_length=1, json_schema_extra={"uniqueItems": True}),
+]
 
 
 class _RuntimeHaltModel(RuntimeRiskModel):
@@ -132,6 +136,18 @@ class GlobalSafetyObservation(_RuntimeHaltModel):
 
 
 class GlobalHaltState(_RuntimeHaltModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "x-cross-field-invariants": [
+                "generation == 1 => prior_transition_event_id == null and prior_transition_digest == null",
+                "generation > 1 => prior_transition_event_id != null and prior_transition_digest != null",
+                "generation == 1 and status == ACTIVE => reason_codes == [INITIALIZED_SAFE]",
+                "generation > 1 and status == ACTIVE => reason_codes == [RECOVERY_AUTHORIZED]",
+                "status == HALTED => reason_codes is a nonempty canonical subset of [SAFETY_AUTHORITY_UNKNOWN, KILL_SWITCH_ACTIVE, DAILY_LOSS_LIMIT, DRAWDOWN_LIMIT]",
+            ]
+        }
+    )
+
     stream_id: UUID
     generation: _PositiveGeneration
     status: GlobalHaltStatus
@@ -143,7 +159,7 @@ class GlobalHaltState(_RuntimeHaltModel):
     runtime_observation_digest: Sha256
     portfolio_digest: Sha256
     safety_observation_digest: Sha256
-    reason_codes: tuple[GlobalHaltReasonCode, ...]
+    reason_codes: _GlobalHaltReasons
     transitioned_at: datetime
     schema_version: Literal["global-halt-state-v1"]
 
@@ -166,6 +182,10 @@ class GlobalHaltState(_RuntimeHaltModel):
 
 
 class GlobalHaltRecoveryAuthorization(_RuntimeHaltModel):
+    model_config = ConfigDict(
+        json_schema_extra={"x-cross-field-invariants": ["issued_at < expires_at"]}
+    )
+
     authorization_id: UUID
     authorization_digest: Sha256
     halted_generation: _PositiveGeneration
@@ -189,12 +209,25 @@ class GlobalHaltRecoveryAuthorization(_RuntimeHaltModel):
 
 
 class GlobalHaltTransition(_RuntimeHaltModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "x-cross-field-invariants": [
+                "next_generation == 1 => prior_generation == 0 and prior_transition_digest == null",
+                "next_generation > 1 => prior_generation > 0 and prior_transition_digest != null",
+                "next_generation > 1 => next_generation == prior_generation + 1",
+                "next_generation == 1 and next_status == ACTIVE => reason_codes == [INITIALIZED_SAFE] and recovery_authorization_digest == null",
+                "next_generation > 1 and next_status == ACTIVE => reason_codes == [RECOVERY_AUTHORIZED] and recovery_authorization_digest != null",
+                "next_status == HALTED => reason_codes is a nonempty canonical subset of [SAFETY_AUTHORITY_UNKNOWN, KILL_SWITCH_ACTIVE, DAILY_LOSS_LIMIT, DRAWDOWN_LIMIT] and recovery_authorization_digest == null",
+            ]
+        }
+    )
+
     transition_id: UUID
     prior_generation: _NonNegativeGeneration
     prior_transition_digest: Sha256 | None
     next_generation: _PositiveGeneration
     next_status: GlobalHaltStatus
-    reason_codes: tuple[GlobalHaltReasonCode, ...]
+    reason_codes: _GlobalHaltReasons
     runtime_policy_digest: Sha256
     runtime_observation_digest: Sha256
     portfolio_digest: Sha256
@@ -225,6 +258,14 @@ class GlobalHaltTransition(_RuntimeHaltModel):
 
 
 class SubmitPermitPrepared(_RuntimeHaltModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "x-cross-field-invariants": [
+                "expires_at == prepared_at + 5 seconds"
+            ]
+        }
+    )
+
     permit_id: UUID
     approval_event_id: UUID
     approval_reference_digest: Sha256
@@ -259,6 +300,14 @@ class PreparedSubmitPermit(SubmitPermitPrepared):
 
 
 class SubmitPermitConsumed(_RuntimeHaltModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "x-cross-field-invariants": [
+                "permit_id, prepared_event_digest, halt_stream_id, halt_generation, and halt_transition_digest match the stored prepared permit"
+            ]
+        }
+    )
+
     permit_id: UUID
     prepared_event_digest: Sha256
     halt_stream_id: UUID

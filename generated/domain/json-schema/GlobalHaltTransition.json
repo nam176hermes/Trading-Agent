@@ -62,8 +62,10 @@
       "items": {
         "$ref": "#/$defs/GlobalHaltReasonCode"
       },
+      "minItems": 1,
       "title": "Reason Codes",
-      "type": "array"
+      "type": "array",
+      "uniqueItems": true
     },
     "recovery_authorization_digest": {
       "anyOf": [
@@ -119,5 +121,13 @@
     "schema_version"
   ],
   "title": "GlobalHaltTransition",
-  "type": "object"
+  "type": "object",
+  "x-cross-field-invariants": [
+    "next_generation == 1 => prior_generation == 0 and prior_transition_digest == null",
+    "next_generation > 1 => prior_generation > 0 and prior_transition_digest != null",
+    "next_generation > 1 => next_generation == prior_generation + 1",
+    "next_generation == 1 and next_status == ACTIVE => reason_codes == [INITIALIZED_SAFE] and recovery_authorization_digest == null",
+    "next_generation > 1 and next_status == ACTIVE => reason_codes == [RECOVERY_AUTHORIZED] and recovery_authorization_digest != null",
+    "next_status == HALTED => reason_codes is a nonempty canonical subset of [SAFETY_AUTHORITY_UNKNOWN, KILL_SWITCH_ACTIVE, DAILY_LOSS_LIMIT, DRAWDOWN_LIMIT] and recovery_authorization_digest == null"
+  ]
 }
