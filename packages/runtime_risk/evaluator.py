@@ -311,6 +311,8 @@ def _venue_is_healthy(
     intent: OrderIntent,
     spec: RuntimeInstrumentRiskSpec | None,
     observation: RuntimeRiskObservation,
+    policy: RuntimeRiskPolicy,
+    decided_at: datetime,
 ) -> bool:
     venue_id = intent.instrument.venue if spec is None else spec.venue_id
     matches = tuple(
@@ -319,6 +321,11 @@ def _venue_is_healthy(
     return (
         len(matches) == 1
         and matches[0].observed_at <= observation.observed_at
+        and _age_is_valid(
+            matches[0].observed_at,
+            decided_at,
+            policy.market_data_max_age_seconds,
+        )
         and matches[0].health is RuntimeVenueHealth.HEALTHY
     )
 
@@ -403,7 +410,9 @@ def evaluate_runtime_order_risk(
         decided_at,
         valuation_valid,
     )
-    venue_healthy = _venue_is_healthy(intent, spec, observation)
+    venue_healthy = _venue_is_healthy(
+        intent, spec, observation, policy, decided_at
+    )
     reporting = observation.portfolio.reporting_currency
     reporting_balances = tuple(
         balance

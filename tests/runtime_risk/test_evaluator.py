@@ -58,6 +58,15 @@ from packages.runtime_risk import (
 
 NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "SIM")
+SAME_VENUE_INSTRUMENT = InstrumentId(
+    "ETH-USD", ProductType.CRYPTO_SPOT, "SIM"
+)
+OTHER_VENUE_INSTRUMENT = InstrumentId(
+    "SOL-USD", ProductType.CRYPTO_SPOT, "ALT"
+)
+UNRELATED_INSTRUMENT = InstrumentId(
+    "ETH-USD", ProductType.CRYPTO_SPOT, "OTHER"
+)
 
 
 def uid(value: int) -> UUID:
@@ -319,6 +328,139 @@ def evaluator_case(
 @pytest.fixture(name="case")
 def fixture_case() -> EvaluatorCase:
     return evaluator_case()
+
+
+def _single_reason_case(reason: RuntimeRiskReasonCode) -> EvaluatorCase:
+    case = evaluator_case()
+    if reason is RuntimeRiskReasonCode.POLICY_RISK_NOT_APPROVED:
+        return EvaluatorCase(
+            case.intent.model_copy(update={"risk_decision_id": uid(999)}),
+            case.policy_decision,
+            case.observation,
+            case.policy,
+        )
+    if reason is RuntimeRiskReasonCode.ENGINE_NOT_READY:
+        observation = case.observation.model_copy(update={"engine_ready": False})
+    elif reason is RuntimeRiskReasonCode.INSTRUMENT_UNKNOWN:
+        observation = case.observation.model_copy(update={"instrument_specs": ()})
+    elif reason is RuntimeRiskReasonCode.MARKET_DATA_STALE:
+        observation = case.observation.model_copy(update={"market_snapshots": ()})
+    elif reason is RuntimeRiskReasonCode.VALUATION_AUTHORITY_MISSING:
+        case = evaluator_case(
+            settlement_currency=Currency.USDT,
+            conversion_rate=Decimal("1"),
+        )
+        observation = case.observation.model_copy(update={"conversion_rates": ()})
+    elif reason is RuntimeRiskReasonCode.PORTFOLIO_STATE_INVALID:
+        portfolio = case.observation.portfolio.model_copy(
+            update={"instrument_exposures": ()}
+        )
+        observation = case.observation.model_copy(update={"portfolio": portfolio})
+    elif reason is RuntimeRiskReasonCode.PRICE_PRECISION_INVALID:
+        intent = case.intent.model_copy(
+            update={"limit_price": Price(Decimal("100.001"), Currency.USD)}
+        )
+        return EvaluatorCase(
+            intent, case.policy_decision, case.observation, case.policy
+        )
+    elif reason is RuntimeRiskReasonCode.QUANTITY_PRECISION_INVALID:
+        spec = case.observation.instrument_specs[0].model_copy(
+            update={"quantity_increment": OrderQuantity(Decimal("0.003"), 3)}
+        )
+        observation = case.observation.model_copy(update={"instrument_specs": (spec,)})
+    elif reason is RuntimeRiskReasonCode.QUANTITY_OUT_OF_BOUNDS:
+        spec = case.observation.instrument_specs[0].model_copy(
+            update={"min_quantity": OrderQuantity(Decimal("1.001"), 3)}
+        )
+        observation = case.observation.model_copy(update={"instrument_specs": (spec,)})
+    elif reason is RuntimeRiskReasonCode.ORDER_NOTIONAL_LIMIT:
+        spec = case.observation.instrument_specs[0].model_copy(
+            update={"max_order_notional": money("100")}
+        )
+        observation = case.observation.model_copy(update={"instrument_specs": (spec,)})
+    elif reason is RuntimeRiskReasonCode.BALANCE_MARGIN_LIMIT:
+        policy = case.policy.model_copy(update={"min_available_funds": money("9990")})
+        return EvaluatorCase(
+            case.intent, case.policy_decision, case.observation, policy
+        )
+    elif reason is RuntimeRiskReasonCode.PENDING_EXPOSURE_LIMIT:
+        policy = case.policy.model_copy(update={"max_pending_exposure": money("100")})
+        return EvaluatorCase(
+            case.intent, case.policy_decision, case.observation, policy
+        )
+    elif reason is RuntimeRiskReasonCode.GROSS_EXPOSURE_LIMIT:
+        policy = case.policy.model_copy(update={"max_gross_exposure": money("302")})
+        return EvaluatorCase(
+            case.intent, case.policy_decision, case.observation, policy
+        )
+    elif reason is RuntimeRiskReasonCode.NET_EXPOSURE_LIMIT:
+        policy = case.policy.model_copy(update={"max_abs_net_exposure": money("302")})
+        return EvaluatorCase(
+            case.intent, case.policy_decision, case.observation, policy
+        )
+    elif reason is RuntimeRiskReasonCode.STRATEGY_EXPOSURE_LIMIT:
+        policy = case.policy.model_copy(update={"max_strategy_exposure": money("302")})
+        return EvaluatorCase(
+            case.intent, case.policy_decision, case.observation, policy
+        )
+    elif reason is RuntimeRiskReasonCode.VENUE_EXPOSURE_LIMIT:
+        policy = case.policy.model_copy(update={"max_venue_exposure": money("302")})
+        return EvaluatorCase(
+            case.intent, case.policy_decision, case.observation, policy
+        )
+    elif reason is RuntimeRiskReasonCode.DAILY_LOSS_LIMIT:
+        observation = case.observation.model_copy(update={"daily_pnl": money("-1000.01")})
+    elif reason is RuntimeRiskReasonCode.DRAWDOWN_LIMIT:
+        observation = case.observation.model_copy(update={"peak_equity": money("2000.01")})
+    elif reason is RuntimeRiskReasonCode.REDUCE_ONLY_VIOLATION:
+        intent = case.intent.model_copy(update={"reduce_only": True})
+        return EvaluatorCase(
+            intent, case.policy_decision, case.observation, case.policy
+        )
+    elif reason is RuntimeRiskReasonCode.COMMAND_RATE_LIMIT:
+        observation = case.observation.model_copy(update={"commands_in_window": 10})
+    elif reason is RuntimeRiskReasonCode.VENUE_UNHEALTHY:
+        venue = case.observation.venue_health[0].model_copy(
+            update={"health": RuntimeVenueHealth.DEGRADED}
+        )
+        observation = case.observation.model_copy(update={"venue_health": (venue,)})
+    elif reason is RuntimeRiskReasonCode.DUPLICATE_COMMAND:
+        observation = case.observation.model_copy(
+            update={
+                "prior_commands": (
+                    PriorRuntimeCommandIdentity(
+                        intent_id=case.intent.intent_id,
+                        client_order_id="different-client",
+                    ),
+                )
+            }
+        )
+    else:  # pragma: no cover - guarded by the closed parameter list below
+        raise AssertionError(f"unsupported reason: {reason}")
+    return EvaluatorCase(
+        case.intent,
+        case.policy_decision,
+        observation,
+        case.policy,
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    tuple(
+        reason
+        for reason in RuntimeRiskReasonCode
+        if reason is not RuntimeRiskReasonCode.WITHIN_LIMITS
+    ),
+)
+def test_each_rejection_reason_has_an_independent_mutation(
+    reason: RuntimeRiskReasonCode,
+) -> None:
+    case = _single_reason_case(reason)
+
+    decision = case.evaluate()
+
+    assert decision.reason_codes == (reason,)
 
 
 def test_valid_order_is_approved_with_exact_bindings_and_projections(
@@ -806,6 +948,215 @@ def test_exact_limits_are_inclusive_and_one_unit_breaches_reject(case: Evaluator
     )
 
 
+def _marked_position(
+    *,
+    strategy_id: str,
+    instrument: InstrumentId,
+    quantity: str,
+    mark: str,
+) -> AccountPositionSnapshot:
+    return AccountPositionSnapshot(
+        account_id="account-1",
+        strategy_id=strategy_id,
+        instrument=instrument,
+        settlement_currency=Currency.USD,
+        quantity=Quantity(Decimal(quantity), 3),
+        mark=PositionMark(
+            price=Price(Decimal(mark), Currency.USD),
+            marked_at=NOW,
+            provenance_id=f"mark-{strategy_id}-{instrument.symbol}",
+        ),
+        average_entry_price=Price(Decimal(mark), Currency.USD),
+        realized_pnl=money("0"),
+        unrealized_pnl=money("0"),
+        fees=money("0"),
+        funding=money("0"),
+        observed_at=NOW,
+        schema_version="account-position-v1",
+    )
+
+
+def _distinct_exposure_case() -> EvaluatorCase:
+    case = evaluator_case()
+    positions = tuple(
+        sorted(
+            (
+                _marked_position(
+                    strategy_id="strategy-1",
+                    instrument=INSTRUMENT,
+                    quantity="2",
+                    mark="100",
+                ),
+                _marked_position(
+                    strategy_id="strategy-1",
+                    instrument=OTHER_VENUE_INSTRUMENT,
+                    quantity="1",
+                    mark="40",
+                ),
+                _marked_position(
+                    strategy_id="strategy-2",
+                    instrument=SAME_VENUE_INSTRUMENT,
+                    quantity="1",
+                    mark="60",
+                ),
+                _marked_position(
+                    strategy_id="strategy-3",
+                    instrument=UNRELATED_INSTRUMENT,
+                    quantity="-1",
+                    mark="30",
+                ),
+            ),
+            key=lambda position: (
+                position.strategy_id,
+                position.instrument.canonical,
+            ),
+        )
+    )
+    instrument_exposures = tuple(
+        sorted(
+            (
+                InstrumentExposureSnapshot(
+                    instrument=INSTRUMENT, exposure=exposure("200", "200")
+                ),
+                InstrumentExposureSnapshot(
+                    instrument=SAME_VENUE_INSTRUMENT,
+                    exposure=exposure("60", "60"),
+                ),
+                InstrumentExposureSnapshot(
+                    instrument=OTHER_VENUE_INSTRUMENT,
+                    exposure=exposure("40", "40"),
+                ),
+                InstrumentExposureSnapshot(
+                    instrument=UNRELATED_INSTRUMENT,
+                    exposure=exposure("30", "-30"),
+                ),
+            ),
+            key=lambda item: item.instrument.canonical,
+        )
+    )
+    portfolio = case.observation.portfolio.model_copy(
+        update={
+            "positions": positions,
+            "total_exposure": exposure("330", "270"),
+            "instrument_exposures": instrument_exposures,
+            "strategy_exposures": (
+                StrategyExposureSnapshot(
+                    strategy_id="strategy-1", exposure=exposure("240", "240")
+                ),
+                StrategyExposureSnapshot(
+                    strategy_id="strategy-2", exposure=exposure("60", "60")
+                ),
+                StrategyExposureSnapshot(
+                    strategy_id="strategy-3", exposure=exposure("30", "-30")
+                ),
+            ),
+            "venue_exposures": (
+                VenueExposureSnapshot(
+                    venue_id="ALT", exposure=exposure("40", "40")
+                ),
+                VenueExposureSnapshot(
+                    venue_id="OTHER", exposure=exposure("30", "-30")
+                ),
+                VenueExposureSnapshot(
+                    venue_id="SIM", exposure=exposure("260", "260")
+                ),
+            ),
+        }
+    )
+    observation = case.observation.model_copy(update={"portfolio": portfolio})
+    return EvaluatorCase(
+        case.intent, case.policy_decision, observation, case.policy
+    )
+
+
+@pytest.mark.parametrize(
+    ("policy_field", "threshold", "reason"),
+    [
+        (
+            "max_pending_exposure",
+            "100",
+            RuntimeRiskReasonCode.PENDING_EXPOSURE_LIMIT,
+        ),
+        ("max_gross_exposure", "432", RuntimeRiskReasonCode.GROSS_EXPOSURE_LIMIT),
+        ("max_abs_net_exposure", "372", RuntimeRiskReasonCode.NET_EXPOSURE_LIMIT),
+        (
+            "max_strategy_exposure",
+            "342",
+            RuntimeRiskReasonCode.STRATEGY_EXPOSURE_LIMIT,
+        ),
+        (
+            "max_venue_exposure",
+            "362",
+            RuntimeRiskReasonCode.VENUE_EXPOSURE_LIMIT,
+        ),
+    ],
+)
+def test_each_exposure_limit_reads_its_distinct_projection(
+    policy_field: str,
+    threshold: str,
+    reason: RuntimeRiskReasonCode,
+) -> None:
+    case = _distinct_exposure_case()
+    projection = project_runtime_order(
+        case.intent, case.observation, case.policy, decided_at=NOW
+    )
+    assert projection.projected_pending == money("101")
+    assert projection.projected_gross == money("433")
+    assert projection.projected_net == money("373")
+    assert projection.projected_strategy_gross == money("343")
+    assert projection.projected_venue_gross == money("363")
+    policy = case.policy.model_copy(update={policy_field: money(threshold)})
+
+    assert case.evaluate(policy=policy).reason_codes == (reason,)
+
+
+def test_distinct_exposure_limits_accept_exact_boundaries() -> None:
+    case = _distinct_exposure_case()
+    policy = case.policy.model_copy(
+        update={
+            "max_pending_exposure": money("101"),
+            "max_gross_exposure": money("433"),
+            "max_abs_net_exposure": money("373"),
+            "max_strategy_exposure": money("343"),
+            "max_venue_exposure": money("363"),
+        }
+    )
+
+    assert case.evaluate(policy=policy).reason_codes == (
+        RuntimeRiskReasonCode.WITHIN_LIMITS,
+    )
+
+
+@pytest.mark.parametrize(
+    ("current", "side", "exact_limit", "breach_limit"),
+    [
+        ("2", OrderSide.BUY, "303", "302"),
+        ("-2", OrderSide.SELL, "300", "299"),
+    ],
+    ids=["positive-net", "negative-net"],
+)
+def test_absolute_net_limit_accepts_equality_and_rejects_one_unit_breach(
+    current: str,
+    side: OrderSide,
+    exact_limit: str,
+    breach_limit: str,
+) -> None:
+    case = evaluator_case(current_quantity=current, side=side)
+    exact = case.policy.model_copy(
+        update={"max_abs_net_exposure": money(exact_limit)}
+    )
+    breached = case.policy.model_copy(
+        update={"max_abs_net_exposure": money(breach_limit)}
+    )
+
+    assert case.evaluate(policy=exact).reason_codes == (
+        RuntimeRiskReasonCode.WITHIN_LIMITS,
+    )
+    assert case.evaluate(policy=breached).reason_codes == (
+        RuntimeRiskReasonCode.NET_EXPOSURE_LIMIT,
+    )
+
+
 def test_missing_reporting_balance_is_balance_margin_rejection(case: EvaluatorCase) -> None:
     portfolio = case.observation.portfolio.model_copy(update={"balances": ()})
     observation = case.observation.model_copy(update={"portfolio": portfolio})
@@ -840,6 +1191,360 @@ def test_different_currency_balance_does_not_supply_reporting_funds(
     assert case.evaluate(observation=observation).reason_codes == (
         RuntimeRiskReasonCode.BALANCE_MARGIN_LIMIT,
     )
+
+
+def _binding_case(binding: str) -> tuple[EvaluatorCase, tuple[RuntimeRiskReasonCode, ...]]:
+    case = evaluator_case()
+    if binding == "intent-account":
+        intent = case.intent.model_copy(update={"account_id": "account-2"})
+        return (
+            EvaluatorCase(intent, case.policy_decision, case.observation, case.policy),
+            (RuntimeRiskReasonCode.PORTFOLIO_STATE_INVALID,),
+        )
+    if binding == "policy-account":
+        policy = case.policy.model_copy(update={"account_id": "account-2"})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, case.observation, policy),
+            (RuntimeRiskReasonCode.PORTFOLIO_STATE_INVALID,),
+        )
+    if binding == "intent-instrument":
+        intent = case.intent.model_copy(update={"instrument": SAME_VENUE_INSTRUMENT})
+        return (
+            EvaluatorCase(intent, case.policy_decision, case.observation, case.policy),
+            (RuntimeRiskReasonCode.INSTRUMENT_UNKNOWN,),
+        )
+    if binding == "instrument-spec":
+        spec = case.observation.instrument_specs[0].model_copy(
+            update={"instrument": SAME_VENUE_INSTRUMENT}
+        )
+        observation = case.observation.model_copy(update={"instrument_specs": (spec,)})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.INSTRUMENT_UNKNOWN,),
+        )
+    if binding == "spec-venue":
+        spec = case.observation.instrument_specs[0].model_copy(
+            update={"venue_id": "ALT"}
+        )
+        observation = case.observation.model_copy(update={"instrument_specs": (spec,)})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.INSTRUMENT_UNKNOWN,),
+        )
+    if binding == "market-instrument":
+        market = case.observation.market_snapshots[0].model_copy(
+            update={"instrument": SAME_VENUE_INSTRUMENT}
+        )
+        observation = case.observation.model_copy(update={"market_snapshots": (market,)})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.MARKET_DATA_STALE,),
+        )
+    if binding == "market-currency":
+        market = case.observation.market_snapshots[0].model_copy(
+            update={
+                "bid": Price(Decimal("99"), Currency.USDT),
+                "ask": Price(Decimal("101"), Currency.USDT),
+                "last": Price(Decimal("100"), Currency.USDT),
+            }
+        )
+        observation = case.observation.model_copy(update={"market_snapshots": (market,)})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.MARKET_DATA_STALE,),
+        )
+    if binding == "order-price-currency":
+        intent = case.intent.model_copy(
+            update={"limit_price": Price(Decimal("100"), Currency.USDT)}
+        )
+        return (
+            EvaluatorCase(intent, case.policy_decision, case.observation, case.policy),
+            (
+                RuntimeRiskReasonCode.VALUATION_AUTHORITY_MISSING,
+                RuntimeRiskReasonCode.PRICE_PRECISION_INVALID,
+            ),
+        )
+    if binding == "policy-currency":
+        changes = {
+            name: money(getattr(case.policy, name).amount, Currency.USDT)
+            for name in (
+                "max_pending_exposure",
+                "max_gross_exposure",
+                "max_abs_net_exposure",
+                "max_strategy_exposure",
+                "max_venue_exposure",
+                "min_available_funds",
+                "max_daily_loss",
+                "max_drawdown",
+            )
+        }
+        policy = case.policy.model_copy(update=changes)
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, case.observation, policy),
+            (RuntimeRiskReasonCode.VALUATION_AUTHORITY_MISSING,),
+        )
+    if binding == "conversion-direction":
+        case = evaluator_case(
+            settlement_currency=Currency.USDT,
+            conversion_rate=Decimal("1"),
+        )
+        conversion = RuntimeRiskConversionRate(
+            source_currency=Currency.USD,
+            target_currency=Currency.USDT,
+            rate=Decimal("1"),
+            observed_at=NOW,
+            provenance_id="fx-reversed",
+        )
+        observation = case.observation.model_copy(
+            update={"conversion_rates": (conversion,)}
+        )
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.VALUATION_AUTHORITY_MISSING,),
+        )
+    if binding == "market-absent":
+        observation = case.observation.model_copy(update={"market_snapshots": ()})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.MARKET_DATA_STALE,),
+        )
+    if binding == "venue-absent":
+        observation = case.observation.model_copy(update={"venue_health": ()})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.VENUE_UNHEALTHY,),
+        )
+    if binding == "venue-wrong":
+        venue = RuntimeVenueHealthRecord(
+            venue_id="ALT",
+            health=RuntimeVenueHealth.HEALTHY,
+            observed_at=NOW,
+        )
+        observation = case.observation.model_copy(update={"venue_health": (venue,)})
+        return (
+            EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+            (RuntimeRiskReasonCode.VENUE_UNHEALTHY,),
+        )
+    raise AssertionError(binding)
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "intent-account",
+        "policy-account",
+        "intent-instrument",
+        "instrument-spec",
+        "spec-venue",
+        "market-instrument",
+        "market-currency",
+        "order-price-currency",
+        "policy-currency",
+        "conversion-direction",
+        "market-absent",
+        "venue-absent",
+        "venue-wrong",
+    ],
+)
+def test_exact_identity_currency_and_missing_authority_bindings(binding: str) -> None:
+    case, expected = _binding_case(binding)
+
+    assert case.evaluate().reason_codes == expected
+
+
+def test_strategy_identity_does_not_replace_another_strategys_position(
+    case: EvaluatorCase,
+) -> None:
+    intent = case.intent.model_copy(update={"strategy_id": "strategy-2"})
+
+    decision = case.evaluate(intent=intent)
+
+    assert decision.reason_codes == (RuntimeRiskReasonCode.WITHIN_LIMITS,)
+    assert decision.projected_position_quantity == Quantity(Decimal("1"), 3)
+    assert decision.projected_strategy_gross == money("101")
+    assert decision.projected_instrument_gross == money("301")
+
+
+def _freshness_case(
+    authority: str,
+    age_seconds: int,
+) -> tuple[EvaluatorCase, tuple[RuntimeRiskReasonCode, ...]]:
+    observed_at = NOW - timedelta(seconds=age_seconds)
+    expected_authority = (
+        None
+        if age_seconds == 10
+        else {
+            "portfolio": RuntimeRiskReasonCode.PORTFOLIO_STATE_INVALID,
+            "balance": RuntimeRiskReasonCode.PORTFOLIO_STATE_INVALID,
+            "position": RuntimeRiskReasonCode.PORTFOLIO_STATE_INVALID,
+            "mark": RuntimeRiskReasonCode.PORTFOLIO_STATE_INVALID,
+            "market": RuntimeRiskReasonCode.MARKET_DATA_STALE,
+            "conversion": RuntimeRiskReasonCode.VALUATION_AUTHORITY_MISSING,
+            "venue": RuntimeRiskReasonCode.VENUE_UNHEALTHY,
+        }[authority]
+    )
+    case = (
+        evaluator_case(
+            current_quantity="0",
+            settlement_currency=Currency.USDT,
+            conversion_rate=Decimal("1"),
+        )
+        if authority == "conversion"
+        else evaluator_case(current_quantity="0")
+        if authority in ("portfolio", "position")
+        else evaluator_case()
+    )
+    observation = case.observation
+    if authority == "market":
+        market = observation.market_snapshots[0].model_copy(
+            update={"observed_at": observed_at}
+        )
+        observation = observation.model_copy(update={"market_snapshots": (market,)})
+    elif authority == "conversion":
+        conversion = observation.conversion_rates[0].model_copy(
+            update={"observed_at": observed_at}
+        )
+        observation = observation.model_copy(
+            update={"conversion_rates": (conversion,)}
+        )
+    elif authority == "venue":
+        venue = observation.venue_health[0].model_copy(
+            update={"observed_at": observed_at}
+        )
+        observation = observation.model_copy(update={"venue_health": (venue,)})
+    elif authority == "balance":
+        balance = observation.portfolio.balances[0].model_copy(
+            update={"observed_at": observed_at}
+        )
+        portfolio = observation.portfolio.model_copy(update={"balances": (balance,)})
+        observation = observation.model_copy(update={"portfolio": portfolio})
+    elif authority == "mark":
+        position = observation.portfolio.positions[0]
+        assert position.mark is not None
+        mark = position.mark.model_copy(update={"marked_at": observed_at})
+        position = position.model_copy(update={"mark": mark})
+        portfolio = observation.portfolio.model_copy(
+            update={"positions": (position,)}
+        )
+        observation = observation.model_copy(update={"portfolio": portfolio})
+    elif authority == "position":
+        zero_position = AccountPositionSnapshot(
+            account_id="account-1",
+            strategy_id="strategy-1",
+            instrument=INSTRUMENT,
+            settlement_currency=Currency.USD,
+            quantity=Quantity(Decimal("0"), 3),
+            mark=None,
+            average_entry_price=None,
+            realized_pnl=money("0"),
+            unrealized_pnl=money("0"),
+            fees=money("0"),
+            funding=money("0"),
+            observed_at=observed_at,
+            schema_version="account-position-v1",
+        )
+        portfolio = observation.portfolio.model_copy(
+            update={"positions": (zero_position,)}
+        )
+        observation = observation.model_copy(update={"portfolio": portfolio})
+    elif authority == "portfolio":
+        portfolio = observation.portfolio.model_copy(
+            update={
+                "balances": (),
+                "positions": (),
+                "observed_at": observed_at,
+            }
+        )
+        observation = observation.model_copy(update={"portfolio": portfolio})
+        expected = (RuntimeRiskReasonCode.BALANCE_MARGIN_LIMIT,)
+        if expected_authority is not None:
+            expected = (
+                expected_authority,
+                RuntimeRiskReasonCode.BALANCE_MARGIN_LIMIT,
+            )
+        return (
+            EvaluatorCase(
+                case.intent,
+                case.policy_decision,
+                observation,
+                case.policy,
+            ),
+            expected,
+        )
+    else:
+        raise AssertionError(authority)
+    expected = (
+        (RuntimeRiskReasonCode.WITHIN_LIMITS,)
+        if expected_authority is None
+        else (expected_authority,)
+    )
+    return (
+        EvaluatorCase(case.intent, case.policy_decision, observation, case.policy),
+        expected,
+    )
+
+
+@pytest.mark.parametrize(
+    "authority",
+    ["portfolio", "balance", "position", "mark", "market", "conversion", "venue"],
+)
+@pytest.mark.parametrize("age_seconds", [10, 11], ids=["exact-boundary", "stale-by-one"])
+def test_each_authority_timestamp_has_an_independent_freshness_boundary(
+    authority: str,
+    age_seconds: int,
+) -> None:
+    case, expected = _freshness_case(authority, age_seconds)
+
+    assert case.evaluate().reason_codes == expected
+
+
+@pytest.mark.parametrize(
+    ("cash", "expected"),
+    [
+        ("20.30", (RuntimeRiskReasonCode.WITHIN_LIMITS,)),
+        ("20.29", (RuntimeRiskReasonCode.BALANCE_MARGIN_LIMIT,)),
+    ],
+)
+def test_available_cash_has_an_independent_exact_margin_buffer_boundary(
+    case: EvaluatorCase,
+    cash: str,
+    expected: tuple[RuntimeRiskReasonCode, ...],
+) -> None:
+    balance = case.observation.portfolio.balances[0].model_copy(
+        update={"cash": money(cash)}
+    )
+    portfolio = case.observation.portfolio.model_copy(update={"balances": (balance,)})
+    observation = case.observation.model_copy(update={"portfolio": portfolio})
+    policy = case.policy.model_copy(update={"min_available_funds": money("10")})
+
+    assert case.evaluate(observation=observation, policy=policy).reason_codes == expected
+
+
+@pytest.mark.parametrize(
+    ("margin_rate", "expected"),
+    [
+        ("0.2", (RuntimeRiskReasonCode.WITHIN_LIMITS,)),
+        ("0.21", (RuntimeRiskReasonCode.BALANCE_MARGIN_LIMIT,)),
+    ],
+)
+def test_initial_margin_rate_has_an_independent_available_funds_boundary(
+    case: EvaluatorCase,
+    margin_rate: str,
+    expected: tuple[RuntimeRiskReasonCode, ...],
+) -> None:
+    balance = case.observation.portfolio.balances[0].model_copy(
+        update={"cash": money("100")}
+    )
+    portfolio = case.observation.portfolio.model_copy(update={"balances": (balance,)})
+    spec = case.observation.instrument_specs[0].model_copy(
+        update={"initial_margin_rate": Decimal(margin_rate)}
+    )
+    observation = case.observation.model_copy(
+        update={"portfolio": portfolio, "instrument_specs": (spec,)}
+    )
+    policy = case.policy.model_copy(update={"min_available_funds": money("79.40")})
+
+    assert case.evaluate(observation=observation, policy=policy).reason_codes == expected
 
 
 def test_identical_inputs_and_hostile_decimal_context_are_canonical(case: EvaluatorCase) -> None:
