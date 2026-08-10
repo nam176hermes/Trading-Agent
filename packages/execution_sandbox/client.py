@@ -37,6 +37,7 @@ from .models import (
     SandboxCommandResult,
     SandboxConnectionState,
     SandboxExecutionError,
+    SandboxKnownReport,
     SandboxLostResponse,
     SandboxModifyRequest,
     SandboxOrderSnapshot,
@@ -511,9 +512,6 @@ class SandboxExecutionClient:
                     canonical_event = serialize_event(report.event)
                 except (TypeError, ValueError) as exc:
                     raise SandboxExecutionError("invalid scenario report") from exc
-                retained = retained + (
-                    _RetainedReport(report_id=report.report_id, canonical_event=canonical_event),
-                )
             else:
                 canonical_event = next(
                     (
@@ -525,6 +523,12 @@ class SandboxExecutionClient:
                 )
                 if canonical_event is None:
                     raise SandboxExecutionError("duplicate report original is unavailable")
+            retained = retained + (
+                _RetainedReport(
+                    report_id=report.report_id,
+                    canonical_event=canonical_event,
+                ),
+            )
             event = _canonical_envelope(canonical_event)
             if event.payload.order_id != order_id:
                 raise SandboxExecutionError("report order_id is unknown")
@@ -571,14 +575,22 @@ class SandboxExecutionClient:
         executed: tuple[UUID, ...] | None = None,
     ) -> None:
         next_queue = self._queued_reports if queued is None else queued
+        next_retained = self._retained_reports if retained is None else retained
         self._snapshot = SandboxSnapshot(
             connection_state=self._snapshot.connection_state if connection_state is None else connection_state,
             current_time=self._snapshot.current_time if current_time is None else current_time,
             orders=self._snapshot.orders if orders is None else orders,
+            known_reports=tuple(
+                SandboxKnownReport(
+                    report_id=item.report_id,
+                    event=_canonical_envelope(item.canonical_event),
+                )
+                for item in next_retained
+            ),
             queued_reports=tuple(item.plan for item in next_queue),
         )
         self._queued_reports = next_queue
-        self._retained_reports = self._retained_reports if retained is None else retained
+        self._retained_reports = next_retained
         self._executed_command_ids = self._executed_command_ids if executed is None else executed
 
     def _order_for(self, order_id: UUID) -> SandboxOrderSnapshot:

@@ -14,6 +14,7 @@ from packages.execution_sandbox import (
     SandboxCommandPlan,
     SandboxConnectionState,
     SandboxExecutionError,
+    SandboxKnownReport,
     SandboxLostResponse,
     SandboxModifyRequest,
     SandboxOrderSnapshot,
@@ -226,6 +227,71 @@ def test_report_canonicalization_rejects_forged_nested_event(submitted_envelope:
     object.__setattr__(forged, "payload", object())
     with pytest.raises(ValueError):
         SandboxReportPlan(report_id=uid(93), deliver_at=NOW, event=forged)
+
+
+def test_known_report_is_strict_frozen_and_rejects_forged_nested_event(
+    submitted_envelope: EventEnvelope[object],
+) -> None:
+    known = SandboxKnownReport(report_id=uid(94), event=submitted_envelope)
+    forged = submitted_envelope.model_copy()
+    object.__setattr__(forged, "payload", object())
+
+    with pytest.raises(ValidationError):
+        SandboxKnownReport(report_id=uid(95), event=submitted_envelope, unexpected="value")
+    with pytest.raises(ValidationError):
+        known.report_id = uid(96)  # type: ignore[misc]
+    with pytest.raises(ValueError):
+        SandboxKnownReport(report_id=uid(97), event=forged)
+
+
+def test_snapshot_requires_each_queued_id_to_be_known(
+    submitted_envelope: EventEnvelope[object],
+) -> None:
+    known = SandboxKnownReport(report_id=uid(20), event=submitted_envelope)
+    queued = SandboxReportPlan(report_id=uid(21), deliver_at=NOW, event=submitted_envelope)
+
+    with pytest.raises(ValueError, match="queued report_id"):
+        SandboxSnapshot(
+            connection_state=SandboxConnectionState.CONNECTED,
+            current_time=NOW,
+            known_reports=(known,),
+            queued_reports=(queued,),
+        )
+
+
+def test_snapshot_rejects_duplicate_known_report_ids(
+    submitted_envelope: EventEnvelope[object],
+) -> None:
+    known = SandboxKnownReport(report_id=uid(98), event=submitted_envelope)
+
+    with pytest.raises(ValueError, match="known_reports contain duplicate report_id"):
+        SandboxSnapshot(
+            connection_state=SandboxConnectionState.CONNECTED,
+            current_time=NOW,
+            known_reports=(known, known),
+        )
+
+
+def test_snapshot_requires_known_report_order_id_to_be_present(
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[object],
+) -> None:
+    known = SandboxKnownReport(report_id=uid(99), event=submitted_envelope)
+    other_order = SandboxOrderSnapshot(
+        order_id=uid(100),
+        client_order_id=prepared_case.intent.client_order_id,
+        order_intent=prepared_case.intent.model_copy(update={"intent_id": uid(100)}),
+        venue_state=OrderState(order_id=uid(100)),
+        observed_state=OrderState(order_id=uid(100)),
+    )
+
+    with pytest.raises(ValueError, match="known report order_id"):
+        SandboxSnapshot(
+            connection_state=SandboxConnectionState.CONNECTED,
+            current_time=NOW,
+            orders=(other_order,),
+            known_reports=(known,),
+        )
 
 
 def test_snapshot_uses_frozen_tuples_not_mutable_collections() -> None:

@@ -169,6 +169,55 @@ def valid_submit_request(prepared_case: Any, *, command_id: int = 100) -> Sandbo
     )
 
 
+def _original_duplicate_client(
+    prepared_case: Any,
+    safety_verifier: object,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> SandboxExecutionClient:
+    submitted = order_envelope(
+        submitted_envelope,
+        event_id=10,
+        envelope_sequence=1,
+        order_sequence=1,
+        status=OrderStatus.SUBMITTED,
+    )
+    accepted = order_envelope(
+        submitted_envelope,
+        event_id=11,
+        envelope_sequence=2,
+        order_sequence=2,
+        status=OrderStatus.ACCEPTED,
+    )
+    return client_for(
+        scenario(
+            commands=(command(100, SandboxCommandKind.SUBMIT, (20, 21, 22)),),
+            reports=(
+                original(20, submitted),
+                original(21, accepted),
+                duplicate(22, 21, at=NOW + timedelta(seconds=1)),
+            ),
+        ),
+        safety_verifier,
+    )
+
+
+def test_snapshot_retains_original_and_duplicate_after_delivery(
+    prepared_case: Any,
+    safety_verifier: object,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    client = _original_duplicate_client(prepared_case, safety_verifier, submitted_envelope)
+    client.submit(valid_submit_request(prepared_case))
+    client.drain_reports()
+    client.advance_time(to=NOW + timedelta(seconds=1))
+    client.drain_reports()
+
+    snapshot = client.snapshot()
+    assert [item.report_id for item in snapshot.known_reports] == [uid(20), uid(21), uid(22)]
+    assert snapshot.queued_reports == ()
+    assert snapshot.known_reports[1].event == snapshot.known_reports[2].event
+
+
 def test_delayed_acceptance_advances_venue_not_observed_until_drain(
     submitted_envelope: EventEnvelope[OrderEvent], prepared_case: Any, safety_verifier: Any
 ) -> None:

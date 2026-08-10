@@ -107,6 +107,16 @@ class SandboxReportPlan(SandboxModel):
         return self
 
 
+class SandboxKnownReport(SandboxModel):
+    report_id: UUID
+    event: EventEnvelope[object]
+
+    @model_validator(mode="after")
+    def _canonical_event(self) -> "SandboxKnownReport":
+        object.__setattr__(self, "event", _canonical_report_event(self.event))
+        return self
+
+
 class SandboxCommandPlan(SandboxModel):
     command_id: UUID
     kind: SandboxCommandKind
@@ -300,6 +310,7 @@ class SandboxSnapshot(SandboxModel):
     connection_state: SandboxConnectionState
     current_time: datetime
     orders: tuple[SandboxOrderSnapshot, ...] = ()
+    known_reports: tuple[SandboxKnownReport, ...] = ()
     queued_reports: tuple[SandboxReportPlan, ...] = ()
 
     @field_validator("current_time")
@@ -313,20 +324,32 @@ class SandboxSnapshot(SandboxModel):
             _canonical_model(order, SandboxOrderSnapshot, "orders")
             for order in self.orders
         )
+        known_reports = tuple(
+            _canonical_model(report, SandboxKnownReport, "known_reports")
+            for report in self.known_reports
+        )
         queued_reports = tuple(
             _canonical_model(report, SandboxReportPlan, "queued_reports")
             for report in self.queued_reports
         )
         order_ids = tuple(order.order_id for order in orders)
         client_order_ids = tuple(order.client_order_id for order in orders)
+        known_report_ids = tuple(report.report_id for report in known_reports)
         report_ids = tuple(report.report_id for report in queued_reports)
         if len(order_ids) != len(set(order_ids)):
             raise ValueError("orders contain duplicate order_id")
         if len(client_order_ids) != len(set(client_order_ids)):
             raise ValueError("orders contain duplicate client_order_id")
+        if len(known_report_ids) != len(set(known_report_ids)):
+            raise ValueError("known_reports contain duplicate report_id")
         if len(report_ids) != len(set(report_ids)):
             raise ValueError("queued_reports contain duplicate report_id")
+        if any(report_id not in known_report_ids for report_id in report_ids):
+            raise ValueError("queued report_id must occur exactly once in known_reports")
+        if any(report.event.payload.order_id not in order_ids for report in known_reports):
+            raise ValueError("known report order_id must be present in snapshot orders")
         object.__setattr__(self, "orders", orders)
+        object.__setattr__(self, "known_reports", known_reports)
         object.__setattr__(self, "queued_reports", queued_reports)
         return self
 
@@ -338,6 +361,7 @@ __all__ = [
     "SandboxCommandKind",
     "SandboxResponseDisposition",
     "SandboxReportPlan",
+    "SandboxKnownReport",
     "SandboxCommandPlan",
     "SandboxScenario",
     "SandboxSubmitRequest",
