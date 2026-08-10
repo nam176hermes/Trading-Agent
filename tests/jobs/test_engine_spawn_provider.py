@@ -430,16 +430,6 @@ def _close_spawn_fds(spawn) -> None:
         os.close(descriptor)
 
 
-def _fd_targets() -> dict[int, str]:
-    observed: dict[int, str] = {}
-    for entry in Path("/proc/self/fd").iterdir():
-        try:
-            observed[int(entry.name)] = os.readlink(entry)
-        except FileNotFoundError:
-            pass
-    return observed
-
-
 def _data_fd(argv: tuple[str, ...] | list[str], target: str) -> int:
     for index in range(len(argv) - 2):
         if argv[index] == "--ro-bind-data" and argv[index + 2] == target:
