@@ -328,6 +328,14 @@ def _verify_partitions(
                 reporting,
                 field=field,
             )
+        pending = _sum(
+            *(value.pending.amount for value in actual.values()),
+            field=f"{field} pending exposure",
+        )
+        if pending != portfolio.total_exposure.pending.amount:
+            raise ProjectionError(
+                f"{field} pending partitions are inconsistent with total pending"
+            )
 
 
 def _matching_position(
@@ -384,12 +392,12 @@ def project_runtime_order(
 ) -> RuntimeRiskProjection:
     """Derive conservative price and exact replacement portfolio projections."""
 
-    for value, field in (
-        (intent, "intent"),
-        (observation, "observation"),
-        (policy, "policy"),
+    for value, expected_type, field in (
+        (intent, OrderIntent, "intent"),
+        (observation, RuntimeRiskObservation, "observation"),
+        (policy, RuntimeRiskPolicy, "policy"),
     ):
-        if not isinstance(value, BaseModel):
+        if type(value) is not expected_type:
             raise ProjectionError(f"{field} is invalid")
         _validated_digest(value, field=field)
     try:
@@ -434,6 +442,14 @@ def project_runtime_order(
         raise ProjectionError("instrument authority does not exactly match order instrument")
     if spec.venue_id != intent.instrument.venue:
         raise ProjectionError("instrument venue authority does not match order venue")
+    venue = _one_by_key(
+        observation.venue_health,
+        spec.venue_id,
+        key_of=lambda item: item.venue_id,
+        field="venue health record",
+    )
+    if venue.venue_id != spec.venue_id:
+        raise ProjectionError("venue authority does not exactly match order venue")
     if any(
         price.currency is not spec.settlement_currency
         for price in (market.bid, market.ask, market.last)

@@ -47,6 +47,12 @@ from packages.runtime_risk import (
 
 NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "SIM")
+SAME_VENUE_INSTRUMENT = InstrumentId(
+    "ETH-USD", ProductType.CRYPTO_SPOT, "SIM"
+)
+OTHER_VENUE_INSTRUMENT = InstrumentId(
+    "SOL-USD", ProductType.CRYPTO_SPOT, "ALT"
+)
 
 
 def uid(value: int) -> UUID:
@@ -414,6 +420,31 @@ def test_cross_currency_rejects_missing_reversed_or_stale_rate(
         )
 
 
+@pytest.mark.parametrize("venue_kind", ["absent", "wrong"])
+def test_projection_requires_exact_venue_health_authority(
+    case: RuntimeCase,
+    venue_kind: str,
+) -> None:
+    records = ()
+    if venue_kind == "wrong":
+        records = (
+            RuntimeVenueHealthRecord(
+                venue_id="OTHER",
+                health=RuntimeVenueHealth.HEALTHY,
+                observed_at=NOW,
+            ),
+        )
+    observation = case.observation.model_copy(update={"venue_health": records})
+
+    with pytest.raises(ProjectionError, match="venue"):
+        project_runtime_order(
+            case.make_intent(),
+            observation,
+            case.policy,
+            decided_at=case.decided_at,
+        )
+
+
 def test_absent_new_partitions_start_from_canonical_zero() -> None:
     case = runtime_case(
         current_quantity=Decimal("0"),
@@ -450,6 +481,47 @@ def test_absent_partition_for_existing_nonzero_position_fails_closed(
     observation = case.observation.model_copy(update={"portfolio": portfolio})
 
     with pytest.raises(ProjectionError, match="partition"):
+        project_runtime_order(
+            case.make_intent(),
+            observation,
+            case.policy,
+            decided_at=case.decided_at,
+        )
+
+
+@pytest.mark.parametrize(
+    "partition_family",
+    ["instrument_exposures", "strategy_exposures", "venue_exposures"],
+)
+def test_each_keyed_partition_family_pending_must_sum_to_total_pending(
+    case: RuntimeCase,
+    partition_family: str,
+) -> None:
+    wrong = exposure("200", "200", pending="999")
+    if partition_family == "instrument_exposures":
+        replacement: object = (
+            InstrumentExposureSnapshot(
+                instrument=INSTRUMENT,
+                exposure=wrong,
+            ),
+        )
+    elif partition_family == "strategy_exposures":
+        replacement = (
+            StrategyExposureSnapshot(
+                strategy_id="strategy-1",
+                exposure=wrong,
+            ),
+        )
+    else:
+        replacement = (
+            VenueExposureSnapshot(venue_id="SIM", exposure=wrong),
+        )
+    portfolio = case.observation.portfolio.model_copy(
+        update={partition_family: replacement}
+    )
+    observation = case.observation.model_copy(update={"portfolio": portfolio})
+
+    with pytest.raises(ProjectionError, match="pending"):
         project_runtime_order(
             case.make_intent(),
             observation,
@@ -571,6 +643,126 @@ def test_exact_replacement_projection_for_position_shapes(
     assert projection.projected_available_funds == money(expected["available"])
 
 
+def _position(
+    *,
+    strategy_id: str,
+    instrument: InstrumentId,
+    quantity: str,
+    mark: str,
+) -> AccountPositionSnapshot:
+    return AccountPositionSnapshot(
+        account_id="account-1",
+        strategy_id=strategy_id,
+        instrument=instrument,
+        settlement_currency=Currency.USD,
+        quantity=Quantity(Decimal(quantity), 0),
+        mark=PositionMark(
+            price=Price(Decimal(mark), Currency.USD),
+            marked_at=NOW,
+            provenance_id="sim-mark",
+        ),
+        average_entry_price=Price(Decimal(mark), Currency.USD),
+        realized_pnl=money("0"),
+        unrealized_pnl=money("0"),
+        fees=money("0"),
+        funding=money("0"),
+        observed_at=NOW,
+        schema_version="account-position-v1",
+    )
+
+
+def test_multi_position_replacement_preserves_unrelated_aggregate_contributions(
+    case: RuntimeCase,
+) -> None:
+    positions = (
+        _position(
+            strategy_id="strategy-1",
+            instrument=INSTRUMENT,
+            quantity="2",
+            mark="100",
+        ),
+        _position(
+            strategy_id="strategy-1",
+            instrument=SAME_VENUE_INSTRUMENT,
+            quantity="2",
+            mark="50",
+        ),
+        _position(
+            strategy_id="strategy-2",
+            instrument=INSTRUMENT,
+            quantity="1",
+            mark="100",
+        ),
+        _position(
+            strategy_id="strategy-3",
+            instrument=OTHER_VENUE_INSTRUMENT,
+            quantity="1",
+            mark="25",
+        ),
+    )
+    portfolio = case.observation.portfolio.model_copy(
+        update={
+            "positions": positions,
+            "total_exposure": exposure("425", "425", pending="5"),
+            "instrument_exposures": (
+                InstrumentExposureSnapshot(
+                    instrument=OTHER_VENUE_INSTRUMENT,
+                    exposure=exposure("25", "25", pending="5"),
+                ),
+                InstrumentExposureSnapshot(
+                    instrument=INSTRUMENT,
+                    exposure=exposure("300", "300", pending="0"),
+                ),
+                InstrumentExposureSnapshot(
+                    instrument=SAME_VENUE_INSTRUMENT,
+                    exposure=exposure("100", "100", pending="0"),
+                ),
+            ),
+            "strategy_exposures": (
+                StrategyExposureSnapshot(
+                    strategy_id="strategy-1",
+                    exposure=exposure("300", "300", pending="5"),
+                ),
+                StrategyExposureSnapshot(
+                    strategy_id="strategy-2",
+                    exposure=exposure("100", "100", pending="0"),
+                ),
+                StrategyExposureSnapshot(
+                    strategy_id="strategy-3",
+                    exposure=exposure("25", "25", pending="0"),
+                ),
+            ),
+            "venue_exposures": (
+                VenueExposureSnapshot(
+                    venue_id="ALT",
+                    exposure=exposure("25", "25", pending="5"),
+                ),
+                VenueExposureSnapshot(
+                    venue_id="SIM",
+                    exposure=exposure("400", "400", pending="0"),
+                ),
+            ),
+        }
+    )
+    observation = case.observation.model_copy(update={"portfolio": portfolio})
+
+    projection = project_runtime_order(
+        case.make_intent(),
+        observation,
+        case.policy,
+        decided_at=case.decided_at,
+    )
+
+    assert projection.projected_pending == money("106")
+    assert projection.projected_gross == money("528")
+    assert projection.projected_net == money("528")
+    assert projection.projected_strategy_gross == money("403")
+    assert projection.projected_venue_gross == money("503")
+    assert projection.projected_instrument_gross == money("403")
+    assert projection.projected_margin_used == money("30.30")
+    assert projection.projected_available_funds == money("919.70")
+
+
 @pytest.mark.parametrize(
     "inconsistent_partition",
     ["total_exposure", "instrument_exposures", "strategy_exposures", "venue_exposures"],
@@ -680,3 +872,29 @@ def test_projection_never_mutates_order_market_quantity_or_conversion_inputs() -
     assert case.observation.market_snapshots[0] == market_before
     assert intent.quantity == quantity_before
     assert case.observation.conversion_rates[0] == conversion_before
+
+
+@pytest.mark.parametrize("wrong_argument", ["intent", "observation", "policy"])
+def test_wrong_top_level_contract_type_raises_bounded_projection_error(
+    case: RuntimeCase,
+    wrong_argument: str,
+) -> None:
+    arguments: dict[str, object] = {
+        "intent": case.make_intent(),
+        "observation": case.observation,
+        "policy": case.policy,
+    }
+    replacements = {
+        "intent": case.policy,
+        "observation": case.policy,
+        "policy": case.observation,
+    }
+    arguments[wrong_argument] = replacements[wrong_argument]
+
+    with pytest.raises(ProjectionError, match=wrong_argument):
+        project_runtime_order(
+            arguments["intent"],  # type: ignore[arg-type]
+            arguments["observation"],  # type: ignore[arg-type]
+            arguments["policy"],  # type: ignore[arg-type]
+            decided_at=case.decided_at,
+        )
