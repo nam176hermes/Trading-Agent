@@ -283,6 +283,12 @@ The persistence service receives a fully constructed decision event and an
    verifies every reference binding. A forged, stale, rejected, missing, or
    mismatched event fails closed.
 
+Repository instance identity is not part of the approval reference. A trusted
+replica containing the exact byte-identical canonical event is valid; a
+repository with an absent, conflicting, duplicated, or malformed event fails
+closed. This content-addressed rule permits controlled ledger replication
+without inventing a second repository-identity authority in 05C.
+
 No new database table or migration is required: the existing event ledger
 stores the new typed event envelope. Tests use the in-memory repository and
 failing repository doubles only; no PostgreSQL instance is mutated.

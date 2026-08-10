@@ -724,8 +724,11 @@ Also require:
   target-policy/portfolio/observation/runtime-policy binding is rejected one
   field at a time;
 - a reference to a rejected decision is rejected even when all hashes match;
-- verifying against a different intent, target decision, observation, policy,
-  or repository fails;
+- verifying against a different intent, target decision, observation, or
+  policy fails;
+- a trusted replica containing the byte-identical canonical event passes,
+  while a repository with an absent, conflicting, duplicated, or malformed
+  event fails;
 - publication topic is exactly `runtime-risk.decisions` and payload JSON equals
   `json.dumps({"decision_id": str(event.payload.decision_id)},
   sort_keys=True, separators=(",", ":"))`;
