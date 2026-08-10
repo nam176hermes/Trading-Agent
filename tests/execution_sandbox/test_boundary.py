@@ -18,12 +18,14 @@ from pydantic import ValidationError
 from packages.domain import EventEnvelope, FillEvent, FillReportStatus, OrderEvent, OrderQuantity, OrderStatus
 from packages.event_ledger import InMemoryEventLedger, OutboxIntent, serialize_event
 from packages.execution_sandbox import (
+    SandboxCancelRequest,
     SandboxCommandKind,
     SandboxCommandPlan,
     SandboxConnectionState,
     SandboxExecutionClient,
     SandboxExecutionError,
     SandboxLostResponse,
+    SandboxModifyRequest,
     SandboxReportPlan,
     SandboxResponseDisposition,
     SandboxScenario,
@@ -43,12 +45,14 @@ _FORBIDDEN_IMPORTS = (
     "asyncio", "threading", "multiprocessing", "sqlite3", "sqlalchemy", "psycopg",
     "psycopg2", "asyncpg", "packages.runtime_release", "packages.nautilus_",
     "packages.provider_", "packages.execution_provider", "packages.paper_",
-    "packages.live_", "services.paper_runtime", "services.provider_",
-    "services.execution_provider", "services.live_",
+    "packages.live_", "services.",
 )
-_PROCESS_ENTRY_POINTS = (
-    "system", "popen", "posix_spawn", "posix_spawnp", "spawnl", "spawnle", "spawnlp",
-    "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
+_PROCESS_ENTRY_POINTS = tuple(
+    name
+    for name in dir(os)
+    if name in {"system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp"}
+    or name.startswith("spawn")
+    or name.startswith("exec")
 )
 
 
@@ -62,7 +66,12 @@ def uid(value: int) -> UUID:
 
 
 def _activation_source_roots(root: Path) -> tuple[Path, ...]:
-    return tuple(root / name for name in ("apps", "services", "packages"))
+    return (
+        root / "apps",
+        root / "services",
+        root / "packages",
+        root / "legacy" / "research-backend" / "exchange",
+    )
 
 
 def _is_production_source(source: Path) -> bool:
@@ -130,12 +139,17 @@ def _is_forbidden_import(candidate: str) -> bool:
         candidate == blocked
         or candidate.startswith(f"{blocked}.")
         or (blocked.endswith("_") and candidate.startswith(blocked))
+        or (blocked.endswith(".") and candidate.startswith(blocked))
         for blocked in _FORBIDDEN_IMPORTS
     )
 
 
 def _is_forbidden_process_entry(candidate: str) -> bool:
-    return candidate in {"os.system", "os.popen", "os.posix_spawn", "os.posix_spawnp"} or candidate.startswith("os.spawn")
+    return (
+        candidate in {"os.system", "os.popen", "os.fork", "os.forkpty", "os.posix_spawn", "os.posix_spawnp"}
+        or candidate.startswith("os.spawn")
+        or candidate.startswith("os.exec")
+    )
 
 
 def _forbidden_source_references(source: str) -> tuple[str, ...]:
@@ -294,6 +308,35 @@ def test_forbidden_detector_rejects_direct_from_import_and_process_entries(
     assert _forbidden_source_references(source) == expected
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("from services import job_store\n", ("services.job_store",)),
+        ("import os\nos.fork()\n", ("os.fork",)),
+        ("from os import fork\nfork()\n", ("os.fork",)),
+        ("import os\nos.forkpty()\n", ("os.forkpty",)),
+        ("from os import forkpty\nforkpty()\n", ("os.forkpty",)),
+        ("import os\nos.execv('x', ())\n", ("os.execv",)),
+        ("from os import execv\nexecv('x', ())\n", ("os.execv",)),
+    ),
+)
+def test_forbidden_detector_rejects_service_wrappers_and_process_escapes(
+    source: str, expected: tuple[str, ...]
+) -> None:
+    assert _forbidden_source_references(source) == expected
+
+
+def test_runtime_process_guard_covers_every_available_creation_or_execution_entry() -> None:
+    expected = {
+        name
+        for name in dir(os)
+        if name in {"system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp"}
+        or name.startswith("spawn")
+        or name.startswith("exec")
+    }
+    assert expected <= set(_PROCESS_ENTRY_POINTS)
+
+
 @pytest.mark.parametrize("reference", ("execution_sandbox", "execution-sandbox"))
 def test_registration_proof_catches_nested_dashboard_references(
     tmp_path: Path, reference: str
@@ -333,6 +376,14 @@ def test_registration_source_roots_exclude_sandbox_tests_and_generated_files(tmp
         source.write_text('register("execution_sandbox")\n', encoding="utf-8")
 
     assert _registration_references(_activation_source_roots(tmp_path)) == (active,)
+
+
+def test_registration_source_roots_include_legacy_exchange_provider_surface(tmp_path: Path) -> None:
+    legacy_provider = tmp_path / "legacy" / "research-backend" / "exchange" / "provider.py"
+    legacy_provider.parent.mkdir(parents=True)
+    legacy_provider.write_text('register("execution-sandbox")\n', encoding="utf-8")
+
+    assert _registration_references(_activation_source_roots(tmp_path)) == (legacy_provider,)
 
 
 def test_equivalent_runs_produce_identical_snapshots_and_event_bytes(
@@ -413,6 +464,79 @@ def test_disconnected_client_rejects_planned_submit_without_consuming_command(
     client.submit(request)
     assert client.snapshot().orders[0].order_id == request.order_id
     assert client.snapshot().connection_state is SandboxConnectionState.CONNECTED
+
+
+@pytest.mark.parametrize(
+    ("kind", "pending_status"),
+    (
+        (SandboxCommandKind.MODIFY, OrderStatus.PENDING_UPDATE),
+        (SandboxCommandKind.CANCEL, OrderStatus.PENDING_CANCEL),
+    ),
+)
+def test_disconnected_client_rejects_planned_modify_and_cancel_without_consuming_command(
+    kind: SandboxCommandKind,
+    pending_status: OrderStatus,
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    scenario = SandboxScenario(
+        command_plans=(
+            SandboxCommandPlan(
+                command_id=uid(100), kind=SandboxCommandKind.SUBMIT,
+                response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+                order_id=uid(1), report_ids=(uid(20), uid(24)),
+            ),
+            SandboxCommandPlan(
+                command_id=uid(70), kind=SandboxCommandKind.DISCONNECT,
+                response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+                order_id=uid(1), report_ids=(uid(21),),
+            ),
+            SandboxCommandPlan(
+                command_id=uid(71), kind=SandboxCommandKind.RECONNECT,
+                response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+                order_id=uid(1), report_ids=(uid(22),),
+            ),
+            SandboxCommandPlan(
+                command_id=uid(101), kind=kind,
+                response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+                order_id=uid(1), report_ids=(uid(23),),
+            ),
+        ),
+        report_plans=(
+            order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED),
+            order_report(submitted_envelope, report_id=21, event_id=101, sequence=2, status=OrderStatus.ACCEPTED),
+            order_report(submitted_envelope, report_id=22, event_id=102, sequence=3, status=OrderStatus.ACCEPTED),
+            order_report(submitted_envelope, report_id=23, event_id=103, sequence=3, status=pending_status),
+            order_report(submitted_envelope, report_id=24, event_id=104, sequence=2, status=OrderStatus.ACCEPTED),
+        ),
+    )
+    client = SandboxExecutionClient(
+        repository=prepared_case.ledger,
+        safety_verifier=ExactSafetyVerifier(),
+        scenario=scenario,
+        initial_time=NOW,
+    )
+    client.submit(submit_request(prepared_case))
+    client.drain_reports()
+    client.disconnect(command_id=uid(70), at=NOW)
+    before = client.snapshot()
+    if kind is SandboxCommandKind.MODIFY:
+        operation = client.modify
+        request: SandboxModifyRequest | SandboxCancelRequest = SandboxModifyRequest(
+            command_id=uid(101), order_id=uid(1),
+            replacement_order_intent=prepared_case.intent, requested_at=NOW,
+        )
+    else:
+        operation = client.cancel
+        request = SandboxCancelRequest(command_id=uid(101), order_id=uid(1), requested_at=NOW)
+
+    with pytest.raises(SandboxExecutionError, match="sandbox is disconnected"):
+        operation(request)
+    assert client.snapshot() == before
+
+    client.reconnect(command_id=uid(71), at=NOW)
+    operation(request)
+    assert client.snapshot().queued_reports[0].report_id == uid(23)
 
 
 def test_client_rejects_backwards_connection_timestamp_without_mutation(
