@@ -36,7 +36,12 @@ from packages.runtime_risk import (
     verify_durable_order_approval,
 )
 
-from tests.runtime_risk.test_evaluator import EvaluatorCase, evaluator_case, uid
+from tests.runtime_risk.test_evaluator import (
+    EvaluatorCase,
+    evaluator_case,
+    forged_long_observation_cycle,
+    uid,
+)
 
 
 def runtime_risk_event(
@@ -432,6 +437,25 @@ def test_record_bounds_recursive_decision_payload_failure() -> None:
     assert not isinstance(caught.value.__cause__, RecursionError)
 
 
+def test_record_bounds_long_recursive_decision_payload_failure() -> None:
+    event = runtime_risk_event()
+    first: list[object] = []
+    cursor = first
+    for _ in range(499):
+        child: list[object] = []
+        cursor.append(child)
+        cursor = child
+    cursor.append(event.payload)
+    object.__setattr__(event.payload, "risk_price", first)
+    repository = BoundedRepository(events=(event,))
+
+    with pytest.raises(DurableApprovalError) as caught:
+        record_runtime_risk_decision(repository=repository, event=event)
+
+    assert type(caught.value) is DurableApprovalError
+    assert not isinstance(caught.value.__cause__, RecursionError)
+
+
 def test_verification_rejects_each_forged_reference_binding_one_at_a_time() -> None:
     ledger, case, _, reference = record_approved()
     changes: tuple[dict[str, object], ...] = (
@@ -533,6 +557,22 @@ def test_verification_bounds_recursive_runtime_observation_failure() -> None:
         verify(ledger, reference, case, observation=forged)
 
     assert type(caught.value) is DurableApprovalError
+    assert not isinstance(caught.value.__cause__, RecursionError)
+
+
+def test_verification_bounds_long_recursive_runtime_observation_failure() -> None:
+    ledger, case, _, reference = record_approved()
+
+    with pytest.raises(DurableApprovalError) as caught:
+        verify(
+            ledger,
+            reference,
+            case,
+            observation=forged_long_observation_cycle(case.observation),
+        )
+
+    assert type(caught.value) is DurableApprovalError
+    assert type(caught.value.__cause__) is ValueError
     assert not isinstance(caught.value.__cause__, RecursionError)
 
 

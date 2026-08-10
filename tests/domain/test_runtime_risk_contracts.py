@@ -47,6 +47,7 @@ NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "SIM")
 DIGEST = "a" * 64
 MAX_RUNTIME_RISK_DURATION_SECONDS = 86_399_999_999_999
+MAX_CANONICAL_NESTING = 128
 
 EXPECTED_REASON_ORDER = (
     "POLICY_RISK_NOT_APPROVED",
@@ -134,6 +135,26 @@ class _ArbitraryContainerParent(BaseModel):
     model_config = ConfigDict(strict=True)
 
     payload: Any
+
+
+def _nested_list(depth: int, tail: object) -> object:
+    value = tail
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def _long_recursive_observation(link_count: int = 500) -> RuntimeRiskObservation:
+    forged = observation()
+    first: list[object] = []
+    cursor = first
+    for _ in range(link_count - 1):
+        child: list[object] = []
+        cursor.append(child)
+        cursor = child
+    cursor.append(forged)
+    object.__setattr__(forged, "portfolio", first)
+    return forged
 
 
 def uid(value: int) -> UUID:
@@ -604,3 +625,34 @@ def test_canonical_identity_rejects_recursive_model_and_container_graphs(
         canonical_model_json(value)
 
     assert type(caught.value.__cause__) is ValueError
+
+
+def test_canonical_identity_bounds_long_actual_runtime_observation_cycle() -> None:
+    with pytest.raises(ValueError, match="canonically represented") as caught:
+        canonical_model_json(_long_recursive_observation())
+
+    assert type(caught.value.__cause__) is ValueError
+    assert not isinstance(caught.value.__cause__, RecursionError)
+
+
+def test_canonical_identity_accepts_acyclic_input_at_nesting_boundary() -> None:
+    encoded = canonical_model_json(
+        _ArbitraryContainerParent(
+            payload=_nested_list(MAX_CANONICAL_NESTING, "boundary-leaf")
+        )
+    )
+
+    assert encoded.count("[") == MAX_CANONICAL_NESTING
+    assert '"boundary-leaf"' in encoded
+
+
+def test_canonical_identity_rejects_acyclic_input_above_nesting_boundary() -> None:
+    value = _ArbitraryContainerParent(
+        payload=_nested_list(MAX_CANONICAL_NESTING + 1, "over-limit")
+    )
+
+    with pytest.raises(ValueError, match="canonically represented") as caught:
+        canonical_model_json(value)
+
+    assert type(caught.value.__cause__) is ValueError
+    assert not isinstance(caught.value.__cause__, RecursionError)

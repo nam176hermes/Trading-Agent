@@ -113,6 +113,23 @@ class EvaluatorCase:
         return evaluate_runtime_order_risk(**arguments)  # type: ignore[arg-type]
 
 
+def forged_long_observation_cycle(
+    value: RuntimeRiskObservation,
+    *,
+    link_count: int = 500,
+) -> RuntimeRiskObservation:
+    forged = value.model_copy()
+    first: list[object] = []
+    cursor = first
+    for _ in range(link_count - 1):
+        child: list[object] = []
+        cursor.append(child)
+        cursor = child
+    cursor.append(forged)
+    object.__setattr__(forged, "portfolio", first)
+    return forged
+
+
 def evaluator_case(
     *,
     current_quantity: str = "2",
@@ -691,6 +708,16 @@ def test_recursive_runtime_observation_is_rejected_without_recursion_error(
         case.evaluate(observation=forged)
 
     assert type(caught.value.__cause__) is ValueError
+
+
+def test_long_recursive_runtime_observation_is_rejected_without_recursion_error(
+    case: EvaluatorCase,
+) -> None:
+    with pytest.raises(ValueError, match="canonically represented") as caught:
+        case.evaluate(observation=forged_long_observation_cycle(case.observation))
+
+    assert type(caught.value.__cause__) is ValueError
+    assert not isinstance(caught.value.__cause__, RecursionError)
 
 
 @pytest.mark.parametrize(

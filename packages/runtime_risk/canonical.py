@@ -9,12 +9,21 @@ from hashlib import sha256
 from pydantic import BaseModel, ValidationError
 
 
+_MAX_CANONICAL_NESTING = 128
+
+
 def _rebuild_python_value(
     value: object,
     *,
     active_ids: set[int] | None = None,
+    nesting: int = 0,
 ) -> object:
-    """Recursively revalidate models while preserving Python container types."""
+    """Revalidate models and containers within a bounded nesting depth.
+
+    The root model is at nesting zero. At most 128 traversable child levels are
+    accepted so malformed graphs fail deterministically before Python's stack
+    limit, while primitive leaves beyond the final container remain valid.
+    """
 
     traversable = isinstance(
         value,
@@ -22,6 +31,8 @@ def _rebuild_python_value(
     )
     if not traversable:
         return value
+    if nesting > _MAX_CANONICAL_NESTING:
+        raise ValueError("model or container nesting exceeds canonical limit")
     active = set() if active_ids is None else active_ids
     identity = id(value)
     if identity in active:
@@ -33,28 +44,58 @@ def _rebuild_python_value(
                 name: _rebuild_python_value(
                     getattr(value, name),
                     active_ids=active,
+                    nesting=nesting + 1,
                 )
                 for name in type(value).model_fields
             }
             return type(value).model_validate(fields)
         if isinstance(value, Mapping):
             return {
-                _rebuild_python_value(key, active_ids=active): _rebuild_python_value(
+                _rebuild_python_value(
+                    key,
+                    active_ids=active,
+                    nesting=nesting + 1,
+                ): _rebuild_python_value(
                     item,
                     active_ids=active,
+                    nesting=nesting + 1,
                 )
                 for key, item in value.items()
             }
         if isinstance(value, tuple):
             return tuple(
-                _rebuild_python_value(item, active_ids=active) for item in value
+                _rebuild_python_value(
+                    item,
+                    active_ids=active,
+                    nesting=nesting + 1,
+                )
+                for item in value
             )
         if isinstance(value, list):
-            return [_rebuild_python_value(item, active_ids=active) for item in value]
+            return [
+                _rebuild_python_value(
+                    item,
+                    active_ids=active,
+                    nesting=nesting + 1,
+                )
+                for item in value
+            ]
         if isinstance(value, set):
-            return {_rebuild_python_value(item, active_ids=active) for item in value}
+            return {
+                _rebuild_python_value(
+                    item,
+                    active_ids=active,
+                    nesting=nesting + 1,
+                )
+                for item in value
+            }
         return frozenset(
-            _rebuild_python_value(item, active_ids=active) for item in value
+            _rebuild_python_value(
+                item,
+                active_ids=active,
+                nesting=nesting + 1,
+            )
+            for item in value
         )
     finally:
         active.remove(identity)
