@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from packages.domain import EventEnvelope, OrderIntent
+from packages.domain import EventEnvelope, OrderIntent, OrderState
 from packages.execution_sandbox import (
     SandboxCancelRequest,
     SandboxCommandKind,
@@ -16,6 +16,7 @@ from packages.execution_sandbox import (
     SandboxExecutionError,
     SandboxLostResponse,
     SandboxModifyRequest,
+    SandboxOrderSnapshot,
     SandboxSnapshot,
     SandboxReportPlan,
     SandboxResponseDisposition,
@@ -205,6 +206,18 @@ def test_snapshot_uses_frozen_tuples_not_mutable_collections() -> None:
             current_time=NOW,
             orders=[],
             queued_reports=[],
+        )
+
+
+def test_order_snapshot_requires_intent_identity_to_match_order_id(prepared_case: Any) -> None:
+    order_id = uid(94)
+    with pytest.raises(ValueError, match="order_intent"):
+        SandboxOrderSnapshot(
+            order_id=order_id,
+            client_order_id=prepared_case.intent.client_order_id,
+            order_intent=prepared_case.intent,
+            venue_state=OrderState(order_id=order_id),
+            observed_state=OrderState(order_id=order_id),
         )
 
 

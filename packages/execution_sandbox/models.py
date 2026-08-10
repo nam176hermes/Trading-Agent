@@ -276,6 +276,8 @@ class SandboxOrderSnapshot(SandboxModel):
         intent = _canonical_model(self.order_intent, OrderIntent, "order_intent")
         venue_state = _canonical_model(self.venue_state, OrderState, "venue_state")
         observed_state = _canonical_model(self.observed_state, OrderState, "observed_state")
+        if self.order_id != intent.intent_id:
+            raise ValueError("order_id must match order_intent.intent_id")
         if self.client_order_id != intent.client_order_id:
             raise ValueError("client_order_id must match order_intent")
         if self.order_id != venue_state.order_id or self.order_id != observed_state.order_id:
