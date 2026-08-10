@@ -110,6 +110,24 @@ class _StrictPrimitiveParent(BaseModel):
     child: _StrictUuidChild | _StrictDecimalChild
 
 
+class _FrozenSetChild(BaseModel):
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    identifier: UUID
+
+
+class _SetParent(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    children: set[_FrozenSetChild]
+
+
+class _FrozenSetParent(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    children: frozenset[_FrozenSetChild]
+
+
 def uid(value: int) -> UUID:
     return UUID(int=value)
 
@@ -390,3 +408,21 @@ def test_canonical_identity_preserves_strict_uuid_and_decimal_python_types() -> 
     )
     with pytest.raises(ValueError, match="canonically represented"):
         canonical_model_json(forged_decimal_parent)
+
+
+def test_canonical_identity_preserves_valid_set_and_frozenset_model_members() -> None:
+    child = _FrozenSetChild(identifier=uid(1))
+    assert canonical_model_json(_SetParent(children={child})) == (
+        '{"children":[{"identifier":"00000000-0000-0000-0000-000000000001"}]}'
+    )
+    assert canonical_model_json(_FrozenSetParent(children=frozenset({child}))) == (
+        '{"children":[{"identifier":"00000000-0000-0000-0000-000000000001"}]}'
+    )
+
+
+def test_canonical_identity_rejects_forged_set_and_frozenset_members() -> None:
+    forged_child = _FrozenSetChild.model_construct(identifier=str(uid(1)))
+    with pytest.raises(ValueError, match="canonically represented"):
+        canonical_model_json(_SetParent(children={forged_child}))
+    with pytest.raises(ValueError, match="canonically represented"):
+        canonical_model_json(_FrozenSetParent(children=frozenset({forged_child})))

@@ -10,15 +10,19 @@ from pydantic import BaseModel, ValidationError
 
 
 def _rebuild_python_value(value: object) -> object:
-    """Turn nested Pydantic models into mappings without coercing primitives."""
+    """Recursively revalidate models while preserving Python container types."""
 
     if isinstance(value, BaseModel):
-        return {
+        fields = {
             name: _rebuild_python_value(getattr(value, name))
             for name in type(value).model_fields
         }
+        return type(value).model_validate(fields)
     if isinstance(value, Mapping):
-        return {key: _rebuild_python_value(item) for key, item in value.items()}
+        return {
+            _rebuild_python_value(key): _rebuild_python_value(item)
+            for key, item in value.items()
+        }
     if isinstance(value, tuple):
         return tuple(_rebuild_python_value(item) for item in value)
     if isinstance(value, list):
@@ -36,7 +40,9 @@ def canonical_model_json(value: BaseModel) -> str:
     if not isinstance(value, BaseModel):
         raise ValueError("value must be a Pydantic model")
     try:
-        canonical = type(value).model_validate(_rebuild_python_value(value))
+        canonical = _rebuild_python_value(value)
+        if not isinstance(canonical, BaseModel):
+            raise TypeError("canonical value must be a Pydantic model")
         document = canonical.model_dump(mode="json")
     except (AttributeError, TypeError, ValidationError, ValueError) as exc:
         raise ValueError("model cannot be canonically represented") from exc
