@@ -1,5 +1,6 @@
 """Public deterministic, in-memory execution sandbox contracts."""
 
+from .client import SandboxExecutionClient
 from .models import (
     SandboxCancelRequest,
     SandboxCommandKind,
@@ -18,6 +19,7 @@ from .models import (
 )
 
 __all__ = [
+    "SandboxExecutionClient",
     "SandboxExecutionError",
     "SandboxLostResponse",
     "SandboxConnectionState",
