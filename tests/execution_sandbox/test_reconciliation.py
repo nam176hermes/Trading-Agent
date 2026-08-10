@@ -11,7 +11,8 @@ from packages.domain import EventEnvelope, OrderEvent, OrderState, OrderStatus
 from packages.execution_sandbox import (
     SandboxCommandKind,
     SandboxConnectionState,
-    SandboxReconciliationReasonCode,
+    SandboxOrderReconciliation,
+    SandboxReconciliationReason,
     SandboxReconciliationRequest,
     SandboxReconciliationResult,
     SandboxReconciliationStatus,
@@ -103,7 +104,7 @@ def test_contract_enums_have_the_locked_order() -> None:
         "DELIVERY_PENDING",
         "MISMATCH",
     )
-    assert tuple(reason.value for reason in SandboxReconciliationReasonCode) == (
+    assert tuple(reason.value for reason in SandboxReconciliationReason) == (
         "UNKNOWN_ORDER_REPORT",
         "OBSERVED_ORDER_REPLAY_FAILED",
         "OBSERVED_STATE_MISMATCH",
@@ -112,6 +113,11 @@ def test_contract_enums_have_the_locked_order() -> None:
         "FILL_EVIDENCE_MISMATCH",
         "UNEXPECTED_OBSERVED_REPORT",
     )
+
+
+def test_contract_uses_the_locked_reconciliation_public_names() -> None:
+    assert "expected_venue_state" in SandboxOrderReconciliation.model_fields
+    assert "expected_state" not in SandboxOrderReconciliation.model_fields
 
 
 def test_contract_models_are_frozen_and_forbid_extra() -> None:
@@ -190,14 +196,14 @@ def test_result_canonical_digest_is_stable_after_reconstruction() -> None:
         (
             SandboxReconciliationStatus.DELIVERY_PENDING,
             (),
-            (SandboxReconciliationReasonCode.UNKNOWN_ORDER_REPORT,),
+            (SandboxReconciliationReason.UNKNOWN_ORDER_REPORT,),
         ),
     ),
 )
 def test_invalid_input_result_status_must_match_findings_and_pending_content(
     status: SandboxReconciliationStatus,
     pending_report_ids: tuple[UUID, ...],
-    unattributed_reason_codes: tuple[SandboxReconciliationReasonCode, ...],
+    unattributed_reason_codes: tuple[SandboxReconciliationReason, ...],
 ) -> None:
     with pytest.raises(ValueError, match="status"):
         SandboxReconciliationResult(

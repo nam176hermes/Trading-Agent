@@ -69,7 +69,7 @@ class SandboxReconciliationStatus(str, Enum):
     MISMATCH = "MISMATCH"
 
 
-class SandboxReconciliationReasonCode(str, Enum):
+class SandboxReconciliationReason(str, Enum):
     """Closed, descriptive evidence reasons with no repair authority."""
 
     UNKNOWN_ORDER_REPORT = "UNKNOWN_ORDER_REPORT"
@@ -380,11 +380,11 @@ class SandboxSnapshot(SandboxModel):
 
 
 def _canonical_reason_codes(
-    values: tuple[SandboxReconciliationReasonCode, ...], field_name: str
-) -> tuple[SandboxReconciliationReasonCode, ...]:
+    values: tuple[SandboxReconciliationReason, ...], field_name: str
+) -> tuple[SandboxReconciliationReason, ...]:
     """Require unique reason codes in their closed public enum order."""
 
-    indices = tuple(list(SandboxReconciliationReasonCode).index(value) for value in values)
+    indices = tuple(list(SandboxReconciliationReason).index(value) for value in values)
     if len(indices) != len(set(indices)):
         raise ValueError(f"{field_name} must not contain duplicate reason codes")
     if indices != tuple(sorted(indices)):
@@ -424,16 +424,21 @@ class SandboxOrderReconciliation(SandboxModel):
 
     order_id: UUID
     observed_state: OrderState
-    expected_state: OrderState
+    expected_venue_state: OrderState
     observed_report_ids: tuple[UUID, ...]
     pending_report_ids: tuple[UUID, ...]
-    reason_codes: tuple[SandboxReconciliationReasonCode, ...] = ()
+    reason_codes: tuple[SandboxReconciliationReason, ...] = ()
 
     @model_validator(mode="after")
     def _canonical_values(self) -> "SandboxOrderReconciliation":
         observed_state = _canonical_model(self.observed_state, OrderState, "observed_state")
-        expected_state = _canonical_model(self.expected_state, OrderState, "expected_state")
-        if observed_state.order_id != self.order_id or expected_state.order_id != self.order_id:
+        expected_venue_state = _canonical_model(
+            self.expected_venue_state, OrderState, "expected_venue_state"
+        )
+        if (
+            observed_state.order_id != self.order_id
+            or expected_venue_state.order_id != self.order_id
+        ):
             raise ValueError("order states must match reconciliation order_id")
         if len(self.observed_report_ids) != len(set(self.observed_report_ids)):
             raise ValueError("observed_report_ids must occur exactly once")
@@ -442,7 +447,7 @@ class SandboxOrderReconciliation(SandboxModel):
         if set(self.observed_report_ids) & set(self.pending_report_ids):
             raise ValueError("report ids cannot be both observed and pending")
         object.__setattr__(self, "observed_state", observed_state)
-        object.__setattr__(self, "expected_state", expected_state)
+        object.__setattr__(self, "expected_venue_state", expected_venue_state)
         object.__setattr__(
             self,
             "reason_codes",
@@ -459,7 +464,7 @@ class SandboxReconciliationResult(SandboxModel):
     orders: tuple[SandboxOrderReconciliation, ...]
     pending_report_ids: tuple[UUID, ...]
     unattributed_event_ids: tuple[UUID, ...]
-    unattributed_reason_codes: tuple[SandboxReconciliationReasonCode, ...]
+    unattributed_reason_codes: tuple[SandboxReconciliationReason, ...]
 
     @field_validator("snapshot_time")
     @classmethod
@@ -519,7 +524,7 @@ __all__ = [
     "SandboxCommandKind",
     "SandboxResponseDisposition",
     "SandboxReconciliationStatus",
-    "SandboxReconciliationReasonCode",
+    "SandboxReconciliationReason",
     "SandboxReportPlan",
     "SandboxKnownReport",
     "SandboxCommandPlan",
