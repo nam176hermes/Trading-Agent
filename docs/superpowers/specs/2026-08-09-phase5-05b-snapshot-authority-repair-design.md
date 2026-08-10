@@ -192,4 +192,3 @@ whole-branch review must pass before local integration.
    hash-for-hash equivalent.
 5. The repair remains pure and introduces no persistence, API, provider,
    runtime, risk, execution, secret, deployment, or live boundary.
-

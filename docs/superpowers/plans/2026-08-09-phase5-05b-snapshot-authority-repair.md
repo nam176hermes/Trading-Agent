@@ -267,4 +267,3 @@ Expected: every gate passes and status is empty.
 - [ ] **Step 4: Record verdict**
 
 Write exact candidate range, public forgery probe evidence, clean-clone commands, C/I/M, SPEC/QUALITY verdict, and merge recommendation. Only zero-finding PASS authorizes the final whole-branch review and local fast-forward; do not push.
-
