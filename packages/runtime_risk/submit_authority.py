@@ -152,6 +152,7 @@ def _require_active_exact_authority(
     if (
         state is None
         or state.status is not GlobalHaltStatus.ACTIVE
+        or state.transitioned_at > prepared_at
         or observation.observed_at > prepared_at
         or safety.observed_at > prepared_at
     ):
@@ -334,6 +335,8 @@ def _exact_existing_prepared(
     payload: SubmitPermitPrepared,
     event_id: UUID,
 ) -> PreparedSubmitPermit | None:
+    if payload.permit_id in replay.consumed_permit_ids:
+        raise SubmitPermitPreparationError(_PREPARATION_FAILURE)
     matches = tuple(
         item for item in replay.prepared if item.permit_id == payload.permit_id
     )

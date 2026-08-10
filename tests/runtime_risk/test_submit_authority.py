@@ -11,9 +11,11 @@ import pytest
 import packages.runtime_risk.submit_authority as submit_authority_module
 from packages.domain import EventEnvelope
 from packages.domain.runtime_halt import (
+    GlobalHaltRecoveryAuthorization,
     GlobalHaltStatus,
     GlobalSafetyObservation,
     PreparedSubmitPermit,
+    SubmitPermitConsumed,
     SubmitPermitPrepared,
 )
 from packages.domain.runtime_risk import DurableOrderApprovalRef, RuntimeRiskOutcome
@@ -34,6 +36,7 @@ from packages.runtime_risk import (
     prepare_submit_permit,
     record_global_halt_observation,
     record_runtime_risk_decision,
+    recover_global_halt,
     replay_global_halt_authority,
 )
 from packages.safety_evidence import CanonicalKillSwitchState
@@ -95,6 +98,85 @@ def approved_active_case() -> PrepareCase:
         event_id=uid(806),
         decided_at=NOW,
     )
+    assert state.status is GlobalHaltStatus.ACTIVE
+    return PrepareCase(
+        ledger=ledger,
+        evaluator=selected,
+        approval_reference=approval_reference,
+        approval_event=approval_event,
+        initial_safety=initial_safety,
+    )
+
+
+class ExactRecoveryVerifier:
+    def verify(self, **kwargs: object) -> GlobalHaltRecoveryAuthorization:
+        authorization = kwargs["authorization"]
+        assert type(authorization) is GlobalHaltRecoveryAuthorization
+        return authorization
+
+
+def active_case_with_transition_at(
+    transitioned_at: datetime, *, recovered: bool
+) -> PrepareCase:
+    ledger = InMemoryEventLedger()
+    selected = evaluator_case()
+    approval_event = runtime_risk_event(
+        selected,
+        event_id=uid(850),
+        stream_id=uid(851),
+    )
+    approval_reference = record_runtime_risk_decision(
+        repository=ledger,
+        event=approval_event,
+    )
+    assert approval_reference is not None
+    initial_safety = safety(
+        state=(
+            CanonicalKillSwitchState.ACTIVE
+            if recovered
+            else CanonicalKillSwitchState.INACTIVE
+        ),
+        observed_at=NOW,
+    )
+    state = record_global_halt_observation(
+        repository=ledger,
+        stream_id=HALT_STREAM_ID,
+        observation=selected.observation,
+        policy=selected.policy,
+        safety=initial_safety,
+        transition_id=uid(852),
+        event_id=uid(853),
+        decided_at=NOW if recovered else transitioned_at,
+    )
+    if recovered:
+        assert state.status is GlobalHaltStatus.HALTED
+        safe = safety(observed_at=NOW)
+        authorization = GlobalHaltRecoveryAuthorization(
+            authorization_id=uid(854),
+            authorization_digest="b" * 64,
+            halted_generation=state.generation,
+            halted_transition_digest=state.transition_digest,
+            runtime_policy_digest=canonical_model_digest(selected.policy),
+            runtime_observation_digest=canonical_model_digest(selected.observation),
+            portfolio_digest=canonical_model_digest(selected.observation.portfolio),
+            safety_binding_digest=global_safety_binding_digest(safe),
+            issued_at=NOW,
+            expires_at=NOW + timedelta(minutes=10),
+            operator_authority_digest="c" * 64,
+            schema_version="global-halt-recovery-authorization-v1",
+        )
+        state = recover_global_halt(
+            repository=ledger,
+            stream_id=HALT_STREAM_ID,
+            observation=selected.observation,
+            policy=selected.policy,
+            safety=safe,
+            authorization=authorization,
+            verifier=ExactRecoveryVerifier(),
+            transition_id=uid(855),
+            event_id=uid(856),
+            decided_at=transitioned_at,
+        )
     assert state.status is GlobalHaltStatus.ACTIVE
     return PrepareCase(
         ledger=ledger,
@@ -363,6 +445,32 @@ def test_prepare_submit_permit_rejects_uninitialized_or_halted_stream() -> None:
         prepare(halted)
 
 
+@pytest.mark.parametrize("recovered", (False, True), ids=("initialization", "recovery"))
+@pytest.mark.parametrize(
+    ("transition_delta", "accepted"),
+    (
+        (timedelta(0), True),
+        (timedelta(microseconds=1), False),
+    ),
+    ids=("equal-prepared-at", "one-microsecond-after"),
+)
+def test_prepare_submit_permit_requires_active_transition_no_later_than_prepared_at(
+    recovered: bool,
+    transition_delta: timedelta,
+    accepted: bool,
+) -> None:
+    case = active_case_with_transition_at(
+        PREPARED_AT + transition_delta,
+        recovered=recovered,
+    )
+
+    if accepted:
+        assert prepare(case).prepared_at == PREPARED_AT
+    else:
+        with pytest.raises(SubmitPermitPreparationError):
+            prepare(case)
+
+
 def test_prepare_submit_permit_rejects_expired_or_malformed_decision_authority() -> None:
     case = approved_active_case()
     for expired_at in (
@@ -558,6 +666,67 @@ def test_prepare_submit_permit_changed_halt_generation_cannot_reuse_prior_ids() 
             prepared_at=PREPARED_AT + timedelta(seconds=1),
             current_safety=safety(observed_at=PREPARED_AT + timedelta(seconds=1)),
         )
+
+
+def test_prepare_submit_permit_rejects_consumed_permit_id_without_mutation() -> None:
+    case = approved_active_case()
+    prepared = prepare(case)
+    consumed_at = PREPARED_AT + timedelta(seconds=1)
+    consumed_payload = SubmitPermitConsumed(
+        permit_id=prepared.permit_id,
+        prepared_event_digest=prepared.prepared_event_digest,
+        halt_stream_id=prepared.halt_stream_id,
+        halt_generation=prepared.halt_generation,
+        halt_transition_digest=prepared.halt_transition_digest,
+        consumed_at=consumed_at,
+        schema_version="submit-permit-consumed-v1",
+    )
+    consumed = EventEnvelope[SubmitPermitConsumed](
+        event_id=uid(860),
+        event_type="SubmitPermitConsumed",
+        schema_version="submit-permit-consumed-event-v1",
+        source="runtime-risk",
+        stream_id=HALT_STREAM_ID,
+        sequence=3,
+        observed_at=consumed_at,
+        ingested_at=consumed_at,
+        produced_at=consumed_at,
+        effective_at=consumed_at,
+        expires_at=consumed_at + timedelta(minutes=5),
+        correlation_id=PERMIT_ID,
+        causation_id=PERMIT_ID,
+        trace_id=PERMIT_ID,
+        payload=consumed_payload,
+    )
+    assert type(consumed.payload) is SubmitPermitConsumed
+    case.ledger.append(
+        consumed,
+        OutboxIntent(event_id=consumed.event_id, topic="submit-permit-consumed.audit"),
+    )
+    prior_events = case.ledger.load_events()
+    prior_outbox = case.ledger.load_outbox()
+    prior_replay = replay_global_halt_authority(
+        events=prior_events,
+        stream_id=HALT_STREAM_ID,
+    )
+    assert prior_replay.consumed_permit_ids == (PERMIT_ID,)
+
+    with pytest.raises(SubmitPermitPreparationError):
+        prepare(
+            case,
+            event_id=uid(861),
+            prepared_at=PREPARED_AT + timedelta(seconds=2),
+            current_safety=safety(
+                observed_at=PREPARED_AT + timedelta(seconds=2)
+            ),
+        )
+
+    assert case.ledger.load_events() == prior_events
+    assert case.ledger.load_outbox() == prior_outbox
+    assert replay_global_halt_authority(
+        events=case.ledger.load_events(),
+        stream_id=HALT_STREAM_ID,
+    ) == prior_replay
 
 
 def test_prepare_submit_permit_does_not_mask_reference_programming_errors(
