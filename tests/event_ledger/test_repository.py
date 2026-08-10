@@ -57,6 +57,21 @@ def test_repository_preserves_global_halt_transition_concrete_payload() -> None:
     assert type(loaded.payload) is type(event.payload)
 
 
+def test_repository_preserves_submit_permit_prepared_concrete_payload() -> None:
+    from tests.runtime_risk.test_global_halt import initialize, prepared_event
+
+    repository = InMemoryEventLedger()
+    state = initialize(repository)
+    event = prepared_event(state)
+    outbox = OutboxIntent(event_id=event.event_id, topic="submit-permit.audit")
+
+    repository.append(event, outbox)
+
+    loaded = repository.load_events()[-1]
+    assert loaded == event
+    assert type(loaded.payload) is type(event.payload)
+
+
 def test_exact_retry_survives_publication_and_pending_outbox_retention() -> None:
     repository = InMemoryEventLedger()
     event = envelope(signal(), event_number=1)

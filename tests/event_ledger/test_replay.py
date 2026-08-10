@@ -342,3 +342,22 @@ def test_global_halt_replay_empty_stream_has_no_implicit_active_state() -> None:
     assert result.head_sequence == 0
     assert result.head_event_id is None
     assert result.head_event_digest is None
+
+
+def test_global_halt_replay_retains_prepared_permit_without_rotating_generation() -> None:
+    from packages.event_ledger import InMemoryEventLedger
+    from packages.runtime_risk import replay_global_halt_authority
+    from tests.runtime_risk.test_global_halt import initialize, prepared_event
+
+    repository = InMemoryEventLedger()
+    state = initialize(repository)
+    transition = repository.load_events()[0]
+    prepared = prepared_event(state)
+
+    result = replay_global_halt_authority(
+        events=(transition, prepared), stream_id=state.stream_id
+    )
+
+    assert result.state == state
+    assert result.prepared[0].permit_id == prepared.payload.permit_id
+    assert result.consumed_permit_ids == ()

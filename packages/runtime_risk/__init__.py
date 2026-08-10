@@ -19,6 +19,7 @@ from .halt import (
     replay_global_halt_authority,
 )
 from .safety import global_safety_binding_digest, observe_global_safety
+from .submit_authority import SubmitPermitPreparationError, prepare_submit_permit
 
 __all__ = [
     "ProjectionError",
@@ -40,4 +41,6 @@ __all__ = [
     "recover_global_halt",
     "record_global_halt_observation",
     "replay_global_halt_authority",
+    "SubmitPermitPreparationError",
+    "prepare_submit_permit",
 ]
