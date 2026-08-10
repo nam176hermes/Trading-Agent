@@ -8,7 +8,15 @@ from uuid import UUID
 import pytest
 
 import packages.execution_sandbox.client as sandbox_client_module
-from packages.domain import EventEnvelope, OrderEvent, OrderQuantity, OrderStatus, Price
+from packages.domain import (
+    EventEnvelope,
+    FillEvent,
+    FillReportStatus,
+    OrderEvent,
+    OrderQuantity,
+    OrderStatus,
+    Price,
+)
 from packages.domain.runtime_halt import SubmitPermitConsumed
 from packages.event_ledger import serialize_event
 from packages.execution_sandbox import (
@@ -60,6 +68,41 @@ def _order_report(
         }
     )
     return SandboxReportPlan(report_id=uid(report_id), deliver_at=at, event=event)
+
+
+def _fill_report(
+    source: EventEnvelope[FillEvent],
+    *,
+    report_id: int,
+    event_id: int,
+    envelope_sequence: int,
+    execution_id: int,
+    report_sequence: int,
+    quantity: str,
+    cumulative: str,
+    leaves: str,
+) -> SandboxReportPlan:
+    payload = FillEvent(
+        **{
+            **{name: getattr(source.payload, name) for name in FillEvent.model_fields},
+            "execution_id": uid(execution_id),
+            "report_sequence": report_sequence,
+            "venue_trade_id": f"fill-{event_id}",
+            "status": FillReportStatus.PARTIALLY_FILLED,
+            "quantity": OrderQuantity(Decimal(quantity), 3),
+            "cumulative_fill_quantity": OrderQuantity(Decimal(cumulative), 3),
+            "leaves_quantity": OrderQuantity(Decimal(leaves), 3),
+        }
+    )
+    event = EventEnvelope[FillEvent](
+        **{
+            **{name: getattr(source, name) for name in EventEnvelope.model_fields},
+            "event_id": uid(event_id),
+            "sequence": envelope_sequence,
+            "payload": payload,
+        }
+    )
+    return SandboxReportPlan(report_id=uid(report_id), deliver_at=NOW, event=event)
 
 
 def _command(command_id: int, kind: SandboxCommandKind, report_ids: tuple[int, ...], *, response=SandboxResponseDisposition.ACKNOWLEDGED) -> SandboxCommandPlan:
@@ -134,6 +177,219 @@ def test_failed_consumption_creates_no_order_report_or_response(
     with pytest.raises(SandboxExecutionError):
         client.submit(_submit_request(prepared_case, submitted_at=NOW + timedelta(seconds=7)))
 
+    assert client.snapshot().orders == ()
+    assert client.snapshot().queued_reports == ()
+
+
+def test_future_submit_advances_the_authoritative_logical_clock(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    client = _client(prepared_case, _accepted_submit_scenario(submitted_envelope))
+
+    client.submit(_submit_request(prepared_case))
+
+    assert client.snapshot().current_time == NOW + timedelta(seconds=1)
+
+
+def test_stale_submit_timestamp_is_rejected_before_consumption(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    client = _client(prepared_case, _accepted_submit_scenario(submitted_envelope))
+    client.advance_time(to=NOW + timedelta(seconds=2))
+    before_events = prepared_case.ledger.load_events()
+    before = client.snapshot()
+
+    with pytest.raises(SandboxExecutionError, match="command time cannot precede logical clock"):
+        client.submit(_submit_request(prepared_case))
+
+    assert prepared_case.ledger.load_events() == before_events
+    assert client.snapshot() == before
+
+
+def test_expired_after_advance_permit_cannot_use_an_older_submit_timestamp(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    client = _client(prepared_case, _accepted_submit_scenario(submitted_envelope))
+    client.advance_time(to=NOW + timedelta(seconds=7))
+    before_events = prepared_case.ledger.load_events()
+    before = client.snapshot()
+
+    with pytest.raises(SandboxExecutionError, match="command time cannot precede logical clock"):
+        client.submit(_submit_request(prepared_case))
+
+    assert prepared_case.ledger.load_events() == before_events
+    assert client.snapshot() == before
+
+
+def test_conflicting_original_event_id_is_rejected_before_any_submit_effect(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    submitted = _order_report(
+        submitted_envelope,
+        report_id=20,
+        event_id=100,
+        sequence=1,
+        status=OrderStatus.SUBMITTED,
+    )
+    accepted = _order_report(
+        submitted_envelope,
+        report_id=21,
+        event_id=101,
+        sequence=2,
+        status=OrderStatus.ACCEPTED,
+    )
+    assert submitted.event is not None
+    assert accepted.event is not None
+    conflicting = SandboxReportPlan(
+        report_id=accepted.report_id,
+        deliver_at=accepted.deliver_at,
+        event=accepted.event.model_copy(update={"event_id": submitted.event.event_id}),
+    )
+    client = _client(
+        prepared_case,
+        _scenario(
+            (_command(100, SandboxCommandKind.SUBMIT, (20, 21)),),
+            (submitted, conflicting),
+        ),
+    )
+    before_events = prepared_case.ledger.load_events()
+    before_outbox = prepared_case.ledger.load_outbox()
+
+    with pytest.raises(SandboxExecutionError, match="event_id conflict"):
+        client.submit(_submit_request(prepared_case))
+
+    assert prepared_case.ledger.load_events() == before_events
+    assert prepared_case.ledger.load_outbox() == before_outbox
+    assert client.snapshot().orders == ()
+    assert client.snapshot().queued_reports == ()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"second_execution_id": 600},
+        {"second_report_sequence": 1},
+        {"first_report_sequence": 2, "second_report_sequence": 1},
+        {"second_quantity": "0.100", "second_cumulative": "0.400", "second_leaves": "0.600"},
+        {"second_quantity": "0.100", "second_cumulative": "0.700", "second_leaves": "0.300"},
+    ),
+    ids=(
+        "repeated-execution-id",
+        "repeated-report-sequence",
+        "nonmonotonic-report-sequence",
+        "regressive-cumulative-quantity",
+        "invalid-cumulative-delta",
+    ),
+)
+def test_invalid_fill_progression_is_rejected_before_any_submit_effect(
+    changes: dict[str, object],
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+    fill_envelope: EventEnvelope[FillEvent],
+) -> None:
+    values: dict[str, object] = {
+        "first_execution_id": 600,
+        "second_execution_id": 601,
+        "first_report_sequence": 1,
+        "second_report_sequence": 2,
+        "second_quantity": "0.250",
+        "second_cumulative": "0.750",
+        "second_leaves": "0.250",
+    }
+    values.update(changes)
+    reports = (
+        _order_report(
+            submitted_envelope,
+            report_id=20,
+            event_id=100,
+            sequence=1,
+            status=OrderStatus.SUBMITTED,
+        ),
+        _order_report(
+            submitted_envelope,
+            report_id=21,
+            event_id=101,
+            sequence=2,
+            status=OrderStatus.PARTIALLY_FILLED,
+        ),
+        _fill_report(
+            fill_envelope,
+            report_id=22,
+            event_id=102,
+            envelope_sequence=3,
+            execution_id=int(values["first_execution_id"]),
+            report_sequence=int(values["first_report_sequence"]),
+            quantity="0.500",
+            cumulative="0.500",
+            leaves="0.500",
+        ),
+        _fill_report(
+            fill_envelope,
+            report_id=23,
+            event_id=103,
+            envelope_sequence=4,
+            execution_id=int(values["second_execution_id"]),
+            report_sequence=int(values["second_report_sequence"]),
+            quantity=str(values["second_quantity"]),
+            cumulative=str(values["second_cumulative"]),
+            leaves=str(values["second_leaves"]),
+        ),
+    )
+    client = _client(
+        prepared_case,
+        _scenario(
+            (_command(100, SandboxCommandKind.SUBMIT, (20, 21, 22, 23)),),
+            reports,
+        ),
+    )
+    before_events = prepared_case.ledger.load_events()
+    before_outbox = prepared_case.ledger.load_outbox()
+
+    with pytest.raises(SandboxExecutionError, match="fill report"):
+        client.submit(_submit_request(prepared_case))
+
+    assert prepared_case.ledger.load_events() == before_events
+    assert prepared_case.ledger.load_outbox() == before_outbox
+    assert client.snapshot().orders == ()
+    assert client.snapshot().queued_reports == ()
+
+
+def test_invalid_observed_delivery_order_is_rejected_before_any_submit_effect(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    reports = (
+        _order_report(
+            submitted_envelope,
+            report_id=20,
+            event_id=100,
+            sequence=1,
+            status=OrderStatus.SUBMITTED,
+            at=NOW + timedelta(seconds=2),
+        ),
+        _order_report(
+            submitted_envelope,
+            report_id=21,
+            event_id=101,
+            sequence=2,
+            status=OrderStatus.ACCEPTED,
+            at=NOW + timedelta(seconds=1),
+        ),
+    )
+    client = _client(
+        prepared_case,
+        _scenario(
+            (_command(100, SandboxCommandKind.SUBMIT, (20, 21)),),
+            reports,
+        ),
+    )
+    before_events = prepared_case.ledger.load_events()
+    before_outbox = prepared_case.ledger.load_outbox()
+
+    with pytest.raises(SandboxExecutionError, match="observed delivery order"):
+        client.submit(_submit_request(prepared_case))
+
+    assert prepared_case.ledger.load_events() == before_events
+    assert prepared_case.ledger.load_outbox() == before_outbox
     assert client.snapshot().orders == ()
     assert client.snapshot().queued_reports == ()
 
@@ -337,13 +593,11 @@ def test_delayed_submit_report_is_delivered_only_after_reconnect(
     scenario = _scenario(
         (
             _command(100, SandboxCommandKind.SUBMIT, (20,)),
-            _command(101, SandboxCommandKind.DISCONNECT, (21,)),
-            _command(102, SandboxCommandKind.RECONNECT, (22,)),
+            _command(101, SandboxCommandKind.DISCONNECT, ()),
+            _command(102, SandboxCommandKind.RECONNECT, ()),
         ),
         (
             _order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED, at=NOW + timedelta(seconds=2)),
-            _order_report(submitted_envelope, report_id=21, event_id=101, sequence=2, status=OrderStatus.ACCEPTED),
-            _order_report(submitted_envelope, report_id=22, event_id=102, sequence=3, status=OrderStatus.ACCEPTED),
         ),
     )
     client = _client(prepared_case, scenario)
@@ -385,7 +639,7 @@ def test_modify_uses_replacement_intent_only_after_pending_update_is_accepted(
             command_id=uid(101),
             order_id=uid(1),
             replacement_order_intent=replacement,
-            requested_at=NOW,
+            requested_at=NOW + timedelta(seconds=1),
         )
     )
 
@@ -425,7 +679,7 @@ def test_modify_installs_replacement_after_each_valid_pending_update_path(
             command_id=uid(101),
             order_id=uid(1),
             replacement_order_intent=replacement,
-            requested_at=NOW,
+            requested_at=NOW + timedelta(seconds=1),
         )
     )
 
@@ -462,14 +716,14 @@ def test_cancel_and_modify_fill_races_keep_the_existing_accepted_intent(
     )
 
     if kind is SandboxCommandKind.CANCEL:
-        client.cancel(SandboxCancelRequest(command_id=uid(101), order_id=uid(1), requested_at=NOW))
+        client.cancel(SandboxCancelRequest(command_id=uid(101), order_id=uid(1), requested_at=NOW + timedelta(seconds=1)))
     else:
         client.modify(
             SandboxModifyRequest(
                 command_id=uid(101),
                 order_id=uid(1),
                 replacement_order_intent=replacement,
-                requested_at=NOW,
+                requested_at=NOW + timedelta(seconds=1),
             )
         )
     client.drain_reports()

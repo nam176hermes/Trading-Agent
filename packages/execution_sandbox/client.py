@@ -11,12 +11,16 @@ from packages.domain.clock import require_utc
 from packages.domain.events import EventEnvelope
 from packages.domain.orders import (
     TERMINAL_ORDER_STATUSES,
+    FillEvent,
+    FillReportStatus,
     OrderEvent,
     OrderIntent,
+    OrderQuantity,
     OrderState,
     OrderStatus,
     reduce_order,
 )
+from packages.domain.primitives import decimal_to_scaled_integer
 from packages.event_ledger import EventLedgerRepository, OutboxIntent, deserialize_event, serialize_event
 from packages.event_ledger.models import AppendOutcome
 from packages.runtime_risk import (
@@ -118,6 +122,7 @@ class SandboxExecutionClient:
         self._require_connected_and_unused_client_order_id(
             request.order_intent.client_order_id, request.order_id
         )
+        self._require_command_time(request.submitted_at)
         self._validate_all_planned_reports_before_effect(plan, request)
         try:
             authority = consume_submit_permit(
@@ -141,6 +146,7 @@ class SandboxExecutionClient:
         )
         next_order, next_queue, retained = self._apply_venue_reports_and_enqueue(plan, initial_order)
         self._replace_state(
+            current_time=request.submitted_at,
             orders=self._snapshot.orders + (next_order,),
             queued=next_queue,
             retained=retained,
@@ -157,6 +163,7 @@ class SandboxExecutionClient:
     def modify(self, request: SandboxModifyRequest) -> SandboxCommandResult:
         request = _canonical_model(request, SandboxModifyRequest, "modify request")
         self._require_connected()
+        self._require_command_time(request.requested_at)
         existing = self._order_for(request.order_id)
         self._require_nonterminal(existing)
         if request.replacement_order_intent.intent_id != request.order_id:
@@ -164,12 +171,14 @@ class SandboxExecutionClient:
         if request.replacement_order_intent.client_order_id != existing.client_order_id:
             raise SandboxExecutionError("replacement client order identity is invalid")
         plan = self._require_plan(request.command_id, SandboxCommandKind.MODIFY, request.order_id)
+        self._validate_planned_delivery_before_effect(plan, request.order_id)
         next_order, next_queue, retained = self._apply_venue_reports_and_enqueue(
             plan,
             existing,
             replacement_order_intent=request.replacement_order_intent,
         )
         self._replace_state(
+            current_time=request.requested_at,
             orders=self._replace_order(next_order),
             queued=next_queue,
             retained=retained,
@@ -180,11 +189,14 @@ class SandboxExecutionClient:
     def cancel(self, request: SandboxCancelRequest) -> SandboxCommandResult:
         request = _canonical_model(request, SandboxCancelRequest, "cancel request")
         self._require_connected()
+        self._require_command_time(request.requested_at)
         existing = self._order_for(request.order_id)
         self._require_nonterminal(existing)
         plan = self._require_plan(request.command_id, SandboxCommandKind.CANCEL, request.order_id)
+        self._validate_planned_delivery_before_effect(plan, request.order_id)
         next_order, next_queue, retained = self._apply_venue_reports_and_enqueue(plan, existing)
         self._replace_state(
+            current_time=request.requested_at,
             orders=self._replace_order(next_order),
             queued=next_queue,
             retained=retained,
@@ -252,8 +264,7 @@ class SandboxExecutionClient:
             require_utc(at)
         except (TypeError, ValueError) as exc:
             raise SandboxExecutionError("connection time must be UTC") from exc
-        if at < self._snapshot.current_time:
-            raise SandboxExecutionError("clock cannot move backwards")
+        self._require_command_time(at)
         wanted = SandboxConnectionState.CONNECTED if kind is SandboxCommandKind.DISCONNECT else SandboxConnectionState.DISCONNECTED
         if self._snapshot.connection_state is not wanted:
             raise SandboxExecutionError("invalid sandbox connection transition")
@@ -261,6 +272,7 @@ class SandboxExecutionClient:
         next_state = SandboxConnectionState.DISCONNECTED if kind is SandboxCommandKind.DISCONNECT else SandboxConnectionState.CONNECTED
         self._replace_state(
             connection_state=next_state,
+            current_time=at,
             executed=self._executed_command_ids + (plan.command_id,),
         )
         return self._result_or_lost(plan)
@@ -290,12 +302,158 @@ class SandboxExecutionClient:
     def _validate_all_planned_reports_before_effect(
         self, plan: SandboxCommandPlan, request: SandboxSubmitRequest
     ) -> None:
+        self._validate_scenario_report_inventory()
         reports, _ = self._planned_reports(plan, request.order_id)
         state = OrderState(order_id=request.order_id)
         for _, canonical_event in reports:
             event = _canonical_envelope(canonical_event)
             if type(event.payload) is OrderEvent:
                 state = self._reduce(state, event.payload)
+        self._validate_observed_delivery_order(
+            reports,
+            new_order_id=request.order_id,
+        )
+
+    def _validate_planned_delivery_before_effect(
+        self, plan: SandboxCommandPlan, order_id: UUID
+    ) -> None:
+        self._validate_scenario_report_inventory()
+        reports, _ = self._planned_reports(plan, order_id)
+        self._validate_observed_delivery_order(reports)
+
+    def _validate_scenario_report_inventory(self) -> None:
+        canonical_by_report_id: dict[UUID, str] = {}
+        canonical_by_event_id: dict[UUID, str] = {}
+        for report in self._scenario.report_plans:
+            if report.event is not None:
+                try:
+                    canonical_event = serialize_event(report.event)
+                except (TypeError, ValueError) as exc:
+                    raise SandboxExecutionError("invalid scenario report") from exc
+                event = _canonical_envelope(canonical_event)
+                previous = canonical_by_event_id.get(event.event_id)
+                if previous is not None:
+                    if previous != canonical_event:
+                        raise SandboxExecutionError(
+                            "scenario original event_id conflict"
+                        )
+                    raise SandboxExecutionError(
+                        "scenario original event_id must use a duplicate report plan"
+                    )
+                canonical_by_event_id[event.event_id] = canonical_event
+                canonical_by_report_id[report.report_id] = canonical_event
+                continue
+            original = canonical_by_report_id.get(report.duplicate_of_report_id)
+            if original is None:
+                raise SandboxExecutionError("duplicate report original is unavailable")
+            canonical_by_report_id[report.report_id] = original
+
+        insertion_ordinals: dict[UUID, int] = {}
+        next_ordinal = 0
+        for command in self._scenario.command_plans:
+            for report_id in command.report_ids:
+                insertion_ordinals[report_id] = next_ordinal
+                next_ordinal += 1
+
+        scheduled = sorted(
+            (
+                report.deliver_at,
+                insertion_ordinals[report.report_id],
+                canonical_by_report_id[report.report_id],
+            )
+            for report in self._scenario.report_plans
+        )
+        seen_event_ids: set[UUID] = set()
+        execution_ids: set[UUID] = set()
+        prior_by_order: dict[UUID, FillEvent] = {}
+        for _, _, canonical_event in scheduled:
+            event = _canonical_envelope(canonical_event)
+            if event.event_id in seen_event_ids:
+                continue
+            seen_event_ids.add(event.event_id)
+            if type(event.payload) is not FillEvent:
+                continue
+            report = event.payload
+            if report.status not in (
+                FillReportStatus.PARTIALLY_FILLED,
+                FillReportStatus.FILLED,
+            ):
+                raise SandboxExecutionError("fill report status is outside 06A")
+            if report.execution_id in execution_ids:
+                raise SandboxExecutionError("fill report execution_id is repeated")
+            execution_ids.add(report.execution_id)
+            prior = prior_by_order.get(report.order_id)
+            if prior is None:
+                if self._scaled_quantity(report.cumulative_fill_quantity) != self._scaled_quantity(
+                    report.quantity
+                ):
+                    raise SandboxExecutionError(
+                        "fill report initial cumulative progression is invalid"
+                    )
+            else:
+                if report.report_sequence <= prior.report_sequence:
+                    raise SandboxExecutionError(
+                        "fill report_sequence is not strictly increasing"
+                    )
+                prior_cumulative = self._scaled_quantity(prior.cumulative_fill_quantity)
+                cumulative = self._scaled_quantity(report.cumulative_fill_quantity)
+                quantity = self._scaled_quantity(report.quantity)
+                if cumulative <= prior_cumulative:
+                    raise SandboxExecutionError(
+                        "fill report cumulative progression is not increasing"
+                    )
+                if cumulative != prior_cumulative + quantity:
+                    raise SandboxExecutionError(
+                        "fill report cumulative progression is invalid"
+                    )
+                if report.order_quantity != prior.order_quantity:
+                    raise SandboxExecutionError(
+                        "fill report order quantity changed across progression"
+                    )
+            prior_by_order[report.order_id] = report
+
+    def _validate_observed_delivery_order(
+        self,
+        reports: tuple[tuple[SandboxReportPlan, str], ...],
+        *,
+        new_order_id: UUID | None = None,
+    ) -> None:
+        states = {
+            order.order_id: order.observed_state for order in self._snapshot.orders
+        }
+        if new_order_id is not None:
+            states[new_order_id] = OrderState(order_id=new_order_id)
+        next_ordinal = max(
+            (item.insertion_ordinal for item in self._queued_reports), default=-1
+        ) + 1
+        candidates = self._queued_reports + tuple(
+            _QueuedReport(report, canonical_event, next_ordinal + offset)
+            for offset, (report, canonical_event) in enumerate(reports)
+        )
+        for item in sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.plan.deliver_at,
+                candidate.insertion_ordinal,
+            ),
+        ):
+            event = _canonical_envelope(item.canonical_event)
+            if type(event.payload) is not OrderEvent:
+                continue
+            state = states.get(event.payload.order_id)
+            if state is None:
+                raise SandboxExecutionError("observed delivery order references unknown order")
+            try:
+                states[event.payload.order_id] = self._reduce(state, event.payload)
+            except SandboxExecutionError as exc:
+                raise SandboxExecutionError("invalid observed delivery order") from exc
+
+    @staticmethod
+    def _scaled_quantity(quantity: OrderQuantity) -> int:
+        try:
+            return decimal_to_scaled_integer(quantity.value, quantity.precision)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise SandboxExecutionError("fill report quantity is invalid") from exc
 
     def _apply_venue_reports_and_enqueue(
         self,
@@ -468,6 +626,12 @@ class SandboxExecutionClient:
     def _require_connected(self) -> None:
         if self._snapshot.connection_state is not SandboxConnectionState.CONNECTED:
             raise SandboxExecutionError("sandbox is disconnected")
+
+    def _require_command_time(self, command_time: datetime) -> None:
+        if command_time < self._snapshot.current_time:
+            raise SandboxExecutionError(
+                "command time cannot precede logical clock"
+            )
 
     @staticmethod
     def _result_or_lost(plan: SandboxCommandPlan) -> SandboxCommandResult:

@@ -70,7 +70,12 @@ def order_envelope(
 
 
 def fill_report(
-    fill_envelope: EventEnvelope[FillEvent], *, event_id: int, sequence: int, partial: bool = False
+    fill_envelope: EventEnvelope[FillEvent],
+    *,
+    event_id: int,
+    sequence: int,
+    partial: bool = False,
+    after_partial: bool = False,
 ) -> EventEnvelope[FillEvent]:
     payload = fill_envelope.payload
     if partial:
@@ -93,6 +98,14 @@ def fill_report(
                 "execution_id": uid(20_000 + event_id),
                 "report_sequence": 2,
                 "venue_trade_id": f"full-{event_id}",
+                **(
+                    {
+                        "quantity": OrderQuantity(Decimal("0.500"), 3),
+                        "cumulative_fill_quantity": OrderQuantity(Decimal("1.000"), 3),
+                    }
+                    if after_partial
+                    else {}
+                ),
             }
         )
     return EventEnvelope[FillEvent](
@@ -189,7 +202,7 @@ def test_duplicate_delivery_reuses_exact_envelope_and_is_idempotent(
             reports=(
                 original(20, submitted),
                 original(21, accepted),
-                duplicate(22, 21, at=NOW + timedelta(seconds=1)),
+                duplicate(22, 21, at=NOW + timedelta(seconds=2)),
             ),
         ),
         safety_verifier,
@@ -197,7 +210,7 @@ def test_duplicate_delivery_reuses_exact_envelope_and_is_idempotent(
 
     client.submit(valid_submit_request(prepared_case))
     first = client.drain_reports()
-    client.advance_time(to=NOW + timedelta(seconds=1))
+    client.advance_time(to=NOW + timedelta(seconds=2))
     second = client.drain_reports()
 
     assert serialize_event(second[0]) == serialize_event(first[-1])
@@ -257,7 +270,7 @@ def test_partial_then_full_fill_progresses_lifecycle_and_delivers_fill_reports(
             commands=(command(100, SandboxCommandKind.SUBMIT, (20, 21, 22, 23, 24)),),
             reports=(
                 original(20, submitted), original(21, partial), original(22, fill_report(fill_envelope, event_id=13, sequence=3, partial=True)),
-                original(23, full), original(24, fill_report(fill_envelope, event_id=14, sequence=5)),
+                original(23, full), original(24, fill_report(fill_envelope, event_id=14, sequence=5, after_partial=True)),
             ),
         ),
         safety_verifier,
@@ -334,32 +347,181 @@ def test_backwards_clock_is_rejected_without_mutation(submitted_envelope: EventE
 
 
 def test_connection_command_before_logical_clock_is_rejected_without_mutation(
-    submitted_envelope: EventEnvelope[OrderEvent], safety_verifier: Any
+    safety_verifier: Any,
 ) -> None:
     client = client_for(
         scenario(
-            commands=(command(100, SandboxCommandKind.DISCONNECT, (20,)),),
-            reports=(
-                original(
-                    20,
-                    order_envelope(
-                        submitted_envelope,
-                        event_id=10,
-                        envelope_sequence=1,
-                        order_sequence=1,
-                        status=OrderStatus.SUBMITTED,
-                    ),
-                ),
-            ),
+            commands=(command(100, SandboxCommandKind.DISCONNECT, ()),),
+            reports=(),
         ),
         safety_verifier,
     )
     client.advance_time(to=NOW + timedelta(seconds=1))
     before = client.snapshot()
 
-    with pytest.raises(SandboxExecutionError, match="clock cannot move backwards"):
+    with pytest.raises(SandboxExecutionError, match="command time cannot precede logical clock"):
         client.disconnect(command_id=uid(100), at=NOW)
 
+    assert client.snapshot() == before
+
+
+def test_accepted_connection_commands_advance_the_logical_clock(
+    safety_verifier: Any,
+) -> None:
+    client = client_for(
+        scenario(
+            commands=(
+                command(100, SandboxCommandKind.DISCONNECT, ()),
+                command(101, SandboxCommandKind.RECONNECT, ()),
+            ),
+            reports=(),
+        ),
+        safety_verifier,
+    )
+
+    client.disconnect(command_id=uid(100), at=NOW + timedelta(seconds=1))
+    assert client.snapshot().current_time == NOW + timedelta(seconds=1)
+    client.reconnect(command_id=uid(101), at=NOW + timedelta(seconds=2))
+    assert client.snapshot().current_time == NOW + timedelta(seconds=2)
+
+
+@pytest.mark.parametrize(
+    ("kind", "pending_status"),
+    (
+        (SandboxCommandKind.MODIFY, OrderStatus.PENDING_UPDATE),
+        (SandboxCommandKind.CANCEL, OrderStatus.PENDING_CANCEL),
+    ),
+)
+def test_future_lifecycle_command_advances_the_logical_clock(
+    kind: SandboxCommandKind,
+    pending_status: OrderStatus,
+    submitted_envelope: EventEnvelope[OrderEvent],
+    prepared_case: Any,
+    safety_verifier: Any,
+) -> None:
+    submitted = order_envelope(
+        submitted_envelope,
+        event_id=10,
+        envelope_sequence=1,
+        order_sequence=1,
+        status=OrderStatus.SUBMITTED,
+    )
+    accepted = order_envelope(
+        submitted_envelope,
+        event_id=11,
+        envelope_sequence=2,
+        order_sequence=2,
+        status=OrderStatus.ACCEPTED,
+    )
+    pending = order_envelope(
+        submitted_envelope,
+        event_id=12,
+        envelope_sequence=3,
+        order_sequence=3,
+        status=pending_status,
+    )
+    client = client_for(
+        scenario(
+            commands=(
+                command(100, SandboxCommandKind.SUBMIT, (20, 21)),
+                command(101, kind, (22,)),
+            ),
+            reports=(original(20, submitted), original(21, accepted), original(22, pending)),
+        ),
+        safety_verifier,
+    )
+    client.submit(valid_submit_request(prepared_case))
+    client.drain_reports()
+
+    if kind is SandboxCommandKind.MODIFY:
+        client.modify(
+            SandboxModifyRequest(
+                command_id=uid(101),
+                order_id=uid(1),
+                replacement_order_intent=prepared_case.intent,
+                requested_at=NOW + timedelta(seconds=2),
+            )
+        )
+    else:
+        client.cancel(
+            SandboxCancelRequest(
+                command_id=uid(101),
+                order_id=uid(1),
+                requested_at=NOW + timedelta(seconds=2),
+            )
+        )
+
+    assert client.snapshot().current_time == NOW + timedelta(seconds=2)
+
+
+@pytest.mark.parametrize(
+    ("kind", "pending_status"),
+    (
+        (SandboxCommandKind.MODIFY, OrderStatus.PENDING_UPDATE),
+        (SandboxCommandKind.CANCEL, OrderStatus.PENDING_CANCEL),
+    ),
+)
+def test_stale_lifecycle_command_is_rejected_without_mutation(
+    kind: SandboxCommandKind,
+    pending_status: OrderStatus,
+    submitted_envelope: EventEnvelope[OrderEvent],
+    prepared_case: Any,
+    safety_verifier: Any,
+) -> None:
+    submitted = order_envelope(
+        submitted_envelope,
+        event_id=10,
+        envelope_sequence=1,
+        order_sequence=1,
+        status=OrderStatus.SUBMITTED,
+    )
+    accepted = order_envelope(
+        submitted_envelope,
+        event_id=11,
+        envelope_sequence=2,
+        order_sequence=2,
+        status=OrderStatus.ACCEPTED,
+    )
+    pending = order_envelope(
+        submitted_envelope,
+        event_id=12,
+        envelope_sequence=3,
+        order_sequence=3,
+        status=pending_status,
+    )
+    client = client_for(
+        scenario(
+            commands=(
+                command(100, SandboxCommandKind.SUBMIT, (20, 21)),
+                command(101, kind, (22,)),
+            ),
+            reports=(original(20, submitted), original(21, accepted), original(22, pending)),
+        ),
+        safety_verifier,
+    )
+    client.submit(valid_submit_request(prepared_case))
+    client.drain_reports()
+    client.advance_time(to=NOW + timedelta(seconds=2))
+    before = client.snapshot()
+
+    if kind is SandboxCommandKind.MODIFY:
+        operation = client.modify
+        request: SandboxModifyRequest | SandboxCancelRequest = SandboxModifyRequest(
+            command_id=uid(101),
+            order_id=uid(1),
+            replacement_order_intent=prepared_case.intent,
+            requested_at=NOW + timedelta(seconds=1),
+        )
+    else:
+        operation = client.cancel
+        request = SandboxCancelRequest(
+            command_id=uid(101),
+            order_id=uid(1),
+            requested_at=NOW + timedelta(seconds=1),
+        )
+
+    with pytest.raises(SandboxExecutionError, match="command time cannot precede logical clock"):
+        operation(request)  # type: ignore[arg-type]
     assert client.snapshot() == before
 
 
@@ -457,23 +619,21 @@ def test_cancel_and_modify_fill_races_follow_the_declared_command_plan_order(
     client.drain_reports()
 
     if kind is SandboxCommandKind.CANCEL:
-        client.cancel(SandboxCancelRequest(command_id=uid(101), order_id=uid(1), requested_at=NOW))
+        client.cancel(SandboxCancelRequest(command_id=uid(101), order_id=uid(1), requested_at=NOW + timedelta(seconds=1)))
     else:
-        client.modify(SandboxModifyRequest(command_id=uid(101), order_id=uid(1), replacement_order_intent=prepared_case.intent, requested_at=NOW))
+        client.modify(SandboxModifyRequest(command_id=uid(101), order_id=uid(1), replacement_order_intent=prepared_case.intent, requested_at=NOW + timedelta(seconds=1)))
     client.drain_reports()
 
     assert client.snapshot().orders[0].observed_state.status is OrderStatus.FILLED
 
 
 def test_disconnect_and_reconnect_are_scenario_gated_and_do_not_drain(
-    submitted_envelope: EventEnvelope[OrderEvent], prepared_case: Any, safety_verifier: Any
+    prepared_case: Any, safety_verifier: Any
 ) -> None:
-    dormant = order_envelope(submitted_envelope, event_id=10, envelope_sequence=1, order_sequence=1, status=OrderStatus.SUBMITTED)
-    delayed = order_envelope(submitted_envelope, event_id=11, envelope_sequence=2, order_sequence=2, status=OrderStatus.ACCEPTED)
     client = client_for(
         scenario(
-            commands=(command(100, SandboxCommandKind.DISCONNECT, (20,)), command(101, SandboxCommandKind.RECONNECT, (21,))),
-            reports=(original(20, dormant), original(21, delayed)),
+            commands=(command(100, SandboxCommandKind.DISCONNECT, ()), command(101, SandboxCommandKind.RECONNECT, ())),
+            reports=(),
         ),
         safety_verifier,
     )

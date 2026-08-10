@@ -440,12 +440,12 @@ def test_disconnected_client_rejects_planned_submit_without_consuming_command(
             SandboxCommandPlan(
                 command_id=uid(70), kind=SandboxCommandKind.DISCONNECT,
                 response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
-                order_id=uid(1), report_ids=(uid(20),),
+                order_id=uid(1), report_ids=(),
             ),
             SandboxCommandPlan(
                 command_id=uid(71), kind=SandboxCommandKind.RECONNECT,
                 response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
-                order_id=uid(1), report_ids=(uid(21),),
+                order_id=uid(1), report_ids=(),
             ),
             SandboxCommandPlan(
                 command_id=uid(100), kind=SandboxCommandKind.SUBMIT,
@@ -454,8 +454,6 @@ def test_disconnected_client_rejects_planned_submit_without_consuming_command(
             ),
         ),
         report_plans=(
-            order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED),
-            order_report(submitted_envelope, report_id=21, event_id=101, sequence=2, status=OrderStatus.ACCEPTED),
             order_report(submitted_envelope, report_id=22, event_id=102, sequence=1, status=OrderStatus.SUBMITTED),
         ),
     )
@@ -501,12 +499,12 @@ def test_disconnected_client_rejects_planned_modify_and_cancel_without_consuming
             SandboxCommandPlan(
                 command_id=uid(70), kind=SandboxCommandKind.DISCONNECT,
                 response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
-                order_id=uid(1), report_ids=(uid(21),),
+                order_id=uid(1), report_ids=(),
             ),
             SandboxCommandPlan(
                 command_id=uid(71), kind=SandboxCommandKind.RECONNECT,
                 response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
-                order_id=uid(1), report_ids=(uid(22),),
+                order_id=uid(1), report_ids=(),
             ),
             SandboxCommandPlan(
                 command_id=uid(101), kind=kind,
@@ -516,8 +514,6 @@ def test_disconnected_client_rejects_planned_modify_and_cancel_without_consuming
         ),
         report_plans=(
             order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED),
-            order_report(submitted_envelope, report_id=21, event_id=101, sequence=2, status=OrderStatus.ACCEPTED),
-            order_report(submitted_envelope, report_id=22, event_id=102, sequence=3, status=OrderStatus.ACCEPTED),
             order_report(submitted_envelope, report_id=23, event_id=103, sequence=3, status=pending_status),
             order_report(submitted_envelope, report_id=24, event_id=104, sequence=2, status=OrderStatus.ACCEPTED),
         ),
@@ -530,40 +526,43 @@ def test_disconnected_client_rejects_planned_modify_and_cancel_without_consuming
     )
     client.submit(submit_request(prepared_case))
     client.drain_reports()
-    client.disconnect(command_id=uid(70), at=NOW)
+    client.disconnect(command_id=uid(70), at=NOW + timedelta(seconds=1))
     before = client.snapshot()
     if kind is SandboxCommandKind.MODIFY:
         operation = client.modify
         request: SandboxModifyRequest | SandboxCancelRequest = SandboxModifyRequest(
             command_id=uid(101), order_id=uid(1),
-            replacement_order_intent=prepared_case.intent, requested_at=NOW,
+            replacement_order_intent=prepared_case.intent, requested_at=NOW + timedelta(seconds=1),
         )
     else:
         operation = client.cancel
-        request = SandboxCancelRequest(command_id=uid(101), order_id=uid(1), requested_at=NOW)
+        request = SandboxCancelRequest(
+            command_id=uid(101),
+            order_id=uid(1),
+            requested_at=NOW + timedelta(seconds=1),
+        )
 
     with pytest.raises(SandboxExecutionError, match="sandbox is disconnected"):
         operation(request)
     assert client.snapshot() == before
 
-    client.reconnect(command_id=uid(71), at=NOW)
+    client.reconnect(command_id=uid(71), at=NOW + timedelta(seconds=1))
     operation(request)
     assert client.snapshot().queued_reports[0].report_id == uid(23)
 
 
 def test_client_rejects_backwards_connection_timestamp_without_mutation(
     prepared_case: Any,
-    submitted_envelope: EventEnvelope[OrderEvent],
 ) -> None:
     scenario = SandboxScenario(
         command_plans=(
             SandboxCommandPlan(
                 command_id=uid(70), kind=SandboxCommandKind.DISCONNECT,
                 response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
-                order_id=uid(1), report_ids=(uid(20),),
+                order_id=uid(1), report_ids=(),
             ),
         ),
-        report_plans=(order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED),),
+        report_plans=(),
     )
     client = SandboxExecutionClient(
         repository=prepared_case.ledger,
@@ -574,7 +573,7 @@ def test_client_rejects_backwards_connection_timestamp_without_mutation(
     client.advance_time(to=NOW + timedelta(seconds=1))
     before = client.snapshot()
 
-    with pytest.raises(SandboxExecutionError, match="clock cannot move backwards"):
+    with pytest.raises(SandboxExecutionError, match="command time cannot precede logical clock"):
         client.disconnect(command_id=uid(70), at=NOW)
 
     assert client.snapshot() == before

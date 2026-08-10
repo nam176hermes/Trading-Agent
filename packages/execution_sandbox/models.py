@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, TypeVar
+from typing import Any, TypeVar
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from packages.domain.clock import require_utc
 from packages.domain.events import EventEnvelope
@@ -112,12 +112,20 @@ class SandboxCommandPlan(SandboxModel):
     kind: SandboxCommandKind
     response_disposition: SandboxResponseDisposition
     order_id: UUID
-    report_ids: Annotated[tuple[UUID, ...], Field(min_length=1)]
+    report_ids: tuple[UUID, ...]
 
     @model_validator(mode="after")
     def _unique_report_ids(self) -> "SandboxCommandPlan":
         if len(self.report_ids) != len(set(self.report_ids)):
             raise ValueError("command report_ids must occur exactly once")
+        connection_command = self.kind in (
+            SandboxCommandKind.DISCONNECT,
+            SandboxCommandKind.RECONNECT,
+        )
+        if connection_command and self.report_ids:
+            raise ValueError("connection command report_ids must be empty")
+        if not connection_command and not self.report_ids:
+            raise ValueError("lifecycle command report_ids must not be empty")
         return self
 
 

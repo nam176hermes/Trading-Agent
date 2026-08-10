@@ -129,6 +129,28 @@ def test_command_requires_existing_nonrepeating_report_ids(submitted_envelope: E
         SandboxScenario(command_plans=(submit_plan(uid(62), (uid(63),)),), report_plans=(report,))
 
 
+def test_connection_commands_require_empty_report_inventory() -> None:
+    disconnect = SandboxCommandPlan(
+        command_id=uid(67),
+        kind=SandboxCommandKind.DISCONNECT,
+        response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+        order_id=uid(1),
+        report_ids=(),
+    )
+
+    assert SandboxScenario(command_plans=(disconnect,), report_plans=()).report_plans == ()
+    with pytest.raises(ValueError, match="connection command report_ids must be empty"):
+        SandboxCommandPlan(
+            command_id=uid(68),
+            kind=SandboxCommandKind.RECONNECT,
+            response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+            order_id=uid(1),
+            report_ids=(uid(69),),
+        )
+    with pytest.raises(ValueError, match="lifecycle command report_ids must not be empty"):
+        submit_plan(uid(69), ())
+
+
 def test_scenario_rejects_a_report_assigned_to_more_than_one_command(
     submitted_envelope: EventEnvelope[object],
 ) -> None:
