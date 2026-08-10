@@ -36,7 +36,7 @@
 - tests/domain/test_portfolio_events.py — cost-basis, payload, registration tests.
 - tests/portfolio_reducer/test_execution_accounting.py — fill/correction/bust accounting tests.
 - tests/portfolio_reducer/test_adjustments.py — mark, funding, conversion, valuation, reconciliation tests.
-- tests/portfolio_reducer/test_replay.py — stream, canonical ordering, snapshot-tail, tamper tests.
+- tests/portfolio_reducer/test_portfolio_replay.py — stream, canonical ordering, snapshot-tail, tamper tests.
 - tests/domain/test_contract_generation.py — generated schemas and legacy compatibility.
 
 ### Task 1: Public Cost-Basis and Portfolio Ledger Entry Contracts
@@ -279,7 +279,7 @@ git commit -m "feat: derive portfolio adjustments and exposure"
 - Modify: packages/portfolio_reducer/models.py
 - Modify: packages/portfolio_reducer/__init__.py
 - Modify: scripts/generate_contracts.py
-- Create: tests/portfolio_reducer/test_replay.py
+- Create: tests/portfolio_reducer/test_portfolio_replay.py
 - Modify: tests/domain/test_contract_generation.py
 - Modify: docs/implementation/foundation-handler-inventory.md (only when its mandated check requires regeneration)
 
@@ -309,7 +309,7 @@ Cover missing/non-first opening, foreign account/stream, gap/regression, old tai
 
 - [ ] **Step 2: Run replay tests and confirm RED**
 
-Run: uv run pytest -q tests/portfolio_reducer/test_replay.py
+Run: uv run pytest -q tests/portfolio_reducer/test_portfolio_replay.py
 
 Expected: FAIL because no strict portfolio record/replay boundary exists.
 
@@ -328,7 +328,7 @@ The canonical state document contains exactly schema_version, reducer_version, s
 
 - [ ] **Step 4: Run the complete 05B focused suite and static gates**
 
-Run: uv run pytest -q tests/domain/test_portfolio_events.py tests/portfolio_reducer/test_execution_accounting.py tests/portfolio_reducer/test_adjustments.py tests/portfolio_reducer/test_replay.py tests/domain/test_contract_generation.py
+Run: uv run pytest -q tests/domain/test_portfolio_events.py tests/portfolio_reducer/test_execution_accounting.py tests/portfolio_reducer/test_adjustments.py tests/portfolio_reducer/test_portfolio_replay.py tests/domain/test_contract_generation.py
 
 Expected: PASS.
 

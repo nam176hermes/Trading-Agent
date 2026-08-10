@@ -29,7 +29,7 @@
 - Modify: packages/portfolio_reducer/replay.py
 - Modify: packages/portfolio_reducer/__init__.py
 - Modify: scripts/generate_contracts.py
-- Modify: tests/portfolio_reducer/test_replay.py
+- Modify: tests/portfolio_reducer/test_portfolio_replay.py
 - Modify: tests/domain/test_contract_generation.py
 
 **Interfaces:**
@@ -60,7 +60,7 @@ Add table cases for wrong account, stream, cursor, state hash, prefix-history ha
 
 - [ ] **Step 2: Verify RED**
 
-Run: PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider tests/portfolio_reducer/test_replay.py -k "authority or forged_record"
+Run: PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider tests/portfolio_reducer/test_portfolio_replay.py -k "authority or forged_record"
 
 Expected: collection or assertion failures because authority models/API do not exist and snapshot-only replay remains accepted.
 
@@ -118,7 +118,7 @@ Run:
 
 ~~~bash
 uv run python scripts/generate_contracts.py
-PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider tests/portfolio_reducer/test_replay.py tests/domain/test_contract_generation.py
+PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider tests/portfolio_reducer/test_portfolio_replay.py tests/domain/test_contract_generation.py
 uv run python scripts/generate_contracts.py --check
 git diff --check
 ~~~
@@ -128,7 +128,7 @@ Expected: PASS; generated changes are limited to PortfolioReplayResult, Portfoli
 Commit:
 
 ~~~bash
-git add packages/portfolio_reducer scripts/generate_contracts.py schemas tests/portfolio_reducer/test_replay.py tests/domain/test_contract_generation.py
+git add packages/portfolio_reducer scripts/generate_contracts.py schemas tests/portfolio_reducer/test_portfolio_replay.py tests/domain/test_contract_generation.py
 git commit -m "feat: anchor portfolio snapshot tail replay"
 ~~~
 
@@ -139,7 +139,7 @@ git commit -m "feat: anchor portfolio snapshot tail replay"
 - Modify: packages/portfolio_reducer/reducer.py
 - Modify: packages/portfolio_reducer/replay.py
 - Modify: tests/portfolio_reducer/test_execution_accounting.py
-- Modify: tests/portfolio_reducer/test_replay.py
+- Modify: tests/portfolio_reducer/test_portfolio_replay.py
 - Modify: docs/implementation/foundation-handler-inventory.md only when the inventory checker requires mechanical line updates
 
 **Interfaces:**
@@ -164,7 +164,7 @@ Add direct malformed-state cases: missing business_identity_id for an applicable
 
 - [ ] **Step 2: Verify RED**
 
-Run: PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider tests/portfolio_reducer/test_replay.py -k "identity_omission or business_identity"
+Run: PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider tests/portfolio_reducer/test_portfolio_replay.py -k "identity_omission or business_identity"
 
 Expected: FAIL because PortfolioAppliedEvent has no event type/business identity fields and completeness is not enforceable.
 
