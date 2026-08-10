@@ -50,7 +50,7 @@ _FORBIDDEN_IMPORTS = (
 _PROCESS_ENTRY_POINTS = tuple(
     name
     for name in dir(os)
-    if name in {"system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp"}
+    if name in {"system", "popen", "startfile", "fork", "forkpty", "posix_spawn", "posix_spawnp"}
     or name.startswith("spawn")
     or name.startswith("exec")
 )
@@ -146,7 +146,7 @@ def _is_forbidden_import(candidate: str) -> bool:
 
 def _is_forbidden_process_entry(candidate: str) -> bool:
     return (
-        candidate in {"os.system", "os.popen", "os.fork", "os.forkpty", "os.posix_spawn", "os.posix_spawnp"}
+        candidate in {"os.system", "os.popen", "os.startfile", "os.fork", "os.forkpty", "os.posix_spawn", "os.posix_spawnp"}
         or candidate.startswith("os.spawn")
         or candidate.startswith("os.exec")
     )
@@ -318,6 +318,8 @@ def test_forbidden_detector_rejects_direct_from_import_and_process_entries(
         ("from os import forkpty\nforkpty()\n", ("os.forkpty",)),
         ("import os\nos.execv('x', ())\n", ("os.execv",)),
         ("from os import execv\nexecv('x', ())\n", ("os.execv",)),
+        ("import os\nos.startfile('x')\n", ("os.startfile",)),
+        ("from os import startfile\nstartfile('x')\n", ("os.startfile",)),
     ),
 )
 def test_forbidden_detector_rejects_service_wrappers_and_process_escapes(
@@ -330,7 +332,7 @@ def test_runtime_process_guard_covers_every_available_creation_or_execution_entr
     expected = {
         name
         for name in dir(os)
-        if name in {"system", "popen", "fork", "forkpty", "posix_spawn", "posix_spawnp"}
+        if name in {"system", "popen", "startfile", "fork", "forkpty", "posix_spawn", "posix_spawnp"}
         or name.startswith("spawn")
         or name.startswith("exec")
     }
