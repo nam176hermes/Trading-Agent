@@ -18,6 +18,7 @@ from packages.execution_sandbox import (
     SandboxModifyRequest,
     SandboxKnownReport,
     SandboxOrderReconciliation,
+    SandboxReconciliationError,
     SandboxReconciliationReason,
     SandboxReconciliationRequest,
     SandboxReconciliationResult,
@@ -729,6 +730,85 @@ def test_changed_fill_bytes_under_known_event_id_are_a_mismatch(
     assert result.orders[0].reason_codes == (
         SandboxReconciliationReason.FILL_EVIDENCE_MISMATCH,
     )
+
+
+def test_changed_order_bytes_under_delivered_event_id_are_a_mismatch(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Comparing only a delivered order ID would certify changed evidence."""
+
+    request = reconciliation_request_factory("settled_ack")
+    changed = request.observed_reports[0].model_copy(update={"source": "changed-source"})
+    attack = SandboxReconciliationRequest(
+        snapshot=request.snapshot,
+        observed_reports=(changed, request.observed_reports[1]),
+    )
+    snapshot_before = attack.snapshot
+    reports_before = attack.observed_reports
+
+    result = reconcile_execution_state(attack)
+
+    assert result.status is SandboxReconciliationStatus.MISMATCH
+    assert SandboxReconciliationReason.UNEXPECTED_OBSERVED_REPORT in result.orders[0].reason_codes
+    assert result.orders[0].observed_report_ids == (uid(21),)
+    assert attack.snapshot == snapshot_before
+    assert attack.observed_reports == reports_before
+
+
+def test_conflicting_delivered_known_order_identities_are_malformed(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Collapsing conflicting retained identities would erase a malformed snapshot."""
+
+    request = reconciliation_request_factory("settled_ack")
+    original = request.snapshot.known_reports[0]
+    conflicting = SandboxKnownReport(
+        report_id=uid(22),
+        event=original.event.model_copy(update={"source": "conflicting-source"}),
+    )
+    malformed_snapshot = SandboxSnapshot(
+        connection_state=request.snapshot.connection_state,
+        current_time=request.snapshot.current_time,
+        orders=request.snapshot.orders,
+        known_reports=request.snapshot.known_reports + (conflicting,),
+        queued_reports=request.snapshot.queued_reports,
+    )
+
+    with pytest.raises(SandboxReconciliationError, match="conflicting delivered known event"):
+        reconcile_execution_state(
+            SandboxReconciliationRequest(
+                snapshot=malformed_snapshot,
+                observed_reports=request.observed_reports,
+            )
+        )
+
+
+def test_same_byte_delivered_order_duplicate_retains_all_report_identities(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Rejecting byte-identical retained order duplicates would lose valid evidence."""
+
+    request = reconciliation_request_factory("settled_ack")
+    original = request.snapshot.known_reports[0]
+    duplicate = SandboxKnownReport(report_id=uid(22), event=original.event)
+    snapshot = SandboxSnapshot(
+        connection_state=request.snapshot.connection_state,
+        current_time=request.snapshot.current_time,
+        orders=request.snapshot.orders,
+        known_reports=request.snapshot.known_reports + (duplicate,),
+        queued_reports=request.snapshot.queued_reports,
+    )
+
+    result = reconcile_execution_state(
+        SandboxReconciliationRequest(
+            snapshot=snapshot,
+            observed_reports=request.observed_reports,
+        )
+    )
+
+    assert result.status is SandboxReconciliationStatus.RECONCILED
+    assert result.orders[0].reason_codes == ()
+    assert result.orders[0].observed_report_ids == (uid(20), uid(21), uid(22))
 
 
 def test_delivered_duplicate_report_ids_share_one_observed_fill_event(
