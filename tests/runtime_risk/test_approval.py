@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 from uuid import UUID
 
 import pytest
 from pydantic import BaseModel
+
+import packages.runtime_risk.approval as approval_module
 
 from packages.domain import EventEnvelope, OrderIntent, RiskDecision
 from packages.domain.runtime_risk import (
@@ -62,6 +64,29 @@ def runtime_risk_event(
         causation_id=selected.intent.risk_decision_id,
         trace_id=uid(102),
         payload=payload,
+    )
+
+
+def near_datetime_max_event() -> EventEnvelope[RuntimeOrderRiskDecision]:
+    case = evaluator_case()
+    decided_at = datetime.max.replace(tzinfo=UTC) - timedelta(minutes=1)
+    decision = case.evaluate().model_copy(update={"decided_at": decided_at})
+    return EventEnvelope[RuntimeOrderRiskDecision](
+        event_id=uid(110),
+        event_type="RuntimeOrderRiskDecision",
+        schema_version="runtime-order-risk-event-v1",
+        source="runtime-risk",
+        stream_id=uid(111),
+        sequence=1,
+        observed_at=decided_at,
+        ingested_at=decided_at,
+        produced_at=decided_at,
+        effective_at=decided_at,
+        expires_at=datetime.max.replace(tzinfo=UTC),
+        correlation_id=case.intent.intent_id,
+        causation_id=case.intent.risk_decision_id,
+        trace_id=uid(112),
+        payload=decision,
     )
 
 
@@ -324,6 +349,32 @@ def test_read_back_exception_is_bounded_and_chained() -> None:
     assert "private repository detail" not in str(caught.value)
 
 
+def test_record_near_datetime_max_translates_canonical_event_overflow() -> None:
+    event = near_datetime_max_event()
+    repository = BoundedRepository(events=(event,))
+
+    with pytest.raises(DurableApprovalError) as caught:
+        record_runtime_risk_decision(repository=repository, event=event)
+
+    assert type(caught.value) is DurableApprovalError
+    assert "date value out of range" not in str(caught.value)
+
+
+def test_record_does_not_relabel_unrelated_reference_construction_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event = runtime_risk_event()
+    repository = BoundedRepository(events=(event,))
+
+    def fail_reference(*args: object, **kwargs: object) -> DurableOrderApprovalRef:
+        raise RuntimeError("reference construction programming defect")
+
+    monkeypatch.setattr(approval_module, "_approval_reference", fail_reference)
+
+    with pytest.raises(RuntimeError, match="reference construction programming defect"):
+        record_runtime_risk_decision(repository=repository, event=event)
+
+
 def test_verification_rejects_each_forged_reference_binding_one_at_a_time() -> None:
     ledger, case, _, reference = record_approved()
     changes: tuple[dict[str, object], ...] = (
@@ -486,11 +537,60 @@ def test_verification_rejects_a_reference_to_an_exact_rejected_decision() -> Non
         verify(ledger, reference, rejected_case)
 
 
-def test_verification_rejects_a_different_repository() -> None:
+def test_verification_accepts_a_trusted_replica_with_the_exact_canonical_event() -> None:
+    origin, case, event, reference = record_approved()
+    assert isinstance(origin, InMemoryEventLedger)
+    replica = InMemoryEventLedger()
+    replica.append(
+        event,
+        OutboxIntent(event_id=event.event_id, topic="trusted-replica.audit"),
+    )
+
+    verified = verify(replica, reference, case)
+
+    assert replica is not origin
+    assert replica.load_outbox() != origin.load_outbox()
+    assert serialize_event(replica.load_events()[0]) == serialize_event(event)
+    assert verified == event.payload
+
+
+def test_verification_rejects_a_repository_where_the_event_is_absent() -> None:
     _, case, _, reference = record_approved()
 
     with pytest.raises(DurableApprovalError):
         verify(InMemoryEventLedger(), reference, case)
+
+
+def test_verify_near_datetime_max_translates_canonical_event_overflow() -> None:
+    case = evaluator_case()
+    event = near_datetime_max_event()
+    repository = BoundedRepository(events=(event,))
+    repository.appended = True
+    reference = matching_reference(event)
+
+    with pytest.raises(DurableApprovalError) as caught:
+        verify(repository, reference, case)
+
+    assert type(caught.value) is DurableApprovalError
+    assert "date value out of range" not in str(caught.value)
+
+
+def test_verify_does_not_relabel_unrelated_evaluator_runtime_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger, case, _, reference = record_approved()
+
+    def fail_evaluation(**kwargs: object) -> RuntimeOrderRiskDecision:
+        raise RuntimeError("evaluator programming defect")
+
+    monkeypatch.setattr(
+        approval_module,
+        "evaluate_runtime_order_risk",
+        fail_evaluation,
+    )
+
+    with pytest.raises(RuntimeError, match="evaluator programming defect"):
+        verify(ledger, reference, case)
 
 
 @pytest.mark.parametrize(

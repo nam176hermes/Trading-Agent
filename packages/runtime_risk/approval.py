@@ -37,7 +37,10 @@ _EVENT_SOURCE = "runtime-risk"
 _OUTBOX_TOPIC = "runtime-risk.decisions"
 _APPROVAL_SCHEMA_VERSION = "durable-order-approval-v1"
 _EVENT_LIFETIME = timedelta(minutes=5)
-_BOUNDARY_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
+_CANONICALIZATION_ERRORS = (AttributeError, OverflowError, TypeError, ValueError)
+_REPOSITORY_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
+_RECORDING_FAILURE = "durable runtime-risk decision recording failed"
+_VERIFICATION_FAILURE = "durable runtime-risk approval verification failed"
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
@@ -78,7 +81,7 @@ def _canonical_runtime_event(
         or canonical.ingested_at != payload.decided_at
         or canonical.produced_at != payload.decided_at
         or canonical.effective_at != payload.decided_at
-        or canonical.expires_at != payload.decided_at + _EVENT_LIFETIME
+        or canonical.expires_at - payload.decided_at != _EVENT_LIFETIME
     ):
         raise ValueError("event authority bindings are invalid")
     return canonical, canonical_text
@@ -87,19 +90,69 @@ def _canonical_runtime_event(
 def _load_one_event(
     repository: EventLedgerRepository,
     event_id: UUID,
+    *,
+    failure_message: str,
 ) -> EventEnvelope[object]:
-    events = repository.load_events()
-    if type(events) is not tuple:
-        raise ValueError("ledger read-back must be a tuple")
-    matches = tuple(
-        event for event in events if getattr(event, "event_id", None) == event_id
-    )
-    if len(matches) != 1:
-        raise ValueError("ledger must contain exactly one matching event")
-    match = matches[0]
-    if not isinstance(match, EventEnvelope):
-        raise ValueError("matching ledger record must be an event envelope")
-    return match
+    try:
+        events = repository.load_events()
+    except _REPOSITORY_ERRORS as exc:
+        raise DurableApprovalError(failure_message) from exc
+    try:
+        if type(events) is not tuple:
+            raise ValueError("ledger read-back must be a tuple")
+        matches = tuple(
+            event for event in events if getattr(event, "event_id", None) == event_id
+        )
+        if len(matches) != 1:
+            raise ValueError("ledger must contain exactly one matching event")
+        match = matches[0]
+        if not isinstance(match, EventEnvelope):
+            raise ValueError("matching ledger record must be an event envelope")
+        return match
+    except _CANONICALIZATION_ERRORS as exc:
+        raise DurableApprovalError(failure_message) from exc
+
+
+def _canonical_event_boundary(
+    event: object,
+    *,
+    failure_message: str,
+) -> tuple[EventEnvelope[object], str]:
+    try:
+        return _canonical_runtime_event(event)
+    except _CANONICALIZATION_ERRORS as exc:
+        raise DurableApprovalError(failure_message) from exc
+
+
+def _canonical_model_boundary(
+    value: object,
+    expected_type: type[_ModelT],
+    *,
+    field: str,
+) -> _ModelT:
+    try:
+        return _canonical_model(value, expected_type, field=field)
+    except _CANONICALIZATION_ERRORS as exc:
+        raise DurableApprovalError(_VERIFICATION_FAILURE) from exc
+
+
+def _append_boundary(
+    repository: EventLedgerRepository,
+    event: EventEnvelope[object],
+    outbox: OutboxIntent,
+) -> None:
+    try:
+        append_result = repository.append(event, outbox)
+    except _REPOSITORY_ERRORS as exc:
+        raise DurableApprovalError(_RECORDING_FAILURE) from exc
+    try:
+        canonical_result = AppendOutcome.model_validate(
+            append_result.model_dump(mode="python")
+        )
+    except _CANONICALIZATION_ERRORS as exc:
+        raise DurableApprovalError(_RECORDING_FAILURE) from exc
+    if canonical_result.event_id != event.event_id:
+        raise DurableApprovalError(_RECORDING_FAILURE)
 
 
 def _canonical_outbox(event: EventEnvelope[object]) -> OutboxIntent:
@@ -155,32 +208,32 @@ def record_runtime_risk_decision(
 ) -> DurableOrderApprovalRef | None:
     """Atomically append, exactly read back, and authorize an approved decision."""
 
-    try:
-        canonical_event, expected_text = _canonical_runtime_event(event)
-        outbox = _canonical_outbox(canonical_event)
-        append_result = repository.append(canonical_event, outbox)
-        append_result = AppendOutcome.model_validate(
-            append_result.model_dump(mode="python")
-        )
-        if append_result.event_id != canonical_event.event_id:
-            raise ValueError("append result event identity does not match")
-        loaded = _load_one_event(repository, canonical_event.event_id)
-        loaded_event, actual_text = _canonical_runtime_event(loaded)
-        if (
-            actual_text.encode("utf-8") != expected_text.encode("utf-8")
-            or event_digest(actual_text) != event_digest(expected_text)
-            or loaded_event != canonical_event
-        ):
-            raise ValueError("ledger read-back is not byte-identical")
-        if loaded_event.payload.outcome is RuntimeRiskOutcome.REJECTED:
-            return None
-        if loaded_event.payload.outcome is not RuntimeRiskOutcome.APPROVED:
-            raise ValueError("runtime-risk decision outcome is invalid")
-        return _approval_reference(loaded_event, actual_text)
-    except _BOUNDARY_ERRORS as exc:
-        raise DurableApprovalError(
-            "durable runtime-risk decision recording failed"
-        ) from exc
+    canonical_event, expected_text = _canonical_event_boundary(
+        event,
+        failure_message=_RECORDING_FAILURE,
+    )
+    outbox = _canonical_outbox(canonical_event)
+    _append_boundary(repository, canonical_event, outbox)
+    loaded = _load_one_event(
+        repository,
+        canonical_event.event_id,
+        failure_message=_RECORDING_FAILURE,
+    )
+    loaded_event, actual_text = _canonical_event_boundary(
+        loaded,
+        failure_message=_RECORDING_FAILURE,
+    )
+    if (
+        actual_text.encode("utf-8") != expected_text.encode("utf-8")
+        or event_digest(actual_text) != event_digest(expected_text)
+        or loaded_event != canonical_event
+    ):
+        raise DurableApprovalError(_RECORDING_FAILURE)
+    if loaded_event.payload.outcome is RuntimeRiskOutcome.REJECTED:
+        return None
+    if loaded_event.payload.outcome is not RuntimeRiskOutcome.APPROVED:
+        raise DurableApprovalError(_RECORDING_FAILURE)
+    return _approval_reference(loaded_event, actual_text)
 
 
 def _reference_matches(
@@ -225,35 +278,46 @@ def verify_durable_order_approval(
 ) -> RuntimeOrderRiskDecision:
     """Recompute and verify every input, decision, event, and ledger binding."""
 
+    canonical_reference = _canonical_model_boundary(
+        reference,
+        DurableOrderApprovalRef,
+        field="reference",
+    )
+    canonical_intent = _canonical_model_boundary(
+        intent,
+        OrderIntent,
+        field="intent",
+    )
+    canonical_policy_decision = _canonical_model_boundary(
+        policy_decision,
+        RiskDecision,
+        field="policy_decision",
+    )
+    canonical_observation = _canonical_model_boundary(
+        observation,
+        RuntimeRiskObservation,
+        field="observation",
+    )
+    canonical_policy = _canonical_model_boundary(
+        policy,
+        RuntimeRiskPolicy,
+        field="policy",
+    )
+    loaded = _load_one_event(
+        repository,
+        canonical_reference.event_id,
+        failure_message=_VERIFICATION_FAILURE,
+    )
+    canonical_event, canonical_event_text = _canonical_event_boundary(
+        loaded,
+        failure_message=_VERIFICATION_FAILURE,
+    )
+    decision = canonical_event.payload
+    if type(decision) is not RuntimeOrderRiskDecision:
+        raise DurableApprovalError(_VERIFICATION_FAILURE)
+    if decision.outcome is not RuntimeRiskOutcome.APPROVED:
+        raise DurableApprovalError(_VERIFICATION_FAILURE)
     try:
-        canonical_reference = _canonical_model(
-            reference,
-            DurableOrderApprovalRef,
-            field="reference",
-        )
-        canonical_intent = _canonical_model(intent, OrderIntent, field="intent")
-        canonical_policy_decision = _canonical_model(
-            policy_decision,
-            RiskDecision,
-            field="policy_decision",
-        )
-        canonical_observation = _canonical_model(
-            observation,
-            RuntimeRiskObservation,
-            field="observation",
-        )
-        canonical_policy = _canonical_model(
-            policy,
-            RuntimeRiskPolicy,
-            field="policy",
-        )
-        loaded = _load_one_event(repository, canonical_reference.event_id)
-        canonical_event, canonical_event_text = _canonical_runtime_event(loaded)
-        decision = canonical_event.payload
-        if type(decision) is not RuntimeOrderRiskDecision:
-            raise ValueError("event payload has the wrong concrete type")
-        if decision.outcome is not RuntimeRiskOutcome.APPROVED:
-            raise ValueError("rejected decisions cannot grant approval authority")
         expected_decision = evaluate_runtime_order_risk(
             decision_id=decision.decision_id,
             intent=canonical_intent,
@@ -262,28 +326,25 @@ def verify_durable_order_approval(
             policy=canonical_policy,
             decided_at=decision.decided_at,
         )
-        if (
-            expected_decision.outcome is not RuntimeRiskOutcome.APPROVED
-            or canonical_model_json(expected_decision)
-            != canonical_model_json(decision)
-            or canonical_model_digest(canonical_intent) != decision.intent_digest
-            or canonical_model_digest(canonical_policy_decision)
-            != decision.policy_risk_decision_digest
-            or canonical_model_digest(canonical_observation.portfolio)
-            != decision.portfolio_digest
-            or canonical_model_digest(canonical_observation)
-            != decision.observation_digest
-            or canonical_model_digest(canonical_policy) != decision.policy_digest
-            or not _reference_matches(
-                canonical_reference,
-                canonical_event,
-                canonical_event_text,
-                decision,
-            )
-        ):
-            raise ValueError("durable approval bindings do not match")
-        return expected_decision
-    except _BOUNDARY_ERRORS as exc:
-        raise DurableApprovalError(
-            "durable runtime-risk approval verification failed"
-        ) from exc
+    except ValueError as exc:
+        raise DurableApprovalError(_VERIFICATION_FAILURE) from exc
+    if (
+        expected_decision.outcome is not RuntimeRiskOutcome.APPROVED
+        or canonical_model_json(expected_decision) != canonical_model_json(decision)
+        or canonical_model_digest(canonical_intent) != decision.intent_digest
+        or canonical_model_digest(canonical_policy_decision)
+        != decision.policy_risk_decision_digest
+        or canonical_model_digest(canonical_observation.portfolio)
+        != decision.portfolio_digest
+        or canonical_model_digest(canonical_observation)
+        != decision.observation_digest
+        or canonical_model_digest(canonical_policy) != decision.policy_digest
+        or not _reference_matches(
+            canonical_reference,
+            canonical_event,
+            canonical_event_text,
+            decision,
+        )
+    ):
+        raise DurableApprovalError(_VERIFICATION_FAILURE)
+    return expected_decision
