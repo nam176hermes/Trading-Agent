@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 from pydantic import ValidationError
 
@@ -39,6 +41,20 @@ def test_repository_preserves_runtime_risk_decision_concrete_payload() -> None:
     assert repository.load_events() == (event,)
     assert type(repository.load_events()[0].payload) is type(event.payload)
     assert repository.load_outbox() == (outbox,)
+
+
+def test_repository_preserves_global_halt_transition_concrete_payload() -> None:
+    from tests.runtime_risk.test_global_halt import transition_event, transition_payload
+
+    repository = InMemoryEventLedger()
+    event = transition_event(transition_payload(), event_id=UUID(int=901), sequence=1)
+    outbox = OutboxIntent(event_id=event.event_id, topic="global-halt.audit")
+
+    repository.append(event, outbox)
+
+    loaded = repository.load_events()[0]
+    assert loaded == event
+    assert type(loaded.payload) is type(event.payload)
 
 
 def test_exact_retry_survives_publication_and_pending_outbox_retention() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from uuid import UUID
 
 import pytest
 from hypothesis import given, strategies as st
@@ -330,3 +331,14 @@ def test_conflicting_retry_of_skipped_gap_event_fails_closed() -> None:
             (conflicting,),
             snapshot=snapshot_from_result(after_middle),
         )
+
+
+def test_global_halt_replay_empty_stream_has_no_implicit_active_state() -> None:
+    from packages.runtime_risk import replay_global_halt_authority
+
+    result = replay_global_halt_authority(events=(), stream_id=UUID(int=900))
+
+    assert result.state is None
+    assert result.head_sequence == 0
+    assert result.head_event_id is None
+    assert result.head_event_digest is None

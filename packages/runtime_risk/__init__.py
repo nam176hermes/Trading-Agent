@@ -8,6 +8,17 @@ from .approval import (
 )
 from .evaluator import evaluate_runtime_order_risk
 from .projections import ProjectionError, RuntimeRiskProjection, project_runtime_order
+from .halt import (
+    GlobalHaltAuthorityError,
+    GlobalHaltRecoveryAuthorityVerifier,
+    GlobalHaltRecoveryError,
+    GlobalHaltReplay,
+    evaluate_global_breaker,
+    recover_global_halt,
+    record_global_halt_observation,
+    replay_global_halt_authority,
+)
+from .safety import global_safety_binding_digest, observe_global_safety
 
 __all__ = [
     "ProjectionError",
@@ -19,4 +30,14 @@ __all__ = [
     "project_runtime_order",
     "record_runtime_risk_decision",
     "verify_durable_order_approval",
+    "GlobalHaltAuthorityError",
+    "GlobalHaltRecoveryAuthorityVerifier",
+    "GlobalHaltRecoveryError",
+    "GlobalHaltReplay",
+    "evaluate_global_breaker",
+    "global_safety_binding_digest",
+    "observe_global_safety",
+    "recover_global_halt",
+    "record_global_halt_observation",
+    "replay_global_halt_authority",
 ]

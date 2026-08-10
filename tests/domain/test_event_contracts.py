@@ -49,12 +49,24 @@ from packages.domain import (
     validate_event_batch,
 )
 from packages.event_ledger import deserialize_event, serialize_event
+from packages.domain.events import EVENT_TYPE_BY_PAYLOAD
+from packages.domain.runtime_halt import (
+    GlobalHaltTransition,
+    SubmitPermitConsumed,
+    SubmitPermitPrepared,
+)
 
 from tests.runtime_risk.test_approval import runtime_risk_event
 
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "ALPACA")
+
+
+def test_global_halt_event_payloads_have_concrete_registered_types() -> None:
+    assert EVENT_TYPE_BY_PAYLOAD[GlobalHaltTransition] == "GlobalHaltTransition"
+    assert EVENT_TYPE_BY_PAYLOAD[SubmitPermitPrepared] == "SubmitPermitPrepared"
+    assert EVENT_TYPE_BY_PAYLOAD[SubmitPermitConsumed] == "SubmitPermitConsumed"
 
 
 def fill_definition() -> InstrumentDefinition:

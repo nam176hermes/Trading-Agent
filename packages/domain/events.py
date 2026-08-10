@@ -29,6 +29,11 @@ from .portfolio_events import (
     PortfolioValuationRateEntry,
 )
 from .risk import RiskDecision
+from .runtime_halt import (
+    GlobalHaltTransition,
+    SubmitPermitConsumed,
+    SubmitPermitPrepared,
+)
 from .runtime_risk import RuntimeOrderRiskDecision
 from .signals import SignalProposal
 
@@ -51,6 +56,9 @@ EVENT_TYPE_BY_PAYLOAD: dict[type[object], str] = {
     PortfolioValuationRateEntry: "PortfolioValuationRateEntry",
     PortfolioReconciliationEntry: "PortfolioReconciliationEntry",
     RuntimeOrderRiskDecision: "RuntimeOrderRiskDecision",
+    GlobalHaltTransition: "GlobalHaltTransition",
+    SubmitPermitPrepared: "SubmitPermitPrepared",
+    SubmitPermitConsumed: "SubmitPermitConsumed",
 }
 
 
