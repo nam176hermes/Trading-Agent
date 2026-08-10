@@ -194,6 +194,7 @@ class SandboxExecutionClient:
         for item in due:
             event = _canonical_envelope(item.canonical_event)
             order = self._order_from(next_orders, event.payload.order_id)
+            self._append_and_read_back(event)
             if type(event.payload) is OrderEvent:
                 order = SandboxOrderSnapshot(
                     order_id=order.order_id,
@@ -204,9 +205,6 @@ class SandboxExecutionClient:
                 )
                 next_orders = self._replace_order_in(next_orders, order)
             delivered.append(event)
-
-        for event in delivered:
-            self._append_and_read_back(event)
 
         delivered_ordinals = {item.insertion_ordinal for item in due}
         self._replace_state(

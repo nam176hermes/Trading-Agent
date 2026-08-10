@@ -345,6 +345,56 @@ def test_bad_ledger_stream_sequence_retains_pre_drain_snapshot(
     assert client.snapshot() == before
 
 
+def test_later_ledger_failure_reduces_only_confirmed_reports_in_append_order(
+    submitted_envelope: EventEnvelope[OrderEvent], prepared_case: Any, safety_verifier: Any
+) -> None:
+    submitted = order_envelope(submitted_envelope, event_id=10, envelope_sequence=1, order_sequence=1, status=OrderStatus.SUBMITTED)
+    accepted = order_envelope(submitted_envelope, event_id=11, envelope_sequence=2, order_sequence=2, status=OrderStatus.ACCEPTED)
+    partial = order_envelope(submitted_envelope, event_id=12, envelope_sequence=3, order_sequence=3, status=OrderStatus.PARTIALLY_FILLED)
+    call_order: list[tuple[str, UUID]] = []
+
+    class FailingLaterLedger:
+        def __init__(self) -> None:
+            self._delegate = InMemoryEventLedger()
+
+        def append(self, event: EventEnvelope[object], outbox: OutboxIntent) -> Any:
+            call_order.append(("append", event.event_id))
+            if event.event_id == uid(11):
+                raise ValueError("scripted conflicting append")
+            return self._delegate.append(event, outbox)
+
+        def load_events(self) -> tuple[EventEnvelope[object], ...]:
+            return self._delegate.load_events()
+
+    client = client_for(
+        scenario(
+            commands=(command(100, SandboxCommandKind.SUBMIT, (20, 21, 22)),),
+            reports=(original(20, submitted), original(21, accepted), original(22, partial)),
+        ),
+        safety_verifier,
+        FailingLaterLedger(),
+    )
+    client.submit(valid_submit_request(prepared_case))
+    before = client.snapshot()
+    reduce = client._reduce
+
+    def record_observed_reduction(state: Any, event: OrderEvent) -> Any:
+        call_order.append(("reduce", event.event_id))
+        return reduce(state, event)
+
+    client._reduce = record_observed_reduction  # type: ignore[method-assign]
+
+    with pytest.raises(SandboxExecutionError):
+        client.drain_reports()
+
+    assert call_order == [
+        ("append", uid(10)),
+        ("reduce", uid(10_010)),
+        ("append", uid(11)),
+    ]
+    assert client.snapshot() == before
+
+
 @pytest.mark.parametrize(
     ("kind", "first_status"),
     ((SandboxCommandKind.CANCEL, OrderStatus.PENDING_CANCEL), (SandboxCommandKind.MODIFY, OrderStatus.PENDING_UPDATE)),
