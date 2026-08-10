@@ -62,20 +62,25 @@ def money(amount: str, currency: Currency = Currency.USD) -> Money:
     return Money(Decimal(amount), currency)
 
 
-def definition() -> InstrumentDefinition:
+def definition(
+    *,
+    instrument: InstrumentId = INSTRUMENT,
+    base_currency: Currency = Currency.BTC,
+    settlement_currency: Currency = Currency.USD,
+) -> InstrumentDefinition:
     return InstrumentDefinition(
-        instrument_id=INSTRUMENT,
-        raw_symbol="BTCUSD",
+        instrument_id=instrument,
+        raw_symbol=instrument.symbol.replace("-", ""),
         asset_class=AssetClass.CRYPTO,
-        base_currency=Currency.BTC,
-        quote_currency=Currency.USD,
-        settlement_currency=Currency.USD,
-        tick_size=Price(Decimal("0.01"), Currency.USD),
+        base_currency=base_currency,
+        quote_currency=settlement_currency,
+        settlement_currency=settlement_currency,
+        tick_size=Price(Decimal("0.01"), settlement_currency),
         size_increment=OrderQuantity(Decimal("0.01"), 2),
         minimum_quantity=OrderQuantity(Decimal("0.01"), 2),
         maximum_quantity=OrderQuantity(Decimal("100"), 2),
-        minimum_notional=money("1"),
-        maximum_notional=money("100000"),
+        minimum_notional=money("1", settlement_currency),
+        maximum_notional=money("100000", settlement_currency),
         multiplier=Decimal("1"),
         margin=None,
         session_calendar="24X7",
@@ -165,9 +170,11 @@ def fill(
     duplicate_of: UUID | None = None,
     correction_of: UUID | None = None,
     bust_of: UUID | None = None,
+    instrument_definition: InstrumentDefinition | None = None,
 ) -> EventEnvelope[object]:
     at = NOW + timedelta(minutes=number)
     execution_number = 1_000 + number if execution is None else execution
+    selected_definition = instrument_definition or definition()
     return envelope(
         PortfolioFillEntry(
             account_id=account,
@@ -177,7 +184,7 @@ def fill(
                 order_id=uid(2_000 + execution_number),
                 report_sequence=1,
                 venue_trade_id=f"trade-{execution_number}",
-                instrument_definition=definition(),
+                instrument_definition=selected_definition,
                 side=side,
                 liquidity_side=LiquiditySide.MAKER,
                 status=status,
@@ -185,9 +192,13 @@ def fill(
                 cumulative_fill_quantity=OrderQuantity(Decimal(quantity), 2),
                 leaves_quantity=OrderQuantity(Decimal("0"), 2),
                 order_quantity=OrderQuantity(Decimal(quantity), 2),
-                last_fill_price=Price(Decimal(price), Currency.USD),
-                average_fill_price=Price(Decimal(price), Currency.USD),
-                commission=money("0"),
+                last_fill_price=Price(
+                    Decimal(price), selected_definition.settlement_currency
+                ),
+                average_fill_price=Price(
+                    Decimal(price), selected_definition.settlement_currency
+                ),
+                commission=money("0", selected_definition.settlement_currency),
                 reconciliation_source=ReconciliationSource.VENUE,
                 duplicate_of_execution_id=duplicate_of,
                 correction_of_execution_id=correction_of,
@@ -203,14 +214,21 @@ def fill(
     )
 
 
-def mark(*, number: int, stream: UUID = STREAM) -> EventEnvelope[object]:
+def mark(
+    *,
+    number: int,
+    stream: UUID = STREAM,
+    instrument: InstrumentId = INSTRUMENT,
+    price: str = "101",
+    currency: Currency = Currency.USD,
+) -> EventEnvelope[object]:
     at = NOW + timedelta(minutes=number)
     return envelope(
         PortfolioMarkEntry(
             account_id="account-1",
-            instrument=INSTRUMENT,
+            instrument=instrument,
             mark=PositionMark(
-                price=Price(Decimal("101"), Currency.USD),
+                price=Price(Decimal(price), currency),
                 marked_at=at,
                 provenance_id="marks-v1",
             ),
@@ -769,6 +787,145 @@ def test_post_mark_fill_has_identical_marked_full_and_tail_snapshots() -> None:
     assert position.average_entry_price.amount == Decimal("105")
     assert position.unrealized_pnl.amount == Decimal("-8")
     assert full.canonical_snapshot.balances[0].unrealized_pnl.amount == Decimal("-8")
+
+
+def test_cross_instrument_correction_requires_an_explicit_destination_mark() -> None:
+    eth_usd = InstrumentId("ETH-USD", ProductType.CRYPTO_SPOT, "ALPACA")
+    eth_definition = definition(
+        instrument=eth_usd,
+        base_currency=Currency.ETH,
+    )
+    original = fill(number=2, price="100")
+    correction = fill(
+        number=4,
+        price="50",
+        status=FillReportStatus.CORRECTION,
+        correction_of=original.payload.fill.execution_id,
+        instrument_definition=eth_definition,
+    )
+    prefix = (
+        opening(),
+        original,
+        mark(number=3, price="200"),
+    )
+    unmarked_events = (*prefix, correction)
+
+    with pytest.raises(PortfolioReplayError):
+        replay_portfolio(unmarked_events)
+
+    record, authority = checkpoint(prefix)
+    with pytest.raises(PortfolioReplayError):
+        replay_portfolio((correction,), snapshot=record, authority=authority)
+
+    destination_mark = mark(
+        number=5,
+        instrument=eth_usd,
+        price="55",
+    )
+    full = replay_portfolio((*unmarked_events, destination_mark))
+    tail = replay_portfolio(
+        (correction, destination_mark), snapshot=record, authority=authority
+    )
+
+    assert tail == full
+    position = next(
+        item
+        for item in full.canonical_snapshot.positions
+        if item.instrument == eth_usd
+    )
+    assert position.mark is not None
+    assert position.mark.price == Price(Decimal("55"), Currency.USD)
+    assert position.unrealized_pnl == money("5")
+
+
+def test_cross_instrument_correction_uses_existing_destination_mark() -> None:
+    eth_usd = InstrumentId("ETH-USD", ProductType.CRYPTO_SPOT, "ALPACA")
+    eth_definition = definition(
+        instrument=eth_usd,
+        base_currency=Currency.ETH,
+    )
+    original = fill(number=2, price="100")
+    prefix = (
+        opening(),
+        original,
+        fill(number=3, price="40", instrument_definition=eth_definition),
+        mark(number=4, instrument=eth_usd, price="60"),
+        mark(number=5, price="200"),
+    )
+    correction = fill(
+        number=6,
+        price="50",
+        status=FillReportStatus.CORRECTION,
+        correction_of=original.payload.fill.execution_id,
+        instrument_definition=eth_definition,
+    )
+
+    full = replay_portfolio((*prefix, correction))
+    record, authority = checkpoint(prefix)
+    tail = replay_portfolio(
+        (correction,), snapshot=record, authority=authority
+    )
+
+    assert tail == full
+    position = next(
+        item
+        for item in full.canonical_snapshot.positions
+        if item.instrument == eth_usd
+    )
+    assert position.quantity.value == Decimal("2.00")
+    assert position.average_entry_price == Price(Decimal("45"), Currency.USD)
+    assert position.mark is not None
+    assert position.mark.price == Price(Decimal("60"), Currency.USD)
+    assert position.unrealized_pnl == money("30")
+
+
+def test_cross_settlement_correction_uses_only_destination_mark() -> None:
+    eth_usdt = InstrumentId("ETH-USDT", ProductType.CRYPTO_SPOT, "ALPACA")
+    eth_definition = definition(
+        instrument=eth_usdt,
+        base_currency=Currency.ETH,
+        settlement_currency=Currency.USDT,
+    )
+    original = fill(number=2, price="100")
+    prefix = (
+        opening_with_conversion_balances(),
+        original,
+        fill(number=3, price="40", instrument_definition=eth_definition),
+        valuation_rate(number=4),
+        mark(
+            number=5,
+            instrument=eth_usdt,
+            price="60",
+            currency=Currency.USDT,
+        ),
+        mark(number=6, price="200"),
+    )
+    correction = fill(
+        number=7,
+        price="50",
+        status=FillReportStatus.CORRECTION,
+        correction_of=original.payload.fill.execution_id,
+        instrument_definition=eth_definition,
+    )
+
+    full = replay_portfolio((*prefix, correction))
+    record, authority = checkpoint(prefix)
+    tail = replay_portfolio(
+        (correction,), snapshot=record, authority=authority
+    )
+
+    assert tail == full
+    position = next(
+        item
+        for item in full.canonical_snapshot.positions
+        if item.instrument == eth_usdt
+    )
+    assert position.quantity.value == Decimal("2.00")
+    assert position.average_entry_price == Price(Decimal("45"), Currency.USDT)
+    assert position.mark is not None
+    assert position.mark.price == Price(Decimal("60"), Currency.USDT)
+    assert position.unrealized_pnl == money("30", Currency.USDT)
+    assert full.canonical_snapshot.total_exposure.gross == money("240")
 
 
 @pytest.mark.parametrize(

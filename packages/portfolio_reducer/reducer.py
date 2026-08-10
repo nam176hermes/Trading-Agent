@@ -792,27 +792,49 @@ def _rebase_later_effects(
     event: PortfolioEvent,
     entry: PortfolioFillEntry,
 ) -> PortfolioReplayState:
-    """Replace or remove one effect while preserving subsequent same-position fills."""
+    """Replace or remove one effect while preserving affected position lineages."""
 
+    replacement_definition = entry.fill.instrument_definition
+    replacement_key = (
+        entry.strategy_id,
+        replacement_definition.instrument_id.canonical,
+    )
+    affected_definitions = {
+        effect.position_key: effect.fill.instrument_definition,
+    }
+    if entry.fill.status is FillReportStatus.CORRECTION:
+        affected_definitions[replacement_key] = replacement_definition
+    affected_keys = set(affected_definitions)
     later = tuple(
         sorted(
             (
                 item
                 for item in state.active_effects
-                if item.position_key == effect.position_key
+                if item.position_key in affected_keys
                 and item.logical_sequence > effect.logical_sequence
             ),
             key=lambda item: item.logical_sequence,
         )
     )
-    current_position = _find_position(
-        state,
-        effect.strategy_id,
-        effect.fill.instrument_definition.instrument_id.canonical,
-    )
-    retained_mark = current_position.mark if current_position is not None else None
+    retained_marks: dict[tuple[str, str], PositionMark | None] = {}
+    for position_key in affected_keys:
+        current_position = _find_position(state, *position_key)
+        expected_definition = affected_definitions[position_key]
+        retained_marks[position_key] = (
+            current_position.mark
+            if current_position is not None
+            and current_position.instrument == expected_definition.instrument_id
+            and current_position.settlement_currency
+            is expected_definition.settlement_currency
+            and current_position.mark is not None
+            and current_position.mark.price.currency
+            is current_position.settlement_currency
+            else None
+        )
     rebased = state
-    for item in reversed((effect, *later)):
+    for item in sorted(
+        (effect, *later), key=lambda item: item.logical_sequence, reverse=True
+    ):
         rebased = _remove_effect(rebased, item, observed_at=entry.effective_at)
     if entry.fill.status is FillReportStatus.CORRECTION:
         replacement, next_position = _fill_effect(
@@ -820,7 +842,7 @@ def _rebase_later_effects(
             entry,
             source_event=event,
             logical_sequence=effect.logical_sequence,
-            retained_mark=retained_mark,
+            retained_mark=retained_marks[replacement_key],
         )
         rebased = _with_effect(rebased, replacement, next_position)
     for item in later:
@@ -829,7 +851,7 @@ def _rebase_later_effects(
             item.entry,
             source_event=item.source_event,
             logical_sequence=item.logical_sequence,
-            retained_mark=retained_mark,
+            retained_mark=retained_marks[item.position_key],
         )
         rebased = _with_effect(
             rebased,
