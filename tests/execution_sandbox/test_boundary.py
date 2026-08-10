@@ -47,7 +47,7 @@ _FORBIDDEN_IMPORTS = (
     "services.execution_provider", "services.live_",
 )
 _PROCESS_ENTRY_POINTS = (
-    "system", "posix_spawn", "posix_spawnp", "spawnl", "spawnle", "spawnlp",
+    "system", "popen", "posix_spawn", "posix_spawnp", "spawnl", "spawnle", "spawnlp",
     "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
 )
 
@@ -135,7 +135,7 @@ def _is_forbidden_import(candidate: str) -> bool:
 
 
 def _is_forbidden_process_entry(candidate: str) -> bool:
-    return candidate in {"os.system", "os.posix_spawn", "os.posix_spawnp"} or candidate.startswith("os.spawn")
+    return candidate in {"os.system", "os.popen", "os.posix_spawn", "os.posix_spawnp"} or candidate.startswith("os.spawn")
 
 
 def _forbidden_source_references(source: str) -> tuple[str, ...]:
@@ -282,6 +282,8 @@ def test_execution_sandbox_ast_has_no_transport_process_or_runtime_imports() -> 
         ("from services import live_runtime\n", ("services.live_runtime",)),
         ("import os\nos.system('blocked')\n", ("os.system",)),
         ("from os import system\nsystem('blocked')\n", ("os.system",)),
+        ("import os\nos.popen('blocked')\n", ("os.popen",)),
+        ("from os import popen\npopen('blocked')\n", ("os.popen",)),
         ("import os\nos.posix_spawn('x', (), {})\n", ("os.posix_spawn",)),
         ("from os import posix_spawn\nposix_spawn('x', (), {})\n", ("os.posix_spawn",)),
     ),
