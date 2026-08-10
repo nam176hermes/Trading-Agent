@@ -536,7 +536,9 @@ For every known report identity, compare canonical event bytes to observed
 evidence when its report is delivered. Treat several report identities with
 the same canonical event ID as one idempotent observed event. Validate each
 fill's exact execution ID, report sequence, and order ID against the known
-inventory; never calculate price, quantity, commission, or cash. Queue-only
+inventory; never calculate price, quantity, commission, or cash. A foreign
+fill whose order ID is absent from the snapshot is an unattributed event with
+`FILL_EVIDENCE_MISMATCH`, rather than a synthetic order finding. Queue-only
 reports remain pending. Add `FILL_EVIDENCE_MISMATCH` to the affected order
 without suppressing any order-state reason. Keep reason ordering enum-stable
 and result construction sorted by UUID integer.
@@ -582,11 +584,14 @@ Run:
 ```bash
 git diff --name-only main...HEAD
 rg -n 'EventLedgerRepository|subprocess|socket|requests|httpx|threading|sqlalchemy' \
-  packages/execution_sandbox tests/execution_sandbox
+  packages/execution_sandbox/reconciliation.py
+git diff --unified=0 main...HEAD -- packages/execution_sandbox/client.py | \
+  rg '^[+-].*(EventLedgerRepository|subprocess|socket|requests|httpx|threading|sqlalchemy)' || true
 ```
 
-Expected: 06B files may use only canonical event serialization and domain
-reducer imports; no repository/provider/network/process/database path appears.
+Expected: `reconciliation.py` has no repository/provider/network/process/database
+path. The existing 06A client retains its already-reviewed repository-backed
+delivery method; the diff scan proves 06B adds none of those dependencies there.
 
 - [ ] **Step 2: Create a fresh standalone clean candidate and bootstrap offline**
 
