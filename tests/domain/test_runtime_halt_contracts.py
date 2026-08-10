@@ -185,6 +185,29 @@ def test_runtime_halt_public_enums_are_complete_and_stable() -> None:
     )
 
 
+def test_global_halt_state_represents_only_canonical_recovered_active_state() -> None:
+    recovered = halt_state(
+        generation=2,
+        status=GlobalHaltStatus.ACTIVE,
+        prior_transition_event_id=UUID(int=99),
+        prior_transition_digest="d" * 64,
+        reason_codes=(GlobalHaltReasonCode.RECOVERY_AUTHORIZED,),
+    )
+
+    assert recovered.generation == 2
+    assert recovered.status is GlobalHaltStatus.ACTIVE
+    assert recovered.reason_codes == (GlobalHaltReasonCode.RECOVERY_AUTHORIZED,)
+
+    with pytest.raises(ValidationError):
+        halt_state(
+            generation=2,
+            status=GlobalHaltStatus.ACTIVE,
+            prior_transition_event_id=UUID(int=99),
+            prior_transition_digest="d" * 64,
+            reason_codes=(GlobalHaltReasonCode.INITIALIZED_SAFE,),
+        )
+
+
 @pytest.mark.parametrize(
     ("factory", "changes"),
     [

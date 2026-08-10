@@ -99,6 +99,7 @@ def _require_halt_status_reasons(
     *,
     initialization: bool,
     recovery_authorization_digest: str | None = None,
+    require_recovery_authorization: bool = False,
 ) -> None:
     _require_canonical_reasons(reason_codes)
     if status is GlobalHaltStatus.HALTED:
@@ -115,7 +116,7 @@ def _require_halt_status_reasons(
         return
     if reason_codes != (GlobalHaltReasonCode.RECOVERY_AUTHORIZED,):
         raise ValueError("active recovery requires only RECOVERY_AUTHORIZED")
-    if recovery_authorization_digest is None:
+    if require_recovery_authorization and recovery_authorization_digest is None:
         raise ValueError("active recovery requires recovery authorization")
 
 
@@ -219,6 +220,7 @@ class GlobalHaltTransition(_RuntimeHaltModel):
             self.reason_codes,
             initialization=self.next_generation == 1,
             recovery_authorization_digest=self.recovery_authorization_digest,
+            require_recovery_authorization=True,
         )
 
 
