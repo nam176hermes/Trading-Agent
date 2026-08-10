@@ -14,9 +14,12 @@ change the sandbox, ledger, halt state, or any external system.
 ## 2. Scope Decision
 
 06B consumes an immutable `SandboxSnapshot` and an immutable tuple of observed
-execution-report envelopes.  The caller may obtain that tuple by filtering an
-existing event-ledger read, but the 06B package receives values only.  It never
-accepts a repository, datasource, client, provider, or callback.
+execution-report envelopes.  06B extends the existing snapshot with its exact
+canonical known-report inventory.  The queue remains the subset of retained
+reports that has not yet been delivered.  The caller may obtain the observed
+tuple by filtering an existing event-ledger read, but the 06B package receives
+values only.  It never accepts a repository, datasource, client, provider, or
+callback.
 
 This permits the reconciliation rules to be source-tested with the same
 in-memory fixtures as 06A.  It also keeps recovery, persistence, and external
@@ -48,11 +51,14 @@ SandboxSnapshot + observed EventEnvelope[OrderEvent | FillEvent] tuple
 ```
 
 `SandboxSnapshot` deliberately exposes separate `venue_state`,
-`observed_state`, and `queued_reports` values.  A snapshot alone cannot prove
-the identity of a previously delivered report or a fill: an already delivered
-original may be referenced by a queued duplicate, and `FillEvent` does not
-change `OrderState`.  The explicit observed-envelope tuple supplies that
-evidence without expanding 06B into a ledger reader.
+`observed_state`, and `queued_reports` values.  It is extended with
+`known_reports`: one retained, canonical envelope for every report generated
+by the sandbox, including every duplicate delivery identity.  The queued
+report IDs are its not-yet-delivered subset.  This lets a snapshot prove the
+identity of a previously delivered original even when a later duplicate is
+still queued, and lets 06B reconcile `FillEvent` values that do not change an
+`OrderState`.  The explicit observed-envelope tuple supplies the independent
+ledger-side evidence without expanding 06B into a ledger reader.
 
 The alternative of directly comparing the two order states would incorrectly
 flag legitimate delayed, disconnected, lost-response, and duplicate-delivery
@@ -87,6 +93,16 @@ round-tripped through the existing event-ledger canonical codec.  Only exact
 `OrderEvent` and `FillEvent` payloads are accepted.  The input tuple may be in
 any order; its order is never treated as authority.
 
+`SandboxKnownReport` is the strict immutable snapshot record for one generated
+delivery identity: its `report_id` is unique and its envelope is an exact
+canonical `OrderEvent` or `FillEvent`.  `SandboxSnapshot.known_reports` is in
+generation order, retains originals and duplicates separately, and uses the
+same report IDs as `queued_reports`.  Its validator requires unique known IDs,
+requires every queued ID to occur exactly once in the known inventory, and
+requires every known report to refer to a snapshot order.  A delivered report
+is therefore a known report whose ID is absent from the queue; no separate
+mutable delivery-status field is introduced.
+
 For an observed `event_id`, repeated canonical bytes are idempotent input;
 different canonical bytes for the same ID are invalid input and raise
 `SandboxReconciliationError`.  A well-formed report for an unknown sandbox
@@ -115,7 +131,6 @@ Each per-order record carries the order ID, the final observed and expected
 closed reason codes.  The initial closed reason vocabulary is:
 
 - `UNKNOWN_ORDER_REPORT`;
-- `UNRESOLVED_DUPLICATE_REPORT`;
 - `OBSERVED_ORDER_REPLAY_FAILED`;
 - `OBSERVED_STATE_MISMATCH`;
 - `PENDING_ORDER_REPLAY_FAILED`;
@@ -135,13 +150,16 @@ The algorithm is finite and has no ambient input.
 2. Build a canonical observed-event map keyed by `event_id`.  Same-byte repeats
    collapse idempotently; a conflicting byte representation is an invalid
    request.
-3. Treat the tuple position of a queued report as its retained insertion
-   ordinal.  Sort queued reports by `(deliver_at, retained ordinal)`, exactly
-   matching 06A delivery ordering.
-4. Resolve each queued original from its canonical envelope.  Resolve a queued
-   duplicate from its original queued report when present, otherwise from the
-   observed-event map.  An unresolved duplicate is a per-order mismatch; 06B
-   never invents report bytes.
+3. Build the known-report map keyed by report ID.  Treat the tuple position of
+   a queued report as its retained insertion ordinal, resolve each queued plan
+   through that known-report map, and sort the queue by `(deliver_at, retained
+   ordinal)`, exactly matching 06A delivery ordering.  A queue ID absent from
+   known inventory is malformed snapshot input; 06B never invents report
+   bytes.
+4. Derive delivered report identities as `known_reports - queued_reports`.
+   Their unique canonical event IDs are the only observed report IDs permitted
+   in the evidence tuple.  A delivered duplicate therefore requires the same
+   canonical event as its original but does not mint a second observed event.
 5. Group canonical reports by order.  Replay unique observed `OrderEvent`
    values from a fresh existing `OrderState`, ordered by their existing order
    sequence, and require the result to equal the snapshot `observed_state`.
@@ -185,10 +203,12 @@ production code.  The required matrix covers:
 - exact ACK, partial/full fill, fill-before-ACK, cancel, and modify paths;
 - delayed reports, disconnect/reconnect, lost responses, and queued duplicates
   as `DELIVERY_PENDING` rather than false mismatches;
+- snapshot known-report retention for delivered originals and duplicates, plus
+  queue IDs that must be an exact subset of that immutable inventory;
 - report absence/excess, unknown orders, changed canonical bytes under one
-  `event_id`, invalid lifecycle replay, forged state, unresolved duplicate,
-  and invalid fill identity/sequence as fail-closed mismatches or invalid
-  requests as appropriate;
+  `event_id`, invalid lifecycle replay, forged state, a queue ID absent from
+  known inventory, and invalid fill identity/sequence as fail-closed
+  mismatches or invalid requests as appropriate;
 - input-order independence, canonical result bytes/digest, strict model
   reconstruction, and no mutation of snapshot/evidence values; and
 - regression coverage for the existing 06A lifecycle and event-ledger
