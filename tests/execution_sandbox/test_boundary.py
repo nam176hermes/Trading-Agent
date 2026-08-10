@@ -45,7 +45,7 @@ _FORBIDDEN_IMPORTS = (
     "asyncio", "threading", "multiprocessing", "sqlite3", "sqlalchemy", "psycopg",
     "psycopg2", "asyncpg", "packages.runtime_release", "packages.nautilus_",
     "packages.provider_", "packages.execution_provider", "packages.paper_",
-    "packages.live_", "services.",
+    "packages.live_", "services.", "trading_control.db",
 )
 _PROCESS_ENTRY_POINTS = tuple(
     name
@@ -70,7 +70,7 @@ def _activation_source_roots(root: Path) -> tuple[Path, ...]:
         root / "apps",
         root / "services",
         root / "packages",
-        root / "legacy" / "research-backend" / "exchange",
+        root / "legacy" / "research-backend",
     )
 
 
@@ -312,6 +312,8 @@ def test_forbidden_detector_rejects_direct_from_import_and_process_entries(
     ("source", "expected"),
     (
         ("from services import job_store\n", ("services.job_store",)),
+        ("import trading_control.db\n", ("trading_control.db",)),
+        ("from trading_control import db\n", ("trading_control.db",)),
         ("import os\nos.fork()\n", ("os.fork",)),
         ("from os import fork\nfork()\n", ("os.fork",)),
         ("import os\nos.forkpty()\n", ("os.forkpty",)),
@@ -386,6 +388,14 @@ def test_registration_source_roots_include_legacy_exchange_provider_surface(tmp_
     legacy_provider.write_text('register("execution-sandbox")\n', encoding="utf-8")
 
     assert _registration_references(_activation_source_roots(tmp_path)) == (legacy_provider,)
+
+
+def test_registration_source_roots_include_legacy_execution_main(tmp_path: Path) -> None:
+    legacy_main = tmp_path / "legacy" / "research-backend" / "main.py"
+    legacy_main.parent.mkdir(parents=True)
+    legacy_main.write_text('register("execution_sandbox")\n', encoding="utf-8")
+
+    assert _registration_references(_activation_source_roots(tmp_path)) == (legacy_main,)
 
 
 def test_equivalent_runs_produce_identical_snapshots_and_event_bytes(
