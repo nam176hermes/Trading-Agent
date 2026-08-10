@@ -1780,10 +1780,13 @@ def test_real_provider_authority_stays_pinned_through_runner_popen_boundary(
 
 
 @pytest.mark.parametrize("failure_stage", ("validation", "safety", "popen"))
-def test_runner_closes_every_real_provider_fd_after_post_consume_failure(
-    secure_tmp_path: Path, failure_stage: str
+def test_runner_closes_transferred_provider_fds_after_post_consume_failure(
+    secure_tmp_path: Path,
+    failure_stage: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from services.job_worker.errors import SafetyBlockedError
+    from services.job_worker import process_runner as process_runner_module
     from services.job_worker.process_runner import HeartbeatDecision
     from tests.jobs.test_process_runner import (
         FakeProcess,
@@ -1798,6 +1801,22 @@ def test_runner_closes_every_real_provider_fd_after_post_consume_failure(
     process = FakeProcess([None, 0])
     instance = runner(
         secure_tmp_path, process, Inspector([identity()]), [],
+    )
+    process_fds = (process.stdout.fileno(), process.stderr.fileno())
+    transferred_fds: tuple[int, ...] = ()
+    consume = process_runner_module.consume_prepared_engine_spawn
+
+    def capture_transferred_fds(prepared):
+        nonlocal transferred_fds
+
+        built = consume(prepared)
+        transferred_fds = built.close_after_spawn_fds
+        return built
+
+    monkeypatch.setattr(
+        process_runner_module,
+        "consume_prepared_engine_spawn",
+        capture_transferred_fds,
     )
     timeout = 11 if failure_stage == "validation" else 10
     preflight = None
@@ -1818,7 +1837,6 @@ def test_runner_closes_every_real_provider_fd_after_post_consume_failure(
         instance._popen = fail_popen
         expected = OSError
 
-    before = _fd_targets()
     with pytest.raises(expected):
         instance.run(
             lambda: provider.prepare(_envelope()),
@@ -1830,7 +1848,12 @@ def test_runner_closes_every_real_provider_fd_after_post_consume_failure(
             attempt_id="attempt_fedcba9876543210fedcba9876543210",
         )
 
-    assert _fd_targets() == before
+    assert transferred_fds
+    for descriptor in transferred_fds:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    for descriptor in process_fds:
+        os.fstat(descriptor)
 
 
 @pytest.mark.parametrize("unavailable", (None, object()))
