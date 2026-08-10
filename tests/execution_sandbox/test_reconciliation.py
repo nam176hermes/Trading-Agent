@@ -7,12 +7,14 @@ from uuid import UUID
 
 import pytest
 
-from packages.domain import EventEnvelope, OrderEvent, OrderState, OrderStatus
+from packages.domain import EventEnvelope, FillEvent, OrderEvent, OrderState, OrderStatus
 from packages.execution_sandbox import (
+    SandboxCancelRequest,
     SandboxCommandKind,
     SandboxCommandPlan,
     SandboxConnectionState,
     SandboxLostResponse,
+    SandboxModifyRequest,
     SandboxKnownReport,
     SandboxOrderReconciliation,
     SandboxReconciliationReason,
@@ -28,6 +30,7 @@ from .test_client_lifecycle import (
     client_for,
     command,
     duplicate,
+    fill_report,
     order_envelope,
     original,
     scenario,
@@ -408,5 +411,156 @@ def test_reconcile_execution_state_does_not_mutate_input_evidence(
 
     reconcile_execution_state(request)
 
+    assert request.snapshot == snapshot_before
+    assert request.observed_reports == reports_before
+
+
+def test_reconcile_execution_state_replays_fill_before_ack_without_order_state_mutation(
+    prepared_case: Any,
+    safety_verifier: object,
+    submitted_envelope: EventEnvelope[OrderEvent],
+    fill_envelope: EventEnvelope[FillEvent],
+) -> None:
+    """Treating a fill envelope as an order transition would corrupt an ACK race."""
+
+    submitted = order_envelope(
+        submitted_envelope,
+        event_id=10,
+        envelope_sequence=2,
+        order_sequence=1,
+        status=OrderStatus.SUBMITTED,
+    )
+    accepted = order_envelope(
+        submitted_envelope,
+        event_id=11,
+        envelope_sequence=3,
+        order_sequence=2,
+        status=OrderStatus.ACCEPTED,
+    )
+    client = client_for(
+        scenario(
+            commands=(command(100, SandboxCommandKind.SUBMIT, (22, 20, 21)),),
+            reports=(
+                original(22, fill_report(fill_envelope, event_id=12, sequence=1)),
+                original(20, submitted),
+                original(21, accepted),
+            ),
+        ),
+        safety_verifier,
+    )
+    client.submit(valid_submit_request(prepared_case))
+    observed_reports = client.drain_reports()
+    request = SandboxReconciliationRequest(
+        snapshot=client.snapshot(), observed_reports=observed_reports
+    )
+    snapshot_before = request.snapshot
+    reports_before = request.observed_reports
+
+    result = reconcile_execution_state(request)
+
+    assert result.status is SandboxReconciliationStatus.RECONCILED
+    assert result.orders[0].observed_state.status is OrderStatus.ACCEPTED
+    assert result.orders[0].expected_venue_state.status is OrderStatus.ACCEPTED
+    assert result.orders[0].reason_codes == ()
+    assert result.orders[0].observed_report_ids == (uid(22), uid(20), uid(21))
+    assert request.snapshot == snapshot_before
+    assert request.observed_reports == reports_before
+
+
+@pytest.mark.parametrize(
+    ("command_kind", "pending_status"),
+    [
+        (SandboxCommandKind.CANCEL, OrderStatus.PENDING_CANCEL),
+        (SandboxCommandKind.MODIFY, OrderStatus.PENDING_UPDATE),
+    ],
+    ids=("cancel_fill", "modify_fill"),
+)
+def test_reconcile_execution_state_replays_command_fill_edges(
+    command_kind: SandboxCommandKind,
+    pending_status: OrderStatus,
+    prepared_case: Any,
+    safety_verifier: object,
+    submitted_envelope: EventEnvelope[OrderEvent],
+    fill_envelope: EventEnvelope[FillEvent],
+) -> None:
+    """Ignoring pending cancel/update state would hide a valid terminal fill race."""
+
+    submitted = order_envelope(
+        submitted_envelope,
+        event_id=10,
+        envelope_sequence=1,
+        order_sequence=1,
+        status=OrderStatus.SUBMITTED,
+    )
+    accepted = order_envelope(
+        submitted_envelope,
+        event_id=11,
+        envelope_sequence=2,
+        order_sequence=2,
+        status=OrderStatus.ACCEPTED,
+    )
+    pending = order_envelope(
+        submitted_envelope,
+        event_id=12,
+        envelope_sequence=3,
+        order_sequence=3,
+        status=pending_status,
+    )
+    filled = order_envelope(
+        submitted_envelope,
+        event_id=13,
+        envelope_sequence=4,
+        order_sequence=4,
+        status=OrderStatus.FILLED,
+    )
+    client = client_for(
+        scenario(
+            commands=(
+                command(100, SandboxCommandKind.SUBMIT, (20, 21)),
+                command(101, command_kind, (22, 23, 24)),
+            ),
+            reports=(
+                original(20, submitted),
+                original(21, accepted),
+                original(22, pending),
+                original(23, filled),
+                original(24, fill_report(fill_envelope, event_id=14, sequence=5)),
+            ),
+        ),
+        safety_verifier,
+    )
+    client.submit(valid_submit_request(prepared_case))
+    observed_reports = client.drain_reports()
+    if command_kind is SandboxCommandKind.CANCEL:
+        client.cancel(
+            SandboxCancelRequest(
+                command_id=uid(101),
+                order_id=uid(1),
+                requested_at=NOW + timedelta(seconds=1),
+            )
+        )
+    else:
+        client.modify(
+            SandboxModifyRequest(
+                command_id=uid(101),
+                order_id=uid(1),
+                replacement_order_intent=prepared_case.intent,
+                requested_at=NOW + timedelta(seconds=1),
+            )
+        )
+    observed_reports += client.drain_reports()
+    request = SandboxReconciliationRequest(
+        snapshot=client.snapshot(), observed_reports=observed_reports
+    )
+    snapshot_before = request.snapshot
+    reports_before = request.observed_reports
+
+    result = reconcile_execution_state(request)
+
+    assert result.status is SandboxReconciliationStatus.RECONCILED
+    assert result.orders[0].observed_state.status is OrderStatus.FILLED
+    assert result.orders[0].expected_venue_state.status is OrderStatus.FILLED
+    assert result.orders[0].reason_codes == ()
+    assert result.orders[0].pending_report_ids == ()
     assert request.snapshot == snapshot_before
     assert request.observed_reports == reports_before
