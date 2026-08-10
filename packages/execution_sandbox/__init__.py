@@ -24,6 +24,7 @@ from .models import (
     SandboxSnapshot,
     SandboxSubmitRequest,
 )
+from .reconciliation import reconcile_execution_state
 
 __all__ = [
     "SandboxExecutionClient",
@@ -48,4 +49,5 @@ __all__ = [
     "SandboxCommandResult",
     "SandboxOrderSnapshot",
     "SandboxSnapshot",
+    "reconcile_execution_state",
 ]

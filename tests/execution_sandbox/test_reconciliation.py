@@ -10,13 +10,18 @@ import pytest
 from packages.domain import EventEnvelope, OrderEvent, OrderState, OrderStatus
 from packages.execution_sandbox import (
     SandboxCommandKind,
+    SandboxCommandPlan,
     SandboxConnectionState,
+    SandboxLostResponse,
+    SandboxKnownReport,
     SandboxOrderReconciliation,
     SandboxReconciliationReason,
     SandboxReconciliationRequest,
     SandboxReconciliationResult,
     SandboxReconciliationStatus,
     SandboxSnapshot,
+    SandboxResponseDisposition,
+    reconcile_execution_state,
 )
 
 from .test_client_lifecycle import (
@@ -71,29 +76,79 @@ def fixture_reconciliation_request_factory(
             order_sequence=2,
             status=OrderStatus.ACCEPTED,
         )
-        reports = {
-            "exact_ack": (original(20, submitted), original(21, accepted)),
-            "partial_full_fill": (original(20, submitted), original(21, accepted)),
-            "fill_before_ack": (original(20, submitted), original(21, accepted)),
-            "cancel": (original(20, submitted), original(21, accepted)),
-            "modify": (
-                original(20, submitted),
-                original(21, accepted),
-                duplicate(22, 21, at=NOW + timedelta(seconds=1)),
+        delayed = case in {"delayed_ack", "disconnected_queue"}
+        reports = (
+            original(20, submitted),
+            original(
+                21,
+                accepted,
+                at=NOW + timedelta(seconds=2) if delayed else NOW,
             ),
-        }
+        )
+        response = (
+            SandboxResponseDisposition.LOST_RESPONSE
+            if case == "lost_response"
+            else SandboxResponseDisposition.ACKNOWLEDGED
+        )
+        commands = (
+            SandboxCommandPlan(
+                command_id=uid(100),
+                kind=SandboxCommandKind.SUBMIT,
+                response_disposition=response,
+                order_id=uid(1),
+                report_ids=(uid(20), uid(21)),
+            ),
+        )
+        if case == "disconnected_queue":
+            commands += (
+                SandboxCommandPlan(
+                    command_id=uid(101),
+                    kind=SandboxCommandKind.DISCONNECT,
+                    response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+                    order_id=uid(1),
+                    report_ids=(),
+                ),
+            )
         client = client_for(
             scenario(
-                commands=(command(100, SandboxCommandKind.SUBMIT, tuple(plan.report_id.int for plan in reports[case])),),
-                reports=reports[case],
+                commands=commands,
+                reports=reports,
             ),
             safety_verifier,
         )
-        client.submit(valid_submit_request(prepared_case))
-        observed = client.drain_reports()
-        return SandboxReconciliationRequest(
-            snapshot=client.snapshot(), observed_reports=observed
-        )
+        if case == "lost_response":
+            with pytest.raises(SandboxLostResponse):
+                client.submit(valid_submit_request(prepared_case))
+            observed = ()
+        else:
+            client.submit(valid_submit_request(prepared_case))
+            observed = client.drain_reports()
+        if case == "disconnected_queue":
+            client.disconnect(command_id=uid(101), at=NOW + timedelta(seconds=2))
+        snapshot = client.snapshot()
+        if case == "missing_observed_ack":
+            observed = observed[:1]
+        if case == "forged_observed_state":
+            order = snapshot.orders[0]
+            snapshot = snapshot.model_copy(
+                update={
+                    "orders": (
+                        order.model_copy(update={"observed_state": OrderState(order_id=order.order_id)}),
+                    )
+                }
+            )
+        if case == "unknown_order":
+            payload = OrderEvent.create(
+                event_id=uid(10_901),
+                order_id=uid(900),
+                sequence=1,
+                target_status=OrderStatus.SUBMITTED,
+                occurred_at=NOW,
+            )
+            observed = observed + (
+                submitted.model_copy(update={"event_id": uid(901), "payload": payload}),
+            )
+        return SandboxReconciliationRequest(snapshot=snapshot, observed_reports=observed)
 
     return build
 
@@ -214,3 +269,144 @@ def test_invalid_input_result_status_must_match_findings_and_pending_content(
             unattributed_event_ids=(),
             unattributed_reason_codes=unattributed_reason_codes,
         )
+
+
+@pytest.mark.parametrize(
+    ("scenario_kind", "expected_status"),
+    [
+        ("settled_ack", SandboxReconciliationStatus.RECONCILED),
+        ("delayed_ack", SandboxReconciliationStatus.DELIVERY_PENDING),
+        ("lost_response", SandboxReconciliationStatus.DELIVERY_PENDING),
+        ("disconnected_queue", SandboxReconciliationStatus.DELIVERY_PENDING),
+        ("missing_observed_ack", SandboxReconciliationStatus.MISMATCH),
+    ],
+)
+def test_reconcile_execution_state_classifies_delivery_state(
+    scenario_kind: str,
+    expected_status: SandboxReconciliationStatus,
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """A wrong delivery classification must change the public reconciliation status."""
+
+    result = reconcile_execution_state(reconciliation_request_factory(scenario_kind))
+    assert result.status is expected_status
+
+
+def test_reconcile_execution_state_marks_forged_observed_state_mismatch(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Skipping the observed-state comparison must expose the forged snapshot state."""
+
+    result = reconcile_execution_state(reconciliation_request_factory("forged_observed_state"))
+    assert result.status is SandboxReconciliationStatus.MISMATCH
+    assert result.orders[0].reason_codes == (
+        SandboxReconciliationReason.OBSERVED_STATE_MISMATCH,
+    )
+
+
+def test_reconcile_execution_state_keeps_unknown_report_unattributed(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Assigning foreign evidence to a sandbox order must remain impossible."""
+
+    result = reconcile_execution_state(reconciliation_request_factory("unknown_order"))
+    assert result.status is SandboxReconciliationStatus.MISMATCH
+    assert result.unattributed_event_ids == (uid(901),)
+    assert result.unattributed_reason_codes == (
+        SandboxReconciliationReason.UNKNOWN_ORDER_REPORT,
+    )
+
+
+def test_reconcile_execution_state_replays_observed_events_independent_of_input_order(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Treating caller tuple order as lifecycle authority must change the result."""
+
+    request = reconciliation_request_factory("settled_ack")
+    permuted = SandboxReconciliationRequest(
+        snapshot=request.snapshot,
+        observed_reports=tuple(reversed(request.observed_reports)),
+    )
+    assert reconcile_execution_state(permuted) == reconcile_execution_state(request)
+
+
+def test_reconcile_execution_state_marks_invalid_observed_lifecycle(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Ignoring a reducer failure must hide an invalid observed lifecycle."""
+
+    request = reconciliation_request_factory("settled_ack")
+    result = reconcile_execution_state(
+        SandboxReconciliationRequest(
+            snapshot=request.snapshot,
+            observed_reports=(request.observed_reports[1],),
+        )
+    )
+    assert SandboxReconciliationReason.OBSERVED_ORDER_REPLAY_FAILED in result.orders[0].reason_codes
+
+
+def test_reconcile_execution_state_marks_invalid_pending_lifecycle(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    """Ignoring a queued reducer failure must hide an invalid venue lifecycle."""
+
+    request = reconciliation_request_factory("delayed_ack")
+    invalid_pending = order_envelope(
+        submitted_envelope,
+        event_id=11,
+        envelope_sequence=2,
+        order_sequence=2,
+        status=OrderStatus.SUBMITTED,
+    )
+    snapshot = SandboxSnapshot(
+        connection_state=request.snapshot.connection_state,
+        current_time=request.snapshot.current_time,
+        orders=request.snapshot.orders,
+        known_reports=(
+            request.snapshot.known_reports[0],
+            SandboxKnownReport(report_id=uid(21), event=invalid_pending),
+        ),
+        queued_reports=request.snapshot.queued_reports,
+    )
+    result = reconcile_execution_state(
+        SandboxReconciliationRequest(
+            snapshot=snapshot,
+            observed_reports=request.observed_reports,
+        )
+    )
+    assert SandboxReconciliationReason.PENDING_ORDER_REPLAY_FAILED in result.orders[0].reason_codes
+
+
+def test_reconcile_execution_state_keeps_unexpected_report_unattributed(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Accepting an event absent from delivered inventory must be a mismatch."""
+
+    request = reconciliation_request_factory("settled_ack")
+    unexpected = request.observed_reports[0].model_copy(update={"event_id": uid(902)})
+    result = reconcile_execution_state(
+        SandboxReconciliationRequest(
+            snapshot=request.snapshot,
+            observed_reports=request.observed_reports + (unexpected,),
+        )
+    )
+    assert result.unattributed_event_ids == (uid(902),)
+    assert result.unattributed_reason_codes == (
+        SandboxReconciliationReason.UNEXPECTED_OBSERVED_REPORT,
+    )
+
+
+def test_reconcile_execution_state_does_not_mutate_input_evidence(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Mutating snapshot or evidence while reconciling would break repeatable results."""
+
+    request = reconciliation_request_factory("delayed_ack")
+    snapshot_before = request.snapshot
+    reports_before = request.observed_reports
+
+    reconcile_execution_state(request)
+
+    assert request.snapshot == snapshot_before
+    assert request.observed_reports == reports_before
