@@ -252,6 +252,8 @@ class SandboxExecutionClient:
             require_utc(at)
         except (TypeError, ValueError) as exc:
             raise SandboxExecutionError("connection time must be UTC") from exc
+        if at < self._snapshot.current_time:
+            raise SandboxExecutionError("clock cannot move backwards")
         wanted = SandboxConnectionState.CONNECTED if kind is SandboxCommandKind.DISCONNECT else SandboxConnectionState.DISCONNECTED
         if self._snapshot.connection_state is not wanted:
             raise SandboxExecutionError("invalid sandbox connection transition")

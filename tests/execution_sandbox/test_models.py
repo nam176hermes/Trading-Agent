@@ -129,6 +129,21 @@ def test_command_requires_existing_nonrepeating_report_ids(submitted_envelope: E
         SandboxScenario(command_plans=(submit_plan(uid(62), (uid(63),)),), report_plans=(report,))
 
 
+def test_scenario_rejects_a_report_assigned_to_more_than_one_command(
+    submitted_envelope: EventEnvelope[object],
+) -> None:
+    report = original_report(report_id=uid(64), event=submitted_envelope)
+
+    with pytest.raises(ValueError, match="must occur exactly once"):
+        SandboxScenario(
+            command_plans=(
+                submit_plan(uid(65), (uid(64),)),
+                submit_plan(uid(66), (uid(64),)),
+            ),
+            report_plans=(report,),
+        )
+
+
 def test_report_plan_requires_concrete_order_or_fill_event(prepared_case: Any) -> None:
     wrong = EventEnvelope[OrderIntent](
         event_id=uid(71),

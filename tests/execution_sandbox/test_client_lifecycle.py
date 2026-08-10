@@ -333,6 +333,36 @@ def test_backwards_clock_is_rejected_without_mutation(submitted_envelope: EventE
     assert client.snapshot() == before
 
 
+def test_connection_command_before_logical_clock_is_rejected_without_mutation(
+    submitted_envelope: EventEnvelope[OrderEvent], safety_verifier: Any
+) -> None:
+    client = client_for(
+        scenario(
+            commands=(command(100, SandboxCommandKind.DISCONNECT, (20,)),),
+            reports=(
+                original(
+                    20,
+                    order_envelope(
+                        submitted_envelope,
+                        event_id=10,
+                        envelope_sequence=1,
+                        order_sequence=1,
+                        status=OrderStatus.SUBMITTED,
+                    ),
+                ),
+            ),
+        ),
+        safety_verifier,
+    )
+    client.advance_time(to=NOW + timedelta(seconds=1))
+    before = client.snapshot()
+
+    with pytest.raises(SandboxExecutionError, match="clock cannot move backwards"):
+        client.disconnect(command_id=uid(100), at=NOW)
+
+    assert client.snapshot() == before
+
+
 def test_bad_ledger_stream_sequence_retains_pre_drain_snapshot(
     submitted_envelope: EventEnvelope[OrderEvent], prepared_case: Any, safety_verifier: Any
 ) -> None:

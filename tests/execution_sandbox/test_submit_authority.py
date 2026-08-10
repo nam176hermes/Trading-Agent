@@ -328,6 +328,7 @@ def test_lost_response_after_acceptance_keeps_reports_for_explicit_delivery(
 
     assert client.snapshot().orders[0].venue_state.status is OrderStatus.ACCEPTED
     assert [event.event_type for event in client.drain_reports()] == ["OrderEvent", "OrderEvent"]
+    assert client.drain_reports() == ()
 
 
 def test_delayed_submit_report_is_delivered_only_after_reconnect(
