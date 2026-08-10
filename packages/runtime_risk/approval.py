@@ -109,7 +109,7 @@ def _load_one_event(
         if not isinstance(match, EventEnvelope):
             raise ValueError("matching ledger record must be an event envelope")
         return match
-    except _CANONICALIZATION_ERRORS as exc:
+    except _REPOSITORY_ERRORS as exc:
         raise DurableApprovalError(failure_message) from exc
 
 
@@ -149,7 +149,7 @@ def _append_boundary(
         canonical_result = AppendOutcome.model_validate(
             append_result.model_dump(mode="python")
         )
-    except _CANONICALIZATION_ERRORS as exc:
+    except _REPOSITORY_ERRORS as exc:
         raise DurableApprovalError(_RECORDING_FAILURE) from exc
     if canonical_result.event_id != event.event_id:
         raise DurableApprovalError(_RECORDING_FAILURE)

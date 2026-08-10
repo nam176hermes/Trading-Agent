@@ -157,6 +157,26 @@ class EventIdOnly:
         self.event_id = event_id
 
 
+class MalformedAppendReceipt:
+    def model_dump(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise RuntimeError("malformed append receipt detail")
+
+
+class MalformedReadBackRecord:
+    @property
+    def event_id(self) -> UUID:
+        raise RuntimeError("malformed read-back record detail")
+
+
+class MalformedAppendReceiptRepository(BoundedRepository):
+    def append(  # type: ignore[override]
+        self, event: EventEnvelope[object], outbox: OutboxIntent
+    ) -> MalformedAppendReceipt:
+        self.appended = True
+        self.outbox = outbox
+        return MalformedAppendReceipt()
+
+
 def model_fields(value: BaseModel) -> dict[str, object]:
     return {name: getattr(value, name) for name in type(value).model_fields}
 
@@ -347,6 +367,30 @@ def test_read_back_exception_is_bounded_and_chained() -> None:
 
     assert caught.value.__cause__ is error
     assert "private repository detail" not in str(caught.value)
+
+
+def test_malformed_append_receipt_runtime_error_is_bounded_and_chained() -> None:
+    event = runtime_risk_event()
+    repository = MalformedAppendReceiptRepository(events=(event,))
+
+    with pytest.raises(DurableApprovalError) as caught:
+        record_runtime_risk_decision(repository=repository, event=event)
+
+    assert type(caught.value.__cause__) is RuntimeError
+    assert "malformed append receipt detail" not in str(caught.value)
+
+
+def test_record_malformed_read_back_accessor_is_bounded_and_chained() -> None:
+    event = runtime_risk_event()
+    repository = BoundedRepository(
+        events=(MalformedReadBackRecord(),),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(DurableApprovalError) as caught:
+        record_runtime_risk_decision(repository=repository, event=event)
+
+    assert type(caught.value.__cause__) is RuntimeError
+    assert "malformed read-back record detail" not in str(caught.value)
 
 
 def test_record_near_datetime_max_translates_canonical_event_overflow() -> None:
@@ -591,6 +635,20 @@ def test_verify_does_not_relabel_unrelated_evaluator_runtime_errors(
 
     with pytest.raises(RuntimeError, match="evaluator programming defect"):
         verify(ledger, reference, case)
+
+
+def test_verify_malformed_read_back_accessor_is_bounded_and_chained() -> None:
+    _, case, _, reference = record_approved()
+    repository = BoundedRepository(
+        events=(MalformedReadBackRecord(),),  # type: ignore[arg-type]
+    )
+    repository.appended = True
+
+    with pytest.raises(DurableApprovalError) as caught:
+        verify(repository, reference, case)
+
+    assert type(caught.value.__cause__) is RuntimeError
+    assert "malformed read-back record detail" not in str(caught.value)
 
 
 @pytest.mark.parametrize(
