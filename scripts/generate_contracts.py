@@ -209,6 +209,7 @@ DOMAIN_SCHEMA_MODELS = (
     EventEnvelope[PortfolioConversionEntry],
     EventEnvelope[PortfolioValuationRateEntry],
     EventEnvelope[PortfolioReconciliationEntry],
+    EventEnvelope[RuntimeOrderRiskDecision],
     StoredEvent,
     ReplayIssue,
     AppliedEvent,

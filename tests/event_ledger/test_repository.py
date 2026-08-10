@@ -9,6 +9,7 @@ from packages.event_ledger.models import EventTypeCount
 from packages.event_ledger.replay import canonical_state_json, event_digest
 
 from tests.event_ledger.test_reducer import envelope, fill, signal
+from tests.runtime_risk.test_approval import runtime_risk_event
 
 
 def test_append_and_outbox_are_atomic_and_identical_retry_is_idempotent() -> None:
@@ -22,6 +23,22 @@ def test_append_and_outbox_are_atomic_and_identical_retry_is_idempotent() -> Non
     with pytest.raises(EventConflictError):
         repository.append(event.model_copy(update={"source": "conflict"}), intent)
     assert repository.load_outbox() == (intent,)
+
+
+def test_repository_preserves_runtime_risk_decision_concrete_payload() -> None:
+    repository = InMemoryEventLedger()
+    event = runtime_risk_event()
+    outbox = OutboxIntent(
+        event_id=event.event_id,
+        topic="runtime-risk.decisions",
+        payload_json='{"decision_id":"00000000-0000-0000-0000-00000000005a"}',
+    )
+
+    repository.append(event, outbox)
+
+    assert repository.load_events() == (event,)
+    assert type(repository.load_events()[0].payload) is type(event.payload)
+    assert repository.load_outbox() == (outbox,)
 
 
 def test_exact_retry_survives_publication_and_pending_outbox_retention() -> None:

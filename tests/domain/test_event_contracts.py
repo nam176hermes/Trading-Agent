@@ -40,6 +40,7 @@ from packages.domain import (
     RiskOutcome,
     RiskReasonCode,
     RiskStateSnapshot,
+    RuntimeOrderRiskDecision,
     SignalDirection,
     SignalProposal,
     TargetPortfolio,
@@ -47,6 +48,9 @@ from packages.domain import (
     TimeInForce,
     validate_event_batch,
 )
+from packages.event_ledger import deserialize_event, serialize_event
+
+from tests.runtime_risk.test_approval import runtime_risk_event
 
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
@@ -674,6 +678,17 @@ def test_typed_event_envelope_round_trips_canonical_json(
     restored = envelope_type.model_validate_json(wrapped.model_dump_json())
     assert restored == wrapped
     assert isinstance(restored.payload, payload_type)
+
+
+def test_runtime_risk_decision_event_uses_the_registered_concrete_codec() -> None:
+    event = runtime_risk_event()
+
+    canonical = serialize_event(event)
+    restored = deserialize_event(canonical)
+
+    assert type(restored.payload) is RuntimeOrderRiskDecision
+    assert restored == event
+    assert serialize_event(restored) == canonical
 
 
 def test_typed_event_envelope_rejects_mismatched_event_type_in_python_and_json() -> None:

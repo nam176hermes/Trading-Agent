@@ -81,6 +81,7 @@ EXPECTED = {
     "RuntimeRiskObservation.json",
     "RuntimeOrderRiskDecision.json",
     "DurableOrderApprovalRef.json",
+    "EventEnvelope_RuntimeOrderRiskDecision_.json",
 }
 
 LEGACY_EVENT_TYPES = {
@@ -90,6 +91,7 @@ PORTFOLIO_ENTRY_EVENT_TYPES = {
     "PortfolioOpeningEntry", "PortfolioFillEntry", "PortfolioMarkEntry", "PortfolioFundingEntry",
     "PortfolioConversionEntry", "PortfolioValuationRateEntry", "PortfolioReconciliationEntry",
 }
+RUNTIME_RISK_EVENT_TYPES = {"RuntimeOrderRiskDecision"}
 
 
 def test_contract_generation_is_deterministic_and_current() -> None:
@@ -112,6 +114,12 @@ def test_portfolio_event_schemas_and_registrations_are_additive() -> None:
     for event_type in PORTFOLIO_ENTRY_EVENT_TYPES:
         assert f"{event_type}.json" in EXPECTED
         assert f"EventEnvelope_{event_type}_.json" in EXPECTED
+
+
+def test_runtime_risk_event_schema_and_registration_are_additive() -> None:
+    registered_types = set(EVENT_TYPE_BY_PAYLOAD.values())
+    assert RUNTIME_RISK_EVENT_TYPES <= registered_types
+    assert "EventEnvelope_RuntimeOrderRiskDecision_.json" in EXPECTED
 
 
 @pytest.mark.parametrize("filename", sorted(EXPECTED))

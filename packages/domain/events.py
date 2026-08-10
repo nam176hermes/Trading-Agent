@@ -29,6 +29,7 @@ from .portfolio_events import (
     PortfolioValuationRateEntry,
 )
 from .risk import RiskDecision
+from .runtime_risk import RuntimeOrderRiskDecision
 from .signals import SignalProposal
 
 
@@ -49,6 +50,7 @@ EVENT_TYPE_BY_PAYLOAD: dict[type[object], str] = {
     PortfolioConversionEntry: "PortfolioConversionEntry",
     PortfolioValuationRateEntry: "PortfolioValuationRateEntry",
     PortfolioReconciliationEntry: "PortfolioReconciliationEntry",
+    RuntimeOrderRiskDecision: "RuntimeOrderRiskDecision",
 }
 
 

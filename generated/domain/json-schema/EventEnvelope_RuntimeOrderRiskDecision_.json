@@ -1,0 +1,441 @@
+{
+  "$defs": {
+    "Currency": {
+      "description": "One immutable identity issued by a versioned currency registry.",
+      "enum": [
+        "USD",
+        "USDT",
+        "BTC",
+        "ETH"
+      ],
+      "title": "Currency",
+      "type": "string",
+      "x-currency-registry-version": "currency-v1"
+    },
+    "Money": {
+      "description": "An exact signed monetary amount.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Money",
+      "type": "object"
+    },
+    "Price": {
+      "description": "An exact strictly positive monetary price.",
+      "properties": {
+        "amount": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Amount",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        },
+        "currency": {
+          "$ref": "#/$defs/Currency"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "title": "Price",
+      "type": "object"
+    },
+    "Quantity": {
+      "description": "An exact signed quantity with declared fractional precision.",
+      "properties": {
+        "precision": {
+          "title": "Precision",
+          "type": "integer"
+        },
+        "value": {
+          "pattern": "^(?:0|-?[1-9]\\d*|-?(?:0|[1-9]\\d*)\\.\\d*[1-9])$",
+          "title": "Value",
+          "type": "string",
+          "x-canonical-decimal-policy": "decimal-v1"
+        }
+      },
+      "required": [
+        "value",
+        "precision"
+      ],
+      "title": "Quantity",
+      "type": "object"
+    },
+    "RuntimeOrderRiskDecision": {
+      "additionalProperties": false,
+      "properties": {
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "decision_id": {
+          "format": "uuid",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "intent_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Intent Digest",
+          "type": "string"
+        },
+        "intent_id": {
+          "format": "uuid",
+          "title": "Intent Id",
+          "type": "string"
+        },
+        "observation_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Observation Digest",
+          "type": "string"
+        },
+        "observation_id": {
+          "format": "uuid",
+          "title": "Observation Id",
+          "type": "string"
+        },
+        "observation_version": {
+          "title": "Observation Version",
+          "type": "integer"
+        },
+        "order_notional": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/RuntimeRiskOutcome"
+        },
+        "policy_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "policy_id": {
+          "format": "uuid",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "policy_risk_decision_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Risk Decision Digest",
+          "type": "string"
+        },
+        "policy_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "portfolio_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Portfolio Digest",
+          "type": "string"
+        },
+        "portfolio_snapshot_id": {
+          "format": "uuid",
+          "title": "Portfolio Snapshot Id",
+          "type": "string"
+        },
+        "projected_available_funds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_gross": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_instrument_gross": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_margin_used": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_net": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_pending": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_position_quantity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Quantity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_strategy_gross": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projected_venue_gross": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Money"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_codes": {
+          "items": {
+            "$ref": "#/$defs/RuntimeRiskReasonCode"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "risk_decision_id": {
+          "format": "uuid",
+          "title": "Risk Decision Id",
+          "type": "string"
+        },
+        "risk_price": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Price"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "const": "runtime-order-risk-decision-v1",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision_id",
+        "intent_id",
+        "risk_decision_id",
+        "intent_digest",
+        "policy_risk_decision_digest",
+        "portfolio_snapshot_id",
+        "portfolio_digest",
+        "observation_id",
+        "observation_version",
+        "observation_digest",
+        "policy_id",
+        "policy_version",
+        "policy_digest",
+        "risk_price",
+        "order_notional",
+        "projected_position_quantity",
+        "projected_pending",
+        "projected_gross",
+        "projected_net",
+        "projected_strategy_gross",
+        "projected_venue_gross",
+        "projected_instrument_gross",
+        "projected_margin_used",
+        "projected_available_funds",
+        "outcome",
+        "reason_codes",
+        "decided_at",
+        "schema_version"
+      ],
+      "title": "RuntimeOrderRiskDecision",
+      "type": "object"
+    },
+    "RuntimeRiskOutcome": {
+      "enum": [
+        "APPROVED",
+        "REJECTED"
+      ],
+      "title": "RuntimeRiskOutcome",
+      "type": "string"
+    },
+    "RuntimeRiskReasonCode": {
+      "enum": [
+        "POLICY_RISK_NOT_APPROVED",
+        "ENGINE_NOT_READY",
+        "INSTRUMENT_UNKNOWN",
+        "MARKET_DATA_STALE",
+        "VALUATION_AUTHORITY_MISSING",
+        "PORTFOLIO_STATE_INVALID",
+        "PRICE_PRECISION_INVALID",
+        "QUANTITY_PRECISION_INVALID",
+        "QUANTITY_OUT_OF_BOUNDS",
+        "ORDER_NOTIONAL_LIMIT",
+        "BALANCE_MARGIN_LIMIT",
+        "PENDING_EXPOSURE_LIMIT",
+        "GROSS_EXPOSURE_LIMIT",
+        "NET_EXPOSURE_LIMIT",
+        "STRATEGY_EXPOSURE_LIMIT",
+        "VENUE_EXPOSURE_LIMIT",
+        "DAILY_LOSS_LIMIT",
+        "DRAWDOWN_LIMIT",
+        "REDUCE_ONLY_VIOLATION",
+        "COMMAND_RATE_LIMIT",
+        "VENUE_UNHEALTHY",
+        "DUPLICATE_COMMAND",
+        "WITHIN_LIMITS"
+      ],
+      "title": "RuntimeRiskReasonCode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "causation_id": {
+      "format": "uuid",
+      "title": "Causation Id",
+      "type": "string"
+    },
+    "correlation_id": {
+      "format": "uuid",
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "effective_at": {
+      "format": "date-time",
+      "title": "Effective At",
+      "type": "string"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_type": {
+      "const": "RuntimeOrderRiskDecision",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "ingested_at": {
+      "format": "date-time",
+      "title": "Ingested At",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "payload": {
+      "$ref": "#/$defs/RuntimeOrderRiskDecision"
+    },
+    "produced_at": {
+      "format": "date-time",
+      "title": "Produced At",
+      "type": "string"
+    },
+    "schema_version": {
+      "minLength": 1,
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    },
+    "trace_id": {
+      "format": "uuid",
+      "title": "Trace Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "source",
+    "stream_id",
+    "sequence",
+    "observed_at",
+    "ingested_at",
+    "produced_at",
+    "effective_at",
+    "expires_at",
+    "correlation_id",
+    "causation_id",
+    "trace_id",
+    "payload"
+  ],
+  "title": "EventEnvelope[RuntimeOrderRiskDecision]",
+  "type": "object"
+}

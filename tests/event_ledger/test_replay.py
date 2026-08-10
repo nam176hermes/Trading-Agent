@@ -21,6 +21,7 @@ from packages.event_ledger import (
 from packages.event_ledger.replay import canonical_state_json, event_digest
 
 from tests.event_ledger.test_reducer import envelope, fill, order_event, order_intent, risk, signal, target
+from tests.runtime_risk.test_approval import runtime_risk_event
 
 
 @pytest.mark.parametrize("payload", [signal, target, risk, order_intent, order_event, fill])
@@ -28,6 +29,17 @@ def test_all_registered_payload_types_round_trip_exact_concrete_type(payload: ob
     event = envelope(payload(), event_number=100 + len(type(payload()).__name__))  # type: ignore[operator]
     assert deserialize_event(serialize_event(event)) == event
     assert type(deserialize_event(serialize_event(event)).payload) is type(event.payload)
+
+
+def test_runtime_risk_decision_replay_round_trip_is_canonical_and_concrete() -> None:
+    event = runtime_risk_event()
+    canonical = serialize_event(event)
+
+    restored = deserialize_event(canonical)
+
+    assert restored == event
+    assert type(restored.payload) is type(event.payload)
+    assert serialize_event(restored) == canonical
 
 
 def test_accepted_base_order_event_wire_shape_is_a_rejected_preproduction_break() -> None:
