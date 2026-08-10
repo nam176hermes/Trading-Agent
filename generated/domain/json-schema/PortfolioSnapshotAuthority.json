@@ -1,0 +1,54 @@
+{
+  "additionalProperties": false,
+  "description": "Independent trusted commitment authorizing one snapshot record.",
+  "properties": {
+    "account_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$",
+      "title": "Account Id",
+      "type": "string"
+    },
+    "cursor_sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Cursor Sequence",
+      "type": "integer"
+    },
+    "prefix_history_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Prefix History Hash",
+      "type": "string"
+    },
+    "reducer_version": {
+      "const": "portfolio-reducer-v1",
+      "title": "Reducer Version",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "portfolio-replay-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "snapshot_state_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Snapshot State Hash",
+      "type": "string"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "reducer_version",
+    "account_id",
+    "stream_id",
+    "cursor_sequence",
+    "snapshot_state_hash",
+    "prefix_history_hash"
+  ],
+  "title": "PortfolioSnapshotAuthority",
+  "type": "object"
+}

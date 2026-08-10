@@ -232,6 +232,7 @@ class PortfolioReplayResult(DomainModel):
     state: PortfolioReplayState
     canonical_snapshot: AccountPortfolioSnapshot
     cursor: tuple[PortfolioStreamCursor, ...]
+    prefix_history_hash: Sha256
     canonical_state_json: Annotated[str, Field(min_length=2)]
     state_hash: Sha256
 
@@ -244,5 +245,18 @@ class PortfolioSnapshotRecord(DomainModel):
     state: PortfolioReplayState
     canonical_snapshot: AccountPortfolioSnapshot
     cursor: tuple[PortfolioStreamCursor, ...]
+    prefix_history_hash: Sha256
     canonical_state_json: Annotated[str, Field(min_length=2)]
     state_hash: Sha256
+
+
+class PortfolioSnapshotAuthority(DomainModel):
+    """Independent trusted commitment authorizing one snapshot record."""
+
+    schema_version: Literal["portfolio-replay-v1"]
+    reducer_version: Literal["portfolio-reducer-v1"]
+    account_id: CanonicalPortfolioIdentifier
+    stream_id: UUID
+    cursor_sequence: Annotated[int, Field(gt=0)]
+    snapshot_state_hash: Sha256
+    prefix_history_hash: Sha256

@@ -101,7 +101,11 @@ from packages.event_ledger import (
     StoredEvent,
     StreamProjection,
 )
-from packages.portfolio_reducer import PortfolioReplayResult, PortfolioSnapshotRecord
+from packages.portfolio_reducer import (
+    PortfolioReplayResult,
+    PortfolioSnapshotAuthority,
+    PortfolioSnapshotRecord,
+)
 from packages.engine_contracts import (
     EngineCapabilities,
     EngineCommandEnvelope,
@@ -182,6 +186,7 @@ DOMAIN_SCHEMA_MODELS = (
     PortfolioReconciliationEntry,
     PortfolioReplayResult,
     PortfolioSnapshotRecord,
+    PortfolioSnapshotAuthority,
     EventEnvelope[SignalProposal],
     EventEnvelope[TargetPortfolio],
     EventEnvelope[RiskDecision],

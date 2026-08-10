@@ -38,10 +38,11 @@ from packages.portfolio_reducer import (
     PortfolioReplayError,
     derive_account_snapshot,
     replay_portfolio,
+    snapshot_authority_from_result,
     snapshot_from_portfolio_result,
 )
 from packages.event_ledger import InMemoryEventLedger
-from packages.event_ledger.replay import _canonical_json, event_digest
+from packages.event_ledger.replay import _canonical_json, event_digest, serialize_event
 
 
 NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
@@ -312,6 +313,7 @@ def hash_consistent_record_with_state(record, state):
             "state": state.model_dump(mode="json"),
             "canonical_snapshot": canonical_snapshot.model_dump(mode="json"),
             "cursor": [item.model_dump(mode="json") for item in state.cursor],
+            "prefix_history_hash": record.prefix_history_hash,
         }
     )
     return record.model_copy(
@@ -325,16 +327,131 @@ def hash_consistent_record_with_state(record, state):
     )
 
 
+def checkpoint(events):
+    result = replay_portfolio(events)
+    return (
+        snapshot_from_portfolio_result(result),
+        snapshot_authority_from_result(result),
+    )
+
+
 @pytest.fixture
 def portfolio_events() -> tuple[EventEnvelope[object], ...]:
     return (opening(), fill(number=2), mark(number=3), fill(number=4), mark(number=5))
 
 
+def test_full_replay_extends_a_rolling_prefix_history_commitment(portfolio_events) -> None:
+    expected = (
+        "c3c608bfacb605883cbe6c8fdd4b0180c7ea3697f7f7ede1c46ad2525aa00afd",
+        "ac33c7a779285daebfb5fe54a69d45504d6ad3b70269e195f0c00619b285a085",
+        "91ba3ba65b5674c3b31021199293b1bf0e7c5a3c61a923e2348f1ea9256b4aa7",
+    )
+
+    assert tuple(
+        replay_portfolio(portfolio_events[:sequence]).prefix_history_hash
+        for sequence in (1, 3, 5)
+    ) == expected
+
+
+def test_snapshot_tail_requires_independent_authority(portfolio_events) -> None:
+    prefix = replay_portfolio(portfolio_events[:3])
+    record = snapshot_from_portfolio_result(prefix)
+
+    with pytest.raises(PortfolioReplayError, match="authority"):
+        replay_portfolio(portfolio_events[3:], snapshot=record)
+
+
+def test_recomputed_forged_record_rejects_original_authority(portfolio_events) -> None:
+    prefix = replay_portfolio(portfolio_events[:3])
+    record = snapshot_from_portfolio_result(prefix)
+    authority = snapshot_authority_from_result(prefix)
+    effect = record.state.active_effects[0]
+    forged_source = effect.source_event.model_copy(update={"source": "forged-source"})
+    forged_digest = event_digest(serialize_event(forged_source))
+    forged_effect = effect.model_copy(update={"source_event": forged_source})
+    forged_applied = tuple(
+        item.model_copy(update={"digest": forged_digest})
+        if item.event_id == forged_source.event_id
+        else item
+        for item in record.state.applied_events
+    )
+    forged_identities = tuple(
+        item.model_copy(update={"event_digest": forged_digest})
+        if item.event_id == forged_source.event_id
+        else item
+        for item in record.state.execution_identities
+    )
+    forged = hash_consistent_record_with_state(
+        record,
+        record.state.model_copy(
+            update={
+                "active_effects": (forged_effect,),
+                "applied_events": forged_applied,
+                "execution_identities": forged_identities,
+            }
+        ),
+    )
+
+    with pytest.raises(PortfolioReplayError, match="authority"):
+        replay_portfolio(portfolio_events[3:], snapshot=forged, authority=authority)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("account_id", "account-2"),
+        ("stream_id", OTHER_STREAM),
+        ("cursor_sequence", 4),
+        ("snapshot_state_hash", "0" * 64),
+        ("prefix_history_hash", "0" * 64),
+        ("schema_version", "portfolio-replay-v2"),
+        ("reducer_version", "portfolio-reducer-v2"),
+    ],
+)
+def test_snapshot_tail_rejects_mismatched_authority_field(
+    field: str, value: object, portfolio_events
+) -> None:
+    record, authority = checkpoint(portfolio_events[:3])
+    mismatched = authority.model_copy(update={field: value})
+
+    with pytest.raises(PortfolioReplayError, match="authority"):
+        replay_portfolio(
+            portfolio_events[3:], snapshot=record, authority=mismatched
+        )
+
+
+def test_snapshot_tail_rejects_authority_reused_with_another_record(
+    portfolio_events,
+) -> None:
+    _, authority = checkpoint(portfolio_events[:1])
+    record, _ = checkpoint(portfolio_events[:3])
+
+    with pytest.raises(PortfolioReplayError, match="authority"):
+        replay_portfolio(portfolio_events[3:], snapshot=record, authority=authority)
+
+
+def test_snapshot_authority_without_snapshot_fails_closed(portfolio_events) -> None:
+    authority = snapshot_authority_from_result(replay_portfolio(portfolio_events[:3]))
+
+    with pytest.raises(PortfolioReplayError, match="authority"):
+        replay_portfolio(portfolio_events, authority=authority)
+
+
+def test_snapshot_authority_issuance_revalidates_result(portfolio_events) -> None:
+    result = replay_portfolio(portfolio_events[:3])
+    forged = result.model_copy(update={"state_hash": "0" * 64})
+
+    with pytest.raises(PortfolioReplayError, match="state hash"):
+        snapshot_authority_from_result(forged)
+
+
 def test_snapshot_tail_is_identical_to_full_replay(portfolio_events) -> None:
     full = replay_portfolio(portfolio_events)
-    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+    record, authority = checkpoint(portfolio_events[:3])
 
-    tail = replay_portfolio(portfolio_events[3:], snapshot=record)
+    tail = replay_portfolio(
+        portfolio_events[3:], snapshot=record, authority=authority
+    )
 
     assert tail == full
     assert tail.canonical_state_json == full.canonical_state_json
@@ -345,8 +462,8 @@ def test_post_mark_fill_has_identical_marked_full_and_tail_snapshots() -> None:
     events = (opening(), fill(number=2), mark(number=3), fill(number=4, price="110"))
 
     full = replay_portfolio(events)
-    record = snapshot_from_portfolio_result(replay_portfolio(events[:3]))
-    tail = replay_portfolio(events[3:], snapshot=record)
+    record, authority = checkpoint(events[:3])
+    tail = replay_portfolio(events[3:], snapshot=record, authority=authority)
 
     assert tail == full
     position = full.canonical_snapshot.positions[0]
@@ -392,8 +509,8 @@ def test_post_mark_close_correction_and_bust_match_full_and_tail_snapshots(
     events = (opening(), normal, mark(number=3), adjustment)
 
     full = replay_portfolio(events)
-    record = snapshot_from_portfolio_result(replay_portfolio(events[:3]))
-    tail = replay_portfolio(events[3:], snapshot=record)
+    record, authority = checkpoint(events[:3])
+    tail = replay_portfolio(events[3:], snapshot=record, authority=authority)
 
     assert tail == full
     position = full.canonical_snapshot.positions[0]
@@ -435,28 +552,28 @@ def test_canonical_snapshot_retains_closed_position_accounting_without_exposure(
 
 def test_snapshot_tail_rejects_exact_and_conflicting_funding_identity_reuse() -> None:
     original = funding(number=2, funding_id=uid(7_000))
-    record = snapshot_from_portfolio_result(replay_portfolio((opening(), original)))
+    record, authority = checkpoint((opening(), original))
     exact_repeat = envelope(original.payload, number=3)
     conflicting_repeat = funding(number=3, funding_id=uid(7_000), amount="9")
 
     with pytest.raises(PortfolioReplayError, match="duplicate funding identity"):
-        replay_portfolio((exact_repeat,), snapshot=record)
+        replay_portfolio((exact_repeat,), snapshot=record, authority=authority)
     with pytest.raises(PortfolioReplayError, match="conflicting funding identity"):
-        replay_portfolio((conflicting_repeat,), snapshot=record)
+        replay_portfolio((conflicting_repeat,), snapshot=record, authority=authority)
 
 
 def test_snapshot_tail_rejects_exact_and_conflicting_reconciliation_identity_reuse() -> None:
     original = reconciliation(number=2, reconciliation_id=uid(7_100))
-    record = snapshot_from_portfolio_result(replay_portfolio((opening(), original)))
+    record, authority = checkpoint((opening(), original))
     exact_repeat = envelope(original.payload, number=3)
     conflicting_repeat = reconciliation(
         number=3, reconciliation_id=uid(7_100), cash="778"
     )
 
     with pytest.raises(PortfolioReplayError, match="duplicate reconciliation identity"):
-        replay_portfolio((exact_repeat,), snapshot=record)
+        replay_portfolio((exact_repeat,), snapshot=record, authority=authority)
     with pytest.raises(PortfolioReplayError, match="conflicting reconciliation identity"):
-        replay_portfolio((conflicting_repeat,), snapshot=record)
+        replay_portfolio((conflicting_repeat,), snapshot=record, authority=authority)
 
 
 @pytest.mark.parametrize("terminal", ["bust", "reconciliation"])
@@ -473,9 +590,7 @@ def test_snapshot_tail_rejects_exact_and_conflicting_consumed_execution_reuse(
         )
     else:
         terminal_event = reconciliation(number=3, reconciliation_id=uid(7_202))
-    record = snapshot_from_portfolio_result(
-        replay_portfolio((opening(), original, terminal_event))
-    )
+    record, authority = checkpoint((opening(), original, terminal_event))
     exact_repeat = envelope(original.payload, number=4)
     conflicting_fill = original.payload.fill.model_copy(
         update={
@@ -488,17 +603,19 @@ def test_snapshot_tail_rejects_exact_and_conflicting_consumed_execution_reuse(
     )
 
     with pytest.raises(PortfolioReplayError, match="duplicate execution identity"):
-        replay_portfolio((exact_repeat,), snapshot=record)
+        replay_portfolio((exact_repeat,), snapshot=record, authority=authority)
     with pytest.raises(PortfolioReplayError, match="conflicting execution identity"):
-        replay_portfolio((conflicting_repeat,), snapshot=record)
+        replay_portfolio((conflicting_repeat,), snapshot=record, authority=authority)
 
 
 def test_tampered_record_hash_fails_closed(portfolio_events) -> None:
-    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+    record, authority = checkpoint(portfolio_events[:3])
 
     with pytest.raises(PortfolioReplayError, match="state hash"):
         replay_portfolio(
-            portfolio_events[3:], snapshot=record.model_copy(update={"state_hash": "0" * 64})
+            portfolio_events[3:],
+            snapshot=record.model_copy(update={"state_hash": "0" * 64}),
+            authority=authority,
         )
 
 
@@ -519,26 +636,26 @@ def test_replay_rejects_invalid_full_history(events, pattern: str) -> None:
 
 
 def test_snapshot_rejects_tampered_applied_digest_and_effect_index(portfolio_events) -> None:
-    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+    record, authority = checkpoint(portfolio_events[:3])
     applied = record.state.applied_events[0].model_copy(update={"digest": "0" * 64})
     bad_applied = record.model_copy(
         update={"state": record.state.model_copy(update={"applied_events": (applied, *record.state.applied_events[1:])})}
     )
     with pytest.raises(PortfolioReplayError, match="state hash"):
-        replay_portfolio((), snapshot=bad_applied)
+        replay_portfolio((), snapshot=bad_applied, authority=authority)
 
     effect = record.state.active_effects[0].model_copy(update={"logical_sequence": 1})
     bad_effect = record.model_copy(
         update={"state": record.state.model_copy(update={"active_effects": (effect,)})}
     )
     with pytest.raises(PortfolioReplayError, match="effect"):
-        replay_portfolio((), snapshot=bad_effect)
+        replay_portfolio((), snapshot=bad_effect, authority=authority)
 
 
 def test_snapshot_rejects_hash_consistent_forged_execution_economics() -> None:
     normal = fill(number=2)
     prefix = (opening(), normal, mark(number=3))
-    record = snapshot_from_portfolio_result(replay_portfolio(prefix))
+    record, authority = checkpoint(prefix)
     effect = record.state.active_effects[0]
     forged_effect = effect.model_copy(
         update={"cash_deltas": (money("-1"),)}
@@ -560,13 +677,11 @@ def test_snapshot_rejects_hash_consistent_forged_execution_economics() -> None:
     )
 
     with pytest.raises(PortfolioReplayError, match="effect"):
-        replay_portfolio((bust,), snapshot=forged_record)
+        replay_portfolio((bust,), snapshot=forged_record, authority=authority)
 
 
 def test_snapshot_wraps_nested_position_validation_failures() -> None:
-    record = snapshot_from_portfolio_result(
-        replay_portfolio((opening(), fill(number=2), mark(number=3)))
-    )
+    record, authority = checkpoint((opening(), fill(number=2), mark(number=3)))
     position = record.state.snapshot.positions[0]
     assert position.mark is not None
     future_mark = position.mark.model_copy(
@@ -583,7 +698,9 @@ def test_snapshot_wraps_nested_position_validation_failures() -> None:
 
     with pytest.raises(PortfolioReplayError, match="canonical portfolio state"):
         replay_portfolio(
-            (), snapshot=record.model_copy(update={"state": forged_state})
+            (),
+            snapshot=record.model_copy(update={"state": forged_state}),
+            authority=authority,
         )
 
 
@@ -591,7 +708,7 @@ def test_snapshot_wraps_nested_position_validation_failures() -> None:
 def test_snapshot_rejects_hash_consistent_foreign_reconciliation(
     with_canonical_tail: bool, portfolio_events
 ) -> None:
-    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+    record, authority = checkpoint(portfolio_events[:3])
     foreign_record = hash_consistent_record_with_state(
         record,
         record.state.model_copy(update={"reconciliation": foreign_reconciliation()}),
@@ -599,31 +716,43 @@ def test_snapshot_rejects_hash_consistent_foreign_reconciliation(
 
     selected_tail = portfolio_events[3:] if with_canonical_tail else ()
     with pytest.raises(PortfolioReplayError, match="reconciliation account"):
-        replay_portfolio(selected_tail, snapshot=foreign_record)
+        replay_portfolio(selected_tail, snapshot=foreign_record, authority=authority)
 
 
 def test_snapshot_tail_rejects_old_and_conflicting_events(portfolio_events) -> None:
-    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+    record, authority = checkpoint(portfolio_events[:3])
     old = portfolio_events[2]
     conflict = old.model_copy(update={"source": "another-source"})
 
     with pytest.raises(PortfolioReplayError, match="cursor"):
-        replay_portfolio((old,), snapshot=record)
+        replay_portfolio((old,), snapshot=record, authority=authority)
     with pytest.raises(PortfolioReplayError, match="conflicting"):
-        replay_portfolio((conflict,), snapshot=record)
+        replay_portfolio((conflict,), snapshot=record, authority=authority)
 
 
 def test_snapshot_tail_rejects_foreign_scope_gap_and_regression(portfolio_events) -> None:
-    record = snapshot_from_portfolio_result(replay_portfolio(portfolio_events[:3]))
+    record, authority = checkpoint(portfolio_events[:3])
 
     with pytest.raises(PortfolioReplayError, match="stream"):
-        replay_portfolio((fill(number=4, stream=OTHER_STREAM),), snapshot=record)
+        replay_portfolio(
+            (fill(number=4, stream=OTHER_STREAM),),
+            snapshot=record,
+            authority=authority,
+        )
     with pytest.raises(PortfolioReplayError, match="account"):
-        replay_portfolio((fill(number=4, account="account-2"),), snapshot=record)
+        replay_portfolio(
+            (fill(number=4, account="account-2"),),
+            snapshot=record,
+            authority=authority,
+        )
     with pytest.raises(PortfolioReplayError, match="sequence"):
-        replay_portfolio((fill(number=5),), snapshot=record)
+        replay_portfolio((fill(number=5),), snapshot=record, authority=authority)
     with pytest.raises(PortfolioReplayError, match="cursor"):
-        replay_portfolio((fill(number=2).model_copy(update={"event_id": uid(9_999)}),), snapshot=record)
+        replay_portfolio(
+            (fill(number=2).model_copy(update={"event_id": uid(9_999)}),),
+            snapshot=record,
+            authority=authority,
+        )
 
 
 def test_full_replay_rejects_distinct_canonical_bytes_for_one_event_id(portfolio_events) -> None:

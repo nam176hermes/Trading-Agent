@@ -31,6 +31,7 @@ from .models import (
     PortfolioReplayError,
     PortfolioReplayResult,
     PortfolioReplayState,
+    PortfolioSnapshotAuthority,
     PortfolioSnapshotRecord,
 )
 from .reducer import (
@@ -83,10 +84,25 @@ def _canonical_events(events: Iterable[object]) -> tuple[EventEnvelope[object], 
     return canonical
 
 
+def _extend_history_hash(previous: str, event: EventEnvelope[object]) -> str:
+    event_json = serialize_event(event)
+    material = _canonical_json(
+        {
+            "event_digest": event_digest(event_json),
+            "event_id": str(event.event_id),
+            "event_type": event.event_type,
+            "previous": previous,
+            "sequence": event.sequence,
+        }
+    )
+    return event_digest(material)
+
+
 def _canonical_state_document(
     state: PortfolioReplayState,
     canonical_snapshot: object,
     cursor: object,
+    prefix_history_hash: str,
     *,
     schema_version: str,
     reducer_version: str,
@@ -99,6 +115,7 @@ def _canonical_state_document(
                 "state": state.model_dump(mode="json"),
                 "canonical_snapshot": canonical_snapshot.model_dump(mode="json"),
                 "cursor": [item.model_dump(mode="json") for item in cursor],
+                "prefix_history_hash": prefix_history_hash,
             }
         )
     except (AttributeError, ReplayError, ValueError) as exc:
@@ -278,6 +295,7 @@ def _validate_document(document: object, *, record: bool) -> PortfolioReplayResu
         state,
         expected_snapshot,
         state.cursor,
+        document.prefix_history_hash,
         schema_version=document.schema_version,
         reducer_version=document.reducer_version,
     )
@@ -288,13 +306,14 @@ def _validate_document(document: object, *, record: bool) -> PortfolioReplayResu
     return document
 
 
-def _result(state: PortfolioReplayState) -> PortfolioReplayResult:
+def _result(state: PortfolioReplayState, prefix_history_hash: str) -> PortfolioReplayResult:
     state = _validated_state(state)
     canonical_snapshot = derive_account_snapshot(state, state.snapshot.observed_at)
     canonical_json = _canonical_state_document(
         state,
         canonical_snapshot,
         state.cursor,
+        prefix_history_hash,
         schema_version=PORTFOLIO_REPLAY_SCHEMA_VERSION,
         reducer_version=PORTFOLIO_REDUCER_VERSION,
     )
@@ -304,6 +323,7 @@ def _result(state: PortfolioReplayState) -> PortfolioReplayResult:
         state=state,
         canonical_snapshot=canonical_snapshot,
         cursor=state.cursor,
+        prefix_history_hash=prefix_history_hash,
         canonical_state_json=canonical_json,
         state_hash=event_digest(canonical_json),
     )
@@ -374,28 +394,60 @@ def _validate_tail(
         expected_sequence += 1
 
 
+def _validate_authority(
+    authority: object, snapshot: PortfolioSnapshotRecord
+) -> PortfolioSnapshotAuthority:
+    try:
+        authority = PortfolioSnapshotAuthority.model_validate(authority)
+    except (AttributeError, ValidationError, ValueError) as exc:
+        raise PortfolioReplayError("snapshot authority is invalid") from exc
+    cursor = snapshot.cursor[0]
+    if (
+        authority.schema_version != snapshot.schema_version
+        or authority.reducer_version != snapshot.reducer_version
+        or authority.account_id != snapshot.state.snapshot.account_id
+        or authority.stream_id != cursor.stream_id
+        or authority.cursor_sequence != cursor.sequence
+        or authority.snapshot_state_hash != snapshot.state_hash
+        or authority.prefix_history_hash != snapshot.prefix_history_hash
+    ):
+        raise PortfolioReplayError("snapshot authority does not match snapshot record")
+    return authority
+
+
 def replay_portfolio(
-    events: Iterable[object], *, snapshot: PortfolioSnapshotRecord | None = None
+    events: Iterable[object],
+    *,
+    snapshot: PortfolioSnapshotRecord | None = None,
+    authority: PortfolioSnapshotAuthority | None = None,
 ) -> PortfolioReplayResult:
     """Replay one strictly ordered portfolio stream without persistence or external input."""
 
+    if (snapshot is None) != (authority is None):
+        raise PortfolioReplayError("snapshot and authority must be supplied together")
     batch = _canonical_events(events)
     if snapshot is None:
         _validate_full_history(batch)
         try:
-            return _result(reduce_portfolio_events(batch))
+            prefix_history_hash = event_digest("")
+            for event in batch:
+                prefix_history_hash = _extend_history_hash(prefix_history_hash, event)
+            return _result(reduce_portfolio_events(batch), prefix_history_hash)
         except PortfolioReplayError:
             raise
         except (ValueError, ValidationError) as exc:
             raise PortfolioReplayError("portfolio replay failed") from exc
     validated_snapshot = _validate_document(snapshot, record=True)
     assert isinstance(validated_snapshot, PortfolioSnapshotRecord)
+    validated_authority = _validate_authority(authority, validated_snapshot)
     _validate_tail(batch, validated_snapshot)
     state = validated_snapshot.state
+    prefix_history_hash = validated_authority.prefix_history_hash
     try:
         for event in batch:
             state = apply_portfolio_event(state, event)
-        return _result(state)
+            prefix_history_hash = _extend_history_hash(prefix_history_hash, event)
+        return _result(state, prefix_history_hash)
     except PortfolioReplayError:
         raise
     except (ValueError, ValidationError) as exc:
@@ -413,9 +465,29 @@ def snapshot_from_portfolio_result(result: PortfolioReplayResult) -> PortfolioSn
         state=validated.state,
         canonical_snapshot=validated.canonical_snapshot,
         cursor=validated.cursor,
+        prefix_history_hash=validated.prefix_history_hash,
         canonical_state_json=validated.canonical_state_json,
         state_hash=validated.state_hash,
     )
     validated_record = _validate_document(record, record=True)
     assert isinstance(validated_record, PortfolioSnapshotRecord)
     return validated_record
+
+
+def snapshot_authority_from_result(
+    result: PortfolioReplayResult,
+) -> PortfolioSnapshotAuthority:
+    """Issue an independent commitment only from a fully revalidated replay result."""
+
+    validated = _validate_document(result, record=False)
+    assert isinstance(validated, PortfolioReplayResult)
+    cursor = validated.cursor[0]
+    return PortfolioSnapshotAuthority(
+        schema_version=validated.schema_version,
+        reducer_version=validated.reducer_version,
+        account_id=validated.state.snapshot.account_id,
+        stream_id=cursor.stream_id,
+        cursor_sequence=cursor.sequence,
+        snapshot_state_hash=validated.state_hash,
+        prefix_history_hash=validated.prefix_history_hash,
+    )

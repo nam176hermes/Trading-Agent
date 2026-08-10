@@ -64,6 +64,7 @@ EXPECTED = {
     "PortfolioReconciliationEntry.json",
     "PortfolioReplayResult.json",
     "PortfolioSnapshotRecord.json",
+    "PortfolioSnapshotAuthority.json",
     "EventEnvelope_PortfolioOpeningEntry_.json",
     "EventEnvelope_PortfolioFillEntry_.json",
     "EventEnvelope_PortfolioMarkEntry_.json",
@@ -383,3 +384,33 @@ def test_replay_public_contracts_require_versioned_canonical_hash_fields(filenam
     schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
     assert {"schema_version", "reducer_version", "canonical_state_json", "state_hash"} <= set(schema["required"])
     assert schema["properties"]["state_hash"]["pattern"] == "^[0-9a-f]{64}$"
+
+
+@pytest.mark.parametrize(
+    "filename", ("PortfolioReplayResult.json", "PortfolioSnapshotRecord.json")
+)
+def test_portfolio_replay_contracts_bind_prefix_history(filename: str) -> None:
+    schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+
+    assert "prefix_history_hash" in schema["required"]
+    assert schema["properties"]["prefix_history_hash"]["pattern"] == "^[0-9a-f]{64}$"
+
+
+def test_portfolio_snapshot_authority_contract_is_strict_and_complete() -> None:
+    schema = json.loads(
+        (SCHEMA_ROOT / "PortfolioSnapshotAuthority.json").read_text(encoding="utf-8")
+    )
+
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {
+        "schema_version",
+        "reducer_version",
+        "account_id",
+        "stream_id",
+        "cursor_sequence",
+        "snapshot_state_hash",
+        "prefix_history_hash",
+    }
+    assert schema["properties"]["cursor_sequence"]["exclusiveMinimum"] == 0
+    for field in ("snapshot_state_hash", "prefix_history_hash"):
+        assert schema["properties"][field]["pattern"] == "^[0-9a-f]{64}$"

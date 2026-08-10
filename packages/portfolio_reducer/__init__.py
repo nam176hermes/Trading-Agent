@@ -10,11 +10,16 @@ from .models import (
     PortfolioReplayError,
     PortfolioReplayResult,
     PortfolioReplayState,
+    PortfolioSnapshotAuthority,
     PortfolioSnapshotRecord,
     PortfolioStreamCursor,
     PortfolioWorkingSnapshot,
 )
-from .replay import replay_portfolio, snapshot_from_portfolio_result
+from .replay import (
+    replay_portfolio,
+    snapshot_authority_from_result,
+    snapshot_from_portfolio_result,
+)
 from .reducer import apply_portfolio_event, derive_account_snapshot, reduce_portfolio_events
 
 __all__ = [
@@ -27,6 +32,7 @@ __all__ = [
     "PortfolioReplayError",
     "PortfolioReplayResult",
     "PortfolioReplayState",
+    "PortfolioSnapshotAuthority",
     "PortfolioSnapshotRecord",
     "PortfolioStreamCursor",
     "PortfolioWorkingSnapshot",
@@ -34,5 +40,6 @@ __all__ = [
     "derive_account_snapshot",
     "reduce_portfolio_events",
     "replay_portfolio",
+    "snapshot_authority_from_result",
     "snapshot_from_portfolio_result",
 ]

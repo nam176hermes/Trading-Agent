@@ -1491,6 +1491,11 @@
       "title": "Cursor",
       "type": "array"
     },
+    "prefix_history_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Prefix History Hash",
+      "type": "string"
+    },
     "reducer_version": {
       "const": "portfolio-reducer-v1",
       "title": "Reducer Version",
@@ -1516,6 +1521,7 @@
     "state",
     "canonical_snapshot",
     "cursor",
+    "prefix_history_hash",
     "canonical_state_json",
     "state_hash"
   ],
