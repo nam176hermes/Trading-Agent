@@ -121,13 +121,13 @@ order is not malformed: it produces a `MISMATCH` finding.
 
 `SandboxReconciliationResult` contains the status, the snapshot logical time,
 an ordered tuple of `SandboxOrderReconciliation` records, an ordered tuple of
-pending report IDs, ordered `unattributed_report_ids`, an ordered tuple of
-`unattributed_reason_codes`, and a canonical digest.  Unattributed values
-represent valid report evidence that names no order in the snapshot, or other
-valid whole-request contradictions that cannot honestly be assigned to a
-snapshot order.  Result order is by UUID integer order, not caller input order.
-Its digest is derived from existing canonical model serialization, never from
-a JSON library default or ambient Decimal context.
+pending report IDs, ordered `unattributed_event_ids`, an ordered tuple of
+`unattributed_reason_codes`, and a canonical digest. Unattributed values
+represent canonical envelope event IDs that name no order in the snapshot, or
+other valid whole-request contradictions that cannot honestly be assigned to a
+snapshot order. Result order is by UUID integer order, not caller input order.
+Its digest is derived from existing canonical model serialization, never from a
+JSON library default or ambient Decimal context.
 
 Each per-order record carries the order ID, the final observed and expected
 `OrderState`, the observed and pending report IDs, and a canonical tuple of
