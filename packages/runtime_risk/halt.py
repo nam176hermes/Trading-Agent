@@ -275,11 +275,16 @@ def replay_global_halt_authority(
         state: GlobalHaltState | None = None
         prepared: dict[UUID, PreparedSubmitPermit] = {}
         consumed: list[UUID] = []
+        event_digests: dict[UUID, str] = {}
         head_event_id: UUID | None = None
         head_digest: str | None = None
         for expected_sequence, (event, text) in enumerate(selected, start=1):
             if event.sequence != expected_sequence:
                 raise ValueError("global halt authority sequence is not contiguous")
+            digest = event_digest(text)
+            if event.event_id in event_digests:
+                raise ValueError("global halt authority event_id is not unique")
+            event_digests[event.event_id] = digest
             _require_event_bindings(event)
             payload = event.payload
             if type(payload) is GlobalHaltTransition:
@@ -319,6 +324,11 @@ def replay_global_halt_authority(
                     or payload.halt_stream_id != stream_id
                     or payload.halt_generation != state.generation
                     or payload.halt_transition_digest != state.transition_digest
+                    or not (
+                        authority.prepared_at
+                        <= payload.consumed_at
+                        <= authority.expires_at
+                    )
                 ):
                     raise ValueError("consumed permit contradicts halt authority")
                 del prepared[payload.permit_id]
@@ -326,7 +336,7 @@ def replay_global_halt_authority(
             else:
                 raise ValueError("foreign payload in global halt authority stream")
             head_event_id = event.event_id
-            head_digest = event_digest(text)
+            head_digest = digest
         return GlobalHaltReplay(
             state=state,
             prepared=tuple(prepared.values()),
@@ -487,6 +497,171 @@ def _new_transition_payload(
     )
 
 
+def _duration_microseconds(value: timedelta) -> int:
+    return (
+        value.days * 86_400_000_000
+        + value.seconds * 1_000_000
+        + value.microseconds
+    )
+
+
+def _recovery_bindings_match(
+    *,
+    authorization: GlobalHaltRecoveryAuthorization,
+    state: GlobalHaltState,
+    observation: RuntimeRiskObservation,
+    policy: RuntimeRiskPolicy,
+    safety: GlobalSafetyObservation,
+    decided_at: datetime,
+) -> bool:
+    observation_age = decided_at - observation.observed_at
+    observation_is_current = (
+        _duration_microseconds(observation_age) >= 0
+        and _duration_microseconds(observation_age)
+        <= policy.portfolio_max_age_seconds * 1_000_000
+    )
+    return all(
+        (
+            authorization.halted_generation == state.generation,
+            authorization.halted_transition_digest == state.transition_digest,
+            authorization.runtime_policy_digest == canonical_model_digest(policy),
+            authorization.runtime_observation_digest
+            == canonical_model_digest(observation),
+            authorization.portfolio_digest
+            == canonical_model_digest(observation.portfolio),
+            authorization.safety_binding_digest
+            == global_safety_binding_digest(safety),
+            state.transitioned_at
+            <= observation.observed_at
+            <= authorization.issued_at
+            <= safety.observed_at
+            <= decided_at,
+            authorization.issued_at <= decided_at < authorization.expires_at,
+            observation_is_current,
+            not evaluate_global_breaker(
+                observation=observation,
+                policy=policy,
+                safety=safety,
+            ),
+        )
+    )
+
+
+def _verify_recovery_authorization(
+    *,
+    verifier: GlobalHaltRecoveryAuthorityVerifier,
+    authorization: GlobalHaltRecoveryAuthorization,
+    state: GlobalHaltState,
+    observation: RuntimeRiskObservation,
+    policy: RuntimeRiskPolicy,
+    safety: GlobalSafetyObservation,
+    decided_at: datetime,
+) -> bool:
+    try:
+        verified = verifier.verify(
+            authorization=authorization,
+            state=state,
+            observation=observation,
+            policy=policy,
+            safety=safety,
+            verified_at=decided_at,
+        )
+    except _REPOSITORY_ERRORS as exc:
+        raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
+    try:
+        verified = _canonical(
+            verified, GlobalHaltRecoveryAuthorization, "verified authorization"
+        )
+        exact_verifier_result = canonical_model_json(verified) == canonical_model_json(
+            authorization
+        )
+    except _CANONICAL_ERRORS as exc:
+        raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
+    return exact_verifier_result and _recovery_bindings_match(
+        authorization=authorization,
+        state=state,
+        observation=observation,
+        policy=policy,
+        safety=safety,
+        decided_at=decided_at,
+    )
+
+
+def _already_durable_recovery(
+    *,
+    events: tuple[EventEnvelope[object], ...],
+    replayed: GlobalHaltReplay,
+    stream_id: UUID,
+    observation: RuntimeRiskObservation,
+    policy: RuntimeRiskPolicy,
+    safety: GlobalSafetyObservation,
+    authorization: GlobalHaltRecoveryAuthorization,
+    verifier: GlobalHaltRecoveryAuthorityVerifier,
+    transition_id: UUID,
+    event_id: UUID,
+    decided_at: datetime,
+) -> GlobalHaltState | None:
+    current = replayed.state
+    if (
+        current is None
+        or current.status is not GlobalHaltStatus.ACTIVE
+        or current.transition_event_id != event_id
+    ):
+        return None
+    selected: list[EventEnvelope[object]] = []
+    match: EventEnvelope[object] | None = None
+    match_text: str | None = None
+    for supplied in events:
+        event, text = _canonical_envelope(supplied)
+        if event.stream_id != stream_id:
+            continue
+        selected.append(event)
+        if event.event_id == event_id:
+            match = event
+            match_text = text
+    if (
+        match is None
+        or match_text is None
+        or type(match.payload) is not GlobalHaltTransition
+    ):
+        return None
+    prefix = tuple(event for event in selected if event.sequence < match.sequence)
+    prior_replay = replay_global_halt_authority(events=prefix, stream_id=stream_id)
+    prior = prior_replay.state
+    if prior is None or prior.status is not GlobalHaltStatus.HALTED:
+        return None
+    if not _verify_recovery_authorization(
+        verifier=verifier,
+        authorization=authorization,
+        state=prior,
+        observation=observation,
+        policy=policy,
+        safety=safety,
+        decided_at=decided_at,
+    ):
+        return None
+    expected_payload = _new_transition_payload(
+        replayed=prior_replay,
+        observation=observation,
+        policy=policy,
+        safety=safety,
+        transition_id=transition_id,
+        decided_at=decided_at,
+        status=GlobalHaltStatus.ACTIVE,
+        reasons=(GlobalHaltReasonCode.RECOVERY_AUTHORIZED,),
+        recovery_authorization_digest=authorization.authorization_digest,
+    )
+    expected_event = _transition_event(
+        stream_id=stream_id,
+        sequence=match.sequence,
+        event_id=event_id,
+        payload=expected_payload,
+    )
+    if serialize_event(expected_event) != match_text:
+        return None
+    return current
+
+
 def record_global_halt_observation(
     *,
     repository: EventLedgerRepository,
@@ -596,40 +771,38 @@ def recover_global_halt(
     except GlobalHaltAuthorityError as exc:
         raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
     state = replayed.state
+    if state is not None and state.status is GlobalHaltStatus.ACTIVE:
+        try:
+            durable = _already_durable_recovery(
+                events=events,
+                replayed=replayed,
+                stream_id=stream_id,
+                observation=observation,
+                policy=policy,
+                safety=safety,
+                authorization=authorization,
+                verifier=verifier,
+                transition_id=transition_id,
+                event_id=event_id,
+                decided_at=decided_at,
+            )
+        except GlobalHaltRecoveryError:
+            raise
+        except _CANONICAL_ERRORS as exc:
+            raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
+        if durable is not None:
+            return durable
     if state is None or state.status is not GlobalHaltStatus.HALTED:
         raise GlobalHaltRecoveryError(_RECOVERY_FAILURE)
-    try:
-        verified = verifier.verify(
-            authorization=authorization,
-            state=state,
-            observation=observation,
-            policy=policy,
-            safety=safety,
-            verified_at=decided_at,
-        )
-    except _REPOSITORY_ERRORS as exc:
-        raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
-    try:
-        verified = _canonical(
-            verified, GlobalHaltRecoveryAuthorization, "verified authorization"
-        )
-        exact_verifier_result = canonical_model_json(verified) == canonical_model_json(
-            authorization
-        )
-    except _CANONICAL_ERRORS as exc:
-        raise GlobalHaltRecoveryError(_RECOVERY_FAILURE) from exc
-    expected_bindings = (
-        authorization.halted_generation == state.generation,
-        authorization.halted_transition_digest == state.transition_digest,
-        authorization.runtime_policy_digest == canonical_model_digest(policy),
-        authorization.runtime_observation_digest == canonical_model_digest(observation),
-        authorization.portfolio_digest == canonical_model_digest(observation.portfolio),
-        authorization.safety_binding_digest == global_safety_binding_digest(safety),
-        authorization.issued_at <= safety.observed_at <= decided_at,
-        authorization.issued_at <= decided_at < authorization.expires_at,
-        not evaluate_global_breaker(observation=observation, policy=policy, safety=safety),
-    )
-    if not exact_verifier_result or not all(expected_bindings):
+    if not _verify_recovery_authorization(
+        verifier=verifier,
+        authorization=authorization,
+        state=state,
+        observation=observation,
+        policy=policy,
+        safety=safety,
+        decided_at=decided_at,
+    ):
         raise GlobalHaltRecoveryError(_RECOVERY_FAILURE)
     try:
         payload = _new_transition_payload(

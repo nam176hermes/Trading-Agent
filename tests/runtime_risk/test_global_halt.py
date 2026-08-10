@@ -572,6 +572,7 @@ def consumed_event(
     *,
     event_id: UUID = uid(738),
     sequence: int = 3,
+    consumed_at: datetime = NOW + timedelta(seconds=2),
 ) -> EventEnvelope[SubmitPermitConsumed]:
     payload = SubmitPermitConsumed(
         permit_id=prepared.permit_id,
@@ -579,7 +580,7 @@ def consumed_event(
         halt_stream_id=prepared.halt_stream_id,
         halt_generation=prepared.halt_generation,
         halt_transition_digest=prepared.halt_transition_digest,
-        consumed_at=NOW + timedelta(seconds=2),
+        consumed_at=consumed_at,
         schema_version="submit-permit-consumed-v1",
     )
     return EventEnvelope[SubmitPermitConsumed](
@@ -635,6 +636,87 @@ def test_global_halt_replay_rejects_consume_before_prepare() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("consumed_at", "accepted"),
+    (
+        (NOW + timedelta(microseconds=999_999), False),
+        (NOW + timedelta(seconds=1), True),
+        (NOW + timedelta(seconds=6), True),
+        (NOW + timedelta(seconds=6, microseconds=1), False),
+    ),
+    ids=(
+        "before-prepared-at",
+        "exact-prepared-at",
+        "exact-expiry",
+        "after-expiry",
+    ),
+)
+def test_global_halt_replay_enforces_submit_permit_consumption_window(
+    consumed_at: datetime,
+    accepted: bool,
+) -> None:
+    ledger = InMemoryEventLedger()
+    state = initialize(ledger)
+    first = ledger.load_events()[0]
+    prepared_envelope = prepared_event(state)
+    prepared = replay_global_halt_authority(
+        events=(first, prepared_envelope), stream_id=STREAM_ID
+    ).prepared[0]
+    events = (
+        first,
+        prepared_envelope,
+        consumed_event(prepared, consumed_at=consumed_at),
+    )
+    if accepted:
+        assert replay_global_halt_authority(
+            events=events, stream_id=STREAM_ID
+        ).consumed_permit_ids == (prepared.permit_id,)
+    else:
+        with pytest.raises(GlobalHaltAuthorityError):
+            replay_global_halt_authority(events=events, stream_id=STREAM_ID)
+
+
+@pytest.mark.parametrize("second_kind", ("transition", "permit"))
+def test_global_halt_replay_rejects_reused_envelope_event_id(
+    second_kind: str,
+) -> None:
+    ledger = InMemoryEventLedger()
+    active = initialize(ledger)
+    first = ledger.load_events()[0]
+    if second_kind == "permit":
+        second: EventEnvelope[object] = prepared_event(
+            active,
+            event_id=first.event_id,
+        )
+    else:
+        breach = runtime_observation(daily_pnl=money("-1001"))
+        payload = GlobalHaltTransition(
+            transition_id=uid(739),
+            prior_generation=active.generation,
+            prior_transition_digest=active.transition_digest,
+            next_generation=active.generation + 1,
+            next_status=GlobalHaltStatus.HALTED,
+            reason_codes=(GlobalHaltReasonCode.DAILY_LOSS_LIMIT,),
+            runtime_policy_digest=canonical_model_digest(runtime_policy()),
+            runtime_observation_digest=canonical_model_digest(breach),
+            portfolio_digest=canonical_model_digest(breach.portfolio),
+            safety_observation_digest=canonical_model_digest(safety_observation()),
+            recovery_authorization_digest=None,
+            decided_at=NOW + timedelta(seconds=1),
+            schema_version="global-halt-transition-v1",
+        )
+        second = transition_event(
+            payload,
+            event_id=first.event_id,
+            sequence=2,
+        )
+    with pytest.raises(GlobalHaltAuthorityError):
+        replay_global_halt_authority(
+            events=(first, second),
+            stream_id=STREAM_ID,
+        )
+
+
 def recovery_authorization(
     state: GlobalHaltState,
     *,
@@ -685,6 +767,9 @@ def recover(
     policy=None,
     safety=None,
     verifier: object | None = None,
+    transition_id: UUID = uid(741),
+    event_id: UUID = uid(742),
+    decided_at: datetime = NOW + timedelta(seconds=3),
 ) -> GlobalHaltState:
     return recover_global_halt(
         repository=ledger,
@@ -694,9 +779,9 @@ def recover(
         safety=safety or safety_observation(observed_at=NOW + timedelta(seconds=2)),
         authorization=authorization,
         verifier=verifier or ExactVerifier(),
-        transition_id=uid(741),
-        event_id=uid(742),
-        decided_at=NOW + timedelta(seconds=3),
+        transition_id=transition_id,
+        event_id=event_id,
+        decided_at=decided_at,
     )
 
 
@@ -745,6 +830,96 @@ def test_exact_verified_global_halt_recovery_rotates_generation() -> None:
     assert recovered.reason_codes == (GlobalHaltReasonCode.RECOVERY_AUTHORIZED,)
     assert recovered.prior_transition_event_id == halted.transition_event_id
     assert recovered.prior_transition_digest == halted.transition_digest
+    assert len(ledger.load_events()) == 2
+
+
+def test_global_halt_recovery_rejects_runtime_observation_after_decision() -> None:
+    ledger, halted = halted_ledger()
+    future = runtime_observation(observed_at=NOW + timedelta(seconds=4))
+    authorization = recovery_authorization(halted, observation=future)
+    with pytest.raises(GlobalHaltRecoveryError):
+        recover(ledger, authorization, observation=future)
+
+
+def test_global_halt_recovery_rejects_stale_runtime_observation() -> None:
+    ledger, halted = halted_ledger()
+    authorization = recovery_authorization(halted)
+    with pytest.raises(GlobalHaltRecoveryError):
+        recover(
+            ledger,
+            authorization,
+            decided_at=NOW + timedelta(seconds=11),
+        )
+
+
+def test_global_halt_recovery_rejects_authorization_issued_before_halt() -> None:
+    ledger, halted = halted_ledger()
+    authorization = recovery_authorization(
+        halted,
+        issued_at=NOW - timedelta(seconds=1),
+        expires_at=NOW + timedelta(minutes=1),
+    )
+    with pytest.raises(GlobalHaltRecoveryError):
+        recover(ledger, authorization)
+
+
+def test_exact_global_halt_recovery_retry_returns_same_durable_state() -> None:
+    ledger, halted = halted_ledger()
+    authorization = recovery_authorization(halted)
+    first = recover(ledger, authorization)
+    second = recover(ledger, authorization)
+    assert second == first
+    assert len(ledger.load_events()) == 2
+
+
+def test_global_halt_recovery_rejects_conflicting_same_event_id_retry() -> None:
+    ledger, halted = halted_ledger()
+    authorization = recovery_authorization(halted)
+    recovered = recover(ledger, authorization)
+    with pytest.raises(GlobalHaltRecoveryError):
+        recover(
+            ledger,
+            authorization,
+            transition_id=uid(745),
+            event_id=recovered.transition_event_id,
+        )
+
+
+class PostCommitReadFailureLedger(InMemoryEventLedger):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_read_after_next_append = False
+        self._fail_next_read = False
+
+    def append(
+        self, event: EventEnvelope[object], outbox: OutboxIntent
+    ) -> AppendOutcome:
+        outcome = super().append(event, outbox)
+        if self.fail_read_after_next_append:
+            self.fail_read_after_next_append = False
+            self._fail_next_read = True
+        return outcome
+
+    def load_events(self) -> tuple[EventEnvelope[object], ...]:
+        if self._fail_next_read:
+            self._fail_next_read = False
+            raise RuntimeError("ambiguous post-commit read failure")
+        return super().load_events()
+
+
+def test_global_halt_recovery_retry_resolves_ambiguous_post_commit_failure() -> None:
+    ledger = PostCommitReadFailureLedger()
+    halted = initialize(
+        ledger,
+        observation=runtime_observation(daily_pnl=money("-1001")),
+    )
+    authorization = recovery_authorization(halted)
+    ledger.fail_read_after_next_append = True
+    with pytest.raises(GlobalHaltRecoveryError):
+        recover(ledger, authorization)
+    recovered = recover(ledger, authorization)
+    assert recovered.status is GlobalHaltStatus.ACTIVE
+    assert recovered.generation == halted.generation + 1
     assert len(ledger.load_events()) == 2
 
 
