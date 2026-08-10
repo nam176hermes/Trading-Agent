@@ -20,9 +20,9 @@ from packages.domain.orders import (
 from packages.event_ledger import EventLedgerRepository, OutboxIntent, deserialize_event, serialize_event
 from packages.event_ledger.models import AppendOutcome
 from packages.runtime_risk import (
-    GlobalHaltAuthorityError,
     GlobalSafetyAuthorityVerifier,
     SubmitPermitConsumptionError,
+    canonical_model_digest,
     consume_submit_permit,
 )
 
@@ -113,6 +113,7 @@ class SandboxExecutionClient:
 
     def submit(self, request: SandboxSubmitRequest) -> SandboxCommandResult:
         request = self._canonical_submit_request(request)
+        self._require_exact_permit_intent(request)
         plan = self._require_plan(request.command_id, SandboxCommandKind.SUBMIT, request.order_id)
         self._require_connected_and_unused_client_order_id(
             request.order_intent.client_order_id, request.order_id
@@ -129,7 +130,7 @@ class SandboxExecutionClient:
                 consumed_event_id=request.consumed_event_id,
                 consumed_at=request.submitted_at,
             )
-        except (GlobalHaltAuthorityError, SubmitPermitConsumptionError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        except SubmitPermitConsumptionError as exc:
             raise SandboxExecutionError("submit authority consumption failed") from exc
         initial_order = SandboxOrderSnapshot(
             order_id=request.order_id,
@@ -265,6 +266,11 @@ class SandboxExecutionClient:
     def _canonical_submit_request(self, request: SandboxSubmitRequest) -> SandboxSubmitRequest:
         return _canonical_model(request, SandboxSubmitRequest, "submit request")
 
+    @staticmethod
+    def _require_exact_permit_intent(request: SandboxSubmitRequest) -> None:
+        if canonical_model_digest(request.order_intent) != request.permit.intent_digest:
+            raise SandboxExecutionError("submit order intent does not match permit")
+
     def _require_plan(
         self, command_id: UUID, kind: SandboxCommandKind, order_id: UUID | None
     ) -> SandboxCommandPlan:
@@ -304,7 +310,6 @@ class SandboxExecutionClient:
         for report, canonical_event in planned_reports:
             event = _canonical_envelope(canonical_event)
             if type(event.payload) is OrderEvent:
-                previous_status = next_order.venue_state.status
                 next_order = SandboxOrderSnapshot(
                     order_id=next_order.order_id,
                     client_order_id=next_order.client_order_id,
@@ -314,8 +319,7 @@ class SandboxExecutionClient:
                 )
                 if (
                     replacement_order_intent is not None
-                    and previous_status is OrderStatus.ACCEPTED
-                    and event.payload.target_status is OrderStatus.PENDING_UPDATE
+                    and next_order.venue_state.status is OrderStatus.PENDING_UPDATE
                 ):
                     replacement_ready = True
                 elif (

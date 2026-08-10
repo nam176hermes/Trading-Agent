@@ -7,7 +7,8 @@ from uuid import UUID
 
 import pytest
 
-from packages.domain import EventEnvelope, OrderEvent, OrderStatus, Price
+import packages.execution_sandbox.client as sandbox_client_module
+from packages.domain import EventEnvelope, OrderEvent, OrderQuantity, OrderStatus, Price
 from packages.domain.runtime_halt import SubmitPermitConsumed
 from packages.event_ledger import serialize_event
 from packages.execution_sandbox import (
@@ -172,6 +173,39 @@ def test_altered_permit_is_rejected_before_any_venue_effect(
     assert client.snapshot().queued_reports == ()
 
 
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        lambda case: case.intent.model_copy(
+            update={"limit_price": Price(Decimal("101"), case.intent.limit_price.currency)}
+        ),
+        lambda case: case.intent.model_copy(
+            update={"quantity": OrderQuantity(Decimal("2"), 3)}
+        ),
+    ),
+    ids=("price", "quantity"),
+)
+def test_submit_rejects_a_different_intent_with_the_permitted_order_identities(
+    replacement: Any,
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    client = _client(prepared_case, _accepted_submit_scenario(submitted_envelope))
+    request = _submit_request(prepared_case).model_copy(
+        update={"order_intent": replacement(prepared_case)}
+    )
+
+    with pytest.raises(SandboxExecutionError):
+        client.submit(request)
+
+    assert not any(
+        type(event.payload) is SubmitPermitConsumed
+        for event in prepared_case.ledger.load_events()
+    )
+    assert client.snapshot().orders == ()
+    assert client.snapshot().queued_reports == ()
+
+
 def test_stale_safety_is_rejected_before_any_venue_effect(
     prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
 ) -> None:
@@ -184,6 +218,50 @@ def test_stale_safety_is_rejected_before_any_venue_effect(
         client.submit(request)
 
     assert client.snapshot().orders == ()
+
+
+def test_changed_safety_binding_is_rejected_before_any_venue_effect(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    client = _client(prepared_case, _accepted_submit_scenario(submitted_envelope))
+    request = _submit_request(prepared_case).model_copy(
+        update={
+            "current_safety": prepared_case.safety.model_copy(
+                update={"source_fingerprint": "b" * 64}
+            )
+        }
+    )
+
+    with pytest.raises(SandboxExecutionError):
+        client.submit(request)
+
+    assert not any(
+        type(event.payload) is SubmitPermitConsumed
+        for event in prepared_case.ledger.load_events()
+    )
+    assert client.snapshot().orders == ()
+    assert client.snapshot().queued_reports == ()
+
+
+def test_submit_allows_unexpected_consumption_faults_to_propagate(
+    monkeypatch: pytest.MonkeyPatch,
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    client = _client(prepared_case, _accepted_submit_scenario(submitted_envelope))
+
+    def unexpected_attribute_error(**_: object) -> object:
+        raise AttributeError("unexpected consumption fault")
+
+    monkeypatch.setattr(
+        sandbox_client_module, "consume_submit_permit", unexpected_attribute_error
+    )
+
+    with pytest.raises(AttributeError, match="unexpected consumption fault"):
+        client.submit(_submit_request(prepared_case))
+
+    assert client.snapshot().orders == ()
+    assert client.snapshot().queued_reports == ()
 
 
 def test_halted_authority_is_rejected_before_any_venue_effect(
@@ -313,6 +391,44 @@ def test_modify_uses_replacement_intent_only_after_pending_update_is_accepted(
     assert client.snapshot().orders[0].order_intent == replacement
     client.drain_reports()
     assert client.snapshot().orders[0].observed_state.status is OrderStatus.ACCEPTED
+
+
+@pytest.mark.parametrize("prior_status", (OrderStatus.PARTIALLY_FILLED, OrderStatus.TRIGGERED))
+def test_modify_installs_replacement_after_each_valid_pending_update_path(
+    prior_status: OrderStatus,
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    scenario = _scenario(
+        (
+            _command(100, SandboxCommandKind.SUBMIT, (20, 21, 22)),
+            _command(101, SandboxCommandKind.MODIFY, (23, 24)),
+        ),
+        (
+            _order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED),
+            _order_report(submitted_envelope, report_id=21, event_id=101, sequence=2, status=OrderStatus.ACCEPTED),
+            _order_report(submitted_envelope, report_id=22, event_id=102, sequence=3, status=prior_status),
+            _order_report(submitted_envelope, report_id=23, event_id=103, sequence=4, status=OrderStatus.PENDING_UPDATE),
+            _order_report(submitted_envelope, report_id=24, event_id=104, sequence=5, status=OrderStatus.ACCEPTED),
+        ),
+    )
+    client = _client(prepared_case, scenario)
+    client.submit(_submit_request(prepared_case))
+    client.drain_reports()
+    replacement = prepared_case.intent.model_copy(
+        update={"limit_price": Price(Decimal("101"), prepared_case.intent.limit_price.currency)}
+    )
+
+    client.modify(
+        SandboxModifyRequest(
+            command_id=uid(101),
+            order_id=uid(1),
+            replacement_order_intent=replacement,
+            requested_at=NOW,
+        )
+    )
+
+    assert client.snapshot().orders[0].order_intent == replacement
 
 
 @pytest.mark.parametrize(
