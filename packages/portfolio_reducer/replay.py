@@ -131,6 +131,19 @@ def _validated_state(state: object) -> PortfolioReplayState:
         raise PortfolioReplayError("snapshot cursor must contain exactly one portfolio stream")
     if len(state.applied_events) != state.cursor[0].sequence:
         raise PortfolioReplayError("snapshot applied event count does not match cursor")
+    applied_sequences: set[int] = set()
+    for item in state.applied_events:
+        if item.stream_id != state.cursor[0].stream_id:
+            raise PortfolioReplayError(
+                "snapshot applied event stream does not match cursor"
+            )
+        if item.sequence > state.cursor[0].sequence:
+            raise PortfolioReplayError(
+                "snapshot applied event sequence exceeds cursor"
+            )
+        if item.sequence in applied_sequences:
+            raise PortfolioReplayError("snapshot applied event sequence is duplicated")
+        applied_sequences.add(item.sequence)
     account_id = state.snapshot.account_id
     reconciliation = state.reconciliation
     if reconciliation is not None and (
@@ -182,6 +195,8 @@ def _validated_state(state: object) -> PortfolioReplayState:
             if (
                 identity.event_id != applied_event.event_id
                 or identity.event_digest != applied_event.digest
+                or identity.stream_id != applied_event.stream_id
+                or identity.sequence != applied_event.sequence
             ):
                 raise PortfolioReplayError(
                     f"snapshot {label} business identity metadata does not match applied event"

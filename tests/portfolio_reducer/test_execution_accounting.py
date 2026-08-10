@@ -286,8 +286,12 @@ def test_applied_events_record_payload_type_and_business_identity_at_ingress() -
     state = reduce_portfolio_events((opening(), normal))
 
     applied = {item.event_id: item for item in state.applied_events}
+    assert applied[uid(1)].stream_id == STREAM
+    assert applied[uid(1)].sequence == 1
     assert applied[uid(1)].event_type == "PortfolioOpeningEntry"
     assert applied[uid(1)].business_identity_id is None
+    assert applied[uid(2)].stream_id == STREAM
+    assert applied[uid(2)].sequence == 2
     assert applied[uid(2)].event_type == "PortfolioFillEntry"
     assert applied[uid(2)].business_identity_id == uid(20)
 

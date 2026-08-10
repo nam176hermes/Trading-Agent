@@ -228,6 +228,8 @@ def _applied_event(event: PortfolioEvent, digest: str) -> PortfolioAppliedEvent:
     return PortfolioAppliedEvent(
         event_id=event.event_id,
         digest=digest,
+        stream_id=event.stream_id,
+        sequence=event.sequence,
         event_type=type(event.payload).__name__,
         business_identity_id=_business_identity(event.payload),
     )

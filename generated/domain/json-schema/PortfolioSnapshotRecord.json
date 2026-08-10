@@ -796,11 +796,23 @@
           ],
           "title": "Event Type",
           "type": "string"
+        },
+        "sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "stream_id": {
+          "format": "uuid",
+          "title": "Stream Id",
+          "type": "string"
         }
       },
       "required": [
         "event_id",
         "digest",
+        "stream_id",
+        "sequence",
         "event_type"
       ],
       "title": "PortfolioAppliedEvent",

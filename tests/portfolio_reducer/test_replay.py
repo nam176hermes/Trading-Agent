@@ -537,6 +537,22 @@ def test_snapshot_authority_issuance_revalidates_result(portfolio_events) -> Non
         snapshot_authority_from_result(forged)
 
 
+def test_snapshot_authority_rejects_in_range_business_identity_sequence_forgery() -> None:
+    result = replay_portfolio(
+        (opening(), funding(number=2, funding_id=uid(6_900)), mark(number=3))
+    )
+    forged_identity = result.state.funding_identities[0].model_copy(
+        update={"sequence": 1}
+    )
+    forged = hash_consistent_record_with_state(
+        result,
+        result.state.model_copy(update={"funding_identities": (forged_identity,)}),
+    )
+
+    with pytest.raises(PortfolioReplayError, match="identity"):
+        snapshot_authority_from_result(forged)
+
+
 @pytest.mark.parametrize(
     "identity_kind", ["funding", "execution", "reconciliation"]
 )

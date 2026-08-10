@@ -40,6 +40,8 @@ class PortfolioStreamCursor(DomainModel):
 class PortfolioAppliedEvent(DomainModel):
     event_id: UUID
     digest: Sha256
+    stream_id: UUID
+    sequence: Annotated[int, Field(gt=0)]
     event_type: Literal[
         "PortfolioOpeningEntry",
         "PortfolioFillEntry",
