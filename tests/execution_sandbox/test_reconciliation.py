@@ -774,7 +774,66 @@ def test_conflicting_delivered_known_order_identities_are_malformed(
         queued_reports=request.snapshot.queued_reports,
     )
 
-    with pytest.raises(SandboxReconciliationError, match="conflicting delivered known event"):
+    with pytest.raises(SandboxReconciliationError, match="conflicting known event"):
+        reconcile_execution_state(
+            SandboxReconciliationRequest(
+                snapshot=malformed_snapshot,
+                observed_reports=request.observed_reports,
+            )
+        )
+
+
+def test_conflicting_queued_known_order_identities_are_malformed(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Ignoring queued identities would classify a malformed inventory as pending."""
+
+    request = reconciliation_request_factory("settled_ack")
+    original_report = request.snapshot.known_reports[0]
+    conflicting = SandboxKnownReport(
+        report_id=uid(22),
+        event=original_report.event.model_copy(update={"source": "conflicting-source"}),
+    )
+    malformed_snapshot = SandboxSnapshot(
+        connection_state=request.snapshot.connection_state,
+        current_time=request.snapshot.current_time,
+        orders=request.snapshot.orders,
+        known_reports=request.snapshot.known_reports + (conflicting,),
+        queued_reports=(
+            original(20, original_report.event),
+            original(22, conflicting.event),
+        ),
+    )
+
+    with pytest.raises(SandboxReconciliationError, match="conflicting known event"):
+        reconcile_execution_state(
+            SandboxReconciliationRequest(
+                snapshot=malformed_snapshot,
+                observed_reports=(),
+            )
+        )
+
+
+def test_conflicting_queued_and_delivered_known_order_identities_are_malformed(
+    reconciliation_request_factory: Callable[[str], SandboxReconciliationRequest],
+) -> None:
+    """Filtering queued identities must not hide conflict with a delivered duplicate."""
+
+    request = reconciliation_request_factory("settled_ack")
+    original_report = request.snapshot.known_reports[0]
+    conflicting = SandboxKnownReport(
+        report_id=uid(22),
+        event=original_report.event.model_copy(update={"source": "conflicting-source"}),
+    )
+    malformed_snapshot = SandboxSnapshot(
+        connection_state=request.snapshot.connection_state,
+        current_time=request.snapshot.current_time,
+        orders=request.snapshot.orders,
+        known_reports=request.snapshot.known_reports + (conflicting,),
+        queued_reports=(original(22, conflicting.event),),
+    )
+
+    with pytest.raises(SandboxReconciliationError, match="conflicting known event"):
         reconcile_execution_state(
             SandboxReconciliationRequest(
                 snapshot=malformed_snapshot,

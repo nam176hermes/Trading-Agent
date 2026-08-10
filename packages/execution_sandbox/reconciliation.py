@@ -77,22 +77,26 @@ def _queued_reports(
     )
 
 
-def _delivered_event_ids(snapshot: SandboxSnapshot) -> frozenset[UUID]:
-    return frozenset(_delivered_event_bytes(snapshot))
+def _known_event_bytes(snapshot: SandboxSnapshot) -> dict[UUID, str]:
+    known: dict[UUID, str] = {}
+    for report in snapshot.known_reports:
+        canonical_bytes = serialize_event(report.event)
+        previous = known.get(report.event.event_id)
+        if previous is not None and previous != canonical_bytes:
+            raise SandboxReconciliationError("conflicting known event")
+        known[report.event.event_id] = canonical_bytes
+    return known
 
 
 def _delivered_event_bytes(snapshot: SandboxSnapshot) -> dict[UUID, str]:
+    known = _known_event_bytes(snapshot)
     queued_ids = {plan.report_id for plan in snapshot.queued_reports}
-    delivered: dict[UUID, str] = {}
-    for report in snapshot.known_reports:
-        if report.report_id in queued_ids:
-            continue
-        canonical_bytes = serialize_event(report.event)
-        previous = delivered.get(report.event.event_id)
-        if previous is not None and previous != canonical_bytes:
-            raise SandboxReconciliationError("conflicting delivered known event")
-        delivered[report.event.event_id] = canonical_bytes
-    return delivered
+    delivered_ids = {
+        report.event.event_id
+        for report in snapshot.known_reports
+        if report.report_id not in queued_ids
+    }
+    return {event_id: known[event_id] for event_id in delivered_ids}
 
 
 def _replay_order_events(
