@@ -1,0 +1,81 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "authorization_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Authorization Digest",
+      "type": "string"
+    },
+    "authorization_id": {
+      "format": "uuid",
+      "title": "Authorization Id",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "halted_generation": {
+      "exclusiveMinimum": 0,
+      "title": "Halted Generation",
+      "type": "integer"
+    },
+    "halted_transition_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Halted Transition Digest",
+      "type": "string"
+    },
+    "issued_at": {
+      "format": "date-time",
+      "title": "Issued At",
+      "type": "string"
+    },
+    "operator_authority_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Operator Authority Digest",
+      "type": "string"
+    },
+    "portfolio_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Portfolio Digest",
+      "type": "string"
+    },
+    "runtime_observation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Observation Digest",
+      "type": "string"
+    },
+    "runtime_policy_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Policy Digest",
+      "type": "string"
+    },
+    "safety_binding_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Safety Binding Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "global-halt-recovery-authorization-v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "authorization_id",
+    "authorization_digest",
+    "halted_generation",
+    "halted_transition_digest",
+    "runtime_policy_digest",
+    "runtime_observation_digest",
+    "portfolio_digest",
+    "safety_binding_digest",
+    "issued_at",
+    "expires_at",
+    "operator_authority_digest",
+    "schema_version"
+  ],
+  "title": "GlobalHaltRecoveryAuthorization",
+  "type": "object"
+}

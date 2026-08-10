@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "GlobalHaltReasonCode": {
+      "enum": [
+        "SAFETY_AUTHORITY_UNKNOWN",
+        "KILL_SWITCH_ACTIVE",
+        "DAILY_LOSS_LIMIT",
+        "DRAWDOWN_LIMIT",
+        "RECOVERY_AUTHORIZED",
+        "INITIALIZED_SAFE"
+      ],
+      "title": "GlobalHaltReasonCode",
+      "type": "string"
+    },
+    "GlobalHaltStatus": {
+      "enum": [
+        "ACTIVE",
+        "HALTED"
+      ],
+      "title": "GlobalHaltStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "generation": {
+      "exclusiveMinimum": 0,
+      "title": "Generation",
+      "type": "integer"
+    },
+    "portfolio_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Portfolio Digest",
+      "type": "string"
+    },
+    "prior_transition_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Prior Transition Digest"
+    },
+    "prior_transition_event_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Prior Transition Event Id"
+    },
+    "reason_codes": {
+      "items": {
+        "$ref": "#/$defs/GlobalHaltReasonCode"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "runtime_observation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Observation Digest",
+      "type": "string"
+    },
+    "runtime_policy_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Policy Digest",
+      "type": "string"
+    },
+    "safety_observation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Safety Observation Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "global-halt-state-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/GlobalHaltStatus"
+    },
+    "stream_id": {
+      "format": "uuid",
+      "title": "Stream Id",
+      "type": "string"
+    },
+    "transition_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Transition Digest",
+      "type": "string"
+    },
+    "transition_event_id": {
+      "format": "uuid",
+      "title": "Transition Event Id",
+      "type": "string"
+    },
+    "transitioned_at": {
+      "format": "date-time",
+      "title": "Transitioned At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "stream_id",
+    "generation",
+    "status",
+    "transition_event_id",
+    "transition_digest",
+    "prior_transition_event_id",
+    "prior_transition_digest",
+    "runtime_policy_digest",
+    "runtime_observation_digest",
+    "portfolio_digest",
+    "safety_observation_digest",
+    "reason_codes",
+    "transitioned_at",
+    "schema_version"
+  ],
+  "title": "GlobalHaltState",
+  "type": "object"
+}

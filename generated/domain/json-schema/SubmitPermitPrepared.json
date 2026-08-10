@@ -1,0 +1,111 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "approval_event_id": {
+      "format": "uuid",
+      "title": "Approval Event Id",
+      "type": "string"
+    },
+    "approval_reference_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Approval Reference Digest",
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    },
+    "halt_generation": {
+      "exclusiveMinimum": 0,
+      "title": "Halt Generation",
+      "type": "integer"
+    },
+    "halt_stream_id": {
+      "format": "uuid",
+      "title": "Halt Stream Id",
+      "type": "string"
+    },
+    "halt_transition_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Halt Transition Digest",
+      "type": "string"
+    },
+    "halt_transition_event_id": {
+      "format": "uuid",
+      "title": "Halt Transition Event Id",
+      "type": "string"
+    },
+    "intent_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Intent Digest",
+      "type": "string"
+    },
+    "permit_id": {
+      "format": "uuid",
+      "title": "Permit Id",
+      "type": "string"
+    },
+    "policy_risk_decision_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Risk Decision Digest",
+      "type": "string"
+    },
+    "portfolio_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Portfolio Digest",
+      "type": "string"
+    },
+    "prepared_at": {
+      "format": "date-time",
+      "title": "Prepared At",
+      "type": "string"
+    },
+    "runtime_observation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Observation Digest",
+      "type": "string"
+    },
+    "runtime_policy_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Policy Digest",
+      "type": "string"
+    },
+    "runtime_risk_decision_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Runtime Risk Decision Digest",
+      "type": "string"
+    },
+    "safety_binding_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Safety Binding Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "submit-permit-prepared-v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "permit_id",
+    "approval_event_id",
+    "approval_reference_digest",
+    "intent_digest",
+    "policy_risk_decision_digest",
+    "runtime_risk_decision_digest",
+    "runtime_policy_digest",
+    "runtime_observation_digest",
+    "portfolio_digest",
+    "safety_binding_digest",
+    "halt_stream_id",
+    "halt_generation",
+    "halt_transition_event_id",
+    "halt_transition_digest",
+    "prepared_at",
+    "expires_at",
+    "schema_version"
+  ],
+  "title": "SubmitPermitPrepared",
+  "type": "object"
+}

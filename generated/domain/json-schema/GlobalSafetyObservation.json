@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "CanonicalKillSwitchState": {
+      "enum": [
+        "ACTIVE",
+        "INACTIVE",
+        "UNKNOWN"
+      ],
+      "title": "CanonicalKillSwitchState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "kill_switch_state": {
+      "$ref": "#/$defs/CanonicalKillSwitchState"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "global-safety-observation-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_fingerprint",
+    "kill_switch_state",
+    "observed_at",
+    "schema_version"
+  ],
+  "title": "GlobalSafetyObservation",
+  "type": "object"
+}

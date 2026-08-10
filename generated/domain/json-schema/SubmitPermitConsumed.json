@@ -1,0 +1,51 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "consumed_at": {
+      "format": "date-time",
+      "title": "Consumed At",
+      "type": "string"
+    },
+    "halt_generation": {
+      "exclusiveMinimum": 0,
+      "title": "Halt Generation",
+      "type": "integer"
+    },
+    "halt_stream_id": {
+      "format": "uuid",
+      "title": "Halt Stream Id",
+      "type": "string"
+    },
+    "halt_transition_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Halt Transition Digest",
+      "type": "string"
+    },
+    "permit_id": {
+      "format": "uuid",
+      "title": "Permit Id",
+      "type": "string"
+    },
+    "prepared_event_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Prepared Event Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "submit-permit-consumed-v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "permit_id",
+    "prepared_event_digest",
+    "halt_stream_id",
+    "halt_generation",
+    "halt_transition_digest",
+    "consumed_at",
+    "schema_version"
+  ],
+  "title": "SubmitPermitConsumed",
+  "type": "object"
+}

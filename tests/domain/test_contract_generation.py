@@ -82,6 +82,14 @@ EXPECTED = {
     "RuntimeOrderRiskDecision.json",
     "DurableOrderApprovalRef.json",
     "EventEnvelope_RuntimeOrderRiskDecision_.json",
+    "GlobalSafetyObservation.json",
+    "GlobalHaltState.json",
+    "GlobalHaltRecoveryAuthorization.json",
+    "GlobalHaltTransition.json",
+    "SubmitPermitPrepared.json",
+    "PreparedSubmitPermit.json",
+    "SubmitPermitConsumed.json",
+    "ConsumedSubmitAuthority.json",
 }
 
 LEGACY_EVENT_TYPES = {
@@ -285,6 +293,88 @@ def test_runtime_risk_schemas_publish_strict_closed_contracts() -> None:
         "type": "string",
     }
     assert "authority" not in approval["properties"]
+
+
+def test_global_halt_and_submit_authority_schemas_publish_closed_bindings() -> None:
+    expected_versions = {
+        "GlobalSafetyObservation.json": "global-safety-observation-v1",
+        "GlobalHaltState.json": "global-halt-state-v1",
+        "GlobalHaltRecoveryAuthorization.json": "global-halt-recovery-authorization-v1",
+        "GlobalHaltTransition.json": "global-halt-transition-v1",
+        "SubmitPermitPrepared.json": "submit-permit-prepared-v1",
+        "PreparedSubmitPermit.json": "prepared-submit-permit-v1",
+        "SubmitPermitConsumed.json": "submit-permit-consumed-v1",
+        "ConsumedSubmitAuthority.json": "consumed-submit-authority-v1",
+    }
+    expected_required = {
+        "GlobalSafetyObservation.json": {
+            "source_fingerprint", "kill_switch_state", "observed_at", "schema_version",
+        },
+        "GlobalHaltState.json": {
+            "stream_id", "generation", "status", "transition_event_id", "transition_digest",
+            "prior_transition_event_id", "prior_transition_digest", "runtime_policy_digest",
+            "runtime_observation_digest", "portfolio_digest", "safety_observation_digest",
+            "reason_codes", "transitioned_at", "schema_version",
+        },
+        "GlobalHaltRecoveryAuthorization.json": {
+            "authorization_id", "authorization_digest", "halted_generation",
+            "halted_transition_digest", "runtime_policy_digest", "runtime_observation_digest",
+            "portfolio_digest", "safety_binding_digest", "issued_at", "expires_at",
+            "operator_authority_digest", "schema_version",
+        },
+        "GlobalHaltTransition.json": {
+            "transition_id", "prior_generation", "prior_transition_digest", "next_generation",
+            "next_status", "reason_codes", "runtime_policy_digest",
+            "runtime_observation_digest", "portfolio_digest", "safety_observation_digest",
+            "recovery_authorization_digest", "decided_at", "schema_version",
+        },
+        "SubmitPermitPrepared.json": {
+            "permit_id", "approval_event_id", "approval_reference_digest", "intent_digest",
+            "policy_risk_decision_digest", "runtime_risk_decision_digest", "runtime_policy_digest",
+            "runtime_observation_digest", "portfolio_digest", "safety_binding_digest",
+            "halt_stream_id", "halt_generation", "halt_transition_event_id",
+            "halt_transition_digest", "prepared_at", "expires_at", "schema_version",
+        },
+        "PreparedSubmitPermit.json": {
+            "permit_id", "approval_event_id", "approval_reference_digest", "intent_digest",
+            "policy_risk_decision_digest", "runtime_risk_decision_digest", "runtime_policy_digest",
+            "runtime_observation_digest", "portfolio_digest", "safety_binding_digest",
+            "halt_stream_id", "halt_generation", "halt_transition_event_id",
+            "halt_transition_digest", "prepared_at", "expires_at", "prepared_event_id",
+            "prepared_event_digest", "schema_version",
+        },
+        "SubmitPermitConsumed.json": {
+            "permit_id", "prepared_event_digest", "halt_stream_id", "halt_generation",
+            "halt_transition_digest", "consumed_at", "schema_version",
+        },
+        "ConsumedSubmitAuthority.json": {
+            "permit_id", "prepared_event_digest", "halt_stream_id", "halt_generation",
+            "halt_transition_digest", "consumed_at", "consumed_event_id",
+            "consumed_event_digest", "schema_version",
+        },
+    }
+    digest_pattern = "^[0-9a-f]{64}$"
+
+    for filename, version in expected_versions.items():
+        schema = json.loads((SCHEMA_ROOT / filename).read_text(encoding="utf-8"))
+        assert set(schema["required"]) == expected_required[filename]
+        assert schema["properties"]["schema_version"]["const"] == version
+        for name, property_schema in schema["properties"].items():
+            if name.endswith("digest") or name == "source_fingerprint":
+                serialized = json.dumps(property_schema)
+                assert digest_pattern in serialized
+
+    state = json.loads((SCHEMA_ROOT / "GlobalHaltState.json").read_text(encoding="utf-8"))
+    transition = json.loads((SCHEMA_ROOT / "GlobalHaltTransition.json").read_text(encoding="utf-8"))
+    permit = json.loads((SCHEMA_ROOT / "SubmitPermitPrepared.json").read_text(encoding="utf-8"))
+    assert state["properties"]["generation"]["exclusiveMinimum"] == 0
+    assert transition["properties"]["next_generation"]["exclusiveMinimum"] == 0
+    assert permit["properties"]["halt_generation"]["exclusiveMinimum"] == 0
+    assert state["$defs"]["GlobalHaltStatus"]["enum"] == ["ACTIVE", "HALTED"]
+    assert state["$defs"]["GlobalHaltReasonCode"]["enum"] == [
+        "SAFETY_AUTHORITY_UNKNOWN", "KILL_SWITCH_ACTIVE", "DAILY_LOSS_LIMIT",
+        "DRAWDOWN_LIMIT", "RECOVERY_AUTHORIZED", "INITIALIZED_SAFE",
+    ]
 
 
 def test_every_runtime_risk_schema_has_the_exact_closed_public_shape() -> None:
