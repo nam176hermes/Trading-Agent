@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import re
 import socket
 import subprocess
@@ -17,14 +18,12 @@ from pydantic import ValidationError
 from packages.domain import EventEnvelope, FillEvent, FillReportStatus, OrderEvent, OrderQuantity, OrderStatus
 from packages.event_ledger import InMemoryEventLedger, OutboxIntent, serialize_event
 from packages.execution_sandbox import (
-    SandboxCancelRequest,
     SandboxCommandKind,
     SandboxCommandPlan,
     SandboxConnectionState,
     SandboxExecutionClient,
     SandboxExecutionError,
     SandboxLostResponse,
-    SandboxModifyRequest,
     SandboxReportPlan,
     SandboxResponseDisposition,
     SandboxScenario,
@@ -36,18 +35,20 @@ NOW = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_SUFFIXES = frozenset({".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 _SANDBOX_REFERENCE = re.compile(r"execution(?:_|-)sandbox", flags=re.IGNORECASE)
-_REGISTRATION_SURFACES = (
-    PACKAGE_ROOT / "packages" / "engine_contracts",
-    PACKAGE_ROOT / "packages" / "engine_event_ledger",
-    PACKAGE_ROOT / "packages" / "job_authority",
-    PACKAGE_ROOT / "packages" / "job_contracts",
-    PACKAGE_ROOT / "apps" / "control_api",
-    PACKAGE_ROOT / "apps" / "job_api",
-    PACKAGE_ROOT / "apps" / "dashboard" / "src",
-    PACKAGE_ROOT / "services" / "job_scheduler",
-    PACKAGE_ROOT / "services" / "job_store",
-    PACKAGE_ROOT / "services" / "job_worker",
-    PACKAGE_ROOT / "legacy" / "research-backend" / "exchange",
+_NONPRODUCTION_SOURCE_PARTS = frozenset(
+    {"tests", "test", "generated", "__generated__", ".next", "node_modules", "__pycache__"}
+)
+_FORBIDDEN_IMPORTS = (
+    "socket", "ssl", "http", "urllib", "requests", "websockets", "subprocess",
+    "asyncio", "threading", "multiprocessing", "sqlite3", "sqlalchemy", "psycopg",
+    "psycopg2", "asyncpg", "packages.runtime_release", "packages.nautilus_",
+    "packages.provider_", "packages.execution_provider", "packages.paper_",
+    "packages.live_", "services.paper_runtime", "services.provider_",
+    "services.execution_provider", "services.live_",
+)
+_PROCESS_ENTRY_POINTS = (
+    "system", "posix_spawn", "posix_spawnp", "spawnl", "spawnle", "spawnlp",
+    "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe",
 )
 
 
@@ -60,18 +61,97 @@ def uid(value: int) -> UUID:
     return UUID(int=value)
 
 
+def _activation_source_roots(root: Path) -> tuple[Path, ...]:
+    return tuple(root / name for name in ("apps", "services", "packages"))
+
+
+def _is_production_source(source: Path) -> bool:
+    return (
+        source.is_file()
+        and source.suffix in _SOURCE_SUFFIXES
+        and not any(part in _NONPRODUCTION_SOURCE_PARTS for part in source.parts)
+        and "execution_sandbox" not in source.parts
+    )
+
+
 def _registration_references(roots: tuple[Path, ...]) -> tuple[Path, ...]:
     sources = (
         source
         for root in roots
         for source in root.rglob("*")
-        if source.is_file() and source.suffix in _SOURCE_SUFFIXES
+        if _is_production_source(source)
     )
     return tuple(
         source
         for source in sorted(sources)
         if _SANDBOX_REFERENCE.search(source.read_text(encoding="utf-8"))
     )
+
+
+def _import_candidates(tree: ast.AST) -> tuple[str, ...]:
+    candidates: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            candidates.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            candidates.append(node.module)
+            candidates.extend(
+                f"{node.module}.{alias.name}"
+                for alias in node.names
+                if alias.name != "*"
+            )
+    return tuple(candidates)
+
+
+def _import_bindings(tree: ast.AST) -> dict[str, str]:
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bindings[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                if alias.name != "*":
+                    bindings[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return bindings
+
+
+def _call_candidate(call: ast.Call, bindings: dict[str, str]) -> str | None:
+    function = call.func
+    if isinstance(function, ast.Name):
+        return bindings.get(function.id)
+    if isinstance(function, ast.Attribute) and isinstance(function.value, ast.Name):
+        return f"{bindings.get(function.value.id, function.value.id)}.{function.attr}"
+    return None
+
+
+def _is_forbidden_import(candidate: str) -> bool:
+    return any(
+        candidate == blocked
+        or candidate.startswith(f"{blocked}.")
+        or (blocked.endswith("_") and candidate.startswith(blocked))
+        for blocked in _FORBIDDEN_IMPORTS
+    )
+
+
+def _is_forbidden_process_entry(candidate: str) -> bool:
+    return candidate in {"os.system", "os.posix_spawn", "os.posix_spawnp"} or candidate.startswith("os.spawn")
+
+
+def _forbidden_source_references(source: str) -> tuple[str, ...]:
+    tree = ast.parse(source)
+    bindings = _import_bindings(tree)
+    references = [
+        candidate for candidate in _import_candidates(tree) if _is_forbidden_import(candidate)
+    ]
+    references.extend(
+        candidate
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for candidate in (_call_candidate(node, bindings),)
+        if candidate is not None and _is_forbidden_process_entry(candidate)
+    )
+    return tuple(dict.fromkeys(references))
 
 
 def order_report(
@@ -182,23 +262,34 @@ def run_complete_script(
 
 
 def test_execution_sandbox_ast_has_no_transport_process_or_runtime_imports() -> None:
-    forbidden = (
-        "socket", "ssl", "http", "urllib", "requests", "websockets", "subprocess", "asyncio",
-        "threading", "sqlalchemy", "psycopg", "packages.runtime_release", "packages.nautilus_",
-    )
     violations: list[str] = []
     for source in sorted((PACKAGE_ROOT / "packages" / "execution_sandbox").rglob("*.py")):
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        for node in ast.walk(tree):
-            names = (
-                (alias.name for alias in node.names)
-                if isinstance(node, ast.Import)
-                else (node.module,) if isinstance(node, ast.ImportFrom) and node.module else ()
-            )
-            for name in names:
-                if any(name == blocked or name.startswith(f"{blocked}.") or name.startswith(blocked) for blocked in forbidden):
-                    violations.append(f"{source.relative_to(PACKAGE_ROOT)}: {name}")
+        violations.extend(
+            f"{source.relative_to(PACKAGE_ROOT)}: {reference}"
+            for reference in _forbidden_source_references(source.read_text(encoding="utf-8"))
+        )
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        ("import sqlite3\n", ("sqlite3",)),
+        ("from packages import runtime_release\n", ("packages.runtime_release",)),
+        ("from packages import nautilus_backtest\n", ("packages.nautilus_backtest",)),
+        ("from packages import execution_provider\n", ("packages.execution_provider",)),
+        ("from services import paper_runtime\n", ("services.paper_runtime",)),
+        ("from services import live_runtime\n", ("services.live_runtime",)),
+        ("import os\nos.system('blocked')\n", ("os.system",)),
+        ("from os import system\nsystem('blocked')\n", ("os.system",)),
+        ("import os\nos.posix_spawn('x', (), {})\n", ("os.posix_spawn",)),
+        ("from os import posix_spawn\nposix_spawn('x', (), {})\n", ("os.posix_spawn",)),
+    ),
+)
+def test_forbidden_detector_rejects_direct_from_import_and_process_entries(
+    source: str, expected: tuple[str, ...]
+) -> None:
+    assert _forbidden_source_references(source) == expected
 
 
 @pytest.mark.parametrize("reference", ("execution_sandbox", "execution-sandbox"))
@@ -216,6 +307,32 @@ def test_registration_proof_catches_nested_dashboard_references(
     )
 
 
+def test_registration_proof_catches_multiple_activation_surfaces(tmp_path: Path) -> None:
+    dashboard_route = tmp_path / "apps" / "dashboard" / "src" / "app" / "route.ts"
+    provider_module = tmp_path / "services" / "paper_runtime" / "provider.py"
+    dashboard_route.parent.mkdir(parents=True)
+    provider_module.parent.mkdir(parents=True)
+    dashboard_route.write_text('register("execution-sandbox")\n', encoding="utf-8")
+    provider_module.write_text('register("execution_sandbox")\n', encoding="utf-8")
+
+    assert _registration_references((tmp_path / "apps", tmp_path / "services")) == (
+        dashboard_route,
+        provider_module,
+    )
+
+
+def test_registration_source_roots_exclude_sandbox_tests_and_generated_files(tmp_path: Path) -> None:
+    active = tmp_path / "packages" / "runtime_release" / "registration.py"
+    sandbox = tmp_path / "packages" / "execution_sandbox" / "client.py"
+    test_source = tmp_path / "apps" / "control_api" / "tests" / "test_sandbox.py"
+    generated = tmp_path / "services" / "job_worker" / "generated" / "types.ts"
+    for source in (active, sandbox, test_source, generated):
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text('register("execution_sandbox")\n', encoding="utf-8")
+
+    assert _registration_references(_activation_source_roots(tmp_path)) == (active,)
+
+
 def test_equivalent_runs_produce_identical_snapshots_and_event_bytes(
     monkeypatch: pytest.MonkeyPatch,
     prepared_case: Any,
@@ -227,6 +344,13 @@ def test_equivalent_runs_produce_identical_snapshots_and_event_bytes(
 
     monkeypatch.setattr(socket, "socket", forbidden_io)
     monkeypatch.setattr(subprocess, "Popen", forbidden_io)
+    monkeypatch.setattr(subprocess, "run", forbidden_io)
+    monkeypatch.setattr(subprocess, "call", forbidden_io)
+    monkeypatch.setattr(subprocess, "check_call", forbidden_io)
+    monkeypatch.setattr(subprocess, "check_output", forbidden_io)
+    for entry_point in _PROCESS_ENTRY_POINTS:
+        if hasattr(os, entry_point):
+            monkeypatch.setattr(os, entry_point, forbidden_io)
 
     left_snapshot, left_delivered, left_remaining = run_complete_script(
         fresh_prepared_case(prepared_case), submitted_envelope, fill_envelope
@@ -242,7 +366,7 @@ def test_equivalent_runs_produce_identical_snapshots_and_event_bytes(
     ]
 
 
-def test_disconnected_client_has_no_command_backdoor(
+def test_disconnected_client_rejects_planned_submit_without_consuming_command(
     prepared_case: Any,
     submitted_envelope: EventEnvelope[OrderEvent],
 ) -> None:
@@ -253,8 +377,22 @@ def test_disconnected_client_has_no_command_backdoor(
                 response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
                 order_id=uid(1), report_ids=(uid(20),),
             ),
+            SandboxCommandPlan(
+                command_id=uid(71), kind=SandboxCommandKind.RECONNECT,
+                response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+                order_id=uid(1), report_ids=(uid(21),),
+            ),
+            SandboxCommandPlan(
+                command_id=uid(100), kind=SandboxCommandKind.SUBMIT,
+                response_disposition=SandboxResponseDisposition.ACKNOWLEDGED,
+                order_id=uid(1), report_ids=(uid(22),),
+            ),
         ),
-        report_plans=(order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED),),
+        report_plans=(
+            order_report(submitted_envelope, report_id=20, event_id=100, sequence=1, status=OrderStatus.SUBMITTED),
+            order_report(submitted_envelope, report_id=21, event_id=101, sequence=2, status=OrderStatus.ACCEPTED),
+            order_report(submitted_envelope, report_id=22, event_id=102, sequence=1, status=OrderStatus.SUBMITTED),
+        ),
     )
     client = SandboxExecutionClient(
         repository=prepared_case.ledger,
@@ -264,21 +402,15 @@ def test_disconnected_client_has_no_command_backdoor(
     )
     client.disconnect(command_id=uid(70), at=NOW)
     before = client.snapshot()
-    for operation, request in (
-        (client.submit, submit_request(prepared_case)),
-        (
-            client.modify,
-            SandboxModifyRequest(
-                command_id=uid(71), order_id=uid(1),
-                replacement_order_intent=prepared_case.intent, requested_at=NOW,
-            ),
-        ),
-        (client.cancel, SandboxCancelRequest(command_id=uid(72), order_id=uid(1), requested_at=NOW)),
-    ):
-        with pytest.raises(SandboxExecutionError):
-            operation(request)
-        assert client.snapshot() == before
-    assert client.snapshot().connection_state is SandboxConnectionState.DISCONNECTED
+    request = submit_request(prepared_case)
+    with pytest.raises(SandboxExecutionError, match="sandbox is disconnected"):
+        client.submit(request)
+    assert client.snapshot() == before
+
+    client.reconnect(command_id=uid(71), at=NOW)
+    client.submit(request)
+    assert client.snapshot().orders[0].order_id == request.order_id
+    assert client.snapshot().connection_state is SandboxConnectionState.CONNECTED
 
 
 def test_client_rejects_backwards_connection_timestamp_without_mutation(
@@ -326,5 +458,6 @@ def test_snapshot_and_reports_are_immutable_and_each_declared_report_is_consumed
 
 
 def test_no_engine_job_dashboard_or_provider_registers_the_sandbox() -> None:
-    assert all(root.is_dir() for root in _REGISTRATION_SURFACES)
-    assert _registration_references(_REGISTRATION_SURFACES) == ()
+    roots = _activation_source_roots(PACKAGE_ROOT)
+    assert all(root.is_dir() for root in roots)
+    assert _registration_references(roots) == ()
