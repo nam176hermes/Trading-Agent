@@ -92,6 +92,24 @@ class _CanonicalParent(BaseModel):
     child: _CanonicalChild
 
 
+class _StrictUuidChild(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    identifier: UUID
+
+
+class _StrictDecimalChild(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    amount: Decimal
+
+
+class _StrictPrimitiveParent(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    child: _StrictUuidChild | _StrictDecimalChild
+
+
 def uid(value: int) -> UUID:
     return UUID(int=value)
 
@@ -355,3 +373,20 @@ def test_canonical_identity_rejects_top_level_and_nested_forged_models() -> None
     )
     with pytest.raises(ValueError, match="canonically represented"):
         canonical_model_digest(forged_nested_incomplete)
+
+
+def test_canonical_identity_preserves_strict_uuid_and_decimal_python_types() -> None:
+    forged_approval = approval_ref()
+    object.__setattr__(forged_approval, "decision_id", str(uid(4)))
+    with pytest.raises(ValueError, match="canonically represented"):
+        canonical_model_digest(forged_approval)
+    forged_uuid_parent = _StrictPrimitiveParent(
+        child=_StrictUuidChild.model_construct(identifier=str(uid(1)))
+    )
+    with pytest.raises(ValueError, match="canonically represented"):
+        canonical_model_json(forged_uuid_parent)
+    forged_decimal_parent = _StrictPrimitiveParent(
+        child=_StrictDecimalChild.model_construct(amount="1.25")
+    )
+    with pytest.raises(ValueError, match="canonically represented"):
+        canonical_model_json(forged_decimal_parent)
