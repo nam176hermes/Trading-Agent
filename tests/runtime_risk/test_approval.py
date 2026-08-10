@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Callable
 from uuid import UUID
 
@@ -10,7 +11,7 @@ from pydantic import BaseModel
 
 import packages.runtime_risk.approval as approval_module
 
-from packages.domain import EventEnvelope, OrderIntent, RiskDecision
+from packages.domain import Currency, EventEnvelope, OrderIntent, RiskDecision
 from packages.domain.runtime_risk import (
     DurableOrderApprovalRef,
     RuntimeOrderRiskDecision,
@@ -419,6 +420,18 @@ def test_record_does_not_relabel_unrelated_reference_construction_errors(
         record_runtime_risk_decision(repository=repository, event=event)
 
 
+def test_record_bounds_recursive_decision_payload_failure() -> None:
+    event = runtime_risk_event()
+    object.__setattr__(event.payload, "risk_price", event.payload)
+    repository = BoundedRepository(events=(event,))
+
+    with pytest.raises(DurableApprovalError) as caught:
+        record_runtime_risk_decision(repository=repository, event=event)
+
+    assert type(caught.value) is DurableApprovalError
+    assert not isinstance(caught.value.__cause__, RecursionError)
+
+
 def test_verification_rejects_each_forged_reference_binding_one_at_a_time() -> None:
     ledger, case, _, reference = record_approved()
     changes: tuple[dict[str, object], ...] = (
@@ -509,6 +522,83 @@ def test_verification_revalidates_forged_input_models(field: str) -> None:
 
     with pytest.raises(DurableApprovalError):
         verify(ledger, reference, case, **{field: forged})
+
+
+def test_verification_bounds_recursive_runtime_observation_failure() -> None:
+    ledger, case, _, reference = record_approved()
+    forged = case.observation.model_copy()
+    object.__setattr__(forged, "portfolio", forged)
+
+    with pytest.raises(DurableApprovalError) as caught:
+        verify(ledger, reference, case, observation=forged)
+
+    assert type(caught.value) is DurableApprovalError
+    assert not isinstance(caught.value.__cause__, RecursionError)
+
+
+@pytest.mark.parametrize("authority", ("portfolio", "market", "conversion", "venue"))
+def test_verification_bounds_source_facts_after_enclosing_observation(
+    authority: str,
+) -> None:
+    case = (
+        evaluator_case(
+            settlement_currency=Currency.USDT,
+            conversion_rate=Decimal("1"),
+        )
+        if authority == "conversion"
+        else evaluator_case()
+    )
+    ledger = InMemoryEventLedger()
+    event = runtime_risk_event(case)
+    reference = record_runtime_risk_decision(repository=ledger, event=event)
+    assert reference is not None
+    forged = case.observation.model_copy()
+    future = case.observation.observed_at + timedelta(seconds=1)
+    if authority == "portfolio":
+        child = case.observation.portfolio.model_copy(update={"observed_at": future})
+        object.__setattr__(forged, "portfolio", child)
+    elif authority == "market":
+        child = case.observation.market_snapshots[0].model_copy(
+            update={"observed_at": future}
+        )
+        object.__setattr__(forged, "market_snapshots", (child,))
+    elif authority == "conversion":
+        child = case.observation.conversion_rates[0].model_copy(
+            update={"observed_at": future}
+        )
+        object.__setattr__(forged, "conversion_rates", (child,))
+    else:
+        child = case.observation.venue_health[0].model_copy(
+            update={"observed_at": future}
+        )
+        object.__setattr__(forged, "venue_health", (child,))
+
+    with pytest.raises(DurableApprovalError) as caught:
+        verify(ledger, reference, case, observation=forged)
+
+    assert caught.value.__cause__ is not None
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "market_data_max_age_seconds",
+        "portfolio_max_age_seconds",
+        "command_window_seconds",
+    ),
+)
+def test_verification_bounds_forged_unbounded_duration_without_overflow(
+    field: str,
+) -> None:
+    ledger, case, _, reference = record_approved()
+    forged = case.policy.model_copy()
+    object.__setattr__(forged, field, 10**30)
+
+    with pytest.raises(DurableApprovalError) as caught:
+        verify(ledger, reference, case, policy=forged)
+
+    assert type(caught.value) is DurableApprovalError
+    assert not isinstance(caught.value.__cause__, OverflowError)
 
 
 def test_verification_recomputes_the_complete_runtime_decision() -> None:

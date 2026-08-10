@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -45,6 +46,7 @@ from packages.runtime_risk import canonical_model_digest, canonical_model_json
 NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "SIM")
 DIGEST = "a" * 64
+MAX_RUNTIME_RISK_DURATION_SECONDS = 86_399_999_999_999
 
 EXPECTED_REASON_ORDER = (
     "POLICY_RISK_NOT_APPROVED",
@@ -126,6 +128,12 @@ class _FrozenSetParent(BaseModel):
     model_config = ConfigDict(strict=True)
 
     children: frozenset[_FrozenSetChild]
+
+
+class _ArbitraryContainerParent(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    payload: Any
 
 
 def uid(value: int) -> UUID:
@@ -270,7 +278,7 @@ def test_runtime_contracts_require_exact_decimals_strict_scalars_and_utc_datetim
         )
 
 
-def test_instrument_spec_requires_positive_increments_ordered_bounds_and_settlement_currency() -> None:
+def test_instrument_spec_requires_positive_increments_and_ordered_shared_currency_bounds() -> None:
     with pytest.raises(ValidationError, match="price_increment"):
         instrument_spec(price_increment={"amount": Decimal("0"), "currency": Currency.USD})
     with pytest.raises(ValidationError, match="quantity_increment"):
@@ -279,10 +287,35 @@ def test_instrument_spec_requires_positive_increments_ordered_bounds_and_settlem
         instrument_spec(max_quantity=OrderQuantity(Decimal("0.0001"), 4))
     with pytest.raises(ValidationError, match="notional"):
         instrument_spec(min_order_notional=money("100001"))
-    with pytest.raises(ValidationError, match="settlement"):
+    with pytest.raises(ValidationError, match="notional bounds currency"):
         instrument_spec(max_order_notional=Money(Decimal("100000"), Currency.USDT))
     with pytest.raises(ValidationError, match="initial_margin_rate"):
         instrument_spec(initial_margin_rate=Decimal("1.01"))
+
+
+def test_cross_currency_instrument_notional_bounds_use_reporting_currency() -> None:
+    spec = instrument_spec(
+        settlement_currency=Currency.USDT,
+        price_increment=Price(Decimal("0.01"), Currency.USDT),
+        min_order_notional=money("1"),
+        max_order_notional=money("100000"),
+    )
+
+    assert spec.settlement_currency is Currency.USDT
+    assert spec.min_order_notional.currency is Currency.USD
+    assert spec.max_order_notional.currency is Currency.USD
+
+
+def test_observation_requires_instrument_notional_bounds_in_reporting_currency() -> None:
+    spec = instrument_spec(
+        settlement_currency=Currency.USDT,
+        price_increment=Price(Decimal("0.01"), Currency.USDT),
+        min_order_notional=Money(Decimal("1"), Currency.USDT),
+        max_order_notional=Money(Decimal("100000"), Currency.USDT),
+    )
+
+    with pytest.raises(ValidationError, match="reporting currency"):
+        observation(instrument_specs=(spec,))
 
 
 def test_market_and_conversion_contracts_require_ordered_currency_aligned_positive_quotes() -> None:
@@ -310,6 +343,39 @@ def test_policy_and_observation_require_nonnegative_counts_matching_currencies_a
         observation(commands_in_window=-1)
     with pytest.raises(ValidationError, match="reporting currency"):
         observation(daily_pnl=Money(Decimal("0"), Currency.USDT))
+
+
+@pytest.mark.parametrize("authority", ("portfolio", "market", "conversion", "venue"))
+def test_observation_rejects_child_source_facts_after_observation_time(
+    authority: str,
+) -> None:
+    future = NOW + timedelta(seconds=1)
+    changes: dict[str, object]
+    if authority == "portfolio":
+        changes = {"portfolio": portfolio().model_copy(update={"observed_at": future})}
+    elif authority == "market":
+        market = observation().market_snapshots[0].model_copy(
+            update={"observed_at": future}
+        )
+        changes = {"market_snapshots": (market,)}
+    elif authority == "conversion":
+        conversion = observation().conversion_rates[0].model_copy(
+            update={"observed_at": future}
+        )
+        changes = {"conversion_rates": (conversion,)}
+    else:
+        venue = observation().venue_health[0].model_copy(
+            update={"observed_at": future}
+        )
+        changes = {"venue_health": (venue,)}
+
+    with pytest.raises(ValidationError, match="after observation"):
+        observation(**changes)
+
+
+def test_observation_rejects_command_window_start_after_observation_time() -> None:
+    with pytest.raises(ValidationError, match="command window"):
+        observation(command_window_started_at=NOW + timedelta(seconds=1))
 
 
 def test_observation_requires_canonical_order_for_each_identity_collection() -> None:
@@ -340,6 +406,43 @@ def test_runtime_policy_limits_and_margin_rate_include_their_boundaries() -> Non
     assert policy(min_available_funds=money("0")).min_available_funds.amount == Decimal("0")
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "market_data_max_age_seconds",
+        "portfolio_max_age_seconds",
+        "command_window_seconds",
+    ),
+)
+def test_runtime_policy_duration_fields_accept_exact_supported_maximum(
+    field: str,
+) -> None:
+    assert getattr(
+        policy(**{field: MAX_RUNTIME_RISK_DURATION_SECONDS}),
+        field,
+    ) == MAX_RUNTIME_RISK_DURATION_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        (field, value)
+        for field in (
+            "market_data_max_age_seconds",
+            "portfolio_max_age_seconds",
+            "command_window_seconds",
+        )
+        for value in (MAX_RUNTIME_RISK_DURATION_SECONDS + 1, 10**30)
+    ],
+)
+def test_runtime_policy_duration_fields_reject_values_above_supported_maximum(
+    field: str,
+    value: int,
+) -> None:
+    with pytest.raises(ValidationError, match="less than or equal"):
+        policy(**{field: value})
+
+
 def test_runtime_order_decision_enforces_outcome_projection_and_reason_semantics() -> None:
     approved = approved_decision()
     rejected = approved_decision(
@@ -366,6 +469,59 @@ def test_approval_reference_is_approval_only_and_model_copy_revalidates() -> Non
     approved_ref = approval_ref()
     with pytest.raises(ValueError):
         approved_ref.model_copy(update={"decision_outcome": RuntimeRiskOutcome.REJECTED})
+
+
+@pytest.mark.parametrize("contract_kind", ("instrument", "policy", "observation"))
+def test_deep_model_copy_preserves_registered_currency_singleton_authority(
+    contract_kind: str,
+) -> None:
+    if contract_kind == "instrument":
+        original = instrument_spec()
+        copied = original.model_copy(deep=True)
+        assert copied.price_increment is not original.price_increment
+        currency_pairs = (
+            (copied.settlement_currency, original.settlement_currency),
+            (copied.price_increment.currency, original.price_increment.currency),
+            (copied.min_order_notional.currency, original.min_order_notional.currency),
+        )
+    elif contract_kind == "policy":
+        original = policy()
+        copied = original.model_copy(deep=True)
+        assert copied.max_pending_exposure is not original.max_pending_exposure
+        currency_pairs = (
+            (
+                copied.max_pending_exposure.currency,
+                original.max_pending_exposure.currency,
+            ),
+            (copied.max_drawdown.currency, original.max_drawdown.currency),
+        )
+    else:
+        original = observation()
+        copied = original.model_copy(deep=True)
+        assert copied.portfolio is not original.portfolio
+        assert copied.instrument_specs[0] is not original.instrument_specs[0]
+        currency_pairs = (
+            (
+                copied.portfolio.reporting_currency,
+                original.portfolio.reporting_currency,
+            ),
+            (
+                copied.portfolio.balances[0].currency,
+                original.portfolio.balances[0].currency,
+            ),
+            (
+                copied.instrument_specs[0].settlement_currency,
+                original.instrument_specs[0].settlement_currency,
+            ),
+            (
+                copied.market_snapshots[0].bid.currency,
+                original.market_snapshots[0].bid.currency,
+            ),
+        )
+
+    assert copied == original
+    assert copied is not original
+    assert all(actual is expected for actual, expected in currency_pairs)
 
 
 def test_canonical_identity_has_stable_json_and_digest_vectors() -> None:
@@ -426,3 +582,25 @@ def test_canonical_identity_rejects_forged_set_and_frozenset_members() -> None:
         canonical_model_json(_SetParent(children={forged_child}))
     with pytest.raises(ValueError, match="canonically represented"):
         canonical_model_json(_FrozenSetParent(children=frozenset({forged_child})))
+
+
+@pytest.mark.parametrize("container_kind", ("runtime-model", "mapping", "list"))
+def test_canonical_identity_rejects_recursive_model_and_container_graphs(
+    container_kind: str,
+) -> None:
+    if container_kind == "runtime-model":
+        value: BaseModel = observation()
+        object.__setattr__(value, "portfolio", value)
+    elif container_kind == "mapping":
+        recursive_mapping: dict[str, object] = {}
+        recursive_mapping["self"] = recursive_mapping
+        value = _ArbitraryContainerParent(payload=recursive_mapping)
+    else:
+        recursive_list: list[object] = []
+        recursive_list.append(recursive_list)
+        value = _ArbitraryContainerParent(payload=recursive_list)
+
+    with pytest.raises(ValueError, match="canonically represented") as caught:
+        canonical_model_json(value)
+
+    assert type(caught.value.__cause__) is ValueError

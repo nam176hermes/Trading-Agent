@@ -43,10 +43,14 @@
       "type": "string"
     },
     "command_window_seconds": {
+      "exclusiveMinimum": 0,
+      "maximum": 86399999999999,
       "title": "Command Window Seconds",
       "type": "integer"
     },
     "market_data_max_age_seconds": {
+      "exclusiveMinimum": 0,
+      "maximum": 86399999999999,
       "title": "Market Data Max Age Seconds",
       "type": "integer"
     },
@@ -91,6 +95,8 @@
       "type": "string"
     },
     "portfolio_max_age_seconds": {
+      "exclusiveMinimum": 0,
+      "maximum": 86399999999999,
       "title": "Portfolio Max Age Seconds",
       "type": "integer"
     },

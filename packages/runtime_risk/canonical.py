@@ -9,29 +9,55 @@ from hashlib import sha256
 from pydantic import BaseModel, ValidationError
 
 
-def _rebuild_python_value(value: object) -> object:
+def _rebuild_python_value(
+    value: object,
+    *,
+    active_ids: set[int] | None = None,
+) -> object:
     """Recursively revalidate models while preserving Python container types."""
 
-    if isinstance(value, BaseModel):
-        fields = {
-            name: _rebuild_python_value(getattr(value, name))
-            for name in type(value).model_fields
-        }
-        return type(value).model_validate(fields)
-    if isinstance(value, Mapping):
-        return {
-            _rebuild_python_value(key): _rebuild_python_value(item)
-            for key, item in value.items()
-        }
-    if isinstance(value, tuple):
-        return tuple(_rebuild_python_value(item) for item in value)
-    if isinstance(value, list):
-        return [_rebuild_python_value(item) for item in value]
-    if isinstance(value, set):
-        return {_rebuild_python_value(item) for item in value}
-    if isinstance(value, frozenset):
-        return frozenset(_rebuild_python_value(item) for item in value)
-    return value
+    traversable = isinstance(
+        value,
+        (BaseModel, Mapping, tuple, list, set, frozenset),
+    )
+    if not traversable:
+        return value
+    active = set() if active_ids is None else active_ids
+    identity = id(value)
+    if identity in active:
+        raise ValueError("recursive model or container graph")
+    active.add(identity)
+    try:
+        if isinstance(value, BaseModel):
+            fields = {
+                name: _rebuild_python_value(
+                    getattr(value, name),
+                    active_ids=active,
+                )
+                for name in type(value).model_fields
+            }
+            return type(value).model_validate(fields)
+        if isinstance(value, Mapping):
+            return {
+                _rebuild_python_value(key, active_ids=active): _rebuild_python_value(
+                    item,
+                    active_ids=active,
+                )
+                for key, item in value.items()
+            }
+        if isinstance(value, tuple):
+            return tuple(
+                _rebuild_python_value(item, active_ids=active) for item in value
+            )
+        if isinstance(value, list):
+            return [_rebuild_python_value(item, active_ids=active) for item in value]
+        if isinstance(value, set):
+            return {_rebuild_python_value(item, active_ids=active) for item in value}
+        return frozenset(
+            _rebuild_python_value(item, active_ids=active) for item in value
+        )
+    finally:
+        active.remove(identity)
 
 
 def canonical_model_json(value: BaseModel) -> str:

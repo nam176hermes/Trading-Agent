@@ -152,8 +152,8 @@ def runtime_case(
         quantity_increment=OrderQuantity(Decimal("0.001"), 3),
         min_quantity=OrderQuantity(Decimal("0.001"), 3),
         max_quantity=OrderQuantity(Decimal("1000000"), 3),
-        min_order_notional=money("1", settlement_currency),
-        max_order_notional=money("100000000", settlement_currency),
+        min_order_notional=money("1"),
+        max_order_notional=money("100000000"),
         initial_margin_rate=initial_margin_rate,
     )
     balance = AccountBalanceSnapshot(
@@ -415,6 +415,44 @@ def test_cross_currency_rejects_missing_reversed_or_stale_rate(
         project_runtime_order(
             case.make_intent(),
             observation,
+            case.policy,
+            decided_at=case.decided_at,
+        )
+
+
+@pytest.mark.parametrize("authority", ("portfolio", "market", "conversion", "venue"))
+def test_projection_rejects_source_facts_after_enclosing_observation(
+    authority: str,
+) -> None:
+    case = runtime_case(
+        settlement_currency=Currency.USDT,
+        reporting_rate=Decimal("1"),
+    )
+    forged = case.observation.model_copy()
+    future = case.observation.observed_at + timedelta(seconds=1)
+    if authority == "portfolio":
+        child = case.observation.portfolio.model_copy(update={"observed_at": future})
+        object.__setattr__(forged, "portfolio", child)
+    elif authority == "market":
+        child = case.observation.market_snapshots[0].model_copy(
+            update={"observed_at": future}
+        )
+        object.__setattr__(forged, "market_snapshots", (child,))
+    elif authority == "conversion":
+        child = case.observation.conversion_rates[0].model_copy(
+            update={"observed_at": future}
+        )
+        object.__setattr__(forged, "conversion_rates", (child,))
+    else:
+        child = case.observation.venue_health[0].model_copy(
+            update={"observed_at": future}
+        )
+        object.__setattr__(forged, "venue_health", (child,))
+
+    with pytest.raises(ProjectionError, match="observation"):
+        project_runtime_order(
+            case.make_intent(),
+            forged,
             case.policy,
             decided_at=case.decided_at,
         )

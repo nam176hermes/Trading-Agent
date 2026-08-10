@@ -67,6 +67,7 @@ OTHER_VENUE_INSTRUMENT = InstrumentId(
 UNRELATED_INSTRUMENT = InstrumentId(
     "ETH-USD", ProductType.CRYPTO_SPOT, "OTHER"
 )
+MAX_RUNTIME_RISK_DURATION_SECONDS = 86_399_999_999_999
 
 
 def uid(value: int) -> UUID:
@@ -208,8 +209,8 @@ def evaluator_case(
         quantity_increment=OrderQuantity(Decimal("0.001"), 3),
         min_quantity=OrderQuantity(Decimal("0.001"), 3),
         max_quantity=OrderQuantity(Decimal("100"), 3),
-        min_order_notional=money("1", settlement_currency),
-        max_order_notional=money("100000", settlement_currency),
+        min_order_notional=money("1"),
+        max_order_notional=money("100000"),
         initial_margin_rate=Decimal("0.1"),
     )
     market = RuntimeRiskMarketSnapshot(
@@ -680,6 +681,18 @@ def test_invalid_model_copy_or_construct_inputs_return_no_decision(
         case.evaluate(intent=constructed_intent)
 
 
+def test_recursive_runtime_observation_is_rejected_without_recursion_error(
+    case: EvaluatorCase,
+) -> None:
+    forged = case.observation.model_copy()
+    object.__setattr__(forged, "portfolio", forged)
+
+    with pytest.raises(ValueError, match="canonically represented") as caught:
+        case.evaluate(observation=forged)
+
+    assert type(caught.value.__cause__) is ValueError
+
+
 @pytest.mark.parametrize(
     ("age", "reason"),
     [
@@ -811,6 +824,65 @@ def test_order_notional_bounds_are_inclusive(
 
 
 @pytest.mark.parametrize(
+    ("rate", "minimum", "maximum", "expected_notional", "expected_reasons"),
+    [
+        (
+            Decimal("0.5"),
+            "50.50",
+            "1000",
+            "50.50",
+            (RuntimeRiskReasonCode.WITHIN_LIMITS,),
+        ),
+        (
+            Decimal("0.5"),
+            "50.51",
+            "1000",
+            "50.50",
+            (RuntimeRiskReasonCode.ORDER_NOTIONAL_LIMIT,),
+        ),
+        (
+            Decimal("2"),
+            "1",
+            "202",
+            "202",
+            (RuntimeRiskReasonCode.WITHIN_LIMITS,),
+        ),
+        (
+            Decimal("2"),
+            "1",
+            "201.99",
+            "202",
+            (RuntimeRiskReasonCode.ORDER_NOTIONAL_LIMIT,),
+        ),
+    ],
+    ids=("minimum-equality", "below-minimum", "maximum-equality", "above-maximum"),
+)
+def test_cross_currency_notional_bounds_compare_exact_reporting_notional(
+    rate: Decimal,
+    minimum: str,
+    maximum: str,
+    expected_notional: str,
+    expected_reasons: tuple[RuntimeRiskReasonCode, ...],
+) -> None:
+    case = evaluator_case(
+        settlement_currency=Currency.USDT,
+        conversion_rate=rate,
+    )
+    spec = case.observation.instrument_specs[0].model_copy(
+        update={
+            "min_order_notional": money(minimum),
+            "max_order_notional": money(maximum),
+        }
+    )
+    observation = case.observation.model_copy(update={"instrument_specs": (spec,)})
+
+    decision = case.evaluate(observation=observation)
+
+    assert decision.order_notional == money(expected_notional)
+    assert decision.reason_codes == expected_reasons
+
+
+@pytest.mark.parametrize(
     ("side", "current", "quantity", "approved"),
     [
         (OrderSide.SELL, "2", "1", True),
@@ -847,7 +919,6 @@ def test_reduce_only_closes_without_increasing_crossing_or_reversing(
         (NOW - timedelta(seconds=60), 9, (RuntimeRiskReasonCode.WITHIN_LIMITS,)),
         (NOW - timedelta(seconds=60), 10, (RuntimeRiskReasonCode.COMMAND_RATE_LIMIT,)),
         (NOW - timedelta(seconds=61), 0, (RuntimeRiskReasonCode.COMMAND_RATE_LIMIT,)),
-        (NOW + timedelta(seconds=1), 0, (RuntimeRiskReasonCode.COMMAND_RATE_LIMIT,)),
     ],
 )
 def test_command_window_counts_new_command_and_requires_active_window(
@@ -861,6 +932,82 @@ def test_command_window_counts_new_command_and_requires_active_window(
     )
 
     assert case.evaluate(observation=observation).reason_codes == expected
+
+
+def test_evaluator_rejects_forged_window_start_after_observation(
+    case: EvaluatorCase,
+) -> None:
+    forged = case.observation.model_copy()
+    object.__setattr__(
+        forged,
+        "command_window_started_at",
+        NOW + timedelta(seconds=1),
+    )
+
+    with pytest.raises(ValueError, match="canonically represented"):
+        case.evaluate(observation=forged, decided_at=NOW + timedelta(seconds=5))
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected"),
+    [
+        (60, (RuntimeRiskReasonCode.WITHIN_LIMITS,)),
+        (61, (RuntimeRiskReasonCode.COMMAND_RATE_LIMIT,)),
+    ],
+    ids=("decision-at-window-end", "decision-after-window-end"),
+)
+def test_command_window_must_also_contain_decision_time(
+    case: EvaluatorCase,
+    elapsed: int,
+    expected: tuple[RuntimeRiskReasonCode, ...],
+) -> None:
+    policy = case.policy.model_copy(
+        update={
+            "market_data_max_age_seconds": 120,
+            "portfolio_max_age_seconds": 120,
+            "command_window_seconds": 60,
+        }
+    )
+
+    assert case.evaluate(
+        policy=policy,
+        decided_at=NOW + timedelta(seconds=elapsed),
+    ).reason_codes == expected
+
+
+def test_exact_maximum_duration_policy_evaluates_without_overflow(
+    case: EvaluatorCase,
+) -> None:
+    policy = case.policy.model_copy(
+        update={
+            "market_data_max_age_seconds": MAX_RUNTIME_RISK_DURATION_SECONDS,
+            "portfolio_max_age_seconds": MAX_RUNTIME_RISK_DURATION_SECONDS,
+            "command_window_seconds": MAX_RUNTIME_RISK_DURATION_SECONDS,
+        }
+    )
+
+    assert case.evaluate(policy=policy).reason_codes == (
+        RuntimeRiskReasonCode.WITHIN_LIMITS,
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "market_data_max_age_seconds",
+        "portfolio_max_age_seconds",
+        "command_window_seconds",
+    ),
+)
+def test_evaluator_rejects_forged_unbounded_duration_without_overflow(
+    case: EvaluatorCase,
+    field: str,
+) -> None:
+    forged = case.policy.model_copy()
+    object.__setattr__(forged, field, 10**30)
+
+    with pytest.raises(ValueError, match="canonically represented"):
+        case.evaluate(policy=forged)
 
 
 @pytest.mark.parametrize("health", [RuntimeVenueHealth.DEGRADED, RuntimeVenueHealth.UNKNOWN])

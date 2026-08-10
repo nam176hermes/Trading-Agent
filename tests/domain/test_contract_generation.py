@@ -356,9 +356,17 @@ def test_every_runtime_risk_schema_has_the_exact_closed_public_shape() -> None:
     assert spec["properties"]["initial_margin_rate"]["pattern"]
     assert conversion["properties"]["rate"]["type"] == "string"
     assert conversion["properties"]["rate"]["pattern"]
-    assert policy["properties"]["market_data_max_age_seconds"] == {
-        "title": "Market Data Max Age Seconds", "type": "integer"
-    }
+    for field, title in (
+        ("market_data_max_age_seconds", "Market Data Max Age Seconds"),
+        ("portfolio_max_age_seconds", "Portfolio Max Age Seconds"),
+        ("command_window_seconds", "Command Window Seconds"),
+    ):
+        assert policy["properties"][field] == {
+            "exclusiveMinimum": 0,
+            "maximum": 86_399_999_999_999,
+            "title": title,
+            "type": "integer",
+        }
     assert observation["properties"]["engine_ready"] == {
         "title": "Engine Ready", "type": "boolean"
     }

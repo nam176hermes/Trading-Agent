@@ -15,7 +15,15 @@ from .clock import require_utc
 from .instruments import InstrumentId
 from .orders import DomainModel
 from .portfolio import AccountPortfolioSnapshot
-from .primitives import Currency, FiniteDecimal, Money, OrderQuantity, Price, Quantity
+from .primitives import (
+    DEFAULT_CURRENCY_REGISTRY,
+    Currency,
+    FiniteDecimal,
+    Money,
+    OrderQuantity,
+    Price,
+    Quantity,
+)
 
 
 CanonicalRiskIdentifier = Annotated[
@@ -27,6 +35,11 @@ CanonicalRiskIdentifier = Annotated[
     ),
 ]
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+_MAX_RUNTIME_RISK_DURATION_SECONDS = 86_399_999_999_999
+_RuntimeRiskDurationSeconds = Annotated[
+    StrictInt,
+    Field(gt=0, le=_MAX_RUNTIME_RISK_DURATION_SECONDS),
+]
 
 
 class RuntimeRiskOutcome(str, Enum):
@@ -89,7 +102,13 @@ class RuntimeRiskModel(DomainModel):
         values = {name: getattr(self, name) for name in type(self).model_fields}
         if update:
             values.update(update)
-        return type(self).model_validate(deepcopy(values) if deep else values)
+        if deep:
+            currency_memo = {
+                id(currency): currency
+                for currency in DEFAULT_CURRENCY_REGISTRY.currencies
+            }
+            values = deepcopy(values, currency_memo)
+        return type(self).model_validate(values)
 
 
 def _require_positive(value: Decimal, field_name: str) -> None:
@@ -141,11 +160,8 @@ class RuntimeInstrumentRiskSpec(RuntimeRiskModel):
             raise ValueError("max_quantity precision must match quantity_increment")
         if self.max_quantity.value < self.min_quantity.value:
             raise ValueError("max_quantity must not be below min_quantity")
-        _require_money_currency(
-            self.settlement_currency,
-            (self.min_order_notional, self.max_order_notional),
-            "settlement",
-        )
+        if self.min_order_notional.currency is not self.max_order_notional.currency:
+            raise ValueError("order notional bounds currency must match")
         _require_positive(self.min_order_notional.amount, "min_order_notional")
         _require_positive(self.max_order_notional.amount, "max_order_notional")
         if self.max_order_notional.amount < self.min_order_notional.amount:
@@ -208,8 +224,8 @@ class RuntimeRiskPolicy(RuntimeRiskModel):
     policy_id: UUID
     policy_version: CanonicalRiskIdentifier
     account_id: CanonicalRiskIdentifier
-    market_data_max_age_seconds: StrictInt
-    portfolio_max_age_seconds: StrictInt
+    market_data_max_age_seconds: _RuntimeRiskDurationSeconds
+    portfolio_max_age_seconds: _RuntimeRiskDurationSeconds
     max_pending_exposure: Money
     max_gross_exposure: Money
     max_abs_net_exposure: Money
@@ -218,7 +234,7 @@ class RuntimeRiskPolicy(RuntimeRiskModel):
     min_available_funds: Money
     max_daily_loss: Money
     max_drawdown: Money
-    command_window_seconds: StrictInt
+    command_window_seconds: _RuntimeRiskDurationSeconds
     max_commands_per_window: StrictInt
     schema_version: Literal["runtime-risk-policy-v1"]
 
@@ -280,6 +296,8 @@ class RuntimeRiskObservation(RuntimeRiskModel):
             return
         require_utc(self.command_window_started_at)
         require_utc(self.observed_at)
+        if self.command_window_started_at > self.observed_at:
+            raise ValueError("command window must start no later than observation")
         if self.state_version < 0:
             raise ValueError("state_version must be non-negative")
         if self.commands_in_window < 0:
@@ -289,10 +307,25 @@ class RuntimeRiskObservation(RuntimeRiskModel):
             (self.daily_pnl, self.current_equity, self.peak_equity),
             "reporting",
         )
+        if any(
+            spec.min_order_notional.currency is not self.portfolio.reporting_currency
+            or spec.max_order_notional.currency is not self.portfolio.reporting_currency
+            for spec in self.instrument_specs
+        ):
+            raise ValueError("instrument notional bounds must use reporting currency")
         if self.current_equity.amount < 0:
             raise ValueError("current_equity must be non-negative")
         if self.peak_equity.amount < 0:
             raise ValueError("peak_equity must be non-negative")
+        observed_children = (
+            ("portfolio", self.portfolio.observed_at),
+            *(("market", item.observed_at) for item in self.market_snapshots),
+            *(("conversion", item.observed_at) for item in self.conversion_rates),
+            *(("venue", item.observed_at) for item in self.venue_health),
+        )
+        for name, child_observed_at in observed_children:
+            if child_observed_at > self.observed_at:
+                raise ValueError(f"{name} timestamp must not be after observation")
         intent_ids = tuple(item.intent_id for item in self.prior_commands)
         client_order_ids = tuple(item.client_order_id for item in self.prior_commands)
         if len(intent_ids) != len(set(intent_ids)):

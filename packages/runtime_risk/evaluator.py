@@ -469,12 +469,12 @@ def evaluate_runtime_order_risk(
     )
     notional_bounds_valid = True
     if spec is not None and projection is not None:
-        settlement_notional = (
-            _fraction(intent.quantity.value) * _fraction(projection.risk_price.amount)
-        )
         notional_bounds_valid = (
-            _fraction(spec.min_order_notional.amount)
-            <= settlement_notional
+            spec.min_order_notional.currency is reporting
+            and spec.max_order_notional.currency is reporting
+            and projection.order_notional.currency is reporting
+            and _fraction(spec.min_order_notional.amount)
+            <= _fraction(projection.order_notional.amount)
             <= _fraction(spec.max_order_notional.amount)
         )
     balance_margin_failed = not balance_valid or (
@@ -494,10 +494,13 @@ def evaluate_runtime_order_risk(
         Fraction(0),
     )
     drawdown_valid = drawdown <= _fraction(policy.max_drawdown.amount)
-    command_window_valid = _age_is_valid(
-        observation.command_window_started_at,
-        decided_at,
-        policy.command_window_seconds,
+    command_window_valid = all(
+        _age_is_valid(
+            observation.command_window_started_at,
+            contained_at,
+            policy.command_window_seconds,
+        )
+        for contained_at in (observation.observed_at, decided_at)
     )
     command_rate_valid = (
         command_window_valid
