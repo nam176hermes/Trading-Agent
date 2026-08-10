@@ -81,6 +81,7 @@ class ExactSafetyVerifier:
 
 @dataclass(frozen=True)
 class PreparedCase:
+    ledger: InMemoryEventLedger
     intent: OrderIntent
     observation: RuntimeRiskObservation
     policy: RuntimeRiskPolicy
@@ -314,4 +315,5 @@ def fixture_prepared_case(order_intent: OrderIntent) -> PreparedCase:
         current_observation=observation, current_policy=policy, current_safety=safety,
         safety_verifier=ExactSafetyVerifier(), permit_id=uid(22), event_id=uid(23), prepared_at=NOW + timedelta(seconds=1),
     )
-    return PreparedCase(order_intent, observation, policy, safety, permit)
+    consumption_safety = safety.model_copy(update={"observed_at": NOW + timedelta(seconds=1)})
+    return PreparedCase(ledger, order_intent, observation, policy, consumption_safety, permit)

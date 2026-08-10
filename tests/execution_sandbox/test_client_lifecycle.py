@@ -28,11 +28,16 @@ NOW = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture(name="safety_verifier")
-def fixture_safety_verifier() -> object:
-    """Task 2 accepts the trusted verifier dependency but does not consume permits."""
+def fixture_safety_verifier(prepared_case: Any) -> object:
+    """The lifecycle client verifies the same injected safety observation."""
 
-    return object()
+    class ExactSafetyVerifier:
+        def verify(self, *, observation: object) -> object:
+            return observation
 
+    verifier = ExactSafetyVerifier()
+    verifier.repository = prepared_case.ledger
+    return verifier
 
 def uid(value: int) -> UUID:
     return UUID(int=value)
@@ -130,7 +135,7 @@ def scenario(*, commands: tuple[SandboxCommandPlan, ...], reports: tuple[Sandbox
 
 def client_for(scenario_value: SandboxScenario, safety_verifier: Any, repository: Any | None = None) -> SandboxExecutionClient:
     return SandboxExecutionClient(
-        repository=InMemoryEventLedger() if repository is None else repository,
+        repository=(safety_verifier.repository if repository is None else repository),
         safety_verifier=safety_verifier,
         scenario=scenario_value,
         initial_time=NOW,
@@ -147,7 +152,7 @@ def valid_submit_request(prepared_case: Any, *, command_id: int = 100) -> Sandbo
         current_policy=prepared_case.policy,
         current_safety=prepared_case.safety,
         consumed_event_id=uid(9_001),
-        submitted_at=NOW,
+        submitted_at=NOW + timedelta(seconds=1),
     )
 
 
@@ -284,7 +289,7 @@ def test_altered_ledger_duplicate_conflict_retains_pre_drain_snapshot(
     submitted_envelope: EventEnvelope[OrderEvent], prepared_case: Any, safety_verifier: Any
 ) -> None:
     report = order_envelope(submitted_envelope, event_id=10, envelope_sequence=1, order_sequence=1, status=OrderStatus.SUBMITTED)
-    repository = InMemoryEventLedger()
+    repository = prepared_case.ledger
     altered = EventEnvelope[OrderEvent](**{**report.model_dump(mode="python"), "source": "other-source"})
     repository.append(altered, OutboxIntent(event_id=altered.event_id, topic="execution-sandbox.report", payload_json=serialize_event(altered)))
     client = client_for(
@@ -354,8 +359,8 @@ def test_later_ledger_failure_reduces_only_confirmed_reports_in_append_order(
     call_order: list[tuple[str, UUID]] = []
 
     class FailingLaterLedger:
-        def __init__(self) -> None:
-            self._delegate = InMemoryEventLedger()
+        def __init__(self, delegate: InMemoryEventLedger) -> None:
+            self._delegate = delegate
 
         def append(self, event: EventEnvelope[object], outbox: OutboxIntent) -> Any:
             call_order.append(("append", event.event_id))
@@ -372,9 +377,10 @@ def test_later_ledger_failure_reduces_only_confirmed_reports_in_append_order(
             reports=(original(20, submitted), original(21, accepted), original(22, partial)),
         ),
         safety_verifier,
-        FailingLaterLedger(),
+        FailingLaterLedger(prepared_case.ledger),
     )
     client.submit(valid_submit_request(prepared_case))
+    call_order.clear()
     before = client.snapshot()
     reduce = client._reduce
 

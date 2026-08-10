@@ -9,10 +9,22 @@ from uuid import UUID
 
 from packages.domain.clock import require_utc
 from packages.domain.events import EventEnvelope
-from packages.domain.orders import OrderEvent, OrderState, reduce_order
+from packages.domain.orders import (
+    TERMINAL_ORDER_STATUSES,
+    OrderEvent,
+    OrderIntent,
+    OrderState,
+    OrderStatus,
+    reduce_order,
+)
 from packages.event_ledger import EventLedgerRepository, OutboxIntent, deserialize_event, serialize_event
 from packages.event_ledger.models import AppendOutcome
-from packages.runtime_risk import GlobalSafetyAuthorityVerifier
+from packages.runtime_risk import (
+    GlobalHaltAuthorityError,
+    GlobalSafetyAuthorityVerifier,
+    SubmitPermitConsumptionError,
+    consume_submit_permit,
+)
 
 from .models import (
     SandboxCancelRequest,
@@ -100,13 +112,25 @@ class SandboxExecutionClient:
         return _canonical_model(self._snapshot, SandboxSnapshot, "snapshot")
 
     def submit(self, request: SandboxSubmitRequest) -> SandboxCommandResult:
-        request = _canonical_model(request, SandboxSubmitRequest, "submit request")
-        self._require_connected()
-        if any(order.order_id == request.order_id for order in self._snapshot.orders):
-            raise SandboxExecutionError("order_id already exists")
-        if any(order.client_order_id == request.order_intent.client_order_id for order in self._snapshot.orders):
-            raise SandboxExecutionError("client_order_id already exists")
-        plan = self._command_for(request.command_id, SandboxCommandKind.SUBMIT, request.order_id)
+        request = self._canonical_submit_request(request)
+        plan = self._require_plan(request.command_id, SandboxCommandKind.SUBMIT, request.order_id)
+        self._require_connected_and_unused_client_order_id(
+            request.order_intent.client_order_id, request.order_id
+        )
+        self._validate_all_planned_reports_before_effect(plan, request)
+        try:
+            authority = consume_submit_permit(
+                repository=self._repository,
+                permit=request.permit,
+                current_observation=request.current_observation,
+                current_policy=request.current_policy,
+                current_safety=request.current_safety,
+                safety_verifier=self._safety_verifier,
+                consumed_event_id=request.consumed_event_id,
+                consumed_at=request.submitted_at,
+            )
+        except (GlobalHaltAuthorityError, SubmitPermitConsumptionError, AttributeError, RuntimeError, TypeError, ValueError) as exc:
+            raise SandboxExecutionError("submit authority consumption failed") from exc
         initial_order = SandboxOrderSnapshot(
             order_id=request.order_id,
             client_order_id=request.order_intent.client_order_id,
@@ -114,32 +138,36 @@ class SandboxExecutionClient:
             venue_state=OrderState(order_id=request.order_id),
             observed_state=OrderState(order_id=request.order_id),
         )
-        next_order, next_queue, retained = self._apply_command_reports(plan, initial_order)
+        next_order, next_queue, retained = self._apply_venue_reports_and_enqueue(plan, initial_order)
         self._replace_state(
             orders=self._snapshot.orders + (next_order,),
             queued=next_queue,
             retained=retained,
             executed=self._executed_command_ids + (plan.command_id,),
         )
-        return self._result_or_lost(plan)
+        if plan.response_disposition is SandboxResponseDisposition.LOST_RESPONSE:
+            raise SandboxLostResponse("sandbox response was intentionally lost")
+        return SandboxCommandResult(
+            command_id=request.command_id,
+            response=plan.response_disposition,
+            consumed_authority=authority,
+        )
 
     def modify(self, request: SandboxModifyRequest) -> SandboxCommandResult:
         request = _canonical_model(request, SandboxModifyRequest, "modify request")
         self._require_connected()
         existing = self._order_for(request.order_id)
+        self._require_nonterminal(existing)
         if request.replacement_order_intent.intent_id != request.order_id:
             raise SandboxExecutionError("replacement order identity is invalid")
         if request.replacement_order_intent.client_order_id != existing.client_order_id:
             raise SandboxExecutionError("replacement client order identity is invalid")
-        plan = self._command_for(request.command_id, SandboxCommandKind.MODIFY, request.order_id)
-        replacement = SandboxOrderSnapshot(
-            order_id=existing.order_id,
-            client_order_id=existing.client_order_id,
-            order_intent=request.replacement_order_intent,
-            venue_state=existing.venue_state,
-            observed_state=existing.observed_state,
+        plan = self._require_plan(request.command_id, SandboxCommandKind.MODIFY, request.order_id)
+        next_order, next_queue, retained = self._apply_venue_reports_and_enqueue(
+            plan,
+            existing,
+            replacement_order_intent=request.replacement_order_intent,
         )
-        next_order, next_queue, retained = self._apply_command_reports(plan, replacement)
         self._replace_state(
             orders=self._replace_order(next_order),
             queued=next_queue,
@@ -152,8 +180,9 @@ class SandboxExecutionClient:
         request = _canonical_model(request, SandboxCancelRequest, "cancel request")
         self._require_connected()
         existing = self._order_for(request.order_id)
-        plan = self._command_for(request.command_id, SandboxCommandKind.CANCEL, request.order_id)
-        next_order, next_queue, retained = self._apply_command_reports(plan, existing)
+        self._require_nonterminal(existing)
+        plan = self._require_plan(request.command_id, SandboxCommandKind.CANCEL, request.order_id)
+        next_order, next_queue, retained = self._apply_venue_reports_and_enqueue(plan, existing)
         self._replace_state(
             orders=self._replace_order(next_order),
             queued=next_queue,
@@ -225,7 +254,7 @@ class SandboxExecutionClient:
         wanted = SandboxConnectionState.CONNECTED if kind is SandboxCommandKind.DISCONNECT else SandboxConnectionState.DISCONNECTED
         if self._snapshot.connection_state is not wanted:
             raise SandboxExecutionError("invalid sandbox connection transition")
-        plan = self._command_for(command_id, kind, None)
+        plan = self._require_plan(command_id, kind, None)
         next_state = SandboxConnectionState.DISCONNECTED if kind is SandboxCommandKind.DISCONNECT else SandboxConnectionState.CONNECTED
         self._replace_state(
             connection_state=next_state,
@@ -233,7 +262,10 @@ class SandboxExecutionClient:
         )
         return self._result_or_lost(plan)
 
-    def _command_for(
+    def _canonical_submit_request(self, request: SandboxSubmitRequest) -> SandboxSubmitRequest:
+        return _canonical_model(request, SandboxSubmitRequest, "submit request")
+
+    def _require_plan(
         self, command_id: UUID, kind: SandboxCommandKind, order_id: UUID | None
     ) -> SandboxCommandPlan:
         if type(command_id) is not UUID:
@@ -247,34 +279,32 @@ class SandboxExecutionClient:
             raise SandboxExecutionError("command has already executed")
         return _canonical_model(plan, SandboxCommandPlan, "command plan")
 
-    def _apply_command_reports(
-        self, plan: SandboxCommandPlan, order: SandboxOrderSnapshot
+    def _validate_all_planned_reports_before_effect(
+        self, plan: SandboxCommandPlan, request: SandboxSubmitRequest
+    ) -> None:
+        reports, _ = self._planned_reports(plan, request.order_id)
+        state = OrderState(order_id=request.order_id)
+        for _, canonical_event in reports:
+            event = _canonical_envelope(canonical_event)
+            if type(event.payload) is OrderEvent:
+                state = self._reduce(state, event.payload)
+
+    def _apply_venue_reports_and_enqueue(
+        self,
+        plan: SandboxCommandPlan,
+        order: SandboxOrderSnapshot,
+        *,
+        replacement_order_intent: OrderIntent | None = None,
     ) -> tuple[SandboxOrderSnapshot, tuple[_QueuedReport, ...], tuple[_RetainedReport, ...]]:
-        report_plans = tuple(self._report_plan_for(report_id) for report_id in plan.report_ids)
+        planned_reports, retained = self._planned_reports(plan, order.order_id)
         next_order = order
-        retained = self._retained_reports
         queued = self._queued_reports
         next_ordinal = max((item.insertion_ordinal for item in queued), default=-1) + 1
-        for report in report_plans:
-            if report.event is not None:
-                try:
-                    canonical_event = serialize_event(report.event)
-                except (TypeError, ValueError) as exc:
-                    raise SandboxExecutionError("invalid scenario report") from exc
-                event = _canonical_envelope(canonical_event)
-                retained = retained + (_RetainedReport(report_id=report.report_id, canonical_event=canonical_event),)
-            else:
-                retained_event = next(
-                    (item.canonical_event for item in retained if item.report_id == report.duplicate_of_report_id),
-                    None,
-                )
-                if retained_event is None:
-                    raise SandboxExecutionError("duplicate report original is unavailable")
-                canonical_event = retained_event
-                event = _canonical_envelope(canonical_event)
-            if event.payload.order_id != order.order_id:
-                raise SandboxExecutionError("report order_id is unknown")
+        replacement_ready = False
+        for report, canonical_event in planned_reports:
+            event = _canonical_envelope(canonical_event)
             if type(event.payload) is OrderEvent:
+                previous_status = next_order.venue_state.status
                 next_order = SandboxOrderSnapshot(
                     order_id=next_order.order_id,
                     client_order_id=next_order.client_order_id,
@@ -282,9 +312,60 @@ class SandboxExecutionClient:
                     venue_state=self._reduce(next_order.venue_state, event.payload),
                     observed_state=next_order.observed_state,
                 )
+                if (
+                    replacement_order_intent is not None
+                    and previous_status is OrderStatus.ACCEPTED
+                    and event.payload.target_status is OrderStatus.PENDING_UPDATE
+                ):
+                    replacement_ready = True
+                elif (
+                    replacement_ready
+                    and event.payload.target_status is OrderStatus.ACCEPTED
+                    and next_order.venue_state.status is OrderStatus.ACCEPTED
+                ):
+                    next_order = SandboxOrderSnapshot(
+                        order_id=next_order.order_id,
+                        client_order_id=next_order.client_order_id,
+                        order_intent=replacement_order_intent,
+                        venue_state=next_order.venue_state,
+                        observed_state=next_order.observed_state,
+                    )
+                    replacement_ready = False
             queued = queued + (_QueuedReport(report, canonical_event, next_ordinal),)
             next_ordinal += 1
         return next_order, queued, retained
+
+    def _planned_reports(
+        self, plan: SandboxCommandPlan, order_id: UUID
+    ) -> tuple[tuple[tuple[SandboxReportPlan, str], ...], tuple[_RetainedReport, ...]]:
+        retained = self._retained_reports
+        planned: list[tuple[SandboxReportPlan, str]] = []
+        for report_id in plan.report_ids:
+            report = self._report_plan_for(report_id)
+            if report.event is not None:
+                try:
+                    canonical_event = serialize_event(report.event)
+                except (TypeError, ValueError) as exc:
+                    raise SandboxExecutionError("invalid scenario report") from exc
+                retained = retained + (
+                    _RetainedReport(report_id=report.report_id, canonical_event=canonical_event),
+                )
+            else:
+                canonical_event = next(
+                    (
+                        item.canonical_event
+                        for item in retained
+                        if item.report_id == report.duplicate_of_report_id
+                    ),
+                    None,
+                )
+                if canonical_event is None:
+                    raise SandboxExecutionError("duplicate report original is unavailable")
+            event = _canonical_envelope(canonical_event)
+            if event.payload.order_id != order_id:
+                raise SandboxExecutionError("report order_id is unknown")
+            planned.append((report, canonical_event))
+        return tuple(planned), retained
 
     def _report_plan_for(self, report_id: UUID) -> SandboxReportPlan:
         report = next((item for item in self._scenario.report_plans if item.report_id == report_id), None)
@@ -340,6 +421,20 @@ class SandboxExecutionClient:
         if type(order_id) is not UUID:
             raise SandboxExecutionError("order_id must be a UUID")
         return self._order_from(self._snapshot.orders, order_id)
+
+    def _require_connected_and_unused_client_order_id(
+        self, client_order_id: str, order_id: UUID
+    ) -> None:
+        self._require_connected()
+        if any(order.order_id == order_id for order in self._snapshot.orders):
+            raise SandboxExecutionError("order_id already exists")
+        if any(order.client_order_id == client_order_id for order in self._snapshot.orders):
+            raise SandboxExecutionError("client_order_id already exists")
+
+    @staticmethod
+    def _require_nonterminal(order: SandboxOrderSnapshot) -> None:
+        if order.venue_state.status in TERMINAL_ORDER_STATUSES:
+            raise SandboxExecutionError("order is terminal")
 
     @staticmethod
     def _order_from(orders: tuple[SandboxOrderSnapshot, ...], order_id: UUID) -> SandboxOrderSnapshot:
