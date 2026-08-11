@@ -84,17 +84,42 @@ class SandboxRecoveryCheckpointRecorded(BaseModel):
     ) -> Self:
         """Rebuild copied or constructed records before trusting their fields."""
 
-        if isinstance(obj, cls):
+        if type(obj) is cls:
             try:
-                obj = {
-                    name: object.__getattribute__(obj, name)
-                    for name in cls.model_fields
-                }
+                state = object.__getattribute__(obj, "__dict__")
+                fields_set = object.__getattribute__(
+                    obj,
+                    "__pydantic_fields_set__",
+                )
+                extra = object.__getattribute__(obj, "__pydantic_extra__")
             except AttributeError as exc:
                 raise ValidationError.from_exception_data(
                     cls.__name__,
                     [{"type": "missing", "loc": ("recovery_record",), "input": obj}],
                 ) from exc
+            if type(state) is not dict or type(fields_set) is not set:
+                raise ValueError("recovery record model state must be concrete")
+            state_names = tuple(dict.__iter__(state))
+            fields_set_names = tuple(set.__iter__(fields_set))
+            if any(type(name) is not str for name in state_names):
+                raise ValueError("recovery record field names must be concrete strings")
+            if any(type(name) is not str for name in fields_set_names):
+                raise ValueError(
+                    "recovery record field-set names must be concrete strings"
+                )
+            declared_names = cls.model_fields
+            if (
+                len(state_names) != len(declared_names)
+                or any(name not in declared_names for name in state_names)
+                or any(name not in state for name in declared_names)
+                or any(name not in declared_names for name in fields_set_names)
+            ):
+                raise ValueError("recovery record model fields must be exact")
+            if extra is not None and (
+                type(extra) is not dict or dict.__len__(extra) != 0
+            ):
+                raise ValueError("recovery record model extras must be empty")
+            obj = dict.copy(state)
         return super().model_validate(
             obj,
             strict=strict,

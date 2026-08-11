@@ -48,17 +48,73 @@ def _concrete_uuid(value: object, field_name: str) -> UUID:
     return value
 
 
+def _require_exact_model_root(
+    value: object,
+    expected_type: type[BaseModel],
+    field_name: str,
+) -> None:
+    """Reject incomplete or surplus exact-model state without calling value hooks."""
+
+    if type(value) is not expected_type:
+        raise SandboxRecoveryPersistenceError(
+            f"{field_name} must be a concrete {expected_type.__name__}"
+        )
+    try:
+        state = object.__getattribute__(value, "__dict__")
+        fields_set = object.__getattribute__(value, "__pydantic_fields_set__")
+        extra = object.__getattribute__(value, "__pydantic_extra__")
+    except AttributeError as exc:
+        raise SandboxRecoveryPersistenceError(
+            f"{field_name} model state is incomplete"
+        ) from exc
+    if type(state) is not dict or type(fields_set) is not set:
+        raise SandboxRecoveryPersistenceError(
+            f"{field_name} model state must be concrete"
+        )
+    state_names = tuple(dict.__iter__(state))
+    fields_set_names = tuple(set.__iter__(fields_set))
+    if any(type(name) is not str for name in state_names):
+        raise SandboxRecoveryPersistenceError(
+            f"{field_name} field names must be concrete strings"
+        )
+    if any(type(name) is not str for name in fields_set_names):
+        raise SandboxRecoveryPersistenceError(
+            f"{field_name} field-set names must be concrete strings"
+        )
+    declared_names = expected_type.model_fields
+    if (
+        len(state_names) != len(declared_names)
+        or any(name not in declared_names for name in state_names)
+        or any(name not in state for name in declared_names)
+        or any(name not in declared_names for name in fields_set_names)
+    ):
+        raise SandboxRecoveryPersistenceError(
+            f"{field_name} model fields must be exact"
+        )
+    if extra is not None and (type(extra) is not dict or dict.__len__(extra) != 0):
+        raise SandboxRecoveryPersistenceError(
+            f"{field_name} model extras must be empty"
+        )
+
+
 def _canonical_record(
     value: object,
 ) -> SandboxRecoveryCheckpointRecorded:
-    if type(value) is not SandboxRecoveryCheckpointRecorded:
-        raise SandboxRecoveryPersistenceError(
-            "record must be a concrete SandboxRecoveryCheckpointRecorded"
-        )
+    _require_exact_model_root(
+        value,
+        SandboxRecoveryCheckpointRecorded,
+        "record",
+    )
     try:
-        return SandboxRecoveryCheckpointRecorded.model_validate(value)
+        canonical = SandboxRecoveryCheckpointRecorded.model_validate(value)
     except (AttributeError, TypeError, ValidationError, ValueError) as exc:
         raise SandboxRecoveryPersistenceError("record is not canonical") from exc
+    _require_exact_model_root(
+        canonical,
+        SandboxRecoveryCheckpointRecorded,
+        "canonical record",
+    )
+    return canonical
 
 
 def encode_recovery_checkpoint(
@@ -70,7 +126,17 @@ def encode_recovery_checkpoint(
 
     session_id = _concrete_uuid(recovery_session_id, "recovery_session_id")
     try:
+        _require_exact_model_root(
+            checkpoint,
+            SandboxRecoveryCheckpoint,
+            "checkpoint",
+        )
         canonical_checkpoint = _canonical_checkpoint_input(checkpoint)
+        _require_exact_model_root(
+            canonical_checkpoint,
+            SandboxRecoveryCheckpoint,
+            "canonical checkpoint",
+        )
         checkpoint_json = canonical_model_json(canonical_checkpoint)
         checkpoint_digest = canonical_model_digest(canonical_checkpoint)
         stored_digest = sha256(str.encode(checkpoint_json, "utf-8")).hexdigest()
@@ -80,13 +146,15 @@ def encode_recovery_checkpoint(
             raise ValueError("checkpoint_id must be a concrete UUID")
         if type(canonical_checkpoint.schema_version) is not str:
             raise ValueError("checkpoint schema_version must be concrete text")
-        return SandboxRecoveryCheckpointRecorded(
-            recovery_session_id=session_id,
-            checkpoint_id=canonical_checkpoint.checkpoint_id,
-            checkpoint_digest=checkpoint_digest,
-            checkpoint_json=checkpoint_json,
-            checkpoint_schema_version=canonical_checkpoint.schema_version,
-            schema_version=_RECORD_SCHEMA_VERSION,
+        return _canonical_record(
+            SandboxRecoveryCheckpointRecorded(
+                recovery_session_id=session_id,
+                checkpoint_id=canonical_checkpoint.checkpoint_id,
+                checkpoint_digest=checkpoint_digest,
+                checkpoint_json=checkpoint_json,
+                checkpoint_schema_version=canonical_checkpoint.schema_version,
+                schema_version=_RECORD_SCHEMA_VERSION,
+            )
         )
     except SandboxRecoveryPersistenceError:
         raise
@@ -206,6 +274,11 @@ def _checkpoint_from_stored_json(checkpoint_json: str) -> SandboxRecoveryCheckpo
         raise SandboxRecoveryPersistenceError(
             "checkpoint_json did not decode to the exact checkpoint type"
         )
+    _require_exact_model_root(
+        checkpoint,
+        SandboxRecoveryCheckpoint,
+        "decoded checkpoint",
+    )
     return checkpoint
 
 
@@ -250,42 +323,47 @@ def _require_concrete_envelope(
     event: object,
 ) -> EventEnvelope[SandboxRecoveryCheckpointRecorded]:
     expected_type = EventEnvelope[SandboxRecoveryCheckpointRecorded]
-    if type(event) is not expected_type:
-        raise SandboxRecoveryPersistenceError(
-            "event must be the concrete typed recovery checkpoint envelope"
-        )
-    for name in (
-        "event_id",
-        "stream_id",
-        "correlation_id",
-        "causation_id",
-        "trace_id",
-    ):
-        _concrete_uuid(object.__getattribute__(event, name), f"event {name}")
-    for name in ("event_type", "schema_version", "source"):
-        if type(object.__getattribute__(event, name)) is not str:
+    _require_exact_model_root(event, expected_type, "event")
+    try:
+        for name in (
+            "event_id",
+            "stream_id",
+            "correlation_id",
+            "causation_id",
+            "trace_id",
+        ):
+            _concrete_uuid(object.__getattribute__(event, name), f"event {name}")
+        for name in ("event_type", "schema_version", "source"):
+            if type(object.__getattribute__(event, name)) is not str:
+                raise SandboxRecoveryPersistenceError(
+                    f"event {name} must be a concrete string"
+                )
+        for name in (
+            "observed_at",
+            "ingested_at",
+            "produced_at",
+            "effective_at",
+            "expires_at",
+        ):
+            if type(object.__getattribute__(event, name)) is not datetime:
+                raise SandboxRecoveryPersistenceError(
+                    f"event {name} must be a concrete datetime"
+                )
+        if type(object.__getattribute__(event, "sequence")) is not int:
             raise SandboxRecoveryPersistenceError(
-                f"event {name} must be a concrete string"
+                "event sequence must be a concrete integer"
             )
-    for name in (
-        "observed_at",
-        "ingested_at",
-        "produced_at",
-        "effective_at",
-        "expires_at",
-    ):
-        if type(object.__getattribute__(event, name)) is not datetime:
+        if (
+            type(object.__getattribute__(event, "payload"))
+            is not SandboxRecoveryCheckpointRecorded
+        ):
             raise SandboxRecoveryPersistenceError(
-                f"event {name} must be a concrete datetime"
+                "event payload must be a concrete recovery checkpoint record"
             )
-    if type(object.__getattribute__(event, "sequence")) is not int:
+    except AttributeError as exc:
         raise SandboxRecoveryPersistenceError(
-            "event sequence must be a concrete integer"
-        )
-    if type(object.__getattribute__(event, "payload")) is not SandboxRecoveryCheckpointRecorded:
-        raise SandboxRecoveryPersistenceError(
-            "event payload must be a concrete recovery checkpoint record"
-        )
+            "event model fields are incomplete"
+        ) from exc
     return event
 
 

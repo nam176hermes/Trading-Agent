@@ -296,6 +296,20 @@ def test_encode_rejects_hostile_session_and_copy_forged_checkpoint_without_mutat
         )
 
 
+def test_encode_rejects_copy_forged_checkpoint_unknown_root_field(
+    prepared_case: Any,
+) -> None:
+    forged = checkpoint(prepared_case).model_copy(update={"restore": True})
+    assert object.__getattribute__(forged, "__dict__")["restore"] is True
+    assert "restore" in object.__getattribute__(forged, "__pydantic_fields_set__")
+
+    with pytest.raises(SandboxRecoveryPersistenceError):
+        encode_recovery_checkpoint(
+            recovery_session_id=uid(600),
+            checkpoint=forged,
+        )
+
+
 @pytest.mark.parametrize(
     "variant",
     (
@@ -373,6 +387,23 @@ def test_decode_rejects_record_to_embedded_checkpoint_identity_conflict(
         decode_recovery_checkpoint(record_with_json(record, changed))
 
 
+def test_carrier_and_decode_reject_copy_forged_unknown_root_field(
+    prepared_case: Any,
+) -> None:
+    record = encode_recovery_checkpoint(
+        recovery_session_id=uid(600),
+        checkpoint=checkpoint(prepared_case),
+    )
+    forged = record.model_copy(update={"restore": True})
+    assert object.__getattribute__(forged, "__dict__")["restore"] is True
+    assert "restore" in object.__getattribute__(forged, "__pydantic_fields_set__")
+
+    with pytest.raises((ValidationError, ValueError)):
+        SandboxRecoveryCheckpointRecorded.model_validate(forged)
+    with pytest.raises(SandboxRecoveryPersistenceError):
+        decode_recovery_checkpoint(forged)
+
+
 def test_registered_record_round_trips_with_exact_concrete_codec_and_event_binding(
     prepared_case: Any,
 ) -> None:
@@ -442,6 +473,42 @@ def test_event_validator_rejects_generic_forged_and_subclass_envelopes(
     for supplied in (generic, forged, subclass):
         with pytest.raises(SandboxRecoveryPersistenceError):
             validate_recovery_checkpoint_event(supplied)
+
+
+def test_event_validator_rejects_copy_forged_unknown_root_field(
+    prepared_case: Any,
+) -> None:
+    record = encode_recovery_checkpoint(
+        recovery_session_id=uid(600),
+        checkpoint=checkpoint(prepared_case),
+    )
+    forged = checkpoint_event(record).model_copy(update={"restore": True})
+    assert object.__getattribute__(forged, "__dict__")["restore"] is True
+    assert "restore" in object.__getattribute__(forged, "__pydantic_fields_set__")
+
+    with pytest.raises(SandboxRecoveryPersistenceError):
+        validate_recovery_checkpoint_event(forged)
+
+
+def test_event_validator_maps_incomplete_constructed_envelope_to_narrow_error(
+    prepared_case: Any,
+) -> None:
+    record = encode_recovery_checkpoint(
+        recovery_session_id=uid(600),
+        checkpoint=checkpoint(prepared_case),
+    )
+    event = checkpoint_event(record)
+    values = {
+        name: object.__getattribute__(event, name)
+        for name in EventEnvelope.model_fields
+        if name != "trace_id"
+    }
+    incomplete = EventEnvelope[SandboxRecoveryCheckpointRecorded].model_construct(
+        **values
+    )
+
+    with pytest.raises(SandboxRecoveryPersistenceError):
+        validate_recovery_checkpoint_event(incomplete)
 
 
 def test_event_validator_rebuilds_record_before_entering_event_codec(
