@@ -350,6 +350,73 @@ def test_requested_checkpoint_never_bypasses_corruption_elsewhere_in_stream(
         _load(repository=StaticStreamRepository(events))
 
 
+def test_exact_id_lookup_starts_only_after_entire_stream_validates(
+    prepared_case: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = InMemoryEventLedger()
+    first, first_event = _checkpoint_event(
+        prepared_case,
+        checkpoint_id=uid(200),
+        sequence=1,
+    )
+    _, second_event = _checkpoint_event(
+        prepared_case,
+        checkpoint_id=uid(201),
+        sequence=2,
+    )
+    _append(repository, first_event)
+    _append(repository, second_event)
+    validated_ids: list[UUID] = []
+    lookup_observations: list[tuple[UUID, ...]] = []
+    expected_validated_ids = (uid(200), uid(201))
+
+    class LookupCanary:
+        def __eq__(self, other: object) -> bool:
+            observed = tuple(validated_ids)
+            lookup_observations.append(observed)
+            assert observed == expected_validated_ids, (
+                "exact-ID lookup started before complete stream validation"
+            )
+            return other == uid(200)
+
+    real_concrete_uuid = recovery_persistence._concrete_uuid
+    lookup_canary = LookupCanary()
+
+    def concrete_uuid_with_lookup_canary(
+        value: object,
+        field_name: str,
+    ) -> object:
+        validated = real_concrete_uuid(value, field_name)
+        return lookup_canary if field_name == "checkpoint_id" else validated
+
+    real_validator = recovery_persistence.validate_recovery_checkpoint_event
+
+    def tracking_validator(event: object) -> SandboxRecoveryCheckpoint:
+        checkpoint = real_validator(event)
+        validated_ids.append(checkpoint.checkpoint_id)
+        return checkpoint
+
+    monkeypatch.setattr(
+        recovery_persistence,
+        "_concrete_uuid",
+        concrete_uuid_with_lookup_canary,
+    )
+    monkeypatch.setattr(
+        recovery_persistence,
+        "validate_recovery_checkpoint_event",
+        tracking_validator,
+    )
+
+    loaded = _load(repository=repository, checkpoint_id=uid(200))
+
+    assert loaded == first
+    assert lookup_observations == [
+        expected_validated_ids,
+        expected_validated_ids,
+    ]
+
+
 def test_repository_operational_error_propagates_unchanged() -> None:
     error = RepositoryUnavailable("stream read unavailable")
     repository = FailingStreamRepository(error)

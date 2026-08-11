@@ -435,7 +435,7 @@ def load_recovery_checkpoint(
         )
 
     seen_event_ids: set[UUID] = set()
-    selected: SandboxRecoveryCheckpoint | None = None
+    validated_evidence: list[tuple[UUID, SandboxRecoveryCheckpoint]] = []
     for event in tuple.__iter__(events):
         checkpoint = validate_recovery_checkpoint_event(event)
         record = object.__getattribute__(event, "payload")
@@ -459,6 +459,10 @@ def load_recovery_checkpoint(
             raise SandboxRecoveryPersistenceError(
                 "recovery checkpoint identities are not exactly bound"
             )
+        validated_evidence.append((event_id, checkpoint))
+
+    selected: SandboxRecoveryCheckpoint | None = None
+    for event_id, checkpoint in validated_evidence:
         if event_id == requested_checkpoint_id:
             selected = checkpoint
     return selected
