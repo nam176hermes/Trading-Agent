@@ -20,6 +20,7 @@ from packages.event_ledger.replay import (
     deserialize_event,
     serialize_event,
 )
+from packages.event_ledger.repository import EventLedgerRepository
 from packages.runtime_risk import canonical_model_digest, canonical_model_json
 
 from .recovery import (
@@ -403,9 +404,70 @@ def validate_recovery_checkpoint_event(
         ) from exc
 
 
+def load_recovery_checkpoint(
+    *,
+    repository: EventLedgerRepository,
+    recovery_session_id: UUID,
+    checkpoint_id: UUID,
+) -> SandboxRecoveryCheckpoint | None:
+    """Load one exact checkpoint only after validating its complete session stream."""
+
+    session_id = _concrete_uuid(recovery_session_id, "recovery_session_id")
+    requested_checkpoint_id = _concrete_uuid(checkpoint_id, "checkpoint_id")
+    try:
+        load_stream_events = object.__getattribute__(
+            repository,
+            "load_stream_events",
+        )
+    except AttributeError as exc:
+        raise SandboxRecoveryPersistenceError(
+            "repository must provide load_stream_events"
+        ) from exc
+    if not callable(load_stream_events):
+        raise SandboxRecoveryPersistenceError(
+            "repository load_stream_events must be callable"
+        )
+
+    events = load_stream_events(session_id)
+    if type(events) is not tuple:
+        raise SandboxRecoveryPersistenceError(
+            "repository load_stream_events must return a concrete tuple"
+        )
+
+    seen_event_ids: set[UUID] = set()
+    selected: SandboxRecoveryCheckpoint | None = None
+    for event in tuple.__iter__(events):
+        checkpoint = validate_recovery_checkpoint_event(event)
+        record = object.__getattribute__(event, "payload")
+        event_id = object.__getattribute__(event, "event_id")
+        stream_id = object.__getattribute__(event, "stream_id")
+        record_session_id = object.__getattribute__(record, "recovery_session_id")
+        record_checkpoint_id = object.__getattribute__(record, "checkpoint_id")
+        if stream_id != session_id or record_session_id != session_id:
+            raise SandboxRecoveryPersistenceError(
+                "recovery checkpoint event does not belong to requested session"
+            )
+        if event_id in seen_event_ids:
+            raise SandboxRecoveryPersistenceError(
+                "recovery checkpoint stream contains a duplicate event_id"
+            )
+        seen_event_ids.add(event_id)
+        if (
+            event_id != record_checkpoint_id
+            or record_checkpoint_id != checkpoint.checkpoint_id
+        ):
+            raise SandboxRecoveryPersistenceError(
+                "recovery checkpoint identities are not exactly bound"
+            )
+        if event_id == requested_checkpoint_id:
+            selected = checkpoint
+    return selected
+
+
 __all__ = [
     "SandboxRecoveryPersistenceError",
     "decode_recovery_checkpoint",
     "encode_recovery_checkpoint",
+    "load_recovery_checkpoint",
     "validate_recovery_checkpoint_event",
 ]
