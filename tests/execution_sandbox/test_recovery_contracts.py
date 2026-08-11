@@ -36,7 +36,14 @@ class AdversarialUUID(UUID):
 
 
 class AdversarialUUIDTuple(tuple):
-    """An accepted tuple subtype that must not skip element validation."""
+    """A tuple subtype whose stored UUID elements are directly iterable."""
+
+
+class MaskingAdversarialUUIDTuple(tuple):
+    """A tuple subtype that lies about its stored UUID elements during iteration."""
+
+    def __iter__(self):  # type: ignore[override]
+        return iter((UUID(int=101), UUID(int=102)))
 
 
 class LyingLaterDatetime(datetime):
@@ -517,6 +524,50 @@ def test_checkpoint_rejects_uuid_subclasses_inside_tuple_subclass(
                 submit_custodies=(),
             )
         )
+
+
+def test_checkpoint_rejects_tuple_subclass_that_masks_stored_uuid_subclasses(
+    prepared_case: Any,
+) -> None:
+    executed = MaskingAdversarialUUIDTuple(
+        (AdversarialUUID(int=100), AdversarialUUID(int=100))
+    )
+    empty_snapshot = SandboxSnapshot(
+        connection_state=SandboxConnectionState.CONNECTED,
+        current_time=NOW + timedelta(seconds=1),
+    )
+
+    with pytest.raises(ValueError, match="executed_command_ids"):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                checkpoint_snapshot=empty_snapshot,
+                executed_command_ids=executed,
+                submit_custodies=(),
+            )
+        )
+
+
+def test_checkpoint_accepts_ordered_builtin_executed_command_tuple(
+    prepared_case: Any,
+) -> None:
+    executed = (uid(102), uid(101))
+    empty_snapshot = SandboxSnapshot(
+        connection_state=SandboxConnectionState.CONNECTED,
+        current_time=NOW + timedelta(seconds=1),
+    )
+
+    checkpoint = SandboxRecoveryCheckpoint(
+        **checkpoint_values(
+            prepared_case,
+            checkpoint_snapshot=empty_snapshot,
+            executed_command_ids=executed,
+            submit_custodies=(),
+        )
+    )
+
+    assert type(checkpoint.executed_command_ids) is tuple
+    assert checkpoint.executed_command_ids == executed
 
 
 def test_custody_rejects_uuid_subclass_lineage_comparison_bypass(
