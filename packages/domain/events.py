@@ -29,6 +29,7 @@ from .portfolio_events import (
     PortfolioValuationRateEntry,
 )
 from .risk import RiskDecision
+from .recovery import SandboxRecoveryCheckpointRecorded
 from .runtime_halt import (
     GlobalHaltTransition,
     SubmitPermitConsumed,
@@ -59,6 +60,7 @@ EVENT_TYPE_BY_PAYLOAD: dict[type[object], str] = {
     GlobalHaltTransition: "GlobalHaltTransition",
     SubmitPermitPrepared: "SubmitPermitPrepared",
     SubmitPermitConsumed: "SubmitPermitConsumed",
+    SandboxRecoveryCheckpointRecorded: "SandboxRecoveryCheckpointRecorded",
 }
 
 

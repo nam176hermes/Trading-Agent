@@ -80,6 +80,7 @@ from .primitives import (
     decimal_to_scaled_integer,
 )
 from .risk import RiskDecision, RiskOutcome, RiskReasonCode, RiskStateSnapshot
+from .recovery import SandboxRecoveryCheckpointRecorded
 from .runtime_risk import (
     DurableOrderApprovalRef,
     PriorRuntimeCommandIdentity,
@@ -180,6 +181,7 @@ __all__ = [
     "RiskOutcome",
     "RiskReasonCode",
     "RiskStateSnapshot",
+    "SandboxRecoveryCheckpointRecorded",
     "RuntimeInstrumentRiskSpec",
     "RuntimeRiskMarketSnapshot",
     "RuntimeRiskConversionRate",

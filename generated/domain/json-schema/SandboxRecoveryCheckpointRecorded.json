@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "Canonical checkpoint bytes and identity, without execution authority.",
+  "properties": {
+    "checkpoint_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Checkpoint Digest",
+      "type": "string"
+    },
+    "checkpoint_id": {
+      "format": "uuid",
+      "title": "Checkpoint Id",
+      "type": "string"
+    },
+    "checkpoint_json": {
+      "minLength": 1,
+      "title": "Checkpoint Json",
+      "type": "string"
+    },
+    "checkpoint_schema_version": {
+      "const": "sandbox-recovery-checkpoint-v1",
+      "title": "Checkpoint Schema Version",
+      "type": "string"
+    },
+    "recovery_session_id": {
+      "format": "uuid",
+      "title": "Recovery Session Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "sandbox-recovery-checkpoint-recorded-v1",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "recovery_session_id",
+    "checkpoint_id",
+    "checkpoint_digest",
+    "checkpoint_json",
+    "checkpoint_schema_version",
+    "schema_version"
+  ],
+  "title": "SandboxRecoveryCheckpointRecorded",
+  "type": "object"
+}

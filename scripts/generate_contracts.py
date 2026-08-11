@@ -100,6 +100,7 @@ from packages.domain import (
     PreparedSubmitPermit,
     SubmitPermitConsumed,
     ConsumedSubmitAuthority,
+    SandboxRecoveryCheckpointRecorded,
     SignalProposal,
     StrategyExposureSnapshot,
     TargetPortfolio,
@@ -221,6 +222,7 @@ DOMAIN_SCHEMA_MODELS = (
     EventEnvelope[GlobalHaltTransition],
     EventEnvelope[SubmitPermitPrepared],
     EventEnvelope[SubmitPermitConsumed],
+    EventEnvelope[SandboxRecoveryCheckpointRecorded],
     StoredEvent,
     ReplayIssue,
     AppliedEvent,
@@ -248,6 +250,7 @@ DOMAIN_SCHEMA_MODELS = (
     PreparedSubmitPermit,
     SubmitPermitConsumed,
     ConsumedSubmitAuthority,
+    SandboxRecoveryCheckpointRecorded,
 )
 ENGINE_SCHEMA_MODELS = (
     EngineCapabilities,

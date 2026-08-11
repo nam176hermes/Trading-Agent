@@ -93,6 +93,8 @@ EXPECTED = {
     "PreparedSubmitPermit.json",
     "SubmitPermitConsumed.json",
     "ConsumedSubmitAuthority.json",
+    "SandboxRecoveryCheckpointRecorded.json",
+    "EventEnvelope_SandboxRecoveryCheckpointRecorded_.json",
 }
 
 LEGACY_EVENT_TYPES = {

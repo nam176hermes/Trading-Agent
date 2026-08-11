@@ -34,6 +34,12 @@ from .recovery import (
     SandboxSubmitCustody,
     plan_sandbox_recovery,
 )
+from .recovery_persistence import (
+    SandboxRecoveryPersistenceError,
+    decode_recovery_checkpoint,
+    encode_recovery_checkpoint,
+    validate_recovery_checkpoint_event,
+)
 
 __all__ = [
     "SandboxExecutionClient",
@@ -64,6 +70,10 @@ __all__ = [
     "SandboxRecoveryDisposition",
     "SandboxRecoveryMalformedInput",
     "SandboxRecoveryReason",
+    "SandboxRecoveryPersistenceError",
+    "decode_recovery_checkpoint",
+    "encode_recovery_checkpoint",
+    "validate_recovery_checkpoint_event",
     "reconcile_execution_state",
     "plan_sandbox_recovery",
 ]
