@@ -150,7 +150,7 @@ class SandboxRecoveryCheckpoint(SandboxModel):
     @field_validator("executed_command_ids", mode="before")
     @classmethod
     def _concrete_executed_command_ids(cls, value: object) -> object:
-        if type(value) is tuple:
+        if isinstance(value, tuple):
             for command_id in value:
                 _require_concrete_uuid(command_id, "executed_command_ids")
         return value

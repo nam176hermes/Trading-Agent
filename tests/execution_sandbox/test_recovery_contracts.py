@@ -35,6 +35,10 @@ class AdversarialUUID(UUID):
         return id(self)
 
 
+class AdversarialUUIDTuple(tuple):
+    """An accepted tuple subtype that must not skip element validation."""
+
+
 class LyingLaterDatetime(datetime):
     """A truly later timestamp which lies about relative ordering."""
 
@@ -488,6 +492,28 @@ def test_checkpoint_rejects_uuid_subclass_duplicate_executed_commands(
                 prepared_case,
                 checkpoint_snapshot=empty_snapshot,
                 executed_command_ids=(first, second),
+                submit_custodies=(),
+            )
+        )
+
+
+def test_checkpoint_rejects_uuid_subclasses_inside_tuple_subclass(
+    prepared_case: Any,
+) -> None:
+    executed = AdversarialUUIDTuple(
+        (AdversarialUUID(int=100), AdversarialUUID(int=100))
+    )
+    empty_snapshot = SandboxSnapshot(
+        connection_state=SandboxConnectionState.CONNECTED,
+        current_time=NOW + timedelta(seconds=1),
+    )
+
+    with pytest.raises(ValueError, match="executed_command_ids"):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                checkpoint_snapshot=empty_snapshot,
+                executed_command_ids=executed,
                 submit_custodies=(),
             )
         )
