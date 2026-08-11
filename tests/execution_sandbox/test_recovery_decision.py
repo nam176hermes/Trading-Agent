@@ -59,6 +59,18 @@ class AdversarialDatetime(datetime):
         raise AssertionError("datetime ordering must not run")
 
 
+class AdversarialString(str):
+    compared = False
+
+    def __eq__(self, other: object) -> bool:
+        type(self).compared = True
+        raise AssertionError("string equality must not run")
+
+    def __hash__(self) -> int:
+        type(self).compared = True
+        raise AssertionError("string hashing must not run")
+
+
 class AdversarialTuple(tuple):
     iterated = False
 
@@ -682,6 +694,77 @@ def test_pending_report_inventory_and_order_conflict_is_state_conflict(
     assert SandboxRecoveryReason.PENDING_REPORT_INVENTORY_CONFLICT in decision.reason_codes
 
 
+def test_original_queued_report_content_conflict_is_state_conflict(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope, pending=True)
+    snapshot = case.checkpoint.snapshot
+    original_plan = snapshot.queued_reports[0]
+    assert original_plan.event is not None
+    conflicting_plan = SandboxReportPlan(
+        report_id=original_plan.report_id,
+        deliver_at=original_plan.deliver_at,
+        event=_replace_event(original_plan.event, source="conflicting-queued-source"),
+    )
+    conflicting_snapshot = SandboxSnapshot(
+        **{**_model_values(snapshot), "queued_reports": (conflicting_plan,)}
+    )
+    checkpoint = SandboxRecoveryCheckpoint(
+        **{**_model_values(case.checkpoint), "snapshot": conflicting_snapshot}
+    )
+    reconciliation = _reconciliation_for(conflicting_snapshot)
+
+    decision = plan_sandbox_recovery(
+        checkpoint=checkpoint,
+        authority_events=case.authority_events,
+        reconciliation=reconciliation,
+    )
+
+    assert decision.disposition is SandboxRecoveryDisposition.STATE_CONFLICT
+    assert decision.reason_codes == (
+        SandboxRecoveryReason.PENDING_REPORT_INVENTORY_CONFLICT,
+    )
+
+
+def test_duplicate_queued_report_must_match_referenced_original_content(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope, pending=True)
+    snapshot = case.checkpoint.snapshot
+    original = snapshot.known_reports[0]
+    conflicting_duplicate = SandboxKnownReport(
+        report_id=uid(51),
+        event=_replace_event(original.event, source="conflicting-duplicate-source"),
+    )
+    duplicate_plan = SandboxReportPlan(
+        report_id=conflicting_duplicate.report_id,
+        deliver_at=snapshot.queued_reports[0].deliver_at,
+        duplicate_of_report_id=original.report_id,
+    )
+    conflicting_snapshot = SandboxSnapshot(
+        **{
+            **_model_values(snapshot),
+            "known_reports": (original, conflicting_duplicate),
+            "queued_reports": (duplicate_plan,),
+        }
+    )
+    checkpoint = SandboxRecoveryCheckpoint(
+        **{**_model_values(case.checkpoint), "snapshot": conflicting_snapshot}
+    )
+    reconciliation = _reconciliation_for(conflicting_snapshot)
+
+    decision = plan_sandbox_recovery(
+        checkpoint=checkpoint,
+        authority_events=case.authority_events,
+        reconciliation=reconciliation,
+    )
+
+    assert decision.disposition is SandboxRecoveryDisposition.STATE_CONFLICT
+    assert decision.reason_codes == (
+        SandboxRecoveryReason.PENDING_REPORT_INVENTORY_CONFLICT,
+    )
+
+
 def test_mismatch_reconciliation_requires_more_economic_evidence(
     prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
 ) -> None:
@@ -823,6 +906,27 @@ def test_noncanonical_authority_envelope_raises_narrow_malformed_input(
             authority_events=(forged, case.authority_events[1]),
             reconciliation=case.reconciliation,
         )
+
+
+def test_hostile_event_type_string_is_rejected_before_equality_dispatch(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope)
+    forged = case.authority_events[0].model_copy()
+    object.__setattr__(
+        forged,
+        "event_type",
+        AdversarialString(forged.event_type),
+    )
+    AdversarialString.compared = False
+
+    with pytest.raises(SandboxRecoveryMalformedInput):
+        plan_sandbox_recovery(
+            checkpoint=case.checkpoint,
+            authority_events=(forged, case.authority_events[1]),
+            reconciliation=case.reconciliation,
+        )
+    assert not AdversarialString.compared
 
 
 def test_conflicting_same_event_id_raises_narrow_malformed_input(

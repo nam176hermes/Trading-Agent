@@ -346,6 +346,12 @@ def _require_safe_recovery_value(
                 f"{field_name} must contain concrete datetime values"
             )
         return
+    if isinstance(value, str):
+        if type(value) is not str and not isinstance(value, Enum):
+            raise SandboxRecoveryMalformedInput(
+                f"{field_name} must contain concrete string values"
+            )
+        return
     if isinstance(value, tuple):
         if type(value) is not tuple:
             raise SandboxRecoveryMalformedInput(
@@ -674,6 +680,18 @@ def _reconciliation_reasons(
     )
     if reconciliation.pending_report_ids != ordered_pending:
         reasons.add(SandboxRecoveryReason.PENDING_REPORT_INVENTORY_CONFLICT)
+    for plan in snapshot.queued_reports:
+        known_event = known_by_report_id[plan.report_id]
+        expected_event = plan.event
+        if expected_event is None:
+            expected_event = known_by_report_id.get(plan.duplicate_of_report_id)
+        if (
+            expected_event is None
+            or plan.duplicate_of_report_id == plan.report_id
+            or serialize_event(expected_event) != serialize_event(known_event)
+        ):
+            reasons.add(SandboxRecoveryReason.PENDING_REPORT_INVENTORY_CONFLICT)
+            affected.add(known_event.payload.order_id)
     queued_ids = set(ordered_pending)
     incomplete = False
     for order_id in set(snapshot_by_order) & set(reconciliation_by_order):
