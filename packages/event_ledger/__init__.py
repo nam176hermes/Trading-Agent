@@ -7,10 +7,11 @@ from .models import (
 from .reducer import ConflictingEventError, ReducerPolicy, SequenceError, reduce_events
 from .replay import ReplayError, deserialize_event, replay, serialize_event, snapshot_from_result
 from .repository import EventConflictError, EventLedgerRepository, InMemoryEventLedger, PostgresLedgerSql
+from .postgres_repository import PostgresEventLedgerRepository
 
 __all__ = [
     "AggregateReplayState", "AppendOutcome", "AppliedEvent", "ConflictingEventError", "EventConflictError",
-    "EventLedgerRepository", "EventTypeCount", "InMemoryEventLedger", "OutboxIntent", "PostgresLedgerSql",
+    "EventLedgerRepository", "EventTypeCount", "InMemoryEventLedger", "OutboxIntent", "PostgresEventLedgerRepository", "PostgresLedgerSql",
     "REDUCER_VERSION", "REPLAY_SCHEMA_VERSION", "ReducerPolicy", "ReplayError", "ReplayIssue", "ReplayIssueCode", "ReplayResult",
     "ReplayStatus", "SequenceError", "SnapshotRecord", "StoredEvent", "StreamProjection", "deserialize_event",
     "reduce_events", "replay", "serialize_event", "snapshot_from_result",
