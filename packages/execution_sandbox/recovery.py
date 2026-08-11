@@ -467,6 +467,11 @@ def _canonical_authority_events(
         for index, supplied in enumerate(iterator):
             if not isinstance(supplied, EventEnvelope):
                 raise ValueError("authority evidence must be an EventEnvelope")
+            event_type = object.__getattribute__(supplied, "event_type")
+            if type(event_type) is not str:
+                raise SandboxRecoveryMalformedInput(
+                    "authority_events event_type must be a concrete string"
+                )
             _require_safe_recovery_value(supplied, f"authority_events.{index}")
             canonical_text = serialize_event(supplied)
             canonical = deserialize_event(canonical_text)

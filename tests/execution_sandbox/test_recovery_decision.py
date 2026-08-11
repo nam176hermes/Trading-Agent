@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -69,6 +70,21 @@ class AdversarialString(str):
     def __hash__(self) -> int:
         type(self).compared = True
         raise AssertionError("string hashing must not run")
+
+
+_adversarial_string_enum_operations: list[str] = []
+
+
+class AdversarialStringEnum(str, Enum):
+    PREPARED = "SubmitPermitPrepared"
+
+    def __eq__(self, other: object) -> bool:
+        _adversarial_string_enum_operations.append("equality")
+        raise AssertionError("string-enum equality must not run")
+
+    def __hash__(self) -> int:
+        _adversarial_string_enum_operations.append("hashing")
+        raise AssertionError("string-enum hashing must not run")
 
 
 class AdversarialTuple(tuple):
@@ -927,6 +943,23 @@ def test_hostile_event_type_string_is_rejected_before_equality_dispatch(
             reconciliation=case.reconciliation,
         )
     assert not AdversarialString.compared
+
+
+def test_hostile_event_type_string_enum_is_rejected_before_equality_dispatch(
+    prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope)
+    forged = case.authority_events[0].model_copy()
+    object.__setattr__(forged, "event_type", AdversarialStringEnum.PREPARED)
+    _adversarial_string_enum_operations.clear()
+
+    with pytest.raises(SandboxRecoveryMalformedInput):
+        plan_sandbox_recovery(
+            checkpoint=case.checkpoint,
+            authority_events=(forged, case.authority_events[1]),
+            reconciliation=case.reconciliation,
+        )
+    assert not _adversarial_string_enum_operations
 
 
 def test_conflicting_same_event_id_raises_narrow_malformed_input(
