@@ -25,7 +25,15 @@ from .models import (
     SandboxSubmitRequest,
 )
 from .reconciliation import reconcile_execution_state
-from .recovery import SandboxRecoveryCheckpoint, SandboxSubmitCustody
+from .recovery import (
+    SandboxRecoveryCheckpoint,
+    SandboxRecoveryDecision,
+    SandboxRecoveryDisposition,
+    SandboxRecoveryMalformedInput,
+    SandboxRecoveryReason,
+    SandboxSubmitCustody,
+    plan_sandbox_recovery,
+)
 
 __all__ = [
     "SandboxExecutionClient",
@@ -52,5 +60,10 @@ __all__ = [
     "SandboxSnapshot",
     "SandboxSubmitCustody",
     "SandboxRecoveryCheckpoint",
+    "SandboxRecoveryDecision",
+    "SandboxRecoveryDisposition",
+    "SandboxRecoveryMalformedInput",
+    "SandboxRecoveryReason",
     "reconcile_execution_state",
+    "plan_sandbox_recovery",
 ]
