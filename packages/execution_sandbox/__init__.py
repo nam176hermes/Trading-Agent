@@ -25,6 +25,7 @@ from .models import (
     SandboxSubmitRequest,
 )
 from .reconciliation import reconcile_execution_state
+from .recovery import SandboxRecoveryCheckpoint, SandboxSubmitCustody
 
 __all__ = [
     "SandboxExecutionClient",
@@ -49,5 +50,7 @@ __all__ = [
     "SandboxCommandResult",
     "SandboxOrderSnapshot",
     "SandboxSnapshot",
+    "SandboxSubmitCustody",
+    "SandboxRecoveryCheckpoint",
     "reconcile_execution_state",
 ]
