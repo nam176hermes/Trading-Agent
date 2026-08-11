@@ -22,6 +22,35 @@ from packages.runtime_risk import canonical_model_digest, canonical_model_json
 NOW = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
 
 
+class AdversarialUUID(UUID):
+    """A UUID whose Python identity operations deny its canonical bytes."""
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
+class LyingLaterDatetime(datetime):
+    """A truly later timestamp which lies about relative ordering."""
+
+    def __lt__(self, other: object) -> bool:
+        return False
+
+    def __gt__(self, other: object) -> bool:
+        return False
+
+    def __le__(self, other: object) -> bool:
+        return True
+
+    def __ge__(self, other: object) -> bool:
+        return True
+
+
 def uid(value: int) -> UUID:
     return UUID(int=value)
 
@@ -441,3 +470,134 @@ def test_construction_rebuilds_without_mutating_caller_owned_nested_models(
     assert checkpoint.snapshot is not original_snapshot
     assert checkpoint.submit_custodies[0] == original_custody
     assert checkpoint.submit_custodies[0] is not original_custody
+
+
+def test_checkpoint_rejects_uuid_subclass_duplicate_executed_commands(
+    prepared_case: Any,
+) -> None:
+    first = AdversarialUUID(int=100)
+    second = AdversarialUUID(int=100)
+    empty_snapshot = SandboxSnapshot(
+        connection_state=SandboxConnectionState.CONNECTED,
+        current_time=NOW + timedelta(seconds=1),
+    )
+
+    with pytest.raises(ValueError, match="executed_command_ids"):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                checkpoint_snapshot=empty_snapshot,
+                executed_command_ids=(first, second),
+                submit_custodies=(),
+            )
+        )
+
+
+def test_custody_rejects_uuid_subclass_lineage_comparison_bypass(
+    prepared_case: Any,
+) -> None:
+    prepared = prepared_case.permit.model_copy(
+        update={
+            "permit_id": AdversarialUUID(int=901),
+            "halt_stream_id": AdversarialUUID(int=902),
+        }
+    )
+
+    with pytest.raises(ValueError, match="prepared_permit"):
+        submit_custody(prepared_case, prepared_permit=prepared)
+
+
+@pytest.mark.parametrize("field_name", ("command_id", "order_id"))
+def test_custody_rejects_uuid_subclass_direct_identity(
+    field_name: str,
+    prepared_case: Any,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        submit_custody(
+            prepared_case,
+            **{field_name: AdversarialUUID(int=100 if field_name == "command_id" else 1)},
+        )
+
+
+def test_checkpoint_rejects_uuid_subclass_checkpoint_identity(
+    prepared_case: Any,
+) -> None:
+    with pytest.raises(ValueError, match="checkpoint_id"):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                checkpoint_id=AdversarialUUID(int=200),
+            )
+        )
+
+
+@pytest.mark.parametrize("identity_field", ("order_id", "venue_state", "observed_state"))
+def test_checkpoint_rejects_uuid_subclass_snapshot_order_identity_bypass(
+    identity_field: str,
+    prepared_case: Any,
+) -> None:
+    order_id: UUID = uid(1)
+    venue_state = OrderState(order_id=uid(1))
+    observed_state = OrderState(order_id=uid(1))
+    if identity_field == "order_id":
+        order_id = AdversarialUUID(int=999)
+    elif identity_field == "venue_state":
+        venue_state = OrderState(order_id=AdversarialUUID(int=999))
+    else:
+        observed_state = OrderState(order_id=AdversarialUUID(int=999))
+    forged_order = SandboxOrderSnapshot(
+        order_id=order_id,
+        client_order_id=prepared_case.intent.client_order_id,
+        order_intent=prepared_case.intent,
+        venue_state=venue_state,
+        observed_state=observed_state,
+    )
+    forged_snapshot = SandboxSnapshot(
+        connection_state=SandboxConnectionState.CONNECTED,
+        current_time=NOW + timedelta(seconds=1),
+        orders=(forged_order,),
+    )
+
+    with pytest.raises(ValueError, match="snapshot"):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                checkpoint_snapshot=forged_snapshot,
+            )
+        )
+
+
+def test_checkpoint_rejects_datetime_subclass_logical_time_bypass(
+    prepared_case: Any,
+) -> None:
+    consumed = consumed_authority(
+        prepared_case,
+        consumed_at=LyingLaterDatetime(2026, 8, 11, 12, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(ValueError, match="consumed_at"):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                submit_custodies=(
+                    submit_custody(prepared_case, consumed=consumed),
+                ),
+            )
+        )
+
+
+def test_checkpoint_rejects_datetime_subclass_snapshot_time_bypass(
+    prepared_case: Any,
+) -> None:
+    forged_snapshot = snapshot(
+        prepared_case,
+        current_time=LyingLaterDatetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(ValueError, match="snapshot current_time"):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                checkpoint_snapshot=forged_snapshot,
+            )
+        )
