@@ -352,6 +352,34 @@ class PostgresEventLedgerRepository:
             events.append(deserialize_event(canonical_text))
         return tuple(events)
 
+    def load_stream_events(
+        self,
+        stream_id: UUID,
+    ) -> tuple[EventEnvelope[object], ...]:
+        if type(stream_id) is not UUID:
+            raise ReplayError("stream_id must be an exact UUID")
+        with self._pool.connection() as connection:
+            rows = connection.execute(
+                PostgresLedgerSql.LOAD_STREAM_EVENTS,
+                {"stream_id": stream_id},
+            ).fetchall()
+        events: list[EventEnvelope[object]] = []
+        for row in rows:
+            canonical_text = self._row_value(
+                row,
+                "canonical_event_text",
+                0,
+                width=1,
+                error="database returned an invalid stored event row",
+            )
+            if type(canonical_text) is not str:
+                raise ReplayError("database returned invalid stored event bytes")
+            event = deserialize_event(canonical_text)
+            if type(event.stream_id) is not UUID or event.stream_id != stream_id:
+                raise ReplayError("stored event does not belong to requested stream")
+            events.append(event)
+        return tuple(events)
+
     def claim_inbox(self, consumer: str, event_id: UUID) -> bool:
         if type(consumer) is not str or not consumer or len(consumer) > 256:
             raise ReplayError("consumer must be bounded non-empty text")

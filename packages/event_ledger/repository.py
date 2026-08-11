@@ -21,6 +21,7 @@ class EventConflictError(ConflictingEventError):
 class EventLedgerRepository(Protocol):
     def append(self, event: EventEnvelope[object], outbox: OutboxIntent) -> AppendOutcome: ...
     def load_events(self) -> tuple[EventEnvelope[object], ...]: ...
+    def load_stream_events(self, stream_id: UUID) -> tuple[EventEnvelope[object], ...]: ...
     def claim_inbox(self, consumer: str, event_id: UUID) -> bool: ...
     def acknowledge_outbox(self, event_id: UUID) -> bool: ...
     def save_snapshot(self, snapshot: SnapshotRecord) -> None: ...
@@ -93,6 +94,22 @@ class InMemoryEventLedger:
         from .replay import deserialize_event
         return tuple(deserialize_event(record.canonical_json) for record in sorted(self._events.values(), key=lambda item: (item.stream_id.bytes, item.sequence, item.event_id.bytes)))
 
+    def load_stream_events(self, stream_id: UUID) -> tuple[EventEnvelope[object], ...]:
+        if type(stream_id) is not UUID:
+            raise ReplayError("stream_id must be an exact UUID")
+        from .replay import deserialize_event
+        records = (
+            record for record in self._events.values()
+            if record.stream_id == stream_id
+        )
+        return tuple(
+            deserialize_event(record.canonical_json)
+            for record in sorted(
+                records,
+                key=lambda item: (item.sequence, item.event_id.bytes),
+            )
+        )
+
     def load_outbox(self) -> tuple[OutboxIntent, ...]:
         return tuple(self._outbox[event_id] for event_id in sorted(self._outbox, key=lambda value: value.bytes))
 
@@ -150,6 +167,9 @@ class PostgresLedgerSql:
     %(canonical_event_text)s, %(topic)s, %(payload_json)s
 );"""
     LOAD_EVENTS = "SELECT canonical_event_text FROM public.domain_events ORDER BY stream_id, sequence, event_id"
+    LOAD_STREAM_EVENTS = """SELECT canonical_event_text FROM public.domain_events
+WHERE stream_id = %(stream_id)s
+ORDER BY sequence, event_id"""
     SAVE_SNAPSHOT = """SELECT public.save_domain_snapshot(
     %(canonical_state_json)s
 );"""

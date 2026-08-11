@@ -14,6 +14,25 @@ from tests.event_ledger.test_reducer import envelope, fill, signal
 from tests.runtime_risk.test_approval import runtime_risk_event
 
 
+class HostileUUIDSubclass(UUID):
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("UUID subclass equality must not run")
+
+    def __hash__(self) -> int:
+        raise AssertionError("UUID subclass hashing must not run")
+
+
+class UUIDDuck:
+    int = 1
+    bytes = b"\x00" * 16
+
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("UUID duck equality must not run")
+
+    def __hash__(self) -> int:
+        raise AssertionError("UUID duck hashing must not run")
+
+
 def test_append_and_outbox_are_atomic_and_identical_retry_is_idempotent() -> None:
     repository = InMemoryEventLedger()
     event = envelope(signal(), event_number=1)
@@ -143,6 +162,65 @@ def test_ingest_boundary_rejects_delivery_order_that_replay_canonicalizes() -> N
     assert repository.load_events() == (first, second)
 
 
+def test_load_stream_events_returns_empty_tuple_for_unknown_stream() -> None:
+    repository = InMemoryEventLedger()
+
+    assert repository.load_stream_events(UUID(int=999)) == ()
+
+
+def test_load_stream_events_returns_one_exact_concrete_event() -> None:
+    repository = InMemoryEventLedger()
+    event = envelope(signal(), event_number=1, stream_number=20, sequence=1)
+    repository.append(event, OutboxIntent(event_id=event.event_id, topic="signal"))
+
+    loaded = repository.load_stream_events(event.stream_id)
+
+    assert loaded == (event,)
+    assert type(loaded[0].payload) is type(event.payload)
+
+
+def test_load_stream_events_returns_only_requested_stream_in_canonical_order() -> None:
+    repository = InMemoryEventLedger()
+    requested_first = envelope(
+        signal(), event_number=3, stream_number=20, sequence=1
+    )
+    foreign = envelope(fill(), event_number=1, stream_number=10, sequence=1)
+    requested_second = envelope(
+        fill(), event_number=2, stream_number=20, sequence=2
+    )
+    for event in (requested_first, foreign, requested_second):
+        repository.append(
+            event,
+            OutboxIntent(event_id=event.event_id, topic="domain.event"),
+        )
+
+    assert repository.load_stream_events(requested_first.stream_id) == (
+        requested_first,
+        requested_second,
+    )
+    assert repository.load_stream_events(foreign.stream_id) == (foreign,)
+
+
+@pytest.mark.parametrize(
+    "stream_id",
+    (
+        "00000000-0000-0000-0000-000000000014",
+        HostileUUIDSubclass(int=20),
+        20,
+        UUIDDuck(),
+    ),
+)
+def test_load_stream_events_rejects_non_exact_uuid_before_lookup(
+    stream_id: object,
+) -> None:
+    repository = InMemoryEventLedger()
+    event = envelope(signal(), event_number=1, stream_number=20, sequence=1)
+    repository.append(event, OutboxIntent(event_id=event.event_id, topic="signal"))
+
+    with pytest.raises(ReplayError, match="stream_id must be an exact UUID"):
+        repository.load_stream_events(stream_id)  # type: ignore[arg-type]
+
+
 def test_inbox_rejects_unknown_event_identity_like_database_foreign_key() -> None:
     repository = InMemoryEventLedger()
 
@@ -260,6 +338,11 @@ def test_postgres_sql_boundary_is_one_atomic_function_call_and_loads_canonical_t
     assert "digest" not in statement
     assert "canonical_event_text" in PostgresLedgerSql.LOAD_EVENTS
     assert "canonical_event" not in PostgresLedgerSql.LOAD_EVENTS.replace("canonical_event_text", "")
+
+    stream_statement = PostgresLedgerSql.LOAD_STREAM_EVENTS
+    assert "SELECT canonical_event_text FROM public.domain_events" in stream_statement
+    assert "WHERE stream_id = %(stream_id)s" in stream_statement
+    assert "ORDER BY sequence, event_id" in stream_statement
 
 
 def test_postgres_sql_boundary_has_snapshot_and_inbox_parity() -> None:

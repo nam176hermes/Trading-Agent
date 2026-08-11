@@ -118,6 +118,25 @@ class DictSubclass(dict):
         raise AssertionError("hostile row lookup must not run")
 
 
+class HostileText(str):
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("hostile stored text equality must not run")
+
+    def __hash__(self) -> int:
+        raise AssertionError("hostile stored text hashing must not run")
+
+    def encode(self, *args: object, **kwargs: object) -> bytes:
+        raise AssertionError("hostile stored text encoding must not run")
+
+
+class HostileUUIDSubclass(UUID):
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("UUID subclass equality must not run")
+
+    def __hash__(self) -> int:
+        raise AssertionError("UUID subclass hashing must not run")
+
+
 def test_append_uses_one_transaction_and_database_owned_function_result() -> None:
     event = envelope(signal(), event_number=1)
     outbox = OutboxIntent(
@@ -319,6 +338,156 @@ def test_load_events_rejects_invalid_row_shapes_and_stored_event_bytes(row: obje
 
     with pytest.raises(ReplayError):
         PostgresEventLedgerRepository(Pool(connection)).load_events()
+
+
+def test_load_stream_events_queries_exact_stream_without_a_transaction() -> None:
+    stream_id = UUID(int=20)
+    connection = Connection([[]])
+
+    loaded = PostgresEventLedgerRepository(Pool(connection)).load_stream_events(
+        stream_id
+    )
+
+    assert loaded == ()
+    assert connection.executions == [
+        (PostgresLedgerSql.LOAD_STREAM_EVENTS, {"stream_id": stream_id})
+    ]
+    assert connection.transaction_count == 0
+
+
+def test_load_stream_events_reconstructs_one_exact_concrete_payload() -> None:
+    event = envelope(fill(), event_number=1, stream_number=20, sequence=1)
+    connection = Connection([[{"canonical_event_text": serialize_event(event)}]])
+
+    loaded = PostgresEventLedgerRepository(Pool(connection)).load_stream_events(
+        event.stream_id
+    )
+
+    assert loaded == (event,)
+    assert type(loaded[0].payload) is type(event.payload)
+
+
+def test_load_stream_events_preserves_database_order_and_duplicate_sequences() -> None:
+    second = envelope(fill(), event_number=3, stream_number=20, sequence=2)
+    first_later_id = envelope(signal(), event_number=2, stream_number=20, sequence=1)
+    first_earlier_id = envelope(fill(), event_number=1, stream_number=20, sequence=1)
+    scripted = (second, first_later_id, first_earlier_id)
+    connection = Connection(
+        [[(serialize_event(event),) for event in scripted]]
+    )
+
+    loaded = PostgresEventLedgerRepository(Pool(connection)).load_stream_events(
+        second.stream_id
+    )
+
+    assert loaded == scripted
+    assert tuple(type(event.payload) for event in loaded) == tuple(
+        type(event.payload) for event in scripted
+    )
+
+
+@pytest.mark.parametrize(
+    "row",
+    (
+        (),
+        ("{}", "surplus"),
+        {"wrong": "{}"},
+        TupleSubclass(("{}",)),
+        DictSubclass(canonical_event_text="{}"),
+    ),
+)
+def test_load_stream_events_rejects_malformed_row_shapes(row: object) -> None:
+    connection = Connection([[row]])
+
+    with pytest.raises(ReplayError):
+        PostgresEventLedgerRepository(Pool(connection)).load_stream_events(UUID(int=20))
+
+
+def test_load_stream_events_rejects_non_string_stored_text() -> None:
+    connection = Connection([[(1,)]])
+
+    with pytest.raises(ReplayError, match="invalid stored event bytes"):
+        PostgresEventLedgerRepository(Pool(connection)).load_stream_events(UUID(int=20))
+
+
+def test_load_stream_events_rejects_hostile_text_without_invoking_hooks() -> None:
+    connection = Connection([[(HostileText("{}"),)]])
+
+    with pytest.raises(ReplayError, match="invalid stored event bytes"):
+        PostgresEventLedgerRepository(Pool(connection)).load_stream_events(UUID(int=20))
+
+
+def test_load_stream_events_rejects_malformed_and_noncanonical_text() -> None:
+    event = envelope(signal(), event_number=1, stream_number=20, sequence=1)
+    noncanonical = json.dumps(json.loads(serialize_event(event)), indent=2)
+
+    for canonical_text in ("{", noncanonical):
+        connection = Connection([[(canonical_text,)]])
+        with pytest.raises(ReplayError):
+            PostgresEventLedgerRepository(Pool(connection)).load_stream_events(
+                event.stream_id
+            )
+
+
+def test_load_stream_events_later_corruption_fails_without_returning_prefix() -> None:
+    first = envelope(signal(), event_number=1, stream_number=20, sequence=1)
+    second = envelope(fill(), event_number=2, stream_number=20, sequence=2)
+    noncanonical = json.dumps(json.loads(serialize_event(second)), indent=2)
+    connection = Connection([[(serialize_event(first),), (noncanonical,)]])
+
+    with pytest.raises(ReplayError, match="not canonical"):
+        PostgresEventLedgerRepository(Pool(connection)).load_stream_events(
+            first.stream_id
+        )
+
+
+def test_load_stream_events_foreign_later_row_fails_closed() -> None:
+    requested = envelope(signal(), event_number=1, stream_number=20, sequence=1)
+    foreign = envelope(fill(), event_number=2, stream_number=30, sequence=1)
+    connection = Connection(
+        [[(serialize_event(requested),), (serialize_event(foreign),)]]
+    )
+
+    with pytest.raises(ReplayError, match="requested stream"):
+        PostgresEventLedgerRepository(Pool(connection)).load_stream_events(
+            requested.stream_id
+        )
+
+
+@pytest.mark.parametrize(
+    "stream_id",
+    (
+        "00000000-0000-0000-0000-000000000014",
+        HostileUUIDSubclass(int=20),
+        20,
+        object(),
+    ),
+)
+def test_load_stream_events_rejects_non_exact_uuid_before_database_access(
+    stream_id: object,
+) -> None:
+    connection = Connection()
+
+    with pytest.raises(ReplayError, match="stream_id must be an exact UUID"):
+        PostgresEventLedgerRepository(Pool(connection)).load_stream_events(
+            stream_id  # type: ignore[arg-type]
+        )
+
+    assert connection.executions == []
+
+
+def test_load_stream_events_preserves_operational_database_error_identity() -> None:
+    error = DatabaseError("08006")
+    connection = Connection(error=error)
+
+    with pytest.raises(DatabaseError) as raised:
+        PostgresEventLedgerRepository(Pool(connection)).load_stream_events(UUID(int=20))
+
+    assert raised.value is error
+    assert connection.executions == [
+        (PostgresLedgerSql.LOAD_STREAM_EVENTS, {"stream_id": UUID(int=20)})
+    ]
+    assert connection.transaction_count == 0
 
 
 def test_claim_inbox_validates_input_and_uses_existing_claim_contract() -> None:
