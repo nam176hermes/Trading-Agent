@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
-from packages.domain import OrderState
+from packages.domain import EventEnvelope, OrderEvent, OrderState, OrderStatus, Price
 from packages.domain.runtime_halt import ConsumedSubmitAuthority
 from packages.execution_sandbox import (
     SandboxConnectionState,
+    SandboxModifyRequest,
     SandboxOrderSnapshot,
     SandboxRecoveryCheckpoint,
     SandboxSnapshot,
@@ -62,6 +64,30 @@ class LyingLaterDatetime(datetime):
         return True
 
 
+class ExplodingUUID(UUID):
+    operations: list[str] = []
+
+    def __eq__(self, other: object) -> bool:
+        type(self).operations.append("equality")
+        raise AssertionError("UUID equality must not run")
+
+    def __hash__(self) -> int:
+        type(self).operations.append("hashing")
+        raise AssertionError("UUID hashing must not run")
+
+
+class ExplodingString(str):
+    operations: list[str] = []
+
+    def __eq__(self, other: object) -> bool:
+        type(self).operations.append("equality")
+        raise AssertionError("string equality must not run")
+
+    def __hash__(self) -> int:
+        type(self).operations.append("hashing")
+        raise AssertionError("string hashing must not run")
+
+
 def uid(value: int) -> UUID:
     return UUID(int=value)
 
@@ -90,16 +116,36 @@ def submit_custody(
     command_id: UUID = uid(100),
     order_id: UUID = uid(1),
     client_order_id: str = "sandbox-client-1",
+    submitted_order_intent: object | None = None,
     prepared_permit: object | None = None,
     consumed: object | None = None,
 ) -> SandboxSubmitCustody:
+    historical_intent = (
+        prepared_case.intent.model_copy(
+            update={
+                "intent_id": order_id,
+                "client_order_id": client_order_id,
+            }
+        )
+        if submitted_order_intent is None
+        else submitted_order_intent
+    )
+    selected_permit = prepared_permit
+    if selected_permit is None:
+        historical_digest = canonical_model_digest(historical_intent)
+        selected_permit = (
+            prepared_case.permit
+            if historical_digest == prepared_case.permit.intent_digest
+            else prepared_case.permit.model_copy(
+                update={"intent_digest": historical_digest}
+            )
+        )
     return SandboxSubmitCustody(
         command_id=command_id,
         order_id=order_id,
         client_order_id=client_order_id,
-        prepared_permit=(
-            prepared_case.permit if prepared_permit is None else prepared_permit
-        ),
+        submitted_order_intent=historical_intent,
+        prepared_permit=selected_permit,
         consumed_authority=(
             consumed_authority(prepared_case) if consumed is None else consumed
         ),
@@ -160,7 +206,7 @@ def checkpoint_values(
             else submit_custodies
         ),
         "created_at": NOW + timedelta(seconds=2),
-        "schema_version": "sandbox-recovery-checkpoint-v1",
+        "schema_version": "sandbox-recovery-checkpoint-v2",
     }
     values.update(changes)
     return values
@@ -174,7 +220,7 @@ def test_valid_canonical_custody_and_checkpoint_are_strict_immutable_evidence(
 
     assert custody.command_id == uid(100)
     assert checkpoint.snapshot.orders[0].order_id == custody.order_id
-    assert checkpoint.schema_version == "sandbox-recovery-checkpoint-v1"
+    assert checkpoint.schema_version == "sandbox-recovery-checkpoint-v2"
     assert set(SandboxRecoveryCheckpoint.model_fields) == {
         "checkpoint_id",
         "scenario_digest",
@@ -183,6 +229,14 @@ def test_valid_canonical_custody_and_checkpoint_are_strict_immutable_evidence(
         "submit_custodies",
         "created_at",
         "schema_version",
+    }
+    assert set(SandboxSubmitCustody.model_fields) == {
+        "command_id",
+        "order_id",
+        "client_order_id",
+        "submitted_order_intent",
+        "prepared_permit",
+        "consumed_authority",
     }
     assert "digest" not in SandboxRecoveryCheckpoint.model_fields
     with pytest.raises(ValidationError):
@@ -365,17 +419,16 @@ def test_checkpoint_rejects_duplicate_custody_client_order_id(
         )
 
 
-def test_checkpoint_rejects_snapshot_intent_not_bound_to_permit(
+def test_custody_rejects_historical_submitted_intent_not_bound_to_permit(
     prepared_case: Any,
 ) -> None:
     changed_permit = prepared_case.permit.model_copy(
         update={"intent_digest": "f" * 64}
     )
-    custody = submit_custody(prepared_case, prepared_permit=changed_permit)
-
     with pytest.raises(ValueError, match="intent_digest"):
-        SandboxRecoveryCheckpoint(
-            **checkpoint_values(prepared_case, submit_custodies=(custody,))
+        submit_custody(
+            prepared_case,
+            prepared_permit=changed_permit,
         )
 
 
@@ -405,7 +458,7 @@ def test_checkpoint_rejects_unsupported_schema_version(prepared_case: Any) -> No
         SandboxRecoveryCheckpoint(
             **checkpoint_values(
                 prepared_case,
-                schema_version="sandbox-recovery-checkpoint-v2",
+                schema_version="sandbox-recovery-checkpoint-v1",
             )
         )
 
@@ -678,3 +731,265 @@ def test_checkpoint_rejects_datetime_subclass_snapshot_time_bypass(
                 checkpoint_snapshot=forged_snapshot,
             )
         )
+
+
+def test_checkpoint_accepts_modified_current_intent_with_historical_submit_intent(
+    prepared_case: Any,
+) -> None:
+    """A permitted modify must not rewrite the original submit authority."""
+
+    submitted_intent = prepared_case.intent
+    current_intent = submitted_intent.model_copy(
+        update={
+            "limit_price": Price(
+                Decimal("101"),
+                submitted_intent.limit_price.currency,
+            )
+        }
+    )
+    current_order = SandboxOrderSnapshot(
+        order_id=submitted_intent.intent_id,
+        client_order_id=submitted_intent.client_order_id,
+        order_intent=current_intent,
+        venue_state=OrderState(order_id=submitted_intent.intent_id),
+        observed_state=OrderState(order_id=submitted_intent.intent_id),
+    )
+    custody = SandboxSubmitCustody(
+        command_id=uid(100),
+        order_id=submitted_intent.intent_id,
+        client_order_id=submitted_intent.client_order_id,
+        submitted_order_intent=submitted_intent,
+        prepared_permit=prepared_case.permit,
+        consumed_authority=consumed_authority(prepared_case),
+    )
+
+    checkpoint = SandboxRecoveryCheckpoint(
+        **checkpoint_values(
+            prepared_case,
+            checkpoint_snapshot=snapshot(
+                prepared_case,
+                orders=(current_order,),
+            ),
+            submit_custodies=(custody,),
+            schema_version="sandbox-recovery-checkpoint-v2",
+        )
+    )
+
+    assert checkpoint.submit_custodies[0].submitted_order_intent == submitted_intent
+    assert checkpoint.snapshot.orders[0].order_intent == current_intent
+    assert canonical_model_digest(current_intent) != prepared_case.permit.intent_digest
+
+
+@pytest.mark.parametrize("identity", ("order", "client"))
+def test_custody_rejects_historical_intent_identity_mismatch(
+    identity: str,
+    prepared_case: Any,
+) -> None:
+    changes = (
+        {"intent_id": uid(999)}
+        if identity == "order"
+        else {"client_order_id": "sandbox-client-other"}
+    )
+    forged = prepared_case.intent.model_copy(update=changes)
+
+    with pytest.raises(ValueError, match="submitted_order_intent"):
+        SandboxSubmitCustody(
+            command_id=uid(100),
+            order_id=prepared_case.intent.intent_id,
+            client_order_id=prepared_case.intent.client_order_id,
+            submitted_order_intent=forged,
+            prepared_permit=prepared_case.permit,
+            consumed_authority=consumed_authority(prepared_case),
+        )
+
+
+def test_custody_rejects_historical_intent_economic_digest_mismatch(
+    prepared_case: Any,
+) -> None:
+    forged = prepared_case.intent.model_copy(
+        update={
+            "limit_price": Price(
+                Decimal("101"),
+                prepared_case.intent.limit_price.currency,
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="intent_digest"):
+        submit_custody(
+            prepared_case,
+            submitted_order_intent=forged,
+            prepared_permit=prepared_case.permit,
+        )
+
+
+def test_custody_rejects_copy_forged_historical_intent_root(
+    prepared_case: Any,
+) -> None:
+    forged = prepared_case.intent.model_copy(update={"restore": True})
+
+    with pytest.raises(ValueError, match="submitted_order_intent"):
+        submit_custody(
+            prepared_case,
+            submitted_order_intent=forged,
+            prepared_permit=prepared_case.permit,
+        )
+
+
+@pytest.mark.parametrize("attack", ("uuid", "string"))
+def test_custody_rejects_hostile_historical_intent_identity_before_dispatch(
+    attack: str,
+    prepared_case: Any,
+) -> None:
+    forged = prepared_case.intent.model_copy()
+    if attack == "uuid":
+        object.__setattr__(
+            forged,
+            "intent_id",
+            ExplodingUUID(str(prepared_case.intent.intent_id)),
+        )
+        ExplodingUUID.operations.clear()
+    else:
+        object.__setattr__(
+            forged,
+            "client_order_id",
+            ExplodingString(prepared_case.intent.client_order_id),
+        )
+        ExplodingString.operations.clear()
+
+    with pytest.raises(ValueError, match="submitted_order_intent"):
+        submit_custody(
+            prepared_case,
+            submitted_order_intent=forged,
+            prepared_permit=prepared_case.permit,
+        )
+
+    assert (
+        ExplodingUUID.operations == []
+        if attack == "uuid"
+        else ExplodingString.operations == []
+    )
+
+
+@pytest.mark.parametrize("nested_root", ("custody", "order"))
+def test_checkpoint_rejects_copy_forged_nested_unknown_root_field(
+    nested_root: str,
+    prepared_case: Any,
+) -> None:
+    custody = submit_custody(prepared_case)
+    checkpoint_snapshot = snapshot(prepared_case)
+    if nested_root == "custody":
+        custody = custody.model_copy(update={"restore": True})
+    else:
+        forged_order = checkpoint_snapshot.orders[0].model_copy(
+            update={"restore": True}
+        )
+        checkpoint_snapshot = checkpoint_snapshot.model_copy(
+            update={"orders": (forged_order,)}
+        )
+
+    with pytest.raises(ValueError, match=nested_root):
+        SandboxRecoveryCheckpoint(
+            **checkpoint_values(
+                prepared_case,
+                checkpoint_snapshot=checkpoint_snapshot,
+                submit_custodies=(custody,),
+            )
+        )
+
+
+def test_real_client_submit_modify_snapshot_retains_historical_submit_authority(
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    from tests.execution_sandbox.test_submit_authority import (
+        _client,
+        _command,
+        _order_report,
+        _scenario,
+        _submit_request,
+    )
+    from packages.execution_sandbox import SandboxCommandKind
+
+    scenario = _scenario(
+        (
+            _command(100, SandboxCommandKind.SUBMIT, (20, 21)),
+            _command(101, SandboxCommandKind.MODIFY, (22, 23)),
+        ),
+        (
+            _order_report(
+                submitted_envelope,
+                report_id=20,
+                event_id=100,
+                sequence=1,
+                status=OrderStatus.SUBMITTED,
+            ),
+            _order_report(
+                submitted_envelope,
+                report_id=21,
+                event_id=101,
+                sequence=2,
+                status=OrderStatus.ACCEPTED,
+            ),
+            _order_report(
+                submitted_envelope,
+                report_id=22,
+                event_id=102,
+                sequence=3,
+                status=OrderStatus.PENDING_UPDATE,
+            ),
+            _order_report(
+                submitted_envelope,
+                report_id=23,
+                event_id=103,
+                sequence=4,
+                status=OrderStatus.ACCEPTED,
+            ),
+        ),
+    )
+    client = _client(prepared_case, scenario)
+    submit_result = client.submit(_submit_request(prepared_case))
+    client.drain_reports()
+    replacement = prepared_case.intent.model_copy(
+        update={
+            "limit_price": Price(
+                Decimal("101"),
+                prepared_case.intent.limit_price.currency,
+            )
+        }
+    )
+    client.modify(
+        SandboxModifyRequest(
+            command_id=uid(101),
+            order_id=prepared_case.intent.intent_id,
+            replacement_order_intent=replacement,
+            requested_at=NOW + timedelta(seconds=2),
+        )
+    )
+    current_snapshot = client.snapshot()
+    assert submit_result.consumed_authority is not None
+    custody = SandboxSubmitCustody(
+        command_id=uid(100),
+        order_id=prepared_case.intent.intent_id,
+        client_order_id=prepared_case.intent.client_order_id,
+        submitted_order_intent=prepared_case.intent,
+        prepared_permit=prepared_case.permit,
+        consumed_authority=submit_result.consumed_authority,
+    )
+
+    checkpoint = SandboxRecoveryCheckpoint(
+        checkpoint_id=uid(200),
+        scenario_digest="a" * 64,
+        snapshot=current_snapshot,
+        executed_command_ids=(uid(100), uid(101)),
+        submit_custodies=(custody,),
+        created_at=NOW + timedelta(seconds=3),
+        schema_version="sandbox-recovery-checkpoint-v2",
+    )
+
+    assert checkpoint.snapshot.orders[0].order_intent == replacement
+    assert checkpoint.submit_custodies[0].submitted_order_intent == prepared_case.intent
+    assert (
+        canonical_model_digest(checkpoint.submit_custodies[0].submitted_order_intent)
+        == checkpoint.submit_custodies[0].prepared_permit.intent_digest
+    )

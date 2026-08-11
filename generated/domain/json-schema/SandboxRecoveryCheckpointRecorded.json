@@ -18,7 +18,7 @@
       "type": "string"
     },
     "checkpoint_schema_version": {
-      "const": "sandbox-recovery-checkpoint-v1",
+      "const": "sandbox-recovery-checkpoint-v2",
       "title": "Checkpoint Schema Version",
       "type": "string"
     },

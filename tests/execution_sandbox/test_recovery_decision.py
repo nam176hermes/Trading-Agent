@@ -2,13 +2,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
 import pytest
 
-from packages.domain import EventEnvelope, OrderEvent, OrderState, OrderStatus, reduce_order
+from packages.domain import (
+    EventEnvelope,
+    OrderEvent,
+    OrderState,
+    OrderStatus,
+    Price,
+    reduce_order,
+)
 from packages.domain.runtime_halt import (
     ConsumedSubmitAuthority,
     SubmitPermitConsumed,
@@ -265,6 +273,7 @@ def recovery_case(
         command_id=uid(100),
         order_id=prepared_case.intent.intent_id,
         client_order_id=prepared_case.intent.client_order_id,
+        submitted_order_intent=prepared_case.intent,
         prepared_permit=prepared_case.permit,
         consumed_authority=consumed,
     )
@@ -275,7 +284,7 @@ def recovery_case(
         executed_command_ids=(uid(100),),
         submit_custodies=(custody,),
         created_at=NOW + timedelta(seconds=3),
-        schema_version="sandbox-recovery-checkpoint-v1",
+        schema_version="sandbox-recovery-checkpoint-v2",
     )
     return RecoveryCase(
         checkpoint=checkpoint,
@@ -405,6 +414,63 @@ def test_reconciled_nonterminal_order_is_safe_to_restore_process_state(
     assert decision.reason_codes == (SandboxRecoveryReason.RECOVERY_EVIDENCE_COMPLETE,)
 
 
+def test_recovery_authority_binds_historical_submit_intent_not_current_modified_intent(
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope)
+    historical_intent = case.checkpoint.submit_custodies[0].submitted_order_intent
+    current_intent = historical_intent.model_copy(
+        update={
+            "limit_price": Price(
+                Decimal("101"),
+                historical_intent.limit_price.currency,
+            )
+        }
+    )
+    prior_order = case.checkpoint.snapshot.orders[0]
+    current_order = SandboxOrderSnapshot(
+        order_id=prior_order.order_id,
+        client_order_id=prior_order.client_order_id,
+        order_intent=current_intent,
+        venue_state=prior_order.venue_state,
+        observed_state=prior_order.observed_state,
+    )
+    current_snapshot = SandboxSnapshot(
+        **{
+            **_model_values(case.checkpoint.snapshot),
+            "orders": (current_order,),
+        }
+    )
+    checkpoint = SandboxRecoveryCheckpoint(
+        **{
+            **_model_values(case.checkpoint),
+            "snapshot": current_snapshot,
+        }
+    )
+    reconciliation = _reconciliation_for(current_snapshot)
+
+    decision = plan_sandbox_recovery(
+        checkpoint=checkpoint,
+        authority_events=case.authority_events,
+        reconciliation=reconciliation,
+    )
+
+    prepared_payload = next(
+        event.payload
+        for event in case.authority_events
+        if type(event.payload) is SubmitPermitPrepared
+    )
+    custody = checkpoint.submit_custodies[0]
+    assert decision.disposition is SandboxRecoveryDisposition.SAFE_TO_RESTORE
+    assert (
+        prepared_payload.intent_digest
+        == custody.prepared_permit.intent_digest
+        == canonical_model_digest(custody.submitted_order_intent)
+    )
+    assert canonical_model_digest(current_intent) != prepared_payload.intent_digest
+
+
 def test_delivery_pending_is_safe_to_restore_without_resubmit_authority(
     prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
 ) -> None:
@@ -510,6 +576,7 @@ def test_checkpoint_authority_digest_conflict_is_state_conflict(
         command_id=custody.command_id,
         order_id=custody.order_id,
         client_order_id=custody.client_order_id,
+        submitted_order_intent=custody.submitted_order_intent,
         prepared_permit=prepared,
         consumed_authority=consumed,
     )

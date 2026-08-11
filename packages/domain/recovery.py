@@ -36,7 +36,7 @@ class SandboxRecoveryCheckpointRecorded(BaseModel):
     checkpoint_id: UUID
     checkpoint_digest: Sha256
     checkpoint_json: NonEmptyCheckpointJson
-    checkpoint_schema_version: Literal["sandbox-recovery-checkpoint-v1"]
+    checkpoint_schema_version: Literal["sandbox-recovery-checkpoint-v2"]
     schema_version: Literal["sandbox-recovery-checkpoint-recorded-v1"]
 
     @field_validator("recovery_session_id", "checkpoint_id", mode="before")

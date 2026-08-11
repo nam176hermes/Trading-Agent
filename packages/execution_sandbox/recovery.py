@@ -11,7 +11,11 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from packages.domain.clock import require_utc
 from packages.domain.events import EventEnvelope
-from packages.domain.orders import TERMINAL_ORDER_STATUSES, CanonicalIdentifier
+from packages.domain.orders import (
+    TERMINAL_ORDER_STATUSES,
+    CanonicalIdentifier,
+    OrderIntent,
+)
 from packages.domain.runtime_halt import (
     ConsumedSubmitAuthority,
     PreparedSubmitPermit,
@@ -39,16 +43,50 @@ from .models import (
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
+def _require_exact_model_root(
+    value: object,
+    expected: type[BaseModel],
+    field_name: str,
+) -> None:
+    """Reject incomplete or surplus copied model state before reconstruction."""
+
+    if type(value) is not expected:
+        raise ValueError(f"{field_name} must be a concrete {expected.__name__}")
+    try:
+        state = object.__getattribute__(value, "__dict__")
+        fields_set = object.__getattribute__(value, "__pydantic_fields_set__")
+        extra = object.__getattribute__(value, "__pydantic_extra__")
+    except AttributeError as exc:
+        raise ValueError(f"{field_name} model state is incomplete") from exc
+    if type(state) is not dict or type(fields_set) is not set:
+        raise ValueError(f"{field_name} model state must be concrete")
+    state_names = tuple(dict.__iter__(state))
+    fields_set_names = tuple(set.__iter__(fields_set))
+    if any(type(name) is not str for name in state_names + fields_set_names):
+        raise ValueError(f"{field_name} field names must be concrete strings")
+    declared_names = expected.model_fields
+    if (
+        len(state_names) != len(declared_names)
+        or any(name not in declared_names for name in state_names)
+        or any(name not in state for name in declared_names)
+        or any(name not in declared_names for name in fields_set_names)
+    ):
+        raise ValueError(f"{field_name} model fields must be exact")
+    if extra is not None and (type(extra) is not dict or dict.__len__(extra) != 0):
+        raise ValueError(f"{field_name} model extras must be empty")
+
+
 def _canonical_model(
     value: object, expected: type[ModelT], field_name: str
 ) -> ModelT:
     """Rebuild one exact nested model without trusting an existing instance."""
 
-    if type(value) is not expected:
-        raise ValueError(f"{field_name} must be a concrete {expected.__name__}")
     try:
+        _require_exact_model_root(value, expected, field_name)
         values = {name: getattr(value, name) for name in expected.model_fields}
-        return expected.model_validate(values)
+        canonical = expected.model_validate(values)
+        _require_exact_model_root(canonical, expected, f"canonical {field_name}")
+        return canonical
     except (AttributeError, TypeError, ValueError) as exc:
         raise ValueError(f"{field_name} is not canonical") from exc
 
@@ -79,13 +117,20 @@ def _require_authority_boundary_types(
 def _require_snapshot_boundary_types(value: object) -> None:
     if type(value) is not SandboxSnapshot:
         return
+    _require_exact_model_root(value, SandboxSnapshot, "snapshot")
     if type(value.current_time) is not datetime:
         raise ValueError("snapshot current_time must be a concrete datetime")
     if type(value.orders) is not tuple:
-        return
-    for order in value.orders:
+        raise ValueError("snapshot orders must be a concrete tuple")
+    for order in tuple.__iter__(value.orders):
         if type(order) is not SandboxOrderSnapshot:
             continue
+        _require_exact_model_root(order, SandboxOrderSnapshot, "snapshot order")
+        _require_exact_model_root(
+            order.order_intent,
+            OrderIntent,
+            "snapshot order intent",
+        )
         identities = (
             ("order_id", order.order_id),
             ("order_intent.intent_id", order.order_intent.intent_id),
@@ -100,11 +145,16 @@ def _require_snapshot_boundary_types(value: object) -> None:
 
 
 class SandboxSubmitCustody(SandboxModel):
-    """Recovery evidence only; grants neither submit nor retry authority."""
+    """Immutable historical submit authority, never retry/submit permission.
+
+    ``submitted_order_intent`` is the exact economic instruction authorized at
+    submit. A checkpoint snapshot may hold a later, permitted replacement intent.
+    """
 
     command_id: UUID
     order_id: UUID
     client_order_id: CanonicalIdentifier
+    submitted_order_intent: OrderIntent
     prepared_permit: PreparedSubmitPermit
     consumed_authority: ConsumedSubmitAuthority
 
@@ -118,8 +168,38 @@ class SandboxSubmitCustody(SandboxModel):
     def _concrete_order_id(cls, value: object) -> UUID:
         return _require_concrete_uuid(value, "order_id")
 
+    @field_validator("client_order_id", mode="before")
+    @classmethod
+    def _concrete_client_order_id(cls, value: object) -> object:
+        if type(value) is not str:
+            raise ValueError("client_order_id must be a concrete string")
+        return value
+
+    @field_validator("submitted_order_intent", mode="before")
+    @classmethod
+    def _concrete_submitted_order_intent(cls, value: object) -> object:
+        _require_exact_model_root(
+            value,
+            OrderIntent,
+            "submitted_order_intent",
+        )
+        _require_concrete_uuid(
+            object.__getattribute__(value, "intent_id"),
+            "submitted_order_intent intent_id",
+        )
+        if type(object.__getattribute__(value, "client_order_id")) is not str:
+            raise ValueError(
+                "submitted_order_intent client_order_id must be a concrete string"
+            )
+        return value
+
     @model_validator(mode="after")
     def _canonical_authority_lineage(self) -> "SandboxSubmitCustody":
+        submitted_intent = _canonical_model(
+            self.submitted_order_intent,
+            OrderIntent,
+            "submitted_order_intent",
+        )
         prepared = _canonical_model(
             self.prepared_permit,
             PreparedSubmitPermit,
@@ -131,6 +211,18 @@ class SandboxSubmitCustody(SandboxModel):
             "consumed_authority",
         )
         _require_authority_boundary_types(prepared, consumed)
+        if submitted_intent.intent_id != self.order_id:
+            raise ValueError(
+                "submitted_order_intent intent_id must match custody order_id"
+            )
+        if submitted_intent.client_order_id != self.client_order_id:
+            raise ValueError(
+                "submitted_order_intent client_order_id must match custody"
+            )
+        if canonical_model_digest(submitted_intent) != prepared.intent_digest:
+            raise ValueError(
+                "submitted_order_intent intent_digest must match prepared_permit"
+            )
         for field_name in (
             "permit_id",
             "prepared_event_digest",
@@ -142,13 +234,19 @@ class SandboxSubmitCustody(SandboxModel):
                 raise ValueError(
                     f"prepared_permit and consumed_authority {field_name} must match"
                 )
+        object.__setattr__(self, "submitted_order_intent", submitted_intent)
         object.__setattr__(self, "prepared_permit", prepared)
         object.__setattr__(self, "consumed_authority", consumed)
         return self
 
 
 class SandboxRecoveryCheckpoint(SandboxModel):
-    """Canonical process-local recovery evidence with no execution authority."""
+    """Canonical recovery evidence with historical and current intent custody.
+
+    Submit custody binds immutable historical economic authority. The snapshot
+    independently binds the current mutable intent and stable order/client identity.
+    The two intent digests need not match after a permitted modify.
+    """
 
     checkpoint_id: UUID
     scenario_digest: Sha256
@@ -156,7 +254,7 @@ class SandboxRecoveryCheckpoint(SandboxModel):
     executed_command_ids: tuple[UUID, ...]
     submit_custodies: tuple[SandboxSubmitCustody, ...]
     created_at: datetime
-    schema_version: Literal["sandbox-recovery-checkpoint-v1"]
+    schema_version: Literal["sandbox-recovery-checkpoint-v2"]
 
     @field_validator("checkpoint_id", mode="before")
     @classmethod
@@ -170,6 +268,25 @@ class SandboxRecoveryCheckpoint(SandboxModel):
             raise ValueError("executed_command_ids must be a concrete tuple")
         for command_id in value:
             _require_concrete_uuid(command_id, "executed_command_ids")
+        return value
+
+    @field_validator("snapshot", mode="before")
+    @classmethod
+    def _concrete_snapshot_root(cls, value: object) -> object:
+        _require_snapshot_boundary_types(value)
+        return value
+
+    @field_validator("submit_custodies", mode="before")
+    @classmethod
+    def _concrete_submit_custody_roots(cls, value: object) -> object:
+        if type(value) is not tuple:
+            raise ValueError("submit_custodies must be a concrete tuple")
+        for custody in tuple.__iter__(value):
+            _require_exact_model_root(
+                custody,
+                SandboxSubmitCustody,
+                "submit_custodies custody",
+            )
         return value
 
     @field_validator("created_at")
@@ -220,13 +337,6 @@ class SandboxRecoveryCheckpoint(SandboxModel):
             ):
                 raise ValueError(
                     "custody client_order_id must match the snapshot order intent"
-                )
-            if (
-                canonical_model_digest(snapshot_order.order_intent)
-                != custody.prepared_permit.intent_digest
-            ):
-                raise ValueError(
-                    "snapshot order intent_digest must match prepared_permit"
                 )
             if custody.consumed_authority.consumed_at > snapshot.current_time:
                 raise ValueError(

@@ -33,7 +33,7 @@ from .recovery import (
 _EVENT_TYPE = "SandboxRecoveryCheckpointRecorded"
 _EVENT_SCHEMA_VERSION = "sandbox-recovery-checkpoint-recorded-event-v1"
 _EVENT_SOURCE = "execution-sandbox"
-_CHECKPOINT_SCHEMA_VERSION = "sandbox-recovery-checkpoint-v1"
+_CHECKPOINT_SCHEMA_VERSION = "sandbox-recovery-checkpoint-v2"
 _RECORD_SCHEMA_VERSION = "sandbox-recovery-checkpoint-recorded-v1"
 
 

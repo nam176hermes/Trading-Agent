@@ -31,7 +31,7 @@ from tests.execution_sandbox.test_recovery_contracts import checkpoint_values, u
 NOW = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
 ROOT = Path(__file__).resolve().parents[2]
 RECORD_SCHEMA = "sandbox-recovery-checkpoint-recorded-v1"
-CHECKPOINT_SCHEMA = "sandbox-recovery-checkpoint-v1"
+CHECKPOINT_SCHEMA = "sandbox-recovery-checkpoint-v2"
 EVENT_SCHEMA = "sandbox-recovery-checkpoint-recorded-event-v1"
 
 
@@ -206,7 +206,7 @@ def test_record_is_strict_frozen_extra_forbid_and_revalidates_forged_copies(
     (
         ("checkpoint_digest", "0" * 64),
         ("checkpoint_json", ""),
-        ("checkpoint_schema_version", "sandbox-recovery-checkpoint-v2"),
+        ("checkpoint_schema_version", "sandbox-recovery-checkpoint-v1"),
         ("schema_version", "sandbox-recovery-checkpoint-recorded-v2"),
     ),
 )
@@ -310,6 +310,35 @@ def test_encode_rejects_copy_forged_checkpoint_unknown_root_field(
         )
 
 
+@pytest.mark.parametrize("nested_root", ("custody", "order"))
+def test_encode_rejects_copy_forged_checkpoint_nested_unknown_root_field(
+    nested_root: str,
+    prepared_case: Any,
+) -> None:
+    source = checkpoint(prepared_case)
+    if nested_root == "custody":
+        forged_custody = source.submit_custodies[0].model_copy(
+            update={"restore": True}
+        )
+        forged = source.model_copy(
+            update={"submit_custodies": (forged_custody,)}
+        )
+    else:
+        forged_order = source.snapshot.orders[0].model_copy(
+            update={"restore": True}
+        )
+        forged_snapshot = source.snapshot.model_copy(
+            update={"orders": (forged_order,)}
+        )
+        forged = source.model_copy(update={"snapshot": forged_snapshot})
+
+    with pytest.raises(SandboxRecoveryPersistenceError):
+        encode_recovery_checkpoint(
+            recovery_session_id=uid(600),
+            checkpoint=forged,
+        )
+
+
 @pytest.mark.parametrize(
     "variant",
     (
@@ -355,7 +384,7 @@ def test_decode_rejects_every_noncanonical_or_invalid_checkpoint_json_variant(
         if variant == "unknown-field":
             document["unexpected"] = True
         else:
-            document["schema_version"] = "sandbox-recovery-checkpoint-v2"
+            document["schema_version"] = "sandbox-recovery-checkpoint-v1"
         changed = json.dumps(
             document,
             sort_keys=True,
@@ -648,6 +677,10 @@ def test_generated_record_and_typed_envelope_schemas_are_strict() -> None:
         SandboxRecoveryCheckpointRecorded.model_fields
     )
     assert record_schema["properties"]["schema_version"]["const"] == RECORD_SCHEMA
+    assert (
+        record_schema["properties"]["checkpoint_schema_version"]["const"]
+        == CHECKPOINT_SCHEMA
+    )
     assert envelope_schema["additionalProperties"] is False
     assert envelope_schema["properties"]["event_type"] == {
         "const": "SandboxRecoveryCheckpointRecorded",
