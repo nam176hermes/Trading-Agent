@@ -259,8 +259,9 @@ def test_append_rolls_back_for_missing_or_non_boolean_database_outcome() -> None
 
     for rows in ([], [(1,)]):
         connection = Connection([rows])
-        with pytest.raises(EventConflictError, match="invalid append outcome"):
+        with pytest.raises(ReplayError, match="invalid append outcome") as raised:
             PostgresEventLedgerRepository(Pool(connection)).append(event, outbox)
+        assert type(raised.value) is ReplayError
         assert connection.commit_count == 0
         assert connection.rollback_count == 1
 
@@ -369,10 +370,11 @@ def test_claim_inbox_rejects_uuid_subclass_and_malformed_database_boolean() -> N
     assert rejected_input.executions == []
 
     malformed_result = Connection([[(1,)]])
-    with pytest.raises(EventConflictError, match="invalid inbox claim outcome"):
+    with pytest.raises(ReplayError, match="invalid inbox claim outcome") as raised:
         PostgresEventLedgerRepository(Pool(malformed_result)).claim_inbox(
             "consumer", UUID(int=1)
         )
+    assert type(raised.value) is ReplayError
     assert malformed_result.rollback_count == 1
 
 
@@ -405,9 +407,10 @@ def test_acknowledge_outbox_maps_missing_pending_work_to_conflict() -> None:
 def test_acknowledge_outbox_rejects_malformed_database_boolean() -> None:
     connection = Connection([[{"acknowledge_domain_publication": "true"}]])
 
-    with pytest.raises(EventConflictError, match="invalid outbox acknowledgement"):
+    with pytest.raises(ReplayError, match="invalid outbox acknowledgement") as raised:
         PostgresEventLedgerRepository(Pool(connection)).acknowledge_outbox(UUID(int=1))
 
+    assert type(raised.value) is ReplayError
     assert connection.rollback_count == 1
 
 
@@ -458,6 +461,35 @@ def test_save_snapshot_rejects_copy_forged_root_extra_before_database_access() -
         PostgresEventLedgerRepository(Pool(connection)).save_snapshot(snapshot)
 
     assert connection.executions == []
+
+
+def test_save_snapshot_rejects_copy_forged_nested_state_before_database_access() -> None:
+    snapshot = snapshot_from_result(
+        replay((envelope(signal(), event_number=1),))
+    )
+    forged = snapshot.model_copy(
+        update={"state": snapshot.state.model_copy(update={"restore": True})}
+    )
+    connection = Connection()
+
+    with pytest.raises(EventConflictError, match="invalid snapshot"):
+        PostgresEventLedgerRepository(Pool(connection)).save_snapshot(forged)
+
+    assert connection.executions == []
+
+
+def test_save_snapshot_rejects_malformed_database_boolean_as_replay_error() -> None:
+    snapshot = snapshot_from_result(
+        replay((envelope(signal(), event_number=1),))
+    )
+    connection = Connection([[{"save_domain_snapshot": 1}]])
+
+    with pytest.raises(ReplayError, match="invalid snapshot save outcome") as raised:
+        PostgresEventLedgerRepository(Pool(connection)).save_snapshot(snapshot)
+
+    assert type(raised.value) is ReplayError
+    assert connection.commit_count == 0
+    assert connection.rollback_count == 1
 
 
 def test_load_snapshot_reconstructs_and_revalidates_complete_stored_wrapper() -> None:

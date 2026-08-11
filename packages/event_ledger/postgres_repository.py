@@ -15,7 +15,19 @@ from pydantic import BaseModel, ValidationError
 
 from packages.domain.events import EventEnvelope
 
-from .models import AppendOutcome, OutboxIntent, SnapshotRecord, StoredEvent
+from .models import (
+    AggregateReplayState,
+    AppendOutcome,
+    AppliedEvent,
+    EventTypeCount,
+    OutboxIntent,
+    ReplayIssue,
+    ReplayIssueCode,
+    ReplayStatus,
+    SnapshotRecord,
+    StoredEvent,
+    StreamProjection,
+)
 from .reducer import SequenceError
 from .replay import ReplayError, _validate_snapshot, deserialize_event
 from .repository import EventConflictError, PostgresLedgerSql
@@ -178,13 +190,83 @@ class PostgresEventLedgerRepository:
 
     @classmethod
     def _boolean_outcome(cls, row: object, name: str, error: str) -> bool:
-        try:
-            value = cls._row_value(row, name, 0, width=1, error=error)
-        except ReplayError as exc:
-            raise EventConflictError(error) from exc
+        value = cls._row_value(row, name, 0, width=1, error=error)
         if type(value) is not bool:
-            raise EventConflictError(error)
+            raise ReplayError(error)
         return value
+
+    @classmethod
+    def _validated_snapshot(cls, snapshot: object) -> SnapshotRecord:
+        root = cls._exact_model_state(snapshot, SnapshotRecord)
+        for name in (
+            "schema_version",
+            "reducer_version",
+            "canonical_state_json",
+            "state_hash",
+        ):
+            if type(dict.__getitem__(root, name)) is not str:
+                raise ReplayError(f"snapshot {name} must be concrete text")
+        if type(dict.__getitem__(root, "status")) is not ReplayStatus:
+            raise ReplayError("snapshot status must be an exact ReplayStatus")
+
+        state = dict.__getitem__(root, "state")
+        state_fields = cls._exact_model_state(state, AggregateReplayState)
+        if type(dict.__getitem__(state_fields, "event_count")) is not int:
+            raise ReplayError("snapshot event_count must be a concrete integer")
+
+        type_counts = dict.__getitem__(state_fields, "type_counts")
+        if type(type_counts) is not tuple:
+            raise ReplayError("snapshot type_counts must be a concrete tuple")
+        for entry in tuple.__iter__(type_counts):
+            fields = cls._exact_model_state(entry, EventTypeCount)
+            if type(dict.__getitem__(fields, "event_type")) is not str:
+                raise ReplayError("snapshot event_type must be concrete text")
+            if type(dict.__getitem__(fields, "count")) is not int:
+                raise ReplayError("snapshot type count must be a concrete integer")
+
+        streams = dict.__getitem__(state_fields, "streams")
+        if type(streams) is not tuple:
+            raise ReplayError("snapshot streams must be a concrete tuple")
+        for stream in tuple.__iter__(streams):
+            fields = cls._exact_model_state(stream, StreamProjection)
+            if type(dict.__getitem__(fields, "stream_id")) is not UUID:
+                raise ReplayError("snapshot stream_id must be an exact UUID")
+            for name in ("event_count", "last_sequence"):
+                if type(dict.__getitem__(fields, name)) is not int:
+                    raise ReplayError(f"snapshot {name} must be a concrete integer")
+            digest = dict.__getitem__(fields, "last_digest")
+            if digest is not None and type(digest) is not str:
+                raise ReplayError("snapshot last_digest must be concrete text")
+
+        applied_events = dict.__getitem__(state_fields, "applied_events")
+        if type(applied_events) is not tuple:
+            raise ReplayError("snapshot applied_events must be a concrete tuple")
+        for event in tuple.__iter__(applied_events):
+            fields = cls._exact_model_state(event, AppliedEvent)
+            if type(dict.__getitem__(fields, "event_id")) is not UUID:
+                raise ReplayError("snapshot applied event_id must be an exact UUID")
+            if type(dict.__getitem__(fields, "digest")) is not str:
+                raise ReplayError("snapshot applied digest must be concrete text")
+
+        issues = dict.__getitem__(root, "issues")
+        if type(issues) is not tuple:
+            raise ReplayError("snapshot issues must be a concrete tuple")
+        for issue in tuple.__iter__(issues):
+            fields = cls._exact_model_state(issue, ReplayIssue)
+            if type(dict.__getitem__(fields, "code")) is not ReplayIssueCode:
+                raise ReplayError("snapshot issue code must be exact")
+            for name in ("stream_id", "event_id"):
+                if type(dict.__getitem__(fields, name)) is not UUID:
+                    raise ReplayError(f"snapshot issue {name} must be an exact UUID")
+            for name in ("sequence", "expected_sequence"):
+                if type(dict.__getitem__(fields, name)) is not int:
+                    raise ReplayError(
+                        f"snapshot issue {name} must be a concrete integer"
+                    )
+            if type(dict.__getitem__(fields, "digest")) is not str:
+                raise ReplayError("snapshot issue digest must be concrete text")
+
+        return _validate_snapshot(snapshot)
 
     @staticmethod
     def _validated_event_id(event_id: object) -> UUID:
@@ -318,8 +400,7 @@ class PostgresEventLedgerRepository:
 
     def save_snapshot(self, snapshot: SnapshotRecord) -> None:
         try:
-            self._exact_model_state(snapshot, SnapshotRecord)
-            validated = _validate_snapshot(snapshot)
+            validated = self._validated_snapshot(snapshot)
         except ReplayError as exc:
             raise EventConflictError("invalid snapshot") from exc
         try:
