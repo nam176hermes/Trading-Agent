@@ -478,6 +478,27 @@ def test_save_snapshot_rejects_copy_forged_nested_state_before_database_access()
     assert connection.executions == []
 
 
+@pytest.mark.parametrize("field_name", ("type_counts", "streams", "applied_events"))
+def test_save_snapshot_rejects_copy_forged_nested_member_before_database_access(
+    field_name: str,
+) -> None:
+    snapshot = snapshot_from_result(
+        replay((envelope(signal(), event_number=1),))
+    )
+    members = getattr(snapshot.state, field_name)
+    forged_member = members[0].model_copy(update={"restore": True})
+    forged_state = snapshot.state.model_copy(
+        update={field_name: (forged_member, *members[1:])}
+    )
+    forged = snapshot.model_copy(update={"state": forged_state})
+    connection = Connection()
+
+    with pytest.raises(EventConflictError, match="invalid snapshot"):
+        PostgresEventLedgerRepository(Pool(connection)).save_snapshot(forged)
+
+    assert connection.executions == []
+
+
 def test_save_snapshot_rejects_malformed_database_boolean_as_replay_error() -> None:
     snapshot = snapshot_from_result(
         replay((envelope(signal(), event_number=1),))
