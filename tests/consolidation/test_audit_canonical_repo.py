@@ -623,6 +623,18 @@ def test_audit_rejects_partial_external_authority_availability(tmp_path: Path) -
     assert result.stderr.strip() == "E_AUTHORITY"
 
 
+def test_portable_audit_rejects_partial_external_authority_availability(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository, keep="core")
+
+    result = _run(repository, "--portable")
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_AUTHORITY"
+
+
 def test_portable_audit_still_rejects_component_byte_tamper(tmp_path: Path) -> None:
     repository = _valid_root(tmp_path)
     _remove_authority_repositories(repository)

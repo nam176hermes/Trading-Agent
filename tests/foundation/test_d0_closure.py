@@ -128,7 +128,7 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
     assert "test-all-private: audit check-d0-closure check-contracts" in makefile
     assert "check-d0-closure:" in makefile
     assert "uv run pytest -q tests/foundation/test_d0_closure.py" in makefile
-    assert "run: make ci" in workflow
+    assert "run: make ci-portable" in workflow
     assert "uses: actions/upload-artifact@v4" in workflow
     assert "path: /tmp/trading-agent-test-evidence" in workflow
     assert "ci-private:\n\t$(MAKE) prepare-root-test-install" in makefile
@@ -155,7 +155,7 @@ def test_ci_uses_private_test_target_after_one_source_reinstall() -> None:
 
     assert "$(MAKE) prepare-root-test-install" in makefile
     assert "$(MAKE) test-all-private" in makefile
-    ci_private = makefile.split("ci-private:\n", 1)[1]
+    ci_private = makefile.split("ci-private:\n", 1)[1].split("\n\nci-portable:", 1)[0]
     assert ci_private.count("prepare-root-test-install") == 1
 
 

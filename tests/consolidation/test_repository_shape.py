@@ -30,6 +30,7 @@ REQUIRED_COMPONENT_FILES = {
 MAKE_TARGETS = {
     "audit",
     "audit-release",
+    "audit-portable",
     "audit-python-source",
     "audit-dependencies-production",
     "audit-dependencies-dev",
@@ -56,9 +57,12 @@ MAKE_TARGETS = {
     "build-dashboard",
     "prepare-root-test-install",
     "test-all-private",
+    "test-all-portable-private",
     "test-all",
     "ci",
     "ci-private",
+    "ci-portable",
+    "ci-portable-private",
 }
 POSTGRES_TEMPLATE = "ops/postgres/postgres.env.example"
 FORBIDDEN_POSTGRES_TEMPLATE = "ops/postgres/.env.example"
@@ -419,10 +423,75 @@ def test_makefile_exposes_safe_component_orchestration() -> None:
     }
 
 
+def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> None:
+    makefile = _read_current_regular(ROOT, "Makefile").decode("utf-8")
+    targets = {
+        match.group(1): match.group(2).split()
+        for match in re.finditer(
+            r"^([A-Za-z0-9_-]+)[ \t]*:([^=\n]*)$", makefile, re.MULTILINE
+        )
+    }
+    portable_targets = {
+        "audit-portable",
+        "test-all-portable-private",
+        "ci-portable",
+        "ci-portable-private",
+    }
+    logical_makefile = makefile.replace("\\\n", " ")
+    phony = re.search(r"^\.PHONY\s*:(.*)$", logical_makefile, re.MULTILINE)
+
+    assert phony is not None
+    assert portable_targets <= set(phony.group(1).split())
+    assert targets["test-all-portable-private"] == [
+        "audit-portable",
+        "check-d0-closure",
+        "check-contracts",
+        "check-secrets",
+        "test",
+        "test-backend",
+        "test-dashboard",
+        "typecheck-dashboard",
+        "lint-dashboard",
+    ]
+    assert targets["ci-portable"] == []
+    assert targets["ci-portable-private"] == []
+
+    portable_private_recipe = re.search(
+        r"^ci-portable-private:\n((?:\t.*\n)+)", makefile, re.MULTILINE
+    )
+    assert portable_private_recipe is not None
+    assert portable_private_recipe.group(1).count("prepare-root-test-install") == 1
+    assert "$(MAKE) test-all-portable-private check-test-skips check-critical-coverage " in (
+        portable_private_recipe.group(1)
+    )
+    for gate in ("build-dashboard", "audit-python-source", "audit-dependencies"):
+        assert gate in portable_private_recipe.group(1)
+
+    portable_recipe = re.search(
+        r"^ci-portable:\n((?:\t.*\n)+)", makefile, re.MULTILINE
+    )
+    assert portable_recipe is not None
+    portable_make_targets = re.findall(
+        r"\$\(MAKE\)\s+([A-Za-z0-9_-]+)", portable_recipe.group(1)
+    )
+    assert portable_make_targets == ["ci-portable-private"]
+    assert "ci" not in portable_make_targets
+    assert "ci-private" not in portable_make_targets
+
+    workflow = _read_current_regular(ROOT, ".github/workflows/foundation.yml").decode("utf-8")
+    workflow_run_values = re.findall(r"^\s*run:\s*([^\n#]+?)\s*$", workflow, re.MULTILINE)
+    make_run_values = [value for value in workflow_run_values if value.startswith("make ")]
+    assert make_run_values == ["make ci-portable"]
+    assert "make ci" not in make_run_values
+
+
 def test_foundation_workflow_delegates_to_the_canonical_local_ci_gate() -> None:
     workflow = _read_current_regular(ROOT, ".github/workflows/foundation.yml").decode("utf-8")
+    workflow_run_values = re.findall(r"^\s*run:\s*([^\n#]+?)\s*$", workflow, re.MULTILINE)
+    make_run_values = [value for value in workflow_run_values if value.startswith("make ")]
 
-    assert workflow.count("run: make ci") == 1
+    assert make_run_values == ["make ci-portable"]
+    assert "make ci" not in make_run_values
     assert "run: make test-all" not in workflow
     assert "run: make build-dashboard" not in workflow
     assert "pip-audit" not in workflow

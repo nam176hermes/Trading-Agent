@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-core test-consolidation test-production \
@@ -8,7 +8,8 @@
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
-	build-dashboard prepare-root-test-install test-all-private test-all ci ci-private
+	build-dashboard prepare-root-test-install test-all-private test-all-portable-private test-all \
+	ci ci-private ci-portable ci-portable-private
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 RUNTIME_RELEASE_WHEELHOUSE_ROOT ?= $(HOME)/.cache/trading-agent/runtime-release-wheelhouse
@@ -24,6 +25,9 @@ NAUTILUS_IMPORT_RECEIPT ?=
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
+
+audit-portable:
+	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)" --portable
 
 audit-release:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)" --release
@@ -254,6 +258,8 @@ prepare-root-test-install:
 
 test-all-private: audit check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
 
+test-all-portable-private: audit-portable check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
+
 test-all:
 	@set -eu; \
 		test_tmpdir=$$(mktemp -d /tmp/trading-agent-test-all.XXXXXXXXXX); \
@@ -282,3 +288,20 @@ ci:
 ci-private:
 	$(MAKE) prepare-root-test-install
 	$(MAKE) test-all-private check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies
+
+ci-portable:
+	@set -eu; \
+		ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci-portable.XXXXXXXXXX); \
+		chmod 0700 "$$ci_tmpdir"; \
+		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
+		cleanup_ci_tmpdir() { \
+			find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; \
+			rm -rf -- "$$ci_tmpdir"; \
+		}; \
+		trap 'cleanup_ci_tmpdir' EXIT; \
+		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
+			$(MAKE) ci-portable-private
+
+ci-portable-private:
+	$(MAKE) prepare-root-test-install
+	$(MAKE) test-all-portable-private check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies

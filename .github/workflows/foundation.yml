@@ -46,7 +46,7 @@ jobs:
         run: npm ci --prefix apps/dashboard
 
       - name: Run canonical local and CI gate
-        run: make ci
+        run: make ci-portable
 
       - name: Publish test governance evidence
         if: always()
