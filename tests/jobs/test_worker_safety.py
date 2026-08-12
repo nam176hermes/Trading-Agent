@@ -22,7 +22,7 @@ from services.job_worker.safety import (
 
 @pytest.fixture
 def tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="task7-safety-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="task7-safety-"))
     try:
         yield path
     finally:

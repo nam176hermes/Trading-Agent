@@ -711,7 +711,7 @@ def _write_db_env(path: Path, role: str, *extra_lines: str) -> None:
 def test_root_snapshot_keeps_root_owned_boundary_for_user_owned_stage(tmp_path: Path) -> None:
     del tmp_path
     with tempfile.TemporaryDirectory(
-        prefix="phase4b-fakeroot-", dir="/home/thenam176/.cache",
+        prefix="phase4b-fakeroot-",
     ) as raw:
         native = Path(raw)
         stage, _ = _fixture_stage(native)
@@ -740,7 +740,7 @@ def test_fakeroot_generates_all_four_envs_with_exact_safe_environment(
 ) -> None:
     del tmp_path
     with tempfile.TemporaryDirectory(
-        prefix="phase4b-safe-envs-", dir="/home/thenam176/.cache",
+        prefix="phase4b-safe-envs-",
     ) as raw:
         native = Path(raw)
         stage, _ = _fixture_stage(native)
@@ -773,7 +773,7 @@ def test_fakeroot_generates_all_four_envs_with_exact_safe_environment(
 def test_trusted_snapshot_does_not_depend_on_volatile_run(tmp_path: Path) -> None:
     del tmp_path
     with tempfile.TemporaryDirectory(
-        prefix="phase4b-persistent-snapshot-", dir="/home/thenam176/.cache",
+        prefix="phase4b-persistent-snapshot-",
     ) as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
@@ -804,7 +804,7 @@ def _write_db_envs(root: Path, *jobs_extra_lines: str) -> tuple[Path, Path]:
 
 def test_dynamic_staged_install_is_idempotent_and_secret_safe(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-provision-", dir="/home/thenam176/.cache") as raw:
+    with tempfile.TemporaryDirectory(prefix="phase4b-provision-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -833,7 +833,7 @@ def test_dynamic_staged_install_is_idempotent_and_secret_safe(tmp_path: Path) ->
 
 def test_dynamic_staged_install_rejects_missing_extra_tamper_mode_links_and_special_files(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-reject-", dir="/home/thenam176/.cache") as raw:
+    with tempfile.TemporaryDirectory(prefix="phase4b-reject-") as raw:
         native = Path(raw)
         for mutation in (
             "missing", "extra", "metadata_extra", "tamper", "bin_true", "mode",
@@ -881,7 +881,7 @@ def test_dynamic_staged_install_rejects_missing_extra_tamper_mode_links_and_spec
 
 def test_dynamic_partial_failure_never_overwrites_and_is_retryable(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-partial-", dir="/home/thenam176/.cache") as raw:
+    with tempfile.TemporaryDirectory(prefix="phase4b-partial-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -911,7 +911,7 @@ def test_dynamic_partial_failure_never_overwrites_and_is_retryable(tmp_path: Pat
 
 def test_dynamic_copy_tamper_is_rejected_before_release_publication(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-copy-tamper-", dir="/home/thenam176/.cache") as raw:
+    with tempfile.TemporaryDirectory(prefix="phase4b-copy-tamper-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -931,7 +931,7 @@ def test_dynamic_copy_tamper_is_rejected_before_release_publication(tmp_path: Pa
 
 def test_dynamic_staged_unit_swap_cannot_publish_unverified_bytes(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-unit-race-", dir="/home/thenam176/.cache") as raw:
+    with tempfile.TemporaryDirectory(prefix="phase4b-unit-race-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         approved_unit = ROOT / "ops/systemd/trading-job-api.service"
@@ -956,7 +956,7 @@ def test_dynamic_staged_unit_swap_cannot_publish_unverified_bytes(tmp_path: Path
 
 def test_dynamic_user_local_unit_shadow_blocks_before_install(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-shadow-", dir="/home/thenam176/.cache") as raw:
+    with tempfile.TemporaryDirectory(prefix="phase4b-shadow-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -975,7 +975,7 @@ def test_dynamic_database_env_rejects_duplicate_user_and_password_without_leak(
     tmp_path: Path,
 ) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-db-env-reject-", dir="/home/thenam176/.cache") as raw:
+    with tempfile.TemporaryDirectory(prefix="phase4b-db-env-reject-") as raw:
         native = Path(raw)
         for name, duplicate in (
             ("user", "TRADING_DATABASE_USER=trading_owner"),

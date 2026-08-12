@@ -26,7 +26,7 @@ def test_research_data_root_is_dedicated_and_not_the_active_legacy_tree():
 
 @pytest.fixture
 def tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="task7-environment-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="task7-environment-"))
     try:
         yield path
     finally:

@@ -24,7 +24,7 @@ BACKEND_COMMIT = "a" * 40
 
 @pytest.fixture
 def secure_tmp_path(monkeypatch):
-    path = Path(tempfile.mkdtemp(prefix="phase4-semantic-builder-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="phase4-semantic-builder-"))
     path.chmod(0o700)
     monkeypatch.setattr(builder, "ROOT_AUTHORITY_UID", os.geteuid(), raising=False)
     monkeypatch.setattr(builder, "ROOT_AUTHORITY_GID", os.getegid(), raising=False)

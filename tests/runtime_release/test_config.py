@@ -13,7 +13,7 @@ import pytest
 
 @pytest.fixture
 def tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="task2-authority-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="task2-authority-"))
     try:
         yield path
     finally:

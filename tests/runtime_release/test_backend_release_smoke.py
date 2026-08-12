@@ -13,7 +13,7 @@ from scripts.smoke_phase4_backend_release import run_fixture_snapshot
 
 @pytest.fixture
 def linux_tmp_path() -> Path:
-    path = Path(tempfile.mkdtemp(prefix="phase4b-smoke-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="phase4b-smoke-"))
     path.chmod(0o700)
     try:
         yield path

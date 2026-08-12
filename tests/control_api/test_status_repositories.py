@@ -68,7 +68,7 @@ def test_invalid_kill_switch_is_unknown(tmp_path) -> None:
 def test_control_api_and_worker_share_canonical_kill_switch_semantics(tmp_path, monkeypatch) -> None:
     from services.job_worker.safety import KillSwitchState as WorkerState, SafetyProvider, validate_data_root
 
-    root = Path(tempfile.mkdtemp(prefix="task7-kill-parity-", dir="/home/thenam176/.cache"))
+    root = Path(tempfile.mkdtemp(prefix="task7-kill-parity-"))
     try:
         (root / "memory").mkdir()
         create_database(root / "memory" / "trading.db")

@@ -24,7 +24,7 @@ from services.job_worker.engine_spawn import EngineSpawnError
 
 @pytest.fixture
 def sealed_artifacts() -> tuple[Path, tuple[ArtifactReference, ...]]:
-    root = Path(tempfile.mkdtemp(prefix="engine-artifacts-", dir="/home/thenam176/.cache"))
+    root = Path(tempfile.mkdtemp(prefix="engine-artifacts-"))
     try:
         references = []
         for number, media_type in enumerate(

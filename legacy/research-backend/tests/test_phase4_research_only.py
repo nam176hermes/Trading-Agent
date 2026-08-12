@@ -1204,7 +1204,7 @@ def _approved_output_tree(tmp_path, monkeypatch):
 
 @pytest.fixture
 def secure_tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="phase4-backend-output-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="phase4-backend-output-"))
     try:
         yield path
     finally:

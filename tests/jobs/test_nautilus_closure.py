@@ -85,7 +85,7 @@ def closure_config() -> NautilusClosureConfig:
     if not Path("/usr/bin/bwrap").is_file():
         pytest.skip("Bubblewrap is required for the Nautilus closure test")
 
-    base = Path(tempfile.mkdtemp(prefix="nautilus-closure-test-", dir="/home/thenam176/.cache"))
+    base = Path(tempfile.mkdtemp(prefix="nautilus-closure-test-"))
     try:
         sandbox = base / "bwrap"
         shutil.copyfile("/usr/bin/bwrap", sandbox)
@@ -1274,7 +1274,6 @@ def test_attestor_accepts_only_an_explicit_execution_simulation_profile(
     base = Path(
         tempfile.mkdtemp(
             prefix="nautilus-simulation-closure-test-",
-            dir="/home/thenam176/.cache",
         )
     )
     try:
@@ -1315,7 +1314,7 @@ def test_attestor_rejects_legacy_execution_transport_manifest_for_v2_authority(
     if not Path("/usr/bin/bwrap").is_file():
         pytest.skip("Bubblewrap is required for the Nautilus closure test")
     base = Path(
-        tempfile.mkdtemp(prefix="nautilus-legacy-closure-test-", dir="/home/thenam176/.cache")
+        tempfile.mkdtemp(prefix="nautilus-legacy-closure-test-")
     )
     try:
         sandbox = base / "bwrap"
@@ -1347,7 +1346,7 @@ def test_attestor_rejects_semantic_profile_manifest_drift(
     if not Path("/usr/bin/bwrap").is_file():
         pytest.skip("Bubblewrap is required for the Nautilus closure test")
     base = Path(
-        tempfile.mkdtemp(prefix="nautilus-semantic-closure-test-", dir="/home/thenam176/.cache")
+        tempfile.mkdtemp(prefix="nautilus-semantic-closure-test-")
     )
     try:
         sandbox = base / "bwrap"

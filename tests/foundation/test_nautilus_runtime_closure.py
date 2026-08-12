@@ -215,7 +215,6 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
     root = Path(
         tempfile.mkdtemp(
             prefix="nautilus-runtime-materializer-test-",
-            dir="/home/thenam176/.cache",
         )
     )
     try:

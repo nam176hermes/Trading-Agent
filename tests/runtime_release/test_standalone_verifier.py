@@ -138,6 +138,6 @@ def test_standalone_verifier_rejects_wrong_external_authority(native_tmp_path: P
 @pytest.fixture
 def native_tmp_path() -> Path:
     with tempfile.TemporaryDirectory(
-        prefix="phase4b-standalone-", dir="/home/thenam176/.cache",
+        prefix="phase4b-standalone-",
     ) as raw:
         yield Path(raw)

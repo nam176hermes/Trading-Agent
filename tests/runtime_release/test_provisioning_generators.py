@@ -31,7 +31,7 @@ DIGEST = "d" * 64
 
 @pytest.fixture
 def linux_tmp_path() -> Path:
-    path = Path(tempfile.mkdtemp(prefix="phase4-generator-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="phase4-generator-"))
     path.chmod(0o700)
     try:
         yield path

@@ -43,7 +43,7 @@ from tests.jobs.backend_contract_fixtures import BACKEND_COMMIT
 
 @pytest.fixture
 def tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="task7-command-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="task7-command-"))
     try:
         yield path
     finally:

@@ -26,7 +26,7 @@ NOW = datetime(2026, 7, 12, 16, 0, tzinfo=UTC)
 
 @pytest.fixture
 def tmp_path():
-    path = Path(tempfile.mkdtemp(prefix="phase4b-exporter-", dir="/home/thenam176/.cache"))
+    path = Path(tempfile.mkdtemp(prefix="phase4b-exporter-"))
     try:
         yield path
     finally:
