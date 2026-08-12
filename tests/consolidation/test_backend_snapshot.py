@@ -10,12 +10,23 @@ import sys
 
 import pytest
 
+from packages.consolidation import AuthorityError, parse_source_authority
+from tests.consolidation.test_audit_canonical_repo import (
+    _remove_authority_repositories,
+    _valid_root,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 AUTHORITY = ROOT / "ops/consolidation/source-authority.json"
 MANIFEST = ROOT / "ops/consolidation/backend-source-manifest.json"
 DESTINATION = ROOT / "legacy/research-backend"
 VERIFY = ROOT / "scripts/verify_component_snapshot.py"
+if str(VERIFY.parent) not in sys.path:
+    sys.path.insert(0, str(VERIFY.parent))
+
+from verify_component_snapshot import verify_embedded_snapshot
+from import_component_snapshot import CliError
 
 BACKEND_COMMIT = "59578f984b72d5d03583a2c06b15a53a224b31c8"
 BACKEND_TREE = "54e688e9f144aecd2ee204ab95953f7c57069d3c"
@@ -157,6 +168,48 @@ def _manifest() -> dict[str, object]:
     return json.loads(MANIFEST.read_bytes())
 
 
+def _introduction(root: Path = ROOT) -> str:
+    introductions = subprocess.run(
+        [
+            "git", "-C", str(root), "log", "--diff-filter=A", "--format=%H",
+            "HEAD", "--", f"{DESTINATION_PREFIX}/pyproject.toml",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.splitlines()
+    assert len(introductions) == 1
+    return introductions[0]
+
+
+def _strict_verification(
+    authority: Path,
+    manifest: Path,
+    root: Path,
+    introduction: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY),
+            "--authority",
+            str(authority),
+            "--manifest",
+            str(manifest),
+            "--root",
+            str(root),
+            "--revision",
+            introduction,
+        ],
+        cwd=root,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+    )
+
+
 def test_backend_manifest_is_fixed_complete_and_contains_no_globs_or_gitlink() -> None:
     document = _manifest()
     entries = document["entries"]
@@ -193,7 +246,9 @@ def test_backend_manifest_is_fixed_complete_and_contains_no_globs_or_gitlink() -
         assert path.suffix != ".pyc"
 
 
-def test_backend_snapshot_is_exact_regular_single_link_reproduction() -> None:
+def test_backend_snapshot_is_exact_regular_single_link_reproduction(
+    pytestconfig: pytest.Config,
+) -> None:
     document = _manifest()
     imported = {entry["destination_path"] for entry in document["entries"]}
     actual: set[str] = set()
@@ -232,17 +287,7 @@ def test_backend_snapshot_is_exact_regular_single_link_reproduction() -> None:
         physical=actual,
         tracked=tracked_paths,
     )
-    introductions = subprocess.run(
-        [
-            "git", "-C", str(ROOT), "log", "--diff-filter=A", "--format=%H",
-            "HEAD", "--", f"{DESTINATION_PREFIX}/pyproject.toml",
-        ],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.splitlines()
-    assert len(introductions) == 1
-    backend_introduction = introductions[0]
+    backend_introduction = _introduction()
     parent = subprocess.run(
         ["git", "-C", str(ROOT), "rev-parse", f"{backend_introduction}^"],
         check=True,
@@ -254,30 +299,136 @@ def test_backend_snapshot_is_exact_regular_single_link_reproduction() -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     ).returncode != 0
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(VERIFY),
-            "--authority",
-            str(AUTHORITY),
-            "--manifest",
-            str(MANIFEST),
-            "--root",
-            str(ROOT),
-            "--revision",
-            backend_introduction,
-        ],
-        cwd=ROOT,
+    if pytestconfig.getoption("portable_embedded_proof"):
+        manifest = verify_embedded_snapshot(
+            parse_source_authority(AUTHORITY), MANIFEST, ROOT, backend_introduction,
+        )
+        assert manifest.component == "backend"
+    else:
+        result = _strict_verification(AUTHORITY, MANIFEST, ROOT, backend_introduction)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == (
+            f"component=backend revision={backend_introduction} result=PASS"
+        )
+
+
+def test_backend_snapshot_selection_uses_embedded_proof_only_when_explicit(
+    tmp_path: Path, pytestconfig: pytest.Config,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+    authority = repository / "ops/consolidation/source-authority.json"
+    manifest_path = repository / "ops/consolidation/backend-source-manifest.json"
+    introduction = _introduction(repository)
+
+    if pytestconfig.getoption("portable_embedded_proof"):
+        manifest = verify_embedded_snapshot(
+            parse_source_authority(authority),
+            manifest_path,
+            repository,
+            introduction,
+        )
+        assert manifest.component == "backend"
+    else:
+        result = _strict_verification(authority, manifest_path, repository, introduction)
+        assert result.returncode != 0
+        assert result.stderr.strip() == "E_AUTHORITY"
+
+
+def test_backend_portable_embedded_proof_rejects_malformed_authority(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    authority = repository / "ops/consolidation/source-authority.json"
+    authority.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(AuthorityError):
+        parse_source_authority(authority)
+
+
+def test_backend_portable_embedded_proof_rejects_manifest_identity_drift(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+    authority = repository / "ops/consolidation/source-authority.json"
+    manifest_path = repository / "ops/consolidation/backend-source-manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["source_commit"] = "f" * 40
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(CliError, match="^E_MANIFEST$"):
+        verify_embedded_snapshot(
+            parse_source_authority(authority),
+            manifest_path,
+            repository,
+            _introduction(repository),
+        )
+
+
+def test_backend_portable_embedded_proof_rejects_manifest_aggregate_drift(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+    authority = repository / "ops/consolidation/source-authority.json"
+    manifest_path = repository / "ops/consolidation/backend-source-manifest.json"
+    document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    document["aggregate_sha256"] = "f" * 64
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(CliError, match="^E_MANIFEST$"):
+        verify_embedded_snapshot(
+            parse_source_authority(authority),
+            manifest_path,
+            repository,
+            _introduction(repository),
+        )
+
+
+def test_backend_portable_embedded_proof_rejects_changed_introduction_blob(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path, backend_tamper="modified")
+    _remove_authority_repositories(repository)
+    authority = repository / "ops/consolidation/source-authority.json"
+    manifest_path = repository / "ops/consolidation/backend-source-manifest.json"
+
+    with pytest.raises(
+        CliError,
+        match=r"^E_TAMPER: legacy/research-backend/main.py$",
+    ):
+        verify_embedded_snapshot(
+            parse_source_authority(authority),
+            manifest_path,
+            repository,
+            _introduction(repository),
+        )
+
+
+def test_backend_portable_embedded_proof_rejects_shallow_history(tmp_path: Path) -> None:
+    repository = _valid_root(tmp_path)
+    introduction = _introduction(repository)
+    shallow = tmp_path / "shallow"
+    clone = subprocess.run(
+        ["git", "clone", "--depth", "1", repository.resolve().as_uri(), str(shallow)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        timeout=60,
     )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == (
-        f"component=backend revision={backend_introduction} result=PASS"
-    )
+    assert clone.returncode == 0, clone.stderr
+    _remove_authority_repositories(shallow)
+    authority = shallow / "ops/consolidation/source-authority.json"
+    manifest_path = shallow / "ops/consolidation/backend-source-manifest.json"
+
+    with pytest.raises(CliError, match="^E_GIT_OBJECT$"):
+        verify_embedded_snapshot(
+            parse_source_authority(authority),
+            manifest_path,
+            shallow,
+            introduction,
+        )
 
 
 def test_backend_inventory_contract_rejects_unlisted_post_import_path() -> None:

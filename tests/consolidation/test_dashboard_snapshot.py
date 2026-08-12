@@ -7,12 +7,24 @@ import stat
 import subprocess
 import sys
 
+import pytest
+
+from packages.consolidation import parse_source_authority
+from tests.consolidation.test_audit_canonical_repo import (
+    _remove_authority_repositories,
+    _valid_root,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
 AUTHORITY = ROOT / "ops/consolidation/source-authority.json"
 MANIFEST = ROOT / "ops/consolidation/dashboard-source-manifest.json"
 DESTINATION = ROOT / "apps/dashboard"
 VERIFY = ROOT / "scripts/verify_component_snapshot.py"
+if str(VERIFY.parent) not in sys.path:
+    sys.path.insert(0, str(VERIFY.parent))
+
+from verify_component_snapshot import verify_embedded_snapshot
 
 DASHBOARD_COMMIT = "84627f16e9753b1104d661697720b93897f27d27"
 DASHBOARD_TREE = "792f572dea8f819438785e43ee05e07c5b6567bd"
@@ -44,6 +56,48 @@ def _manifest() -> dict[str, object]:
     assert MANIFEST.is_file(), "approved dashboard manifest is absent"
     assert DESTINATION.is_dir(), "dashboard snapshot destination is absent"
     return json.loads(MANIFEST.read_bytes())
+
+
+def _introduction(root: Path = ROOT) -> str:
+    introductions = subprocess.run(
+        [
+            "git", "-C", str(root), "log", "--diff-filter=A", "--format=%H",
+            "HEAD", "--", f"{DESTINATION_PREFIX}/package.json",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.splitlines()
+    assert len(introductions) == 1
+    return introductions[0]
+
+
+def _strict_verification(
+    authority: Path,
+    manifest: Path,
+    root: Path,
+    introduction: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(VERIFY),
+            "--authority",
+            str(authority),
+            "--manifest",
+            str(manifest),
+            "--root",
+            str(root),
+            "--revision",
+            introduction,
+        ],
+        cwd=root,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+    )
 
 
 def test_dashboard_manifest_is_fixed_complete_and_source_scoped() -> None:
@@ -127,26 +181,11 @@ def test_dashboard_snapshot_preserves_introduction_and_tracks_current_regular_fi
     assert actual == tracked_paths
 
 
-def test_dashboard_snapshot_passes_independent_verifier() -> None:
+def test_dashboard_snapshot_passes_independent_verifier(
+    pytestconfig: pytest.Config,
+) -> None:
     _manifest()
-    introductions = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(ROOT),
-            "log",
-            "--diff-filter=A",
-            "--format=%H",
-            "HEAD",
-            "--",
-            f"{DESTINATION_PREFIX}/package.json",
-        ],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.splitlines()
-    assert len(introductions) == 1
-    introduction = introductions[0]
+    introduction = _introduction()
     parent = subprocess.run(
         ["git", "-C", str(ROOT), "rev-parse", f"{introduction}^"],
         check=True,
@@ -159,27 +198,37 @@ def test_dashboard_snapshot_passes_independent_verifier() -> None:
         stderr=subprocess.DEVNULL,
     )
     assert absent_from_parent.returncode != 0
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(VERIFY),
-            "--authority",
-            str(AUTHORITY),
-            "--manifest",
-            str(MANIFEST),
-            "--root",
-            str(ROOT),
-            "--revision",
+    if pytestconfig.getoption("portable_embedded_proof"):
+        manifest = verify_embedded_snapshot(
+            parse_source_authority(AUTHORITY), MANIFEST, ROOT, introduction,
+        )
+        assert manifest.component == "dashboard"
+    else:
+        result = _strict_verification(AUTHORITY, MANIFEST, ROOT, introduction)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == (
+            f"component=dashboard revision={introduction} result=PASS"
+        )
+
+
+def test_dashboard_snapshot_selection_uses_embedded_proof_only_when_explicit(
+    tmp_path: Path, pytestconfig: pytest.Config,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+    authority = repository / "ops/consolidation/source-authority.json"
+    manifest_path = repository / "ops/consolidation/dashboard-source-manifest.json"
+    introduction = _introduction(repository)
+
+    if pytestconfig.getoption("portable_embedded_proof"):
+        manifest = verify_embedded_snapshot(
+            parse_source_authority(authority),
+            manifest_path,
+            repository,
             introduction,
-        ],
-        cwd=ROOT,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == (
-        f"component=dashboard revision={introduction} result=PASS"
-    )
+        )
+        assert manifest.component == "dashboard"
+    else:
+        result = _strict_verification(authority, manifest_path, repository, introduction)
+        assert result.returncode != 0
+        assert result.stderr.strip() == "E_AUTHORITY"

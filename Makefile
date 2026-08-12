@@ -1,7 +1,7 @@
 .PHONY: audit audit-release audit-portable audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
-	check-secrets test test-core test-consolidation test-production \
+	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
 	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
@@ -121,7 +121,10 @@ test:
 		expected_sha256=$${digest_line%% *}; \
 		PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$extension" \
 		PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256" \
-			uv run pytest -q -m "not runtime_postgres and not host_coupled" tests
+		uv run pytest $(ROOT_PYTEST_ARGS) -q -m "not runtime_postgres and not host_coupled" tests
+
+test-portable-embedded-proof: ROOT_PYTEST_ARGS := --portable-embedded-proof
+test-portable-embedded-proof: test
 
 test-core:
 	uv run pytest -q -m "not runtime_postgres" tests \
@@ -258,7 +261,7 @@ prepare-root-test-install:
 
 test-all-private: audit check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
 
-test-all-portable-private: audit-portable check-d0-closure check-contracts check-secrets test test-backend test-dashboard typecheck-dashboard lint-dashboard
+test-all-portable-private: audit-portable check-d0-closure check-contracts check-secrets test-portable-embedded-proof test-backend test-dashboard typecheck-dashboard lint-dashboard
 
 test-all:
 	@set -eu; \

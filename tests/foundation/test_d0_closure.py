@@ -124,7 +124,10 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
     assert "@given" in property_source
     assert "@given" in replay_source
     assert 'testpaths = ["tests"]' in pyproject
-    assert 'pytest -q -m "not runtime_postgres and not host_coupled" tests' in makefile
+    assert (
+        'uv run pytest $(ROOT_PYTEST_ARGS) -q '
+        '-m "not runtime_postgres and not host_coupled" tests'
+    ) in makefile
     assert "test-all-private: audit check-d0-closure check-contracts" in makefile
     assert "check-d0-closure:" in makefile
     assert "uv run pytest -q tests/foundation/test_d0_closure.py" in makefile
@@ -134,6 +137,29 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
     assert "ci-private:\n\t$(MAKE) prepare-root-test-install" in makefile
     assert "\t$(MAKE) test-all-private check-test-skips check-critical-coverage " in makefile
     assert set(document["final_proof_commands"]) == REQUIRED_COMMANDS
+
+
+def test_portable_component_snapshot_proof_is_root_test_local() -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert "test-portable-embedded-proof" in makefile.split(".PHONY:", 1)[1].split("\n\n", 1)[0]
+    assert (
+        "test-portable-embedded-proof: ROOT_PYTEST_ARGS := --portable-embedded-proof\n"
+        "test-portable-embedded-proof: test"
+    ) in makefile
+    assert (
+        "test-all-private: audit check-d0-closure check-contracts check-secrets test "
+        "test-backend test-dashboard typecheck-dashboard lint-dashboard"
+    ) in makefile
+    assert (
+        "test-all-portable-private: audit-portable check-d0-closure check-contracts "
+        "check-secrets test-portable-embedded-proof test-backend test-dashboard "
+        "typecheck-dashboard lint-dashboard"
+    ) in makefile
+    assert makefile.count("$(ROOT_PYTEST_ARGS)") == 1
+    assert "export PYTEST_ADDOPTS" not in makefile
+    assert "test-backend:\n\tcd legacy/research-backend && uv run --frozen --extra test pytest -q" in makefile
+    assert "test-dashboard:\n\tcd apps/dashboard && npm test" in makefile
 
 
 def test_canonical_ci_uses_a_private_linux_temp_root() -> None:

@@ -42,6 +42,7 @@ MAKE_TARGETS = {
     "check-critical-coverage",
     "check-secrets",
     "test",
+    "test-portable-embedded-proof",
     "test-core",
     "test-consolidation",
     "test-production",
@@ -433,6 +434,7 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
     }
     portable_targets = {
         "audit-portable",
+        "test-portable-embedded-proof",
         "test-all-portable-private",
         "ci-portable",
         "ci-portable-private",
@@ -442,12 +444,17 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
 
     assert phony is not None
     assert portable_targets <= set(phony.group(1).split())
+    assert targets["test-portable-embedded-proof"] == ["test"]
+    assert (
+        "test-portable-embedded-proof: ROOT_PYTEST_ARGS := --portable-embedded-proof"
+        in makefile
+    )
     assert targets["test-all-portable-private"] == [
         "audit-portable",
         "check-d0-closure",
         "check-contracts",
         "check-secrets",
-        "test",
+        "test-portable-embedded-proof",
         "test-backend",
         "test-dashboard",
         "typecheck-dashboard",
@@ -455,6 +462,20 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
     ]
     assert targets["ci-portable"] == []
     assert targets["ci-portable-private"] == []
+
+    strict_aggregate = targets["test-all-private"]
+    assert "test" in strict_aggregate
+    assert "test-portable-embedded-proof" not in strict_aggregate
+    root_recipe = re.search(r"^test:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    backend_recipe = re.search(r"^test-backend:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    dashboard_recipe = re.search(r"^test-dashboard:\n((?:\t.*\n)+)", makefile, re.MULTILINE)
+    assert root_recipe is not None
+    assert backend_recipe is not None
+    assert dashboard_recipe is not None
+    assert root_recipe.group(1).count("$(ROOT_PYTEST_ARGS)") == 1
+    assert "--portable-embedded-proof" not in backend_recipe.group(1)
+    assert "--portable-embedded-proof" not in dashboard_recipe.group(1)
+    assert "export PYTEST_ADDOPTS" not in makefile
 
     portable_private_recipe = re.search(
         r"^ci-portable-private:\n((?:\t.*\n)+)", makefile, re.MULTILINE
