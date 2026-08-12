@@ -418,8 +418,12 @@ def _restricted_environment(
                 "sys.meta_path.insert(0, ForbiddenImportFinder())",
             ]
         )
-    (tmp_path / "sitecustomize.py").write_text("\n".join(source) + "\n", encoding="utf-8")
+    sitecustomize_path = tmp_path / "sitecustomize.py"
+    sitecustomize_path.write_text("\n".join(source) + "\n", encoding="utf-8")
+    for cache_file in (tmp_path / "__pycache__").glob("sitecustomize.*.pyc"):
+        cache_file.unlink()
     environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONPATH"] = str(tmp_path)
     return environment
 
@@ -1123,6 +1127,7 @@ def test_audit_guard_blocks_network_operations(tmp_path: Path, program: str) -> 
 
     assert completed.returncode != 0
     assert "audit policy blocked socket." in completed.stderr
+    assert not list((tmp_path / "__pycache__").glob("sitecustomize.*.pyc"))
 
 
 def test_audit_guard_blocks_socket_connect_after_construction(tmp_path: Path) -> None:
