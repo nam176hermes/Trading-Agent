@@ -116,6 +116,70 @@ portable-source native-capability external-authority
  controller aggregation (never a false GREEN)
 ```
 
+### Hosted `ci-portable` root-test routing
+
+The witnessed run proves that the current generic portable aggregate is not a
+valid T-G03C source-required route: `ci-portable-private` reaches
+`test-all-portable-private`, which reaches `test-portable-embedded-proof`, then
+generic root `test`. That root selection executes the locked 62 failures before
+the topology target appended afterward can create exact lane receipts. It cannot
+produce a topology/source green result by adding the topology after the generic
+test.
+
+T-G03C must replace only that **hosted `ci-portable` root-test component** with
+a new private aggregate, proposed as
+`test-all-portable-topology-private`. The canonical Make topology must be:
+
+```text
+Foundation workflow
+  -> make ci-portable                         # unchanged workflow command
+     -> private RUNNER_TEMP 0700 wrapper      # unchanged allocation/cleanup
+        -> make ci-portable-private
+           -> make prepare-root-test-install  # retained
+           -> make test-all-portable-topology-private \
+                   check-test-skips check-critical-coverage build-dashboard \
+                   audit-python-source audit-dependencies
+
+test-all-portable-topology-private:
+  audit-portable check-d0-closure check-contracts check-secrets
+  test-backend test-dashboard typecheck-dashboard lint-dashboard
+  ci-portable-topology
+
+ci-portable-topology:
+  verified tracked inventory install
+  portable-source lane (exact 32 executed)
+  native-capability lane (exact 24 executed or valid DEFERRED)
+  external-authority lane (exact 6 executed or valid DEFERRED)
+  receipt aggregation
+```
+
+This is a Make-only orchestration contract: Foundation continues to invoke only
+`make ci-portable`; it must not gain a hand-written pytest invocation, node
+list, marker, skip, or xfail. `ci-portable-topology` obtains every selection
+from the verified installed tracked inventory defined above, not a Makefile or
+workflow literal. It is the sole root-test route in this source-required path.
+
+`test`, `test-portable-embedded-proof`, and
+`test-all-portable-private` remain available with their existing generic/local
+semantics and are not changed by this topology work. `make ci`, `make audit`,
+and `make audit-release` remain strict and unchanged. The one explicit routing
+change is that `ci-portable-private` uses
+`test-all-portable-topology-private` instead of
+`test-all-portable-private`; neither the new aggregate nor anything it invokes
+may depend on generic `test` or `test-portable-embedded-proof`.
+
+T-G03C must add topology tests that parse the Make dependency graph and fail
+if: the `ci-portable` wrapper stops using its private `RUNNER_TEMP` child;
+`prepare-root-test-install`, `audit-portable`, D0, contracts, secrets, backend,
+dashboard, dashboard typecheck/lint, test-governance, critical coverage,
+dashboard build, Python-source audit, or dependency-audit controls disappear;
+the source-required route directly or transitively reaches `test`,
+`test-portable-embedded-proof`, or `test-all-portable-private`; an individual
+pytest command appears in Foundation; or the workflow ceases to invoke exactly
+`make ci-portable`. Those tests must also prove the legacy targets retain their
+current generic definitions. Exact inventory validation and receipt
+completeness—not broad skip/xfail—prevent loss of the 62 classified nodes.
+
 ### Portable-source lane
 
 It executes all and only the 32 portable node IDs after the narrow test-fixture
@@ -291,7 +355,9 @@ loses security coverage.
    adversarial tests preserving the original security assertions.
 3. Add reviewed parser, exact collection verifier, and hostile receipt/state
    tests through the existing evidence boundary.
-4. Add lane orchestration without changing strict `make ci`, `make audit`, or
+4. Add the exact-inventory portable hosted aggregate and lane orchestration as
+   specified above, while retaining the private `RUNNER_TEMP` wrapper and every
+   listed non-root-test gate. Do not change strict `make ci`, `make audit`, or
    `make audit-release`; retain both live flags false.
 5. Run portable source. Native/external may defer only as specified; `BROKEN`,
    `PARTIAL`, and `INVALID` are red.
