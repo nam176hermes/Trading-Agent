@@ -304,7 +304,6 @@ ci-portable:
 		}; \
 		trap 'cleanup_ci_tmpdir' EXIT; \
 		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
-		TEST_EVIDENCE_DIR="$$ci_tmpdir/test-evidence" \
 			$(MAKE) ci-portable-private
 
 ci-portable-private:

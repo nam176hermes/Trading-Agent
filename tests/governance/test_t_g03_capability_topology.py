@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 import tempfile
 import subprocess
+from types import SimpleNamespace
 
 from scripts import t_g03_capability_topology as topology
 from scripts import test_governance_pytest as governance_plugin
@@ -49,11 +50,13 @@ def test_locked_inventory_installs_exact_bytes_once_and_rejects_tampering(tmp_pa
     """Break caught: an inventory or installed-evidence mapping can silently drift."""
     tracked = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
     rows = topology.load_inventory(tracked)
-    installed = topology.install_inventory(tracked, tmp_path / "evidence")
-    assert installed.read_bytes() == tracked.read_bytes()
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        installed = topology.install_inventory(tracked, evidence)
+        assert installed.read_bytes() == tracked.read_bytes()
+        with pytest.raises(FileExistsError):
+            topology.install_inventory(tracked, evidence)
     assert len(rows) == 62
-    with pytest.raises(FileExistsError):
-        topology.install_inventory(tracked, tmp_path / "evidence")
     changed = tmp_path / "changed.tsv"
     changed.write_bytes(tracked.read_bytes().replace(b"PORTABLE_SOURCE_DEFECT", b"PORTABLE_SOURCE_DEFEKT", 1))
     with pytest.raises(topology.TopologyError, match="hash drift"):
@@ -106,9 +109,11 @@ def test_receipt_rejects_unredacted_fact_payload_and_stale_or_wrong_mapping() ->
 def test_publish_is_no_clobber_and_fake_path_cannot_supply_userns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Break caught: evidence is overwritten or a PATH fake claims native capability."""
     receipt = _receipt()
-    topology.publish_receipt(receipt, tmp_path)
-    with pytest.raises(FileExistsError):
-        topology.publish_receipt(receipt, tmp_path)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        topology.publish_receipt(receipt, evidence)
+        with pytest.raises(FileExistsError):
+            topology.publish_receipt(receipt, evidence)
     fake_dir = tmp_path / "fake-bin"
     fake_dir.mkdir()
     fake = fake_dir / "unshare"
@@ -220,3 +225,87 @@ def test_exact_collection_rejects_nonexecuted_or_xfail_observations(tmp_path: Pa
     monkeypatch.setattr(topology.subprocess, "run", fake_run)
     with pytest.raises(topology.TopologyError):
         topology._run_exact((node,), report)
+
+
+def _write_direct(path: Path, content: str = "fixture\n", *, executable: bool = False) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755 if executable else 0o600)
+
+
+def _complete_corpus_fixture(root: Path) -> None:
+    root.mkdir(mode=0o700)
+    for relative, directory in topology.PHASE3B_REQUIRED_ENTRIES:
+        path = root / relative
+        if directory:
+            path.mkdir(parents=True, mode=0o700)
+            path.chmod(0o700)
+        else:
+            _write_direct(path)
+
+
+def _valid_phase3b_analysis() -> SimpleNamespace:
+    return SimpleNamespace(
+        inventory_hash="dbc94142b6773bb5a79c7bc889e7323ca92c03e5375d0a596b679c3f01c7b4ce",
+        decision_total=16517, cost_sessions=20, asset_count=17, asset_source_files=2209,
+    )
+
+
+def test_external_authority_inventory_classifies_missing_uv_with_closure_and_symlinked_corpus_child(tmp_path: Path) -> None:
+    """Break caught: partial authority is deferred or a symlinked required child is trusted."""
+    legacy = tmp_path / "legacy"
+    for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
+        _write_direct(legacy / relative, executable=relative.endswith("python"))
+    assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=tmp_path / "missing-uv", legacy_root=legacy)[0] == "PARTIAL"
+    corpus = tmp_path / "corpus"
+    _complete_corpus_fixture(corpus)
+    child = corpus / "memory/decisions.jsonl"
+    child.unlink()
+    child.symlink_to(corpus / "asset_registry.py")
+    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=corpus, corpus_validator=lambda _root: _valid_phase3b_analysis())[0] == "INVALID"
+
+
+def test_fully_valid_external_fixtures_reach_valid_without_network(tmp_path: Path) -> None:
+    """Break caught: even a fully bound authority cannot take the VALID pre-test path."""
+    del tmp_path
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        root.chmod(0o700)
+        corpus = root / "corpus"
+        _complete_corpus_fixture(corpus)
+        assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=corpus, corpus_validator=lambda _root: _valid_phase3b_analysis()) == ("VALID", "AUTHORITY_COMPLETE_VALIDATED")
+        legacy = root / "legacy"
+        for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
+            _write_direct(legacy / relative, executable=relative.endswith("python"))
+        uv = root / "uv"
+        _write_direct(uv, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'fixture-uv 1.0\\n'; fi\n", executable=True)
+        expected = topology.hashlib.sha256(uv.read_bytes()).hexdigest()
+        assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy, expected_uv_sha256=expected, expected_uv_version="fixture-uv 1.0") == ("VALID", "AUTHORITY_COMPLETE_VALIDATED")
+
+
+def test_ci_portable_keeps_artifact_evidence_outside_deleted_tmp_root() -> None:
+    """Break caught: receipts are published under ci_tmpdir and deleted before upload."""
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    portable = makefile.split("ci-portable:\n", 1)[1].split("\n\nci-portable-private:", 1)[0]
+    assert 'TEST_EVIDENCE_DIR="$$ci_tmpdir' not in portable
+    assert "TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence" in makefile
+
+
+def test_valid_external_preflight_is_the_only_path_that_selects_external_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Break caught: external tests execute before a full VALID preflight."""
+    monkeypatch.setenv("GITHUB_RUN_ID", "31641536482")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    selected: list[tuple[str, ...]] = []
+
+    def exact(nodes: tuple[str, ...], _report: Path) -> tuple[str, ...]:
+        selected.append(nodes)
+        return nodes
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        paths = topology.run_lane(
+            lane="external-authorities", inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+            evidence_root=Path(raw) / "artifact", run_id="31641536482", head_sha=head,
+            external_preflight=lambda _code: ("VALID", "AUTHORITY_COMPLETE_VALIDATED"), exact_runner=exact,
+        )
+        assert len(paths) == 2
+    assert sorted(len(nodes) for nodes in selected) == [3, 3]

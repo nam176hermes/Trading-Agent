@@ -7,6 +7,7 @@ import hashlib
 import json
 import csv
 import argparse
+from collections.abc import Callable
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,20 @@ RECEIPT_KEYS = frozenset({
 
 class TopologyError(RuntimeError):
     """A topology binding or receipt is invalid."""
+
+
+def _prepare_private_evidence_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise TopologyError("evidence directory is unavailable") from exc
+    if not stat.S_ISDIR(info.st_mode) or path.is_symlink() or info.st_uid != os.geteuid():
+        raise TopologyError("evidence directory is unsafe")
+    os.chmod(path, 0o700)
+    current = path.lstat()
+    if current.st_uid != os.geteuid() or stat.S_IMODE(current.st_mode) != 0o700:
+        raise TopologyError("evidence directory is not private")
 
 
 INVENTORY_COLUMNS = (
@@ -67,6 +82,21 @@ LEGACY_UV = Path("/home/thenam176/.local/bin/uv")
 LEGACY_UV_SHA256 = "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
 LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 ROOT = Path(__file__).resolve().parents[1]
+PHASE3B_REQUIRED_ENTRIES = (
+    ("asset_registry.py", False),
+    ("memory/decisions.jsonl", False),
+    ("memory/trading.db", False),
+    (".dexter/scratchpad", True),
+    ("reports", True),
+    ("decisions", True),
+)
+LEGACY_CLOSURE_ENTRIES = (
+    (".venv/bin/python", False),
+    (".venv/pyvenv.cfg", False),
+    ("pyproject.toml", False),
+    ("uv.lock", False),
+    ("nautilus_parity_adapter.py", False),
+)
 
 
 @dataclass(frozen=True)
@@ -114,8 +144,7 @@ def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
 def install_inventory(source: Path, evidence_root: Path) -> Path:
     """Copy verified bytes once into private evidence; never overwrite a prior run."""
     load_inventory(source)
-    evidence_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(evidence_root, 0o700)
+    _prepare_private_evidence_directory(evidence_root)
     destination = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -276,9 +305,9 @@ def make_receipt(*, run_id: str, head_sha: str, lane: str, code: str, expected: 
 def publish_receipt(receipt: dict[str, object], evidence_root: Path) -> Path:
     """Publish a receipt once. Existing evidence is a hard failure, never clobbered."""
     code = str(receipt["capability_or_authority_code"])
+    _prepare_private_evidence_directory(evidence_root)
     destination = evidence_root / "capability-topology" / f"{code}.json"
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(destination.parent, 0o700)
+    _prepare_private_evidence_directory(destination.parent)
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(canonical_json_bytes(receipt))
@@ -367,44 +396,102 @@ def _safe_authority_entry(path: Path, *, directory: bool) -> str | None:
     return None
 
 
+def _whole_authority_state(paths: tuple[Path, ...]) -> str | None:
+    """Classify presence before deferral: all absent is distinct from partial."""
+    present = [os.path.lexists(path) for path in paths]
+    if not any(present):
+        return "ABSENT"
+    if not all(present):
+        return "PARTIAL"
+    return None
+
+
+def _validate_direct_entries(root: Path, entries: tuple[tuple[str, bool], ...]) -> str | None:
+    try:
+        root_info = root.lstat()
+    except OSError:
+        return "PARTIAL"
+    for relative, directory in entries:
+        path = root / relative
+        state = _safe_authority_entry(path, directory=directory)
+        if state is not None:
+            return "PARTIAL" if state == "ABSENT" else "INVALID"
+        info = path.lstat()
+        if info.st_uid != root_info.st_uid or info.st_gid != root_info.st_gid:
+            return "INVALID"
+    return None
+
+
+def _default_phase3b_validator(root: Path) -> object:
+    from trading_control.phase3b_sources import analyze_phase3b_sources
+    return analyze_phase3b_sources(root)
+
+
+def _phase3b_valid(analysis: object) -> bool:
+    return (
+        getattr(analysis, "inventory_hash", None) == "dbc94142b6773bb5a79c7bc889e7323ca92c03e5375d0a596b679c3f01c7b4ce"
+        and getattr(analysis, "decision_total", None) == 16517
+        and getattr(analysis, "cost_sessions", None) == 20
+        and getattr(analysis, "asset_count", None) == 17
+        and getattr(analysis, "asset_source_files", None) == 2209
+    )
+
+
 def _external_preflight(
     code: str, *, corpus_root: Path = PHASE3B_ROOT, uv_path: Path = LEGACY_UV,
     legacy_root: Path = ROOT / "legacy/research-backend",
+    corpus_validator: Callable[[Path], object] = _default_phase3b_validator,
+    expected_uv_sha256: str = LEGACY_UV_SHA256,
+    expected_uv_version: str = LEGACY_UV_VERSION,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[str, str]:
     if code == "EXT-PHASE3B-CORPUS":
+        paths = (corpus_root, *(corpus_root / relative for relative, _ in PHASE3B_REQUIRED_ENTRIES))
+        whole = _whole_authority_state(paths)
+        if whole == "ABSENT":
+            return "ABSENT", "AUTHORITY_ROOT_ABSENT"
+        if whole == "PARTIAL":
+            return "PARTIAL", "AUTHORITY_PARTIAL"
         state = _safe_authority_entry(corpus_root, directory=True)
         if state is not None:
-            return (state, "AUTHORITY_ROOT_ABSENT" if state == "ABSENT" else "AUTHORITY_PARTIAL" if state == "PARTIAL" else "AUTHORITY_INVALID")
-        if any(not (corpus_root / relative).exists() for relative in (
-            "asset_registry.py", "memory/decisions.jsonl", "memory/trading.db",
-            ".dexter/scratchpad", "reports", "decisions",
-        )):
-            return "PARTIAL", "AUTHORITY_PARTIAL"
+            return "INVALID", "AUTHORITY_INVALID"
+        direct = _validate_direct_entries(corpus_root, PHASE3B_REQUIRED_ENTRIES)
+        if direct is not None:
+            return direct, "AUTHORITY_PARTIAL" if direct == "PARTIAL" else "AUTHORITY_INVALID"
         try:
-            from trading_control.phase3b_sources import analyze_phase3b_sources
-            analysis = analyze_phase3b_sources(corpus_root)
+            analysis = corpus_validator(corpus_root)
         except FileNotFoundError:
             return "PARTIAL", "AUTHORITY_PARTIAL"
         except Exception:
             return "INVALID", "AUTHORITY_INVALID"
-        valid = (analysis.inventory_hash == "dbc94142b6773bb5a79c7bc889e7323ca92c03e5375d0a596b679c3f01c7b4ce"
-                 and analysis.decision_total == 16517 and analysis.cost_sessions == 20
-                 and analysis.asset_count == 17 and analysis.asset_source_files == 2209)
-        return ("VALID", "AUTHORITY_COMPLETE_VALIDATED") if valid else ("INVALID", "AUTHORITY_INVALID")
+        return ("VALID", "AUTHORITY_COMPLETE_VALIDATED") if _phase3b_valid(analysis) else ("INVALID", "AUTHORITY_INVALID")
     if code == "EXT-LEGACY-UV-AUTHORITY":
+        closure_paths = tuple(legacy_root / relative for relative, _ in LEGACY_CLOSURE_ENTRIES)
+        whole = _whole_authority_state((uv_path, *closure_paths))
+        if whole == "ABSENT":
+            return "ABSENT", "AUTHORITY_EXECUTABLE_ABSENT"
+        if whole == "PARTIAL":
+            return "PARTIAL", "AUTHORITY_PARTIAL"
         state = _safe_authority_entry(uv_path, directory=False)
         if state is not None:
-            return (state, "AUTHORITY_EXECUTABLE_ABSENT" if state == "ABSENT" else "AUTHORITY_PARTIAL" if state == "PARTIAL" else "AUTHORITY_INVALID")
-        closure = legacy_root / ".venv/bin/python"
-        closure_state = _safe_authority_entry(closure, directory=False)
-        if closure_state is not None:
-            return "PARTIAL", "AUTHORITY_PARTIAL"
+            return "INVALID", "AUTHORITY_INVALID"
+        direct = _validate_direct_entries(legacy_root, LEGACY_CLOSURE_ENTRIES)
+        if direct is not None:
+            return direct, "AUTHORITY_PARTIAL" if direct == "PARTIAL" else "AUTHORITY_INVALID"
         try:
             digest = hashlib.sha256(uv_path.read_bytes()).hexdigest()
-            version = subprocess.run([str(uv_path), "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
+            version = runner([str(uv_path), "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
+            sync = runner(
+                [str(uv_path), "sync", "--frozen", "--extra", "test"],
+                cwd=legacy_root, stdin=subprocess.DEVNULL, capture_output=True,
+                text=True, timeout=120, check=False,
+                env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1"},
+            )
         except (OSError, subprocess.SubprocessError):
             return "INVALID", "AUTHORITY_INVALID"
-        if stat.S_IMODE(uv_path.stat().st_mode) != 0o755 or digest != LEGACY_UV_SHA256 or version.returncode != 0 or version.stdout.strip() != LEGACY_UV_VERSION:
+        if (stat.S_IMODE(uv_path.stat().st_mode) != 0o755 or digest != expected_uv_sha256
+                or version.returncode != 0 or version.stdout.strip() != expected_uv_version
+                or sync.returncode != 0):
             return "INVALID", "AUTHORITY_INVALID"
         return "VALID", "AUTHORITY_COMPLETE_VALIDATED"
     raise TopologyError("unknown external authority")
@@ -433,7 +520,11 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     return passed
 
 
-def run_lane(*, lane: str, inventory: Path, evidence_root: Path, run_id: str, head_sha: str) -> list[Path]:
+def run_lane(
+    *, lane: str, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    external_preflight: Callable[[str], tuple[str, str]] = _external_preflight,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] = _run_exact,
+) -> list[Path]:
     require_foundation_context(run_id, head_sha)
     rows = load_inventory(inventory)
     installed = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
@@ -449,13 +540,13 @@ def run_lane(*, lane: str, inventory: Path, evidence_root: Path, run_id: str, he
         expected_lane, expected = _expected_rows(rows, code)
         if expected_lane != lane:
             continue
-        state, fact = ("AVAILABLE", "SOURCE_TEST_EXECUTED") if lane == "portable-source" else (_native_preflight(code) if lane == "native-capabilities" else _external_preflight(code))
+        state, fact = ("AVAILABLE", "SOURCE_TEST_EXECUTED") if lane == "portable-source" else (_native_preflight(code) if lane == "native-capabilities" else external_preflight(code))
         if state in {"BROKEN", "PARTIAL", "INVALID"}:
             raise TopologyError(f"{code} preflight is {state}")
         if state in {"UNAVAILABLE", "ABSENT"}:
             receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=(), state=state, fact=fact, outcome="DEFERRED")
         else:
-            selected = _run_exact(expected, evidence_root / "capability-topology" / f"{code}.governance.json")
+            selected = exact_runner(expected, evidence_root / "capability-topology" / f"{code}.governance.json")
             receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=selected, state=state, fact=fact, outcome="PASS")
         publications.append(publish_receipt(receipt, evidence_root))
     return publications
