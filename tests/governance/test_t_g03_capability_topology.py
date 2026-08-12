@@ -134,7 +134,7 @@ def test_external_preflight_distinguishes_absent_partial_and_invalid(tmp_path: P
     assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=absent)[0] == "ABSENT"
     dangling = tmp_path / "dangling"
     dangling.symlink_to(absent)
-    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=dangling)[0] == "PARTIAL"
+    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=dangling)[0] == "INVALID"
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         partial = Path(raw)
         partial.chmod(0o700)
@@ -254,16 +254,20 @@ def _valid_phase3b_analysis() -> SimpleNamespace:
 
 def test_external_authority_inventory_classifies_missing_uv_with_closure_and_symlinked_corpus_child(tmp_path: Path) -> None:
     """Break caught: partial authority is deferred or a symlinked required child is trusted."""
-    legacy = tmp_path / "legacy"
-    for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
-        _write_direct(legacy / relative, executable=relative.endswith("python"))
-    assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=tmp_path / "missing-uv", legacy_root=legacy)[0] == "PARTIAL"
-    corpus = tmp_path / "corpus"
-    _complete_corpus_fixture(corpus)
-    child = corpus / "memory/decisions.jsonl"
-    child.unlink()
-    child.symlink_to(corpus / "asset_registry.py")
-    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=corpus, corpus_validator=lambda _root: _valid_phase3b_analysis())[0] == "INVALID"
+    del tmp_path
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        root.chmod(0o700)
+        legacy = root / "legacy"
+        for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
+            _write_direct(legacy / relative, executable=relative.endswith("python"))
+        assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=root / "missing-uv", legacy_root=legacy)[0] == "PARTIAL"
+        corpus = root / "corpus"
+        _complete_corpus_fixture(corpus)
+        child = corpus / "memory/decisions.jsonl"
+        child.unlink()
+        child.symlink_to(corpus / "asset_registry.py")
+        assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=corpus, corpus_validator=lambda _root: _valid_phase3b_analysis())[0] == "INVALID"
 
 
 def test_fully_valid_external_fixtures_reach_valid_without_network(tmp_path: Path) -> None:
@@ -361,6 +365,70 @@ def test_external_rejects_intermediate_directory_symlinks(tmp_path: Path) -> Non
         uv = root / "uv"
         _write_direct(uv, "#!/bin/sh\nexit 0\n", executable=True)
         assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy)[0] == "INVALID"
+
+
+def test_external_rejects_parent_component_symlinks_for_every_supplied_authority_path(tmp_path: Path) -> None:
+    """Break caught: validation starts at an authority leaf and follows a hostile parent link."""
+    del tmp_path
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        trusted = root / "trusted"
+        trusted.mkdir(mode=0o700)
+        corpus = trusted / "corpus"
+        _complete_corpus_fixture(corpus)
+        legacy = trusted / "legacy"
+        for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
+            _write_direct(legacy / relative, executable=relative.endswith("python"))
+        uv = trusted / "uv"
+        payload = "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'fixture-uv 1.0\\n'; fi\n"
+        _write_direct(uv, payload, executable=True)
+        alias = root / "hostile-parent"
+        alias.symlink_to(trusted, target_is_directory=True)
+        expected = topology.hashlib.sha256(uv.read_bytes()).hexdigest()
+
+        assert topology._external_preflight(
+            "EXT-PHASE3B-CORPUS", corpus_root=alias / "corpus",
+            corpus_validator=lambda _root: _valid_phase3b_analysis(),
+        )[0] == "INVALID"
+        assert topology._external_preflight(
+            "EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=alias / "legacy",
+            expected_uv_sha256=expected, expected_uv_version="fixture-uv 1.0",
+        )[0] == "INVALID"
+        assert topology._external_preflight(
+            "EXT-LEGACY-UV-AUTHORITY", uv_path=alias / "uv", legacy_root=legacy,
+            expected_uv_sha256=expected, expected_uv_version="fixture-uv 1.0",
+        )[0] == "INVALID"
+
+
+def test_completed_topology_retry_preserves_inventory_governance_and_receipt_before_collection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Break caught: a duplicate topology invocation mutates completed evidence before it is rejected."""
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", "31641536482")
+    calls: list[tuple[str, ...]] = []
+
+    def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+        calls.append(nodes)
+        report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        report.write_bytes(b'{"completed":"first"}')
+        return nodes
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
+        receipts = topology.run_lane(
+            lane="portable-source", inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+            evidence_root=evidence, run_id="31641536482", head_sha=head, exact_runner=exact,
+        )
+        installed = evidence / "t-g03a-hosted-failure-inventory.tsv"
+        governance = evidence / "capability-topology/SRC-SEALEDUV-BWRAP-PREFLIGHT.governance.json"
+        receipt = next(path for path in receipts if path.name == "SRC-SEALEDUV-BWRAP-PREFLIGHT.json")
+        preserved = (installed.read_bytes(), governance.read_bytes(), receipt.read_bytes())
+
+        with pytest.raises(topology.TopologyError, match="reserved or populated"):
+            topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
+
+        assert len(calls) == 3
+        assert (installed.read_bytes(), governance.read_bytes(), receipt.read_bytes()) == preserved
 
 
 def test_retained_uv_rejects_named_replacement_after_descriptor_execution(tmp_path: Path) -> None:

@@ -411,27 +411,55 @@ def _native_preflight(code: str) -> tuple[str, str]:
 
 
 def _safe_authority_entry(path: Path, *, directory: bool) -> str | None:
-    if not os.path.lexists(path):
-        return "ABSENT"
+    path_state = _authority_path_state(path, directory=directory)
+    if path_state is not None:
+        return path_state
     try:
         info = path.lstat()
     except OSError:
-        return "PARTIAL"
+        return "INVALID"
     expected_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
-    if path.is_symlink() or not expected_type:
-        return "PARTIAL"
+    if not expected_type:
+        return "INVALID"
     if info.st_uid != os.geteuid() or info.st_gid != os.getegid() or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         return "INVALID"
     return None
 
 
-def _whole_authority_state(paths: tuple[Path, ...]) -> str | None:
-    """Classify presence before deferral: all absent is distinct from partial."""
-    present = [os.path.lexists(path) for path in paths]
-    if not any(present):
-        return "ABSENT"
-    if not all(present):
-        return "PARTIAL"
+def _authority_path_state(path: Path, *, directory: bool) -> str | None:
+    """Inspect every absolute path component with lstat before trusting authority data.
+
+    A parent link would otherwise be followed by normal existence checks before
+    the authority leaf is inspected.  Each component is therefore verified as
+    a non-link directory before the next component is even addressed.
+    """
+    if not path.is_absolute():
+        return "INVALID"
+    parts = path.parts
+    if not parts or parts[0] != path.anchor:
+        return "INVALID"
+    current = Path(path.anchor)
+    try:
+        root_info = current.lstat()
+    except OSError:
+        return "INVALID"
+    if not stat.S_ISDIR(root_info.st_mode):
+        return "INVALID"
+    for index, part in enumerate(parts[1:]):
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return "ABSENT"
+        except OSError:
+            return "INVALID"
+        if stat.S_ISLNK(info.st_mode):
+            return "INVALID"
+        final = index == len(parts) - 2
+        if not final and not stat.S_ISDIR(info.st_mode):
+            return "INVALID"
+        if final and not (stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)):
+            return "INVALID"
     return None
 
 
@@ -494,14 +522,10 @@ def _external_preflight(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> tuple[str, str]:
     if code == "EXT-PHASE3B-CORPUS":
-        paths = (corpus_root, *(corpus_root / relative for relative, _ in PHASE3B_REQUIRED_ENTRIES))
-        whole = _whole_authority_state(paths)
-        if whole == "ABSENT":
+        root_state = _safe_authority_entry(corpus_root, directory=True)
+        if root_state == "ABSENT":
             return "ABSENT", "AUTHORITY_ROOT_ABSENT"
-        if whole == "PARTIAL":
-            return "PARTIAL", "AUTHORITY_PARTIAL"
-        state = _safe_authority_entry(corpus_root, directory=True)
-        if state is not None:
+        if root_state is not None:
             return "INVALID", "AUTHORITY_INVALID"
         direct = _validate_direct_entries(corpus_root, PHASE3B_REQUIRED_ENTRIES)
         if direct is not None:
@@ -514,14 +538,15 @@ def _external_preflight(
             return "INVALID", "AUTHORITY_INVALID"
         return ("VALID", "AUTHORITY_COMPLETE_VALIDATED") if _phase3b_valid(analysis) else ("INVALID", "AUTHORITY_INVALID")
     if code == "EXT-LEGACY-UV-AUTHORITY":
-        closure_paths = tuple(legacy_root / relative for relative, _ in LEGACY_CLOSURE_ENTRIES)
-        whole = _whole_authority_state((uv_path, *closure_paths))
-        if whole == "ABSENT":
+        uv_state = _safe_authority_entry(uv_path, directory=False)
+        legacy_state = _safe_authority_entry(legacy_root, directory=True)
+        if uv_state == legacy_state == "ABSENT":
             return "ABSENT", "AUTHORITY_EXECUTABLE_ABSENT"
-        if whole == "PARTIAL":
+        if uv_state == "INVALID" or legacy_state == "INVALID":
+            return "INVALID", "AUTHORITY_INVALID"
+        if uv_state == "ABSENT" or legacy_state == "ABSENT":
             return "PARTIAL", "AUTHORITY_PARTIAL"
-        state = _safe_authority_entry(uv_path, directory=False)
-        if state is not None:
+        if uv_state is not None or legacy_state is not None:
             return "INVALID", "AUTHORITY_INVALID"
         direct = _validate_direct_entries(legacy_root, LEGACY_CLOSURE_ENTRIES)
         if direct is not None:
