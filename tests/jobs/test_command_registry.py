@@ -6,7 +6,7 @@ import os
 import shutil
 import stat
 import tempfile
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -168,7 +168,146 @@ def _entry(root: Path, path: Path) -> dict[str, object]:
     return {"path": relative, "type": "file", "mode": format(stat.S_IMODE(path.stat().st_mode), "04o"), "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
 
 
-def _deployment(tmp_path: Path, monkeypatch):
+@dataclass
+class _FixtureIdentityEvidence:
+    """Record the real fixture identity before modeling only its root uid."""
+
+    release_root: Path
+    manifest_path: Path
+    release_entries: tuple[Path, ...]
+    _declared_paths: frozenset[Path] = field(init=False, repr=False)
+    _injected_xattrs: dict[Path, tuple[str, ...]] = field(default_factory=dict, repr=False)
+    _lstat_paths: list[str] = field(default_factory=list, repr=False)
+    _xattr_paths: list[str] = field(default_factory=list, repr=False)
+    _diagnostic: dict[str, object] | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        declared: set[Path] = set()
+        for path in (self.release_root, self.manifest_path, *self.release_entries):
+            current = path.absolute()
+            while True:
+                declared.add(current)
+                if current == Path(current.anchor):
+                    break
+                current = current.parent
+        self._declared_paths = frozenset(declared)
+
+    def _path(self, value: Path) -> Path:
+        return value.absolute()
+
+    def _redact(self, path: Path) -> str:
+        if path == Path(path.anchor):
+            return "<filesystem-root>"
+        if path == Path("/tmp"):
+            return "<tmp-root>"
+        if path == self.manifest_path.absolute():
+            return "<release-manifest>"
+        try:
+            path.relative_to(self.release_root.absolute())
+        except ValueError:
+            current = self.release_root.absolute().parent
+            index = 0
+            while True:
+                if path == current:
+                    return f"<fixture-ancestor-{index}>"
+                if current == Path(current.anchor):
+                    break
+                current = current.parent
+                index += 1
+            return "<declared-ancestor>"
+        return "<release-root>" if path == self.release_root.absolute() else "<release-entry>"
+
+    def lstat(self, value: Path) -> os.stat_result:
+        path = self._path(value)
+        real = path.lstat()
+        self._lstat_paths.append(self._redact(path))
+        if path not in self._declared_paths:
+            raise AssertionError("command fixture inspected a path outside its declared identity")
+        values = list(real)
+        values[4] = 0
+        return os.stat_result(values)
+
+    def listxattr(self, value: Path) -> tuple[str, ...]:
+        path = self._path(value)
+        observed = tuple(os.listxattr(path, follow_symlinks=False))
+        self._xattr_paths.append(self._redact(path))
+        if path not in self._declared_paths:
+            raise AssertionError("command fixture inspected xattrs outside its declared identity")
+        injected = self._injected_xattrs.get(path, ())
+        return tuple(dict.fromkeys((*observed, *injected)))
+
+    def inject_xattrs(self, value: Path, attributes: tuple[str, ...]) -> None:
+        path = self._path(value)
+        if path not in self._declared_paths:
+            raise AssertionError("command fixture injected xattrs outside its declared identity")
+        self._injected_xattrs[path] = attributes
+
+    def record_rejection(self, error: CommandRegistryError) -> None:
+        reason = error.reason_code
+        if "XATTR" in reason:
+            category, outcome = "xattr", "present_or_unreadable"
+        elif reason == "COMMAND_RELEASE_EXACT_SET_MISMATCH":
+            category, outcome = "manifest_exact_set", "mismatch"
+        elif reason == "COMMAND_RELEASE_FILE_NOT_APPROVED":
+            category, outcome = "digest", "mismatch"
+        elif reason in {
+            "COMMAND_ANCESTOR_OWNER_UNSAFE",
+            "COMMAND_PATH_OWNER_UNSAFE",
+        }:
+            category, outcome = "lstat", "ownership"
+        elif reason in {
+            "COMMAND_ANCESTOR_MODE_UNSAFE",
+            "COMMAND_PATH_MODE_UNSAFE",
+            "COMMAND_EXECUTABLE_MISSING",
+        }:
+            category, outcome = "lstat", "mode"
+        elif reason in {
+            "COMMAND_ANCESTOR_SYMLINK",
+            "COMMAND_RELEASE_SYMLINK",
+            "COMMAND_RELEASE_TYPE_UNSAFE",
+        }:
+            category, outcome = "lstat", "type"
+        elif reason in {
+            "COMMAND_ANCESTOR_MISSING",
+            "COMMAND_CWD_MISSING",
+            "COMMAND_ARTIFACT_MISSING",
+            "COMMAND_PATH_UNREADABLE",
+            "COMMAND_RELEASE_UNREADABLE",
+            "COMMAND_RELEASE_FILE_UNREADABLE",
+        }:
+            category, outcome = "race", "missing_or_unreadable"
+        else:
+            category, outcome = "unclassified", "unexpected_reason"
+        self._diagnostic = {
+            "category": category,
+            "outcome": outcome,
+            "reason_code": reason,
+            "lstat_paths": tuple(self._lstat_paths),
+            "xattr_paths": tuple(self._xattr_paths),
+        }
+
+    def record_fixture_boundary(self) -> None:
+        self._diagnostic = {
+            "category": "fixture_boundary",
+            "outcome": "undeclared_path",
+            "reason_code": "FIXTURE_IDENTITY_UNDECLARED_PATH",
+            "lstat_paths": tuple(self._lstat_paths),
+            "xattr_paths": tuple(self._xattr_paths),
+        }
+
+    def diagnostic(self) -> dict[str, object]:
+        if self._diagnostic is not None:
+            return self._diagnostic
+        return {
+            "category": "verified",
+            "outcome": "no_rejection",
+            "reason_code": None,
+            "lstat_paths": tuple(self._lstat_paths),
+            "xattr_paths": tuple(self._xattr_paths),
+        }
+
+
+def _deployment(tmp_path: Path, monkeypatch, *, diagnostics: list[_FixtureIdentityEvidence] | None = None):
     # Nested capability fixtures pass a not-yet-existing parent. Create and
     # harden it explicitly because parents=True otherwise uses the ambient
     # umask for intermediate directories, which can produce unsafe 0775 paths.
@@ -202,12 +341,15 @@ def _deployment(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("services.job_worker.command_registry.APPROVED_BACKEND_CWD", root)
     monkeypatch.setattr("services.job_worker.command_registry.APPROVED_BACKEND_PYTHON", root / ".venv/bin/python")
     monkeypatch.setattr("services.job_worker.command_registry.APPROVED_RELEASE_MANIFEST_PATH", manifest_path)
-    real_lstat = Path.lstat
-    def root_owned_lstat(path: Path):
-        values = list(real_lstat(path))
-        values[4] = 0
-        return os.stat_result(values)
-    monkeypatch.setattr("services.job_worker.command_registry._lstat", root_owned_lstat)
+    evidence = _FixtureIdentityEvidence(
+        root,
+        manifest_path,
+        tuple(root / str(entry["path"]) for entry in entries),
+    )
+    if diagnostics is not None:
+        diagnostics.append(evidence)
+    monkeypatch.setattr("services.job_worker.command_registry._lstat", evidence.lstat)
+    monkeypatch.setattr("services.job_worker.command_registry._listxattr", evidence.listxattr)
     authority = RuntimeAuthority(
         ReleaseAuthority("a" * 40, root, manifest_path, "1" * 64, root / ".venv/bin/python", "CPython 3.11.13"),
         ReleaseAuthority(BACKEND_COMMIT, root, manifest_path, hashlib.sha256(raw).hexdigest(), root / ".venv/bin/python", "CPython 3.11.13"),
@@ -219,27 +361,34 @@ def _deployment(tmp_path: Path, monkeypatch):
     import services.job_worker.command_registry as module
 
     def fixture_verify_release(*args, **kwargs):
-        module._validate_artifact(root, directory=True)
-        module._validate_artifact(manifest_path, directory=False)
-        observed = module._walk_release(root)
-        expected = {entry["path"]: entry for entry in entries}
-        if set(observed) != set(expected):
-            module._blocked("COMMAND_RELEASE_EXACT_SET_MISMATCH", "fixture release mismatch")
-        for relative, entry in expected.items():
-            info = observed[relative]
-            is_directory = stat.S_ISDIR(info.st_mode)
-            if is_directory != (entry["type"] == "directory"):
-                module._blocked("COMMAND_RELEASE_TYPE_UNSAFE", "fixture type mismatch")
-            if info.st_uid != 0:
-                module._blocked("COMMAND_PATH_OWNER_UNSAFE", "fixture owner mismatch")
-            if info.st_mode & (0o222 | 0o7000) or format(stat.S_IMODE(info.st_mode), "04o") != entry["mode"]:
-                module._blocked("COMMAND_PATH_MODE_UNSAFE", "fixture mode mismatch")
-            if not is_directory and (
-                info.st_size != entry["size"] or module._sha256_file(root / relative) != entry["sha256"]
-            ):
-                module._blocked("COMMAND_RELEASE_FILE_NOT_APPROVED", "fixture content mismatch")
-        module._validate_artifact(root / ".venv/bin/python", directory=False, executable=True)
-        return True
+        try:
+            module._validate_artifact(root, directory=True)
+            module._validate_artifact(manifest_path, directory=False)
+            observed = module._walk_release(root)
+            expected = {entry["path"]: entry for entry in entries}
+            if set(observed) != set(expected):
+                module._blocked("COMMAND_RELEASE_EXACT_SET_MISMATCH", "fixture release mismatch")
+            for relative, entry in expected.items():
+                info = observed[relative]
+                is_directory = stat.S_ISDIR(info.st_mode)
+                if is_directory != (entry["type"] == "directory"):
+                    module._blocked("COMMAND_RELEASE_TYPE_UNSAFE", "fixture type mismatch")
+                if info.st_uid != 0:
+                    module._blocked("COMMAND_PATH_OWNER_UNSAFE", "fixture owner mismatch")
+                if info.st_mode & (0o222 | 0o7000) or format(stat.S_IMODE(info.st_mode), "04o") != entry["mode"]:
+                    module._blocked("COMMAND_PATH_MODE_UNSAFE", "fixture mode mismatch")
+                if not is_directory and (
+                    info.st_size != entry["size"] or module._sha256_file(root / relative) != entry["sha256"]
+                ):
+                    module._blocked("COMMAND_RELEASE_FILE_NOT_APPROVED", "fixture content mismatch")
+            module._validate_artifact(root / ".venv/bin/python", directory=False, executable=True)
+            return True
+        except CommandRegistryError as error:
+            evidence.record_rejection(error)
+            raise
+        except AssertionError:
+            evidence.record_fixture_boundary()
+            raise
 
     monkeypatch.setattr("services.job_worker.command_registry._load_runtime_authority", lambda: authority)
     monkeypatch.setattr(
@@ -255,6 +404,72 @@ def _deployment(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("services.job_worker.command_registry._runtime_python_path", lambda: authority.application.python_path)
     monkeypatch.setattr(RuntimeAuthority, "recheck", lambda self: self)
     return root, root / ".venv/bin/python", manifest_path
+
+
+def test_deployment_identity_recorder_exposes_lstat_mode_before_outer_collapse(
+    tmp_path, monkeypatch,
+):
+    diagnostics = []
+    root, _, _ = _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    import services.job_worker.command_registry as module
+
+    base = module._lstat
+
+    def mode_unsafe_lstat(path: Path) -> os.stat_result:
+        values = list(base(path))
+        if Path(path).absolute() == root.parent.absolute():
+            values[0] |= stat.S_IWOTH
+        return os.stat_result(values)
+
+    monkeypatch.setattr(module, "_lstat", mode_unsafe_lstat)
+
+    with pytest.raises(CommandRegistryError) as raised:
+        attest_command_capability()
+
+    assert raised.value.reason_code == "COMMAND_RELEASE_NOT_APPROVED"
+    diagnostic = diagnostics[0].diagnostic()
+    assert diagnostic["category"] == "lstat"
+    assert diagnostic["outcome"] == "mode"
+    assert diagnostic["reason_code"] == "COMMAND_ANCESTOR_MODE_UNSAFE"
+    assert diagnostic["lstat_paths"][0] == "<filesystem-root>"
+    assert all(path.startswith("<") and path.endswith(">") for path in diagnostic["lstat_paths"])
+    assert all(path.startswith("<") and path.endswith(">") for path in diagnostic["xattr_paths"])
+    assert str(tmp_path) not in json.dumps(diagnostic, sort_keys=True)
+
+
+def test_deployment_identity_recorder_rejects_an_undeclared_existing_path(
+    tmp_path, monkeypatch,
+):
+    diagnostics = []
+    _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+
+    with pytest.raises(AssertionError, match="outside its declared identity"):
+        diagnostics[0].lstat(Path.cwd())
+
+
+@pytest.mark.parametrize(
+    ("reason", "category", "outcome"),
+    [
+        ("COMMAND_PATH_OWNER_UNSAFE", "lstat", "ownership"),
+        ("COMMAND_PATH_MODE_UNSAFE", "lstat", "mode"),
+        ("COMMAND_RELEASE_TYPE_UNSAFE", "lstat", "type"),
+        ("COMMAND_PATH_XATTR_UNSAFE", "xattr", "present_or_unreadable"),
+        ("COMMAND_RELEASE_EXACT_SET_MISMATCH", "manifest_exact_set", "mismatch"),
+        ("COMMAND_RELEASE_FILE_NOT_APPROVED", "digest", "mismatch"),
+        ("COMMAND_RELEASE_UNREADABLE", "race", "missing_or_unreadable"),
+    ],
+)
+def test_deployment_identity_recorder_keeps_inner_rejection_categories_distinct(
+    tmp_path, monkeypatch, reason, category, outcome,
+):
+    diagnostics = []
+    _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    diagnostics[0].record_rejection(CommandRegistryError(reason, "fixture diagnostic"))
+
+    diagnostic = diagnostics[0].diagnostic()
+    assert diagnostic["category"] == category
+    assert diagnostic["outcome"] == outcome
+    assert diagnostic["reason_code"] == reason
 
 
 def _capability(tmp_path: Path, monkeypatch):
@@ -350,10 +565,10 @@ def test_attestation_rejects_special_mode_bits_everywhere(tmp_path, monkeypatch,
 
 @pytest.mark.parametrize("target", ["ancestor", "root", "manifest", "python", "data"])
 def test_attestation_rejects_any_extended_attribute_on_protected_paths(tmp_path, monkeypatch, target):
-    root, python, manifest = _deployment(tmp_path, monkeypatch)
+    diagnostics = []
+    root, python, manifest = _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
     selected = {"ancestor": root.parent, "root": root, "manifest": manifest, "python": python, "data": root / "data/model.bin"}[target]
-    import services.job_worker.command_registry as module
-    monkeypatch.setattr(module, "_listxattr", lambda path: ("security.capability",) if path == selected else ())
+    diagnostics[0].inject_xattrs(selected, ("security.capability",))
     with pytest.raises(CommandRegistryError) as raised: attest_command_capability()
     assert raised.value.reason_code == "COMMAND_RELEASE_NOT_APPROVED"
 
