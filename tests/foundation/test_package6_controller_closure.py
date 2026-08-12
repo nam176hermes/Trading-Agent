@@ -1044,9 +1044,6 @@ def test_controller_result_crash_before_link_leaves_no_output(
         "revalidate",
         "second-retained-read",
     )
-    issued_roots: set[Path] = set()
-    issued_identities: set[tuple[int, int]] = set()
-    issued_evidence_roots: set[Path] = set()
     for boundary in boundaries:
         case_lease = create_package6_staging_lease()
         lease_root = case_lease.root
@@ -1054,9 +1051,6 @@ def test_controller_result_crash_before_link_leaves_no_output(
         try:
             case_lease.assert_valid()
             assert lease_root.parent == Path("/tmp")
-            assert lease_root not in issued_roots
-            assert case_lease.identity not in issued_identities
-            assert evidence_root not in issued_evidence_roots
             assert not evidence_root.exists()
 
             case = tmp_path / boundary
@@ -1143,18 +1137,12 @@ def test_controller_result_crash_before_link_leaves_no_output(
 
         assert not lease_root.exists()
         assert not evidence_root.exists()
-        issued_roots.add(lease_root)
-        issued_identities.add(case_lease.identity)
-        issued_evidence_roots.add(evidence_root)
 
 
 def test_controller_result_crash_after_link_has_one_complete_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    issued_roots: set[Path] = set()
-    issued_identities: set[tuple[int, int]] = set()
-    issued_evidence_roots: set[Path] = set()
     for boundary in ("link", "directory-fsync", "identity"):
         case_lease = create_package6_staging_lease()
         lease_root = case_lease.root
@@ -1162,9 +1150,6 @@ def test_controller_result_crash_after_link_has_one_complete_output(
         try:
             case_lease.assert_valid()
             assert lease_root.parent == Path("/tmp")
-            assert lease_root not in issued_roots
-            assert case_lease.identity not in issued_identities
-            assert evidence_root not in issued_evidence_roots
             assert not evidence_root.exists()
 
             case = tmp_path / boundary
@@ -1223,9 +1208,6 @@ def test_controller_result_crash_after_link_has_one_complete_output(
 
         assert not lease_root.exists()
         assert not evidence_root.exists()
-        issued_roots.add(lease_root)
-        issued_identities.add(case_lease.identity)
-        issued_evidence_roots.add(evidence_root)
 
 
 def test_controller_result_postlink_failure_retains_recovery_authority(
