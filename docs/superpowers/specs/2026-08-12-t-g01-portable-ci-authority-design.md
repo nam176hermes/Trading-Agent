@@ -207,16 +207,20 @@ T-G02 must reuse, not alter, `--portable`.
 
 1. Run its prescribed baseline: `uv run pytest -q tests/consolidation`,
    `make check-contracts`, and `make check-secrets`.
-2. Add two focused RED tests: the exact-token repository-shape test described
-   above and the named portable-partial-authority test.  The repository-shape
-   test must fail because portable Make targets/workflow routing do not yet
-   exist; the authority test must initially fail because that distinct portable
-   partial probe is missing, not because a fixture or dependency is missing.
-3. Implement the Makefile and workflow changes, then run the focused test.
-4. Update the two existing workflow-topology assertions, run their focused
+2. Add the exact-token repository-shape test as the **sole valid RED** and
+   run it in isolation.  It must fail because portable Make targets/workflow
+   routing do not yet exist, not because a fixture or dependency is missing.
+3. Add the named portable-partial-authority test as a **baseline PASS
+   regression**, not a RED test.  Run that test in isolation immediately; it
+   must pass because `_audit_authority` already fail-closes any partial
+   availability before a portable success path is considered.  Do not change
+   the auditor or manufacture a failure for this established behavior.
+4. Implement the Makefile and workflow changes, then run the focused
+   repository-shape test and the portable-partial regression together.
+5. Update the two existing workflow-topology assertions, run their focused
    test files, then `uv run pytest -q tests/consolidation`.
-5. Run `make check-contracts` and `make check-secrets`; no generator is run.
-6. Run `make ci-portable` only on an authority-absent hosted-like checkout.
+6. Run `make check-contracts` and `make check-secrets`; no generator is run.
+7. Run `make ci-portable` only on an authority-absent hosted-like checkout.
    On this design baseline all three declared authority paths exist, so that
    command is *required* to stop at `E_AUTHORITY`; treating it as local green
    would contradict `test_portable_flag_rejects_fully_available_authorities`.
