@@ -176,7 +176,8 @@ receipt_sha256
 `receipt_sha256` are lowercase 64-character SHA-256 hex strings except that
 the head is the exact lowercase 40-character Git SHA. `lane`,
 `capability_or_authority_code`, `preflight_state`, `redacted_fact_class`, and
-`outcome` are non-empty ASCII strings. `expected_node_ids` and
+`outcome` are non-empty ASCII strings; `outcome` is exactly one of `PASS`,
+`DEFERRED`, or `FAIL`. `expected_node_ids` and
 `collected_node_ids` are duplicate-free arrays of ASCII pytest node-ID strings
 in ascending bytewise order. Schema v1 permits only strings and arrays of
 strings: JSON numbers, booleans, null, nested objects, and nested arrays are
@@ -213,14 +214,35 @@ Only after those bindings hold may it evaluate `PASS`, `FAIL`, or `DEFERRED`.
 Thus a valid receipt from another run/head, or one for a different inventory,
 cannot contribute a green or deferred outcome.
 
-The union of lane IDs must equal the locked 62 exactly; every ID belongs to one
-lane/code once. A PASS receipt proves every selected test was collected and
-executed once. A DEFERRED receipt proves no affected test executed and only
-`UNAVAILABLE` or `ABSENT` caused it. Unknown/duplicate/omitted/stale/skipped/
-xfail/deselected IDs fail aggregation.
+### Lane and Foundation outcomes
 
-`DEFERRED` is not a passing test result and never makes Foundation green. The
-aggregate remains `NOT READY` until all required lanes have valid PASS receipts.
+Each lane's test status is exactly `PASS`, `DEFERRED`, or `FAIL`.
+
+* A portable-source lane is `PASS` only when every selected portable test was
+  collected and executed once successfully. It cannot defer.
+* A native-capability or external-authority lane is `DEFERRED` only when its
+  otherwise valid receipt proves the matching allowed `UNAVAILABLE` or `ABSENT`
+  state, respectively, and no affected test executed. The deferred job must
+  report its test status as `DEFERRED`; it must not call its tests a `PASS`.
+* Any executed test failure, invalid receipt, stale binding, missing/duplicate
+  node, incomplete collection, `BROKEN`, `PARTIAL`, `INVALID`, or a failed
+  state-to-lane/code/node mapping is `FAIL` and fails closed.
+
+The union of lane IDs must equal the locked 62 exactly; every ID belongs to one
+lane/code once. A `PASS` receipt proves every selected test was collected and
+executed once. A `DEFERRED` receipt proves no affected test executed and only
+the permitted state caused it. Unknown/duplicate/omitted/stale/skipped/xfail/
+deselected IDs fail aggregation.
+
+The Foundation source-required job may be green only when the portable-source
+lane is `PASS` and the receipt aggregator has validated every lane's canonical
+bytes, self-hash, current run/head, locked inventory hash, completeness, and
+state-to-lane/code/node mapping. Valid native/external `DEFERRED` receipts may
+therefore coexist with that green job, but they never become test `PASS`.
+When any valid deferred receipt exists, the separate overall runtime-proof
+summary is `COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS`, not full `PASS`; when none
+exist and every lane is `PASS`, it is `COMPLETE`. This distinction is visible
+in the aggregate evidence and cannot be converted into a hidden green result.
 
 ## Rejected alternatives
 
