@@ -424,7 +424,7 @@ def test_deployment_identity_recorder_exposes_lstat_mode_before_outer_collapse(
     monkeypatch.setattr(module, "_lstat", mode_unsafe_lstat)
 
     with pytest.raises(CommandRegistryError) as raised:
-        attest_command_capability()
+        _attest_fixture_capability(diagnostics[0])
 
     assert raised.value.reason_code == "COMMAND_RELEASE_NOT_APPROVED"
     diagnostic = diagnostics[0].diagnostic()
@@ -435,6 +435,12 @@ def test_deployment_identity_recorder_exposes_lstat_mode_before_outer_collapse(
     assert all(path.startswith("<") and path.endswith(">") for path in diagnostic["lstat_paths"])
     assert all(path.startswith("<") and path.endswith(">") for path in diagnostic["xattr_paths"])
     assert str(tmp_path) not in json.dumps(diagnostic, sort_keys=True)
+    note = raised.value.__notes__[-1]
+    assert note.startswith("fixture identity diagnostic (redacted): ")
+    assert json.loads(note.removeprefix("fixture identity diagnostic (redacted): ")) == json.loads(
+        json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+    )
+    assert str(tmp_path) not in note
 
 
 def test_deployment_identity_recorder_rejects_an_undeclared_existing_path(
@@ -472,9 +478,32 @@ def test_deployment_identity_recorder_keeps_inner_rejection_categories_distinct(
     assert diagnostic["reason_code"] == reason
 
 
+def _attest_fixture_capability(evidence: _FixtureIdentityEvidence):
+    """Retain redacted fixture evidence when v1 intentionally collapses it."""
+
+    try:
+        return attest_command_capability()
+    except CommandRegistryError as error:
+        diagnostic = evidence.diagnostic()
+        assert error.reason_code == "COMMAND_RELEASE_NOT_APPROVED"
+        assert diagnostic["category"] != "verified"
+        assert diagnostic["outcome"] != "no_rejection"
+        assert diagnostic["reason_code"] is not None
+        assert all(
+            path.startswith("<") and path.endswith(">")
+            for path in (*diagnostic["lstat_paths"], *diagnostic["xattr_paths"])
+        )
+        error.add_note(
+            "fixture identity diagnostic (redacted): "
+            + json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+        )
+        raise
+
+
 def _capability(tmp_path: Path, monkeypatch):
-    _deployment(tmp_path, monkeypatch)
-    return attest_command_capability()
+    diagnostics = []
+    _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    return _attest_fixture_capability(diagnostics[0])
 
 
 def test_review_constants_pin_root_owned_release_manifest_contract():
@@ -490,8 +519,9 @@ def test_real_startup_remains_blocked_until_ops_provisions_manifest_and_release(
 
 
 def test_manifest_covers_venv_native_pth_data_config_dot_and_ignored_files(tmp_path, monkeypatch):
-    _deployment(tmp_path, monkeypatch)
-    assert len(attest_command_capability().fingerprint) == 64
+    diagnostics = []
+    _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    assert len(_attest_fixture_capability(diagnostics[0]).fingerprint) == 64
 
 
 @pytest.mark.parametrize("extra", [".gitignored", ".venv/lib/python3.11/site-packages/extra.pth", ".venv/lib/python3.11/site-packages/evil.so"])
