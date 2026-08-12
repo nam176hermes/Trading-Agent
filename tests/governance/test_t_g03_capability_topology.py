@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pytest
 from pathlib import Path
 import tempfile
@@ -302,10 +303,88 @@ def test_valid_external_preflight_is_the_only_path_that_selects_external_nodes(t
         return nodes
 
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "artifact"
+        topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
         paths = topology.run_lane(
             lane="external-authorities", inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
-            evidence_root=Path(raw) / "artifact", run_id="31641536482", head_sha=head,
+            evidence_root=evidence, run_id="31641536482", head_sha=head,
             external_preflight=lambda _code: ("VALID", "AUTHORITY_COMPLETE_VALIDATED"), exact_runner=exact,
         )
         assert len(paths) == 2
     assert sorted(len(nodes) for nodes in selected) == [3, 3]
+
+
+def test_topology_retry_fails_before_replacing_existing_governance_bytes(tmp_path: Path) -> None:
+    """Break caught: a retry replaces topology governance evidence before receipt O_EXCL fails."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha="a" * 40)
+        observation = evidence / "capability-topology/SRC-SEALEDUV-BWRAP-PREFLIGHT.governance.json"
+        original = b'{"sealed":"first"}'
+        observation.write_bytes(original)
+        with pytest.raises(topology.TopologyError, match="reserved or populated"):
+            topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha="a" * 40)
+        assert observation.read_bytes() == original
+
+
+def test_topology_governance_publication_is_no_clobber(tmp_path: Path) -> None:
+    """Break caught: governance reporter os.replace overwrites a reserved topology observation."""
+    del tmp_path
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        report = Path(raw) / "governance.json"
+        governance_plugin._atomic_json(report, {"sealed": "first"}, no_clobber=True)
+        original = report.read_bytes()
+        with pytest.raises(FileExistsError):
+            governance_plugin._atomic_json(report, {"sealed": "second"}, no_clobber=True)
+        assert report.read_bytes() == original
+
+
+def test_external_rejects_intermediate_directory_symlinks(tmp_path: Path) -> None:
+    """Break caught: leaf lstat passes through a symlinked Phase3B or legacy directory."""
+    del tmp_path
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        corpus = root / "corpus"
+        _complete_corpus_fixture(corpus)
+        memory = corpus / "memory"
+        moved_memory = corpus / "real-memory"
+        memory.rename(moved_memory)
+        memory.symlink_to(moved_memory, target_is_directory=True)
+        assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=corpus, corpus_validator=lambda _root: _valid_phase3b_analysis())[0] == "INVALID"
+        legacy = root / "legacy"
+        for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
+            _write_direct(legacy / relative, executable=relative.endswith("python"))
+        venv = legacy / ".venv"
+        moved_venv = legacy / "real-venv"
+        venv.rename(moved_venv)
+        venv.symlink_to(moved_venv, target_is_directory=True)
+        uv = root / "uv"
+        _write_direct(uv, "#!/bin/sh\nexit 0\n", executable=True)
+        assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy)[0] == "INVALID"
+
+
+def test_retained_uv_rejects_named_replacement_after_descriptor_execution(tmp_path: Path) -> None:
+    """Break caught: UV is digested then a replacement pathname executes or is accepted."""
+    del tmp_path
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        legacy = root / "legacy"
+        for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
+            _write_direct(legacy / relative, executable=relative.endswith("python"))
+        uv = root / "uv"
+        payload = "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'fixture-uv 1.0\\n'; fi\n"
+        _write_direct(uv, payload, executable=True)
+        replacement = root / "replacement"
+        _write_direct(replacement, payload, executable=True)
+        expected = topology.hashlib.sha256(uv.read_bytes()).hexdigest()
+        commands: list[list[str]] = []
+
+        def swapping_runner(command, **kwargs):
+            commands.append(command)
+            result = subprocess.run(command, **kwargs)
+            if command[1] == "--version":
+                os.replace(replacement, uv)
+            return result
+
+        assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy, expected_uv_sha256=expected, expected_uv_version="fixture-uv 1.0", runner=swapping_runner)[0] == "INVALID"
+        assert all(command[0].startswith("/proc/self/fd/") for command in commands)

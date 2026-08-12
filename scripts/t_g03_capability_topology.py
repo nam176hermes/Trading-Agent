@@ -164,6 +164,35 @@ def install_inventory(source: Path, evidence_root: Path) -> Path:
     return destination
 
 
+def reserve_topology_evidence(evidence_root: Path, *, run_id: str, head_sha: str) -> None:
+    """Seal an empty topology namespace before collection can mutate observations."""
+    _prepare_private_evidence_directory(evidence_root)
+    topology_root = evidence_root / "capability-topology"
+    _prepare_private_evidence_directory(topology_root)
+    targets = [evidence_root / "t-g03a-hosted-failure-inventory.tsv", topology_root / ".reservation"]
+    for code in CODE_CLASSIFICATION:
+        targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+    if any(os.path.lexists(path) for path in targets):
+        raise TopologyError("topology evidence namespace is already reserved or populated")
+    reservation = canonical_json_bytes({"foundation_head_sha": head_sha, "foundation_run_id": run_id, "inventory_sha256": LOCKED_INVENTORY_SHA256})
+    descriptor = os.open(topology_root / ".reservation", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(reservation)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _require_topology_reservation(evidence_root: Path, run_id: str, head_sha: str) -> None:
+    path = evidence_root / "capability-topology/.reservation"
+    try:
+        raw = path.read_bytes()
+        document = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TopologyError("topology evidence reservation is missing") from exc
+    if canonical_json_bytes(document) != raw or document != {"foundation_head_sha": head_sha, "foundation_run_id": run_id, "inventory_sha256": LOCKED_INVENTORY_SHA256}:
+        raise TopologyError("topology evidence reservation binding drift")
+
+
 def canonical_json_bytes(document: object) -> bytes:
     return json.dumps(
         document, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -407,19 +436,38 @@ def _whole_authority_state(paths: tuple[Path, ...]) -> str | None:
 
 
 def _validate_direct_entries(root: Path, entries: tuple[tuple[str, bool], ...]) -> str | None:
-    try:
-        root_info = root.lstat()
-    except OSError:
-        return "PARTIAL"
+    root_state = _safe_authority_entry(root, directory=True)
+    if root_state is not None:
+        return "PARTIAL" if root_state == "ABSENT" else "INVALID"
+    root_info = root.lstat()
     for relative, directory in entries:
-        path = root / relative
-        state = _safe_authority_entry(path, directory=directory)
-        if state is not None:
-            return "PARTIAL" if state == "ABSENT" else "INVALID"
-        info = path.lstat()
-        if info.st_uid != root_info.st_uid or info.st_gid != root_info.st_gid:
-            return "INVALID"
+        parts = Path(relative).parts
+        current = root
+        for index, part in enumerate(parts):
+            current = current / part
+            state = _safe_authority_entry(current, directory=index < len(parts) - 1 or directory)
+            if state is not None:
+                return "PARTIAL" if state == "ABSENT" else "INVALID"
+            info = current.lstat()
+            if info.st_uid != root_info.st_uid or info.st_gid != root_info.st_gid:
+                return "INVALID"
     return None
+
+
+def _identity(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _digest_fd(descriptor: int) -> str:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest()
 
 
 def _default_phase3b_validator(root: Path) -> object:
@@ -478,18 +526,28 @@ def _external_preflight(
         direct = _validate_direct_entries(legacy_root, LEGACY_CLOSURE_ENTRIES)
         if direct is not None:
             return direct, "AUTHORITY_PARTIAL" if direct == "PARTIAL" else "AUTHORITY_INVALID"
+        descriptor = -1
         try:
-            digest = hashlib.sha256(uv_path.read_bytes()).hexdigest()
-            version = runner([str(uv_path), "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
+            named_before = uv_path.lstat()
+            descriptor = os.open(uv_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+            opened = os.fstat(descriptor)
+            digest = _digest_fd(descriptor)
+            executable = f"/proc/self/fd/{descriptor}"
+            version = runner([executable, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False, pass_fds=(descriptor,))
             sync = runner(
-                [str(uv_path), "sync", "--frozen", "--extra", "test"],
+                [executable, "sync", "--frozen", "--extra", "test"],
                 cwd=legacy_root, stdin=subprocess.DEVNULL, capture_output=True,
                 text=True, timeout=120, check=False,
-                env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1"},
+                env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1"}, pass_fds=(descriptor,),
             )
+            named_after = uv_path.lstat()
+            stable = _identity(named_before) == _identity(opened) == _identity(named_after) and _digest_fd(descriptor) == digest
         except (OSError, subprocess.SubprocessError):
             return "INVALID", "AUTHORITY_INVALID"
-        if (stat.S_IMODE(uv_path.stat().st_mode) != 0o755 or digest != expected_uv_sha256
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        if (stat.S_IMODE(opened.st_mode) != 0o755 or not stable or digest != expected_uv_sha256
                 or version.returncode != 0 or version.stdout.strip() != expected_uv_version
                 or sync.returncode != 0):
             return "INVALID", "AUTHORITY_INVALID"
@@ -500,7 +558,7 @@ def _external_preflight(
 def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(report.parent, 0o700)
-    environment = dict(os.environ, TEST_GOVERNANCE_REPORT=str(report), TEST_GOVERNANCE_COMPONENT="root")
+    environment = dict(os.environ, TEST_GOVERNANCE_REPORT=str(report), TEST_GOVERNANCE_COMPONENT="root", TEST_GOVERNANCE_NO_CLOBBER="1")
     completed = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "scripts.test_governance_pytest", *nodes], stdin=subprocess.DEVNULL, env=environment, check=False)
     if completed.returncode != 0 or not report.is_file():
         raise TopologyError("selected pytest collection or execution failed")
@@ -526,6 +584,7 @@ def run_lane(
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] = _run_exact,
 ) -> list[Path]:
     require_foundation_context(run_id, head_sha)
+    _require_topology_reservation(evidence_root, run_id, head_sha)
     rows = load_inventory(inventory)
     installed = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
     if installed.exists():
@@ -554,7 +613,7 @@ def run_lane(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("run-lane", "aggregate"))
+    parser.add_argument("action", choices=("reserve", "run-lane", "aggregate"))
     parser.add_argument("--lane", choices=tuple(CLASSIFICATION_LANE.values()))
     parser.add_argument("--inventory", type=Path, default=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     parser.add_argument("--evidence-root", type=Path, required=True)
@@ -563,7 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         require_foundation_context(args.foundation_run_id, args.foundation_head_sha)
-        if args.action == "run-lane":
+        if args.action == "reserve":
+            reserve_topology_evidence(args.evidence_root, run_id=args.foundation_run_id, head_sha=args.foundation_head_sha)
+        elif args.action == "run-lane":
             if args.lane is None:
                 raise TopologyError("run-lane requires --lane")
             run_lane(lane=args.lane, inventory=args.inventory, evidence_root=args.evidence_root, run_id=args.foundation_run_id, head_sha=args.foundation_head_sha)

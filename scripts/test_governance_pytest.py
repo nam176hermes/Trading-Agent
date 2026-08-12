@@ -25,7 +25,7 @@ _NON_PYTEST_MODULES = {
 }
 
 
-def _atomic_json(path: Path, document: object) -> None:
+def _atomic_json(path: Path, document: object, *, no_clobber: bool = False) -> None:
     parent = path.parent
     absolute = parent.absolute()
     below_trusted_sticky_root = False
@@ -79,12 +79,16 @@ def _atomic_json(path: Path, document: object) -> None:
             stream.write((json.dumps(document, indent=2, sort_keys=True) + "\n").encode())
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(
-            temporary_name,
-            path.name,
-            src_dir_fd=directory,
-            dst_dir_fd=directory,
-        )
+        if no_clobber:
+            os.link(temporary_name, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.unlink(temporary_name, dir_fd=directory)
+        else:
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+            )
         published = True
         os.fsync(directory)
         current = parent.lstat()
@@ -281,7 +285,11 @@ class _GovernanceReporter:
             "summary": counts,
             "tests": records,
         }
-        _atomic_json(self.destination, document)
+        _atomic_json(
+            self.destination,
+            document,
+            no_clobber=os.environ.get("TEST_GOVERNANCE_NO_CLOBBER") == "1",
+        )
 
 
 def pytest_configure(config: Any) -> None:

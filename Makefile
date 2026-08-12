@@ -314,20 +314,27 @@ ci-portable-private:
 # Capability topology is separate from strict ci/audit and never releases runtime proof.
 test-portable-source:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$(git rev-parse HEAD)"
+		foundation_head=$$(git rev-parse HEAD); \
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
 
 test-native-capabilities:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$(git rev-parse HEAD)"
+		foundation_head=$$(git rev-parse HEAD); \
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
 
 test-external-authorities:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$(git rev-parse HEAD)"
+		foundation_head=$$(git rev-parse HEAD); \
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
 
 ci-portable-topology:
 	@set -eu; \
 		test -n "$${GITHUB_RUN_ID:?}"; \
 		foundation_head=$$(git rev-parse HEAD); \
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
