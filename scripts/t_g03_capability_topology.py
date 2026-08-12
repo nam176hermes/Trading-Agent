@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from typing import Any
@@ -54,6 +55,18 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEAD_SHA = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^(0|[1-9][0-9]*)$")
 ASCII = re.compile(r"^[\x21-\x7e]+$")
+REDACTED_FACT_CLASSES = frozenset({
+    "SOURCE_TEST_EXECUTED", "NATIVE_COMPONENT_ABSENT", "NATIVE_IDENTITY_INVALID",
+    "NATIVE_CAPABILITY_VALIDATED", "RUNNER_POLICY_DISALLOWS_USERNS", "NATIVE_PROBE_INVALID",
+    "AUTHORITY_ROOT_ABSENT", "AUTHORITY_EXECUTABLE_ABSENT", "AUTHORITY_COMPLETE_VALIDATED",
+    "AUTHORITY_PARTIAL", "AUTHORITY_INVALID",
+})
+TRUSTED_UNSHARE = Path("/usr/bin/unshare")
+PHASE3B_ROOT = Path("/home/thenam176/.hermes/crypto-research")
+LEGACY_UV = Path("/home/thenam176/.local/bin/uv")
+LEGACY_UV_SHA256 = "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
+LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -173,6 +186,8 @@ def _validate_receipt_shape(receipt: dict[str, object]) -> None:
     for field in ("lane", "capability_or_authority_code", "preflight_state", "redacted_fact_class", "outcome"):
         if not isinstance(receipt[field], str) or not ASCII.fullmatch(receipt[field]):
             raise TopologyError(f"receipt has invalid {field}")
+    if receipt["redacted_fact_class"] not in REDACTED_FACT_CLASSES:
+        raise TopologyError("receipt has unredacted fact class")
     if receipt["outcome"] not in {"PASS", "DEFERRED", "FAIL"}:
         raise TopologyError("receipt has invalid outcome")
     for field in ("expected_node_ids", "collected_node_ids"):
@@ -272,6 +287,24 @@ def publish_receipt(receipt: dict[str, object], evidence_root: Path) -> Path:
     return destination
 
 
+def require_foundation_context(run_id: str, head_sha: str) -> None:
+    """Accept only the authoritative GitHub run and the checkout actually executing."""
+    current_run = os.environ.get("GITHUB_RUN_ID")
+    if not current_run or not RUN_ID.fullmatch(current_run) or current_run == "0":
+        raise TopologyError("authoritative GitHub run context is required")
+    if run_id != current_run:
+        raise TopologyError("Foundation run does not match GitHub run context")
+    try:
+        current_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TopologyError("checked-out Foundation head is unavailable") from exc
+    if not HEAD_SHA.fullmatch(head_sha) or head_sha != current_head:
+        raise TopologyError("Foundation head does not match checked-out HEAD")
+
+
 def _native_preflight(code: str) -> tuple[str, str]:
     if code == "NATIVE-BWRAP-OS-SANDBOX":
         policy = Path("engines/nautilus/sealed-uv-exec-policy.json")
@@ -296,11 +329,19 @@ def _native_preflight(code: str) -> tuple[str, str]:
                  and all(isinstance(option, str) and option in help_output.stdout for option in required))
         return ("AVAILABLE", "NATIVE_CAPABILITY_VALIDATED") if valid else ("BROKEN", "NATIVE_IDENTITY_INVALID")
     if code == "NATIVE-USERNS-ROOT-PROVISION":
-        unshare = shutil.which("unshare")
-        if unshare is None:
+        unshare = TRUSTED_UNSHARE
+        if not os.path.lexists(unshare):
             return "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT"
         try:
-            result = subprocess.run([unshare, "--user", "--map-root-user", "true"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
+            identity = unshare.lstat()
+        except OSError:
+            return "BROKEN", "NATIVE_IDENTITY_INVALID"
+        if (unshare.is_symlink() or not stat.S_ISREG(identity.st_mode)
+                or identity.st_uid != 0 or identity.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or not os.access(unshare, os.X_OK)):
+            return "BROKEN", "NATIVE_IDENTITY_INVALID"
+        try:
+            result = subprocess.run([str(unshare), "--user", "--map-root-user", "true"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
         except (OSError, subprocess.SubprocessError):
             return "BROKEN", "NATIVE_PROBE_INVALID"
         if result.returncode == 0:
@@ -311,13 +352,61 @@ def _native_preflight(code: str) -> tuple[str, str]:
     raise TopologyError("unknown native capability")
 
 
-def _external_preflight(code: str) -> tuple[str, str]:
+def _safe_authority_entry(path: Path, *, directory: bool) -> str | None:
+    if not os.path.lexists(path):
+        return "ABSENT"
+    try:
+        info = path.lstat()
+    except OSError:
+        return "PARTIAL"
+    expected_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if path.is_symlink() or not expected_type:
+        return "PARTIAL"
+    if info.st_uid != os.geteuid() or info.st_gid != os.getegid() or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return "INVALID"
+    return None
+
+
+def _external_preflight(
+    code: str, *, corpus_root: Path = PHASE3B_ROOT, uv_path: Path = LEGACY_UV,
+    legacy_root: Path = ROOT / "legacy/research-backend",
+) -> tuple[str, str]:
     if code == "EXT-PHASE3B-CORPUS":
-        root = Path("/home/thenam176/.hermes/crypto-research")
-        return ("ABSENT", "AUTHORITY_ROOT_ABSENT") if not root.exists() else ("INVALID", "AUTHORITY_PRESENT_REQUIRES_REVIEWED_VALIDATION")
+        state = _safe_authority_entry(corpus_root, directory=True)
+        if state is not None:
+            return (state, "AUTHORITY_ROOT_ABSENT" if state == "ABSENT" else "AUTHORITY_PARTIAL" if state == "PARTIAL" else "AUTHORITY_INVALID")
+        if any(not (corpus_root / relative).exists() for relative in (
+            "asset_registry.py", "memory/decisions.jsonl", "memory/trading.db",
+            ".dexter/scratchpad", "reports", "decisions",
+        )):
+            return "PARTIAL", "AUTHORITY_PARTIAL"
+        try:
+            from trading_control.phase3b_sources import analyze_phase3b_sources
+            analysis = analyze_phase3b_sources(corpus_root)
+        except FileNotFoundError:
+            return "PARTIAL", "AUTHORITY_PARTIAL"
+        except Exception:
+            return "INVALID", "AUTHORITY_INVALID"
+        valid = (analysis.inventory_hash == "dbc94142b6773bb5a79c7bc889e7323ca92c03e5375d0a596b679c3f01c7b4ce"
+                 and analysis.decision_total == 16517 and analysis.cost_sessions == 20
+                 and analysis.asset_count == 17 and analysis.asset_source_files == 2209)
+        return ("VALID", "AUTHORITY_COMPLETE_VALIDATED") if valid else ("INVALID", "AUTHORITY_INVALID")
     if code == "EXT-LEGACY-UV-AUTHORITY":
-        authority = Path("/home/thenam176/.local/bin/uv")
-        return ("ABSENT", "AUTHORITY_EXECUTABLE_ABSENT") if not authority.exists() else ("INVALID", "AUTHORITY_PRESENT_REQUIRES_REVIEWED_VALIDATION")
+        state = _safe_authority_entry(uv_path, directory=False)
+        if state is not None:
+            return (state, "AUTHORITY_EXECUTABLE_ABSENT" if state == "ABSENT" else "AUTHORITY_PARTIAL" if state == "PARTIAL" else "AUTHORITY_INVALID")
+        closure = legacy_root / ".venv/bin/python"
+        closure_state = _safe_authority_entry(closure, directory=False)
+        if closure_state is not None:
+            return "PARTIAL", "AUTHORITY_PARTIAL"
+        try:
+            digest = hashlib.sha256(uv_path.read_bytes()).hexdigest()
+            version = subprocess.run([str(uv_path), "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return "INVALID", "AUTHORITY_INVALID"
+        if stat.S_IMODE(uv_path.stat().st_mode) != 0o755 or digest != LEGACY_UV_SHA256 or version.returncode != 0 or version.stdout.strip() != LEGACY_UV_VERSION:
+            return "INVALID", "AUTHORITY_INVALID"
+        return "VALID", "AUTHORITY_COMPLETE_VALIDATED"
     raise TopologyError("unknown external authority")
 
 
@@ -332,6 +421,12 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     observed = document.get("tests")
     if not isinstance(observed, list):
         raise TopologyError("governance report is malformed")
+    if any(
+        isinstance(item, dict)
+        and (item.get("outcome") in {"xfailed", "xpassed"} or item.get("wasxfail"))
+        for item in observed
+    ):
+        raise TopologyError("xfail or XPASS observed in exact selection")
     passed = tuple(sorted(str(item.get("test_node_id")) for item in observed if isinstance(item, dict) and item.get("outcome") == "passed"))
     if passed != nodes or len(observed) != len(nodes):
         raise TopologyError("exact node collection/execution proof failed")
@@ -339,6 +434,7 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
 
 
 def run_lane(*, lane: str, inventory: Path, evidence_root: Path, run_id: str, head_sha: str) -> list[Path]:
+    require_foundation_context(run_id, head_sha)
     rows = load_inventory(inventory)
     installed = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
     if installed.exists():
@@ -375,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--foundation-head-sha", required=True)
     args = parser.parse_args(argv)
     try:
+        require_foundation_context(args.foundation_run_id, args.foundation_head_sha)
         if args.action == "run-lane":
             if args.lane is None:
                 raise TopologyError("run-lane requires --lane")

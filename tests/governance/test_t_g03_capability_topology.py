@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import pytest
 from pathlib import Path
+import tempfile
+import subprocess
 
 from scripts import t_g03_capability_topology as topology
+from scripts import test_governance_pytest as governance_plugin
 
 
 def _receipt(**overrides: object) -> dict[str, object]:
@@ -81,3 +84,139 @@ def test_receipt_rejects_a_json_number_even_when_its_text_is_a_valid_run_id() ->
     receipt = _receipt(foundation_run_id=31641536482)
     with pytest.raises(topology.TopologyError, match="foundation run"):
         topology.parse_receipt(topology.canonical_json_bytes(receipt))
+
+
+def test_receipt_rejects_unredacted_fact_payload_and_stale_or_wrong_mapping() -> None:
+    """Break caught: redacted receipt fields carry details or stale/mapped evidence passes."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
+    code = "SRC-SEMANTIC-FIXTURE-IDENTITY"
+    _, expected = topology._expected_rows(rows, code)
+    receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected), redacted_fact_class="/home/operator/secret")
+    with pytest.raises(topology.TopologyError, match="redacted"):
+        topology.parse_receipt(topology.canonical_json_bytes(receipt))
+    receipt = _receipt(foundation_run_id="31641536481", foundation_head_sha=head, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected))
+    with pytest.raises(topology.TopologyError, match="stale"):
+        topology.validate_receipt(topology.canonical_json_bytes(receipt), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+    receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="native-capabilities", capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected))
+    with pytest.raises(topology.TopologyError, match="mapping"):
+        topology.validate_receipt(topology.canonical_json_bytes(receipt), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+
+
+def test_publish_is_no_clobber_and_fake_path_cannot_supply_userns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Break caught: evidence is overwritten or a PATH fake claims native capability."""
+    receipt = _receipt()
+    topology.publish_receipt(receipt, tmp_path)
+    with pytest.raises(FileExistsError):
+        topology.publish_receipt(receipt, tmp_path)
+    fake_dir = tmp_path / "fake-bin"
+    fake_dir.mkdir()
+    fake = fake_dir / "unshare"
+    fake.write_text("#!/bin/sh\nprintf x > \"$TG03C_FAKE_MARKER\"\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    marker = tmp_path / "fake-was-run"
+    monkeypatch.setenv("PATH", str(fake_dir))
+    monkeypatch.setenv("TG03C_FAKE_MARKER", str(marker))
+    state, _ = topology._native_preflight("NATIVE-USERNS-ROOT-PROVISION")
+    assert state in {"AVAILABLE", "UNAVAILABLE", "BROKEN"}
+    assert not marker.exists()
+
+
+def test_external_preflight_distinguishes_absent_partial_and_invalid(tmp_path: Path) -> None:
+    """Break caught: a dangling or partial authority is deferred as absent."""
+    absent = tmp_path / "absent"
+    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=absent)[0] == "ABSENT"
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(absent)
+    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=dangling)[0] == "PARTIAL"
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        partial = Path(raw)
+        partial.chmod(0o700)
+        assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=partial)[0] == "PARTIAL"
+
+
+def test_foundation_context_requires_current_github_run_and_checked_out_head(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Break caught: local defaults or another run/head can mint a receipt."""
+    monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+    with pytest.raises(topology.TopologyError, match="GitHub run"):
+        topology.require_foundation_context("31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78")
+
+
+def test_exact_collection_rejects_xpass_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Break caught: a non-strict xfail XPASS becomes a portable PASS."""
+    node = "tests/example.py::test_exact"
+    report = tmp_path / "governance.json"
+
+    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        report.write_text('{"tests":[{"test_node_id":"tests/example.py::test_exact","outcome":"passed","wasxfail":true}]}', encoding="utf-8")
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(topology.subprocess, "run", fake_run)
+    with pytest.raises(topology.TopologyError, match="xfail"):
+        topology._run_exact((node,), report)
+
+
+def test_governance_plugin_labels_xfail_and_xpass_for_exact_lane_rejection(tmp_path: Path) -> None:
+    """Break caught: the reporter collapses marker outcomes into ordinary pass/skip."""
+    reporter = governance_plugin._GovernanceReporter("root", tmp_path / "report.json", tmp_path, (), ("test_*.py",))
+    for node, passed, skipped in (("tests/xpass.py::test_case", True, False), ("tests/xfail.py::test_case", False, True)):
+        reporter.pytest_runtest_logreport(type("Report", (), {"wasxfail": "expected", "passed": passed, "skipped": skipped, "failed": False, "nodeid": node, "when": "call"})())
+    assert reporter.records["tests/xpass.py::test_case"]["outcome"] == "xpassed"
+    assert reporter.records["tests/xfail.py::test_case"]["outcome"] == "xfailed"
+
+
+def test_aggregate_rejects_duplicate_missing_and_unlisted_receipts(tmp_path: Path) -> None:
+    """Break caught: a code receipt can be duplicated, omitted, or replaced by an unlisted node."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
+    paths: list[Path] = []
+    for code in topology.CODE_CLASSIFICATION:
+        lane, expected = topology._expected_rows(rows, code)
+        state, outcome = {"portable-source": ("AVAILABLE", "PASS"), "native-capabilities": ("UNAVAILABLE", "DEFERRED"), "external-authorities": ("ABSENT", "DEFERRED")}[lane]
+        receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected) if outcome == "PASS" else [], preflight_state=state, outcome=outcome)
+        path = tmp_path / f"{code}.json"
+        path.write_bytes(topology.canonical_json_bytes(receipt))
+        paths.append(path)
+    with pytest.raises(topology.TopologyError, match="receipt set"):
+        topology.aggregate_receipts(paths[:-1] + [paths[0]], rows=rows, foundation_run_id=run, foundation_head_sha=head)
+    altered = _receipt(foundation_run_id=run, foundation_head_sha=head, capability_or_authority_code="SRC-SEMANTIC-FIXTURE-IDENTITY", expected_node_ids=["tests/not-inventory.py::test_hidden"], collected_node_ids=["tests/not-inventory.py::test_hidden"])
+    with pytest.raises(topology.TopologyError, match="mapping"):
+        topology.validate_receipt(topology.canonical_json_bytes(altered), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+
+
+def test_fake_or_invalid_trusted_userns_binary_is_broken(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Break caught: a fake fixed-path userns executable receives AVAILABLE."""
+    fake = tmp_path / "unshare"
+    fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setattr(topology, "TRUSTED_UNSHARE", fake)
+    assert topology._native_preflight("NATIVE-USERNS-ROOT-PROVISION")[0] == "BROKEN"
+
+
+def test_receipt_rejects_stale_head_and_forbidden_native_state() -> None:
+    """Break caught: a receipt from another head or BROKEN native state is accepted."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
+    code = "NATIVE-USERNS-ROOT-PROVISION"
+    lane, expected = topology._expected_rows(rows, code)
+    stale = _receipt(foundation_run_id=run, foundation_head_sha="0" * 40, lane=lane, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=[] ,preflight_state="UNAVAILABLE", outcome="DEFERRED")
+    with pytest.raises(topology.TopologyError, match="stale"):
+        topology.validate_receipt(topology.canonical_json_bytes(stale), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+    forbidden = _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=[], preflight_state="BROKEN", outcome="DEFERRED", redacted_fact_class="NATIVE_PROBE_INVALID")
+    with pytest.raises(topology.TopologyError, match="state-to-lane"):
+        topology.validate_receipt(topology.canonical_json_bytes(forbidden), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+
+
+@pytest.mark.parametrize("outcome", ("skipped", "deselected", "xfailed", "xpassed"))
+def test_exact_collection_rejects_nonexecuted_or_xfail_observations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str) -> None:
+    """Break caught: a skip, deselection, xfail, or XPASS is treated as execution."""
+    node = "tests/example.py::test_exact"
+    report = tmp_path / f"{outcome}.json"
+
+    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        report.write_text('{"tests":[{"test_node_id":"tests/example.py::test_exact","outcome":"' + outcome + '"}]}', encoding="utf-8")
+        return subprocess.CompletedProcess([], 0)
+
+    monkeypatch.setattr(topology.subprocess, "run", fake_run)
+    with pytest.raises(topology.TopologyError):
+        topology._run_exact((node,), report)

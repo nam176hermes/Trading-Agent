@@ -142,9 +142,11 @@ class _GovernanceReporter:
             "collected": 0,
             "not_run": 1,
             "passed": 2,
-            "deselected": 3,
-            "skipped": 4,
-            "failed": 5,
+            "xfailed": 3,
+            "xpassed": 4,
+            "deselected": 5,
+            "skipped": 6,
+            "failed": 7,
         }
         if current is not None and priority[current["outcome"]] > priority[outcome]:
             return
@@ -195,6 +197,15 @@ class _GovernanceReporter:
             self._record(item.nodeid, "collected", phase="collection")
 
     def pytest_runtest_logreport(self, report: Any) -> None:
+        if getattr(report, "wasxfail", None):
+            outcome = "xpassed" if report.passed else "xfailed"
+            self._record(
+                report.nodeid,
+                outcome,
+                reason="pytest xfail marker observed",
+                phase=report.when,
+            )
+            return
         if report.skipped:
             self._record(
                 report.nodeid,
