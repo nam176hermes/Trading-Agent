@@ -14,6 +14,7 @@ from typing import Callable, cast
 
 import pytest
 
+import tests.foundation._package6_staging_fixture as staging_fixture
 from tests.foundation._package6_staging_fixture import (
     Package6StagingLease,
     Package6StagingLeaseError,
@@ -453,6 +454,13 @@ def test_staging_material_rejects_a_private_root_outside_tmp() -> None:
             staging_v2._validate_private_root(Path(raw_root))
 
 
+def test_staging_material_rejects_tmp_itself() -> None:
+    """The trusted ancestor is never itself Package-6 staging material."""
+
+    with pytest.raises(ValueError):
+        staging_v2._validate_private_root(Path("/tmp"))
+
+
 def test_package6_staging_lease_is_a_private_direct_tmp_child(
     package6_staging_lease: Package6StagingLease,
 ) -> None:
@@ -464,50 +472,206 @@ def test_package6_staging_lease_is_a_private_direct_tmp_child(
     package6_staging_lease.assert_valid()
 
 
-def test_package6_staging_lease_refuses_replaced_root_without_deleting_it() -> None:
+def test_package6_staging_lease_rejects_a_symlink_replacement_without_deleting_it() -> None:
     lease = create_package6_staging_lease()
     original = lease.root
-    original.rmdir()
-    replacement_target = Path(tempfile.mkdtemp(dir="/tmp"))
-    original.symlink_to(replacement_target, target_is_directory=True)
-
-    with pytest.raises(Package6StagingLeaseError, match="cleanup refused"):
-        lease.cleanup()
-
-    assert original.is_symlink()
-    original.unlink()
-    replacement_target.rmdir()
-
-
-def test_package6_staging_lease_rejects_a_nonprivate_issued_root() -> None:
-    lease = create_package6_staging_lease()
+    replacement_target: Path | None = None
     try:
-        lease.root.chmod(0o755)
+        original.rmdir()
+        replacement_target = Path(tempfile.mkdtemp(dir="/tmp"))
+        original.symlink_to(replacement_target, target_is_directory=True)
+
         with pytest.raises(ValueError):
             lease.assert_valid()
+        with pytest.raises(Package6StagingLeaseError, match="cleanup refused"):
+            lease.cleanup()
+
+        assert original.is_symlink()
+        assert replacement_target.is_dir()
     finally:
-        lease.root.chmod(0o700)
-        lease.cleanup()
+        if original.is_symlink():
+            original.unlink()
+        elif original.exists():
+            original.rmdir()
+        if replacement_target is not None and replacement_target.exists():
+            replacement_target.rmdir()
+
+
+@pytest.mark.parametrize("unsafe_mode", (0o755, 0o770, 0o1700))
+def test_package6_staging_lease_rejects_nonprivate_issued_modes(
+    package6_staging_lease: Package6StagingLease,
+    unsafe_mode: int,
+) -> None:
+    try:
+        package6_staging_lease.root.chmod(unsafe_mode)
+        with pytest.raises(ValueError):
+            package6_staging_lease.assert_valid()
+    finally:
+        package6_staging_lease.root.chmod(0o700)
+
+
+def test_package6_staging_lease_rejects_wrong_owner_metadata_model(
+    package6_staging_lease: Package6StagingLease,
+) -> None:
+    """Model an unrepresentable foreign uid without changing filesystem ownership."""
+
+    info = package6_staging_lease.root.lstat()
+    values = list(info)
+    values[4] = os.geteuid() + 1
+    wrong_owner = os.stat_result(values)
+
+    with pytest.raises(ValueError):
+        staging_fixture._validate_issued_info(
+            wrong_owner, package6_staging_lease.identity
+        )
+
+
+def test_staging_material_rejects_an_unsafe_intermediate_under_tmp(
+    package6_staging_lease: Package6StagingLease,
+) -> None:
+    unsafe_intermediate = package6_staging_lease.root / "unsafe-intermediate"
+    candidate = unsafe_intermediate / "candidate"
+    unsafe_intermediate.mkdir(mode=0o770)
+    unsafe_intermediate.chmod(0o770)
+    candidate.mkdir(mode=0o700)
+
+    with pytest.raises(ValueError):
+        staging_v2._validate_private_root(candidate)
 
 
 def test_package6_staging_lease_has_only_the_approved_test_consumers() -> None:
     root = Path(__file__).resolve().parents[2]
-    consumers: set[str] = set()
-    for path in (root / "tests").rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        if any(
-            isinstance(node, ast.ImportFrom)
-            and node.module == "tests.foundation._package6_staging_fixture"
-            for node in ast.walk(tree)
-        ):
-            consumers.add(path.relative_to(root).as_posix())
-
-    assert consumers == {
+    helper_module = "tests.foundation._package6_staging_fixture"
+    helper_basename = "_package6_staging_fixture"
+    permitted = {
         "tests/foundation/test_package6_runtime_approval.py",
         "tests/foundation/test_package6_runtime_controller.py",
         "tests/foundation/test_package6_controller_closure.py",
         "tests/runtime_release/test_v2_runtime_config.py",
     }
+
+    def consumes_helper(tree: ast.AST) -> bool:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(
+                alias.name == helper_module
+                or alias.name.startswith(helper_module + ".")
+                for alias in node.names
+            ):
+                return True
+            if isinstance(node, ast.ImportFrom):
+                if node.module == helper_module:
+                    return True
+                if (
+                    node.module == "tests.foundation"
+                    and any(alias.name == helper_basename for alias in node.names)
+                ):
+                    return True
+                if node.level and (
+                    node.module == helper_basename
+                    or (
+                        node.module is None
+                        and any(
+                            alias.name == helper_basename
+                            for alias in node.names
+                        )
+                    )
+                ):
+                    return True
+            if isinstance(node, ast.Attribute) and node.attr == helper_basename:
+                return True
+            if isinstance(node, ast.Call) and node.args:
+                function = node.func
+                is_dynamic_import = (
+                    isinstance(function, ast.Name)
+                    and function.id in {"__import__", "import_module"}
+                ) or (
+                    isinstance(function, ast.Attribute)
+                    and function.attr == "import_module"
+                )
+                if (
+                    is_dynamic_import
+                    and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value == helper_module
+                ):
+                    return True
+        return False
+
+    consumers: set[str] = set()
+    for path in root.rglob("*.py"):
+        relative = path.relative_to(root)
+        if {".git", ".venv", "node_modules", ".pytest_cache"} & set(
+            relative.parts
+        ):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if consumes_helper(tree):
+            consumers.add(relative.as_posix())
+
+    assert consumers == permitted
+
+    prohibited_paths = [root / "Makefile"]
+    for directory in ("packages", "services", "ops", "scripts"):
+        prohibited_paths.extend((root / directory).rglob("*"))
+    needles = (
+        helper_module.encode(),
+        b"Package6StagingLease",
+        b"create_package6_staging_lease",
+        b"package6_staging_lease",
+    )
+    for path in prohibited_paths:
+        if path.is_file():
+            content = path.read_bytes()
+            assert not any(needle in content for needle in needles), path
+
+
+def test_package6_staging_lease_forwarding_chain_is_explicit() -> None:
+    root = Path(__file__).resolve().parents[2]
+
+    def function(path: Path, name: str) -> ast.FunctionDef:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        return next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == name
+        )
+
+    def accepts_lease(node: ast.FunctionDef) -> bool:
+        return any(
+            argument.arg == "lease"
+            for argument in (*node.args.args, *node.args.kwonlyargs)
+        )
+
+    def passes_lease(node: ast.FunctionDef, target: str) -> bool:
+        return any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == target
+            and any(
+                keyword.arg == "lease"
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "lease"
+                for keyword in call.keywords
+            )
+            for call in ast.walk(node)
+        )
+
+    approval = function(
+        root / "tests/foundation/test_package6_runtime_approval.py", "_record"
+    )
+    controller = function(
+        root / "tests/foundation/test_package6_runtime_controller.py",
+        "_sealed_runtime_fixture",
+    )
+    closure = function(
+        root / "tests/foundation/test_package6_controller_closure.py",
+        "_finalizer_arguments",
+    )
+
+    assert accepts_lease(approval) and passes_lease(approval, "_staging_material")
+    assert accepts_lease(controller) and passes_lease(controller, "_record")
+    assert accepts_lease(closure) and passes_lease(
+        closure, "_sealed_runtime_fixture"
+    )
 
 
 def _resign(document: dict[str, object]) -> dict[str, object]:

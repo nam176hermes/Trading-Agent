@@ -20,6 +20,7 @@ from typing import Any, Callable, cast
 
 import pytest
 
+import tests.foundation.test_package6_runtime_controller as runtime_controller_tests
 from tests.foundation._package6_staging_fixture import (
     Package6StagingLease,
     package6_staging_lease,
@@ -615,6 +616,46 @@ def _finalizer_arguments(
     }
     before = hashlib.sha256(fixture.bundle.read_bytes()).hexdigest()
     return arguments, before
+
+
+def test_finalizer_arguments_retains_lease_until_outer_fixture_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The closure forwards one live lease; only the outer fixture ends it."""
+
+    class LeaseObserved(Exception):
+        pass
+
+    fixture_lifetime = package6_staging_lease.__wrapped__()
+    lease = next(fixture_lifetime)
+    root = lease.root
+    observed: list[Package6StagingLease] = []
+
+    def stop_after_forwarding(
+        _tmp_path: Path,
+        _monkeypatch: pytest.MonkeyPatch,
+        *,
+        lease: Package6StagingLease,
+    ) -> SealedRuntimeFixture:
+        observed.append(lease)
+        lease.assert_valid()
+        raise LeaseObserved
+
+    monkeypatch.setattr(
+        runtime_controller_tests, "_sealed_runtime_fixture", stop_after_forwarding
+    )
+    try:
+        with pytest.raises(LeaseObserved):
+            _finalizer_arguments(tmp_path, monkeypatch, lease=lease)
+        assert observed == [lease]
+        lease.assert_valid()
+        assert root.is_dir()
+    finally:
+        with pytest.raises(StopIteration):
+            next(fixture_lifetime)
+
+    assert not root.exists()
 
 
 _CONTROLLER_FINAL_NAME = "package6-controller-final.json"
