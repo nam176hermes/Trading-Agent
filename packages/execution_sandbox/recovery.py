@@ -10,7 +10,7 @@ from uuid import UUID
 from pydantic import BaseModel, field_validator, model_validator
 
 from packages.domain.clock import require_utc
-from packages.domain.events import EventEnvelope
+from packages.domain.events import EVENT_TYPE_BY_PAYLOAD, EventEnvelope
 from packages.domain.orders import (
     TERMINAL_ORDER_STATUSES,
     CanonicalIdentifier,
@@ -577,6 +577,23 @@ def _canonical_authority_events(
         for index, supplied in enumerate(iterator):
             if not isinstance(supplied, EventEnvelope):
                 raise ValueError("authority evidence must be an EventEnvelope")
+            payload = object.__getattribute__(supplied, "payload")
+            payload_type = type(payload)
+            registered_payload_type = next(
+                (
+                    candidate
+                    for candidate in dict.__iter__(EVENT_TYPE_BY_PAYLOAD)
+                    if payload_type is candidate
+                ),
+                None,
+            )
+            if registered_payload_type is None:
+                raise ValueError("authority evidence payload type is not registered")
+            _require_exact_model_root(
+                supplied,
+                EventEnvelope[registered_payload_type],
+                f"authority_events.{index}",
+            )
             event_type = object.__getattribute__(supplied, "event_type")
             if type(event_type) is not str:
                 raise SandboxRecoveryMalformedInput(

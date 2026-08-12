@@ -991,6 +991,95 @@ def test_noncanonical_authority_envelope_raises_narrow_malformed_input(
         )
 
 
+@pytest.mark.parametrize(
+    "authority_index",
+    (0, 1),
+    ids=("prepared", "consumed"),
+)
+def test_authority_envelope_root_extra_raises_narrow_malformed_input(
+    authority_index: int,
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope)
+    forged = case.authority_events[authority_index].model_copy(
+        update={"restore": True}
+    )
+    assert "restore" in object.__getattribute__(forged, "__dict__")
+    assert "restore" in object.__getattribute__(forged, "__pydantic_fields_set__")
+    authority_events = tuple(
+        forged if index == authority_index else event
+        for index, event in enumerate(case.authority_events)
+    )
+
+    with pytest.raises(SandboxRecoveryMalformedInput):
+        plan_sandbox_recovery(
+            checkpoint=case.checkpoint,
+            authority_events=authority_events,
+            reconciliation=case.reconciliation,
+        )
+
+
+@pytest.mark.parametrize(
+    "authority_index",
+    (0, 1),
+    ids=("prepared", "consumed"),
+)
+def test_authority_envelope_requires_exact_payload_specific_public_type(
+    authority_index: int,
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope)
+    original = case.authority_events[authority_index]
+    generic = EventEnvelope[object](
+        **{
+            name: object.__getattribute__(original, name)
+            for name in EventEnvelope.model_fields
+        }
+    )
+    authority_events = tuple(
+        generic if index == authority_index else event
+        for index, event in enumerate(case.authority_events)
+    )
+
+    with pytest.raises(SandboxRecoveryMalformedInput):
+        plan_sandbox_recovery(
+            checkpoint=case.checkpoint,
+            authority_events=authority_events,
+            reconciliation=case.reconciliation,
+        )
+
+
+@pytest.mark.parametrize(
+    "authority_index",
+    (0, 1),
+    ids=("prepared", "consumed"),
+)
+def test_authority_envelope_exact_model_copy_remains_safe_to_restore(
+    authority_index: int,
+    prepared_case: Any,
+    submitted_envelope: EventEnvelope[OrderEvent],
+) -> None:
+    case = recovery_case(prepared_case, submitted_envelope)
+    copied = case.authority_events[authority_index].model_copy()
+    authority_events = tuple(
+        copied if index == authority_index else event
+        for index, event in enumerate(case.authority_events)
+    )
+
+    decision = plan_sandbox_recovery(
+        checkpoint=case.checkpoint,
+        authority_events=authority_events,
+        reconciliation=case.reconciliation,
+    )
+
+    assert decision.disposition is SandboxRecoveryDisposition.SAFE_TO_RESTORE
+    assert decision.reason_codes == (
+        SandboxRecoveryReason.RECOVERY_EVIDENCE_COMPLETE,
+    )
+
+
 def test_hostile_event_type_string_is_rejected_before_equality_dispatch(
     prepared_case: Any, submitted_envelope: EventEnvelope[OrderEvent]
 ) -> None:
