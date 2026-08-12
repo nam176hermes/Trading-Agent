@@ -20,6 +20,10 @@ from typing import Any, Callable, cast
 
 import pytest
 
+from tests.foundation._package6_staging_fixture import (
+    Package6StagingLease,
+    package6_staging_lease,
+)
 from services.paper_runtime import evidence as evidence_module
 from services.paper_runtime.evidence import (
     EvidenceIncomplete,
@@ -446,6 +450,8 @@ def _private_json(root: Path, name: str, value: object) -> Path:
 def _finalizer_arguments(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    lease: Package6StagingLease,
 ) -> tuple[dict[str, Any], str]:
     from tests.foundation.test_package6_runtime_controller import (
         _sealed_runtime_fixture,
@@ -453,7 +459,7 @@ def _finalizer_arguments(
 
     fixture_root = tmp_path / "fixture"
     fixture_root.mkdir(mode=0o700)
-    fixture = _sealed_runtime_fixture(fixture_root, monkeypatch)
+    fixture = _sealed_runtime_fixture(fixture_root, monkeypatch, lease=lease)
     runtime_snapshot = evidence_module._load_runtime_evidence_snapshot(
         fixture.bundle
     )
@@ -642,8 +648,11 @@ def _kill_child() -> None:
 def test_controller_result_name_absent_before_commit_link(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     real_link = evidence_module._link_owned_tmpfile
 
@@ -667,8 +676,11 @@ def test_controller_result_name_absent_before_commit_link(
 def test_controller_result_has_single_atomic_commit_point(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     counter = tmp_path / "link-count"
     real_link = evidence_module._link_owned_tmpfile
@@ -695,8 +707,11 @@ def test_controller_result_has_single_atomic_commit_point(
 def test_controller_result_never_exposes_partial_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     real_write = evidence_module.os.write
     writes = 0
@@ -721,8 +736,11 @@ def test_controller_result_never_exposes_partial_bytes(
 def test_controller_result_descriptor_matches_final_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     proof = tmp_path / "descriptor-path-identity.json"
     real_confirm = evidence_module._confirm_final_publication_identity
@@ -766,8 +784,11 @@ def test_controller_result_descriptor_matches_final_path(
 def test_controller_result_mutation_after_check_blocks_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     runtime = cast(Path, arguments["runtime_bundle"])
     real_revalidate = evidence_module._RuntimeEvidenceSnapshot.revalidate
@@ -800,8 +821,11 @@ def test_controller_result_mutation_after_check_blocks_commit(
 def test_controller_result_commit_reads_retained_descriptor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     real_read = evidence_module._read_final_publication
     reads = 0
@@ -845,6 +869,7 @@ def test_controller_result_commit_reads_retained_descriptor(
 def test_controller_result_crash_before_link_leaves_no_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     boundaries = (
         "open",
@@ -857,7 +882,9 @@ def test_controller_result_crash_before_link_leaves_no_output(
     for boundary in boundaries:
         case = tmp_path / boundary
         case.mkdir(mode=0o700)
-        arguments, _before = _finalizer_arguments(case, monkeypatch)
+        arguments, _before = _finalizer_arguments(
+            case, monkeypatch, lease=package6_staging_lease
+        )
         output = cast(Path, arguments["output_dir"])
         real_open = evidence_module._open_publication_tmpfile
         real_fsync = evidence_module.os.fsync
@@ -928,11 +955,14 @@ def test_controller_result_crash_before_link_leaves_no_output(
 def test_controller_result_crash_after_link_has_one_complete_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     for boundary in ("link", "directory-fsync", "identity"):
         case = tmp_path / boundary
         case.mkdir(mode=0o700)
-        arguments, _before = _finalizer_arguments(case, monkeypatch)
+        arguments, _before = _finalizer_arguments(
+            case, monkeypatch, lease=package6_staging_lease
+        )
         output = cast(Path, arguments["output_dir"])
         real_fsync = evidence_module.os.fsync
         real_link = evidence_module._link_owned_tmpfile
@@ -977,8 +1007,11 @@ def test_controller_result_crash_after_link_has_one_complete_output(
 def test_controller_result_postlink_failure_retains_recovery_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     real_fsync = evidence_module.os.fsync
 
@@ -1014,8 +1047,11 @@ def test_controller_result_postlink_failure_retains_recovery_authority(
 def test_controller_result_link_success_interruption_retains_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     real_link = evidence_module._link_owned_tmpfile
 
@@ -1048,8 +1084,11 @@ def test_controller_result_link_success_interruption_retains_authority(
 def test_controller_result_file_exists_after_link_attempt_retains_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     existing = output / _CONTROLLER_FINAL_NAME
     existing.write_bytes(b"preexisting")
@@ -1071,8 +1110,11 @@ def test_controller_result_file_exists_after_link_attempt_retains_authority(
 def test_controller_result_post_success_file_exists_retains_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     real_link = evidence_module._link_owned_tmpfile
 
     def link_then_file_exists(*args: object) -> None:
@@ -1099,9 +1141,12 @@ def test_controller_result_post_success_file_exists_retains_authority(
 def test_controller_result_never_closes_recycled_retained_descriptor(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
     recycle_kind: str,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     output = cast(Path, arguments["output_dir"])
     decoy_file = tmp_path / "final-publication-decoy"
     decoy_file.write_bytes(b"decoy")
@@ -1184,8 +1229,11 @@ def test_controller_result_retained_read_requires_exact_link_state(
 def test_controller_result_retained_policy_failure_sets_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     authority = evidence_module.finalize_controller_evidence(**arguments)
     assert isinstance(authority, evidence_module.FinalPublicationAuthority)
     extra_link = tmp_path / "controller-final-extra-link"
@@ -1203,8 +1251,11 @@ def test_controller_result_retained_policy_failure_sets_recovery(
 def test_controller_result_retained_read_rejects_metadata_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     authority = evidence_module.finalize_controller_evidence(**arguments)
     assert isinstance(authority, evidence_module.FinalPublicationAuthority)
     before = authority.path.stat()
@@ -1221,8 +1272,11 @@ def test_controller_result_retained_read_rejects_metadata_mutation(
 def test_controller_result_input_close_failure_preserves_output_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     real_close = evidence_module._RuntimeEvidenceSnapshot.close
 
     def close_but_report_failure(snapshot: object) -> bool:
@@ -1373,9 +1427,12 @@ def _mutate_diagnostic_case(document: dict[str, object], case: str) -> None:
 def test_finalizer_rejects_each_diagnostic_authority_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
     case: str,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     _rewrite_controller_input(
         arguments,
         path_key="diagnostic_index_path",
@@ -1470,9 +1527,12 @@ def _mutate_review_case(document: dict[str, object], case: str) -> None:
 def test_finalizer_rejects_each_independent_review_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
     case: str,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     _rewrite_controller_input(
         arguments,
         path_key="review_path",
@@ -1488,8 +1548,11 @@ def test_finalizer_rejects_each_independent_review_tamper(
 def test_finalizer_rejects_source_diff_distinct_from_reviewed_patch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     different_source_diff = "a" * 64
     arguments["source_diff_sha256"] = different_source_diff
     for path_key, digest_key in (
@@ -1573,9 +1636,12 @@ def _mutate_cleanup_case(document: dict[str, object], case: str) -> None:
 def test_finalizer_rejects_each_cleanup_authority_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
     case: str,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     _rewrite_controller_input(
         arguments,
         path_key="cleanup_path",
@@ -1616,9 +1682,12 @@ def test_finalizer_rejects_each_cleanup_authority_tamper(
 def test_finalizer_rejects_each_top_level_binding_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
     case: str,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     if case == "candidate-commit":
         arguments["candidate_commit"] = "0" * 40
     elif case == "candidate-tree":
@@ -1674,8 +1743,11 @@ def test_finalizer_rejects_each_top_level_binding_tamper(
 def test_finalizer_writes_single_private_container_without_mutating_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
 
     result = evidence_module.finalize_controller_evidence(**arguments)
     output = cast(Path, arguments["output_dir"])
@@ -1707,8 +1779,11 @@ def test_finalizer_writes_single_private_container_without_mutating_bundle(
 def test_finalizer_rejects_runtime_mutation_after_descriptor_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     runtime_bundle = cast(Path, arguments["runtime_bundle"])
     real_open = evidence_module._open_runtime_evidence_snapshot
     mutated = False
@@ -1766,8 +1841,11 @@ def _replace_runtime_container_verdict(bundle: Path, verdict: str) -> None:
 def test_finalizer_rejects_runtime_mutation_after_second_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     runtime_bundle = cast(Path, arguments["runtime_bundle"])
     real_revalidate = evidence_module._RuntimeEvidenceSnapshot.revalidate
     revalidations = 0
@@ -1810,8 +1888,11 @@ def test_finalizer_rejects_runtime_mutation_after_second_snapshot(
 def test_finalizer_rejects_runtime_mutation_during_final_output_fsync(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    arguments, _before = _finalizer_arguments(tmp_path, monkeypatch)
+    arguments, _before = _finalizer_arguments(
+        tmp_path, monkeypatch, lease=package6_staging_lease
+    )
     runtime_bundle = cast(Path, arguments["runtime_bundle"])
     output = cast(Path, arguments["output_dir"])
     real_fsync = evidence_module.os.fsync

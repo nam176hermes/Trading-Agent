@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -7,10 +8,19 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
+import tempfile
 from typing import Callable, cast
 
 import pytest
 
+from tests.foundation._package6_staging_fixture import (
+    Package6StagingLease,
+    Package6StagingLeaseError,
+    create_package6_staging_lease,
+    package6_staging_lease,
+)
+import packages.runtime_release.staging_v2 as staging_v2
 from packages.runtime_release.staging_v2 import (
     STAGING_SCOPE,
     build_staging_activation_v2,
@@ -77,9 +87,9 @@ def _write_fixed(path: Path, value: object, mode: int = 0o444) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _staging_material(root: Path) -> StagingMaterial:
-    private = root / "package6-staging"
-    private.mkdir(mode=0o700, exist_ok=True)
+def _staging_material(root: Path, *, lease: Package6StagingLease) -> StagingMaterial:
+    lease.assert_valid()
+    private = lease.root
     for path in private.rglob("*"):
         if path.is_dir():
             path.chmod(0o700)
@@ -198,7 +208,7 @@ def _staging_material(root: Path) -> StagingMaterial:
     )
 
 
-def _record(root: Path) -> dict[str, object]:
+def _record(root: Path, *, lease: Package6StagingLease) -> dict[str, object]:
     source_root = root / "source"
     source_root.mkdir(exist_ok=True)
     bindings = []
@@ -222,7 +232,7 @@ def _record(root: Path) -> dict[str, object]:
                 "sha256": hashlib.sha256(binding.read_bytes()).hexdigest(),
             }
         )
-    material = _staging_material(root)
+    material = _staging_material(root, lease=lease)
     fixture_path = material.fixture_path
     fixture_authority_path = material.private / "authority/fixture-authority.json"
     interpreter = material.application_python
@@ -328,8 +338,8 @@ def _record(root: Path) -> dict[str, object]:
             "live_trading_approved": False,
         },
         "constraints": {
-            "disposable_root": str(root / "disposable"),
-            "evidence_root": str(root / "evidence"),
+            "disposable_root": str(material.private / "disposable"),
+            "evidence_root": str(material.private / "evidence"),
             "max_processes": "2",
             "startup_timeout_seconds": "10",
             "operation_timeout_seconds": "30",
@@ -346,7 +356,7 @@ def _record(root: Path) -> dict[str, object]:
             "bind_host": "127.0.0.1",
             "port": "18432",
             "database_name": "trading_agent_disposable_test",
-            "pgdata": str(root / "disposable" / "pgdata"),
+            "pgdata": str(material.private / "disposable" / "pgdata"),
             "cluster_name": "trading-agent-disposable-tests",
             "service_roles": ["trading_job_api", "trading_job_worker"],
         },
@@ -409,7 +419,7 @@ def _record(root: Path) -> dict[str, object]:
     return document
 
 
-def _context(root: Path) -> Package6ApprovalContext:
+def _context(root: Path, *, lease: Package6StagingLease) -> Package6ApprovalContext:
     return Package6ApprovalContext(
         source_commit=COMMIT,
         source_tree=TREE,
@@ -423,16 +433,81 @@ def _context(root: Path) -> Package6ApprovalContext:
         postgres_bind_host="127.0.0.1",
         postgres_port=18432,
         postgres_database_name="trading_agent_disposable_test",
-        postgres_pgdata=str(root / "disposable" / "pgdata"),
+        postgres_pgdata=str(lease.root / "disposable" / "pgdata"),
         postgres_cluster_name="trading-agent-disposable-tests",
         postgres_service_roles=("trading_job_api", "trading_job_worker"),
         now=NOW + timedelta(minutes=1),
         source_root=root / "source",
         staging_scope=STAGING_SCOPE,
-        staging_authority_path=root / "package6-staging/authority/release-authority-v2.json",
-        staging_activation_path=root / "package6-staging/authority/release-activation-v2.json",
+        staging_authority_path=lease.root / "authority/release-authority-v2.json",
+        staging_activation_path=lease.root / "authority/release-activation-v2.json",
         custodian_helper_binary_sha256="8" * 64,
     )
+
+
+def test_staging_material_rejects_a_private_root_outside_tmp() -> None:
+    """A portable runner root must not become Package-6 staging authority."""
+
+    with tempfile.TemporaryDirectory(dir=Path.cwd()) as raw_root:
+        with pytest.raises(ValueError):
+            staging_v2._validate_private_root(Path(raw_root))
+
+
+def test_package6_staging_lease_is_a_private_direct_tmp_child(
+    package6_staging_lease: Package6StagingLease,
+) -> None:
+    info = package6_staging_lease.root.lstat()
+
+    assert package6_staging_lease.root.parent == Path("/tmp")
+    assert stat.S_IMODE(info.st_mode) == 0o700
+    assert info.st_uid == os.geteuid()
+    package6_staging_lease.assert_valid()
+
+
+def test_package6_staging_lease_refuses_replaced_root_without_deleting_it() -> None:
+    lease = create_package6_staging_lease()
+    original = lease.root
+    original.rmdir()
+    replacement_target = Path(tempfile.mkdtemp(dir="/tmp"))
+    original.symlink_to(replacement_target, target_is_directory=True)
+
+    with pytest.raises(Package6StagingLeaseError, match="cleanup refused"):
+        lease.cleanup()
+
+    assert original.is_symlink()
+    original.unlink()
+    replacement_target.rmdir()
+
+
+def test_package6_staging_lease_rejects_a_nonprivate_issued_root() -> None:
+    lease = create_package6_staging_lease()
+    try:
+        lease.root.chmod(0o755)
+        with pytest.raises(ValueError):
+            lease.assert_valid()
+    finally:
+        lease.root.chmod(0o700)
+        lease.cleanup()
+
+
+def test_package6_staging_lease_has_only_the_approved_test_consumers() -> None:
+    root = Path(__file__).resolve().parents[2]
+    consumers: set[str] = set()
+    for path in (root / "tests").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "tests.foundation._package6_staging_fixture"
+            for node in ast.walk(tree)
+        ):
+            consumers.add(path.relative_to(root).as_posix())
+
+    assert consumers == {
+        "tests/foundation/test_package6_runtime_approval.py",
+        "tests/foundation/test_package6_runtime_controller.py",
+        "tests/foundation/test_package6_controller_closure.py",
+        "tests/runtime_release/test_v2_runtime_config.py",
+    }
 
 
 def _resign(document: dict[str, object]) -> dict[str, object]:
@@ -441,7 +516,7 @@ def _resign(document: dict[str, object]) -> dict[str, object]:
 
 
 def _rebind_dynamic_authorities(
-    document: dict[str, object], root: Path
+    document: dict[str, object], root: Path, *, lease: Package6StagingLease
 ) -> dict[str, object]:
     _resign(document)
     approval_sha256 = hashlib.sha256(
@@ -451,37 +526,48 @@ def _rebind_dynamic_authorities(
         "package6-staging/authority/release-activation-v2.json",
         "package6-staging/authority/fixture-authority.json",
     ):
-        path = root / relative
+        path = lease.root / relative.removeprefix("package6-staging/")
         value = json.loads(path.read_text(encoding="utf-8"))
         value["package6_approval_sha256"] = approval_sha256
         _write_fixed(path, value)
     return document
 
 
-def test_exact_candidate_approval_returns_private_capability(tmp_path: Path) -> None:
-    document = _record(tmp_path)
+def test_exact_candidate_approval_returns_private_capability(
+    tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
+) -> None:
+    document = _record(tmp_path, lease=package6_staging_lease)
 
-    capability = validate_package6_runtime_approval(document, _context(tmp_path))
+    capability = validate_package6_runtime_approval(
+        document, _context(tmp_path, lease=package6_staging_lease)
+    )
     validate_source_binding_files(document, tmp_path / "source")
 
     assert capability.source_commit == COMMIT
     assert capability.source_tree == TREE
     assert capability.custodian.authority_mode == "DISPOSABLE_TEST_NATIVE_ONLY"
-    assert capability.operation_ids == _context(tmp_path).operation_ids
+    assert capability.operation_ids == _context(
+        tmp_path, lease=package6_staging_lease
+    ).operation_ids
     assert capability.fixture_sha256 == _object(document, "fixture_authority")[
         "fixture_sha256"
     ]
     assert "approval_sha256" not in repr(capability)
 
 
-def test_job_api_uses_only_canonical_port_8401(tmp_path: Path) -> None:
-    document = _record(tmp_path)
+def test_job_api_uses_only_canonical_port_8401(
+    tmp_path: Path, package6_staging_lease: Package6StagingLease
+) -> None:
+    document = _record(tmp_path, lease=package6_staging_lease)
     for operation in _objects(document, "operations"):
         if operation["component"] == "JOB_API":
             operation["port"] = "8401"
     _resign(document)
 
-    capability = validate_package6_runtime_approval(document, _context(tmp_path))
+    capability = validate_package6_runtime_approval(
+        document, _context(tmp_path, lease=package6_staging_lease)
+    )
 
     assert capability.operations["job-api.start"].port == 8401
     assert capability.operations["job-api.stop"].port == 8401
@@ -509,10 +595,11 @@ def test_job_api_uses_only_canonical_port_8401(tmp_path: Path) -> None:
 )
 def test_job_api_port_rejects_every_noncanonical_document_representation(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
     operation_id: str,
     invalid_port: object,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     operation = next(
         item
         for item in _objects(document, "operations")
@@ -522,11 +609,14 @@ def test_job_api_port_rejects_every_noncanonical_document_representation(
     _resign(document)
 
     with pytest.raises(Package6ApprovalRejected):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 def test_arbitrary_executable_and_interpreter_escape_are_rejected(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     for argv in (
         ["/bin/sh", "-c", "true"],
@@ -534,29 +624,39 @@ def test_arbitrary_executable_and_interpreter_escape_are_rejected(
         ["/usr/bin/python3.11", "-c", "print('escape')"],
         ["/usr/bin/python3.11", "-I", "-m", "unapproved.module"],
     ):
-        document = _record(tmp_path)
+        document = _record(tmp_path, lease=package6_staging_lease)
         _objects(document, "operations")[0]["argv"] = argv
         _resign(document)
         with pytest.raises(Package6ApprovalRejected, match="argv|executable|shape"):
-            validate_package6_runtime_approval(document, _context(tmp_path))
+            validate_package6_runtime_approval(
+                document, _context(tmp_path, lease=package6_staging_lease)
+            )
 
 
-def test_stop_operations_are_signal_authority_not_new_commands(tmp_path: Path) -> None:
-    document = _record(tmp_path)
+def test_stop_operations_are_signal_authority_not_new_commands(
+    tmp_path: Path, package6_staging_lease: Package6StagingLease
+) -> None:
+    document = _record(tmp_path, lease=package6_staging_lease)
     for operation in _objects(document, "operations"):
         if operation["action"] == "STOP":
             operation["argv"] = []
     _resign(document)
 
-    capability = validate_package6_runtime_approval(document, _context(tmp_path))
+    capability = validate_package6_runtime_approval(
+        document, _context(tmp_path, lease=package6_staging_lease)
+    )
 
     assert capability.operations["job-api.stop"].argv == ()
     assert capability.operations["worker.stop"].argv == ()
 
 
-def test_capability_retains_all_typed_runtime_authority(tmp_path: Path) -> None:
-    document = _record(tmp_path)
-    capability = validate_package6_runtime_approval(document, _context(tmp_path))
+def test_capability_retains_all_typed_runtime_authority(
+    tmp_path: Path, package6_staging_lease: Package6StagingLease
+) -> None:
+    document = _record(tmp_path, lease=package6_staging_lease)
+    capability = validate_package6_runtime_approval(
+        document, _context(tmp_path, lease=package6_staging_lease)
+    )
 
     assert capability.postgres.approval_sha256 == PG_APPROVAL
     assert capability.request.idempotency_key == _object(document, "request")[
@@ -607,14 +707,16 @@ def test_capability_retains_all_typed_runtime_authority(tmp_path: Path) -> None:
     ),
 )
 def test_each_syntactically_valid_wrong_authority_digest_is_rejected(
-    tmp_path: Path, key: str
+    tmp_path: Path, package6_staging_lease: Package6StagingLease, key: str
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     _object(document, "authority_digests")[key] = "9" * 64
-    _rebind_dynamic_authorities(document, tmp_path)
+    _rebind_dynamic_authorities(document, tmp_path, lease=package6_staging_lease)
 
     with pytest.raises(Package6ApprovalRejected, match="digest"):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 @pytest.mark.parametrize(
@@ -627,13 +729,17 @@ def test_each_syntactically_valid_wrong_authority_digest_is_rejected(
     ],
 )
 def test_exact_nonambient_staging_context_is_required(
-    tmp_path: Path, field: str, value: object
+    tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
+    field: str,
+    value: object,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
 
     with pytest.raises(Package6ApprovalRejected):
         validate_package6_runtime_approval(
-            document, _context(tmp_path)._replace(**{field: value})
+            document,
+            _context(tmp_path, lease=package6_staging_lease)._replace(**{field: value}),
         )
 
 
@@ -648,10 +754,10 @@ def test_exact_nonambient_staging_context_is_required(
     ),
 )
 def test_staged_candidate_dynamic_and_fixture_byte_drift_is_rejected(
-    tmp_path: Path, relative: str
+    tmp_path: Path, package6_staging_lease: Package6StagingLease, relative: str
 ) -> None:
-    document = _record(tmp_path)
-    path = tmp_path / relative
+    document = _record(tmp_path, lease=package6_staging_lease)
+    path = package6_staging_lease.root / relative.removeprefix("package6-staging/")
     path.chmod(0o600)
     path.write_bytes(path.read_bytes() + b"drift\n")
     path.chmod(
@@ -659,10 +765,14 @@ def test_staged_candidate_dynamic_and_fixture_byte_drift_is_rejected(
     )
 
     with pytest.raises(Package6ApprovalRejected, match="staging|fixture"):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
-def test_source_binding_set_is_canonical_complete_and_ordered(tmp_path: Path) -> None:
+def test_source_binding_set_is_canonical_complete_and_ordered(
+    tmp_path: Path, package6_staging_lease: Package6StagingLease
+) -> None:
     from scripts.validate_package6_runtime_approval import (
         PACKAGE6_SOURCE_BINDING_PATHS,
     )
@@ -671,7 +781,7 @@ def test_source_binding_set_is_canonical_complete_and_ordered(tmp_path: Path) ->
         PAPER_BACKEND_SOURCE_MAPPING,
     )
 
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     assert tuple(item["path"] for item in _objects(document, "source_bindings")) == (
         PACKAGE6_SOURCE_BINDING_PATHS
     )
@@ -691,7 +801,9 @@ def test_source_binding_set_is_canonical_complete_and_ordered(tmp_path: Path) ->
     _objects(document, "source_bindings").reverse()
     _resign(document)
     with pytest.raises(Package6ApprovalRejected, match="canonical order"):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 def test_package6_behavior_sources_are_bound_at_exact_reviewed_cardinality() -> None:
@@ -718,6 +830,7 @@ def test_package6_behavior_sources_are_bound_at_exact_reviewed_cardinality() -> 
 
 def test_public_schema_matches_and_enforces_canonical_source_binding_count(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     from scripts.validate_package6_runtime_approval import (
         PACKAGE6_SOURCE_BINDING_PATHS,
@@ -731,14 +844,18 @@ def test_public_schema_matches_and_enforces_canonical_source_binding_count(
     binding_schema = schema["properties"]["source_bindings"]
     assert binding_schema["minItems"] == len(PACKAGE6_SOURCE_BINDING_PATHS)
     assert binding_schema["maxItems"] == len(PACKAGE6_SOURCE_BINDING_PATHS)
-    document = _record(tmp_path)
-    validate_package6_runtime_approval(document, _context(tmp_path))
+    document = _record(tmp_path, lease=package6_staging_lease)
+    validate_package6_runtime_approval(
+        document, _context(tmp_path, lease=package6_staging_lease)
+    )
     for count in (36, 73, len(PACKAGE6_SOURCE_BINDING_PATHS) - 1):
         stale = dict(document)
         stale["source_bindings"] = _objects(document, "source_bindings")[:count]
         _resign(stale)
         with pytest.raises(Package6ApprovalRejected):
-            validate_package6_runtime_approval(stale, _context(tmp_path))
+            validate_package6_runtime_approval(
+                stale, _context(tmp_path, lease=package6_staging_lease)
+            )
 
 
 @pytest.mark.parametrize(
@@ -775,10 +892,11 @@ def test_public_schema_matches_and_enforces_canonical_source_binding_count(
 )
 def test_each_native_custodian_authority_tamper_or_omission_is_rejected(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
     case: str,
     message: str,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     authority = _object(document, "custodian_authority")
     if case == "missing-authority":
         document.pop("custodian_authority")
@@ -851,23 +969,28 @@ def test_each_native_custodian_authority_tamper_or_omission_is_rejected(
         authority["live_trading_approved"] = True
     else:  # pragma: no cover - exhaustive cases
         raise AssertionError(case)
-    _rebind_dynamic_authorities(document, tmp_path)
+    _rebind_dynamic_authorities(document, tmp_path, lease=package6_staging_lease)
 
     with pytest.raises(Package6ApprovalRejected, match=message):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 @pytest.mark.parametrize("invalid_count", (True, 1, 1.0))
 def test_runtime_request_expected_job_count_requires_exact_integer(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
     invalid_count: object,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     _object(document, "request")["expected_job_count"] = invalid_count
-    _rebind_dynamic_authorities(document, tmp_path)
+    _rebind_dynamic_authorities(document, tmp_path, lease=package6_staging_lease)
 
     with pytest.raises(Package6ApprovalRejected, match="single approved SNAPSHOT"):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 @pytest.mark.parametrize(
@@ -886,17 +1009,20 @@ def test_runtime_request_expected_job_count_requires_exact_integer(
 )
 def test_all_approval_integer_authorities_reject_json_numbers(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
     section: str | None,
     field: str,
     invalid_value: float,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     target = document if section is None else _object(document, section)
     target[field] = invalid_value
-    _rebind_dynamic_authorities(document, tmp_path)
+    _rebind_dynamic_authorities(document, tmp_path, lease=package6_staging_lease)
 
     with pytest.raises(Package6ApprovalRejected):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 def test_approval_schema_has_no_ambiguous_json_numeric_authorities() -> None:
@@ -925,13 +1051,16 @@ def test_approval_schema_has_no_ambiguous_json_numeric_authorities() -> None:
 
 def test_native_source_file_drift_is_rejected_against_bound_bytes(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     path = tmp_path / "source" / PACKAGE6_CUSTODIAN_SOURCE_PATHS[0]
     path.write_bytes(path.read_bytes() + b"drift\n")
 
     with pytest.raises(Package6ApprovalRejected, match="source"):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 def test_json_schema_and_validator_have_exact_native_authority_field_parity() -> None:
@@ -1081,42 +1210,51 @@ def test_json_schema_and_validator_have_exact_native_authority_field_parity() ->
 )
 def test_forbidden_runtime_boundaries_fail_closed(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
     mutation: Callable[[dict[str, object]], object],
     message: str,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     mutation(document)
     _resign(document)
 
     with pytest.raises(Package6ApprovalRejected, match=message):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
-def test_expired_and_excessive_validity_fail_closed(tmp_path: Path) -> None:
+def test_expired_and_excessive_validity_fail_closed(
+    tmp_path: Path, package6_staging_lease: Package6StagingLease
+) -> None:
     for approved, expires, now in (
         ("2026-07-26T12:00:00Z", "2026-07-26T12:31:00Z", "2026-07-26T12:10:00Z"),
         ("2026-07-26T12:00:00Z", "2026-07-26T12:30:00Z", "2026-07-26T12:31:00Z"),
     ):
-        document = _record(tmp_path)
+        document = _record(tmp_path, lease=package6_staging_lease)
         document["validity"] = {
             "approved_at_utc": approved,
             "expires_at_utc": expires,
         }
         _resign(document)
-        context = _context(tmp_path)._replace(
+        context = _context(tmp_path, lease=package6_staging_lease)._replace(
             now=datetime.strptime(now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         )
         with pytest.raises(Package6ApprovalRejected, match="validity|expired"):
             validate_package6_runtime_approval(document, context)
 
 
-def test_startup_requires_paired_explicit_start_and_stop(tmp_path: Path) -> None:
-    document = _record(tmp_path)
+def test_startup_requires_paired_explicit_start_and_stop(
+    tmp_path: Path, package6_staging_lease: Package6StagingLease
+) -> None:
+    document = _record(tmp_path, lease=package6_staging_lease)
     document["operations"] = _objects(document, "operations")[:-1]
     _resign(document)
 
     with pytest.raises(Package6ApprovalRejected, match="START.*STOP"):
-        validate_package6_runtime_approval(document, _context(tmp_path))
+        validate_package6_runtime_approval(
+            document, _context(tmp_path, lease=package6_staging_lease)
+        )
 
 
 @pytest.mark.parametrize(
@@ -1128,9 +1266,9 @@ def test_startup_requires_paired_explicit_start_and_stop(tmp_path: Path) -> None
     ),
 )
 def test_each_new_behavior_source_binding_rejects_file_drift(
-    tmp_path: Path, relative: str
+    tmp_path: Path, package6_staging_lease: Package6StagingLease, relative: str
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     binding = tmp_path / "source" / relative
     binding.write_bytes(binding.read_bytes() + b"# drift\n")
 
@@ -1140,8 +1278,9 @@ def test_each_new_behavior_source_binding_rejects_file_drift(
 
 def test_source_binding_rejects_drift_symlink_non_regular_and_traversal(
     tmp_path: Path,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     binding = tmp_path / "source" / CANONICAL_BINDINGS[0]
     binding.write_text("DRIFT = True\n", encoding="utf-8")
     with pytest.raises(Package6ApprovalRejected, match="digest"):
@@ -1152,19 +1291,23 @@ def test_source_binding_rejects_drift_symlink_non_regular_and_traversal(
     with pytest.raises(Package6ApprovalRejected, match="regular"):
         validate_source_binding_files(document, tmp_path / "source")
 
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=package6_staging_lease)
     _objects(document, "source_bindings")[0]["path"] = "../bound.py"
     _resign(document)
     with pytest.raises(Package6ApprovalRejected, match="path"):
         validate_source_binding_files(document, tmp_path / "source")
 
 
-def test_validator_is_side_effect_free(tmp_path: Path, monkeypatch) -> None:
-    document = _record(tmp_path)
+def test_validator_is_side_effect_free(
+    tmp_path: Path, monkeypatch, package6_staging_lease: Package6StagingLease
+) -> None:
+    document = _record(tmp_path, lease=package6_staging_lease)
     called: list[str] = []
     monkeypatch.setattr(os, "system", lambda _value: called.append("system"))
 
-    validate_package6_runtime_approval(document, _context(tmp_path))
+    validate_package6_runtime_approval(
+        document, _context(tmp_path, lease=package6_staging_lease)
+    )
 
     assert called == []
     assert not (tmp_path / "disposable").exists()

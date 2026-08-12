@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from tests.foundation._package6_staging_fixture import Package6StagingLease
 from services.paper_runtime import controller as controller_module
 from services.paper_runtime.controller import (
     EvidenceBundle,
@@ -372,6 +373,8 @@ class SealedRuntimeFixture:
 def _sealed_runtime_fixture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    lease: Package6StagingLease,
 ) -> SealedRuntimeFixture:
     """Build a source-owned evidence fixture using native custody records."""
 
@@ -392,16 +395,16 @@ def _sealed_runtime_fixture(
 
     postgres_approval_bytes = b'{"approved":"synthetic-package6-test"}'
     postgres_sha256 = hashlib.sha256(postgres_approval_bytes).hexdigest()
-    document = _record(tmp_path)
+    document = _record(tmp_path, lease=lease)
     document["postgres_authority"]["approval_sha256"] = postgres_sha256
-    _rebind_dynamic_authorities(document, tmp_path)
+    _rebind_dynamic_authorities(document, tmp_path, lease=lease)
     approval_bytes = json.dumps(
         document,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
-    context = _context(tmp_path)._replace(
+    context = _context(tmp_path, lease=lease)._replace(
         disposable_postgres_approval_sha256=postgres_sha256
     )
     capability = validate_package6_runtime_approval(

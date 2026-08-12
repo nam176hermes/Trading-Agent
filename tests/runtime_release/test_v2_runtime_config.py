@@ -9,6 +9,10 @@ import stat
 
 import pytest
 
+from tests.foundation._package6_staging_fixture import (
+    Package6StagingLease,
+    package6_staging_lease,
+)
 import packages.runtime_release.config as runtime_config
 import packages.runtime_release.job_plane as job_plane
 from packages.runtime_release.paper_application import (
@@ -80,9 +84,14 @@ def _write_fixed(path: Path, value: object, mode: int = 0o444) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _staging_authority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    private = tmp_path / "package6-staging"
-    private.mkdir(mode=0o700)
+def _staging_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    lease: Package6StagingLease,
+):
+    lease.assert_valid()
+    private = lease.root
     stage = private / "stage"
     app = stage / "application"
     backend = stage / "backend"
@@ -275,9 +284,10 @@ def test_v2_promotion_loader_is_deliberately_no_go_until_reviewed() -> None:
 def test_v2_staging_loader_accepts_only_explicit_candidate_bound_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     stage, application_python, backend_python = _staging_authority(
-        tmp_path, monkeypatch
+        tmp_path, monkeypatch, lease=package6_staging_lease
     )
 
     authority = load_runtime_authority_v2()
@@ -287,7 +297,7 @@ def test_v2_staging_loader_accepts_only_explicit_candidate_bound_authority(
     assert authority.backend_root == stage / "backend"
     assert authority.application_python == application_python
     assert authority.backend_python == backend_python
-    assert authority.runtime_paths.artifact_root.is_relative_to(tmp_path)
+    assert authority.runtime_paths.artifact_root.is_relative_to(package6_staging_lease.root)
     monkeypatch.setattr(
         runtime_config, "_runtime_python_path", lambda: application_python
     )
@@ -297,8 +307,9 @@ def test_v2_staging_loader_accepts_only_explicit_candidate_bound_authority(
 def test_staging_environment_retains_exact_authority_semantic_and_runtime_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    _staging_authority(tmp_path, monkeypatch)
+    _staging_authority(tmp_path, monkeypatch, lease=package6_staging_lease)
     authority = load_runtime_authority_v2()
 
     child = build_child_environment(
@@ -321,9 +332,10 @@ def test_staging_environment_retains_exact_authority_semantic_and_runtime_paths(
 def test_projected_v2_staging_loader_uses_the_same_candidate_bound_material(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     stage, application_python, backend_python = _staging_authority(
-        tmp_path, monkeypatch
+        tmp_path, monkeypatch, lease=package6_staging_lease
     )
 
     authority = projected_runtime_config.load_runtime_authority_v2()
@@ -344,8 +356,9 @@ def test_projected_v2_staging_loader_uses_the_same_candidate_bound_material(
 def test_v2_staging_loader_rejects_package6_approval_mismatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
-    _staging_authority(tmp_path, monkeypatch)
+    _staging_authority(tmp_path, monkeypatch, lease=package6_staging_lease)
     monkeypatch.setenv("TRADING_PACKAGE6_APPROVAL_SHA256", "9" * 64)
 
     with pytest.raises(ProtectedAuthorityError) as raised:
@@ -357,9 +370,10 @@ def test_v2_staging_loader_rejects_package6_approval_mismatch(
 def test_v2_staging_loader_rejects_sealed_stage_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     stage, _application_python, _backend_python = _staging_authority(
-        tmp_path, monkeypatch
+        tmp_path, monkeypatch, lease=package6_staging_lease
     )
     target = stage / "application/worker.py"
     target.chmod(0o644)
@@ -375,9 +389,10 @@ def test_v2_staging_loader_rejects_sealed_stage_tamper(
 def test_v2_staging_loader_rejects_any_live_authority_bit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    package6_staging_lease: Package6StagingLease,
 ) -> None:
     stage, _application_python, _backend_python = _staging_authority(
-        tmp_path, monkeypatch
+        tmp_path, monkeypatch, lease=package6_staging_lease
     )
     authority_path = stage.parent / "authority/release-authority-v2.json"
     activation_path = stage.parent / "authority/release-activation-v2.json"
