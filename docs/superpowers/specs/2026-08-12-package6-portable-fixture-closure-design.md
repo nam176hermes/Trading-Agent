@@ -62,19 +62,38 @@ downstream of the same fixture construction failure.
 
 The closure should introduce a private test helper, for example
 `tests/foundation/_package6_staging_fixture.py`.  It is test-only and private
-by naming and import policy; only the three affected Package-6 fixture families
-may import it:
+by naming and import policy.  The complete permitted consumer/call chain is:
 
-* `tests/foundation/test_package6_runtime_approval.py` (also supplies the
-  material consumed transitively by `test_package6_runtime_controller.py`),
-* `tests/foundation/test_package6_controller_closure.py`, and
-* `tests/runtime_release/test_v2_runtime_config.py`.
+```text
+test_package6_runtime_approval._record
+  -> _staging_material -> build_staging_release_authority_v2
+test_package6_runtime_controller._sealed_runtime_fixture
+  -> imports/calls approval._record
+test_package6_controller_closure._finalizer_arguments
+  -> calls runtime-controller._sealed_runtime_fixture
+test_v2_runtime_config._staging_authority
+  -> its separate local staging-authority construction
+```
+
+Only these four test modules may import the helper or receive its lease.  The
+Package-6 integration test only consumes material already constructed elsewhere
+and is not a helper consumer.
 
 The helper leases an entire fixture root directly below `/tmp`, instead of
 relocating any production root or only one late authority file.  A local
-fixture override named to make its special purpose explicit (for example,
-`package6_staging_tmp_path`) can feed the existing `tmp_path`-shaped helper
-interfaces.  It must not be global or be used by unrelated tests.
+fixture named to make its special purpose explicit (for example,
+`package6_staging_lease`) owns the lease for the outer pytest test lifetime.
+It is not a global fixture, an ambient tempfile setting, or a convenience root
+for unrelated tests.
+
+For the transitive controller path, authorize the smallest test-only ownership
+threading: `_finalizer_arguments(..., lease=...)` receives the outer fixture's
+lease and passes the same object to
+`_sealed_runtime_fixture(..., lease=...)`; that helper passes it unchanged to
+the approval fixture's `_record(..., lease=...)`/`_staging_material()` path.
+The local v2 helper receives its own outer test lease.  No inner helper creates
+or closes a substitute lease.  The exact names may follow local style, but the
+same fixture-owned object and explicit chain are required.
 
 ### Required helper contract
 
@@ -88,9 +107,13 @@ The helper must:
    `0700`; no special bits.  It must separately check `/tmp` against the same
    root-owned `01777` contract used by the production validator.  Record
    `(st_dev, st_ino)` for the issued root.
-3. Yield that root for the affected test's complete lifetime.  The existing
-   Package-6 fixture builders continue to seal stage files and dynamic
-   authorities as they do now; no artificial authority document is added.
+3. Yield that root for the affected outer test's complete lifetime.  The
+   fixture's pytest finalizer, not `_record()`, `_staging_material()`,
+   `_sealed_runtime_fixture()`, or `_finalizer_arguments()`, owns cleanup.
+   Thus controller/finalizer assertions retain valid authority and bundle paths
+   until the test returns.  The existing Package-6 fixture builders continue
+   to seal stage files and dynamic authorities as they do now; no artificial
+   authority document is added.
 4. Clean up only after reopening through a `/tmp` directory descriptor with
    `O_DIRECTORY|O_NOFOLLOW`, rechecking the issued device/inode, type, uid and
    mode.  Recursive deletion must be descriptor-relative and symlink-safe.  If
@@ -107,14 +130,14 @@ The initial implementation slice may change only:
 
 * new `tests/foundation/_package6_staging_fixture.py`;
 * `tests/foundation/test_package6_runtime_approval.py`;
+* `tests/foundation/test_package6_runtime_controller.py`;
 * `tests/foundation/test_package6_controller_closure.py`; and
 * `tests/runtime_release/test_v2_runtime_config.py`.
 
-If the transitive `_sealed_runtime_fixture()` in
-`tests/foundation/test_package6_runtime_controller.py` cannot consume the
-lease without a small test-only call-site adjustment, that file is the sole
-additional file requiring a separate, explicit design amendment before edit.
-Do not widen the slice implicitly.
+The runtime-controller and controller-closure changes are limited to the
+fixture-scoped lease parameter/call-site threading above.  They must not add a
+module-global lease, an autouse/global environment override, a deferred process
+cleanup, or cleanup at `_record()` return.  Do not widen the slice implicitly.
 
 In particular, this slice must not edit `Makefile`, `.github/workflows/**`,
 `packages/runtime_release/staging_v2.py`, any validator, authority/manifest,
@@ -144,8 +167,12 @@ the following:
   issuance are rejected or cause fail-closed cleanup as applicable;
 * the helper never reads ambient tempfile variables and no affected test sees
   its ordinary runtime root changed to `/tmp`; and
-* a static import/consumer regression permits only the enumerated Package-6
-  test modules to import the helper.
+* a static import/consumer regression permits exactly the four enumerated
+  Package-6 modules and checks the approval -> runtime-controller ->
+  controller-closure lease forwarding chain; and
+* a controller-closure lifetime regression proves that the lease is still
+  valid throughout `_finalizer_arguments()` and is cleaned only by the outer
+  fixture finalizer after the test completes.
 
 The negative root test can allocate its non-`/tmp` case in a test-owned
 directory outside `/tmp` solely to prove the validator's path predicate, then
