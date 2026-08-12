@@ -34,10 +34,27 @@ SAFE_ENVIRONMENT = {
     "LIVE_EXECUTION_ENABLED": "false",
     "LIVE_TRADING_APPROVED": "false",
 }
+FAKEROOT_STAGING_ID = 1000
 
 
 def _text(name: str) -> str:
     return (OPS / name).read_text(encoding="utf-8")
+
+
+def _private_fakeroot_test_root() -> Path:
+    """Fakeroot ownership proof requires a real mode-preserving private root."""
+    root = Path("/run/user") / str(os.geteuid())
+    try:
+        info = root.stat()
+    except OSError as error:
+        raise AssertionError(f"private fakeroot test root is unavailable: {error}")
+    if (
+        not root.is_dir()
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise AssertionError("private fakeroot test root is not owner-only")
+    return root
 
 
 def _assert_exact_safe_environment(path: Path) -> None:
@@ -708,17 +725,20 @@ def _write_db_env(path: Path, role: str, *extra_lines: str) -> None:
     path.chmod(0o600)
 
 
-def test_root_snapshot_keeps_root_owned_boundary_for_user_owned_stage(tmp_path: Path) -> None:
+def test_root_snapshot_keeps_root_owned_boundary_for_user_owned_stage(
+    tmp_path: Path,
+) -> None:
     del tmp_path
     with tempfile.TemporaryDirectory(
         prefix="phase4b-fakeroot-",
+        dir=_private_fakeroot_test_root(),
     ) as raw:
         native = Path(raw)
         stage, _ = _fixture_stage(native)
         metadata_path = stage / "staging-metadata.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        metadata["staging_uid"] = os.getuid()
-        metadata["staging_gid"] = os.getgid()
+        metadata["staging_uid"] = FAKEROOT_STAGING_ID
+        metadata["staging_gid"] = FAKEROOT_STAGING_ID
         metadata_path.write_text(json.dumps(metadata, separators=(",", ":")) + "\n")
         metadata_path.chmod(0o600)
         jobs_db_env, reader_db_env = _write_db_envs(native)
@@ -741,13 +761,14 @@ def test_fakeroot_generates_all_four_envs_with_exact_safe_environment(
     del tmp_path
     with tempfile.TemporaryDirectory(
         prefix="phase4b-safe-envs-",
+        dir=_private_fakeroot_test_root(),
     ) as raw:
         native = Path(raw)
         stage, _ = _fixture_stage(native)
         metadata_path = stage / "staging-metadata.json"
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-        metadata["staging_uid"] = os.getuid()
-        metadata["staging_gid"] = os.getgid()
+        metadata["staging_uid"] = FAKEROOT_STAGING_ID
+        metadata["staging_gid"] = FAKEROOT_STAGING_ID
         metadata_path.write_text(json.dumps(metadata, separators=(",", ":")) + "\n")
         metadata_path.chmod(0o600)
         jobs_db_env, reader_db_env = _write_db_envs(native)
@@ -768,6 +789,37 @@ def test_fakeroot_generates_all_four_envs_with_exact_safe_environment(
         )
         for name in GENERATED_ENV_NAMES:
             _assert_exact_safe_environment(env_root / name)
+
+
+def test_fakeroot_rejects_staging_metadata_identity_contradiction(
+    tmp_path: Path,
+) -> None:
+    """The fixture cannot bypass the production fixed-identity boundary."""
+    del tmp_path
+    with tempfile.TemporaryDirectory(
+        prefix="phase4b-fakeroot-mismatch-", dir=_private_fakeroot_test_root()
+    ) as raw:
+        native = Path(raw)
+        stage, _ = _fixture_stage(native)
+        metadata_path = stage / "staging-metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["staging_uid"] = FAKEROOT_STAGING_ID + 1
+        metadata["staging_gid"] = FAKEROOT_STAGING_ID + 1
+        metadata_path.write_text(json.dumps(metadata, separators=(",", ":")) + "\n")
+        metadata_path.chmod(0o600)
+        jobs_db_env, reader_db_env = _write_db_envs(native)
+
+        result = _run_fakeroot_fixture(
+            stage,
+            _sha(metadata_path),
+            native / "root",
+            jobs_db_env,
+            reader_db_env,
+        )
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr == "phase 4b root provisioning rejected\n"
 
 
 def test_trusted_snapshot_does_not_depend_on_volatile_run(tmp_path: Path) -> None:

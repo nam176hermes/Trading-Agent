@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import hashlib
+import os
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,9 @@ def test_semantic_attestation_uses_the_v2_authority_input_root(
     monkeypatch,
 ) -> None:
     import packages.runtime_release.semantic as module
+
+    monkeypatch.setattr(module.os, "geteuid", lambda: 4242)
+    monkeypatch.setattr(module.os, "getegid", lambda: 4343)
 
     service_root = Path("/var/lib/trading-agent-v2/research-input")
     active_path = Path(
@@ -149,8 +153,8 @@ def _publication(version: str):
         "authority_parent_attestation": attestation,
         "manifest_version": version,
         "backend_commit": BACKEND,
-        "runtime_uid": 1000,
-        "runtime_gid": 1000,
+        "runtime_uid": os.geteuid(),
+        "runtime_gid": os.getegid(),
         "generated_at": NOW.isoformat(),
         "validity_minutes": 30,
         "sources": {
@@ -187,6 +191,9 @@ def _publication(version: str):
 
 def test_stable_policy_accepts_valid_active_rotation_without_authority_rewrite(monkeypatch):
     import packages.runtime_release.semantic as module
+
+    monkeypatch.setattr(module.os, "geteuid", lambda: 4242)
+    monkeypatch.setattr(module.os, "getegid", lambda: 4343)
 
     publications = [_publication("v1"), _publication("v2")]
     selected = {item[0]["manifest_version"]: item for item in publications}
@@ -226,6 +233,9 @@ def test_stable_policy_accepts_valid_active_rotation_without_authority_rewrite(m
 
 def test_attestation_exposes_every_exact_dynamic_semantic_identity(monkeypatch):
     import packages.runtime_release.semantic as module
+
+    monkeypatch.setattr(module.os, "geteuid", lambda: 4242)
+    monkeypatch.setattr(module.os, "getegid", lambda: 4343)
 
     active, plan, manifest = _publication("v1")
     active_sha256 = "f" * 64
@@ -271,6 +281,40 @@ def test_attestation_exposes_every_exact_dynamic_semantic_identity(monkeypatch):
     assert evidence.generated_at == NOW
     assert evidence.expires_at == NOW + timedelta(minutes=30)
     assert evidence.policy_sha256 == authority.policy_sha256
+
+
+def test_semantic_attestation_rejects_runtime_identity_drift(monkeypatch) -> None:
+    """Changing a fixture plan identity must still fail the production check."""
+    import packages.runtime_release.semantic as module
+
+    active, plan, manifest = _publication("v1")
+    plan["runtime_uid"] = os.geteuid() + 1
+    monkeypatch.setattr(
+        module,
+        "read_protected_canonical_json_current",
+        lambda path: (active, "f" * 64),
+    )
+    monkeypatch.setattr(
+        module,
+        "read_protected_canonical_json",
+        lambda path, digest: plan if path.name == active["plan_path"] else manifest,
+    )
+    monkeypatch.setattr(module, "_read_input", lambda path, digest: (10, digest))
+    monkeypatch.setattr(module, "_attest_exact_tree", lambda root: None)
+    monkeypatch.setattr(
+        module,
+        "_current_parent_attestations",
+        lambda active_path: (
+            {"device": 1, "inode": 3, "uid": 0, "gid": 0, "mode": 0o755},
+            {"device": 1, "inode": 2, "uid": 0, "gid": 0, "mode": 0o755},
+        ),
+    )
+    authority = SemanticAuthority(
+        ACTIVE_PATH, semantic_policy_digest(BACKEND, ACTIVE_PATH),
+    )
+
+    with pytest.raises(SemanticAttestationError):
+        attest_current_semantic_inputs(authority, BACKEND, clock=lambda: NOW)
 
 
 def test_corrupted_rotating_active_fails_under_unchanged_stable_policy(monkeypatch):

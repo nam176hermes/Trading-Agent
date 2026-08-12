@@ -344,6 +344,30 @@ def _v6_manifest(binary: Path) -> Path:
     return binary.with_name("sealed-uv-exec-v6.manifest.json")
 
 
+def _synthetic_sandbox(tmp_path: Path) -> Path:
+    """Create test-owned bytes for policy-only materializer proofs."""
+    parent = tmp_path / "portable-synthetic-sandbox"
+    parent.mkdir(mode=0o700)
+    parent.chmod(0o700)
+    sandbox = parent / "fixture-bwrap"
+    sandbox.write_bytes(b"sealed-uv portable synthetic sandbox fixture\n")
+    sandbox.chmod(0o755)
+    return sandbox
+
+
+def _synthetic_sandbox_fd(module) -> int:
+    """No synthetic fixture is ever executed or treated as Bubblewrap."""
+    return module._sealed_memfd(
+        "portable-synthetic-sandbox", b"synthetic-test-sandbox", mode=0o500
+    )
+
+
+def _bind_portable_sandbox(module, sandbox: Path) -> None:
+    """Inject no more than the policy-only test boundary into this fresh module."""
+    module.SANDBOX_PATH = str(sandbox)
+    module._verify_sandbox = lambda _policy: _synthetic_sandbox_fd(module)
+
+
 def _task3_policy(
     module,
     *,
@@ -351,10 +375,14 @@ def _task3_policy(
     source_root: Path | None = None,
     source_commit: str | None = None,
     binary_payload: bytes = b"same",
+    sandbox: Path | None = None,
 ) -> dict[str, object]:
     paths = module.POLICY_SOURCE_PATHS
     source_root = source_root or module.ROOT
-    sandbox = Path("/usr/bin/bwrap")
+    real_sandbox = sandbox is None
+    sandbox = sandbox or Path("/usr/bin/bwrap")
+    if not real_sandbox:
+        _bind_portable_sandbox(module, sandbox)
     sandbox_info = sandbox.stat()
     document: dict[str, object] = {
         "schema_version": 2,
@@ -376,14 +404,18 @@ def _task3_policy(
         "sandbox_uid": sandbox_info.st_uid,
         "sandbox_gid": sandbox_info.st_gid,
         "sandbox_mode": f"{stat.S_IMODE(sandbox_info.st_mode):04o}",
-        "sandbox_version": subprocess.run(
-            [str(sandbox), "--version"],
-            check=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        ).stdout.strip(),
+        "sandbox_version": (
+            subprocess.run(
+                [str(sandbox), "--version"],
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout.strip()
+            if real_sandbox
+            else "bubblewrap portable-fixture"
+        ),
         "sandbox_capabilities": ["--clearenv", "--perms", "--ro-bind-data", "--tmpfs"],
     }
     for name, relative in paths.items():
@@ -402,6 +434,7 @@ def _write_policy(
     source_root: Path | None = None,
     source_commit: str | None = None,
     binary_payload: bytes = b"same",
+    sandbox: Path | None = None,
 ) -> Path:
     policy = tmp_path / "sealed-uv-exec-policy.json"
     policy.write_bytes(
@@ -412,11 +445,33 @@ def _write_policy(
                 source_root=source_root,
                 source_commit=source_commit,
                 binary_payload=binary_payload,
+                sandbox=sandbox,
             )
         )
     )
     policy.chmod(0o400)
     return policy
+
+
+def test_portable_policy_fixture_binds_private_synthetic_sandbox_and_rejects_drift(
+    native_tmp_path: Path,
+) -> None:
+    """Portable policy tests bind fixture bytes; they never attest Bubblewrap."""
+    module = _load_materializer()
+    sandbox = _synthetic_sandbox(native_tmp_path)
+
+    policy = _task3_policy(module, sandbox=sandbox)
+
+    assert policy["sandbox_path"] == str(sandbox)
+    assert policy["sandbox_sha256"] == _sha256(sandbox)
+    assert policy["sandbox_uid"] == os.geteuid()
+    assert policy["sandbox_gid"] == os.getegid()
+    assert policy["sandbox_mode"] == "0755"
+    assert stat.S_IMODE(sandbox.parent.stat().st_mode) == 0o700
+    sandbox.chmod(0o777)
+
+    with pytest.raises(module.MaterializationError, match="Bubblewrap identity is unsafe"):
+        module._read_bound_sandbox(policy)
 
 
 def _fake_verified_toolchains(
@@ -518,7 +573,7 @@ def test_materializer_rejects_nonexistent_source_commit_before_authority_use(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module, source_root=repository)
+    policy = _write_policy(native_tmp_path, module, source_root=repository, sandbox=_synthetic_sandbox(native_tmp_path))
     _rewrite_policy_source_commit(policy, "0" * 40)
     calls = _forbid_materialization_authority(monkeypatch, module)
     destination = _v6_binary(_private_parent(native_tmp_path))
@@ -563,6 +618,7 @@ def test_materializer_rejects_source_commit_bytes_mismatch_before_authority_use(
         module,
         source_root=repository,
         source_commit=source_commit,
+        sandbox=_synthetic_sandbox(native_tmp_path),
     )
     calls = _forbid_materialization_authority(monkeypatch, module)
     destination = _v6_binary(_private_parent(native_tmp_path))
@@ -597,6 +653,7 @@ def test_materializer_rejects_source_commit_worktree_only_source_before_authorit
         module,
         source_root=repository,
         source_commit=source_commit,
+        sandbox=_synthetic_sandbox(native_tmp_path),
     )
     calls = _forbid_materialization_authority(monkeypatch, module)
     destination = _v6_binary(_private_parent(native_tmp_path))
@@ -646,7 +703,7 @@ def test_materializer_rejects_drifted_verifier_source_before_toolchain_import(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module)
+    policy = _write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path))
     document = json.loads(policy.read_text(encoding="ascii"))
     document[f"{source_name}_sha256"] = "0" * 64
     policy.chmod(0o600)
@@ -676,7 +733,7 @@ def test_materializer_rejects_nonabsolute_paths_before_authority_use(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module)
+    policy = _write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path))
 
     with pytest.raises(module.MaterializationError, match="policy must be absolute"):
         module.load_policy(Path("relative-policy.json"))
@@ -770,7 +827,7 @@ def test_materializer_rejects_existing_destination_without_clobbering(
     destination.write_bytes(b"retain")
     sentinel = destination
     sentinel.write_text("retain", encoding="ascii")
-    policy = _write_policy(native_tmp_path, module)
+    policy = _write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path))
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(module, "_build_once", _fake_builder([b"same", b"same"]))
 
@@ -791,7 +848,7 @@ def test_materializer_rejects_policy_source_drift_before_build(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module, source_drift=True)
+    policy = _write_policy(native_tmp_path, module, source_drift=True, sandbox=_synthetic_sandbox(native_tmp_path))
     calls: list[str] = []
     monkeypatch.setattr(
         module,
@@ -816,7 +873,7 @@ def test_materializer_rejects_unverified_toolchain_before_build(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module)
+    policy = _write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path))
     called: list[str] = []
     monkeypatch.setattr(
         module,
@@ -841,7 +898,7 @@ def test_materializer_requires_two_identical_private_builds(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module)
+    policy = _write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path))
     parent = _private_parent(native_tmp_path)
     destination = _v6_binary(parent)
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
@@ -866,7 +923,7 @@ def test_materializer_publishes_only_exact_sealed_inventory_atomically(
     monkeypatch.setattr(module, "ROOT", repository)
     parent = _private_parent(native_tmp_path)
     payload = b"reproducible-sealed-uv-exec"
-    policy = _write_policy(native_tmp_path, module, binary_payload=payload)
+    policy = _write_policy(native_tmp_path, module, binary_payload=payload, sandbox=_synthetic_sandbox(native_tmp_path))
     destination = _v6_binary(parent)
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(module, "_build_once", _fake_builder([payload, payload]))
@@ -912,7 +969,7 @@ def test_materializer_rejects_a_reproducible_output_not_bound_by_policy(
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
     approved = b"reviewed-two-build-output"
-    policy = _write_policy(native_tmp_path, module, binary_payload=approved)
+    policy = _write_policy(native_tmp_path, module, binary_payload=approved, sandbox=_synthetic_sandbox(native_tmp_path))
     destination = _v6_binary(_private_parent(native_tmp_path))
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(module, "_build_once", _fake_builder([b"unbound", b"unbound"]))
@@ -936,7 +993,7 @@ def test_descriptor_publication_ignores_a_replacement_left_at_an_old_staging_nam
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
     payload = b"reviewed-two-build-output"
-    policy = _write_policy(native_tmp_path, module, binary_payload=payload)
+    policy = _write_policy(native_tmp_path, module, binary_payload=payload, sandbox=_synthetic_sandbox(native_tmp_path))
     parent = _private_parent(native_tmp_path)
     destination = _v6_binary(parent)
     replacement = parent / ".sealed-uv-exec-attacker-replacement"
@@ -974,7 +1031,7 @@ def test_manifest_link_failure_retains_binary_orphan_and_never_removes_replaceme
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
     payload = b"reviewed-two-build-output"
-    policy = _write_policy(native_tmp_path, module, binary_payload=payload)
+    policy = _write_policy(native_tmp_path, module, binary_payload=payload, sandbox=_synthetic_sandbox(native_tmp_path))
     parent = _private_parent(native_tmp_path)
     destination = _v6_binary(parent)
     replacement = parent / ".sealed-uv-exec-attacker-replacement"
@@ -1051,7 +1108,7 @@ def test_verified_git_blob_bundle_retains_only_sealed_descriptors_after_checkout
     module = _load_materializer()
     repository, source_bytes = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = module.load_policy(_write_policy(native_tmp_path, module))
+    policy = module.load_policy(_write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path)))
 
     bundle = module._create_verified_source_bundle(
         policy, module._verify_policy_source_commit(policy)
@@ -1069,7 +1126,7 @@ def test_dynamic_validators_execute_compiled_sealed_bytes_after_checkout_substit
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = module.load_policy(_write_policy(native_tmp_path, module))
+    policy = module.load_policy(_write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path)))
     bundle = module._create_verified_source_bundle(
         policy, module._verify_policy_source_commit(policy)
     )
@@ -1092,7 +1149,7 @@ def test_cargo_topology_consumes_only_sealed_git_blob_descriptors_after_substitu
     module = _load_materializer()
     repository, source_bytes = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = module.load_policy(_write_policy(native_tmp_path, module))
+    policy = module.load_policy(_write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path)))
     bundle = module._create_verified_source_bundle(
         policy, module._verify_policy_source_commit(policy)
     )
@@ -1132,7 +1189,7 @@ def test_sandbox_topology_hides_hostile_cargo_configuration_ancestry(
         '[build]\nrustc-wrapper = "/hostile-wrapper"\n', encoding="ascii"
     )
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = module.load_policy(_write_policy(native_tmp_path, module))
+    policy = module.load_policy(_write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path)))
     bundle = module._create_verified_source_bundle(
         policy, module._verify_policy_source_commit(policy)
     )
@@ -1209,9 +1266,9 @@ def test_sandbox_binding_rejects_changed_identity(
         module._verify_sandbox(policy)
 
 
-def test_policy_rejects_missing_required_sandbox_capability() -> None:
+def test_policy_rejects_missing_required_sandbox_capability(native_tmp_path: Path) -> None:
     module = _load_materializer()
-    policy = _task3_policy(module)
+    policy = _task3_policy(module, sandbox=_synthetic_sandbox(native_tmp_path))
     policy["sandbox_capabilities"] = ["--clearenv"]
 
     with pytest.raises(module.MaterializationError, match="sandbox binding"):
@@ -1234,7 +1291,7 @@ def test_sandbox_failure_never_attempts_direct_pair_publication(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module)
+    policy = _write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path))
     destination = _v6_binary(_private_parent(native_tmp_path))
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
     monkeypatch.setattr(
@@ -1263,7 +1320,7 @@ def test_materialized_pair_rejects_an_orphan_binary(
     module = _load_materializer()
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
-    policy = _write_policy(native_tmp_path, module)
+    policy = _write_policy(native_tmp_path, module, sandbox=_synthetic_sandbox(native_tmp_path))
     parent = _private_parent(native_tmp_path)
     destination = _v6_binary(parent)
     monkeypatch.setattr(module, "_verify_toolchains", _fake_verified_toolchains)
@@ -1601,7 +1658,7 @@ def test_execute_pair_rechecks_bound_source_before_opening_the_pair(
     repository, _ = _provenance_repository(native_tmp_path, module)
     monkeypatch.setattr(module, "ROOT", repository)
     destination = _v6_binary(_private_parent(native_tmp_path))
-    policy = _write_policy(native_tmp_path, module, source_root=repository)
+    policy = _write_policy(native_tmp_path, module, source_root=repository, sandbox=_synthetic_sandbox(native_tmp_path))
     calls: list[str] = []
     monkeypatch.setattr(
         module,
