@@ -134,6 +134,12 @@ T-G02 must reuse, not alter, `--portable`.
      audit-dependencies`.  It takes no prerequisites and does not invoke
      `ci`, `ci-private`, `audit`, or `audit-release`.
 
+   The focused test must parse the `ci-portable` recipe's `$(MAKE)` target
+   tokens (not use substring matching): its complete target-token list must
+   be exactly `("ci-portable-private",)`.  This explicitly rejects the exact
+   target tokens `ci` and `ci-private`, while allowing the required
+   `ci-portable-private` token.
+
    Do not change existing `audit`, `audit-release`, `test-all-private`,
    `test-all`, `ci`, or `ci-private` recipes.
 
@@ -153,14 +159,21 @@ T-G02 must reuse, not alter, `--portable`.
    targets are in `.PHONY`; assert the exact portable test prerequisite set;
    assert both portable CI targets have no Make prerequisites; assert the
    portable private recipe performs one root reinstall and contains all six
-   post-suite gates; assert neither portable recipe contains `audit-release`,
-   `$(MAKE) ci`, or `$(MAKE) ci-private`; and assert the workflow contains
-   exactly one `run: make ci-portable` and no `run: make ci`.
+   post-suite gates; and use exact target-token matching for the portable
+   wrapper as specified above.  The test must parse scalar workflow `run:`
+   values into `workflow_run_values`, derive
+   `make_run_values = [value for value in workflow_run_values if value.startswith("make ")]`,
+   and assert `make_run_values == ["make ci-portable"]`.  It must also assert
+   `"make ci" not in make_run_values`; it must **not** assert that the
+   substring `"run: make ci"` is absent, because the valid
+   `run: make ci-portable` line contains that substring.
 
-   Update the existing `test_foundation_workflow_delegates_to_the_canonical_local_ci_gate`
-   expectation (or rename it to a portable-specific name) to the exact new
-   command while retaining its assertions that the workflow does not spell out
-   individual test, build, Bandit, npm-audit, or pip-audit commands.
+   Retain the existing test name
+   `test_foundation_workflow_delegates_to_the_canonical_local_ci_gate` and
+   update it to the same exact workflow-run-value contract: the Foundation
+   workflow has one Make run value, exactly `make ci-portable`, and zero exact
+   `make ci` values.  Retain its assertions that the workflow does not spell
+   out individual test, build, Bandit, npm-audit, or pip-audit commands.
 
 4. **`tests/foundation/test_d0_closure.py`**
 
@@ -171,21 +184,34 @@ T-G02 must reuse, not alter, `--portable`.
    portable assertions only if necessary to prevent a duplicate/incomplete
    recipe.  Do not alter the D0 matrix or its historical final proof commands.
 
-5. **No changes** to `scripts/audit_canonical_repo.py`,
+5. **`tests/consolidation/test_audit_canonical_repo.py`**
+
+   Add exactly one dedicated test named
+   `test_portable_audit_rejects_partial_external_authority_availability`.
+   It must create the existing `_valid_root(tmp_path)` fixture, call
+   `_remove_authority_repositories(repository, keep="core")` so exactly the
+   declared `core` authority repository remains, invoke
+   `_run(repository, "--portable")`, and assert a non-zero exit with stderr
+   exactly `E_AUTHORITY`.  Do not modify the existing strict-only
+   `test_audit_rejects_partial_external_authority_availability`; the two tests
+   deliberately prove both requested modes reject a partial authority set.
+
+6. **No changes** to `scripts/audit_canonical_repo.py`,
    `packages/consolidation/authority.py`,
    `scripts/verify_component_snapshot.py`,
    `ops/consolidation/source-authority.json`, either source-manifest JSON,
    lockfiles, generated contracts, trading/runtime/recovery sources, or live
-   flags.  Existing `tests/consolidation/test_audit_canonical_repo.py` already
-   covers the authority behavior and should remain semantically unchanged.
+   flags.
 
 ### TDD and verification order for T-G02
 
 1. Run its prescribed baseline: `uv run pytest -q tests/consolidation`,
    `make check-contracts`, and `make check-secrets`.
-2. Add only the focused repository-shape RED test described above.  It must
-   fail because portable Make targets/workflow routing do not yet exist, not
-   because a fixture or dependency is missing.
+2. Add two focused RED tests: the exact-token repository-shape test described
+   above and the named portable-partial-authority test.  The repository-shape
+   test must fail because portable Make targets/workflow routing do not yet
+   exist; the authority test must initially fail because that distinct portable
+   partial probe is missing, not because a fixture or dependency is missing.
 3. Implement the Makefile and workflow changes, then run the focused test.
 4. Update the two existing workflow-topology assertions, run their focused
    test files, then `uv run pytest -q tests/consolidation`.
@@ -216,7 +242,8 @@ release, or change `LIVE_EXECUTION_ENABLED=false` or
 - The design does not introduce a third authority state or an environmental
   fallback.
 - All named errors retain their source owner and fail-closed behavior.
-- The planned diff is four hand-written files, no dependency or generated
-  artifacts, within T-G02's default scope ceiling.
+- The planned diff is two implementation files and three focused test files,
+  with no dependency or generated artifacts; it remains within T-G02's
+  four-hand-written-production-file ceiling.
 - Hosted execution is deliberately deferred to T-G03; this design does not
   claim a hosted CI run.
