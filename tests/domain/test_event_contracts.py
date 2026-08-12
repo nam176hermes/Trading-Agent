@@ -41,6 +41,7 @@ from packages.domain import (
     RiskReasonCode,
     RiskStateSnapshot,
     RuntimeOrderRiskDecision,
+    SandboxRecoveryCheckpointRecorded,
     SignalDirection,
     SignalProposal,
     TargetPortfolio,
@@ -61,6 +62,12 @@ from tests.runtime_risk.test_approval import runtime_risk_event
 
 NOW = datetime(2026, 7, 20, 12, 0, tzinfo=UTC)
 INSTRUMENT = InstrumentId("BTC-USD", ProductType.CRYPTO_SPOT, "ALPACA")
+RECOVERY_CHECKPOINT_JSON = (
+    '{"schema_version":"sandbox-recovery-checkpoint-v2"}'
+)
+RECOVERY_CHECKPOINT_DIGEST = (
+    "9a7778969fd27ab039632dc456ecac5c41d9fd87d5cdde0417163045e6889a3e"
+)
 
 
 def test_global_halt_event_payloads_have_concrete_registered_types() -> None:
@@ -244,6 +251,21 @@ def fill_values(fill: FillEvent) -> dict[str, object]:
     return {name: getattr(fill, name) for name in FillEvent.model_fields}
 
 
+def recovery_checkpoint_record(
+    **changes: object,
+) -> SandboxRecoveryCheckpointRecorded:
+    values: dict[str, object] = {
+        "recovery_session_id": UUID(int=300),
+        "checkpoint_id": UUID(int=301),
+        "checkpoint_digest": RECOVERY_CHECKPOINT_DIGEST,
+        "checkpoint_json": RECOVERY_CHECKPOINT_JSON,
+        "checkpoint_schema_version": "sandbox-recovery-checkpoint-v2",
+        "schema_version": "sandbox-recovery-checkpoint-recorded-v1",
+    }
+    values.update(changes)
+    return SandboxRecoveryCheckpointRecorded(**values)
+
+
 def envelope(payload: object, *, event_id: UUID | None = None, stream_id: UUID | None = None, sequence: int = 1, **changes: object) -> EventEnvelope[object]:
     values: dict[str, object] = {
         "event_id": event_id or uuid4(),
@@ -264,6 +286,89 @@ def envelope(payload: object, *, event_id: UUID | None = None, stream_id: UUID |
     }
     values.update(changes)
     return EventEnvelope[object](**values)
+
+
+def test_recovery_checkpoint_record_round_trips_registered_v2_carrier() -> None:
+    record = recovery_checkpoint_record()
+    untyped = envelope(record)
+    values = {
+        name: object.__getattribute__(untyped, name)
+        for name in EventEnvelope.model_fields
+    }
+    event = EventEnvelope[SandboxRecoveryCheckpointRecorded](**values)
+
+    canonical = serialize_event(event)
+    restored = deserialize_event(canonical)
+
+    assert EVENT_TYPE_BY_PAYLOAD[SandboxRecoveryCheckpointRecorded] == (
+        "SandboxRecoveryCheckpointRecorded"
+    )
+    assert type(restored) is EventEnvelope[SandboxRecoveryCheckpointRecorded]
+    assert type(restored.payload) is SandboxRecoveryCheckpointRecorded
+    assert restored.payload.checkpoint_schema_version == (
+        "sandbox-recovery-checkpoint-v2"
+    )
+    assert restored.payload.schema_version == (
+        "sandbox-recovery-checkpoint-recorded-v1"
+    )
+    assert restored.payload.checkpoint_json == RECOVERY_CHECKPOINT_JSON
+    assert restored == event
+    assert serialize_event(restored) == canonical
+
+
+def test_recovery_checkpoint_record_rejects_v1_and_tampered_bytes() -> None:
+    with pytest.raises(ValidationError):
+        recovery_checkpoint_record(
+            checkpoint_schema_version="sandbox-recovery-checkpoint-v1"
+        )
+    with pytest.raises(ValidationError, match="checkpoint_digest"):
+        recovery_checkpoint_record(checkpoint_digest="0" * 64)
+
+
+def test_recovery_checkpoint_record_rejects_subclassed_identity_and_text() -> None:
+    class UUIDSubclass(UUID):
+        pass
+
+    class TextSubclass(str):
+        pass
+
+    with pytest.raises(ValidationError, match="concrete UUID"):
+        recovery_checkpoint_record(recovery_session_id=UUIDSubclass(int=300))
+    with pytest.raises(ValidationError, match="concrete string"):
+        recovery_checkpoint_record(
+            checkpoint_schema_version=TextSubclass(
+                "sandbox-recovery-checkpoint-v2"
+            )
+        )
+
+
+def test_recovery_checkpoint_record_revalidates_copy_forged_instances() -> None:
+    record = recovery_checkpoint_record()
+
+    assert SandboxRecoveryCheckpointRecorded.model_validate(record) == record
+    assert (
+        SandboxRecoveryCheckpointRecorded.model_validate(record.model_dump())
+        == record
+    )
+    assert (
+        SandboxRecoveryCheckpointRecorded.model_validate_json(
+            record.model_dump_json()
+        )
+        == record
+    )
+
+    forged_digest = record.model_copy(update={"checkpoint_digest": "0" * 64})
+    forged_extra = record.model_copy(update={"restore": True})
+    incomplete = SandboxRecoveryCheckpointRecorded.model_construct(
+        **{
+            name: object.__getattribute__(record, name)
+            for name in SandboxRecoveryCheckpointRecorded.model_fields
+            if name != "checkpoint_id"
+        }
+    )
+    for forged in (forged_digest, forged_extra, incomplete):
+        with pytest.raises((ValidationError, ValueError)):
+            SandboxRecoveryCheckpointRecorded.model_validate(forged)
 
 
 @pytest.mark.parametrize(
