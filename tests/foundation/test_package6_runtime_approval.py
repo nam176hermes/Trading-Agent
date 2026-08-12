@@ -472,6 +472,50 @@ def test_package6_staging_lease_is_a_private_direct_tmp_child(
     package6_staging_lease.assert_valid()
 
 
+def test_package6_staging_lease_ignores_hostile_ambient_temp_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The special direct-/tmp lease neither reads nor rewrites temp settings."""
+
+    ambient_roots: dict[str, Path] = {}
+    for variable in ("TMPDIR", "TEMP", "TMP", "RUNNER_TEMP"):
+        root = tmp_path / "hostile-ambient" / variable.lower()
+        root.mkdir(parents=True, mode=0o700)
+        root.chmod(0o700)
+        ambient_roots[variable] = root
+        monkeypatch.setenv(variable, str(root))
+
+    issued_dirs: list[object] = []
+    real_mkdtemp = staging_fixture.tempfile.mkdtemp
+
+    def record_direct_lease_dir(*args: object, **kwargs: object) -> str:
+        issued_dirs.append(kwargs.get("dir"))
+        return real_mkdtemp(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(staging_fixture.tempfile, "mkdtemp", record_direct_lease_dir)
+    lease = create_package6_staging_lease()
+    try:
+        assert issued_dirs == ["/tmp"]
+        assert lease.root.parent == Path("/tmp")
+        assert lease.root != tmp_path
+        assert not lease.root.is_relative_to(tmp_path)
+        assert all(
+            not lease.root.is_relative_to(root)
+            for root in ambient_roots.values()
+        )
+        assert {
+            variable: os.environ[variable] for variable in ambient_roots
+        } == {variable: str(root) for variable, root in ambient_roots.items()}
+        lease.assert_valid()
+    finally:
+        lease.cleanup()
+
+    assert {
+        variable: os.environ[variable] for variable in ambient_roots
+    } == {variable: str(root) for variable, root in ambient_roots.items()}
+
+
 def test_package6_staging_lease_rejects_a_symlink_replacement_without_deleting_it() -> None:
     lease = create_package6_staging_lease()
     original = lease.root
@@ -550,7 +594,21 @@ def test_package6_staging_lease_has_only_the_approved_test_consumers() -> None:
         "tests/runtime_release/test_v2_runtime_config.py",
     }
 
-    def consumes_helper(tree: ast.AST) -> bool:
+    def resolved_import_module(
+        node: ast.ImportFrom, source: Path
+    ) -> str | None:
+        """Resolve a static ``from`` target relative to its source package."""
+
+        if not node.level:
+            return node.module
+        package = source.with_suffix("").parts[:-1]
+        if node.level > len(package) + 1:
+            return None
+        package = package[: len(package) - node.level + 1]
+        module = () if node.module is None else tuple(node.module.split("."))
+        return ".".join((*package, *module))
+
+    def consumes_helper(tree: ast.AST, source: Path) -> bool:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import) and any(
                 alias.name == helper_module
@@ -559,22 +617,14 @@ def test_package6_staging_lease_has_only_the_approved_test_consumers() -> None:
             ):
                 return True
             if isinstance(node, ast.ImportFrom):
-                if node.module == helper_module:
-                    return True
-                if (
-                    node.module == "tests.foundation"
-                    and any(alias.name == helper_basename for alias in node.names)
+                module = resolved_import_module(node, source)
+                if module == helper_module or (
+                    module is not None and module.startswith(helper_module + ".")
                 ):
                     return True
-                if node.level and (
-                    node.module == helper_basename
-                    or (
-                        node.module is None
-                        and any(
-                            alias.name == helper_basename
-                            for alias in node.names
-                        )
-                    )
+                if (
+                    module == "tests.foundation"
+                    and any(alias.name == helper_basename for alias in node.names)
                 ):
                     return True
             if isinstance(node, ast.Attribute) and node.attr == helper_basename:
@@ -591,10 +641,44 @@ def test_package6_staging_lease_has_only_the_approved_test_consumers() -> None:
                 if (
                     is_dynamic_import
                     and isinstance(node.args[0], ast.Constant)
-                    and node.args[0].value == helper_module
+                    and isinstance(node.args[0].value, str)
+                    and (
+                        node.args[0].value == helper_module
+                        or node.args[0].value.lstrip(".").endswith(
+                            helper_basename
+                        )
+                    )
                 ):
                     return True
         return False
+
+    relative_import_cases = (
+        (
+            Path("tests/foundation/probe.py"),
+            "from . import _package6_staging_fixture",
+        ),
+        (
+            Path("tests/foundation/probe.py"),
+            "from ._package6_staging_fixture import Package6StagingLease",
+        ),
+        (
+            Path("tests/foundation/probe.py"),
+            "from ..foundation import _package6_staging_fixture",
+        ),
+        (
+            Path("tests/nested/deep/probe.py"),
+            "from ...foundation import _package6_staging_fixture",
+        ),
+        (
+            Path("tests/foundation/probe.py"),
+            "import importlib\n"
+            "importlib.import_module('._package6_staging_fixture', package=__package__)",
+        ),
+    )
+    assert all(
+        consumes_helper(ast.parse(source), relative)
+        for relative, source in relative_import_cases
+    )
 
     consumers: set[str] = set()
     for path in root.rglob("*.py"):
@@ -604,7 +688,7 @@ def test_package6_staging_lease_has_only_the_approved_test_consumers() -> None:
         ):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        if consumes_helper(tree):
+        if consumes_helper(tree, relative):
             consumers.add(relative.as_posix())
 
     assert consumers == permitted

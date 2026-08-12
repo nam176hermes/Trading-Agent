@@ -20,7 +20,6 @@ from typing import Any, Callable, cast
 
 import pytest
 
-import tests.foundation.test_package6_runtime_controller as runtime_controller_tests
 from tests.foundation._package6_staging_fixture import (
     Package6StagingLease,
     package6_staging_lease,
@@ -622,33 +621,60 @@ def test_finalizer_arguments_retains_lease_until_outer_fixture_cleanup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The closure forwards one live lease; only the outer fixture ends it."""
+    """The closure completes on one live lease; only the outer fixture ends it."""
 
-    class LeaseObserved(Exception):
-        pass
+    class PortableDescriptorOwner:
+        """Test-only owner over the real descriptor required by this proof."""
+
+        def __init__(self, descriptor: int) -> None:
+            self.descriptor = descriptor
+            info = os.fstat(descriptor)
+            self.identity = (info.st_dev, info.st_ino)
+            self._closed = False
+
+        def abandon_uncertain_generation(self) -> None:
+            self.close()
+
+        def close(self) -> bool:
+            if self._closed:
+                return True
+            try:
+                os.close(self.descriptor)
+            except OSError:
+                return False
+            self._closed = True
+            return True
+
+    class PortableDescriptorCustody:
+        """The narrow missing-extension seam; all opens remain real OS opens."""
+
+        @staticmethod
+        def open(path: bytes, flags: int, mode: int) -> PortableDescriptorOwner:
+            return PortableDescriptorOwner(os.open(path, flags, mode))
+
+        @staticmethod
+        def openat(
+            directory: int, path: bytes, flags: int, mode: int
+        ) -> PortableDescriptorOwner:
+            return PortableDescriptorOwner(
+                os.open(path, flags, mode, dir_fd=directory)
+            )
 
     fixture_lifetime = package6_staging_lease.__wrapped__()
     lease = next(fixture_lifetime)
     root = lease.root
-    observed: list[Package6StagingLease] = []
-
-    def stop_after_forwarding(
-        _tmp_path: Path,
-        _monkeypatch: pytest.MonkeyPatch,
-        *,
-        lease: Package6StagingLease,
-    ) -> SealedRuntimeFixture:
-        observed.append(lease)
-        lease.assert_valid()
-        raise LeaseObserved
-
     monkeypatch.setattr(
-        runtime_controller_tests, "_sealed_runtime_fixture", stop_after_forwarding
+        evidence_module, "_NATIVE_FD_CUSTODY", PortableDescriptorCustody()
     )
     try:
-        with pytest.raises(LeaseObserved):
-            _finalizer_arguments(tmp_path, monkeypatch, lease=lease)
-        assert observed == [lease]
+        arguments, before = _finalizer_arguments(tmp_path, monkeypatch, lease=lease)
+        runtime_bundle = cast(Path, arguments["runtime_bundle"])
+        assert runtime_bundle.is_file()
+        assert before == hashlib.sha256(runtime_bundle.read_bytes()).hexdigest()
+        assert cast(Path, arguments["review_path"]).is_file()
+        assert cast(Path, arguments["diagnostic_index_path"]).is_file()
+        assert cast(Path, arguments["cleanup_path"]).is_file()
+        assert cast(Path, arguments["output_dir"]).is_dir()
         lease.assert_valid()
         assert root.is_dir()
     finally:
