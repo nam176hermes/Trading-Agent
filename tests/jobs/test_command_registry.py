@@ -673,14 +673,37 @@ def test_attestation_rejects_special_mode_bits_everywhere(tmp_path, monkeypatch,
     assert raised.value.reason_code == "COMMAND_RELEASE_NOT_APPROVED"
 
 
-@pytest.mark.parametrize("target", ["ancestor", "root", "manifest", "python", "data"])
-def test_attestation_rejects_any_extended_attribute_on_protected_paths(tmp_path, monkeypatch, target):
+@pytest.mark.parametrize(
+    ("target", "inner_reason"),
+    [
+        ("ancestor", "COMMAND_ANCESTOR_XATTR_UNSAFE"),
+        ("root", "COMMAND_PATH_XATTR_UNSAFE"),
+        ("manifest", "COMMAND_PATH_XATTR_UNSAFE"),
+        ("python", "COMMAND_PATH_XATTR_UNSAFE"),
+        ("data", "COMMAND_PATH_XATTR_UNSAFE"),
+    ],
+)
+def test_attestation_rejects_any_extended_attribute_on_protected_paths(
+    tmp_path, monkeypatch, target, inner_reason,
+):
     diagnostics = []
     root, python, manifest = _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
     selected = {"ancestor": root.parent, "root": root, "manifest": manifest, "python": python, "data": root / "data/model.bin"}[target]
     diagnostics[0].inject_xattrs(selected, ("security.capability",))
     with pytest.raises(CommandRegistryError) as raised: attest_command_capability()
     assert raised.value.reason_code == "COMMAND_RELEASE_NOT_APPROVED"
+    diagnostic = diagnostics[0].diagnostic()
+    assert diagnostic["category"] == "xattr"
+    assert diagnostic["outcome"] == "present_or_unreadable"
+    assert diagnostic["reason_code"] == inner_reason
+    assert diagnostic["xattr_paths"]
+    assert all(
+        path.startswith("<") and path.endswith(">")
+        for path in (*diagnostic["lstat_paths"], *diagnostic["xattr_paths"])
+    )
+    rendered = json.dumps(diagnostic, sort_keys=True)
+    assert str(tmp_path) not in rendered
+    assert "security.capability" not in rendered
 
 
 def test_attestation_rejects_real_xattr_when_filesystem_supports_it(tmp_path, monkeypatch):
