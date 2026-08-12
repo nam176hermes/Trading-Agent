@@ -14,7 +14,11 @@ passed, 281 skipped, 29 deselected`. The workflow held
 `LIVE_EXECUTION_ENABLED=false` and `LIVE_TRADING_APPROVED=false` and called
 `make ci-portable`.
 
-The immutable input is
+The single canonical inventory for all hosted T-G03C selectors and verifiers is
+the tracked file `tests/fixtures/t-g03a-hosted-failure-inventory.tsv`. This
+design-only change does **not** create that file. T-G03C must add it as a
+reviewed source/test fixture whose bytes are exactly identical to the historical
+sealed ignored evidence inventory
 `.superpowers/sdd/TRADING_AGENT_PHASE1_TERRA_AUTOPILOT_CONTINUE_V4_2/t-g03a-inventory.tsv`:
 
 * Exactly 62 rows, one exact failed node ID per row.
@@ -22,11 +26,28 @@ The immutable input is
 * 32 `PORTABLE_SOURCE_DEFECT`, 24 `NATIVE_CAPABILITY_REQUIRED`, and 6
   `EXTERNAL_AUTHORITY_REQUIRED` rows; no unclassified row.
 
-Any implementation must reject a different inventory hash, omitted/duplicate
-ID, blank required field, or classification outside these three values. A
-future category change needs a new reviewed inventory, not an in-place edit.
-`t-g03a-inventory.tsv` is the canonical inventory; any prior `.csv` reference
-is incorrect and has no authority.
+The tracked fixture must have SHA-256
+`99e2e9f0ea91c65fd841a0b81b8948eb6d3967203627d0911c151794737a8bfe` and
+must be byte-for-byte identical to that ignored evidence inventory, including
+TSV ordering and final newline. The ignored SDD copy is historical evidence
+only, is never a hosted runtime input, and has no selector/verifier authority.
+Any implementation must reject a different tracked-fixture hash,
+omitted/duplicate ID, blank required field, or classification outside these
+three values. A future tracked-fixture change needs a newly reviewed inventory
+and design, not an in-place category edit. The `.tsv` file is canonical; any
+prior `.csv` reference is incorrect and has no authority.
+
+T-G03C must install the tracked fixture through one reviewable copy-and-verify
+step before any lane selection: read the tracked bytes, verify the literal
+SHA-256 above and schema/row mapping, copy them to a new private evidence path,
+then reopen and byte-compare the installed file to the tracked source and
+recompute the same hash. All hosted selectors, lane preflights, completeness
+verifiers, and receipt writers must consume that verified installed copy of the
+tracked fixture, never the ignored SDD file and never an ad-hoc embedded node
+list. The implementation tests must fail closed on drift among the embedded
+literal hash, tracked bytes, installed bytes, and every row's node/lane/code
+mapping; they must also reject a changed row count, reordered/duplicate node,
+or a selector result not exactly derived from the installed fixture.
 
 ## Boundaries that must remain unchanged
 
@@ -208,7 +229,8 @@ Before evaluating receipt outcome, aggregation must reject unless all of these
 are true: strict canonical-byte parse; exact schema/key/type validation;
 self-hash validation; `foundation_run_id` equals the current Foundation run;
 `foundation_head_sha` equals that run's checked-out head; and
-`inventory_sha256` equals the locked canonical `t-g03a-inventory.tsv` hash.
+`inventory_sha256` equals the locked tracked
+`tests/fixtures/t-g03a-hosted-failure-inventory.tsv` hash.
 It must then validate the completeness digest and exact lane/code/node mapping.
 Only after those bindings hold may it evaluate `PASS`, `FAIL`, or `DEFERRED`.
 Thus a valid receipt from another run/head, or one for a different inventory,
