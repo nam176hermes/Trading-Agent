@@ -490,6 +490,7 @@ def test_foundation_workflow_delegates_to_the_canonical_local_ci_gate() -> None:
     workflow_run_values = re.findall(r"^\s*run:\s*([^\n#]+?)\s*$", workflow, re.MULTILINE)
     make_run_values = [value for value in workflow_run_values if value.startswith("make ")]
 
+    assert "uses: actions/checkout@v4\n        with:\n          fetch-depth: 0" in workflow
     assert make_run_values == ["make ci-portable"]
     assert "make ci" not in make_run_values
     assert "run: make test-all" not in workflow
