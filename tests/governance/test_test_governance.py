@@ -952,21 +952,39 @@ def test_critical_coverage_rejects_symlink_report_directory(tmp_path: Path) -> N
     assert list(actual.iterdir()) == []
 
 
-def test_critical_coverage_tightens_current_user_owned_writable_ancestor(
+def test_critical_coverage_tightens_current_user_owned_legacy_report_root(
     tmp_path: Path,
 ) -> None:
-    legacy_root = tmp_path / "legacy-evidence-root"
-    legacy_root.mkdir(mode=0o777)
-    legacy_root.chmod(0o777)
+    legacy_report_root = tmp_path / "legacy-evidence-root"
+    legacy_report_root.mkdir(mode=0o777)
+    legacy_report_root.chmod(0o777)
     malformed = tmp_path / "policy.json"
     malformed.write_text('{"schema_version":0}', encoding="utf-8")
-    report_dir = legacy_root / "reports"
+
+    assert coverage_main([
+        "--policy", str(malformed), "--report-dir", str(legacy_report_root)
+    ]) == 1
+    assert legacy_report_root.stat().st_mode & 0o777 == 0o700
+    assert [path.name for path in legacy_report_root.iterdir()] == [
+        "critical-coverage-error.json"
+    ]
+
+
+def test_critical_coverage_rejects_current_user_owned_writable_intermediate(
+    tmp_path: Path,
+) -> None:
+    private_root = tmp_path / "private-evidence-root"
+    private_root.mkdir(mode=0o700)
+    unsafe_intermediate = private_root / "legacy-evidence-intermediate"
+    unsafe_intermediate.mkdir(mode=0o777)
+    unsafe_intermediate.chmod(0o777)
+    malformed = tmp_path / "policy.json"
+    malformed.write_text('{"schema_version":0}', encoding="utf-8")
+    report_dir = unsafe_intermediate / "reports"
 
     assert coverage_main([
         "--policy", str(malformed), "--report-dir", str(report_dir)
     ]) == 1
-    assert legacy_root.stat().st_mode & 0o777 == 0o700
-    assert report_dir.stat().st_mode & 0o777 == 0o700
-    assert [path.name for path in report_dir.iterdir()] == [
-        "critical-coverage-error.json"
-    ]
+    assert unsafe_intermediate.stat().st_mode & 0o777 == 0o777
+    assert not report_dir.exists()
+    assert list(unsafe_intermediate.iterdir()) == []
