@@ -22,6 +22,7 @@ import pytest
 
 from tests.foundation._package6_staging_fixture import (
     Package6StagingLease,
+    create_package6_staging_lease,
     package6_staging_lease,
 )
 from services.paper_runtime import evidence as evidence_module
@@ -933,10 +934,107 @@ def test_controller_result_commit_reads_retained_descriptor(
     assert list(output.iterdir()) == []
 
 
+def test_crash_boundary_loops_own_a_fresh_lease_until_scenario_completion() -> None:
+    """Each crash boundary needs an isolated real staging-fixture lifetime."""
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    module = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    for name in (
+        "test_controller_result_crash_before_link_leaves_no_output",
+        "test_controller_result_crash_after_link_has_one_complete_output",
+    ):
+        function = functions[name]
+        arguments = (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        )
+        assert all(argument.arg != "package6_staging_lease" for argument in arguments)
+
+        loops = [node for node in function.body if isinstance(node, ast.For)]
+        assert len(loops) == 1
+        loop = loops[0]
+        factory_assignments = [
+            statement
+            for statement in loop.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Name)
+            and statement.value.func.id == "create_package6_staging_lease"
+        ]
+        assert len(factory_assignments) == 1
+        factory_assignment = factory_assignments[0]
+        lease_name = cast(ast.Name, factory_assignment.targets[0]).id
+        scenario = next(
+            (
+                statement
+                for statement in loop.body
+                if isinstance(statement, ast.Try)
+            ),
+            None,
+        )
+        assert scenario is not None
+        assert loop.body.index(factory_assignment) < loop.body.index(scenario)
+
+        finalizer_calls = [
+            node
+            for node in ast.walk(scenario)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_finalizer_arguments"
+        ]
+        assert len(finalizer_calls) == 1
+        assert any(
+            keyword.arg == "lease"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == lease_name
+            for keyword in finalizer_calls[0].keywords
+        )
+
+        child_calls = [
+            node
+            for node in ast.walk(scenario)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_run_finalizer_child"
+        ]
+        assert len(child_calls) == 1
+        child_statement_index = next(
+            index
+            for index, statement in enumerate(scenario.body)
+            if child_calls[0] in ast.walk(statement)
+        )
+        assert any(
+            isinstance(statement, ast.Assert)
+            for statement in scenario.body[child_statement_index + 1 :]
+        )
+        assert any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == lease_name
+            and node.func.attr == "cleanup"
+            for statement in scenario.finalbody
+            for node in ast.walk(statement)
+        )
+        scenario_index = loop.body.index(scenario)
+        assert any(
+            isinstance(statement, ast.Assert)
+            for statement in loop.body[scenario_index + 1 :]
+        )
+
+
 def test_controller_result_crash_before_link_leaves_no_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    package6_staging_lease: Package6StagingLease,
 ) -> None:
     boundaries = (
         "open",
@@ -946,129 +1044,188 @@ def test_controller_result_crash_before_link_leaves_no_output(
         "revalidate",
         "second-retained-read",
     )
+    issued_roots: set[Path] = set()
+    issued_identities: set[tuple[int, int]] = set()
+    issued_evidence_roots: set[Path] = set()
     for boundary in boundaries:
-        case = tmp_path / boundary
-        case.mkdir(mode=0o700)
-        arguments, _before = _finalizer_arguments(
-            case, monkeypatch, lease=package6_staging_lease
-        )
-        output = cast(Path, arguments["output_dir"])
-        real_open = evidence_module._open_publication_tmpfile
-        real_fsync = evidence_module.os.fsync
-        real_read = getattr(evidence_module, "_read_final_publication", None)
-        real_verify = getattr(evidence_module, "_verify_controller_final_container", None)
-        real_revalidate = evidence_module._RuntimeEvidenceSnapshot.revalidate
-        reads = 0
-        revalidations = 0
+        case_lease = create_package6_staging_lease()
+        lease_root = case_lease.root
+        evidence_root = lease_root / "evidence"
+        try:
+            case_lease.assert_valid()
+            assert lease_root.parent == Path("/tmp")
+            assert lease_root not in issued_roots
+            assert case_lease.identity not in issued_identities
+            assert evidence_root not in issued_evidence_roots
+            assert not evidence_root.exists()
 
-        def install() -> None:
-            if boundary == "open":
-                monkeypatch.setattr(
-                    evidence_module,
-                    "_open_publication_tmpfile",
-                    lambda *args, **kwargs: (_kill_child()),
-                )
-            elif boundary == "file-fsync":
-                monkeypatch.setattr(
-                    evidence_module.os,
-                    "fsync",
-                    lambda fd: _kill_child()
-                    if stat.S_ISREG(os.fstat(fd).st_mode)
-                    else real_fsync(fd),
-                )
-            elif boundary in {"retained-read", "second-retained-read"}:
-                assert callable(real_read)
-                retained_reader = cast(Callable[..., object], real_read)
+            case = tmp_path / boundary
+            case.mkdir(mode=0o700)
+            arguments, _before = _finalizer_arguments(
+                case, monkeypatch, lease=case_lease
+            )
+            output = cast(Path, arguments["output_dir"])
+            assert evidence_root.is_dir()
+            case_lease.assert_valid()
+            real_open = evidence_module._open_publication_tmpfile
+            real_fsync = evidence_module.os.fsync
+            real_read = getattr(evidence_module, "_read_final_publication", None)
+            real_verify = getattr(
+                evidence_module, "_verify_controller_final_container", None
+            )
+            real_revalidate = evidence_module._RuntimeEvidenceSnapshot.revalidate
+            reads = 0
+            revalidations = 0
 
-                def kill_on_retained_read(
-                    *args: object,
-                    **kwargs: object,
-                ) -> object:
-                    nonlocal reads
-                    reads += 1
-                    if boundary == "retained-read" or reads == 2:
-                        _kill_child()
-                    return retained_reader(*args, **kwargs)
+            def install() -> None:
+                if boundary == "open":
+                    monkeypatch.setattr(
+                        evidence_module,
+                        "_open_publication_tmpfile",
+                        lambda *args, **kwargs: (_kill_child()),
+                    )
+                elif boundary == "file-fsync":
+                    monkeypatch.setattr(
+                        evidence_module.os,
+                        "fsync",
+                        lambda fd: _kill_child()
+                        if stat.S_ISREG(os.fstat(fd).st_mode)
+                        else real_fsync(fd),
+                    )
+                elif boundary in {"retained-read", "second-retained-read"}:
+                    assert callable(real_read)
+                    retained_reader = cast(Callable[..., object], real_read)
 
-                monkeypatch.setattr(
-                    evidence_module, "_read_final_publication", kill_on_retained_read
-                )
-            elif boundary == "semantic":
-                assert callable(real_verify)
-                monkeypatch.setattr(
-                    evidence_module,
-                    "_verify_controller_final_container",
-                    lambda *a: _kill_child(),
-                )
-            else:
-                def kill_on_second_revalidation(snapshot: object) -> None:
-                    nonlocal revalidations
-                    revalidations += 1
-                    if revalidations == 2:
-                        _kill_child()
-                    real_revalidate(snapshot)  # type: ignore[arg-type]
+                    def kill_on_retained_read(
+                        *args: object,
+                        **kwargs: object,
+                    ) -> object:
+                        nonlocal reads
+                        reads += 1
+                        if boundary == "retained-read" or reads == 2:
+                            _kill_child()
+                        return retained_reader(*args, **kwargs)
 
-                monkeypatch.setattr(
-                    evidence_module._RuntimeEvidenceSnapshot,
-                    "revalidate",
-                    kill_on_second_revalidation,
-                )
+                    monkeypatch.setattr(
+                        evidence_module,
+                        "_read_final_publication",
+                        kill_on_retained_read,
+                    )
+                elif boundary == "semantic":
+                    assert callable(real_verify)
+                    monkeypatch.setattr(
+                        evidence_module,
+                        "_verify_controller_final_container",
+                        lambda *a: _kill_child(),
+                    )
+                else:
+                    def kill_on_second_revalidation(snapshot: object) -> None:
+                        nonlocal revalidations
+                        revalidations += 1
+                        if revalidations == 2:
+                            _kill_child()
+                        real_revalidate(snapshot)  # type: ignore[arg-type]
 
-        status = _run_finalizer_child(arguments, monkeypatch, install)
-        assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL, boundary
-        assert list(output.iterdir()) == []
+                    monkeypatch.setattr(
+                        evidence_module._RuntimeEvidenceSnapshot,
+                        "revalidate",
+                        kill_on_second_revalidation,
+                    )
+
+            status = _run_finalizer_child(arguments, monkeypatch, install)
+            assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL, boundary
+            assert list(output.iterdir()) == []
+            case_lease.assert_valid()
+            assert lease_root.is_dir()
+            assert evidence_root.is_dir()
+        finally:
+            case_lease.cleanup()
+
+        assert not lease_root.exists()
+        assert not evidence_root.exists()
+        issued_roots.add(lease_root)
+        issued_identities.add(case_lease.identity)
+        issued_evidence_roots.add(evidence_root)
 
 
 def test_controller_result_crash_after_link_has_one_complete_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    package6_staging_lease: Package6StagingLease,
 ) -> None:
+    issued_roots: set[Path] = set()
+    issued_identities: set[tuple[int, int]] = set()
+    issued_evidence_roots: set[Path] = set()
     for boundary in ("link", "directory-fsync", "identity"):
-        case = tmp_path / boundary
-        case.mkdir(mode=0o700)
-        arguments, _before = _finalizer_arguments(
-            case, monkeypatch, lease=package6_staging_lease
-        )
-        output = cast(Path, arguments["output_dir"])
-        real_fsync = evidence_module.os.fsync
-        real_link = evidence_module._link_owned_tmpfile
-        real_identity = getattr(evidence_module, "_confirm_final_publication_identity", None)
+        case_lease = create_package6_staging_lease()
+        lease_root = case_lease.root
+        evidence_root = lease_root / "evidence"
+        try:
+            case_lease.assert_valid()
+            assert lease_root.parent == Path("/tmp")
+            assert lease_root not in issued_roots
+            assert case_lease.identity not in issued_identities
+            assert evidence_root not in issued_evidence_roots
+            assert not evidence_root.exists()
 
-        def install() -> None:
-            if boundary == "link":
-                def link_then_kill(*args: object) -> None:
-                    real_link(*args)  # type: ignore[arg-type]
-                    _kill_child()
+            case = tmp_path / boundary
+            case.mkdir(mode=0o700)
+            arguments, _before = _finalizer_arguments(
+                case, monkeypatch, lease=case_lease
+            )
+            output = cast(Path, arguments["output_dir"])
+            assert evidence_root.is_dir()
+            case_lease.assert_valid()
+            real_fsync = evidence_module.os.fsync
+            real_link = evidence_module._link_owned_tmpfile
+            real_identity = getattr(
+                evidence_module, "_confirm_final_publication_identity", None
+            )
 
-                monkeypatch.setattr(
-                    evidence_module, "_link_owned_tmpfile", link_then_kill
-                )
-            elif boundary == "directory-fsync":
-                monkeypatch.setattr(
-                    evidence_module.os,
-                    "fsync",
-                    lambda fd: _kill_child()
-                    if stat.S_ISDIR(os.fstat(fd).st_mode)
-                    else real_fsync(fd),
-                )
-            else:
-                assert callable(real_identity)
-                monkeypatch.setattr(
-                    evidence_module,
-                    "_confirm_final_publication_identity",
-                    lambda *a: _kill_child(),
-                )
+            def install() -> None:
+                if boundary == "link":
+                    def link_then_kill(*args: object) -> None:
+                        real_link(*args)  # type: ignore[arg-type]
+                        _kill_child()
 
-        status = _run_finalizer_child(arguments, monkeypatch, install)
-        assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL
-        files = list(output.iterdir())
-        assert [path.name for path in files] == [_CONTROLLER_FINAL_NAME]
-        raw = files[0].read_bytes()
-        assert hashlib.sha256(raw).hexdigest()
-        assert json.loads(raw)["container_kind"] == (
-            "PACKAGE6_CONTROLLER_FINAL_PUBLICATION"
-        )
+                    monkeypatch.setattr(
+                        evidence_module, "_link_owned_tmpfile", link_then_kill
+                    )
+                elif boundary == "directory-fsync":
+                    monkeypatch.setattr(
+                        evidence_module.os,
+                        "fsync",
+                        lambda fd: _kill_child()
+                        if stat.S_ISDIR(os.fstat(fd).st_mode)
+                        else real_fsync(fd),
+                    )
+                else:
+                    assert callable(real_identity)
+                    monkeypatch.setattr(
+                        evidence_module,
+                        "_confirm_final_publication_identity",
+                        lambda *a: _kill_child(),
+                    )
+
+            status = _run_finalizer_child(arguments, monkeypatch, install)
+            assert os.waitstatus_to_exitcode(status) == -signal.SIGKILL
+            files = list(output.iterdir())
+            assert [path.name for path in files] == [_CONTROLLER_FINAL_NAME]
+            raw = files[0].read_bytes()
+            assert hashlib.sha256(raw).hexdigest()
+            assert json.loads(raw)["container_kind"] == (
+                "PACKAGE6_CONTROLLER_FINAL_PUBLICATION"
+            )
+            case_lease.assert_valid()
+            assert lease_root.is_dir()
+            assert evidence_root.is_dir()
+        finally:
+            case_lease.cleanup()
+
+        assert not lease_root.exists()
+        assert not evidence_root.exists()
+        issued_roots.add(lease_root)
+        issued_identities.add(case_lease.identity)
+        issued_evidence_roots.add(evidence_root)
 
 
 def test_controller_result_postlink_failure_retains_recovery_authority(
