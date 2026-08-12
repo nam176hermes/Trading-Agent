@@ -291,7 +291,7 @@ ci-private:
 
 ci-portable:
 	@set -eu; \
-		ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci-portable.XXXXXXXXXX); \
+		ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable.XXXXXXXXXX"); \
 		chmod 0700 "$$ci_tmpdir"; \
 		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
 		cleanup_ci_tmpdir() { \

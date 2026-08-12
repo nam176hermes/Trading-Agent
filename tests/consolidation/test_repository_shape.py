@@ -471,12 +471,27 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
         r"^ci-portable:\n((?:\t.*\n)+)", makefile, re.MULTILINE
     )
     assert portable_recipe is not None
+    portable_recipe_text = portable_recipe.group(1)
     portable_make_targets = re.findall(
-        r"\$\(MAKE\)\s+([A-Za-z0-9_-]+)", portable_recipe.group(1)
+        r"\$\(MAKE\)\s+([A-Za-z0-9_-]+)", portable_recipe_text
     )
     assert portable_make_targets == ["ci-portable-private"]
     assert "ci" not in portable_make_targets
     assert "ci-private" not in portable_make_targets
+    assert (
+        'ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/'
+        'trading-agent-ci-portable.XXXXXXXXXX")'
+        in portable_recipe_text
+    )
+    assert "/tmp/trading-agent-ci-portable.XXXXXXXXXX" not in portable_recipe_text
+    assert 'chmod 0700 "$$ci_tmpdir"' in portable_recipe_text
+    assert 'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700"' in portable_recipe_text
+    assert "cleanup_ci_tmpdir() {" in portable_recipe_text
+    assert 'find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +' in portable_recipe_text
+    assert "trap 'cleanup_ci_tmpdir' EXIT" in portable_recipe_text
+    assert portable_recipe_text.count(
+        'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir"'
+    ) == 1
 
     workflow = _read_current_regular(ROOT, ".github/workflows/foundation.yml").decode("utf-8")
     workflow_run_values = re.findall(r"^\s*run:\s*([^\n#]+?)\s*$", workflow, re.MULTILINE)

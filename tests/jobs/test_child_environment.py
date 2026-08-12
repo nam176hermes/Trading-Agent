@@ -253,6 +253,25 @@ def test_world_writable_tmp_ancestor_is_rejected(monkeypatch):
         shutil.rmtree(unsafe_root, ignore_errors=True)
 
 
+def test_child_environment_rejects_tmp_root_and_accepts_supplied_safe_root(
+    tmp_path, monkeypatch,
+):
+    unsafe_root = Path(tempfile.mkdtemp(prefix="phase4b-unsafe-", dir="/tmp"))
+    try:
+        with pytest.raises(EnvironmentValidationError) as raised:
+            _settings(unsafe_root, monkeypatch)
+        assert raised.value.reason_code == "ENVIRONMENT_ROOT_ANCESTOR_UNSAFE"
+    finally:
+        shutil.rmtree(unsafe_root, ignore_errors=True)
+
+    settings, roots = _settings(tmp_path, monkeypatch)
+    child = build_child_environment(settings)
+
+    assert child["TRADING_DATA_ROOT"] == str(roots["data_root"])
+    assert child["TRADING_REPORTS_DIR"] == str(roots["reports_dir"])
+    assert child["TRADING_SIGNAL_OUTPUT_DIR"] == str(roots["signal_output_dir"])
+
+
 @pytest.mark.parametrize("root_name", ["reports_dir", "signal_output_dir", "scratch_home"])
 def test_mutable_roots_still_require_runtime_owner_and_mode_0700(tmp_path, monkeypatch, root_name):
     settings, roots = _settings(tmp_path, monkeypatch)

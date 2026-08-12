@@ -152,17 +152,27 @@ def test_canonical_ci_uses_a_private_linux_temp_root() -> None:
 
 def test_portable_ci_uses_a_private_linux_temp_root() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
+    portable_recipe = makefile.split("ci-portable:\n", 1)[1].split(
+        "\n\nci-portable-private:", 1
+    )[0]
 
     assert "ci-portable:\n\t@set -eu;" in makefile
     assert "ci-portable-private:\n\t$(MAKE) prepare-root-test-install" in makefile
-    assert "ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci-portable.XXXXXXXXXX)" in makefile
-    assert 'chmod 0700 "$$ci_tmpdir"' in makefile
-    assert 'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700"' in makefile
-    assert "cleanup_ci_tmpdir() {" in makefile
-    assert 'find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +' in makefile
-    assert "trap 'cleanup_ci_tmpdir' EXIT" in makefile
-    assert 'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir"' in makefile
-    assert "$(MAKE) ci-portable-private" in makefile
+    assert (
+        'ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/'
+        'trading-agent-ci-portable.XXXXXXXXXX")'
+        in portable_recipe
+    )
+    assert "/tmp/trading-agent-ci-portable.XXXXXXXXXX" not in portable_recipe
+    assert 'chmod 0700 "$$ci_tmpdir"' in portable_recipe
+    assert 'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700"' in portable_recipe
+    assert "cleanup_ci_tmpdir() {" in portable_recipe
+    assert 'find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +' in portable_recipe
+    assert "trap 'cleanup_ci_tmpdir' EXIT" in portable_recipe
+    assert portable_recipe.count(
+        'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir"'
+    ) == 1
+    assert portable_recipe.count("$(MAKE) ci-portable-private") == 1
 
 
 def test_ci_uses_private_test_target_after_one_source_reinstall() -> None:
