@@ -153,13 +153,44 @@ untracked.
 ### I-02a: component snapshots — feasible
 
 Add a root pytest option named `--portable-embedded-proof` in
-`tests/conftest.py`, default false.  It is set only by the explicit portable
-Make target chain (a target-specific `PYTEST_ADDOPTS +=
---portable-embedded-proof` propagated to `test` from
-`test-all-portable-private`); strict targets never set it.  This is not an
-authority fallback: the option selects a verifier with no authority lookup and
-does not alter audit authority mode.  The option must be rejected or ignored by
-production code; it is test-harness-only.
+`tests/conftest.py`, default false.  Do **not** export `PYTEST_ADDOPTS` and do
+not put an option on `test-all-portable-private`: that target has both the root
+and nested backend prerequisites, and a global option would either fail to
+reach the root subprocess or leak an unknown option into the legacy pytest
+invocation.
+
+The exact GNU Make restructuring is deliberately root-test-local:
+
+```make
+.PHONY: ... test-portable-embedded-proof ...
+
+test:
+	@set -eu; ... \
+		PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$extension" \
+		PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256" \
+			uv run pytest $(ROOT_PYTEST_ARGS) -q \
+				-m "not runtime_postgres and not host_coupled" tests
+
+test-portable-embedded-proof: ROOT_PYTEST_ARGS := --portable-embedded-proof
+test-portable-embedded-proof: test
+
+test-all-private: audit check-d0-closure check-contracts check-secrets test \
+	test-backend test-dashboard typecheck-dashboard lint-dashboard
+test-all-portable-private: audit-portable check-d0-closure check-contracts \
+	check-secrets test-portable-embedded-proof test-backend test-dashboard \
+	typecheck-dashboard lint-dashboard
+```
+
+`ROOT_PYTEST_ARGS` is expanded only in the existing root `test` recipe.  GNU
+Make propagates the target-specific value from the one-prerequisite wrapper to
+`test`; it does not propagate it sideways to `test-backend` or `test-dashboard`
+because `test-all-portable-private` itself has no target-specific variable.
+The strict aggregate still directly selects `test`, where the variable is
+empty.  `test-backend` remains its current nested
+`cd legacy/research-backend && uv run --frozen --extra test pytest -q`, and
+`test-dashboard` remains `cd apps/dashboard && npm test`, with no root pytest
+option.  The option is an explicit test-target selection, not an environment
+heuristic, an authority fallback, or production input.
 
 Refactor only the final verifier portions of
 `tests/consolidation/test_backend_snapshot.py` and
@@ -174,13 +205,28 @@ Refactor only the final verifier portions of
   introduction commit, and asserts the same component identity, policy,
   entry/blob/mode/size/digest inventory, and historical source snapshot.
 
-Add adversarial tests for (a) option absent -> strict API is selected, (b)
-option present -> embedded API is selected, (c) malformed authority,
-manifest identity drift, aggregate drift, changed introduction blob, and
-shallow history all fail.  Existing portable-audit tests already cover most of
-the latter set; the focused test must prove the direct snapshot test cannot
-accidentally call strict `verify_snapshot()` in portable mode.  No test is
-skipped: each mode runs its selected full proof.
+Add focused Make-topology regressions in
+`tests/consolidation/test_repository_shape.py` and
+`tests/foundation/test_d0_closure.py` that prove all of the following from the
+parsed target graph and exact recipe strings: (a) the strict aggregate depends
+on `test` and not the wrapper, so its root pytest command receives an empty
+`ROOT_PYTEST_ARGS`; (b) the portable aggregate depends on only
+`test-portable-embedded-proof`, which has the exact target-specific assignment
+and only `test` as its prerequisite; and (c) only the root test recipe expands
+`$(ROOT_PYTEST_ARGS)`, while the byte-for-byte backend/dashboard test commands
+contain no portable option.  The tests must also require the wrapper in
+`.PHONY`, prohibit `export PYTEST_ADDOPTS`, and prohibit a literal portable
+option in the strict aggregate or nested test recipes.
+
+Add verifier-selection regressions for (a) option absent -> strict API is
+selected, (b) option present -> embedded API is selected, and (c) malformed
+authority, manifest identity drift, aggregate drift, changed introduction blob,
+and shallow history all fail.  Keep a direct portable invocation probe of both
+snapshot helpers, not merely the aggregate topology test.  Existing portable
+audit tests cover most tamper/shallow cases; the direct snapshot tests must
+prove that the portable helper itself rejects them and cannot accidentally call
+strict `verify_snapshot()`.  No test is skipped: each explicit mode runs its
+selected full proof.
 
 ### I-02b: real research corpus — not feasible under current rules
 
@@ -293,8 +339,11 @@ I-02b red rather than misstate T-G03 as green.
 
 ## Allowed and forbidden implementation surfaces
 
-If and only if the conflict is separately resolved, the source-only slices may
-touch these tracked files:
+The bounded I-01, I-03, and I-02a slices may proceed after their corrected
+design, RED/GREEN evidence, and independent implementation/review loops even
+while I-02b remains an explicitly unresolved authority conflict.  They may not
+claim T-G03 green, classify I-02b as deferred runtime success, or change the
+corpus requirement.  Their exact allowed tracked files are:
 
 * `Makefile`;
 * `tests/conftest.py`;
@@ -317,7 +366,8 @@ tracked change is this document; the accompanying C-11 receipt is ignored.
 
 No implementation is approved by this document.  An implementation handoff is
 **NOT READY** for a claim of T-G02/T-G03 completion because I-02b is unresolved.
-It is ready only for the bounded I-01, I-03, and I-02a slices, with their
-independent reviews and with the conflict kept open.  T-G03 can become GREEN
-only after the corpus authority contradiction is resolved without a skip,
-ambient fallback, synthetic evidence, or external-engine build.
+The corrected bounded I-01, I-03, and I-02a slices may proceed under their own
+independent design/implementation/review loops, with the conflict kept open.
+T-G03 can become GREEN only after the corpus authority contradiction is
+resolved without a skip, ambient fallback, synthetic evidence, or external
+engine build.
