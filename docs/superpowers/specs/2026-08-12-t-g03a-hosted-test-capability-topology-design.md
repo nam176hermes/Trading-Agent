@@ -137,7 +137,8 @@ Foundation workflow
         -> make ci-portable-private
            -> make prepare-root-test-install  # retained
            -> make test-all-portable-topology-private \
-                   check-test-skips check-critical-coverage build-dashboard \
+                   check-test-governance-topology check-critical-coverage \
+                   build-dashboard \
                    audit-python-source audit-dependencies
 
 test-all-portable-topology-private:
@@ -151,6 +152,14 @@ ci-portable-topology:
   native-capability lane (exact 24 executed or valid DEFERRED)
   external-authority lane (exact 6 executed or valid DEFERRED)
   receipt aggregation
+
+check-test-governance-topology:
+  uv run python scripts/check_test_governance.py --topology-audit \
+    --report-dir "$(TEST_EVIDENCE_DIR)/test-governance-topology" \
+    --topology-evidence-root "$(TEST_EVIDENCE_DIR)" \
+    --inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
+    --foundation-run-id "$$GITHUB_RUN_ID" \
+    --foundation-head-sha "$$foundation_head"
 ```
 
 This is a Make-only orchestration contract: Foundation continues to invoke only
@@ -158,6 +167,53 @@ This is a Make-only orchestration contract: Foundation continues to invoke only
 list, marker, skip, or xfail. `ci-portable-topology` obtains every selection
 from the verified installed tracked inventory defined above, not a Makefile or
 workflow literal. It is the sole root-test route in this source-required path.
+
+### Topology-aware test governance
+
+`check-test-governance-topology` is a new portable-only Make target. It invokes
+the existing governance script in the required `--topology-audit` mode and with
+all five arguments shown above. This mode replaces only the generic **root**
+suite launch made by the current `check-test-skips`; it must never call the
+current root `run_suites()` branch or execute `pytest ... tests`.
+
+Instead, topology audit consumes and revalidates the sealed exact lane
+governance records at
+`$(TEST_EVIDENCE_DIR)/capability-topology/<code>.governance.json` together with
+their exact lane receipts. It must first perform the receipt's canonical-byte,
+self-hash, current Foundation run/head, tracked-inventory hash, and
+completeness checks. For every inventory code it then requires exactly one of:
+
+* a `PASS` receipt with one no-clobber root governance record whose complete
+  collected and passed node sets each exactly equal that receipt's sorted
+  `expected_node_ids`; or
+* a valid native/external `DEFERRED` receipt with the permitted matching state,
+  no root governance record, and no claimed test pass.
+
+The union of these two forms must equal every one of the locked 62 root-test
+node IDs, with no extra/duplicate/missing node, code, or lane. A root exact
+record containing skipped, deselected, xfailed, xpassed, failed, or not-run
+outcomes fails; a deferred receipt cannot be converted into a pytest skip or a
+test `PASS`. Thus every root test obligation previously supplied to generic
+governance is accounted for by exact execution or a valid, visible
+native/external receipt rather than silently lost.
+
+Topology audit must retain the existing governance policy semantics and
+evidence, not replace them with a new permissive allowlist. It validates the
+same tracked allowlist schema, owner/security derivation, approval/review date,
+reason, allowed-in-CI, stale/new/changed skip and deselection checks, and
+fail-closed collection/outcome rules. It applies those checks to the audited
+root exact-lane observations and continues the existing governed legacy and
+dashboard collection/reporting paths, merging all three component records into
+the topology governance report. Legacy and dashboard tests may use their
+existing component suite invocations; only the portable root invocation changes
+to audited exact lane records. The report preserves per-component records and
+policy decisions so the Foundation artifact remains comparable and inspectable.
+
+`check-critical-coverage` remains a separate required control with its existing
+sealed coverage policy and exact coverage selections; topology routing must not
+remove, lower, or replace that coverage gate. The portable governance mode must
+also reject any unapproved skip/xfail or unaccounted test loss in its root,
+legacy, dashboard, or coverage evidence.
 
 `test`, `test-portable-embedded-proof`, and
 `test-all-portable-private` remain available with their existing generic/local
@@ -167,6 +223,12 @@ change is that `ci-portable-private` uses
 `test-all-portable-topology-private` instead of
 `test-all-portable-private`; neither the new aggregate nor anything it invokes
 may depend on generic `test` or `test-portable-embedded-proof`.
+
+The existing strict `check-test-skips` target remains byte-for-byte behaviorally
+unchanged for strict `make ci`: it continues to use generic root, legacy, and
+dashboard governance collection. It must not acquire `--topology-audit`, and
+the new target must not alter production behavior, allowlist authority, or
+strict CI semantics.
 
 T-G03C must add topology tests that parse the Make dependency graph and fail
 if: the `ci-portable` wrapper stops using its private `RUNNER_TEMP` child;
@@ -179,6 +241,21 @@ pytest command appears in Foundation; or the workflow ceases to invoke exactly
 `make ci-portable`. Those tests must also prove the legacy targets retain their
 current generic definitions. Exact inventory validation and receipt
 completeness—not broad skip/xfail—prevent loss of the 62 classified nodes.
+
+Beyond this Make-edge check, T-G03C must add a script-level transitive-routing
+test. It invokes the topology lane runner and `check_test_governance.py
+--topology-audit` with sealed fixture receipts/reports and an injected command
+recorder in place of every subprocess launcher reachable from the
+`ci-portable` source-required route. The recorder must fail closed on an
+unknown/dynamic command and reject every generic root invocation, including
+`uv run pytest ... tests`, `python -m pytest ... tests`, direct `pytest ...
+tests`, and shell-string equivalents. It must inspect the recorded argv after
+wrapper expansion, not merely grep Make prerequisites. The only permitted root
+pytest invocations are exact inventory-derived node argv for one lane with the
+governance plugin; no `-k`, broad marker deselection, skip, or xfail mechanism
+is permitted. The test must cover the governance topology branch specifically,
+so reintroducing `run_suites()` or a new helper that root-runs `tests` fails
+even when the Make dependency graph is unchanged.
 
 ### Portable-source lane
 
