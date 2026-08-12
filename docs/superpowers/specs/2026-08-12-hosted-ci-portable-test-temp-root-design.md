@@ -111,16 +111,24 @@ fixture repair and must not be edited:
    - inspect a named `dir=`, the third positional argument (index two) for
      either constructor, and a statically knowable
      `**{"dir": value}` dictionary expansion;
-   - recognize a literal string beginning `/home/` and a simple
-     `Path("/home/...")` expression as a literal user-home directory; and
+   - resolve `import pathlib`, `import pathlib as alias`,
+     `from pathlib import Path`, and `from pathlib import Path as alias` when
+     recognizing a `Path` constructor;
+   - recognize a literal string beginning `/home/` and a `Path("/home/...")`
+     expression in each resolved binding form (`pathlib.Path(...)`,
+     `alias.Path(...)`, direct `Path(...)`, and a direct-import alias) as a
+     literal user-home directory; and
    - inspect only those constructor directory arguments, not unrelated
      policy/runtime/historical string assertions.
 
-   Focused AST-snippet unit cases will prove rejection of direct, module-aliased,
-   direct-import-aliased, third-positional, `Path`, and static-`**kwargs`
-   forms.  They will also prove that `/tmp`, dynamically computed directory
-   expressions, and a policy literal that is not a selected constructor
-   directory argument are not selected.  No global monkeypatch is involved.
+   Focused AST-snippet unit cases will prove rejection of direct and
+   module-aliased `tempfile`, direct-import-aliased constructor,
+   third-positional, static-`**kwargs`, direct `Path`, qualified
+   `pathlib.Path`, module-aliased `pathlib` (`pl.Path`), and direct-import
+   alias (`P(...)`) forms.  They will also prove that `/tmp`, dynamically
+   computed directory expressions, and a policy literal that is not a
+   selected constructor directory argument are not selected.  No global
+   monkeypatch is involved.
    On the current head the production scan fails with exactly the 28 calls in
    the table.
 2. **RED — Make propagation proof.** In
