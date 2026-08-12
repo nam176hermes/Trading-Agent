@@ -13,7 +13,9 @@ from packages.event_ledger import (
     OutboxIntent,
     PostgresEventLedgerRepository,
     PostgresLedgerSql,
+    ReducerPolicy,
     ReplayError,
+    SnapshotRecord,
     SequenceError,
     replay,
     snapshot_from_result,
@@ -137,6 +139,28 @@ class HostileUUIDSubclass(UUID):
         raise AssertionError("UUID subclass hashing must not run")
 
 
+def _snapshot_with_state(
+    snapshot: SnapshotRecord,
+    **updates: object,
+) -> SnapshotRecord:
+    return snapshot.model_copy(
+        update={"state": snapshot.state.model_copy(update=updates)}
+    )
+
+
+def _snapshot_with_state_member(
+    snapshot: SnapshotRecord,
+    field_name: str,
+    **updates: object,
+) -> SnapshotRecord:
+    members = getattr(snapshot.state, field_name)
+    forged_member = members[0].model_copy(update=updates)
+    return _snapshot_with_state(
+        snapshot,
+        **{field_name: (forged_member, *members[1:])},
+    )
+
+
 def test_append_uses_one_transaction_and_database_owned_function_result() -> None:
     event = envelope(signal(), event_number=1)
     outbox = OutboxIntent(
@@ -230,6 +254,52 @@ def test_append_rejects_copy_forged_and_subclassed_inputs_before_database_access
         )
 
     assert connection.executions == []
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"source": TextSubclass("test")},
+        {"sequence": True},
+        {"observed_at": "2026-07-20T12:00:00Z"},
+    ),
+    ids=("text-subclass", "boolean-sequence", "text-timestamp"),
+)
+def test_append_rejects_non_concrete_event_scalars_before_database_access(
+    updates: dict[str, object],
+) -> None:
+    event = envelope(signal(), event_number=1).model_copy(update=updates)
+    outbox = OutboxIntent(event_id=event.event_id, topic="domain.signal")
+    connection = Connection()
+
+    with pytest.raises(ReplayError):
+        PostgresEventLedgerRepository(Pool(connection)).append(event, outbox)
+
+    assert connection.executions == []
+
+
+def test_append_rejects_invalid_event_and_outbox_model_roots_before_database_access() -> None:
+    event = envelope(signal(), event_number=1)
+    outbox = OutboxIntent(event_id=event.event_id, topic="domain.signal")
+
+    for supplied_event, supplied_outbox, error_type in (
+        (object(), outbox, ReplayError),
+        (event, object(), EventConflictError),
+        (
+            event,
+            outbox.model_copy(
+                update={"event_id": UUIDSubclass(int=event.event_id.int)}
+            ),
+            EventConflictError,
+        ),
+    ):
+        connection = Connection()
+        with pytest.raises(error_type):
+            PostgresEventLedgerRepository(Pool(connection)).append(
+                supplied_event,  # type: ignore[arg-type]
+                supplied_outbox,  # type: ignore[arg-type]
+            )
+        assert connection.executions == []
 
 
 @pytest.mark.parametrize(
@@ -668,6 +738,133 @@ def test_save_snapshot_rejects_copy_forged_nested_member_before_database_access(
     assert connection.executions == []
 
 
+@pytest.mark.parametrize(
+    "forge",
+    (
+        lambda snapshot: snapshot.model_copy(
+            update={"schema_version": TextSubclass(snapshot.schema_version)}
+        ),
+        lambda snapshot: snapshot.model_copy(update={"status": "COMPLETE"}),
+        lambda snapshot: _snapshot_with_state(snapshot, event_count=True),
+        lambda snapshot: _snapshot_with_state(
+            snapshot,
+            type_counts=TupleSubclass(snapshot.state.type_counts),
+        ),
+        lambda snapshot: _snapshot_with_state_member(
+            snapshot,
+            "type_counts",
+            event_type=TextSubclass(snapshot.state.type_counts[0].event_type),
+        ),
+        lambda snapshot: _snapshot_with_state_member(
+            snapshot,
+            "type_counts",
+            count=True,
+        ),
+        lambda snapshot: _snapshot_with_state(
+            snapshot,
+            streams=TupleSubclass(snapshot.state.streams),
+        ),
+        lambda snapshot: _snapshot_with_state_member(
+            snapshot,
+            "streams",
+            stream_id=UUIDSubclass(int=snapshot.state.streams[0].stream_id.int),
+        ),
+        lambda snapshot: _snapshot_with_state_member(
+            snapshot,
+            "streams",
+            last_sequence=True,
+        ),
+        lambda snapshot: _snapshot_with_state_member(
+            snapshot,
+            "streams",
+            last_digest=TextSubclass(snapshot.state.streams[0].last_digest),
+        ),
+        lambda snapshot: _snapshot_with_state(
+            snapshot,
+            applied_events=TupleSubclass(snapshot.state.applied_events),
+        ),
+        lambda snapshot: _snapshot_with_state_member(
+            snapshot,
+            "applied_events",
+            event_id=UUIDSubclass(
+                int=snapshot.state.applied_events[0].event_id.int
+            ),
+        ),
+        lambda snapshot: _snapshot_with_state_member(
+            snapshot,
+            "applied_events",
+            digest=TextSubclass(snapshot.state.applied_events[0].digest),
+        ),
+        lambda snapshot: snapshot.model_copy(
+            update={"issues": TupleSubclass(snapshot.issues)}
+        ),
+    ),
+    ids=(
+        "root-text-subclass",
+        "string-status",
+        "boolean-event-count",
+        "type-counts-tuple-subclass",
+        "event-type-text-subclass",
+        "boolean-type-count",
+        "streams-tuple-subclass",
+        "stream-uuid-subclass",
+        "boolean-last-sequence",
+        "last-digest-text-subclass",
+        "applied-events-tuple-subclass",
+        "applied-event-uuid-subclass",
+        "applied-digest-text-subclass",
+        "issues-tuple-subclass",
+    ),
+)
+def test_save_snapshot_rejects_non_concrete_complete_graph_before_database_access(
+    forge,
+) -> None:
+    snapshot = snapshot_from_result(
+        replay((envelope(signal(), event_number=1),))
+    )
+    connection = Connection()
+
+    with pytest.raises(EventConflictError, match="invalid snapshot"):
+        PostgresEventLedgerRepository(Pool(connection)).save_snapshot(forge(snapshot))
+
+    assert connection.executions == []
+
+
+@pytest.mark.parametrize(
+    "updates",
+    (
+        {"restore": True},
+        {"code": "SEQUENCE_GAP"},
+        {"stream_id": UUIDSubclass(int=100)},
+        {"sequence": True},
+        {"digest": TextSubclass("0" * 64)},
+    ),
+    ids=(
+        "copied-extra",
+        "string-code",
+        "stream-uuid-subclass",
+        "boolean-sequence",
+        "digest-text-subclass",
+    ),
+)
+def test_save_snapshot_rejects_non_concrete_replay_issue_before_database_access(
+    updates: dict[str, object],
+) -> None:
+    first = envelope(signal(), event_number=1, sequence=1)
+    gap = envelope(fill(), event_number=2, sequence=3)
+    snapshot = snapshot_from_result(
+        replay((first, gap), policy=ReducerPolicy.DEGRADED)
+    )
+    issue = snapshot.issues[0].model_copy(update=updates)
+    forged = snapshot.model_copy(update={"issues": (issue,)})
+    connection = Connection()
+
+    with pytest.raises(EventConflictError, match="invalid snapshot"):
+        PostgresEventLedgerRepository(Pool(connection)).save_snapshot(forged)
+
+    assert connection.executions == []
+
+
 def test_save_snapshot_rejects_malformed_database_boolean_as_replay_error() -> None:
     snapshot = snapshot_from_result(
         replay((envelope(signal(), event_number=1),))
@@ -766,6 +963,30 @@ def test_load_snapshot_rejects_corrupt_or_mismatched_stored_state(
         )
 
 
+def test_load_snapshot_rejects_non_text_and_non_object_database_bytes() -> None:
+    snapshot = snapshot_from_result(
+        replay((envelope(signal(), event_number=1),))
+    )
+
+    for canonical_text in (1, "[]", "{"):
+        connection = Connection(
+            [[
+                (
+                    canonical_text,
+                    snapshot.schema_version,
+                    snapshot.reducer_version,
+                    snapshot.state_hash,
+                )
+            ]]
+        )
+        with pytest.raises(ReplayError):
+            PostgresEventLedgerRepository(Pool(connection)).load_snapshot(
+                snapshot.state_hash
+            )
+
+        assert connection.transaction_count == 0
+
+
 @pytest.mark.parametrize("state_hash", (None, True, 1, "A" * 64, "0" * 63))
 def test_load_snapshot_rejects_invalid_lookup_hash_without_database_access(
     state_hash: object,
@@ -788,4 +1009,33 @@ def test_unrecognized_database_failure_is_not_laundered() -> None:
     with pytest.raises(DatabaseError):
         PostgresEventLedgerRepository(Pool(connection)).append(event, outbox)
 
+    assert connection.rollback_count == 1
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ("claim_inbox", "acknowledge_outbox", "save_snapshot"),
+)
+def test_mutations_preserve_unknown_database_error_identity_without_retry(
+    operation: str,
+) -> None:
+    error = DatabaseError("08006")
+    connection = Connection(error=error)
+    repository = PostgresEventLedgerRepository(Pool(connection))
+
+    with pytest.raises(DatabaseError) as raised:
+        if operation == "claim_inbox":
+            repository.claim_inbox("consumer", UUID(int=1))
+        elif operation == "acknowledge_outbox":
+            repository.acknowledge_outbox(UUID(int=1))
+        else:
+            repository.save_snapshot(
+                snapshot_from_result(
+                    replay((envelope(signal(), event_number=1),))
+                )
+            )
+
+    assert raised.value is error
+    assert len(connection.executions) == 1
+    assert connection.commit_count == 0
     assert connection.rollback_count == 1
