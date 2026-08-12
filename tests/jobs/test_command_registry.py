@@ -177,6 +177,9 @@ class _FixtureIdentityEvidence:
     release_entries: tuple[Path, ...]
     _declared_paths: frozenset[Path] = field(init=False, repr=False)
     _injected_xattrs: dict[Path, tuple[str, ...]] = field(default_factory=dict, repr=False)
+    _actual_xattr_paths: set[Path] = field(default_factory=set, repr=False)
+    _observed_lstats: dict[Path, os.stat_result] = field(default_factory=dict, repr=False)
+    _observed_xattrs: dict[Path, tuple[str, ...]] = field(default_factory=dict, repr=False)
     _lstat_paths: list[str] = field(default_factory=list, repr=False)
     _xattr_paths: list[str] = field(default_factory=list, repr=False)
     _diagnostic: dict[str, object] | None = field(default=None, repr=False)
@@ -220,27 +223,46 @@ class _FixtureIdentityEvidence:
     def lstat(self, value: Path) -> os.stat_result:
         path = self._path(value)
         real = path.lstat()
+        self._observed_lstats[path] = real
         self._lstat_paths.append(self._redact(path))
         if path not in self._declared_paths:
+            self.record_fixture_boundary()
             raise AssertionError("command fixture inspected a path outside its declared identity")
         values = list(real)
         values[4] = 0
-        return os.stat_result(values)
+        return os.stat_result(values, real.__reduce__()[1][1])
 
     def listxattr(self, value: Path) -> tuple[str, ...]:
         path = self._path(value)
         observed = tuple(os.listxattr(path, follow_symlinks=False))
+        self._observed_xattrs[path] = observed
         self._xattr_paths.append(self._redact(path))
         if path not in self._declared_paths:
+            self.record_fixture_boundary()
             raise AssertionError("command fixture inspected xattrs outside its declared identity")
-        injected = self._injected_xattrs.get(path, ())
-        return tuple(dict.fromkeys((*observed, *injected)))
+        if path in self._injected_xattrs:
+            return self._injected_xattrs[path]
+        if path in self._actual_xattr_paths:
+            return observed
+        return ()
 
     def inject_xattrs(self, value: Path, attributes: tuple[str, ...]) -> None:
         path = self._path(value)
         if path not in self._declared_paths:
             raise AssertionError("command fixture injected xattrs outside its declared identity")
         self._injected_xattrs[path] = attributes
+
+    def require_actual_xattrs(self, value: Path) -> None:
+        path = self._path(value)
+        if path not in self._declared_paths:
+            raise AssertionError("command fixture requested actual xattrs outside its declared identity")
+        self._actual_xattr_paths.add(path)
+
+    def assert_complete_observation(self) -> None:
+        if set(self._observed_lstats) != set(self._declared_paths):
+            raise AssertionError("command fixture did not physically observe every declared lstat path")
+        if set(self._observed_xattrs) != set(self._declared_paths):
+            raise AssertionError("command fixture did not physically observe every declared xattr path")
 
     def record_rejection(self, error: CommandRegistryError) -> None:
         reason = error.reason_code
@@ -382,6 +404,7 @@ def _deployment(tmp_path: Path, monkeypatch, *, diagnostics: list[_FixtureIdenti
                 ):
                     module._blocked("COMMAND_RELEASE_FILE_NOT_APPROVED", "fixture content mismatch")
             module._validate_artifact(root / ".venv/bin/python", directory=False, executable=True)
+            evidence.assert_complete_observation()
             return True
         except CommandRegistryError as error:
             evidence.record_rejection(error)
@@ -448,9 +471,46 @@ def test_deployment_identity_recorder_rejects_an_undeclared_existing_path(
 ):
     diagnostics = []
     _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    outside = tmp_path.parent / f"undeclared-{tmp_path.name}"
+    outside.mkdir()
 
     with pytest.raises(AssertionError, match="outside its declared identity"):
-        diagnostics[0].lstat(Path.cwd())
+        diagnostics[0].lstat(outside)
+    assert outside.absolute() in diagnostics[0]._observed_lstats
+
+    with pytest.raises(AssertionError, match="outside its declared identity"):
+        diagnostics[0].listxattr(outside)
+    assert outside.absolute() in diagnostics[0]._observed_xattrs
+    diagnostic = diagnostics[0].diagnostic()
+    assert diagnostic["category"] == "fixture_boundary"
+    assert diagnostic["outcome"] == "undeclared_path"
+    assert str(outside) not in json.dumps(diagnostic, sort_keys=True)
+
+
+def test_deployment_identity_records_real_declared_ancestor_xattrs_before_normal_view(
+    tmp_path, monkeypatch,
+):
+    diagnostics = []
+    root, _, _ = _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    evidence = diagnostics[0]
+    ancestor = root.parent.absolute()
+    observed_attribute = "user.c42-controlled-ancestor"
+    real_listxattr = os.listxattr
+
+    def controlled_listxattr(path, *, follow_symlinks=True):
+        if Path(path).absolute() == ancestor:
+            return [observed_attribute]
+        return real_listxattr(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(os, "listxattr", controlled_listxattr)
+
+    assert evidence.listxattr(ancestor) == ()
+    assert evidence._observed_xattrs[ancestor] == (observed_attribute,)
+    diagnostic = evidence.diagnostic()
+    assert diagnostic["xattr_paths"] == ("<fixture-ancestor-0>",)
+    rendered = json.dumps(diagnostic, sort_keys=True)
+    assert str(ancestor) not in rendered
+    assert observed_attribute not in rendered
 
 
 @pytest.mark.parametrize(
@@ -520,8 +580,28 @@ def test_real_startup_remains_blocked_until_ops_provisions_manifest_and_release(
 
 def test_manifest_covers_venv_native_pth_data_config_dot_and_ignored_files(tmp_path, monkeypatch):
     diagnostics = []
-    _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    root, _, _ = _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
     assert len(_attest_fixture_capability(diagnostics[0]).fingerprint) == 64
+    evidence = diagnostics[0]
+    evidence.assert_complete_observation()
+    for path, actual in tuple(evidence._observed_lstats.items()):
+        viewed = evidence.lstat(path)
+        assert stat.S_IFMT(viewed.st_mode) == stat.S_IFMT(actual.st_mode)
+        assert stat.S_IMODE(viewed.st_mode) == stat.S_IMODE(actual.st_mode)
+        assert viewed.st_size == actual.st_size
+        assert viewed.st_dev == actual.st_dev
+        assert viewed.st_ino == actual.st_ino
+        assert viewed.st_gid == actual.st_gid
+        assert viewed.st_nlink == actual.st_nlink
+        assert viewed.st_atime_ns == actual.st_atime_ns
+        assert viewed.st_mtime_ns == actual.st_mtime_ns
+        assert viewed.st_ctime_ns == actual.st_ctime_ns
+        assert viewed.st_blksize == actual.st_blksize
+        assert viewed.st_blocks == actual.st_blocks
+        assert viewed.st_rdev == actual.st_rdev
+        assert viewed.st_uid == 0
+    target = root / "data/model.bin"
+    assert target.read_bytes() == b"model-data"
 
 
 @pytest.mark.parametrize("extra", [".gitignored", ".venv/lib/python3.11/site-packages/extra.pth", ".venv/lib/python3.11/site-packages/evil.so"])
@@ -604,7 +684,9 @@ def test_attestation_rejects_any_extended_attribute_on_protected_paths(tmp_path,
 
 
 def test_attestation_rejects_real_xattr_when_filesystem_supports_it(tmp_path, monkeypatch):
-    root, _, _ = _deployment(tmp_path, monkeypatch)
+    diagnostics = []
+    root, _, _ = _deployment(tmp_path, monkeypatch, diagnostics=diagnostics)
+    evidence = diagnostics[0]
     target = root / "data/model.bin"
     target.chmod(0o644)
     try:
@@ -614,8 +696,11 @@ def test_attestation_rejects_real_xattr_when_filesystem_supports_it(tmp_path, mo
     finally:
         target.chmod(0o444)
     assert "user.task7-test" in os.listxattr(target, follow_symlinks=False)
+    evidence.require_actual_xattrs(target)
     with pytest.raises(CommandRegistryError) as raised: attest_command_capability()
     assert raised.value.reason_code == "COMMAND_RELEASE_NOT_APPROVED"
+    assert "user.task7-test" in evidence._observed_xattrs[target]
+    assert evidence.diagnostic()["reason_code"] == "COMMAND_PATH_XATTR_UNSAFE"
 
 
 def test_attestation_rejects_symlinked_ancestor(tmp_path, monkeypatch):
