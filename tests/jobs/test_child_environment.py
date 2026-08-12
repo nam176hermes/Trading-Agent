@@ -253,9 +253,7 @@ def test_world_writable_tmp_ancestor_is_rejected(monkeypatch):
         shutil.rmtree(unsafe_root, ignore_errors=True)
 
 
-def test_child_environment_rejects_tmp_root_and_accepts_supplied_safe_root(
-    tmp_path, monkeypatch,
-):
+def test_child_environment_rejects_tmp_root_and_accepts_supplied_safe_root(monkeypatch):
     unsafe_root = Path(tempfile.mkdtemp(prefix="phase4b-unsafe-", dir="/tmp"))
     try:
         with pytest.raises(EnvironmentValidationError) as raised:
@@ -264,12 +262,22 @@ def test_child_environment_rejects_tmp_root_and_accepts_supplied_safe_root(
     finally:
         shutil.rmtree(unsafe_root, ignore_errors=True)
 
-    settings, roots = _settings(tmp_path, monkeypatch)
-    child = build_child_environment(settings)
+    safe_root = Path(
+        tempfile.mkdtemp(
+            prefix="task7-environment-safe-",
+            dir=Path(__file__).resolve().parents[2].parent,
+        )
+    )
+    try:
+        safe_root.chmod(0o700)
+        settings, roots = _settings(safe_root, monkeypatch)
+        child = build_child_environment(settings)
 
-    assert child["TRADING_DATA_ROOT"] == str(roots["data_root"])
-    assert child["TRADING_REPORTS_DIR"] == str(roots["reports_dir"])
-    assert child["TRADING_SIGNAL_OUTPUT_DIR"] == str(roots["signal_output_dir"])
+        assert child["TRADING_DATA_ROOT"] == str(roots["data_root"])
+        assert child["TRADING_REPORTS_DIR"] == str(roots["reports_dir"])
+        assert child["TRADING_SIGNAL_OUTPUT_DIR"] == str(roots["signal_output_dir"])
+    finally:
+        shutil.rmtree(safe_root, ignore_errors=True)
 
 
 @pytest.mark.parametrize("root_name", ["reports_dir", "signal_output_dir", "scratch_home"])
