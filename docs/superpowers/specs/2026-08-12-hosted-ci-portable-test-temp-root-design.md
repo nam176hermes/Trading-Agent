@@ -4,12 +4,23 @@
 
 `BLOCKER_CLASSIFICATION: SOURCE_OWNED_PORTABLE_TEST_FIXTURE_DEFECT`
 
-The Foundation job reached the repaired portable audit and reported
-`result=PASS` for `f00c35893d8664dfdac6d0727bd05df35527a53a`.  The later
-`FileNotFoundError` failures are therefore not a portable-authority regression
-and not an unavailable-host condition.  They are caused by committed tests
-that explicitly create fixtures below the former developer-specific directory
-`/home/thenam176/.cache`, which does not exist on a fresh hosted runner.
+Foundation run
+[`31619647114`](https://github.com/nam176hermes/Trading-Agent/actions/runs/31619647114)
+ran `f00c35893d8664dfdac6d0727bd05df35527a53a` on
+`codex/phase1-terra-autopilot-19627785c140`.  Its portable audit emitted the
+following exact line before the test phase:
+
+```text
+head=f00c35893d8664dfdac6d0727bd05df35527a53a branch=codex/phase1-terra-autopilot-19627785c140 status=clean authority_mode=portable components=core,backend,dashboard result=PASS
+```
+
+Later in the same pre-temp-root-repair run, tests failed with
+`FileNotFoundError` for `/home/thenam176/.cache/task7-environment-*` and the
+aggregate was `66 failed, 5208 passed, 281 skipped, 29 deselected, 201
+errors`.  This observed sequence establishes that the repaired portable audit
+was not the failing gate, while the literal fixture root is the repeated
+source-owned cause.  It does not close hosted CI: the post-repair
+`make ci-portable` hosted gate remains required.
 
 `make ci-portable` already creates a private `0700`
 `/tmp/trading-agent-ci-portable.XXXXXXXXXX` directory, verifies its owner and
@@ -23,12 +34,18 @@ artifact, manifest, live gate, workflow, or Make target needs to change.
 
 ## Invariant
 
-Every disposable test fixture must be created in a process-owned temporary
-directory, not in a user-specific home directory.  Under `make ci-portable`,
-that directory must be a descendant of the Make-created, owner-verified,
-`0700`, trap-cleaned `TMPDIR`; direct focused test invocation retains
-`tempfile`'s private current-user temporary-directory semantics.  Existing
+This packet prohibits only a statically literal user-home path supplied as the
+`dir` argument to a `tempfile` test-fixture constructor.  Removing such an
+override lets the affected constructor use the process default.  Under
+`make ci-portable`, Make supplies that default through its owner-verified,
+`0700`, trap-cleaned `TMPDIR`, `TEMP`, and `TMP` environment.  Existing
 fixture cleanup and any explicit leaf `chmod(0o700)` remain in place.
+
+This packet does **not** govern deliberate non-home overrides such as the 61
+existing `dir="/tmp"` calls in 42 tracked Python test modules, and does not
+claim every disposable fixture descends from Make's root.  An explicit `dir=`
+always takes precedence over the environment and remains outside this focused
+hosted failure repair.
 
 No test may weaken an asserted runtime identity merely because that identity
 contains an absolute path.  A path supplied to `tempfile` as fixture storage
@@ -81,26 +98,48 @@ fixture repair and must not be edited:
 
 1. **RED — source-level guard.** In
    `tests/consolidation/test_absolute_source_paths.py`, add a focused AST scan
-   over tracked root and legacy Python test files.  It must fail if a call to
-   `tempfile.mkdtemp` or `tempfile.TemporaryDirectory` has a literal
-   `dir=` value beginning `/home/`.  Report `path:line` for every violation.
-   It must inspect only `dir` arguments on those `tempfile` constructors, so
-   it does not mistake runtime/policy identity assertions for fixture setup.
-   On the current head this test fails with exactly the 28 calls in the table.
+   over tracked root and legacy Python test files.  It must report
+   `path:line` for every statically literal user-home directory supplied to
+   `tempfile.mkdtemp` or `tempfile.TemporaryDirectory`, and fail when that
+   report is non-empty.  The visitor must:
+
+   - resolve `import tempfile as alias`, `from tempfile import mkdtemp`, and
+     `from tempfile import TemporaryDirectory`, including aliases of the
+     direct imports;
+   - recognize both a selected `tempfile` module attribute and a selected
+     direct-import name as one of the two constructors;
+   - inspect a named `dir=`, the third positional argument (index two) for
+     either constructor, and a statically knowable
+     `**{"dir": value}` dictionary expansion;
+   - recognize a literal string beginning `/home/` and a simple
+     `Path("/home/...")` expression as a literal user-home directory; and
+   - inspect only those constructor directory arguments, not unrelated
+     policy/runtime/historical string assertions.
+
+   Focused AST-snippet unit cases will prove rejection of direct, module-aliased,
+   direct-import-aliased, third-positional, `Path`, and static-`**kwargs`
+   forms.  They will also prove that `/tmp`, dynamically computed directory
+   expressions, and a policy literal that is not a selected constructor
+   directory argument are not selected.  No global monkeypatch is involved.
+   On the current head the production scan fails with exactly the 28 calls in
+   the table.
 2. **RED — Make propagation proof.** In
    `tests/foundation/test_d0_closure.py`, add the portable analogue of the
    existing private-CI assertion.  It must require the `ci-portable` recipe to
    create `trading-agent-ci-portable`, `chmod 0700`, assert
    `uid:700`, install the cleanup trap, and invoke `ci-portable-private` with
-   all three of `TMPDIR`, `TEMP`, and `TMP` set to `ci_tmpdir`.  This locks the
-   only supported source of the portable test root and proves all commands
-   below that Make invocation inherit it.
+   all three of `TMPDIR`, `TEMP`, and `TMP` set to `ci_tmpdir`.  This proves
+   the portable Make invocation supplies its default temporary root to child
+   commands; it deliberately makes no claim about calls with an explicit
+   `dir=` override.
 3. **GREEN.** Remove only the 28 literal `dir=` overrides listed above.  The
    constructors then use inherited `tempfile` selection; cleanup and modes
    remain as they were.
 4. Run the two new tests plus the touched-module tests.  The scanner passing
-   proves no portable test fixture can bypass Make with a user-home literal;
-   the Make assertion proves `ci-portable` supplies the owned temporary root.
+   proves no selected `tempfile` fixture constructor has a literal user-home
+   root; the Make assertion proves `ci-portable` supplies the owned default
+   temporary root.  Neither assertion claims to govern explicit non-home
+   overrides.
 
 The first regression is intentionally source-oriented rather than a global
 `tempfile` monkeypatch.  It catches every committed literal bypass regardless
@@ -130,7 +169,7 @@ runtime identity assertions and avoiding process-wide test behavior changes.
 Allowed implementation changes are the 16 test modules in the table plus:
 
 - `tests/consolidation/test_absolute_source_paths.py` for the exhaustive
-  fixture-root scanner; and
+  user-home fixture-root scanner; and
 - `tests/foundation/test_d0_closure.py` for portable Make-root propagation.
 
 No files under `apps/`, `packages/`, `services/`, `scripts/`, `ops/`,
