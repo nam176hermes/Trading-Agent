@@ -431,17 +431,15 @@ def audit(
     }
     for name, (sentinel, prefix, manifest_path) in _COMPONENTS.items():
         introduction = _introduction(root, sentinel, prefix)
-        revisions = (introduction, head) if portable else (introduction,)
         try:
-            for revision in dict.fromkeys(revisions):
-                if portable:
-                    verify_embedded_snapshot(
-                        authority, root / manifest_path, root, revision,
-                    )
-                else:
-                    verify_snapshot(
-                        authority_path, root / manifest_path, root, revision,
-                    )
+            if portable:
+                verify_embedded_snapshot(
+                    authority, root / manifest_path, root, introduction,
+                )
+            else:
+                verify_snapshot(
+                    authority_path, root / manifest_path, root, introduction,
+                )
         except CliError as error:
             raise error from None
         components[name] = {"introduction": introduction, "result": "PASS"}

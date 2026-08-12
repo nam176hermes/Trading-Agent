@@ -604,6 +604,44 @@ def test_strict_mode_seals_introduction_but_allows_later_component_evolution(
     assert payload["components"]["backend"]["result"] == "PASS"
 
 
+def test_portable_mode_seals_introduction_but_allows_later_backend_component_evolution(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+    target = repository / "legacy/research-backend/main.py"
+    target.write_text("print('legitimate post-import evolution')\n", encoding="utf-8")
+    _git(repository, "add", str(target.relative_to(repository)))
+    _git(repository, "commit", "-qm", "evolve backend after atomic import")
+
+    result = _run(repository, "--portable", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["authority_mode"] == "portable"
+    assert payload["head"] == _git(repository, "rev-parse", "HEAD")
+    assert payload["components"]["backend"]["result"] == "PASS"
+
+
+def test_portable_mode_seals_introduction_but_allows_later_dashboard_component_evolution(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    _remove_authority_repositories(repository)
+    target = repository / "apps/dashboard/src/app.ts"
+    target.write_text("export const safe = false;\n", encoding="utf-8")
+    _git(repository, "add", str(target.relative_to(repository)))
+    _git(repository, "commit", "-qm", "evolve dashboard after atomic import")
+
+    result = _run(repository, "--portable", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["authority_mode"] == "portable"
+    assert payload["head"] == _git(repository, "rev-parse", "HEAD")
+    assert payload["components"]["dashboard"]["result"] == "PASS"
+
+
 def test_portable_flag_rejects_fully_available_authorities(tmp_path: Path) -> None:
     repository = _valid_root(tmp_path)
 
@@ -635,18 +673,39 @@ def test_portable_audit_rejects_partial_external_authority_availability(
     assert result.stderr.strip() == "E_AUTHORITY"
 
 
-def test_portable_audit_still_rejects_component_byte_tamper(tmp_path: Path) -> None:
-    repository = _valid_root(tmp_path)
+def test_portable_audit_rejects_tampered_backend_introduction_snapshot(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path, backend_tamper="modified")
     _remove_authority_repositories(repository)
-    target = repository / "legacy/research-backend/main.py"
-    target.write_text("print('tampered')\n", encoding="utf-8")
-    _git(repository, "add", "--", "legacy/research-backend/main.py")
-    _git(repository, "commit", "-qm", "tamper portable component")
 
     result = _run(repository, "--portable")
 
     assert result.returncode != 0
     assert result.stderr.strip() == "E_TAMPER: legacy/research-backend/main.py"
+
+
+def test_portable_audit_rejects_shallow_history_with_git_object_error(
+    tmp_path: Path,
+) -> None:
+    repository = _valid_root(tmp_path)
+    shallow = tmp_path / "shallow"
+    cloned = subprocess.run(
+        ["git", "clone", "--depth", "1", repository.resolve().as_uri(), str(shallow)],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert cloned.returncode == 0, cloned.stderr
+    assert _git(shallow, "rev-parse", "--is-shallow-repository") == "true"
+    _remove_authority_repositories(shallow)
+
+    result = _run(shallow, "--portable")
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == "E_GIT_OBJECT"
 
 
 def test_portable_audit_rejects_manifest_identity_tamper(tmp_path: Path) -> None:
