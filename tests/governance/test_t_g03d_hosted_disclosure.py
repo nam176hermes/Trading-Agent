@@ -6,6 +6,7 @@ import shlex
 import tempfile
 import subprocess
 import os
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ def _make_targets(source: str) -> dict[str, tuple[str, ...]]:
     return {
         match.group(1): tuple(match.group(2).split())
         for match in re.finditer(
-            r"^([A-Za-z0-9_-]+)[ \t]*:([^=\n]*)$", source, re.MULTILINE
+            r"^([A-Za-z0-9_.-]+)[ \t]*:([^=\n]*)$", source, re.MULTILINE
         )
     }
 
@@ -453,62 +454,249 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     assert portable_source_sequence.index("collect-baseline") < portable_source_sequence.index("run-lane --lane portable-source")
 
 
+class MakeContractError(AssertionError):
+    """The hermetic Make observer cannot prove the guarded launcher contract."""
+
+
+_EXACT_LOCK_SHELL = "RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)"
+_GUARDED_WORDS = frozenset({
+    "scripts.t_g03_capability_topology", "scripts.check_test_governance",
+    "scripts/t_g03_capability_topology.py", "scripts/check_test_governance.py",
+})
+
+
+def _make_logical_lines(source: str) -> list[tuple[int, int, str]]:
+    """Construct complete GNU Make logical lines using trailing-slash parity."""
+    result: list[tuple[int, int, str]] = []
+    start, fragments = 1, []
+    for number, line in enumerate(source.splitlines(), 1):
+        trailing = len(line) - len(line.rstrip("\\"))
+        if trailing % 2:
+            fragments.extend((line[:-1], " "))
+            continue
+        fragments.append(line)
+        result.append((start, number, "".join(fragments)))
+        start, fragments = number + 1, []
+    if fragments:
+        raise MakeContractError(f"unterminated continuation at line {start}")
+    return result
+
+
+def _conditional_quarantine(source: str) -> None:
+    """Fail before projection/process creation for every conditional directive."""
+    errors: list[str] = []
+    stack: list[bool] = []
+    define_depth = 0
+    directive = re.compile(r"^[ \t]*(ifeq|ifneq|ifdef|ifndef|else|endif)\b(.*)$")
+    assignment = re.compile(r"^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*(?:::=|::=|:=|\?=|\+=|=)")
+    rule = re.compile(r"^[^\t #][^:=#]*:(?![=])")
+    for first, last, line in _make_logical_lines(source):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or line.startswith("\t"):
+            continue
+        if define_depth:
+            if re.fullmatch(r"endef(?:\s+#.*)?", stripped):
+                define_depth -= 1
+            continue
+        if re.match(r"define(?:\s|$)", stripped):
+            define_depth += 1
+            continue
+        if assignment.match(line) or rule.match(line):
+            continue
+        match = directive.match(line)
+        if match is None:
+            if re.match(r"^[ \t]*(?:if\w*|else|endif)\b", line):
+                errors.append(f"ambiguous conditional spelling at {first}:{last}")
+            continue
+        word, tail = match.groups()
+        if first != last:
+            errors.append(f"continued conditional directive at {first}:{last}")
+        if word in {"ifeq", "ifneq", "ifdef", "ifndef"}:
+            if not tail.strip():
+                errors.append(f"malformed {word} at {first}:{last}")
+            stack.append(False)
+        elif word == "else":
+            if not stack:
+                errors.append(f"unmatched else at {first}:{last}")
+            elif stack[-1]:
+                errors.append(f"duplicate else at {first}:{last}")
+            else:
+                stack[-1] = True
+            if tail.strip() and re.fullmatch(r"\s*(?:ifeq|ifneq|ifdef|ifndef)\b.+", tail) is None:
+                errors.append(f"malformed else at {first}:{last}")
+        else:
+            if tail.strip():
+                errors.append(f"unexpected endif material at {first}:{last}")
+            if not stack:
+                errors.append(f"unmatched endif at {first}:{last}")
+            else:
+                stack.pop()
+        errors.append(f"conditional directive {word} at {first}:{last}")
+    if define_depth:
+        errors.append("unterminated define body")
+    if stack:
+        errors.append("missing endif")
+    if errors:
+        raise MakeContractError("; ".join(errors))
+
+
+def _approved_recursive_make(line: str) -> bool:
+    """Allow only the checked-in literal root/package6 recursive Make forms."""
+    forms = line.split("$(MAKE)")[1:]
+    if not forms:
+        return False
+    root_targets = _make_targets((ROOT / "Makefile").read_text(encoding="utf-8"))
+    for form in forms:
+        after = re.sub(r"\s+", " ", form.split(";", 1)[0].replace("\\", " ")).strip()
+        if after.startswith("-C native/package6_custodian"):
+            if not re.fullmatch(r'-C native/package6_custodian(?: "BUILD_DIR=\$\$build_dir")?(?: build| test)?', after):
+                return False
+        elif not after or not all(word in root_targets for word in after.split()):
+            return False
+    return True
+
+
+def _prelaunch_quarantine(source: str) -> None:
+    _conditional_quarantine(source)
+    logical = _make_logical_lines(source)
+    shells = [line for _first, _last, line in logical if "$(shell" in line]
+    if shells != [_EXACT_LOCK_SHELL]:
+        raise MakeContractError("unexpected $(shell ...) evaluator")
+    if any(token in source for token in ("$(eval", "${eval", "$(file", "${file", "$(guile", "${guile", "$(load", "${load")):
+        raise MakeContractError("unsafe Make evaluator")
+    if re.search(r"\$\$\{?MAKE\}?", source):
+        raise MakeContractError("shell-level MAKE indirection")
+    if re.search(r"uv\s+run\s+python(?:\s+-m)?\s+['\"]?\$\$", source):
+        raise MakeContractError("shell-variable guarded program position")
+    if any(
+        any(marker in line for marker in _GUARDED_WORDS)
+        and any(token in line for token in ("`", "eval ", " -exec ", "xargs ", "bash -c", "sh -c"))
+        for line in source.splitlines()
+    ):
+        raise MakeContractError("opaque shell evaluator near guarded launcher")
+    if any(re.match(r"^\t[@-]*\+", line) for line in source.splitlines()):
+        raise MakeContractError("recipe + execution escape")
+    for _first, _last, line in logical:
+        if re.match(r"\s*(?:-|s)?include\b", line):
+            raise MakeContractError("included Makefile is not observable")
+        if "$(MAKE)" in line and not _approved_recursive_make(line):
+            raise MakeContractError(f"unapproved recursive Make form: {line}")
+
+
 def _assert_t_g03_make_launch_contract(makefile: str) -> None:
-    """Assert the complete canonical-module launch contract for one Makefile source."""
-
-    topology_commands = _make_module_commands(
-        makefile, "scripts.t_g03_capability_topology",
-    )
-    governance_commands = _make_module_commands(
-        makefile, "scripts.check_test_governance",
-    )
-
-    evidence_root = "$(TEST_EVIDENCE_DIR)"
-    context_path = "$$FOUNDATION_CONTEXT_PATH"
-    topology_arguments = ("--evidence-root", evidence_root, "--foundation-context-path", context_path)
-    assert topology_commands == [
-        ("test-portable-source", ("reserve", *topology_arguments)),
-        ("test-portable-source", ("collect-baseline", *topology_arguments)),
-        ("test-portable-source", ("run-lane", "--lane", "portable-source", *topology_arguments)),
-        ("test-native-capabilities", ("reserve", *topology_arguments)),
-        ("test-native-capabilities", ("run-lane", "--lane", "native-capabilities", *topology_arguments)),
-        ("test-external-authorities", ("reserve", *topology_arguments)),
-        ("test-external-authorities", ("run-lane", "--lane", "external-authorities", *topology_arguments)),
-        ("test-portable-root-remainder", ("collect-baseline", *topology_arguments)),
-        ("test-portable-root-remainder", ("prepare-remainder", *topology_arguments)),
-        ("test-portable-root-remainder", ("run-remainder", *topology_arguments)),
-        ("ci-portable-topology", ("reserve", *topology_arguments)),
-        ("ci-portable-topology", ("run-lane", "--lane", "portable-source", *topology_arguments)),
-        ("ci-portable-topology", ("run-lane", "--lane", "native-capabilities", *topology_arguments)),
-        ("ci-portable-topology", ("run-lane", "--lane", "external-authorities", *topology_arguments)),
-        ("ci-portable-topology", ("aggregate", *topology_arguments)),
-    ]
-    assert governance_commands == [
-        ("check-test-skips", ("--report-dir", "$(TEST_EVIDENCE_DIR)/test-governance")),
-        (
-            "check-test-governance-topology",
-            (
-                "--topology-audit",
-                "--report-dir", "$(TEST_EVIDENCE_DIR)/test-governance-topology",
-                "--topology-evidence-root", evidence_root,
-                "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
-                "--foundation-context-path", context_path,
-            ),
-        ),
-    ]
-    assert len(topology_commands) == 15
-    assert len(governance_commands) == 2
-    assert not _make_direct_file_commands(
-        makefile, "scripts/t_g03_capability_topology.py",
-    )
-    assert not _make_direct_file_commands(makefile, "scripts/check_test_governance.py")
-    assert not _make_noncanonical_guarded_commands(makefile)
-    assert not _make_opaque_guarded_evaluations(makefile)
+    """Observe GNU Make expansion only, with a copied recursive-Make-safe file."""
+    _prelaunch_quarantine(makefile)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        sandbox = Path(raw)
+        source_digest = hashlib.sha256(makefile.encode()).hexdigest()
+        projection = sandbox / "Makefile"
+        replacements = [(match.start(), match.end()) for match in re.finditer(r"\$\(MAKE\)", makefile)]
+        projected = makefile.replace("$(MAKE)", "make-t-g03-noop")
+        assert hashlib.sha256(makefile.encode()).hexdigest() == source_digest
+        assert all("scripts.t_g03_capability_topology" not in makefile[start:end] for start, end in replacements)
+        projection.write_text(projected, encoding="utf-8")
+        env = {
+            "PATH": "/usr/bin:/bin", "HOME": str(sandbox / "home"),
+            "TEST_EVIDENCE_DIR": str(sandbox / "evidence"),
+            "FOUNDATION_CONTEXT_PATH": str(sandbox / "foundation-context.json"),
+            "GITHUB_RUN_ID": "99999999999", "RUNNER_TEMP": str(sandbox / "runner-temp"),
+        }
+        version = subprocess.run(["make", "--version"], env=env, text=True, capture_output=True, check=False)
+        if version.returncode or not version.stdout.startswith("GNU Make"):
+            raise MakeContractError("GNU Make is required")
+        database = subprocess.run(
+            ["make", "--no-builtin-rules", "--no-builtin-variables", "--always-make", "--print-data-base", "--question", "--file", str(projection), "RUNTIME_RELEASE_LOCK_SHA256=" + "0" * 64],
+            cwd=sandbox, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        )
+        if database.returncode not in {0, 1}:
+            raise MakeContractError(f"Make database failed: {database.stdout}")
+        targets = list(_make_targets(makefile))
+        database_targets = set(re.findall(r"^([^\s#:][^:#]*):(?:\s|$)", database.stdout, re.MULTILINE))
+        if set(targets) - database_targets:
+            raise MakeContractError("Make database omitted a concrete root target")
+        observed: list[tuple[str, tuple[str, ...]]] = []
+        seen_spans: set[tuple[str, int, tuple[str, ...]]] = set()
+        trace = re.compile(r":(\d+): target '([^']+)'")
+        for requested in targets:
+            dry = subprocess.run(
+                ["make", "--no-builtin-rules", "--no-builtin-variables", "--always-make", "--dry-run", "--trace", "--file", str(projection), requested, "RUNTIME_RELEASE_LOCK_SHA256=" + "0" * 64],
+                cwd=sandbox, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+            )
+            if dry.returncode:
+                raise MakeContractError(f"Make dry-run failed for {requested}: {dry.stdout}")
+            current: tuple[str, int] | None = None
+            pending: str | None = None
+            for line in dry.stdout.splitlines():
+                if pending is not None:
+                    pending += " " + line.strip()
+                    if (len(pending.rstrip()) - len(pending.rstrip().rstrip("\\"))) % 2:
+                        pending = pending.rstrip()[:-1]
+                        continue
+                    line, pending = pending, None
+                match = trace.search(line)
+                if match:
+                    current = (match.group(2), int(match.group(1)))
+                    continue
+                if current is None:
+                    continue
+                if (len(line.rstrip()) - len(line.rstrip().rstrip("\\"))) % 2:
+                    pending = line.rstrip()[:-1]
+                    continue
+                if "uv run" not in line:
+                    continue
+                try:
+                    lexer = shlex.shlex(line, posix=True, punctuation_chars=";|&")
+                    lexer.whitespace_split, lexer.commenters = True, ""
+                    tokens = list(lexer)
+                except ValueError as exc:
+                    raise MakeContractError(f"unparseable emitted shell command: {line!r}: {exc}") from exc
+                statement: list[str] = []
+                for token in [*tokens, ";"]:
+                    if token not in {";", ";;", "&&", "||", "|", "&"}:
+                        statement.append(token)
+                        continue
+                    index = 0
+                    while index < len(statement) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", statement[index]):
+                        index += 1
+                    argv = tuple(statement[index:])
+                    if argv and argv[0] not in {"echo", "printf"} and "echo" not in argv and any(word in _GUARDED_WORDS for word in argv):
+                        argv = tuple(re.sub(r"\$(?:\{(FOUNDATION_CONTEXT_PATH)\}|(FOUNDATION_CONTEXT_PATH))", env["FOUNDATION_CONTEXT_PATH"], word) for word in argv)
+                        span = (*current, argv)
+                        if span not in seen_spans:
+                            observed.append((current[0], argv))
+                            seen_spans.add(span)
+                    statement = []
+        evidence, context = env["TEST_EVIDENCE_DIR"], env["FOUNDATION_CONTEXT_PATH"]
+        topology = ("--evidence-root", evidence, "--foundation-context-path", context)
+        expected = [
+            ("check-test-skips", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--report-dir", evidence + "/test-governance")), ("check-test-governance-topology", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--topology-audit", "--report-dir", evidence + "/test-governance-topology", "--topology-evidence-root", evidence, "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv", "--foundation-context-path", context)),
+            ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "portable-source", *topology)),
+            ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)),
+            ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)),
+            ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "prepare-remainder", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-remainder", *topology)),
+            ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "portable-source", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "aggregate", *topology)),
+        ]
+        target_order = {target: index for index, target in enumerate(dict.fromkeys(target for target, _argv in expected))}
+        observed.sort(key=lambda entry: target_order.get(entry[0], len(target_order)))
+        if observed != expected:
+            raise MakeContractError(f"noncanonical GNU Make expansion: {observed!r}")
 
 
 def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> None:
     """Break caught: a T-G03 Make launch bypasses the package module boundary."""
     _assert_t_g03_make_launch_contract((ROOT / "Makefile").read_text(encoding="utf-8"))
+
+
+def test_t_g03_make_contract_rejects_call_expansion_that_materializes_a_direct_file() -> None:
+    """Break caught: GNU Make functions materialize a direct-file launcher."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nRUN = uv run python scripts/t_g03_capability_topology.py reserve\n"
+        "future-call-expansion:\n"
+        "\t$(call RUN)\n"
+    )
+
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
 
 
 @pytest.mark.parametrize(
