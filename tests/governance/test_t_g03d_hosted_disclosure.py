@@ -788,12 +788,36 @@ def test_t_g03_conditional_quarantine_rejects_every_root_conditional_before_make
 
 def test_t_g03_conditional_quarantine_accepts_display_and_define_values() -> None:
     """Break caught: inert comments, recipes, define bodies, and continued values are directives."""
-    source = (ROOT / "Makefile").read_text(encoding="utf-8") + "\\n# ifeq (0,1)\\nSAFE_DISPLAY = first \\\\\\n    ifeq literal display data\\ndefine SAFE_TEXT\\nifeq literal define data\\nendef\\nfuture-safe-display:\\n\\t@echo ifeq literal recipe data\\n"
     source = (ROOT / "Makefile").read_text(encoding="utf-8") + "\n" + "\n".join((
         "# ifeq (0,1)", "define SAFE_TEXT", "ifeq literal define data", "endef",
-        "SAFE_DISPLAY = literal ifeq display data", "future-safe-display:", "\t@echo ifeq literal recipe data", "",
+        "SAFE_DISPLAY = literal " + "\\", "ifeq display data", "# continued comment " + "\\", "ifeq comment data",
+        "future-safe-display:", "\t@echo ifeq literal recipe data", "",
     ))
     _assert_t_g03_make_launch_contract(source)
+
+
+@pytest.mark.parametrize("body", (
+    "ifeq (0,1)\nelse\nelse\nendif", "ifeq (0,1)\nelse", "else\nendif",
+    "ifeq", "ifeq (0,1) \\", "ifeq (0,1)\nifdef NEVER\nendif\nendif",
+    "ifeq (0,1)\ndefine HIDDEN\nuv run python scripts/t_g03_capability_topology.py reserve\nendef\nendif",
+))
+def test_t_g03_conditional_quarantine_structural_matrix_starts_no_make(body: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Break caught: structural/inactive conditional routes reach the projection."""
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_kw: pytest.fail("Make started"))
+    with pytest.raises(MakeContractError):
+        _assert_t_g03_make_launch_contract((ROOT / "Makefile").read_text(encoding="utf-8") + "\n" + body + "\n")
+
+
+@pytest.mark.parametrize("suffix", (
+    "\ndefine RUN\nuv run python scripts/t_g03_capability_topology.py reserve\nendef\nfuture-define:\n\t$(call RUN)\n",
+    "\nfuture-target-specific: RUN = uv run python scripts/t_g03_capability_topology.py reserve\nfuture-target-specific:\n\t$(RUN)\n",
+    "\nfuture-prereq: RUN = uv run python scripts/t_g03_capability_topology.py reserve\nfuture-prereq:\n\t$(RUN)\n",
+    "\nfuture-extra:\n\tuv run python -m scripts.t_g03_capability_topology reserve\n",
+))
+def test_t_g03_make_observer_rejects_define_variable_and_exact_inventory_drift(suffix: str) -> None:
+    """Break caught: Make expansion or an extra canonical site drifts the exact inventory."""
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract((ROOT / "Makefile").read_text(encoding="utf-8") + suffix)
 
 
 @pytest.mark.parametrize(
