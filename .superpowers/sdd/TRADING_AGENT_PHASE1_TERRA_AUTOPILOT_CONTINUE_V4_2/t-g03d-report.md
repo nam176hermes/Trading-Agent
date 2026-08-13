@@ -75,3 +75,56 @@
 - No engine build, authority acquisition, external corpus/UV action, service
   mutation, migration, live action, dashboard/generated output, or dependency
   change was performed.
+
+## Round 1/5: dynamic portable-root remainder amendment
+
+The accepted amendment closes the ordinary-root coverage gap without restoring
+a generic root execution:
+
+- `ci-portable-topology` now creates a new private Package6 custody build,
+  rejects anything other than one regular extension, derives its digest, and
+  exports the extension identity to the topology path.  It does not use a
+  pre-existing extension.
+- `test-portable-root-remainder` is invoked before every inventory lane.  The
+  topology tool is the only code that uses bare `tests`, and only for
+  `--collect-only --portable-embedded-proof -m "not runtime_postgres and not
+  host_coupled" -p scripts.test_governance_pytest`.
+- The collector seals a no-clobber collection report, sorted candidate file,
+  and canonical baseline.  The baseline binds the Foundation run/head, locked
+  inventory hash, portable collector policy, custody-extension digest, list
+  digest, collection-report digest, and self-hash.
+- The generated remainder is the exact baseline-minus-62-inventory set and is
+  also sealed as a canonical JSON record and node file.  Its executor accepts
+  only that reopened/generated list and requires every selected result to be
+  an exact passing governance observation.  An empty remainder still emits a
+  sealed empty governance report.
+- Topology governance now preserves collection-time marker deselections for
+  the existing allowlist policy, while its closed root accounting requires the
+  baseline to equal the disjoint remainder execution plus every lane `PASS`
+  execution or valid native/external `DEFERRED` receipt expectation.
+
+### Round-1 TDD and validation
+
+1. A dynamic-new-root-node baseline/remainder test was added first and failed
+   because the collector/remainder interfaces did not exist.  It passes with a
+   synthetic ordinary root node and proves the generated remainder is exactly
+   the set difference.
+2. A generated-list executor test was added first and failed because no
+   remainder executor existed.  It now proves the runner receives only the
+   reopened generated node ID, not `tests` or a directory selector.
+3. A hostile duplicate-inventory-in-remainder test proves a closed-union
+   mismatch fails before it can contribute a green topology aggregate.
+4. `TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run pytest -q` over the focused
+   T-G03D/topology/repository-shape/D0 tests passed: `57 passed`.
+5. The broader governed focused set (excluding one documented pre-existing
+   critical-coverage intermediate-mode expectation) passed: `119 passed, 1
+   deselected`.
+6. A real collection-only baseline was run with a fresh temporary native
+   custody build and supplied GitHub context.  It collected `5832` portable
+   candidates with `29` preserved marker deselections.  The sealed dynamic
+   remainder contained `5770` node IDs.  Full remainder execution was not run:
+   it would execute the complete root suite and is outside the requested
+   source-contract validation on this host.
+7. `make test-portable-source` still passed with supplied nonzero GitHub run
+   context (all exact 32 portable source nodes); `make audit`,
+   `make check-secrets`, and `git diff --check` passed.

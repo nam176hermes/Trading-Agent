@@ -10,7 +10,7 @@
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
 	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private \
-	ci-portable-topology test-portable-source test-native-capabilities test-external-authorities \
+	ci-portable-topology test-portable-root-remainder test-portable-source test-native-capabilities test-external-authorities \
 	check-test-governance-topology
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
@@ -344,11 +344,35 @@ test-external-authorities:
 		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
 
-ci-portable-topology:
+test-portable-root-remainder:
 	@set -eu; \
 		test -n "$${GITHUB_RUN_ID:?}"; \
 		foundation_head=$$(git rev-parse HEAD); \
+		uv run python scripts/t_g03_capability_topology.py collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		uv run python scripts/t_g03_capability_topology.py prepare-remainder --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		uv run python scripts/t_g03_capability_topology.py run-remainder --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
+
+ci-portable-topology:
+	@set -eu; \
+		test -n "$${GITHUB_RUN_ID:?}"; \
+		build_dir=$$(mktemp -d /tmp/package6-custodian-portable-topology.XXXXXXXXXX); \
+		chmod 0700 "$$build_dir"; \
+		cleanup_build_dir() { find -P "$$build_dir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$build_dir"; }; \
+		trap 'cleanup_build_dir' EXIT; \
+		$(MAKE) -C native/package6_custodian "BUILD_DIR=$$build_dir" build; \
+		set -- "$$build_dir"/python/_package6_fd_custody*.so; \
+		if test "$$#" -ne 1 || test -L "$$1" || ! test -f "$$1"; then \
+			printf '%s\n' "portable topology requires exactly one regular native custody extension" >&2; \
+			exit 2; \
+		fi; \
+		extension=$$1; \
+		digest_line=$$(sha256sum -- "$$extension"); \
+		expected_sha256=$${digest_line%% *}; \
+		export PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$extension"; \
+		export PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256"; \
+		foundation_head=$$(git rev-parse HEAD); \
 		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		$(MAKE) test-portable-root-remainder; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \

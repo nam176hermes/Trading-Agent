@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 import json
 import tempfile
+import subprocess
+import os
 from pathlib import Path
 
 import pytest
@@ -85,16 +87,82 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     assert '$(TEST_EVIDENCE_DIR)' in recipe
     assert 'tests/fixtures/t-g03a-hosted-failure-inventory.tsv' in recipe
     assert '"$$GITHUB_RUN_ID"' in recipe
+    topology_recipe = re.search(
+        r"^ci-portable-topology:\n((?:\t.*\n)+)", makefile, re.MULTILINE,
+    )
+    assert topology_recipe is not None
+    sequence = topology_recipe.group(1)
+    assert sequence.index("$(MAKE) test-portable-root-remainder") < sequence.index("run-lane --lane portable-source")
+    remainder_target = re.search(
+        r"^test-portable-root-remainder:\n((?:\t.*\n)+)", makefile, re.MULTILINE,
+    )
+    assert remainder_target is not None
+    remainder_sequence = remainder_target.group(1)
+    assert remainder_sequence.index("collect-baseline") < remainder_sequence.index("prepare-remainder")
+    assert remainder_sequence.index("prepare-remainder") < remainder_sequence.index("run-remainder")
 
 
 def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = False) -> tuple[str, str]:
     run_id = "31641536482"
-    head_sha = "18f22198c65c7bc735aeb848d8fda55209d01e78"
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
     inventory = ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv"
     rows = topology.load_inventory(inventory)
     topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head_sha)
     (evidence / "t-g03a-hosted-failure-inventory.tsv").write_bytes(inventory.read_bytes())
     topology_root = evidence / "capability-topology"
+    ordinary = "tests/ordinary/test_portable.py::test_ordinary"
+    candidates = tuple(sorted([*(row.node_id for row in rows), ordinary]))
+    candidate_bytes = topology._candidate_file_bytes(candidates)
+    collection = {
+        "schema_version": 1,
+        "component": "root",
+        "collection_only": True,
+        "pytest_exit_status": 0,
+        "tests": [{
+            "test_node_id": node, "component": "root", "outcome": "collected", "reason": "", "phase": "collection",
+        } for node in candidates],
+    }
+    collection_bytes = json.dumps(collection, sort_keys=True).encode("utf-8")
+    (topology_root / "portable-root-collection.governance.json").write_bytes(collection_bytes)
+    baseline: dict[str, object] = {
+        "schema_version": topology.BASELINE_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "collector_policy": {
+            **topology.PORTABLE_ROOT_POLICY,
+            "native_custody_extension_sha256": "0" * 64,
+        },
+        "candidate_node_ids": list(candidates),
+        "candidate_file_sha256": topology.hashlib.sha256(candidate_bytes).hexdigest(),
+        "collection_report_sha256": topology.hashlib.sha256(collection_bytes).hexdigest(),
+        "baseline_sha256": "",
+    }
+    baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
+    (topology_root / "portable-root-candidates.txt").write_bytes(candidate_bytes)
+    (topology_root / "portable-root-baseline.json").write_bytes(topology.canonical_json_bytes(baseline))
+    remainder_bytes = topology._candidate_file_bytes((ordinary,))
+    remainder: dict[str, object] = {
+        "schema_version": topology.REMAINDER_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "baseline_sha256": baseline["baseline_sha256"],
+        "remainder_node_ids": [ordinary],
+        "remainder_file_sha256": topology.hashlib.sha256(remainder_bytes).hexdigest(),
+        "remainder_sha256": "",
+    }
+    remainder["remainder_sha256"] = topology._remainder_payload_sha256(remainder)
+    (topology_root / "portable-root-remainder.txt").write_bytes(remainder_bytes)
+    (topology_root / "portable-root-remainder.json").write_bytes(topology.canonical_json_bytes(remainder))
+    (topology_root / "portable-root-remainder.governance.json").write_text(
+        json.dumps({"schema_version": 1, "component": "root", "pytest_exit_status": 0, "tests": [{
+            "test_node_id": ordinary, "component": "root", "outcome": "passed", "reason": "", "phase": "call",
+        }]}),
+        encoding="utf-8",
+    )
     for code in topology.CODE_CLASSIFICATION:
         lane, expected = topology._expected_rows(rows, code)
         state, outcome = {
@@ -161,7 +229,7 @@ def test_topology_audit_discloses_deferred_receipts_without_claiming_pass() -> N
         "external_authorities_status": "DEFERRED",
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
     }
-    assert len(root_records) == 32
+    assert len(root_records) == 33
     assert {record["outcome"] for record in root_records} == {"passed"}
 
 
@@ -253,3 +321,113 @@ def test_topology_runner_merges_sealed_root_with_retained_component_governance(
     assert exit_codes == {"legacy": 0, "dashboard": 0}
     assert disclosure["runtime_proof"] == "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS"
     assert {str(record["component"]) for record in records} == {"root", "legacy", "dashboard"}
+
+
+def test_dynamic_baseline_includes_a_new_ordinary_root_node_and_derives_the_exact_remainder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: portable CI freezes the historical 62 IDs and loses a new root test."""
+    run_id = "31641536482"
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    rows = topology.load_inventory(ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
+    candidates = tuple(sorted([*(row.node_id for row in rows), "tests/ordinary/test_new.py::test_new"] ))
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        extension = Path(raw) / "custody.so"
+        extension.write_bytes(b"verified custody fixture")
+        digest = topology.hashlib.sha256(extension.read_bytes()).hexdigest()
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head_sha)
+        baseline = topology.collect_portable_root_baseline(
+            inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            collector=lambda: candidates,
+        )
+        remainder = topology.prepare_portable_root_remainder(
+            inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+        )
+
+    assert baseline["candidate_node_ids"] == list(candidates)
+    assert remainder["remainder_node_ids"] == ["tests/ordinary/test_new.py::test_new"]
+
+
+def test_remainder_executor_uses_only_the_verified_generated_node_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: the ordinary-root executor broad-runs a directory or replaces its generated list."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha = _write_topology_evidence(evidence)
+        extension = Path(raw) / "custody.so"
+        extension.write_bytes(b"custody")
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv(
+            "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256",
+            topology.hashlib.sha256(extension.read_bytes()).hexdigest(),
+        )
+        selected: list[tuple[str, ...]] = []
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            selected.append(nodes)
+            report.write_text(json.dumps({"schema_version": 1, "component": "root", "pytest_exit_status": 0, "tests": [{
+                "test_node_id": node, "component": "root", "outcome": "passed", "reason": "", "phase": "call",
+            } for node in nodes]}), encoding="utf-8")
+            return nodes
+
+        # Rebuild the sealed baseline with the real custody digest expected by the executor.
+        topology_root = evidence / "capability-topology"
+        baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
+        baseline["collector_policy"]["native_custody_extension_sha256"] = os.environ["PACKAGE6_FD_CUSTODY_EXTENSION_SHA256"]
+        baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
+        (topology_root / "portable-root-baseline.json").write_bytes(topology.canonical_json_bytes(baseline))
+        remainder = json.loads((topology_root / "portable-root-remainder.json").read_text(encoding="utf-8"))
+        remainder["baseline_sha256"] = baseline["baseline_sha256"]
+        remainder["remainder_sha256"] = topology._remainder_payload_sha256(remainder)
+        (topology_root / "portable-root-remainder.json").write_bytes(topology.canonical_json_bytes(remainder))
+        (topology_root / "portable-root-remainder.governance.json").unlink()
+        executed = topology.execute_portable_root_remainder(
+            inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            exact_runner=exact,
+        )
+
+    assert selected == [("tests/ordinary/test_portable.py::test_ordinary",)]
+    assert executed == selected[0]
+
+
+def test_closed_root_accounting_rejects_duplicate_execution_between_remainder_and_inventory() -> None:
+    """Break caught: an inventory node is also counted as an ordinary-root execution."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw)
+        run_id, head_sha = _write_topology_evidence(evidence)
+        topology_root = evidence / "capability-topology"
+        remainder = json.loads((topology_root / "portable-root-remainder.json").read_text(encoding="utf-8"))
+        duplicate = topology.load_inventory(
+            ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+        )[0].node_id
+        remainder["remainder_node_ids"] = sorted([*remainder["remainder_node_ids"], duplicate])
+        contents = topology._candidate_file_bytes(tuple(remainder["remainder_node_ids"]))
+        remainder["remainder_file_sha256"] = topology.hashlib.sha256(contents).hexdigest()
+        remainder["remainder_sha256"] = topology._remainder_payload_sha256(remainder)
+        (topology_root / "portable-root-remainder.txt").write_bytes(contents)
+        (topology_root / "portable-root-remainder.json").write_bytes(topology.canonical_json_bytes(remainder))
+
+        with pytest.raises(topology.TopologyError, match="baseline minus inventory"):
+            topology.reconcile_portable_root_accounting(
+                inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head_sha,
+            )

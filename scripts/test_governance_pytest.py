@@ -230,6 +230,7 @@ class _GovernanceReporter:
             self._record(report.nodeid, "passed", phase="call")
 
     def pytest_sessionfinish(self, session: Any, exitstatus: int) -> None:
+        collection_only = os.environ.get("TEST_GOVERNANCE_COLLECTION_ONLY") == "1"
         candidates: set[Path] = set()
         for selected in self.selected_paths:
             if selected.is_dir():
@@ -260,15 +261,16 @@ class _GovernanceReporter:
                     phase="collection",
                 )
                 session.exitstatus = 1
-        for node_id, current in tuple(self.records.items()):
-            if current["outcome"] == "collected":
-                self._record(
-                    node_id,
-                    "not_run",
-                    reason="collected but not executed",
-                    phase="session",
-                )
-                session.exitstatus = 1
+        if not collection_only:
+            for node_id, current in tuple(self.records.items()):
+                if current["outcome"] == "collected":
+                    self._record(
+                        node_id,
+                        "not_run",
+                        reason="collected but not executed",
+                        phase="session",
+                    )
+                    session.exitstatus = 1
         if self.collection_integrity_failed:
             session.exitstatus = 1
         records = sorted(
@@ -281,6 +283,7 @@ class _GovernanceReporter:
         document = {
             "schema_version": 1,
             "component": self.component,
+            "collection_only": collection_only,
             "pytest_exit_status": int(session.exitstatus),
             "summary": counts,
             "tests": records,

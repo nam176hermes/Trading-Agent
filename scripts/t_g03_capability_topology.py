@@ -21,6 +21,8 @@ from typing import Any
 
 LOCKED_INVENTORY_SHA256 = "99e2e9f0ea91c65fd841a0b81b8948eb6d3967203627d0911c151794737a8bfe"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
+BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v1"
+REMAINDER_SCHEMA = "t-g03a-portable-root-remainder/v1"
 RECEIPT_KEYS = frozenset({
     "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256",
     "lane", "capability_or_authority_code", "expected_node_ids", "collected_node_ids",
@@ -97,6 +99,13 @@ LEGACY_CLOSURE_ENTRIES = (
     ("uv.lock", False),
     ("nautilus_parity_adapter.py", False),
 )
+PORTABLE_ROOT_MARKER = "not runtime_postgres and not host_coupled"
+PORTABLE_ROOT_POLICY = {
+    "governance_plugin": "scripts.test_governance_pytest",
+    "marker_expression": PORTABLE_ROOT_MARKER,
+    "portable_argument": "--portable-embedded-proof",
+    "root_selector": "tests",
+}
 
 
 @dataclass(frozen=True)
@@ -169,7 +178,16 @@ def reserve_topology_evidence(evidence_root: Path, *, run_id: str, head_sha: str
     _prepare_private_evidence_directory(evidence_root)
     topology_root = evidence_root / "capability-topology"
     _prepare_private_evidence_directory(topology_root)
-    targets = [evidence_root / "t-g03a-hosted-failure-inventory.tsv", topology_root / ".reservation"]
+    targets = [
+        evidence_root / "t-g03a-hosted-failure-inventory.tsv",
+        topology_root / ".reservation",
+        topology_root / "portable-root-baseline.json",
+        topology_root / "portable-root-candidates.txt",
+        topology_root / "portable-root-collection.governance.json",
+        topology_root / "portable-root-remainder.json",
+        topology_root / "portable-root-remainder.txt",
+        topology_root / "portable-root-remainder.governance.json",
+    ]
     for code in CODE_CLASSIFICATION:
         targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
     if any(os.path.lexists(path) for path in targets):
@@ -197,6 +215,407 @@ def canonical_json_bytes(document: object) -> bytes:
     return json.dumps(
         document, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _publish_no_clobber(path: Path, content: bytes) -> None:
+    _prepare_private_evidence_directory(path.parent)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _candidate_file_bytes(node_ids: tuple[str, ...]) -> bytes:
+    return ("\n".join(node_ids) + ("\n" if node_ids else "")).encode("utf-8")
+
+
+def _collection_record_path(evidence_root: Path) -> Path:
+    return evidence_root / "capability-topology" / "portable-root-collection.governance.json"
+
+
+def _validate_collection_record(path: Path, candidates: tuple[str, ...]) -> tuple[dict[str, object], ...]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TopologyError("portable root collection report is malformed") from exc
+    if (
+        not isinstance(document, dict)
+        or document.get("collection_only") is not True
+        or document.get("component") != "root"
+        or document.get("pytest_exit_status") != 0
+        or not isinstance(document.get("tests"), list)
+    ):
+        raise TopologyError("portable root collection report has invalid policy")
+    collected: list[str] = []
+    deselected: list[dict[str, object]] = []
+    for item in document["tests"]:
+        if (
+            not isinstance(item, dict)
+            or item.get("component") != "root"
+            or not isinstance(item.get("test_node_id"), str)
+            or item.get("outcome") not in {"collected", "deselected"}
+        ):
+            raise TopologyError("portable root collection reported an execution outcome")
+        if item["outcome"] == "collected":
+            collected.append(str(item["test_node_id"]))
+        else:
+            deselected.append(dict(item))
+    if tuple(sorted(collected)) != candidates or len(collected) != len(candidates):
+        raise TopologyError("portable root collection report drifted from candidate list")
+    deselected_ids = [str(item["test_node_id"]) for item in deselected]
+    if (
+        len(deselected_ids) != len(set(deselected_ids))
+        or set(deselected_ids) & set(candidates)
+    ):
+        raise TopologyError("portable root collection has duplicate or overlapping deselection")
+    return tuple(deselected)
+
+
+def _validate_root_candidates(node_ids: tuple[str, ...]) -> None:
+    if node_ids != tuple(sorted(set(node_ids))):
+        raise TopologyError("portable root candidates are duplicate or unordered")
+    if any(
+        not isinstance(node_id, str)
+        or not node_id.startswith("tests/")
+        or not node_id
+        or any(ord(character) < 0x20 or ord(character) > 0x7E for character in node_id)
+        for node_id in node_ids
+    ):
+        raise TopologyError("portable root candidate is outside the root test tree")
+
+
+def _native_custody_policy() -> dict[str, str]:
+    raw_path = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
+    expected = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256")
+    if not raw_path or not expected or not HEX64.fullmatch(expected):
+        raise TopologyError("portable root collection requires native custody identity")
+    path = Path(raw_path)
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise OSError
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TopologyError("portable root custody extension is unsafe") from exc
+    if digest != expected:
+        raise TopologyError("portable root custody extension digest drift")
+    return {**PORTABLE_ROOT_POLICY, "native_custody_extension_sha256": expected}
+
+
+def _baseline_payload_sha256(document: dict[str, object]) -> str:
+    return _sha256({key: value for key, value in document.items() if key != "baseline_sha256"})
+
+
+def _remainder_payload_sha256(document: dict[str, object]) -> str:
+    return _sha256({key: value for key, value in document.items() if key != "remainder_sha256"})
+
+
+def _installed_inventory_rows(inventory: Path, evidence_root: Path) -> tuple[InventoryRow, ...]:
+    rows = load_inventory(inventory)
+    installed = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
+    if installed.exists():
+        if installed.read_bytes() != inventory.read_bytes():
+            raise TopologyError("installed inventory binding drift")
+    else:
+        install_inventory(inventory, evidence_root)
+    installed_rows = load_inventory(installed)
+    if rows != installed_rows:
+        raise TopologyError("installed inventory row mapping drift")
+    return installed_rows
+
+
+def collect_portable_root_baseline(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    collector: Callable[[], tuple[str, ...]] | None = None,
+) -> dict[str, object]:
+    """Seal the dynamically collected portable root candidate universe."""
+    require_foundation_context(run_id, head_sha)
+    _require_topology_reservation(evidence_root, run_id, head_sha)
+    rows = _installed_inventory_rows(inventory, evidence_root)
+    policy = _native_custody_policy()
+    candidates = _collect_portable_root_candidates(evidence_root) if collector is None else collector()
+    _validate_root_candidates(candidates)
+    inventory_ids = {row.node_id for row in rows}
+    if not inventory_ids <= set(candidates):
+        raise TopologyError("portable root baseline omitted a locked inventory node")
+    topology_root = evidence_root / "capability-topology"
+    collection_report = _collection_record_path(evidence_root)
+    if collector is not None:
+        _publish_no_clobber(
+            collection_report,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "component": "root",
+                    "collection_only": True,
+                    "pytest_exit_status": 0,
+                    "tests": [
+                        {
+                            "test_node_id": node,
+                            "component": "root",
+                            "outcome": "collected",
+                            "reason": "",
+                            "phase": "collection",
+                        }
+                        for node in candidates
+                    ],
+                },
+                sort_keys=True,
+            ).encode("utf-8"),
+        )
+    _validate_collection_record(collection_report, candidates)
+    collection_digest = hashlib.sha256(collection_report.read_bytes()).hexdigest()
+    candidate_bytes = _candidate_file_bytes(candidates)
+    candidate_digest = hashlib.sha256(candidate_bytes).hexdigest()
+    baseline: dict[str, object] = {
+        "schema_version": BASELINE_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "collector_policy": policy,
+        "candidate_node_ids": list(candidates),
+        "candidate_file_sha256": candidate_digest,
+        "collection_report_sha256": collection_digest,
+        "baseline_sha256": "",
+    }
+    baseline["baseline_sha256"] = _baseline_payload_sha256(baseline)
+    _publish_no_clobber(topology_root / "portable-root-candidates.txt", candidate_bytes)
+    _publish_no_clobber(
+        topology_root / "portable-root-baseline.json", canonical_json_bytes(baseline),
+    )
+    return baseline
+
+
+def load_portable_root_baseline(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+) -> dict[str, object]:
+    """Reopen and verify the sealed baseline and candidate file before execution."""
+    _require_topology_reservation(evidence_root, run_id, head_sha)
+    rows = _installed_inventory_rows(inventory, evidence_root)
+    topology_root = evidence_root / "capability-topology"
+    try:
+        raw = (topology_root / "portable-root-baseline.json").read_bytes()
+        baseline = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TopologyError("portable root baseline is missing") from exc
+    required = {
+        "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256",
+        "collector_policy", "candidate_node_ids", "candidate_file_sha256", "collection_report_sha256", "baseline_sha256",
+    }
+    if not isinstance(baseline, dict) or set(baseline) != required or canonical_json_bytes(baseline) != raw:
+        raise TopologyError("portable root baseline is noncanonical or malformed")
+    if (
+        baseline["schema_version"] != BASELINE_SCHEMA
+        or baseline["foundation_run_id"] != run_id
+        or baseline["foundation_head_sha"] != head_sha
+        or baseline["inventory_sha256"] != LOCKED_INVENTORY_SHA256
+        or baseline["baseline_sha256"] != _baseline_payload_sha256(baseline)
+        or not isinstance(baseline["collector_policy"], dict)
+    ):
+        raise TopologyError("portable root baseline binding drift")
+    policy = baseline["collector_policy"]
+    if (
+        set(policy) != {*PORTABLE_ROOT_POLICY, "native_custody_extension_sha256"}
+        or any(policy.get(key) != value for key, value in PORTABLE_ROOT_POLICY.items())
+        or not isinstance(policy.get("native_custody_extension_sha256"), str)
+        or not HEX64.fullmatch(str(policy["native_custody_extension_sha256"]))
+    ):
+        raise TopologyError("portable root collector policy drift")
+    values = baseline["candidate_node_ids"]
+    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+        raise TopologyError("portable root baseline candidates are malformed")
+    candidates = tuple(values)
+    _validate_root_candidates(candidates)
+    candidate_bytes = _candidate_file_bytes(candidates)
+    if (topology_root / "portable-root-candidates.txt").read_bytes() != candidate_bytes:
+        raise TopologyError("portable root candidate file drift")
+    if baseline["candidate_file_sha256"] != hashlib.sha256(candidate_bytes).hexdigest():
+        raise TopologyError("portable root candidate digest drift")
+    if (
+        not isinstance(baseline["collection_report_sha256"], str)
+        or not HEX64.fullmatch(baseline["collection_report_sha256"])
+        or baseline["collection_report_sha256"]
+        != hashlib.sha256(_collection_record_path(evidence_root).read_bytes()).hexdigest()
+    ):
+        raise TopologyError("portable root collection report digest drift")
+    _validate_collection_record(_collection_record_path(evidence_root), candidates)
+    if not {row.node_id for row in rows} <= set(candidates):
+        raise TopologyError("portable root baseline omitted a locked inventory node")
+    return baseline
+
+
+def prepare_portable_root_remainder(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+) -> dict[str, object]:
+    """Generate the exact ordinary-root list from the verified dynamic baseline."""
+    require_foundation_context(run_id, head_sha)
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+    )
+    rows = _installed_inventory_rows(inventory, evidence_root)
+    candidates = tuple(baseline["candidate_node_ids"])
+    remainder = tuple(sorted(set(candidates) - {row.node_id for row in rows}))
+    _validate_root_candidates(remainder)
+    topology_root = evidence_root / "capability-topology"
+    remainder_bytes = _candidate_file_bytes(remainder)
+    document: dict[str, object] = {
+        "schema_version": REMAINDER_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "baseline_sha256": baseline["baseline_sha256"],
+        "remainder_node_ids": list(remainder),
+        "remainder_file_sha256": hashlib.sha256(remainder_bytes).hexdigest(),
+        "remainder_sha256": "",
+    }
+    document["remainder_sha256"] = _remainder_payload_sha256(document)
+    _publish_no_clobber(topology_root / "portable-root-remainder.txt", remainder_bytes)
+    _publish_no_clobber(
+        topology_root / "portable-root-remainder.json", canonical_json_bytes(document),
+    )
+    return document
+
+
+def _collect_portable_root_candidates(evidence_root: Path) -> tuple[str, ...]:
+    """Run the one permitted broad root selector in collection-only mode."""
+    report = evidence_root / "capability-topology" / "portable-root-collection.governance.json"
+    environment = dict(
+        os.environ,
+        TEST_GOVERNANCE_REPORT=str(report),
+        TEST_GOVERNANCE_COMPONENT="root",
+        TEST_GOVERNANCE_NO_CLOBBER="1",
+        TEST_GOVERNANCE_COLLECTION_ONLY="1",
+    )
+    command = [
+        sys.executable, "-m", "pytest", "-q", "--collect-only",
+        "--portable-embedded-proof", "-m", PORTABLE_ROOT_MARKER,
+        "-p", "scripts.test_governance_pytest", "tests",
+    ]
+    completed = subprocess.run(command, stdin=subprocess.DEVNULL, env=environment, check=False)
+    if completed.returncode != 0 or not report.is_file():
+        raise TopologyError("portable root baseline collection failed")
+    document = json.loads(report.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not isinstance(document.get("tests"), list):
+        raise TopologyError("portable root collection report is malformed")
+    result = tuple(sorted(
+        str(item["test_node_id"])
+        for item in document["tests"]
+        if isinstance(item, dict) and item.get("outcome") == "collected" and isinstance(item.get("test_node_id"), str)
+    ))
+    _validate_root_candidates(result)
+    _validate_collection_record(report, result)
+    return result
+
+
+def _load_portable_root_remainder(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+    )
+    topology_root = evidence_root / "capability-topology"
+    try:
+        raw = (topology_root / "portable-root-remainder.json").read_bytes()
+        document = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TopologyError("portable root remainder is missing") from exc
+    required = {
+        "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256",
+        "baseline_sha256", "remainder_node_ids", "remainder_file_sha256", "remainder_sha256",
+    }
+    if not isinstance(document, dict) or set(document) != required or canonical_json_bytes(document) != raw:
+        raise TopologyError("portable root remainder is noncanonical or malformed")
+    if (
+        document["schema_version"] != REMAINDER_SCHEMA
+        or document["foundation_run_id"] != run_id
+        or document["foundation_head_sha"] != head_sha
+        or document["inventory_sha256"] != LOCKED_INVENTORY_SHA256
+        or document["baseline_sha256"] != baseline["baseline_sha256"]
+        or document["remainder_sha256"] != _remainder_payload_sha256(document)
+        or not isinstance(document["remainder_node_ids"], list)
+        or any(not isinstance(node, str) for node in document["remainder_node_ids"])
+    ):
+        raise TopologyError("portable root remainder binding drift")
+    remainder = tuple(document["remainder_node_ids"])
+    _validate_root_candidates(remainder)
+    expected = tuple(sorted(set(baseline["candidate_node_ids"]) - {row.node_id for row in _installed_inventory_rows(inventory, evidence_root)}))
+    if remainder != expected:
+        raise TopologyError("portable root remainder is not baseline minus inventory")
+    contents = _candidate_file_bytes(remainder)
+    if (topology_root / "portable-root-remainder.txt").read_bytes() != contents:
+        raise TopologyError("portable root remainder file drift")
+    if document["remainder_file_sha256"] != hashlib.sha256(contents).hexdigest():
+        raise TopologyError("portable root remainder digest drift")
+    return document, remainder
+
+
+def _validate_exact_governance_record(path: Path, expected: tuple[str, ...]) -> tuple[str, ...]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TopologyError("exact governance record is malformed") from exc
+    if (
+        not isinstance(document, dict)
+        or document.get("component") != "root"
+        or document.get("pytest_exit_status") != 0
+        or not isinstance(document.get("tests"), list)
+    ):
+        raise TopologyError("exact governance record is not a passing root report")
+    records = document["tests"]
+    observed: list[str] = []
+    for item in records:
+        if (
+            not isinstance(item, dict)
+            or item.get("component") != "root"
+            or item.get("outcome") != "passed"
+            or item.get("wasxfail")
+            or not isinstance(item.get("test_node_id"), str)
+        ):
+            raise TopologyError("exact governance record has a non-passing outcome")
+        observed.append(str(item["test_node_id"]))
+    result = tuple(sorted(observed))
+    if result != expected or len(records) != len(expected):
+        raise TopologyError("exact governance record does not match selected nodes")
+    return result
+
+
+def execute_portable_root_remainder(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] | None = None,
+) -> tuple[str, ...]:
+    """Execute the sealed ordinary-root list exactly once, including an empty list."""
+    require_foundation_context(run_id, head_sha)
+    current_policy = _native_custody_policy()
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+    )
+    if baseline["collector_policy"] != current_policy:
+        raise TopologyError("portable root custody identity drift")
+    _, remainder = _load_portable_root_remainder(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+    )
+    report = evidence_root / "capability-topology" / "portable-root-remainder.governance.json"
+    if remainder:
+        runner = _run_exact if exact_runner is None else exact_runner
+        selected = runner(remainder, report)
+        if selected != remainder:
+            raise TopologyError("portable root remainder runner changed the generated list")
+    else:
+        _publish_no_clobber(
+            report,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "component": "root",
+                    "pytest_exit_status": 0,
+                    "summary": {},
+                    "tests": [],
+                },
+                sort_keys=True,
+            ).encode("utf-8"),
+        )
+    return _validate_exact_governance_record(report, remainder)
 
 
 def _sha256(document: object) -> str:
@@ -315,6 +734,48 @@ def aggregate_receipts(
         "external_authorities_status": statuses["external-authorities"],
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS" if "DEFERRED" in statuses.values() else "COMPLETE",
     }
+
+
+def reconcile_portable_root_accounting(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+) -> dict[str, object]:
+    """Require the dynamic baseline to be a closed one-execution-or-deferred union."""
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+    )
+    _, remainder = _load_portable_root_remainder(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+    )
+    executed_remainder = _validate_exact_governance_record(
+        evidence_root / "capability-topology" / "portable-root-remainder.governance.json",
+        remainder,
+    )
+    rows = _installed_inventory_rows(inventory, evidence_root)
+    topology_root = evidence_root / "capability-topology"
+    receipt_paths = [topology_root / f"{code}.json" for code in sorted(CODE_CLASSIFICATION)]
+    disclosure = aggregate_receipts(
+        receipt_paths, rows=rows, foundation_run_id=run_id, foundation_head_sha=head_sha,
+    )
+    accounted: list[str] = list(executed_remainder)
+    for path in receipt_paths:
+        receipt = validate_receipt(
+            path.read_bytes(), rows=rows, foundation_run_id=run_id, foundation_head_sha=head_sha,
+        )
+        expected = tuple(receipt["expected_node_ids"])
+        code = str(receipt["capability_or_authority_code"])
+        governance = topology_root / f"{code}.governance.json"
+        if receipt["outcome"] == "PASS":
+            accounted.extend(_validate_exact_governance_record(governance, expected))
+        else:
+            if os.path.lexists(governance):
+                raise TopologyError("deferred receipt has an execution record")
+            accounted.extend(expected)
+    candidates = tuple(baseline["candidate_node_ids"])
+    if len(accounted) != len(set(accounted)):
+        raise TopologyError("portable root accounting has duplicate execution or deferral")
+    if tuple(sorted(accounted)) != candidates:
+        raise TopologyError("portable root accounting union does not equal baseline")
+    return {**disclosure, "portable_root_remainder_status": "PASS", "baseline_candidate_count": str(len(candidates))}
 
 
 def make_receipt(*, run_id: str, head_sha: str, lane: str, code: str, expected: tuple[str, ...], collected: tuple[str, ...], state: str, fact: str, outcome: str) -> dict[str, object]:
@@ -584,7 +1045,15 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(report.parent, 0o700)
     environment = dict(os.environ, TEST_GOVERNANCE_REPORT=str(report), TEST_GOVERNANCE_COMPONENT="root", TEST_GOVERNANCE_NO_CLOBBER="1")
-    completed = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "scripts.test_governance_pytest", *nodes], stdin=subprocess.DEVNULL, env=environment, check=False)
+    completed = subprocess.run(
+        [
+            sys.executable, "-m", "pytest", "-q", "--portable-embedded-proof",
+            "-m", PORTABLE_ROOT_MARKER, "-p", "scripts.test_governance_pytest", *nodes,
+        ],
+        stdin=subprocess.DEVNULL,
+        env=environment,
+        check=False,
+    )
     if completed.returncode != 0 or not report.is_file():
         raise TopologyError("selected pytest collection or execution failed")
     document = json.loads(report.read_text(encoding="utf-8"))
@@ -610,15 +1079,7 @@ def run_lane(
 ) -> list[Path]:
     require_foundation_context(run_id, head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha)
-    rows = load_inventory(inventory)
-    installed = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
-    if installed.exists():
-        if installed.read_bytes() != inventory.read_bytes():
-            raise TopologyError("installed inventory binding drift")
-        load_inventory(installed)
-    else:
-        installed = install_inventory(inventory, evidence_root)
-    rows = load_inventory(installed)
+    rows = _installed_inventory_rows(inventory, evidence_root)
     publications: list[Path] = []
     for code in sorted(CODE_CLASSIFICATION):
         expected_lane, expected = _expected_rows(rows, code)
@@ -638,7 +1099,9 @@ def run_lane(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("reserve", "run-lane", "aggregate"))
+    parser.add_argument("action", choices=(
+        "reserve", "collect-baseline", "prepare-remainder", "run-remainder", "run-lane", "aggregate",
+    ))
     parser.add_argument("--lane", choices=tuple(CLASSIFICATION_LANE.values()))
     parser.add_argument("--inventory", type=Path, default=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     parser.add_argument("--evidence-root", type=Path, required=True)
@@ -649,14 +1112,30 @@ def main(argv: list[str] | None = None) -> int:
         require_foundation_context(args.foundation_run_id, args.foundation_head_sha)
         if args.action == "reserve":
             reserve_topology_evidence(args.evidence_root, run_id=args.foundation_run_id, head_sha=args.foundation_head_sha)
+        elif args.action == "collect-baseline":
+            collect_portable_root_baseline(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+            )
+        elif args.action == "prepare-remainder":
+            prepare_portable_root_remainder(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+            )
+        elif args.action == "run-remainder":
+            execute_portable_root_remainder(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+            )
         elif args.action == "run-lane":
             if args.lane is None:
                 raise TopologyError("run-lane requires --lane")
             run_lane(lane=args.lane, inventory=args.inventory, evidence_root=args.evidence_root, run_id=args.foundation_run_id, head_sha=args.foundation_head_sha)
         else:
-            rows = load_inventory(args.inventory)
-            paths = sorted((args.evidence_root / "capability-topology").glob("*.json"))
-            print(canonical_json_bytes(aggregate_receipts(paths, rows=rows, foundation_run_id=args.foundation_run_id, foundation_head_sha=args.foundation_head_sha)).decode("utf-8"))
+            print(canonical_json_bytes(reconcile_portable_root_accounting(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+            )).decode("utf-8"))
     except (TopologyError, OSError, ValueError) as exc:
         print(f"t-g03 capability topology: {exc}", file=sys.stderr)
         return 2

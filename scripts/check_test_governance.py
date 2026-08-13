@@ -772,14 +772,27 @@ def audit_topology_root_records(
         capability_topology._require_topology_reservation(
             evidence_root, foundation_run_id, foundation_head_sha,
         )
-        source_rows = capability_topology.load_inventory(inventory)
-        installed = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
-        if installed.read_bytes() != inventory.read_bytes():
-            raise GovernanceError("installed topology inventory binding drift")
-        rows = capability_topology.load_inventory(installed)
-        if rows != source_rows:
-            raise GovernanceError("installed topology inventory row mapping drift")
+        rows = capability_topology._installed_inventory_rows(inventory, evidence_root)
         topology_root = evidence_root / "capability-topology"
+        baseline = capability_topology.load_portable_root_baseline(
+            inventory=inventory,
+            evidence_root=evidence_root,
+            run_id=foundation_run_id,
+            head_sha=foundation_head_sha,
+        )
+        collection_deselections = capability_topology._validate_collection_record(
+            topology_root / "portable-root-collection.governance.json",
+            tuple(baseline["candidate_node_ids"]),
+        )
+        _, remainder = capability_topology._load_portable_root_remainder(
+            inventory=inventory,
+            evidence_root=evidence_root,
+            run_id=foundation_run_id,
+            head_sha=foundation_head_sha,
+        )
+        remainder_records = capability_topology._validate_exact_governance_record(
+            topology_root / "portable-root-remainder.governance.json", remainder,
+        )
         receipts = [
             topology_root / f"{code}.json"
             for code in sorted(capability_topology.CODE_CLASSIFICATION)
@@ -790,7 +803,18 @@ def audit_topology_root_records(
             foundation_run_id=foundation_run_id,
             foundation_head_sha=foundation_head_sha,
         )
-        root_records: list[dict[str, object]] = []
+        root_records: list[dict[str, object]] = [
+            {
+                "test_node_id": node,
+                "component": "root",
+                "outcome": "passed",
+                "reason": "",
+                "phase": "call",
+            }
+            for node in remainder_records
+        ]
+        root_records.extend(collection_deselections)
+        accounted = list(remainder_records)
         for receipt_path in receipts:
             receipt = capability_topology.validate_receipt(
                 receipt_path.read_bytes(),
@@ -799,12 +823,14 @@ def audit_topology_root_records(
                 foundation_head_sha=foundation_head_sha,
             )
             code = str(receipt["capability_or_authority_code"])
+            expected = tuple(receipt["expected_node_ids"])
             governance_path = topology_root / f"{code}.governance.json"
             if receipt["outcome"] == "DEFERRED":
                 if os.path.lexists(governance_path):
                     raise GovernanceError(
                         f"deferred receipt {code} has a root governance record"
                     )
+                accounted.extend(expected)
                 continue
             metadata = governance_path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
@@ -814,7 +840,6 @@ def audit_topology_root_records(
                 raise GovernanceError(f"root governance record for {code} is malformed")
             if document.get("pytest_exit_status") != 0 or not isinstance(document.get("tests"), list):
                 raise GovernanceError(f"root governance record for {code} is not a passing pytest report")
-            expected = tuple(receipt["expected_node_ids"])
             observed: list[dict[str, object]] = []
             for index, item in enumerate(document["tests"]):
                 record = _validate_observation(item, index)
@@ -829,8 +854,11 @@ def audit_topology_root_records(
                     f"root topology governance record for {code} does not exactly match its receipt"
                 )
             root_records.extend(observed)
-        if len({str(record["test_node_id"]) for record in root_records}) != len(root_records):
+            accounted.extend(observed_nodes)
+        if len(accounted) != len(set(accounted)):
             raise GovernanceError("root topology governance records overlap")
+        if tuple(sorted(accounted)) != tuple(baseline["candidate_node_ids"]):
+            raise GovernanceError("root topology governance accounting does not equal baseline")
         return disclosure, root_records
     except (capability_topology.TopologyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise GovernanceError(f"root topology governance audit failed: {exc}") from exc
