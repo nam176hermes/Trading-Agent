@@ -57,6 +57,31 @@ def _private_fakeroot_test_root() -> Path:
     return root
 
 
+def _dynamic_provision_test_root(prefix: str) -> tempfile.TemporaryDirectory[str]:
+    return tempfile.TemporaryDirectory(
+        prefix=prefix,
+        dir=_private_fakeroot_test_root(),
+    )
+
+
+def test_dynamic_provision_fixture_root_has_verifier_safe_ancestry() -> None:
+    trusted_anchor = _private_fakeroot_test_root()
+    with _dynamic_provision_test_root("phase4b-private-root-") as raw:
+        fixture_root = Path(raw)
+
+        assert trusted_anchor in fixture_root.parents
+        current = fixture_root
+        while True:
+            info = current.lstat()
+            assert stat.S_ISDIR(info.st_mode)
+            assert info.st_uid == os.geteuid()
+            assert info.st_gid == os.getegid()
+            assert stat.S_IMODE(info.st_mode) & (0o022 | 0o7000) == 0
+            if current == trusted_anchor:
+                break
+            current = current.parent
+
+
 def _assert_exact_safe_environment(path: Path) -> None:
     assignments = [
         line
@@ -860,9 +885,7 @@ def test_fakeroot_rejects_unexpected_staged_file_owner(tmp_path: Path) -> None:
 
 def test_trusted_snapshot_does_not_depend_on_volatile_run(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(
-        prefix="phase4b-persistent-snapshot-",
-    ) as raw:
+    with _dynamic_provision_test_root("phase4b-persistent-snapshot-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -892,7 +915,7 @@ def _write_db_envs(root: Path, *jobs_extra_lines: str) -> tuple[Path, Path]:
 
 def test_dynamic_staged_install_is_idempotent_and_secret_safe(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-provision-") as raw:
+    with _dynamic_provision_test_root("phase4b-provision-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -921,7 +944,7 @@ def test_dynamic_staged_install_is_idempotent_and_secret_safe(tmp_path: Path) ->
 
 def test_dynamic_staged_install_rejects_missing_extra_tamper_mode_links_and_special_files(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-reject-") as raw:
+    with _dynamic_provision_test_root("phase4b-reject-") as raw:
         native = Path(raw)
         for mutation in (
             "missing", "extra", "metadata_extra", "tamper", "bin_true", "mode",
@@ -969,7 +992,7 @@ def test_dynamic_staged_install_rejects_missing_extra_tamper_mode_links_and_spec
 
 def test_dynamic_partial_failure_never_overwrites_and_is_retryable(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-partial-") as raw:
+    with _dynamic_provision_test_root("phase4b-partial-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -999,7 +1022,7 @@ def test_dynamic_partial_failure_never_overwrites_and_is_retryable(tmp_path: Pat
 
 def test_dynamic_copy_tamper_is_rejected_before_release_publication(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-copy-tamper-") as raw:
+    with _dynamic_provision_test_root("phase4b-copy-tamper-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -1019,7 +1042,7 @@ def test_dynamic_copy_tamper_is_rejected_before_release_publication(tmp_path: Pa
 
 def test_dynamic_staged_unit_swap_cannot_publish_unverified_bytes(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-unit-race-") as raw:
+    with _dynamic_provision_test_root("phase4b-unit-race-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         approved_unit = ROOT / "ops/systemd/trading-job-api.service"
@@ -1044,7 +1067,7 @@ def test_dynamic_staged_unit_swap_cannot_publish_unverified_bytes(tmp_path: Path
 
 def test_dynamic_user_local_unit_shadow_blocks_before_install(tmp_path: Path) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-shadow-") as raw:
+    with _dynamic_provision_test_root("phase4b-shadow-") as raw:
         native = Path(raw)
         stage, digest = _fixture_stage(native)
         install_root = native / "root"
@@ -1063,7 +1086,7 @@ def test_dynamic_database_env_rejects_duplicate_user_and_password_without_leak(
     tmp_path: Path,
 ) -> None:
     del tmp_path
-    with tempfile.TemporaryDirectory(prefix="phase4b-db-env-reject-") as raw:
+    with _dynamic_provision_test_root("phase4b-db-env-reject-") as raw:
         native = Path(raw)
         for name, duplicate in (
             ("user", "TRADING_DATABASE_USER=trading_owner"),
