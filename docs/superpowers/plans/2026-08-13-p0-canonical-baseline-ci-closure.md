@@ -2458,3 +2458,24 @@ P0-05 must run the exact five locked nodes and review signed-runtime versus
 simulated-ownership behavior, adding source or test changes only for a
 demonstrated RED. It must not update unresolved/closure TSVs. P0-06 alone owns
 the atomic 32-row closure schema and inventory mutation.
+
+### Evidence-corrected P0-05R
+
+P0-05's exact five identity fixtures are qualified, but the full provision
+module exposes four dynamic `unshare` fixture failures that must be repaired
+before P0-06. The dynamic tests create their synthetic destination root below
+default `/tmp`, so the unchanged release verifier reaches that fixture through
+the group/world-writable mode-1777 `/tmp` ancestor and rejects it before the
+tests reach their intended provisioning assertions. Running the same four
+nodes with only the temporary-directory anchor moved beneath the current
+user-owned mode-0700 `/run/user/<euid>` directory passes, confirming fixture
+ancestry as the root cause and confirming that `unshare` is available.
+
+P0-05R may change only the test fixture construction: the dynamic harness root
+must use a safely created, current-user-owned private ancestor whose descendants
+meet the production verifier's ownership and mode expectations. It must retain
+real `unshare --user --map-root-user` execution, test-owned bounded cleanup, and
+strict production verification. Production provisioning scripts, release
+policy, inventories, dependencies, runtime state, and live gates remain
+unchanged. The full provision module and the exact five P0-05 locked nodes must
+pass before P0-06 may begin.
