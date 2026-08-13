@@ -103,17 +103,21 @@ dependency.
 The following interfaces are proposed, not current Make targets:
 
 ```text
-immutable 62-node inventory (hash bound)
+audited portable root candidate collection
               |
-  collection-completeness verifier
-     /             |              \
-portable-source native-capability external-authority
-     |             |              |
-  execute       preflight/run    preflight/run
-     \             |              /
-        sealed exact-node receipts
-                  |
- controller aggregation (never a false GREEN)
+  +-----------+------------------------+
+  |                                    |
+portable-root-remainder       immutable 62-node inventory (hash bound)
+  |                                    |
+exact generated-node run        collection-completeness verifier
+                                       /             |              \
+                              portable-source native-capability external-authority
+                                       |             |              |
+                                    execute       preflight/run    preflight/run
+                                       \             |              /
+                                  sealed root/lane evidence
+                                              |
+                               controller aggregation (never a false GREEN)
 ```
 
 ### Hosted `ci-portable` root-test routing
@@ -148,6 +152,8 @@ test-all-portable-topology-private:
 
 ci-portable-topology:
   verified tracked inventory install
+  audited portable-root candidate collection
+  portable-root-remainder lane (generated exact node-ID list executed)
   portable-source lane (exact 32 executed)
   native-capability lane (exact 24 executed or valid DEFERRED)
   external-authority lane (exact 6 executed or valid DEFERRED)
@@ -164,9 +170,78 @@ check-test-governance-topology:
 
 This is a Make-only orchestration contract: Foundation continues to invoke only
 `make ci-portable`; it must not gain a hand-written pytest invocation, node
-list, marker, skip, or xfail. `ci-portable-topology` obtains every selection
-from the verified installed tracked inventory defined above, not a Makefile or
-workflow literal. It is the sole root-test route in this source-required path.
+list, marker, skip, or xfail. `ci-portable-topology` obtains its three
+capability selections from the verified installed tracked inventory and its
+ordinary-root selection from the audited dynamically collected baseline, never
+from a Makefile or workflow literal. It is the sole root-test route in this
+source-required path.
+
+### Portable-root remainder lane
+
+The locked 62 explain the historical hosted failures; they are not the whole
+portable root-test universe. T-G03C must therefore add the
+`test-portable-root-remainder` lane/target before the three inventory lanes.
+It dynamically accounts for ordinary root tests rather than freezing the
+historical `5451` passing count or a second static node list.
+
+First, a single audited canonical collector creates a private, no-clobber
+baseline candidate record and a sorted UTF-8 node-ID file under
+`$(TEST_EVIDENCE_DIR)/capability-topology/`. It uses the same root location,
+`--portable-embedded-proof` policy, marker expression
+`not runtime_postgres and not host_coupled`, and
+`-p scripts.test_governance_pytest` governance plugin as the previous hosted
+portable root policy, including the same single native-custody-extension
+precondition and exported identity variables, but operates in explicit
+collection-only mode. Its canonical tool-owned invocation is therefore
+equivalent to `uv run pytest -q --collect-only --portable-embedded-proof -m
+"not runtime_postgres and not host_coupled" -p scripts.test_governance_pytest
+tests`. That collection-only plugin mode may report candidates but must not
+manufacture execution outcomes or a successful test result. The collector is
+the only portable source-required operation permitted to use the bare root
+selector `tests`; it must be invoked through the canonical topology tool, not a
+Makefile/workflow pytest literal.
+
+The baseline record binds schema/version, current Foundation run/head, tracked
+inventory hash, exact collector policy, sorted candidate node IDs, and a digest
+of the node-ID file. The collector fails closed if collection emits an unknown
+or malformed selector result, a duplicate ID, a candidate outside the root test
+tree, an omitted/changed policy field, an inventory node absent from the
+baseline, or drift between the plugin's observed candidates and the sealed
+file. Its tests must prove that a newly added ordinary root test becomes a
+baseline candidate on the next run.
+
+The remainder is exactly `baseline_candidate_ids - locked_inventory_ids`. The
+executor must reopen and verify the generated node-ID file and baseline digest,
+then invoke pytest only with that explicit complete node-ID list, the same
+portable marker/policy, native-custody-extension identity, and governance
+plugin. It must not execute `pytest ... tests`, a directory selector, `-k`,
+broad marker deselection, skip, or xfail.
+It writes one no-clobber `portable-root-remainder.governance.json` record. Its
+complete collected and passed sets must each equal the generated remainder set;
+any skipped, deselected, xfailed, xpassed, failed, not-run, duplicate, omitted,
+or additional node fails the lane. An empty remainder still needs a sealed
+empty record and may not bypass collection or aggregation.
+
+The root-accounting set is closed only when the baseline candidate set equals
+the disjoint union of: the passed remainder IDs; all passed portable-source
+IDs; all passed native/external IDs whose capability/authority is available;
+and the expected IDs of valid native/external `DEFERRED` receipts. Every
+baseline ID appears in exactly one term. Thus ordinary remainder plus portable
+source tests execute exactly once, while native/external IDs execute exactly
+once when available or are governed deferred without a claimed pass. Any
+inventory drift, candidate/list digest mismatch, duplicate execution,
+unaccounted baseline ID, or selector output outside this equality fails closed.
+
+T-G03D source contracts must expose a narrow collector result and remainder
+executor interface so tests can inject candidate records without running the
+host suite. They must prove: the collector binds the exact policy and rejects a
+changed marker/plugin/root/extension identity; inventory IDs are a subset of
+the baseline; the generated remainder has no duplicates and is its exact set
+difference; a new ordinary root node enters the next baseline; every execution
+argv comes only from the verified generated file; and baseline/receipt/remainder
+union or execution-count drift is fatal. These are test-governance/orchestration
+contracts only: they change no production validator, authority, runtime, live
+flag, service, database, or trading behavior.
 
 ### Topology-aware test governance
 
@@ -176,12 +251,15 @@ all five arguments shown above. This mode replaces only the generic **root**
 suite launch made by the current `check-test-skips`; it must never call the
 current root `run_suites()` branch or execute `pytest ... tests`.
 
-Instead, topology audit consumes and revalidates the sealed exact lane
-governance records at
-`$(TEST_EVIDENCE_DIR)/capability-topology/<code>.governance.json` together with
-their exact lane receipts. It must first perform the receipt's canonical-byte,
-self-hash, current Foundation run/head, tracked-inventory hash, and
-completeness checks. For every inventory code it then requires exactly one of:
+Instead, topology audit consumes and revalidates the sealed baseline candidate
+record, `portable-root-remainder.governance.json`, and the exact lane governance
+records at `$(TEST_EVIDENCE_DIR)/capability-topology/<code>.governance.json`
+together with their exact lane receipts. It must first perform the baseline
+record's policy/list-digest/current-run/head binding and each receipt's
+canonical-byte, self-hash, current Foundation run/head, tracked-inventory hash,
+and completeness checks. It requires the remainder governance record to have
+complete collected and passed sets exactly equal to the generated remainder. For
+every inventory code it then requires exactly one of:
 
 * a `PASS` receipt with one no-clobber root governance record whose complete
   collected and passed node sets each exactly equal that receipt's sorted
@@ -189,12 +267,16 @@ completeness checks. For every inventory code it then requires exactly one of:
 * a valid native/external `DEFERRED` receipt with the permitted matching state,
   no root governance record, and no claimed test pass.
 
-The union of these two forms must equal every one of the locked 62 root-test
-node IDs, with no extra/duplicate/missing node, code, or lane. A root exact
-record containing skipped, deselected, xfailed, xpassed, failed, or not-run
-outcomes fails; a deferred receipt cannot be converted into a pytest skip or a
-test `PASS`. Thus every root test obligation previously supplied to generic
-governance is accounted for by exact execution or a valid, visible
+The baseline candidate IDs must be exactly the disjoint union of the remainder
+record's passed IDs, every `PASS` receipt's passed/collected IDs, and every
+valid `DEFERRED` receipt's expected IDs. The locked 62 must remain an exact
+subset of the baseline and must not leak into the remainder. No
+extra/duplicate/missing node, code, lane, or execution is allowed. A root
+remainder or exact-lane record containing skipped, deselected, xfailed, xpassed,
+failed, or not-run outcomes fails; a deferred receipt cannot be converted into
+a pytest skip or a test `PASS`. Thus every root test obligation previously
+supplied to generic governance—including dynamically discovered ordinary root
+tests—is accounted for by one exact execution or a valid, visible
 native/external receipt rather than silently lost.
 
 Topology audit must retain the existing governance policy semantics and
@@ -202,12 +284,13 @@ evidence, not replace them with a new permissive allowlist. It validates the
 same tracked allowlist schema, owner/security derivation, approval/review date,
 reason, allowed-in-CI, stale/new/changed skip and deselection checks, and
 fail-closed collection/outcome rules. It applies those checks to the audited
-root exact-lane observations and continues the existing governed legacy and
-dashboard collection/reporting paths, merging all three component records into
-the topology governance report. Legacy and dashboard tests may use their
-existing component suite invocations; only the portable root invocation changes
-to audited exact lane records. The report preserves per-component records and
-policy decisions so the Foundation artifact remains comparable and inspectable.
+root remainder and exact-lane observations and continues the existing governed
+legacy and dashboard collection/reporting paths, merging all three component
+records into the topology governance report. Legacy and dashboard tests may use
+their existing component suite invocations; only the portable root invocation
+changes to audited collection and exact generated-node records. The report
+preserves per-component records and policy decisions so the Foundation artifact
+remains comparable and inspectable.
 
 `check-critical-coverage` remains a separate required control with its existing
 sealed coverage policy and exact coverage selections; topology routing must not
@@ -239,23 +322,30 @@ the source-required route directly or transitively reaches `test`,
 `test-portable-embedded-proof`, or `test-all-portable-private`; an individual
 pytest command appears in Foundation; or the workflow ceases to invoke exactly
 `make ci-portable`. Those tests must also prove the legacy targets retain their
-current generic definitions. Exact inventory validation and receipt
-completeness—not broad skip/xfail—prevent loss of the 62 classified nodes.
+current generic definitions. They must also prove the new remainder target is
+present, that it consumes a generated candidate-minus-inventory file rather
+than a literal list, and that `ci-portable-topology` orders audited collection
+before every root execution. Exact inventory and dynamic baseline validation,
+not broad skip/xfail, prevent loss of the complete root-test universe.
 
 Beyond this Make-edge check, T-G03C must add a script-level transitive-routing
 test. It invokes the topology lane runner and `check_test_governance.py
 --topology-audit` with sealed fixture receipts/reports and an injected command
 recorder in place of every subprocess launcher reachable from the
 `ci-portable` source-required route. The recorder must fail closed on an
-unknown/dynamic command and reject every generic root invocation, including
-`uv run pytest ... tests`, `python -m pytest ... tests`, direct `pytest ...
-tests`, and shell-string equivalents. It must inspect the recorded argv after
-wrapper expansion, not merely grep Make prerequisites. The only permitted root
-pytest invocations are exact inventory-derived node argv for one lane with the
-governance plugin; no `-k`, broad marker deselection, skip, or xfail mechanism
-is permitted. The test must cover the governance topology branch specifically,
-so reintroducing `run_suites()` or a new helper that root-runs `tests` fails
-even when the Make dependency graph is unchanged.
+unknown/dynamic command. It must reject every generic **execution** invocation,
+including `uv run pytest ... tests`, `python -m pytest ... tests`, direct
+`pytest ... tests`, and shell-string equivalents. The sole exception is the
+canonical topology collector's audited `--collect-only` root command with the
+exact portable marker/policy/plugin; the recorder must reject it if any field
+or collection-only status differs. It must inspect recorded argv after wrapper
+expansion, not merely grep Make prerequisites. The only permitted root pytest
+execution invocations are the generated remainder list or exact
+inventory-derived lane node argv, each with the governance plugin; no `-k`,
+broad marker deselection, skip, or xfail mechanism is permitted. The test must
+cover the collector, remainder executor, and governance topology branch, so
+reintroducing `run_suites()` or a new helper that root-runs `tests` fails even
+when the Make dependency graph is unchanged.
 
 ### Portable-source lane
 
@@ -381,8 +471,9 @@ cannot contribute a green or deferred outcome.
 
 Each lane's test status is exactly `PASS`, `DEFERRED`, or `FAIL`.
 
-* A portable-source lane is `PASS` only when every selected portable test was
-  collected and executed once successfully. It cannot defer.
+* The portable-root-remainder and portable-source lanes are `PASS` only when
+  every selected test was collected and executed once successfully. Neither can
+  defer.
 * A native-capability or external-authority lane is `DEFERRED` only when its
   otherwise valid receipt proves the matching allowed `UNAVAILABLE` or `ABSENT`
   state, respectively, and no affected test executed. The deferred job must
@@ -391,15 +482,18 @@ Each lane's test status is exactly `PASS`, `DEFERRED`, or `FAIL`.
   node, incomplete collection, `BROKEN`, `PARTIAL`, `INVALID`, or a failed
   state-to-lane/code/node mapping is `FAIL` and fails closed.
 
-The union of lane IDs must equal the locked 62 exactly; every ID belongs to one
-lane/code once. A `PASS` receipt proves every selected test was collected and
+The union of **inventory** lane IDs must equal the locked 62 exactly; every ID
+belongs to one lane/code once. The separate dynamic remainder plus those
+inventory receipts must equal the baseline candidate collection exactly, as
+defined above. A `PASS` receipt proves every selected test was collected and
 executed once. A `DEFERRED` receipt proves no affected test executed and only
 the permitted state caused it. Unknown/duplicate/omitted/stale/skipped/xfail/
 deselected IDs fail aggregation.
 
 The Foundation source-required job may be green only when the portable-source
-lane is `PASS` and the receipt aggregator has validated every lane's canonical
-bytes, self-hash, current run/head, locked inventory hash, completeness, and
+and portable-root-remainder lanes are `PASS` and the receipt aggregator has
+validated every lane's canonical bytes, self-hash, current run/head, locked
+inventory hash, baseline collection, completeness, and
 state-to-lane/code/node mapping. Valid native/external `DEFERRED` receipts may
 therefore coexist with that green job, but they never become test `PASS`.
 When any valid deferred receipt exists, the separate overall runtime-proof
@@ -408,6 +502,12 @@ exist and every lane is `PASS`, it is `COMPLETE`. This distinction is visible
 in the aggregate evidence and cannot be converted into a hidden green result.
 
 ## Rejected alternatives
+
+**Run only the locked 62:** rejected. Those IDs classify historical failures,
+not every portable root test. A fixed remainder list would likewise lose newly
+added ordinary root tests. The audited baseline collector plus generated
+remainder is required to preserve the whole portable root candidate universe
+without broad root execution.
 
 **Blanket marker, skip, or xfail:** rejected. It cannot bind exact 62-node
 coverage, lets new tests evade governance, and hides unavailable versus broken
@@ -432,7 +532,8 @@ loses security coverage.
    adversarial tests preserving the original security assertions.
 3. Add reviewed parser, exact collection verifier, and hostile receipt/state
    tests through the existing evidence boundary.
-4. Add the exact-inventory portable hosted aggregate and lane orchestration as
+4. Add the audited dynamic baseline collector, generated portable-root-remainder
+   lane, exact-inventory capability lanes, and portable hosted aggregate as
    specified above, while retaining the private `RUNNER_TEMP` wrapper and every
    listed non-root-test gate. Do not change strict `make ci`, `make audit`, or
    `make audit-release`; retain both live flags false.
