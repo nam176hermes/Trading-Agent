@@ -1096,3 +1096,178 @@ def test_structural_invalid_raw_failure_evidence_does_not_publish_any_diagnostic
                     exact_runner=malformed_exact,
                 )
             assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists(), reason
+
+
+def test_unsafe_nonacceptance_reader_rejects_foreign_path_and_any_second_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a copy at another filename enters the diagnostic-only reader domain."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+
+        def unsafe_exact(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1, "component": "root", "pytest_exit_status": 0,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node, "component": "root", "outcome": "skipped",
+                    "reason": "/private/raw-path", "phase": "call",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="^UNSAFE_RAW_REASON_NONACCEPTANCE$"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                exact_runner=unsafe_exact,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        canonical = evidence / "capability-topology/portable-root-remainder.unsafe-raw-reason-nonacceptance.json"
+        foreign = canonical.with_name("foreign.unsafe-raw-reason-nonacceptance.json")
+        foreign.write_bytes(canonical.read_bytes())
+        with pytest.raises(topology.TopologyError, match="canonical path|second unsafe"):
+            topology.read_unsafe_raw_reason_nonacceptance(
+                foreign, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        foreign.write_bytes(b"malformed")
+        with pytest.raises(topology.TopologyError, match="second unsafe"):
+            topology.read_unsafe_raw_reason_nonacceptance(
+                canonical, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+
+
+def test_unsafe_nonacceptance_hostile_integrity_and_named_acceptance_guards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: hostile unsafe evidence mutates, clobbers, or coexists with an accepting reader."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, nodes = _seal_remainder(
+            monkeypatch, evidence, raw, with_context=True,
+            extra_node_ids=("tests/ordinary/test_safe.py::test_safe",),
+        )
+
+        def mixed_exact(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1, "component": "root", "pytest_exit_status": 0,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node, "component": "root", "outcome": "skipped",
+                    "reason": "approved skip" if node.endswith("test_safe") else "token /private/value",
+                    "phase": "call",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="^UNSAFE_RAW_REASON_NONACCEPTANCE$"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                exact_runner=mixed_exact,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        canonical = evidence / "capability-topology/portable-root-remainder.unsafe-raw-reason-nonacceptance.json"
+        document = topology.parse_unsafe_raw_reason_nonacceptance(canonical.read_bytes())
+        record_bytes = canonical.read_bytes()
+        assert all(node.encode() not in record_bytes for node in nodes)
+        assert b"approved skip" not in record_bytes and b"token /private/value" not in record_bytes
+        forged = dict(document)
+        forged["pytest_exit_status"] = "1"
+        with pytest.raises(topology.TopologyError, match="self-hash"):
+            topology.parse_unsafe_raw_reason_nonacceptance(topology.canonical_json_bytes(forged))
+        forged = dict(document)
+        forged["receipt"] = "forbidden"
+        with pytest.raises(topology.TopologyError, match="schema keys"):
+            topology.parse_unsafe_raw_reason_nonacceptance(topology.canonical_json_bytes(forged))
+
+        with pytest.raises(FileExistsError):
+            topology._publish_unsafe_raw_reason_nonacceptance(
+                canonical, {key: value for key, value in document.items() if key != "nonacceptance_sha256"},
+            )
+        staging_root = Path(raw) / "staging-topology"
+        staging_root.mkdir(mode=0o700)
+        staging_target = topology._unsafe_raw_reason_nonacceptance_path(staging_root)
+        staging_target.with_name(f".{staging_target.name}.staging").write_bytes(b"hostile")
+        with pytest.raises(FileExistsError):
+            topology._publish_unsafe_raw_reason_nonacceptance(
+                staging_target, {key: value for key, value in document.items() if key != "nonacceptance_sha256"},
+            )
+        assert not staging_target.exists()
+        with pytest.raises(topology.TopologyError, match="writer requires the canonical path"):
+            topology._publish_unsafe_raw_reason_nonacceptance(
+                canonical.with_name("foreign.unsafe-raw-reason-nonacceptance.json"),
+                {key: value for key, value in document.items() if key != "nonacceptance_sha256"},
+            )
+        tamper_root = Path(raw) / "tamper-topology"
+        tamper_root.mkdir(mode=0o700)
+        tamper_target = topology._unsafe_raw_reason_nonacceptance_path(tamper_root)
+        real_publish = topology._publish_failure_diagnostic
+
+        def tampering_publish(path: Path, content: bytes) -> None:
+            real_publish(path, content)
+            path.write_bytes(b"tampered")
+
+        monkeypatch.setattr(topology, "_publish_failure_diagnostic", tampering_publish)
+        with pytest.raises(topology.TopologyError, match="post-write reread"):
+            topology._publish_unsafe_raw_reason_nonacceptance(
+                tamper_target, {key: value for key, value in document.items() if key != "nonacceptance_sha256"},
+            )
+
+        with pytest.raises(topology.TopologyError, match="unsafe raw reason nonacceptance is present"):
+            topology.read_failure_diagnostic(
+                canonical.with_name("missing.failure-diagnostic.json"), inventory=INVENTORY,
+                evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        with pytest.raises(topology.TopologyError, match="unsafe raw reason nonacceptance is present"):
+            topology.read_policy_validation_nonacceptance(
+                canonical.with_name("missing.policy-validation-nonacceptance.json"), inventory=INVENTORY,
+                evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        with pytest.raises(topology.TopologyError, match="unsafe raw reason nonacceptance is present"):
+            topology.reconcile_portable_root_accounting(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        with pytest.raises(topology.TopologyError, match="unsafe raw reason nonacceptance is present"):
+            topology.aggregate_receipts(
+                [canonical.with_name(f"{code}.json") for code in sorted(topology.CODE_CLASSIFICATION)],
+                rows=topology.load_inventory(INVENTORY), foundation_run_id=run_id, foundation_head_sha=head_sha,
+            )
+        with pytest.raises(topology.TopologyError, match="unsafe raw reason nonacceptance is present"):
+            topology.run_lane(
+                lane="native-capabilities", inventory=INVENTORY, evidence_root=evidence,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+
+
+def test_nonremainder_unsafe_raw_reason_never_publishes_the_diagnostic_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a non-remainder lane can invoke the unsafe-record writer by report content."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+
+        def unsafe_lane(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1, "component": "root", "pytest_exit_status": 1,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node, "component": "root", "outcome": "failed",
+                    "reason": "https://private.example.invalid/raw", "phase": "call",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="unsafe reason"):
+            topology.run_lane(
+                lane="portable-source", inventory=INVENTORY, evidence_root=evidence,
+                run_id=run_id, head_sha=head_sha, exact_runner=unsafe_lane,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        assert not (evidence / "capability-topology/portable-root-remainder.unsafe-raw-reason-nonacceptance.json").exists()

@@ -516,8 +516,22 @@ def _unsafe_raw_reason_nonacceptance_path(topology_root: Path) -> Path:
     return topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json"
 
 
+def _unsafe_raw_reason_nonacceptance_instances(topology_root: Path) -> tuple[Path, ...]:
+    """Find every reserved unsafe-record spelling without opening untrusted bytes."""
+    try:
+        return tuple(sorted(
+            (
+                path for path in topology_root.iterdir()
+                if path.name.endswith(".unsafe-raw-reason-nonacceptance.json") and os.path.lexists(path)
+            ),
+            key=lambda path: path.name.encode(),
+        ))
+    except OSError as exc:
+        raise TopologyError("unsafe raw reason nonacceptance directory is unavailable") from exc
+
+
 def _reject_unsafe_raw_reason_nonacceptance_presence(topology_root: Path) -> None:
-    if os.path.lexists(_unsafe_raw_reason_nonacceptance_path(topology_root)):
+    if _unsafe_raw_reason_nonacceptance_instances(topology_root):
         raise TopologyError("unsafe raw reason nonacceptance is present; topology acceptance is forbidden")
 
 
@@ -1578,6 +1592,8 @@ def parse_unsafe_raw_reason_nonacceptance(raw: bytes) -> dict[str, object]:
 
 
 def _publish_unsafe_raw_reason_nonacceptance(path: Path, payload: dict[str, object]) -> None:
+    if path != _unsafe_raw_reason_nonacceptance_path(path.parent):
+        raise TopologyError("unsafe raw reason nonacceptance writer requires the canonical path")
     payload["nonacceptance_sha256"] = _sha256(payload)
     encoded = canonical_json_bytes(payload)
     _publish_failure_diagnostic(path, encoded)
@@ -1590,7 +1606,13 @@ def read_unsafe_raw_reason_nonacceptance(
     foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Read fixed diagnostic-only evidence; it cannot approve, aggregate, or publish anything."""
-    topology_root = path.parent
+    topology_root = evidence_root / "capability-topology"
+    canonical = _unsafe_raw_reason_nonacceptance_path(topology_root)
+    if path != canonical:
+        raise TopologyError("unsafe raw reason nonacceptance reader requires the canonical path")
+    instances = _unsafe_raw_reason_nonacceptance_instances(topology_root)
+    if instances != (canonical,):
+        raise TopologyError("unsafe raw reason nonacceptance has a second unsafe record")
     conflicts = [
         topology_root / "portable-root-remainder.failure-diagnostic.json",
         _policy_nonacceptance_path(topology_root),
