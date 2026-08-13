@@ -286,22 +286,10 @@ def _validate_root_candidates(node_ids: tuple[str, ...]) -> None:
         raise TopologyError("portable root candidate is outside the root test tree")
 
 
-def _native_custody_policy() -> dict[str, str]:
-    raw_path = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
-    expected = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256")
-    if not raw_path or not expected or not HEX64.fullmatch(expected):
-        raise TopologyError("portable root collection requires native custody identity")
-    path = Path(raw_path)
-    try:
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
-            raise OSError
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as exc:
-        raise TopologyError("portable root custody extension is unsafe") from exc
-    if digest != expected:
-        raise TopologyError("portable root custody extension digest drift")
-    identity = ":".join(
+def _custody_artifact_identity(info: os.stat_result) -> str:
+    if not stat.S_ISREG(info.st_mode):
+        raise TopologyError("portable root custody extension is unsafe")
+    return ":".join(
         str(value)
         for value in (
             info.st_dev,
@@ -311,11 +299,62 @@ def _native_custody_policy() -> dict[str, str]:
             info.st_nlink,
         )
     )
+
+
+def _custody_policy_from_artifact(info: os.stat_result, digest: str) -> dict[str, str]:
+    if not HEX64.fullmatch(digest):
+        raise TopologyError("portable root custody extension is unsafe")
     return {
         **PORTABLE_ROOT_POLICY,
-        "native_custody_extension_identity": identity,
-        "native_custody_extension_sha256": expected,
+        "native_custody_extension_identity": _custody_artifact_identity(info),
+        "native_custody_extension_sha256": digest,
     }
+
+
+def _require_named_custody_matches_descriptor(path: Path, descriptor: int) -> None:
+    try:
+        named = path.stat(follow_symlinks=False)
+        opened = os.fstat(descriptor)
+    except OSError as exc:
+        raise TopologyError("portable root custody extension changed during execution") from exc
+    if _custody_artifact_identity(named) != _custody_artifact_identity(opened):
+        raise TopologyError("portable root custody extension changed during execution")
+
+
+@contextmanager
+def _retained_native_custody():
+    """Hold one no-follow extension descriptor through a root exact execution."""
+    raw_path = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
+    expected = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256")
+    if not raw_path or not expected or not HEX64.fullmatch(expected):
+        raise TopologyError("portable root collection requires native custody identity")
+    path = Path(raw_path)
+    if not path.is_absolute():
+        raise TopologyError("portable root custody extension is unsafe")
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            policy = _custody_policy_from_artifact(os.fstat(descriptor), _digest_fd(descriptor))
+            _require_named_custody_matches_descriptor(path, descriptor)
+        except OSError as exc:
+            raise TopologyError("portable root custody extension is unsafe") from exc
+        if policy["native_custody_extension_sha256"] != expected:
+            raise TopologyError("portable root custody extension digest drift")
+        yield policy, descriptor
+        _require_named_custody_matches_descriptor(path, descriptor)
+        if _custody_policy_from_artifact(
+            os.fstat(descriptor), _digest_fd(descriptor),
+        ) != policy:
+            raise TopologyError("portable root custody extension changed during execution")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _native_custody_policy() -> dict[str, str]:
+    with _retained_native_custody() as (policy, _descriptor):
+        return policy
 
 
 def _validate_custody_policy(policy: object) -> dict[str, str]:
@@ -339,26 +378,31 @@ def _validate_custody_policy(policy: object) -> dict[str, str]:
     return {key: str(value) for key, value in policy.items()}
 
 
-def _require_current_sealed_custody(baseline: dict[str, object]) -> dict[str, str]:
+@contextmanager
+def _retained_sealed_custody(baseline: dict[str, object]):
     sealed = _validate_custody_policy(baseline["collector_policy"])
-    current = _native_custody_policy()
-    if current != sealed:
-        raise TopologyError("portable root custody identity drift")
-    return sealed
+    with _retained_native_custody() as (current, descriptor):
+        if current != sealed:
+            raise TopologyError("portable root custody identity drift")
+        yield sealed, descriptor
 
 
 @contextmanager
-def _governance_custody_policy(policy: dict[str, str]):
-    key = "TEST_GOVERNANCE_CUSTODY_POLICY"
-    previous = os.environ.get(key)
-    os.environ[key] = canonical_json_bytes(policy).decode("utf-8")
+def _governance_custody_policy(policy: dict[str, str], descriptor: int):
+    values = {
+        "TEST_GOVERNANCE_CUSTODY_POLICY": canonical_json_bytes(policy).decode("utf-8"),
+        "TEST_GOVERNANCE_CUSTODY_FD": str(descriptor),
+    }
+    previous = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
     try:
         yield
     finally:
-        if previous is None:
-            del os.environ[key]
-        else:
-            os.environ[key] = previous
+        for key, prior in previous.items():
+            if prior is None:
+                del os.environ[key]
+            else:
+                os.environ[key] = prior
 
 
 def _baseline_payload_sha256(document: dict[str, object]) -> str:
@@ -634,6 +678,30 @@ def _validate_exact_governance_record(
     return result
 
 
+def _execute_exact_with_retained_custody(
+    *, baseline: dict[str, object], nodes: tuple[str, ...], report: Path,
+    runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Publish a PASS report only after the retained extension survives execution."""
+    provisional = report.with_name(f".{report.name}.executing")
+    if os.path.lexists(provisional):
+        raise TopologyError("exact governance staging record already exists")
+    try:
+        with _retained_sealed_custody(baseline) as (sealed_custody, descriptor):
+            with _governance_custody_policy(sealed_custody, descriptor):
+                selected = runner(nodes, provisional)
+            if selected != nodes:
+                raise TopologyError("exact runner changed the generated node list")
+        _validate_exact_governance_record(provisional, nodes, sealed_custody)
+        _publish_no_clobber(report, provisional.read_bytes())
+        return _validate_exact_governance_record(report, nodes, sealed_custody)
+    finally:
+        try:
+            provisional.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def execute_portable_root_remainder(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] | None = None,
@@ -643,33 +711,32 @@ def execute_portable_root_remainder(
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
     )
-    sealed_custody = _require_current_sealed_custody(baseline)
     _, remainder = _load_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
     )
     report = evidence_root / "capability-topology" / "portable-root-remainder.governance.json"
     if remainder:
         runner = _run_exact if exact_runner is None else exact_runner
-        with _governance_custody_policy(sealed_custody):
-            selected = runner(remainder, report)
-        if selected != remainder:
-            raise TopologyError("portable root remainder runner changed the generated list")
-    else:
-        _publish_no_clobber(
-            report,
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "component": "root",
-                    "pytest_exit_status": 0,
-                    "custody_policy": sealed_custody,
-                    "summary": {},
-                    "tests": [],
-                },
-                sort_keys=True,
-            ).encode("utf-8"),
+        return _execute_exact_with_retained_custody(
+            baseline=baseline, nodes=remainder, report=report, runner=runner,
         )
-    return _validate_exact_governance_record(report, remainder, sealed_custody)
+    else:
+        with _retained_sealed_custody(baseline) as (sealed_custody, _descriptor):
+            _publish_no_clobber(
+                report,
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "component": "root",
+                        "pytest_exit_status": 0,
+                        "custody_policy": sealed_custody,
+                        "summary": {},
+                        "tests": [],
+                    },
+                    sort_keys=True,
+                ).encode("utf-8"),
+            )
+        return _validate_exact_governance_record(report, remainder, sealed_custody)
 
 
 def _sha256(document: object) -> str:
@@ -1110,6 +1177,17 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(report.parent, 0o700)
     environment = dict(os.environ, TEST_GOVERNANCE_REPORT=str(report), TEST_GOVERNANCE_COMPONENT="root", TEST_GOVERNANCE_NO_CLOBBER="1")
+    raw_descriptor = environment.get("TEST_GOVERNANCE_CUSTODY_FD")
+    pass_fds: tuple[int, ...] = ()
+    if raw_descriptor is not None:
+        if not raw_descriptor.isdecimal():
+            raise TopologyError("retained custody descriptor is malformed")
+        descriptor = int(raw_descriptor)
+        try:
+            os.fstat(descriptor)
+        except OSError as exc:
+            raise TopologyError("retained custody descriptor is unavailable") from exc
+        pass_fds = (descriptor,)
     completed = subprocess.run(
         [
             sys.executable, "-m", "pytest", "-q", "--portable-embedded-proof",
@@ -1117,6 +1195,7 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
         ],
         stdin=subprocess.DEVNULL,
         env=environment,
+        pass_fds=pass_fds,
         check=False,
     )
     if completed.returncode != 0 or not report.is_file():
@@ -1145,9 +1224,6 @@ def run_lane(
     require_foundation_context(run_id, head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha)
     rows = _installed_inventory_rows(inventory, evidence_root)
-    baseline = load_portable_root_baseline(
-        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
-    )
     publications: list[Path] = []
     for code in sorted(CODE_CLASSIFICATION):
         expected_lane, expected = _expected_rows(rows, code)
@@ -1159,14 +1235,13 @@ def run_lane(
         if state in {"UNAVAILABLE", "ABSENT"}:
             receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=(), state=state, fact=fact, outcome="DEFERRED")
         else:
-            # This is deliberately adjacent to the executable invocation: a
-            # replacement after the generated remainder must stop every later
-            # root lane before it can publish a PASS receipt.
-            sealed_custody = _require_current_sealed_custody(baseline)
+            baseline = load_portable_root_baseline(
+                inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+            )
             governance = evidence_root / "capability-topology" / f"{code}.governance.json"
-            with _governance_custody_policy(sealed_custody):
-                selected = exact_runner(expected, governance)
-            _validate_exact_governance_record(governance, expected, sealed_custody)
+            selected = _execute_exact_with_retained_custody(
+                baseline=baseline, nodes=expected, report=governance, runner=exact_runner,
+            )
             receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=selected, state=state, fact=fact, outcome="PASS")
         publications.append(publish_receipt(receipt, evidence_root))
     return publications

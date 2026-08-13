@@ -370,6 +370,129 @@ def test_valid_external_preflight_is_the_only_path_that_selects_external_nodes(t
     assert sorted(len(nodes) for nodes in selected) == [3, 3]
 
 
+def test_runner_boundary_byte_identical_custody_replacement_cannot_publish_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a same-byte replacement after precheck leaves a green root record."""
+    run_id = "31641536482"
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head)
+        _seal_portable_root_baseline(monkeypatch, evidence, raw, run_id=run_id, head_sha=head)
+        extension = Path(os.environ["PACKAGE6_FD_CUSTODY_EXTENSION_PATH"])
+        replacement = Path(raw) / "same-byte-replacement.so"
+        replacement.write_bytes(extension.read_bytes())
+        invoked = False
+
+        def replace_at_runner_boundary(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            nonlocal invoked
+            invoked = True
+            os.replace(replacement, extension)
+            return _passing_exact(nodes, report)
+
+        with pytest.raises(topology.TopologyError, match="custody"):
+            topology.run_lane(
+                lane="portable-source",
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head,
+                exact_runner=replace_at_runner_boundary,
+            )
+
+        assert invoked
+        assert not any((evidence / "capability-topology").glob("SRC-*.json"))
+
+
+def test_exact_pytest_child_inherits_the_retained_custody_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a custody FD is checked only by the parent and not retained by pytest."""
+    observed: dict[str, object] = {}
+
+    def fake_run(_command, **kwargs):
+        observed.update(kwargs)
+        Path(kwargs["env"]["TEST_GOVERNANCE_REPORT"]).write_text(topology.json.dumps({
+            "component": "root",
+            "pytest_exit_status": 0,
+            "tests": [{
+                "test_node_id": "tests/example.py::test_exact",
+                "component": "root",
+                "outcome": "passed",
+            }],
+        }), encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(topology.subprocess, "run", fake_run)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        artifact = Path(raw) / "custody.so"
+        artifact.write_bytes(b"custody")
+        descriptor = os.open(artifact, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            with topology._governance_custody_policy({"sealed": "policy"}, descriptor):
+                assert topology._run_exact(
+                    ("tests/example.py::test_exact",), Path(raw) / "report.json",
+                ) == ("tests/example.py::test_exact",)
+        finally:
+            os.close(descriptor)
+
+    assert observed["pass_fds"] == (descriptor,)
+    assert observed["env"]["TEST_GOVERNANCE_CUSTODY_FD"] == str(descriptor)
+
+
+def test_standalone_native_deferred_lane_does_not_require_portable_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a valid no-test native deferral is blocked by portable custody setup."""
+    run_id = "31641536482"
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    monkeypatch.setattr(
+        topology, "_native_preflight", lambda _code: ("UNAVAILABLE", "NATIVE_COMPONENT_ABSENT"),
+    )
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head)
+        receipts = topology.run_lane(
+            lane="native-capabilities",
+            inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head,
+        )
+
+        assert not (evidence / "capability-topology/portable-root-baseline.json").exists()
+        assert len(receipts) == 2
+        assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "DEFERRED" for path in receipts)
+        assert not list((evidence / "capability-topology").glob("*.governance.json"))
+
+
+def test_standalone_external_deferred_lane_does_not_require_portable_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a valid no-test external deferral is blocked by portable custody setup."""
+    run_id = "31641536482"
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head)
+        receipts = topology.run_lane(
+            lane="external-authorities",
+            inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head,
+            external_preflight=lambda _code: ("ABSENT", "AUTHORITY_ROOT_ABSENT"),
+        )
+
+        assert not (evidence / "capability-topology/portable-root-baseline.json").exists()
+        assert len(receipts) == 2
+        assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "DEFERRED" for path in receipts)
+        assert not list((evidence / "capability-topology").glob("*.governance.json"))
+
+
 def test_topology_retry_fails_before_replacing_existing_governance_bytes(tmp_path: Path) -> None:
     """Break caught: a retry replaces topology governance evidence before receipt O_EXCL fails."""
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:

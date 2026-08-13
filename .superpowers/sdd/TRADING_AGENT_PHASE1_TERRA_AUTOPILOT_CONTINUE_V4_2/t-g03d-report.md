@@ -192,3 +192,58 @@ round closes that gap without changing receipt v1 or deferred semantics:
   `make ci-portable` remains the canonical full execution.
 - `make check-contracts` remains blocked by the missing ignored dashboard
   `openapi-typescript` executable.  No install was performed.
+
+## Round 3/5: descriptor-held exact execution and independent deferral
+
+The round-2 re-review found two real closure gaps.  This repair keeps receipt
+v1 and hosted topology routing intact while correcting them:
+
+- Custody acquisition now opens the configured absolute extension with
+  `O_NOFOLLOW | O_CLOEXEC`, obtains its policy from the retained descriptor,
+  and verifies the live pathname names that same regular-file object.  The
+  descriptor is retained across each executable remainder or `PASS` lane.
+  The default exact pytest child inherits the descriptor through `pass_fds`
+  and receives its descriptor number only as scoped governance context.
+- After the runner returns, the retained descriptor is rehashed/rechecked and
+  the current named object must still have the same sealed identity.  This
+  rejects both in-place byte mutation and a byte-identical pathname replacement.
+  The runner writes a private provisional governance record; it is copied into
+  the final no-clobber evidence path only after the post-execution custody
+  checks succeed.  A failed postcheck therefore leaves neither a final `PASS`
+  governance record nor a receipt for that lane.
+- Baseline loading is now delayed until a branch actually needs executable
+  `PASS` proof.  A standalone native `UNAVAILABLE` or external `ABSENT` lane
+  can reserve/install its locked inventory and publish its valid no-test
+  `DEFERRED` receipt without a portable baseline, extension, root governance
+  record, or pytest invocation.  Hosted aggregation still requires the sealed
+  baseline, remainder, and closed union.
+
+### Round-3 TDD and validation
+
+1. New RED hostile test replaced the extension with byte-identical content at
+   the exact runner boundary, after precheck.  The prior implementation wrote
+   a green `SRC-*` final report/receipt.  The repaired descriptor-held path is
+   GREEN: it invokes the runner, detects custody drift after it returns, and
+   leaves no final `SRC-*` governance record or receipt.
+2. New RED standalone native and external tests reserved evidence without any
+   baseline.  They previously failed on missing baseline; each is now GREEN
+   with exactly two valid `DEFERRED` receipts, no governance files, and no
+   selected test execution.
+3. A focused child-spawn contract proves `_run_exact` passes the retained
+   custody descriptor through `pass_fds` and the scoped descriptor context.
+4. Focused T-G03D/topology tests — `40 passed`.
+5. Broader governed focused set (excluding the documented unrelated
+   critical-coverage intermediate-mode expectation) — `124 passed, 1
+   deselected`.
+6. Real `make test-portable-source` with supplied GitHub context and a fresh
+   private custody build passed after the descriptor change.  The collection
+   reported `5836` candidates and `29` marker deselections; the three exact
+   source groups again passed with `2`, `27`, and `3` nodes.
+7. `make audit`, `make check-secrets`, and `git diff --check` — PASS.
+
+### Round-3 limitations
+
+- Full generated-remainder execution was not run locally; hosted `make
+  ci-portable` remains the canonical full-root execution.
+- `make check-contracts` is still blocked by the missing ignored dashboard
+  `openapi-typescript` executable.  No dependency install was performed.
