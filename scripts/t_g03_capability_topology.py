@@ -1398,15 +1398,13 @@ def parse_policy_validation_nonacceptance(raw: bytes) -> dict[str, object]:
             raise TopologyError("policy validation nonacceptance hash is invalid")
     status = document["policy_source_hash_status"]
     digest = document["policy_source_sha256"]
-    if status == "UNAVAILABLE":
-        if document["policy_validation_stage"] != "SOURCE_ACQUISITION_HEAD_BINDING" or digest != "":
-            raise TopologyError("policy validation nonacceptance source binding is invalid")
-    elif status in {"CURRENT_STAGE_BYTES", "PRE_EXECUTION_SNAPSHOT"}:
-        if not isinstance(digest, str) or not HEX64.fullmatch(digest):
-            raise TopologyError("policy validation nonacceptance source binding is invalid")
-        if status == "PRE_EXECUTION_SNAPSHOT" and document["policy_validation_stage"] != "POST_CUSTODY_REREAD_COMPARISON":
-            raise TopologyError("policy validation nonacceptance source binding is invalid")
+    if document["policy_validation_stage"] == "SOURCE_ACQUISITION_HEAD_BINDING":
+        source_valid = status == "UNAVAILABLE" and digest == ""
+    elif document["policy_validation_stage"] == "POST_CUSTODY_REREAD_COMPARISON":
+        source_valid = status == "PRE_EXECUTION_SNAPSHOT" and isinstance(digest, str) and HEX64.fullmatch(digest)
     else:
+        source_valid = status == "CURRENT_STAGE_BYTES" and isinstance(digest, str) and HEX64.fullmatch(digest)
+    if not source_valid:
         raise TopologyError("policy validation nonacceptance source binding is invalid")
     if document["nonacceptance_sha256"] != _sha256({key: value for key, value in document.items() if key != "nonacceptance_sha256"}):
         raise TopologyError("policy validation nonacceptance self-hash mismatch")
@@ -1430,6 +1428,13 @@ def read_policy_validation_nonacceptance(
         document = parse_policy_validation_nonacceptance(path.read_bytes())
     except OSError as exc:
         raise TopologyError("policy validation nonacceptance is missing") from exc
+    if document["policy_source_hash_status"] != "UNAVAILABLE":
+        try:
+            source = _allowlist_bytes_at_head(head_sha)
+        except Exception:
+            raise TopologyError("policy validation nonacceptance source binding drift") from None
+        if hashlib.sha256(source).hexdigest() != document["policy_source_sha256"]:
+            raise TopologyError("policy validation nonacceptance source binding drift")
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
@@ -1449,13 +1454,6 @@ def read_policy_validation_nonacceptance(
     for field, value in expected.items():
         if document[field] != value:
             raise TopologyError("policy validation nonacceptance binding drift")
-    if document["policy_source_hash_status"] != "UNAVAILABLE":
-        try:
-            source = _allowlist_bytes_at_head(head_sha)
-        except Exception:
-            raise TopologyError("policy validation nonacceptance source binding drift") from None
-        if hashlib.sha256(source).hexdigest() != document["policy_source_sha256"]:
-            raise TopologyError("policy validation nonacceptance source binding drift")
     return document
 
 
@@ -1956,6 +1954,7 @@ def publish_receipt(receipt: dict[str, object], evidence_root: Path) -> Path:
     _prepare_private_evidence_directory(evidence_root)
     destination = evidence_root / "capability-topology" / f"{code}.json"
     _prepare_private_evidence_directory(destination.parent)
+    _reject_policy_nonacceptance_presence(destination.parent)
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(canonical_json_bytes(receipt))

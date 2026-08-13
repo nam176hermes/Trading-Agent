@@ -359,6 +359,116 @@ def test_preexecution_policy_snapshot_failure_publishes_only_the_redacted_nonacc
         assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists()
 
 
+def test_policy_nonacceptance_parser_and_receipt_writer_close_the_source_and_acceptance_matrices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: an illegal source convention or direct receipt writer accepts diagnostic evidence."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        monkeypatch.setattr(
+            topology, "_allowlist_bytes_at_head",
+            lambda _head: (_ for _ in ()).throw(topology.TopologyError("private")),
+        )
+        with pytest.raises(topology.TopologyError, match="POLICY_VALIDATION_INVALID"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+        path = evidence / "capability-topology/policy-validation-nonacceptance.json"
+        document = topology.parse_policy_validation_nonacceptance(path.read_bytes())
+        assert document["policy_source_hash_status"] == "UNAVAILABLE"
+        for status, digest in (("CURRENT_STAGE_BYTES", "a" * 64), ("PRE_EXECUTION_SNAPSHOT", "a" * 64)):
+            forged = dict(document, policy_source_hash_status=status, policy_source_sha256=digest)
+            forged["nonacceptance_sha256"] = topology._sha256({key: value for key, value in forged.items() if key != "nonacceptance_sha256"})
+            with pytest.raises(topology.TopologyError, match="source binding"):
+                topology.parse_policy_validation_nonacceptance(topology.canonical_json_bytes(forged))
+
+        receipt = topology.make_receipt(
+            run_id=run_id, head_sha=head_sha, lane="portable-source",
+            code="SRC-SEMANTIC-FIXTURE-IDENTITY", expected=("tests/runtime_release/test_semantic.py::test_fixture_uses_current_identity",),
+            collected=("tests/runtime_release/test_semantic.py::test_fixture_uses_current_identity",),
+            state="AVAILABLE", fact="SOURCE_TEST_EXECUTED", outcome="PASS",
+        )
+        with pytest.raises(topology.TopologyError, match="nonacceptance is present"):
+            topology.publish_receipt(receipt, evidence)
+
+
+def test_policy_nonacceptance_reader_rebinds_present_source_before_other_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a drifted source reaches baseline parsing before its own digest check."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        source = topology._allowlist_bytes_at_head(head_sha)
+        record = evidence / "capability-topology/policy-validation-nonacceptance.json"
+        document: dict[str, object] = {
+                "schema_version": topology.POLICY_NONACCEPTANCE_SCHEMA, "diagnostic_only": True,
+                "foundation_run_id": run_id, "foundation_head_sha": head_sha,
+                "foundation_validation_date": "2026-08-13",
+                "foundation_context_sha256": topology.load_foundation_context(
+                    evidence / "capability-topology/foundation-context.json", run_id=run_id, head_sha=head_sha,
+                )["foundation_context_sha256"],
+                "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+                "baseline_sha256": "a" * 64, "baseline_candidate_ids_sha256": "a" * 64,
+                "baseline_node_list_sha256": "a" * 64, "remainder_sha256": "a" * 64,
+                "remainder_candidate_ids_sha256": "a" * 64, "remainder_node_list_sha256": "a" * 64,
+                "custody_policy_sha256": "a" * 64, "custody_status": "PRE_EXECUTION_VALIDATED",
+                "policy_validation_stage": "SHARED_VALIDATOR_IMPORT", "policy_validation_class": "POLICY_VALIDATION_INVALID",
+                "policy_source_hash_status": "CURRENT_STAGE_BYTES", "policy_source_sha256": topology.hashlib.sha256(source).hexdigest(),
+                "nonacceptance_sha256": "",
+            }
+        document["nonacceptance_sha256"] = topology._sha256({key: value for key, value in document.items() if key != "nonacceptance_sha256"})
+        record.write_bytes(topology.canonical_json_bytes(document))
+        monkeypatch.setattr(topology, "_allowlist_bytes_at_head", lambda _head: b"drift")
+        monkeypatch.setattr(
+            topology, "load_portable_root_baseline",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("baseline must not be read first")),
+        )
+        with pytest.raises(topology.TopologyError, match="source binding drift"):
+            topology.read_policy_validation_nonacceptance(
+                record, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+
+
+def test_policy_nonacceptance_stages_are_structural_and_post_custody_is_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: snapshot boundaries infer a stage from text or collapse the second read."""
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    source = topology._allowlist_bytes_at_head(head)
+    cases = [
+        ("SOURCE_ACQUISITION_HEAD_BINDING", lambda patch: patch.setattr(topology, "_allowlist_bytes_at_head", lambda _head: (_ for _ in ()).throw(RuntimeError("x")))),
+        ("STRICT_JSON_PARSE", lambda patch: patch.setattr(topology, "_allowlist_bytes_at_head", lambda _head: b"{")),
+        ("ROOT_PROJECTION_REASON_NORMALIZATION", lambda patch: patch.setattr(topology, "reason_commitment_sha256", lambda _reason: (_ for _ in ()).throw(RuntimeError("x")))),
+    ]
+    for expected, prepare in cases:
+        with pytest.MonkeyPatch.context() as isolated:
+            prepare(isolated)
+            with pytest.raises(topology._PolicyStageError) as raised:
+                topology._policy_snapshot_for_nonacceptance(head, topology.date(2026, 8, 13))
+            assert raised.value.failure.stage == expected
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        reads = 0
+        def source_then_drift(_head: str) -> bytes:
+            nonlocal reads
+            reads += 1
+            return source if reads == 1 else b"{"
+        monkeypatch.setattr(topology, "_allowlist_bytes_at_head", source_then_drift)
+        def passing(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({"component": "root", "pytest_exit_status": 0, "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]), "tests": [{"test_node_id": node, "component": "root", "outcome": "passed", "reason": "", "phase": "call"} for node in nodes]}), encoding="utf-8")
+            return nodes
+        with pytest.raises(topology.TopologyError, match="POLICY_VALIDATION_INVALID"):
+            topology.execute_portable_root_remainder(inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha, exact_runner=passing, foundation_context_path=evidence / "capability-topology/foundation-context.json")
+        record = topology.parse_policy_validation_nonacceptance((evidence / "capability-topology/policy-validation-nonacceptance.json").read_bytes())
+        assert record["policy_validation_stage"] == "POST_CUSTODY_REREAD_COMPARISON"
+        assert record["policy_source_hash_status"] == "PRE_EXECUTION_SNAPSHOT"
+
+
 @pytest.mark.parametrize("allowed", [False, None, "true", 1, 0, [], {}])
 def test_public_comparator_rejects_every_nonliteral_true_ci_approval(allowed: object) -> None:
     """Break caught: a direct comparator caller bypasses CI approval with truthy data."""
