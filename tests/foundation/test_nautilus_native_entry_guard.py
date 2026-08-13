@@ -25,6 +25,9 @@ PRIVATE_RUST = Path(
 PRIVATE_LLVM = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
 )
+PRIVATE_TOOLCHAINS_UNAVAILABLE_REASON = (
+    "sealed private Rust and LLVM toolchains are unavailable"
+)
 TARGET = "x86_64-unknown-linux-gnu"
 GUARD_TARGET = "/engine/bin/nautilus-entry-guard"
 LAUNCHER_TARGET = "/engine/launcher/nautilus_backtest.py"
@@ -53,7 +56,7 @@ def _build_guard(
     rustc = PRIVATE_RUST / "bin/rustc"
     linker = PRIVATE_LLVM / "bin/clang"
     if not all(path.is_file() for path in (cargo, rustc, linker)):
-        pytest.skip("sealed private Rust/LLVM toolchains are unavailable")
+        pytest.skip(PRIVATE_TOOLCHAINS_UNAVAILABLE_REASON)
 
     cargo_home = tmp_path / "cargo-home"
     target_directory = tmp_path / "target"
@@ -294,7 +297,7 @@ def test_materializer_builds_the_policy_bound_guard_reproducibly_offline(
             PRIVATE_LLVM / "bin/clang",
         )
     ):
-        pytest.skip("sealed private Rust/LLVM toolchains are unavailable")
+        pytest.skip(PRIVATE_TOOLCHAINS_UNAVAILABLE_REASON)
     policy = materializer_module._load_policy(policy_path)
     guard_policy = policy["native_entry_guard"]
     first_stage = secure_build_root / "first"

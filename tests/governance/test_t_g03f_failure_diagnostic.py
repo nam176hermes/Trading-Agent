@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import os
+import runpy
 import subprocess
 import tempfile
 from pathlib import Path
@@ -1085,6 +1086,55 @@ def test_complete_unsafe_raw_reason_publishes_only_the_fixed_nonacceptance_recor
         assert all(fragment not in record_bytes and fragment not in str(raised.value).encode() for fragment in forbidden)
         assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists()
         assert not (evidence / "capability-topology/portable-root-remainder.governance.json").exists()
+
+
+def test_missing_native_toolchain_skip_reaches_the_redacted_failure_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: hosted toolchain absence reintroduces a path-like raw skip reason."""
+    fixture = runpy.run_path("tests/foundation/test_nautilus_native_entry_guard.py")
+    build_guard = fixture["_build_guard"]
+    assert callable(build_guard)
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        missing_root = Path(raw) / "missing"
+        monkeypatch.setitem(build_guard.__globals__, "PRIVATE_RUST", missing_root / "rust")
+        monkeypatch.setitem(build_guard.__globals__, "PRIVATE_LLVM", missing_root / "llvm")
+        with pytest.raises(pytest.skip.Exception) as skipped:
+            build_guard(Path(raw) / "build", Path(raw) / "guarded")
+        reason = str(skipped.value)
+
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(
+            monkeypatch, evidence, raw, with_context=True,
+        )
+
+        def unavailable_exact(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1, "component": "root", "pytest_exit_status": 0,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node, "component": "root", "outcome": "skipped",
+                    "reason": reason, "phase": "setup",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="^EXACT_EXECUTION_NONPASS$"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+                head_sha=head_sha, exact_runner=unavailable_exact,
+                foundation_context_path=(
+                    evidence / "capability-topology/foundation-context.json"
+                ),
+            )
+
+        topology_root = evidence / "capability-topology"
+        diagnostic = topology.parse_failure_diagnostic(
+            (topology_root / "portable-root-remainder.failure-diagnostic.json").read_bytes(),
+        )
+        assert diagnostic["observations"][0]["policy_match_result"] == "NO_POLICY_ENTRY"
+        assert not topology._unsafe_raw_reason_nonacceptance_path(topology_root).exists()
 
 
 def test_structural_invalid_raw_failure_evidence_does_not_publish_any_diagnostic(
