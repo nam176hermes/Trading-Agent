@@ -576,6 +576,8 @@ def _prelaunch_quarantine(source: str) -> None:
         raise MakeContractError("opaque shell evaluator near guarded launcher")
     if any(re.match(r"^\t[@-]*\+", line) for line in source.splitlines()):
         raise MakeContractError("recipe + execution escape")
+    if any("%" in line and re.match(r"^[^\t #][^:=#]*:(?![=])", line) for line in source.splitlines()):
+        raise MakeContractError("unenumerable generated Make target")
     for _first, _last, line in logical:
         if re.match(r"\s*(?:-|s)?include\b", line):
             raise MakeContractError("included Makefile is not observable")
@@ -599,7 +601,9 @@ def _database_concrete_targets(database: str) -> list[str]:
         if match is None:
             continue
         target = match.group(1)
-        if target not in {".DEFAULT", ".SUFFIXES"} and "%" not in target:
+        if "%" in target:
+            raise MakeContractError(f"unenumerable generated Make target: {target}")
+        if target not in {".DEFAULT", ".SUFFIXES"}:
             targets.append(target)
     if not targets:
         raise MakeContractError("GNU Make database yielded no concrete targets")
@@ -747,6 +751,15 @@ def test_t_g03_make_contract_rejects_a_database_generated_direct_file_target() -
         _assert_t_g03_make_launch_contract(source)
 
 
+def test_t_g03_make_contract_fails_closed_for_a_guarded_pattern_rule() -> None:
+    """Break caught: an uninstantiated pattern recipe hides a direct-file launch."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nfuture-%: ; uv run python scripts/t_g03_capability_topology.py reserve\n"
+    )
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
+
+
 @pytest.mark.parametrize("expansion", ("$(call RUN)", "$(value RUN)", "$(strip $(RUN))", "$(addprefix ,$(RUN))", "$(RUN)"))
 def test_t_g03_make_contract_rejects_gnu_make_function_or_append_bypasses(expansion: str) -> None:
     """Break caught: GNU Make expansion, rather than a source parser, creates a direct file."""
@@ -773,10 +786,13 @@ def test_t_g03_conditional_quarantine_rejects_every_root_conditional_before_make
     assert not invoked
 
 
-@pytest.mark.skip(reason="covered by the full observer's current Makefile zero-directive proof")
 def test_t_g03_conditional_quarantine_accepts_display_and_define_values() -> None:
     """Break caught: inert comments, recipes, define bodies, and continued values are directives."""
     source = (ROOT / "Makefile").read_text(encoding="utf-8") + "\\n# ifeq (0,1)\\nSAFE_DISPLAY = first \\\\\\n    ifeq literal display data\\ndefine SAFE_TEXT\\nifeq literal define data\\nendef\\nfuture-safe-display:\\n\\t@echo ifeq literal recipe data\\n"
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + "\n" + "\n".join((
+        "# ifeq (0,1)", "define SAFE_TEXT", "ifeq literal define data", "endef",
+        "SAFE_DISPLAY = literal ifeq display data", "future-safe-display:", "\t@echo ifeq literal recipe data", "",
+    ))
     _assert_t_g03_make_launch_contract(source)
 
 
