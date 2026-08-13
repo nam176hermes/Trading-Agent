@@ -165,7 +165,8 @@ check-test-governance-topology:
     --topology-evidence-root "$(TEST_EVIDENCE_DIR)" \
     --inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
     --foundation-run-id "$$GITHUB_RUN_ID" \
-    --foundation-head-sha "$$foundation_head"
+    --foundation-head-sha "$$foundation_head" \
+    --today "$$FOUNDATION_VALIDATION_DATE"
 ```
 
 This is a Make-only orchestration contract: Foundation continues to invoke only
@@ -175,6 +176,127 @@ capability selections from the verified installed tracked inventory and its
 ordinary-root selection from the audited dynamically collected baseline, never
 from a Makefile or workflow literal. It is the sole root-test route in this
 source-required path.
+
+### Amendment A1 — one sealed Foundation policy-validation date
+
+This amendment resolves a narrow source-owned time-anchor split observed in
+the hosted T-G03F symptom.  The supplied hosted excerpt masks the validator
+cause, so the proposed midnight/host-clock timeline is an inference, not a
+proven fact about that run.  It does **not** authorize an allowlist renewal or
+edit.  A policy whose review date has already expired when the Foundation
+invocation begins must continue to fail closed.
+
+The only time authority for the portable Foundation route is one canonical UTC
+calendar date, named `FOUNDATION_VALIDATION_DATE`.  At the first executable
+step of the source-owned `make ci-portable` recipe, before its private temp
+wrapper or any topology/governance operation, it must reject a pre-set value,
+capture `datetime.now(timezone.utc).date().isoformat()` exactly once, validate
+the resulting ASCII `YYYY-MM-DD` string, and export it to its
+`ci-portable-private` child.  Foundation continues to invoke only `make
+ci-portable`; no workflow variable, workflow clock expression, or workflow
+conditional is added.  The capture helper is not callable by topology leaves
+and must not fall back to `date.today()` after this point.
+
+The canonical date parser accepts only ten ASCII bytes matching
+`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`, for which `date.fromisoformat(value)` succeeds
+and round-trips byte-for-byte through `isoformat()`.  This rejects an absent
+value, whitespace, a timestamp/timezone, compact or non-ASCII spelling, and
+an impossible date.  The captured value is a run context, not a policy
+approval, and neither receipt-v1 nor the tracked allowlist schema changes.
+
+`ci-portable-private`, `test-all-portable-topology-private`,
+`ci-portable-topology`, `test-portable-root-remainder`,
+`test-portable-source`, `test-native-capabilities`,
+`test-external-authorities`, and `check-test-governance-topology` must require
+that exported value; none may generate, default, substitute, or reformat it.
+For a direct invocation of any of those targets, the caller must explicitly
+supply the same canonical value along with the existing Foundation run/head
+context.  An absent or malformed direct value fails before collection, test
+selection, policy snapshot, receipt, or failure-diagnostic publication.  A
+direct target does not become a second portable Foundation invocation.
+
+Every invocation of `scripts/t_g03_capability_topology.py` in the portable
+route receives `--validation-date "$FOUNDATION_VALIDATION_DATE"`.  Its
+`reserve`, baseline collector/loader, remainder preparation/execution, lane
+runner, aggregation, and failure reader validate that argument before use.
+The collector writes it as `foundation_validation_date` into the canonical
+baseline and includes it in the baseline self-hash.  Every later topology
+operation must reopen the baseline and require exact equality, not merely a
+valid date.  A mismatch is fatal before an acceptance artifact; a changed
+environment/argv cannot make a different date govern later work.
+
+The existing standard governance CLI remains the sole allowlist validator.
+In topology mode its required `--today` is the exact
+`FOUNDATION_VALIDATION_DATE`; `check-test-governance-topology` must pass it as
+shown above and topology audit must reject a `--today` value absent from,
+malformed against, or unequal to the sealed baseline.  The normal strict
+`check-test-skips` / `make ci` route remains unchanged: this amendment neither
+changes its invocation nor gives it a topology fallback.  The topology helper
+passes the same parsed immutable `date` explicitly to
+`validate_allowlist_document(..., today=validation_date)` for both the
+pre-execution snapshot and the required post-custody reread, and the failure
+reader reconstructs with the date bound in the diagnostic/baseline.  There is
+no downstream bare call that may read the wall clock.
+
+Baseline records therefore move to
+`"t-g03a-portable-root-baseline/v2"`; their exact key set is the prior v1 set
+plus `foundation_validation_date`, and v1 is not accepted by this route.  The
+failure-only record likewise moves to
+`"t-g03a-portable-root-failure-diagnostic/v2"`; its exact key set is the prior
+v1 set plus `foundation_validation_date`, included in `diagnostic_sha256` and
+required to equal the sealed baseline value.  The policy snapshot remains v1:
+it is already source-byte-bound and the enclosing baseline/diagnostic binds
+which valid date was used to validate those bytes.  Remainder records bind the
+new baseline hash transitively.  The locked
+`"t-g03a-capability-receipt/v1"` key set and bytes remain unchanged; receipt
+aggregation obtains the date binding from the verified baseline rather than
+adding a redundant receipt field.
+
+If snapshot validation fails, the topology command and its redacted
+non-acceptance error report may expose only one closed class:
+`POLICY_DATE_CONTEXT_ABSENT`, `POLICY_DATE_CONTEXT_MALFORMED`,
+`POLICY_DATE_CONTEXT_MISMATCH`, `POLICY_REVIEW_DATE_EXPIRED`,
+`POLICY_SCHEMA_INVALID`, `POLICY_FIELD_TYPE_INVALID`,
+`POLICY_REVIEW_DATE_INVALID`, `POLICY_REASON_NORMALIZATION_INVALID`,
+`POLICY_DUPLICATE_ENTRY`, `POLICY_SOURCE_DRIFT`, or
+`POLICY_VALIDATION_INVALID`.  The last is the safe catch-all for a validator
+failure outside the classified domain.  Console/error-artifact text may say
+only `policy validation failed: <class>`; it must not include an entry index,
+node ID, reason, owner, approval, target, path, raw source bytes, or exception
+text.  Exception chaining may remain internal for local debugging, but no
+chained detail is serialized or printed by the hosted route.  A failed
+pre-snapshot, postcheck reread, date validation, or date-baseline comparison
+publishes no snapshot, failure diagnostic, PASS governance record, receipt, or
+aggregate.  A review date earlier than the captured date maps to
+`POLICY_REVIEW_DATE_EXPIRED`, remains fatal, and is not repaired by changing
+policy data.
+
+Focused implementation tests must cover all of the following without a hosted
+workflow run:
+
+1. Freeze the source-owned date at `2026-10-31`, simulate a later wall clock,
+   and prove the standard topology governance validation plus both snapshot
+   reads accept the unchanged source bytes only because all receive the sealed
+   date explicitly.
+2. Capture `2026-11-01` against the same bytes and prove expiry fails closed
+   with only `POLICY_REVIEW_DATE_EXPIRED`; no snapshot, diagnostic, receipt,
+   or acceptance report is published.  Literal JSON `allowed_in_ci: true`
+   remains required.
+3. Exercise absent, whitespace, non-ASCII, timestamp, impossible, malformed,
+   and baseline/argv/`--today` mismatch cases at every direct target boundary;
+   each fails before execution and cannot self-capture a replacement date.
+4. Tamper the baseline or v2 failure diagnostic date and self-hash, then prove
+   remainder execution, aggregation, and the diagnostic reader reject it.
+   Prove receipt-v1 canonical bytes/key validation is unchanged.
+5. Retain hostile malformed-schema, field-type/non-boolean,
+   review-date-format, non-normalized-reason, duplicate-entry, and source-byte
+   drift matrices.  Assert their exposed class is one of the closed redacted
+   domain and contains no allowlist detail.
+
+This amendment is limited to portable test-governance/topology provenance and
+diagnostics.  It adds no policy renewal, workflow dependency, authority
+acquisition, network action, runtime/service/database change, or live-trading
+behavior.
 
 ### Portable-root remainder lane
 
@@ -201,9 +323,10 @@ the only portable source-required operation permitted to use the bare root
 selector `tests`; it must be invoked through the canonical topology tool, not a
 Makefile/workflow pytest literal.
 
-The baseline record binds schema/version, current Foundation run/head, tracked
-inventory hash, exact collector policy, sorted candidate node IDs, and a digest
-of the node-ID file. The collector fails closed if collection emits an unknown
+The baseline record binds schema/version, current Foundation run/head, the
+sealed canonical Foundation validation date, tracked inventory hash, exact
+collector policy, sorted candidate node IDs, and a digest of the node-ID file.
+The collector fails closed if collection emits an unknown
 or malformed selector result, a duplicate ID, a candidate outside the root test
 tree, an omitted/changed policy field, an inventory node absent from the
 baseline, or drift between the plugin's observed candidates and the sealed
@@ -247,7 +370,7 @@ the diagnostic, and must then exit nonzero. It must not also publish a passing
 remainder governance record or a `PASS` receipt.
 
 The record has the one versioned schema
-`"t-g03a-portable-root-failure-diagnostic/v1"`. Its complete top-level key set
+`"t-g03a-portable-root-failure-diagnostic/v2"`. Its complete top-level key set
 is exactly:
 
 ```text
@@ -255,6 +378,7 @@ schema_version
 diagnostic_only
 foundation_run_id
 foundation_head_sha
+foundation_validation_date
 inventory_sha256
 baseline_candidate_ids_sha256
 baseline_node_list_sha256
@@ -301,7 +425,8 @@ the canonical decimal string `"1"`; and `policy_entry_schema_version` is
 exactly `"t-g03a-skip-policy-entry/v1"`.
 `allowlist_source_sha256` is SHA-256 of the exact strict-UTF-8 source bytes,
 without a BOM, before parsing. The source document must first pass the current
-allowlist-v1 schema, owner/security derivation, approval, review-date,
+allowlist-v1 schema, owner/security derivation, approval, review-date against
+the sealed `foundation_validation_date`,
 allowed-in-CI, and normalized-reason validation. Any source-byte drift, parse
 failure, duplicate `(component, test_node_id)`, invalid entry, or changed
 postcheck reread prevents diagnostic publication.
