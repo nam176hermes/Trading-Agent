@@ -1219,6 +1219,10 @@ def test_foreign_unsafe_record_blocks_audit_before_baseline_loading(
             topology, "load_portable_root_baseline",
             lambda **_kwargs: (_ for _ in ()).throw(AssertionError("foreign unsafe record must stop before baseline")),
         )
+        monkeypatch.setattr(
+            topology, "_installed_inventory_rows",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("foreign unsafe record must stop before inventory")),
+        )
         with pytest.raises(governance.GovernanceError, match="unsafe raw reason nonacceptance is present"):
             governance.audit_topology_root_records(
                 evidence_root=evidence, inventory=INVENTORY, foundation_run_id=run_id,

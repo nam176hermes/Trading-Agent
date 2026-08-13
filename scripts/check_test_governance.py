@@ -791,14 +791,14 @@ def audit_topology_root_records(
         capability_topology._require_topology_reservation(
             evidence_root, foundation_run_id, foundation_head_sha, context,
         )
-        rows = capability_topology._installed_inventory_rows(inventory, evidence_root)
         topology_root = evidence_root / "capability-topology"
+        if capability_topology._unsafe_raw_reason_nonacceptance_instances(topology_root):
+            raise GovernanceError("unsafe raw reason nonacceptance is present; topology aggregation is forbidden")
         if os.path.lexists(topology_root / "policy-validation-nonacceptance.json"):
             raise GovernanceError("policy validation nonacceptance is present; topology aggregation is forbidden")
         if os.path.lexists(topology_root / "portable-root-remainder.failure-diagnostic.json"):
             raise GovernanceError("failure diagnostic is present; topology aggregation is forbidden")
-        if capability_topology._unsafe_raw_reason_nonacceptance_instances(topology_root):
-            raise GovernanceError("unsafe raw reason nonacceptance is present; topology aggregation is forbidden")
+        rows = capability_topology._installed_inventory_rows(inventory, evidence_root)
         baseline = capability_topology.load_portable_root_baseline(
             inventory=inventory,
             evidence_root=evidence_root,
