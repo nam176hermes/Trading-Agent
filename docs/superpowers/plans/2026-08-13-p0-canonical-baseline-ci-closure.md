@@ -2501,3 +2501,35 @@ the one closure proof so every collected node appears exactly once. Stale
 `SRC-*` receipt or governance artifacts, an overlapping/reintroduced portable
 row, missing or forged closure evidence, and native/external mapping drift all
 fail closed.
+
+### Evidence-corrected P0-07
+
+P0-07 introduces the native-only strict receipt schema
+`t-g03a-native-capability-receipt/v2`; the existing flat v1 schema remains
+valid only for the two external-authority codes until P0-08. Native v2 binds
+the exact 16 Bubblewrap or eight user-namespace nodes, run/head/Foundation
+context/date, active-inventory digest, a closed probe command ID, retained
+executable digest, hash-only probe outputs, exact execution counts, outcome,
+and both completeness and receipt hashes. A stale native v1 receipt, forged
+PASS, mixed mapping, noncanonical payload, or incomplete governance record
+fails closed.
+
+Native availability must be established with the real retained executable,
+not version/help output or a synthetic replacement. Bubblewrap executes a
+fixed inert command with the user, PID, and network namespace isolation needed
+by the native group through the policy-bound `/usr/bin/bwrap`; user namespace
+provisioning executes the fixed equivalent of
+`/usr/bin/unshare --user --map-root-user true`. Absence or an exact reviewed
+host namespace-policy denial may produce DEFERRED. A present-invalid identity,
+unrecognized diagnostic, timeout, partial setup, output drift, replacement, or
+test failure produces FAIL and can never publish PASS.
+
+The executable identity remains retained from probe through exact test
+execution and a named-versus-held postcheck. Native receipt and PASS-governance
+artifacts use private regular no-clobber publication and retained-identity
+reads. Portable aggregation may accept an explicit bound DEFERRED while
+surfacing it; an explicit host-require-pass validator rejects DEFERRED, but P0-09
+alone owns wiring that mode into a separate workflow. The standalone native
+target must create the authoritative context, custody, reservation, and
+portable-root baseline required to run the exact native groups once on either
+an available or unavailable host.
