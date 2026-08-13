@@ -811,13 +811,52 @@ def test_t_g03_conditional_quarantine_structural_matrix_starts_no_make(body: str
 @pytest.mark.parametrize("suffix", (
     "\ndefine RUN\nuv run python scripts/t_g03_capability_topology.py reserve\nendef\nfuture-define:\n\t$(call RUN)\n",
     "\nfuture-target-specific: RUN = uv run python scripts/t_g03_capability_topology.py reserve\nfuture-target-specific:\n\t$(RUN)\n",
-    "\nfuture-prereq: RUN = uv run python scripts/t_g03_capability_topology.py reserve\nfuture-prereq:\n\t$(RUN)\n",
+    "\nfuture-parent: RUN = uv run python scripts/t_g03_capability_topology.py reserve\nfuture-parent: future-prereq\nfuture-prereq:\n\t$(RUN)\n",
     "\nfuture-extra:\n\tuv run python -m scripts.t_g03_capability_topology reserve\n",
 ))
 def test_t_g03_make_observer_rejects_define_variable_and_exact_inventory_drift(suffix: str) -> None:
-    """Break caught: Make expansion or an extra canonical site drifts the exact inventory."""
+    """Break caught: Make expansion or an extra site drifts the exact inventory."""
     with pytest.raises(AssertionError):
         _assert_t_g03_make_launch_contract((ROOT / "Makefile").read_text(encoding="utf-8") + suffix)
+
+
+def test_t_g03_make_observer_rejects_missing_canonical_module_site() -> None:
+    """Break caught: a canonical topology launch is removed from its real recipe."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8")
+    removed = (
+        "\t\tuv run python -m scripts.t_g03_capability_topology run-lane "
+        "--lane native-capabilities --evidence-root \"$(TEST_EVIDENCE_DIR)\" "
+        "--foundation-context-path \"$$FOUNDATION_CONTEXT_PATH\"\n"
+    )
+    assert source.count(removed) == 1
+
+    with pytest.raises(MakeContractError, match="noncanonical GNU Make expansion"):
+        _assert_t_g03_make_launch_contract(source.replace(removed, "\t\t:\n"))
+
+
+def test_t_g03_make_observer_rejects_reordered_canonical_module_sites() -> None:
+    """Break caught: canonical topology launches run in an order different from the contract."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8")
+    ordered = (
+        "\t\tuv run python -m scripts.t_g03_capability_topology collect-baseline "
+        "--evidence-root \"$(TEST_EVIDENCE_DIR)\" --foundation-context-path "
+        "\"$$FOUNDATION_CONTEXT_PATH\"; \\\n"
+        "\t\tuv run python -m scripts.t_g03_capability_topology prepare-remainder "
+        "--evidence-root \"$(TEST_EVIDENCE_DIR)\" --foundation-context-path "
+        "\"$$FOUNDATION_CONTEXT_PATH\"; \\\n"
+    )
+    reordered = (
+        "\t\tuv run python -m scripts.t_g03_capability_topology prepare-remainder "
+        "--evidence-root \"$(TEST_EVIDENCE_DIR)\" --foundation-context-path "
+        "\"$$FOUNDATION_CONTEXT_PATH\"; \\\n"
+        "\t\tuv run python -m scripts.t_g03_capability_topology collect-baseline "
+        "--evidence-root \"$(TEST_EVIDENCE_DIR)\" --foundation-context-path "
+        "\"$$FOUNDATION_CONTEXT_PATH\"; \\\n"
+    )
+    assert source.count(ordered) == 1
+
+    with pytest.raises(MakeContractError, match="noncanonical GNU Make expansion"):
+        _assert_t_g03_make_launch_contract(source.replace(ordered, reordered))
 
 
 @pytest.mark.parametrize(
