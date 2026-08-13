@@ -231,6 +231,37 @@ def test_final_reread_rejects_a_replaced_diagnostic(monkeypatch: pytest.MonkeyPa
             topology.parse_failure_diagnostic(diagnostic.read_bytes())
 
 
+def test_receipt_first_complete_nonpass_does_not_publish_a_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a pre-existing deferred receipt can coexist with new failure evidence."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw)
+        receipts = topology.run_lane(
+            lane="external-authorities", inventory=INVENTORY, evidence_root=evidence,
+            run_id=run_id, head_sha=head_sha,
+            external_preflight=lambda _code: ("ABSENT", "AUTHORITY_ROOT_ABSENT"),
+        )
+        before = {path: path.read_bytes() for path in receipts}
+
+        def failed(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "component": "root", "pytest_exit_status": 1,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{"test_node_id": selected[0], "component": "root", "outcome": "failed", "reason": "assertion failed", "phase": "call"}],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="acceptance artifact"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                exact_runner=failed,
+            )
+        assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists()
+        assert {path: path.read_bytes() for path in receipts} == before
+
+
 @pytest.mark.parametrize("allowed", [False, None, "true", 1, 0, [], {}])
 def test_public_comparator_rejects_every_nonliteral_true_ci_approval(allowed: object) -> None:
     """Break caught: a direct comparator caller bypasses CI approval with truthy data."""

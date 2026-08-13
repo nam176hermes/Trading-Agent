@@ -279,6 +279,15 @@ def _publish_failure_diagnostic(path: Path, content: bytes) -> None:
             pass
 
 
+def _reject_failure_diagnostic_coexistence(topology_root: Path) -> None:
+    """A failure-only record cannot be installed beside any accepting topology evidence."""
+    accepted = [topology_root / "portable-root-remainder.governance.json"]
+    for code in CODE_CLASSIFICATION:
+        accepted.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+    if any(os.path.lexists(path) for path in accepted):
+        raise TopologyError("failure diagnostic conflicts with existing topology acceptance artifact")
+
+
 def _candidate_file_bytes(node_ids: tuple[str, ...]) -> bytes:
     return ("\n".join(node_ids) + ("\n" if node_ids else "")).encode("utf-8")
 
@@ -758,6 +767,7 @@ def _execute_exact_with_retained_custody(
         observations, raw_exit_status = _diagnostic_observations(raw_report, nodes, policy_snapshot)
         is_nonpass = raw_exit_status != "0" or any(item["outcome"] != "passed" for item in observations)
         if is_nonpass:
+            _reject_failure_diagnostic_coexistence(report.parent)
             payload = _failure_diagnostic_payload(
                 baseline=baseline,
                 remainder={
