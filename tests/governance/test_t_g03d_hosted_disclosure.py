@@ -213,7 +213,9 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
     Display commands remain data.  Every other unrecognised command that
     carries an exact guarded module or file token is intentionally treated as
     an unsafe future Make change: this narrow contract cannot prove such shell
-    grammar invokes the required package entrypoint.
+    grammar invokes the required package entrypoint.  Opaque evaluators and
+    shell expansion in an executable/module position are likewise unsafe:
+    this bounded extractor deliberately does not evaluate them.
     """
     guarded = frozenset({
         "scripts.t_g03_capability_topology",
@@ -226,13 +228,51 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
         ("uv", "run", "python", "-m", "scripts.check_test_governance"),
     })
     display_commands = frozenset({"echo", "printf"})
+
+    def is_shell_indirection(word: str) -> bool:
+        """Recognize shell evaluation syntax without interpreting it.
+
+        Make-level values such as ``$(TEST_EVIDENCE_DIR)`` are deliberately
+        not shell indirection.  The doubled dollar forms are emitted to the
+        shell by Make and can choose an executable or module at runtime.
+        """
+        return "$$" in word or "`" in word
+
+    def is_opaque_evaluator(argv: tuple[str, ...]) -> bool:
+        if not argv:
+            return False
+        if argv[0] in {"eval", ".", "source", "exec", "xargs"}:
+            return True
+        if argv[0] in {"sh", "bash", "dash", "ksh", "zsh"} and "-c" in argv[1:]:
+            return True
+        return "-exec" in argv and any(token in guarded for token in argv)
+
+    def has_indirect_guarded_launch(argv: tuple[str, ...]) -> bool:
+        """Reject dynamic words where the protected launcher selects code."""
+        if argv and is_shell_indirection(argv[0]):
+            return True
+        if argv[:2] != ("uv", "run") or len(argv) < 3:
+            return False
+        if is_shell_indirection(argv[2]):
+            return True
+        if argv[2] != "python" or len(argv) < 4:
+            return False
+        program_index = 4 if argv[3] == "-m" else 3
+        return program_index < len(argv) and is_shell_indirection(argv[program_index])
+
     return [
         (target, argv)
         for target, argv in _logical_make_recipe_argvs(source)
         if argv
         and argv[0] not in display_commands
-        and any(token in guarded for token in argv)
-        and argv[:5] not in canonical
+        and (
+            is_opaque_evaluator(argv)
+            or has_indirect_guarded_launch(argv)
+            or (
+                any(token in guarded for token in argv)
+                and argv[:5] not in canonical
+            )
+        )
     ]
 
 
@@ -486,6 +526,62 @@ def test_t_g03_make_contract_fails_closed_for_an_unsupported_function_body() -> 
     assert [target for target, _argv in _make_noncanonical_guarded_commands(source)] == [
         "future-function.t-g03-direct-file",
     ]
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "target"),
+    (
+        (
+            "\nfuture-variable-direct.t-g03-noncanonical:\n"
+            "\tscript=scripts/t_g03_capability_topology.py; "
+            "uv run python \"$$script\" reserve",
+            "future-variable-direct.t-g03-noncanonical",
+        ),
+        (
+            "\nfuture-variable-module.t-g03-noncanonical:\n"
+            "\tmodule=scripts.t_g03_capability_topology; "
+            "uv run python -m \"$${module}\" reserve",
+            "future-variable-module.t-g03-noncanonical",
+        ),
+        (
+            "\nfuture-command-substitution.t-g03-noncanonical:\n"
+            "\tuv run python \"$$(printf scripts/t_g03_capability_topology.py)\" reserve",
+            "future-command-substitution.t-g03-noncanonical",
+        ),
+        (
+            "\nfuture-backticks.t-g03-noncanonical:\n"
+            "\tuv run python \"`printf scripts/t_g03_capability_topology.py`\" reserve",
+            "future-backticks.t-g03-noncanonical",
+        ),
+        (
+            "\nfuture-eval.t-g03-noncanonical:\n"
+            "\teval \"uv run python scripts/t_g03_capability_topology.py reserve\"",
+            "future-eval.t-g03-noncanonical",
+        ),
+        (
+            "\nfuture-shell-c.t-g03-noncanonical:\n"
+            "\tbash -c \"uv run python -m scripts.t_g03_capability_topology reserve\"",
+            "future-shell-c.t-g03-noncanonical",
+        ),
+    ),
+    ids=(
+        "shell-variable-direct-file",
+        "shell-variable-module",
+        "command-substitution",
+        "backticks",
+        "eval",
+        "shell-c",
+    ),
+)
+def test_t_g03_make_contract_rejects_opaque_entrypoint_evaluation(
+    suffix: str, target: str,
+) -> None:
+    """Break caught: an evaluator or dynamic executable hides a guarded launch."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + suffix
+
+    assert [observed_target for observed_target, _argv in _make_noncanonical_guarded_commands(source)] == [target]
     with pytest.raises(AssertionError):
         _assert_t_g03_make_launch_contract(source)
 
