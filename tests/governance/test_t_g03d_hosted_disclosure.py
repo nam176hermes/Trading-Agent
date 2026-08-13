@@ -40,15 +40,23 @@ def _reachable(targets: dict[str, tuple[str, ...]], root: str) -> set[str]:
 
 
 def _logical_make_recipe_argvs(source: str) -> list[tuple[str, tuple[str, ...]]]:
-    """Tokenize shell-command argv from Make recipes without treating data as execution."""
+    """Extract bounded shell command positions from Make recipes.
+
+    This is deliberately not a general shell parser.  It recognizes the
+    control positions used by Make recipes and leaves any unrecognised command
+    form as an argv headed by that form, so the guarded-launch contract can
+    reject an ambiguous use of a protected entrypoint instead of overlooking it.
+    """
     target: str | None = None
     pending_target: str | None = None
     pending: list[str] = []
     commands: list[tuple[str, tuple[str, ...]]] = []
     target_pattern = re.compile(r"^([^\s:=#][^:=#]*?)[ \t]*:(?![=])(.*)$")
     assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
-    separators = frozenset({";", "&&", "||", "|", "&"})
-    command_prefixes = frozenset({"then", "do", "else", "elif", "!", "{", "("})
+    separators = frozenset({";", ";;", "&&", "||", "|", "&"})
+    command_prefixes = frozenset({
+        "then", "do", "else", "elif", "!", "{", "(", "if", "while", "until",
+    })
     env_options_with_value = frozenset({
         "-C", "-S", "-u", "--chdir", "--split-string", "--unset",
     })
@@ -67,6 +75,28 @@ def _logical_make_recipe_argvs(source: str) -> list[tuple[str, tuple[str, ...]]]
             while start < len(words):
                 if words[start] in command_prefixes or assignment.fullmatch(words[start]):
                     start += 1
+                    continue
+                if words[start] == "case":
+                    try:
+                        arm_end = next(
+                            index
+                            for index in range(start + 1, len(words))
+                            if words[index] == ")" or words[index].endswith(")")
+                        )
+                        start = arm_end + 1
+                    except StopIteration:
+                        commands.append((command_target, words))
+                        return
+                    continue
+                if words[start] == ")":
+                    start += 1
+                    continue
+                if words[start] == "command":
+                    start += 1
+                    if start < len(words) and words[start] == "--":
+                        start += 1
+                    while start < len(words) and words[start].startswith("-"):
+                        start += 1
                     continue
                 if words[start] != "env":
                     break
@@ -147,9 +177,14 @@ def _make_direct_file_commands(source: str, script: str) -> list[tuple[str, tupl
     options_with_value = frozenset({"-W", "-X", "--check-hash-based-pycs"})
 
     def executes_script(argv: tuple[str, ...]) -> bool:
-        if argv[: len(prefix)] != prefix:
+        if argv[:2] != prefix[:2]:
             return False
-        index = len(prefix)
+        index = 2
+        if index < len(argv) and argv[index] == "--":
+            index += 1
+        if index >= len(argv) or argv[index] != "python":
+            return False
+        index += 1
         while index < len(argv):
             token = argv[index]
             if token in {"-m", "-c"}:
@@ -169,6 +204,35 @@ def _make_direct_file_commands(source: str, script: str) -> list[tuple[str, tupl
         (target, argv)
         for target, argv in _logical_make_recipe_argvs(source)
         if executes_script(argv)
+    ]
+
+
+def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Return guarded entrypoint references that are not exact module heads.
+
+    Display commands remain data.  Every other unrecognised command that
+    carries an exact guarded module or file token is intentionally treated as
+    an unsafe future Make change: this narrow contract cannot prove such shell
+    grammar invokes the required package entrypoint.
+    """
+    guarded = frozenset({
+        "scripts.t_g03_capability_topology",
+        "scripts.check_test_governance",
+        "scripts/t_g03_capability_topology.py",
+        "scripts/check_test_governance.py",
+    })
+    canonical = frozenset({
+        ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology"),
+        ("uv", "run", "python", "-m", "scripts.check_test_governance"),
+    })
+    display_commands = frozenset({"echo", "printf"})
+    return [
+        (target, argv)
+        for target, argv in _logical_make_recipe_argvs(source)
+        if argv
+        and argv[0] not in display_commands
+        and any(token in guarded for token in argv)
+        and argv[:5] not in canonical
     ]
 
 
@@ -296,6 +360,7 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
         makefile, "scripts/t_g03_capability_topology.py",
     )
     assert not _make_direct_file_commands(makefile, "scripts/check_test_governance.py")
+    assert not _make_noncanonical_guarded_commands(makefile)
 
 
 def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> None:
@@ -343,10 +408,36 @@ def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> Non
             "\t{ uv run python scripts/t_g03_capability_topology.py reserve; }",
             "future-brace.t-g03-direct-file",
         ),
+        (
+            "\nfuture-command-wrapper.t-g03-direct-file:\n"
+            "\tcommand uv run python scripts/t_g03_capability_topology.py reserve",
+            "future-command-wrapper.t-g03-direct-file",
+        ),
+        (
+            "\nfuture-uv-delimiter.t-g03-direct-file:\n"
+            "\tuv run -- python scripts/t_g03_capability_topology.py reserve",
+            "future-uv-delimiter.t-g03-direct-file",
+        ),
+        (
+            "\nfuture-if-condition.t-g03-direct-file:\n"
+            "\tif uv run python scripts/t_g03_capability_topology.py reserve; then :; fi",
+            "future-if-condition.t-g03-direct-file",
+        ),
+        (
+            "\nfuture-while-condition.t-g03-direct-file:\n"
+            "\twhile uv run python scripts/t_g03_capability_topology.py reserve; do :; done",
+            "future-while-condition.t-g03-direct-file",
+        ),
+        (
+            "\nfuture-case-arm.t-g03-direct-file:\n"
+            "\tcase x in x) uv run python scripts/t_g03_capability_topology.py reserve ;; esac",
+            "future-case-arm.t-g03-direct-file",
+        ),
     ),
     ids=(
         "recipe-prefix", "inline-recipe", "odd-continuation", "even-boundary",
-        "python-option", "env-wrapper", "brace-group",
+        "python-option", "env-wrapper", "brace-group", "command-wrapper",
+        "uv-delimiter", "if-condition", "while-condition", "case-arm",
     ),
 )
 def test_t_g03_make_contract_rejects_all_direct_file_recipe_shapes(
@@ -357,6 +448,44 @@ def test_t_g03_make_contract_rejects_all_direct_file_recipe_shapes(
 
     detected = _make_direct_file_commands(source, "scripts/t_g03_capability_topology.py")
     assert [observed_target for observed_target, _argv in detected] == [target]
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        (
+            "\nfuture-python-option-module.t-g03-noncanonical:\n"
+            "\tuv run python -B -m scripts.t_g03_capability_topology reserve"
+        ),
+        (
+            "\nfuture-uv-delimiter-module.t-g03-noncanonical:\n"
+            "\tuv run -- python -m scripts.t_g03_capability_topology reserve"
+        ),
+    ),
+    ids=("python-option-before-module", "uv-delimiter-before-module"),
+)
+def test_t_g03_make_contract_rejects_noncanonical_module_entrypoints(
+    suffix: str,
+) -> None:
+    """Break caught: a guarded tool is launched without its exact approved argv head."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + suffix
+
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
+
+
+def test_t_g03_make_contract_fails_closed_for_an_unsupported_function_body() -> None:
+    """Break caught: unsupported shell grammar hides a guarded direct launch."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nfuture-function.t-g03-direct-file:\n"
+        "\tfunction future_t_g03() { uv run python scripts/t_g03_capability_topology.py reserve; }; future_t_g03"
+    )
+
+    assert [target for target, _argv in _make_noncanonical_guarded_commands(source)] == [
+        "future-function.t-g03-direct-file",
+    ]
     with pytest.raises(AssertionError):
         _assert_t_g03_make_launch_contract(source)
 
@@ -377,8 +506,12 @@ def test_t_g03_make_contract_rejects_all_direct_file_recipe_shapes(
             "\tprintf '%s\\n' prior " "\\\\" "\n"
             "\t@echo uv run python scripts/t_g03_capability_topology.py reserve"
         ),
+        (
+            "\nfuture-case-display.t-g03-direct-file:\n"
+            "\tcase x in x) command echo uv run python scripts/t_g03_capability_topology.py reserve ;; esac"
+        ),
     ),
-    ids=("echo", "brace-echo", "even-boundary-echo"),
+    ids=("echo", "brace-echo", "even-boundary-echo", "case-command-echo"),
 )
 def test_t_g03_make_contract_does_not_treat_display_data_as_an_executable_argv(
     suffix: str,
