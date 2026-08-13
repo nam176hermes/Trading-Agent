@@ -509,7 +509,7 @@ packages/runtime_release/v2.py|2593|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2631|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2667|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2756|Exception|PRODUCTION_CRITICAL|RETURN
-scripts/audit_canonical_repo.py|506|BaseException|TOOLING_MIGRATION|RETURN
+scripts/audit_canonical_repo.py|504|BaseException|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
@@ -529,6 +529,8 @@ scripts/prepare_nautilus_llvm_toolchain.py|458|BaseException|TOOLING_MIGRATION|R
 scripts/prepare_nautilus_llvm_toolchain.py|642|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_runtime_release_wheelhouse.py|230|Exception|TOOLING_MIGRATION|RAISE
 scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|165|BaseException|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|1143|Exception|TOOLING_MIGRATION|RETURN
 scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
@@ -627,7 +629,7 @@ services/semantic_input_refresher/main.py|61|Exception|PRODUCTION_CRITICAL|RAISE
 services/semantic_input_refresher/main.py|116|Exception|PRODUCTION_CRITICAL|RAISE
 services/semantic_input_refresher/main.py|164|Exception|PRODUCTION_CRITICAL|RAISE
 services/semantic_input_refresher/main.py|212|Exception|PRODUCTION_CRITICAL|RETURN
-tests/foundation/test_package6_controller_closure.py|632|BaseException|TESTS|OTHER
+tests/foundation/test_package6_controller_closure.py|706|BaseException|TESTS|OTHER
 tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
