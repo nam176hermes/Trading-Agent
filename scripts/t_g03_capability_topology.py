@@ -945,7 +945,9 @@ def _execute_exact_with_retained_custody(
             str(baseline["foundation_head_sha"]), validation_date,
         )
         if reread_source != policy_source or reread_snapshot != policy_snapshot:
-            raise TopologyError("allowlist source drifted during exact execution")
+            raise _policy_validation_error(
+                TopologyError("allowlist source drifted during exact execution"),
+            )
         raw_report = _strict_json(provisional.read_bytes(), label="raw exact report")
         if raw_report.get("custody_policy") != sealed_custody:
             raise TopologyError("raw diagnostic report has custody policy drift")

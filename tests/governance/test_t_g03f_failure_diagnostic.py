@@ -150,6 +150,64 @@ def test_complete_nonpass_remainder_publishes_redacted_diagnostic_only_after_cus
             )
 
 
+def test_post_custody_source_drift_is_redacted_and_publishes_no_acceptance_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a changed valid second policy read leaks detail or publishes acceptance evidence."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _nodes = _seal_remainder(monkeypatch, evidence, raw)
+        source = topology._allowlist_bytes_at_head(head_sha)
+        reads = 0
+
+        def divergent_second_read(_head_sha: str) -> bytes:
+            nonlocal reads
+            reads += 1
+            return source if reads == 1 else source + b" "
+
+        def passing_exact(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1,
+                "component": "root",
+                "pytest_exit_status": 0,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "passed",
+                    "reason": "",
+                    "phase": "call",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        monkeypatch.setattr(topology, "_allowlist_bytes_at_head", divergent_second_read)
+        with pytest.raises(topology.TopologyError) as raised:
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY,
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head_sha,
+                exact_runner=passing_exact,
+            )
+
+        assert reads == 2
+        assert str(raised.value) == "policy validation failed: POLICY_SOURCE_DRIFT"
+        assert "allowlist" not in str(raised.value).lower()
+        topology_root = evidence / "capability-topology"
+        assert not (topology_root / "portable-root-remainder.governance.json").exists()
+        assert not (topology_root / "portable-root-remainder.failure-diagnostic.json").exists()
+        assert not (topology_root / ".portable-root-remainder.governance.json.executing").exists()
+        assert not any((topology_root / f"{code}.json").exists() for code in topology.CODE_CLASSIFICATION)
+        with pytest.raises(topology.TopologyError):
+            topology.reconcile_portable_root_accounting(
+                inventory=INVENTORY,
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head_sha,
+            )
+
+
 def test_failure_diagnostic_writer_is_no_clobber_and_rejects_staging_collision() -> None:
     """Break caught: a retry replaces published evidence or reuses a hostile staging name."""
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
