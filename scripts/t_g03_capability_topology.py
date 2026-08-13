@@ -525,7 +525,7 @@ def _unsafe_raw_reason_nonacceptance_instances(topology_root: Path) -> tuple[Pat
                 path for path in topology_root.iterdir()
                 if path.name.endswith(".unsafe-raw-reason-nonacceptance.json") and os.path.lexists(path)
             ),
-            key=lambda path: path.name.encode(),
+            key=lambda path: os.fsencode(path.name),
         ))
     except OSError as exc:
         raise TopologyError("unsafe raw reason nonacceptance directory is unavailable") from exc
@@ -758,6 +758,8 @@ def collect_portable_root_baseline(
     require_foundation_context(run_id, head_sha)
     context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha, context)
+    topology_root = evidence_root / "capability-topology"
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
     rows = _installed_inventory_rows(inventory, evidence_root)
     policy = _native_custody_policy()
     candidates = _collect_portable_root_candidates(evidence_root) if collector is None else collector()
@@ -765,7 +767,6 @@ def collect_portable_root_baseline(
     inventory_ids = {row.node_id for row in rows}
     if not inventory_ids <= set(candidates):
         raise TopologyError("portable root baseline omitted a locked inventory node")
-    topology_root = evidence_root / "capability-topology"
     collection_report = _collection_record_path(evidence_root)
     if collector is not None:
         _publish_no_clobber(
@@ -882,6 +883,10 @@ def prepare_portable_root_remainder(
 ) -> dict[str, object]:
     """Generate the exact ordinary-root list from the verified dynamic baseline."""
     require_foundation_context(run_id, head_sha)
+    context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
+    _require_topology_reservation(evidence_root, run_id, head_sha, context)
+    topology_root = evidence_root / "capability-topology"
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
@@ -890,7 +895,6 @@ def prepare_portable_root_remainder(
     candidates = tuple(baseline["candidate_node_ids"])
     remainder = tuple(sorted(set(candidates) - {row.node_id for row in rows}))
     _validate_root_candidates(remainder)
-    topology_root = evidence_root / "capability-topology"
     remainder_bytes = _candidate_file_bytes(remainder)
     document: dict[str, object] = {
         "schema_version": REMAINDER_SCHEMA,
