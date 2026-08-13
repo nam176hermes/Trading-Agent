@@ -2479,3 +2479,25 @@ strict production verification. Production provisioning scripts, release
 policy, inventories, dependencies, runtime state, and live gates remain
 unchanged. The full provision module and the exact five P0-05 locked nodes must
 pass before P0-06 may begin.
+
+### Evidence-corrected P0-06
+
+P0-06 owns one atomic governance migration from the locked 62-row hosted
+failure inventory to a 30-row active unresolved inventory plus a separate
+32-row portable-defect closure ledger. The active inventory retains exactly 24
+native-capability and six external-authority nodes; no portable source defect
+or `SRC-*` receipt code remains active. The closure ledger uses the reviewed
+qualifying commits `871a10f3949c93fe1129c13de09b165b44af62a0` for the 27
+sealed-UV rows and `46cd93582dc0fd7750a768d3e54cc3cfd7003510` for the five
+identity rows, avoiding self-referential closure evidence.
+
+Portable PASS requires one strict run/head/Foundation-context-bound closure
+proof artifact produced by executing the exact 32 closed nodes through an
+independently constructed argument vector. A closure digest or absence of
+active `SRC-*` receipts is not proof. The portable-root remainder must subtract
+both the 30 active unresolved nodes and the 32 closed nodes; accounting then
+reconciles the remainder, the four active native/external receipt groups, and
+the one closure proof so every collected node appears exactly once. Stale
+`SRC-*` receipt or governance artifacts, an overlapping/reintroduced portable
+row, missing or forged closure evidence, and native/external mapping drift all
+fail closed.
