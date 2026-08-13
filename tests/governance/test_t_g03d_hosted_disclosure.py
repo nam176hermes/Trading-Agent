@@ -238,6 +238,10 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
         """
         return "$$" in word or "`" in word
 
+    def is_make_indirection(word: str) -> bool:
+        """Recognize raw Make expansion without resolving a variable value."""
+        return "$(" in word or "${" in word
+
     def is_opaque_evaluator(argv: tuple[str, ...]) -> bool:
         if not argv:
             return False
@@ -245,7 +249,33 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
             return True
         if argv[0] in {"sh", "bash", "dash", "ksh", "zsh"} and "-c" in argv[1:]:
             return True
-        return "-exec" in argv and any(token in guarded for token in argv)
+        if "-exec" not in argv:
+            return False
+        payload = argv[argv.index("-exec") + 1:]
+        shell_names = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
+        return (
+            any(token in guarded for token in payload)
+            or any(token in {"uv", "python"} for token in payload)
+            or (any(token in shell_names for token in payload) and "-c" in payload)
+        )
+
+    def has_make_expanded_guarded_launch(argv: tuple[str, ...]) -> bool:
+        """Reject unresolved Make variables in the protected launcher path.
+
+        Normal Make path interpolation remains allowed after an already exact
+        module command.  A T-G03-named variable is never provable from this
+        source-only parser, even when it is the command word itself.
+        """
+        if any(is_make_indirection(word) and "T_G03" in word for word in argv):
+            return True
+        if argv[:2] != ("uv", "run") or len(argv) < 3:
+            return False
+        if argv[2] != "python":
+            return is_make_indirection(argv[2])
+        if len(argv) < 4:
+            return False
+        program_index = 4 if argv[3] == "-m" else 3
+        return is_make_indirection(argv[program_index])
 
     def has_indirect_guarded_launch(argv: tuple[str, ...]) -> bool:
         """Reject dynamic words where the protected launcher selects code."""
@@ -268,11 +298,29 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
         and (
             is_opaque_evaluator(argv)
             or has_indirect_guarded_launch(argv)
+            or has_make_expanded_guarded_launch(argv)
             or (
                 any(token in guarded for token in argv)
                 and argv[:5] not in canonical
             )
         )
+    ]
+
+
+def _make_opaque_guarded_evaluations(source: str) -> list[str]:
+    """Return Make eval forms that hide a guarded entrypoint from recipes."""
+    guarded_markers = (
+        "scripts.t_g03_capability_topology",
+        "scripts.check_test_governance",
+        "scripts/t_g03_capability_topology.py",
+        "scripts/check_test_governance.py",
+        "T_G03",
+    )
+    return [
+        line
+        for line in source.splitlines()
+        if ("$(eval" in line or "${eval" in line)
+        and any(marker in line for marker in guarded_markers)
     ]
 
 
@@ -401,6 +449,7 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
     )
     assert not _make_direct_file_commands(makefile, "scripts/check_test_governance.py")
     assert not _make_noncanonical_guarded_commands(makefile)
+    assert not _make_opaque_guarded_evaluations(makefile)
 
 
 def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> None:
@@ -584,6 +633,64 @@ def test_t_g03_make_contract_rejects_opaque_entrypoint_evaluation(
     assert [observed_target for observed_target, _argv in _make_noncanonical_guarded_commands(source)] == [target]
     with pytest.raises(AssertionError):
         _assert_t_g03_make_launch_contract(source)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "target"),
+    (
+        (
+            "\nT_G03_SCRIPT = scripts/t_g03_capability_topology.py\n"
+            "future-make-direct.t-g03-noncanonical:\n"
+            "\tuv run python \"$(T_G03_SCRIPT)\" reserve",
+            "future-make-direct.t-g03-noncanonical",
+        ),
+        (
+            "\nT_G03_MODULE = scripts.t_g03_capability_topology\n"
+            "future-make-module.t-g03-noncanonical:\n"
+            "\tuv run python -m \"${T_G03_MODULE}\" reserve",
+            "future-make-module.t-g03-noncanonical",
+        ),
+        (
+            "\nfuture-find-exec.t-g03-noncanonical:\n"
+            "\tfind . -exec sh -c \"uv run python scripts/t_g03_capability_topology.py reserve\" \\\\;",
+            "future-find-exec.t-g03-noncanonical",
+        ),
+        (
+            "\nfuture-xargs.t-g03-noncanonical:\n"
+            "\tprintf '%s\\n' . | xargs sh -c \"uv run python scripts/t_g03_capability_topology.py reserve\"",
+            "future-xargs.t-g03-noncanonical",
+        ),
+        (
+            "\n$(eval future-make-eval.t-g03-noncanonical: ; "
+            "uv run python scripts/t_g03_capability_topology.py reserve)",
+            "future-make-eval.t-g03-noncanonical",
+        ),
+    ),
+    ids=("make-variable-direct-file", "make-variable-module", "find-exec-shell-body", "xargs-shell-body", "make-eval"),
+)
+def test_t_g03_make_contract_rejects_recursive_or_make_expanded_entrypoints(
+    suffix: str, target: str,
+) -> None:
+    """Break caught: a recursive or Make-expanded command hides a T-G03 launch."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + suffix
+
+    if target == "future-make-eval.t-g03-noncanonical":
+        assert _make_opaque_guarded_evaluations(source)
+    else:
+        assert [observed_target for observed_target, _argv in _make_noncanonical_guarded_commands(source)] == [target]
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
+
+
+def test_t_g03_make_contract_keeps_safe_evidence_path_expansions_outside_launcher() -> None:
+    """Break caught: safe current evidence-path Make expansion is rejected as executable indirection."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nfuture-safe-evidence-path:\n"
+        "\tuv run python -m scripts.t_g03_capability_topology reserve "
+        "--evidence-root \"$(TEST_EVIDENCE_DIR)\""
+    )
+
+    assert not _make_noncanonical_guarded_commands(source)
 
 
 @pytest.mark.parametrize(
