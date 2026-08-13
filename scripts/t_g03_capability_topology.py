@@ -1111,7 +1111,11 @@ def _policy_entry_payload(entry: dict[str, object]) -> dict[str, object]:
 
 def _policy_validation_error(exc: BaseException) -> TopologyError:
     message = str(exc).lower()
-    if "expired" in message:
+    if any(token in message for token in (
+        "allowlist source", "tracked allowlist", "utf-8 bom", "strict utf-8",
+    )):
+        code = "POLICY_SOURCE_DRIFT"
+    elif "expired" in message:
         code = "POLICY_REVIEW_DATE_EXPIRED"
     elif "schema" in message:
         code = "POLICY_SCHEMA_INVALID"
@@ -1132,41 +1136,39 @@ def _validated_policy_snapshot(
     head_sha: str, validation_date: date,
 ) -> tuple[dict[str, object], bytes]:
     """Build the complete redacted root-policy projection from tracked allowlist bytes."""
-    raw = _allowlist_bytes_at_head(head_sha)
     try:
+        raw = _allowlist_bytes_at_head(head_sha)
         from scripts import check_test_governance as governance
         document = _strict_json(raw, label="allowlist")
         entries = governance.validate_allowlist_document(document, today=validation_date)
+        snapshot_entries: list[dict[str, object]] = []
+        for entry in entries:
+            if entry["component"] != "root":
+                continue
+            outcome = entry["outcome"]
+            normalized_reason = _normalize_v1_reason(str(entry["reason"]))
+            if str(entry["reason"]) != normalized_reason:
+                raise TopologyError("allowlist policy reason is not v1-normalized")
+            snapshot_entries.append({
+                "component": "root",
+                "test_node_id": entry["test_node_id"],
+                "outcome": outcome,
+                "allowed_in_ci": entry["allowed_in_ci"],
+                "reason_class": "POLICY_SKIP_REASON" if outcome == "skipped" else "POLICY_DESELECT_REASON",
+                "normalized_reason_commitment_sha256": reason_commitment_sha256(normalized_reason),
+                "policy_entry_sha256": _sha256(_policy_entry_payload(entry)),
+            })
+        snapshot_entries.sort(key=lambda item: (str(item["component"]).encode(), str(item["test_node_id"]).encode()))
+        snapshot: dict[str, object] = {
+            "snapshot_schema_version": POLICY_SNAPSHOT_SCHEMA,
+            "allowlist_schema_version": "1",
+            "allowlist_source_sha256": hashlib.sha256(raw).hexdigest(),
+            "policy_entry_schema_version": POLICY_ENTRY_SCHEMA,
+            "entries": snapshot_entries,
+        }
+        return snapshot, raw
     except Exception as exc:
-        if isinstance(exc, TopologyError):
-            raise
         raise _policy_validation_error(exc) from exc
-    snapshot_entries: list[dict[str, object]] = []
-    for entry in entries:
-        if entry["component"] != "root":
-            continue
-        outcome = entry["outcome"]
-        normalized_reason = _normalize_v1_reason(str(entry["reason"]))
-        if str(entry["reason"]) != normalized_reason:
-            raise TopologyError("allowlist policy reason is not v1-normalized")
-        snapshot_entries.append({
-            "component": "root",
-            "test_node_id": entry["test_node_id"],
-            "outcome": outcome,
-            "allowed_in_ci": entry["allowed_in_ci"],
-            "reason_class": "POLICY_SKIP_REASON" if outcome == "skipped" else "POLICY_DESELECT_REASON",
-            "normalized_reason_commitment_sha256": reason_commitment_sha256(normalized_reason),
-            "policy_entry_sha256": _sha256(_policy_entry_payload(entry)),
-        })
-    snapshot_entries.sort(key=lambda item: (str(item["component"]).encode(), str(item["test_node_id"]).encode()))
-    snapshot: dict[str, object] = {
-        "snapshot_schema_version": POLICY_SNAPSHOT_SCHEMA,
-        "allowlist_schema_version": "1",
-        "allowlist_source_sha256": hashlib.sha256(raw).hexdigest(),
-        "policy_entry_schema_version": POLICY_ENTRY_SCHEMA,
-        "entries": snapshot_entries,
-    }
-    return snapshot, raw
 
 
 def _ids_sha256(nodes: tuple[str, ...]) -> str:
