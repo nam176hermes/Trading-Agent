@@ -1,0 +1,11 @@
+{
+  "schema_version": "p0-canonical-baseline/v1",
+  "base_branch": "main",
+  "base_sha": "19627785c140c502260f864e462fed9b9925436e",
+  "candidate_source_branch": "codex/phase1-terra-autopilot-19627785c140",
+  "candidate_start_sha": "417c17452ea31f0ca8c8e9893ac3c03a3a90a7c1",
+  "qualified_sha": null,
+  "promotion_mode": "fast-forward-only",
+  "paper_only": true,
+  "live_execution_authorized": false
+}

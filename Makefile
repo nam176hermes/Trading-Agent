@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-p0-baseline audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -14,6 +14,7 @@
 	check-test-governance-topology
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
+PYTHON ?= uv run python
 RUNTIME_RELEASE_WHEELHOUSE_ROOT ?= $(HOME)/.cache/trading-agent/runtime-release-wheelhouse
 RUNTIME_RELEASE_WHEELHOUSE := $(RUNTIME_RELEASE_WHEELHOUSE_ROOT)/$(RUNTIME_RELEASE_LOCK_SHA256)
 TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence
@@ -30,6 +31,9 @@ audit:
 
 audit-portable:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)" --portable
+
+check-p0-baseline:
+	$(PYTHON) scripts/audit_canonical_repo.py --portable --check-p0-baseline
 
 audit-release:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)" --release

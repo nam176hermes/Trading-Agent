@@ -44,6 +44,16 @@ _GIT_ENV = {
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin",
 }
+_P0_BASELINE_PATH = "ops/consolidation/p0-canonical-baseline.json"
+_P0_BASELINE = {
+    "schema_version": "p0-canonical-baseline/v1",
+    "base_branch": "main",
+    "base_sha": "19627785c140c502260f864e462fed9b9925436e",
+    "candidate_source_branch": "codex/phase1-terra-autopilot-19627785c140",
+    "candidate_start_sha": "417c17452ea31f0ca8c8e9893ac3c03a3a90a7c1",
+    "promotion_mode": "fast-forward-only",
+}
+_P0_BASELINE_KEYS = frozenset({*_P0_BASELINE, "qualified_sha", "paper_only", "live_execution_authorized"})
 _REQUIRED = (
     "AGENTS.md",
     "pyproject.toml",
@@ -149,7 +159,7 @@ def _git(root: Path, arguments: list[str], code: str = "E_ROOT") -> bytes:
         raise CliError(code) from None
 
 
-def _root(path: Path) -> Path:
+def _root(path: Path, *, allow_linked_worktree: bool = False) -> Path:
     text = os.fspath(path)
     try:
         if not path.is_absolute() or os.path.normpath(text) != text:
@@ -160,7 +170,11 @@ def _root(path: Path) -> Path:
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise OSError
         git_metadata = (path / ".git").lstat()
-        if not stat.S_ISDIR(git_metadata.st_mode) or stat.S_ISLNK(git_metadata.st_mode):
+        if stat.S_ISLNK(git_metadata.st_mode):
+            raise OSError
+        if not stat.S_ISDIR(git_metadata.st_mode) and not (
+            allow_linked_worktree and stat.S_ISREG(git_metadata.st_mode)
+        ):
             raise CliError("E_ROOT", ".git")
     except CliError:
         raise
@@ -175,9 +189,69 @@ def _root(path: Path) -> Path:
         common = common.resolve(strict=True)
     except (UnicodeDecodeError, OSError, CliError):
         raise CliError("E_ROOT", ".git") from None
-    if top != path or common != path / ".git":
+    if top != path or (not allow_linked_worktree and common != path / ".git"):
         raise CliError("E_ROOT", ".git")
     return path
+
+
+def _git_commit_exists(root: Path, revision: str) -> bool:
+    try:
+        _git(root, ["rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}"], "P0_BASELINE_SHA_MISSING")
+    except CliError:
+        return False
+    return True
+
+
+def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                _GIT, *_GIT_EXECUTION_GUARDS, "-C", os.fspath(root),
+                "merge-base", "--is-ancestor", "--end-of-options", ancestor, descendant,
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=dict(_GIT_ENV),
+            text=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise CliError("P0_BASELINE_ANCESTRY_INVALID") from None
+    return result.returncode == 0
+
+
+def _audit_p0_baseline(root: Path, head: str) -> None:
+    path = root / _P0_BASELINE_PATH
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise CliError("P0_BASELINE_MISSING") from None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise CliError("P0_BASELINE_SCHEMA_INVALID") from None
+    if not isinstance(document, dict) or set(document) != _P0_BASELINE_KEYS:
+        raise CliError("P0_BASELINE_SCHEMA_INVALID")
+    if any(document.get(key) != value for key, value in _P0_BASELINE.items()):
+        raise CliError("P0_BASELINE_SCHEMA_INVALID")
+    if document["paper_only"] is not True or document["live_execution_authorized"] is not False:
+        raise CliError("P0_LIVE_AUTHORITY_FORBIDDEN")
+    qualified = document["qualified_sha"]
+    if qualified is not None and (not isinstance(qualified, str) or _GIT_ID.fullmatch(qualified) is None):
+        raise CliError("P0_BASELINE_SCHEMA_INVALID")
+    for key in ("base_sha", "candidate_start_sha"):
+        revision = document[key]
+        if not isinstance(revision, str) or _GIT_ID.fullmatch(revision) is None:
+            raise CliError("P0_BASELINE_SCHEMA_INVALID")
+        if not _git_commit_exists(root, revision):
+            raise CliError("P0_BASELINE_SHA_MISSING")
+        if not _git_is_ancestor(root, revision, head):
+            raise CliError("P0_BASELINE_ANCESTRY_INVALID")
+    if qualified is not None:
+        if not _git_commit_exists(root, qualified):
+            raise CliError("P0_BASELINE_SHA_MISSING")
+        if qualified != head or not _git_is_ancestor(root, document["candidate_start_sha"], qualified):
+            raise CliError("P0_BASELINE_ANCESTRY_INVALID")
 
 
 def _nested_git(root: Path) -> None:
@@ -399,10 +473,11 @@ def audit(
     root_path: Path,
     release: bool,
     portable_requested: bool = False,
+    check_p0_baseline: bool = False,
 ) -> dict[str, object]:
-    if release and portable_requested:
+    if (release and portable_requested) or (check_p0_baseline and not portable_requested):
         raise CliError("E_ARGUMENT")
-    root = _root(root_path)
+    root = _root(root_path, allow_linked_worktree=portable_requested)
     _nested_git(root)
     index = _index(root)
     paths = set(index)
@@ -414,7 +489,11 @@ def audit(
     authority_path = root / "ops/consolidation/source-authority.json"
     authority, portable = _audit_authority(
         authority_path,
-        portable_requested=portable_requested,
+        portable_requested=(
+            portable_requested
+            and not check_p0_baseline
+            and not (root / ".git").is_file()
+        ),
     )
     _scan_sources(root, paths)
     try:
@@ -426,6 +505,8 @@ def audit(
         raise CliError("E_ROOT") from None
     if _GIT_ID.fullmatch(head) is None:
         raise CliError("E_ROOT")
+    if check_p0_baseline:
+        _audit_p0_baseline(root, head)
     components: dict[str, object] = {
         "core": {"commit": authority.components["core"].commit, "result": "PASS"},
     }
@@ -465,6 +546,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--release", action="store_true")
     parser.add_argument("--portable", action="store_true")
+    parser.add_argument("--check-p0-baseline", action="store_true")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -488,11 +570,18 @@ def main(argv: list[str] | None = None) -> int:
     raw_arguments = sys.argv[1:] if argv is None else argv
     json_requested = "--json" in raw_arguments
     try:
-        arguments = _parser().parse_args(argv)
+        parse_arguments = list(raw_arguments)
+        if (
+            "--portable" in parse_arguments
+            and not any(argument == "--root" or argument.startswith("--root=") for argument in parse_arguments)
+        ):
+            parse_arguments.extend(("--root", os.fspath(Path(__file__).resolve().parents[1])))
+        arguments = _parser().parse_args(parse_arguments)
         result = audit(
             arguments.root,
             arguments.release,
             portable_requested=arguments.portable,
+            check_p0_baseline=arguments.check_p0_baseline,
         )
     except CliError as error:
         if json_requested:
