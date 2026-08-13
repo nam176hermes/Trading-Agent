@@ -54,6 +54,25 @@ def _seal_remainder(
     return run_id, head_sha, tuple(remainder["remainder_node_ids"])
 
 
+def _valid_unsafe_nonacceptance_bytes(
+    evidence: Path, *, run_id: str, head_sha: str,
+) -> bytes:
+    baseline = topology.load_portable_root_baseline(
+        inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=evidence / "capability-topology/foundation-context.json",
+    )
+    remainder, nodes = topology._load_portable_root_remainder(
+        inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=evidence / "capability-topology/foundation-context.json",
+    )
+    payload = topology._unsafe_raw_reason_nonacceptance_payload(
+        baseline=baseline, remainder=remainder, nodes=nodes,
+        custody=topology._validate_custody_policy(baseline["collector_policy"]), pytest_exit_status="0",
+    )
+    payload["nonacceptance_sha256"] = topology._sha256(payload)
+    return topology.canonical_json_bytes(payload)
+
+
 def test_space_bearing_portable_root_node_id_normalizes_and_round_trips_as_diagnostic_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1131,10 +1150,79 @@ def test_unsafe_nonacceptance_reader_rejects_foreign_path_and_any_second_instanc
                 foreign, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
                 foundation_context_path=evidence / "capability-topology/foundation-context.json",
             )
+        with pytest.raises(topology.TopologyError, match="second unsafe"):
+            topology.read_unsafe_raw_reason_nonacceptance(
+                canonical, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
         foreign.write_bytes(b"malformed")
         with pytest.raises(topology.TopologyError, match="second unsafe"):
             topology.read_unsafe_raw_reason_nonacceptance(
                 canonical, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+
+
+@pytest.mark.parametrize("foreign_bytes", [b"malformed", "valid"], ids=["malformed", "valid"])
+def test_foreign_unsafe_record_blocks_remainder_before_runner_or_terminal_publication(
+    monkeypatch: pytest.MonkeyPatch, foreign_bytes: bytes | str,
+) -> None:
+    """Break caught: a foreign unsafe-record spelling permits a root PASS or canonical unsafe record."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        topology_root = evidence / "capability-topology"
+        foreign = topology_root / "foreign.unsafe-raw-reason-nonacceptance.json"
+        foreign.write_bytes(
+            _valid_unsafe_nonacceptance_bytes(evidence, run_id=run_id, head_sha=head_sha)
+            if foreign_bytes == "valid" else foreign_bytes
+        )
+        invoked = False
+
+        def all_pass(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            nonlocal invoked
+            invoked = True
+            report.write_text(json.dumps({
+                "schema_version": 1, "component": "root", "pytest_exit_status": 0,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node, "component": "root", "outcome": "passed",
+                    "reason": "", "phase": "call",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="unsafe raw reason nonacceptance is present"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                exact_runner=all_pass,
+                foundation_context_path=topology_root / "foundation-context.json",
+            )
+        assert not invoked
+        assert not (topology_root / "portable-root-remainder.governance.json").exists()
+        assert not topology._unsafe_raw_reason_nonacceptance_path(topology_root).exists()
+
+
+@pytest.mark.parametrize("foreign_bytes", [b"malformed", "valid"], ids=["malformed", "valid"])
+def test_foreign_unsafe_record_blocks_audit_before_baseline_loading(
+    monkeypatch: pytest.MonkeyPatch, foreign_bytes: bytes | str,
+) -> None:
+    """Break caught: an earlier acceptance-input error masks a foreign unsafe-record presence."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        (evidence / "capability-topology/foreign.unsafe-raw-reason-nonacceptance.json").write_bytes(
+            _valid_unsafe_nonacceptance_bytes(evidence, run_id=run_id, head_sha=head_sha)
+            if foreign_bytes == "valid" else foreign_bytes
+        )
+        monkeypatch.setattr(
+            topology, "load_portable_root_baseline",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("foreign unsafe record must stop before baseline")),
+        )
+        with pytest.raises(governance.GovernanceError, match="unsafe raw reason nonacceptance is present"):
+            governance.audit_topology_root_records(
+                evidence_root=evidence, inventory=INVENTORY, foundation_run_id=run_id,
+                foundation_head_sha=head_sha,
                 foundation_context_path=evidence / "capability-topology/foundation-context.json",
             )
 

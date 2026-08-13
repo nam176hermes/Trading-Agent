@@ -270,6 +270,7 @@ def reserve_topology_evidence(
     _prepare_private_evidence_directory(evidence_root)
     topology_root = evidence_root / "capability-topology"
     _prepare_private_evidence_directory(topology_root)
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
     context: dict[str, object] | None = None
     if foundation_context_path is not None:
         context = load_foundation_context(
@@ -399,6 +400,7 @@ def _capture_foundation_context(
     _prepare_private_evidence_directory(evidence_root)
     topology_root = evidence_root / "capability-topology"
     _prepare_private_evidence_directory(topology_root)
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
     context_path = _foundation_context_path(evidence_root)
     acceptance_paths = [
         topology_root / ".reservation",
@@ -502,9 +504,8 @@ def _reject_failure_diagnostic_coexistence(topology_root: Path) -> None:
         *accepted,
         topology_root / "portable-root-remainder.failure-diagnostic.json",
         topology_root / "policy-validation-nonacceptance.json",
-        topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json",
     ]
-    if any(os.path.lexists(path) for path in rejected):
+    if any(os.path.lexists(path) for path in rejected) or _unsafe_raw_reason_nonacceptance_instances(topology_root):
         raise TopologyError("failure diagnostic conflicts with existing topology acceptance artifact")
 
 
@@ -1028,6 +1029,7 @@ def _execute_exact_with_retained_custody(
     diagnostic = report.with_name("portable-root-remainder.failure-diagnostic.json")
     nonacceptance = _policy_nonacceptance_path(report.parent)
     unsafe_nonacceptance = _unsafe_raw_reason_nonacceptance_path(report.parent)
+    _reject_unsafe_raw_reason_nonacceptance_presence(report.parent)
     if (
         os.path.lexists(provisional)
         or os.path.lexists(diagnostic)
@@ -1180,6 +1182,7 @@ def execute_portable_root_remainder(
 ) -> tuple[str, ...]:
     """Execute the sealed ordinary-root list exactly once, including an empty list."""
     require_foundation_context(run_id, head_sha)
+    _reject_unsafe_raw_reason_nonacceptance_presence(evidence_root / "capability-topology")
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
