@@ -237,7 +237,7 @@ def _audit_p0_baseline(root: Path, head: str) -> None:
     if document["paper_only"] is not True or document["live_execution_authorized"] is not False:
         raise CliError("P0_LIVE_AUTHORITY_FORBIDDEN")
     qualified = document["qualified_sha"]
-    if qualified is not None and (not isinstance(qualified, str) or _GIT_ID.fullmatch(qualified) is None):
+    if qualified is not None:
         raise CliError("P0_BASELINE_SCHEMA_INVALID")
     for key in ("base_sha", "candidate_start_sha"):
         revision = document[key]
@@ -247,13 +247,6 @@ def _audit_p0_baseline(root: Path, head: str) -> None:
             raise CliError("P0_BASELINE_SHA_MISSING")
         if not _git_is_ancestor(root, revision, head):
             raise CliError("P0_BASELINE_ANCESTRY_INVALID")
-    if qualified is not None:
-        if not _git_commit_exists(root, qualified):
-            raise CliError("P0_BASELINE_SHA_MISSING")
-        if qualified != head or not _git_is_ancestor(root, document["candidate_start_sha"], qualified):
-            raise CliError("P0_BASELINE_ANCESTRY_INVALID")
-
-
 def _nested_git(root: Path) -> None:
     try:
         for directory, names, filenames in os.walk(root, followlinks=False):
@@ -411,6 +404,7 @@ def _audit_authority(
     path: Path,
     *,
     portable_requested: bool,
+    allow_present_portable_authorities: bool = False,
 ) -> tuple[SourceAuthority, bool]:
     try:
         parsed = parse_source_authority(path)
@@ -419,6 +413,8 @@ def _audit_authority(
     available = _authority_availability(parsed)
     if all(available):
         if portable_requested:
+            if allow_present_portable_authorities:
+                return parsed, True
             raise CliError("E_AUTHORITY")
         try:
             return load_source_authority(path), False
@@ -486,16 +482,6 @@ def audit(
     if release and status != "clean":
         raise CliError("E_DIRTY", dirty_path)
     _required(paths)
-    authority_path = root / "ops/consolidation/source-authority.json"
-    authority, portable = _audit_authority(
-        authority_path,
-        portable_requested=(
-            portable_requested
-            and not check_p0_baseline
-            and not (root / ".git").is_file()
-        ),
-    )
-    _scan_sources(root, paths)
     try:
         head = _git(
             root, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"], "E_ROOT",
@@ -507,6 +493,16 @@ def audit(
         raise CliError("E_ROOT")
     if check_p0_baseline:
         _audit_p0_baseline(root, head)
+    authority_path = root / "ops/consolidation/source-authority.json"
+    authority, portable = _audit_authority(
+        authority_path,
+        portable_requested=(
+            portable_requested
+            and (check_p0_baseline or not (root / ".git").is_file())
+        ),
+        allow_present_portable_authorities=check_p0_baseline,
+    )
+    _scan_sources(root, paths)
     components: dict[str, object] = {
         "core": {"commit": authority.components["core"].commit, "result": "PASS"},
     }
@@ -524,7 +520,7 @@ def audit(
         except CliError as error:
             raise error from None
         components[name] = {"introduction": introduction, "result": "PASS"}
-    if portable and any(_authority_availability(authority)):
+    if portable and not check_p0_baseline and any(_authority_availability(authority)):
         raise CliError("E_AUTHORITY")
     _immutable_evidence(root, "ops/consolidation/source-authority.json", "E_AUTHORITY")
     for _, _, manifest_path in _COMPONENTS.values():
