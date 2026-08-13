@@ -530,8 +530,8 @@ scripts/prepare_nautilus_llvm_toolchain.py|642|BaseException|TOOLING_MIGRATION|R
 scripts/prepare_runtime_release_wheelhouse.py|230|Exception|TOOLING_MIGRATION|RAISE
 scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|197|BaseException|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|1170|Exception|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|1866|Exception|TOOLING_MIGRATION|RETURN
+scripts/t_g03_capability_topology.py|1172|Exception|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|1868|Exception|TOOLING_MIGRATION|RETURN
 scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
