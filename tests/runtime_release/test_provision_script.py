@@ -681,6 +681,8 @@ def _run_fakeroot_fixture(
     root: Path,
     jobs_db_env: Path,
     reader_db_env: Path,
+    *,
+    unexpected_staged_owner: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     production = (OPS / "provision-root.sh").read_text(encoding="utf-8")
     patched = production.replace("if [[ $EUID -ne 0 ]]; then", "if false; then", 1)
@@ -699,9 +701,14 @@ def _run_fakeroot_fixture(
         harness.write_text(patched, encoding="utf-8")
         harness.chmod(0o755)
         shutil.copyfile(OPS / "verify-release.py", harness_root / "verify-release.py")
+        owner_mutation = (
+            'chown 1001:1001 "$1/units/trading-job-api.service"; '
+            if unexpected_staged_owner
+            else ""
+        )
         command = (
             'chown -R 1000:1000 "$1"; chown 1000:1000 "$2" "$3"; '
-            'exec "$4" "$1" "$5"'
+            f'{owner_mutation}exec "$4" "$1" "$5"'
         )
         return subprocess.run(
             [
@@ -820,6 +827,35 @@ def test_fakeroot_rejects_staging_metadata_identity_contradiction(
         assert result.returncode == 2
         assert result.stdout == ""
         assert result.stderr == "phase 4b root provisioning rejected\n"
+
+
+def test_fakeroot_rejects_unexpected_staged_file_owner(tmp_path: Path) -> None:
+    del tmp_path
+    with tempfile.TemporaryDirectory(
+        prefix="phase4b-fakeroot-owner-", dir=_private_fakeroot_test_root()
+    ) as raw:
+        native = Path(raw)
+        stage, _ = _fixture_stage(native)
+        metadata_path = stage / "staging-metadata.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["staging_uid"] = FAKEROOT_STAGING_ID
+        metadata["staging_gid"] = FAKEROOT_STAGING_ID
+        metadata_path.write_text(json.dumps(metadata, separators=(",", ":")) + "\n")
+        metadata_path.chmod(0o600)
+        jobs_db_env, reader_db_env = _write_db_envs(native)
+
+        result = _run_fakeroot_fixture(
+            stage,
+            _sha(metadata_path),
+            native / "root",
+            jobs_db_env,
+            reader_db_env,
+            unexpected_staged_owner=True,
+        )
+
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert result.stderr == "wrong staging owner\n"
 
 
 def test_trusted_snapshot_does_not_depend_on_volatile_run(tmp_path: Path) -> None:

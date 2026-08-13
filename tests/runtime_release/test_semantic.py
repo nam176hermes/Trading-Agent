@@ -283,12 +283,18 @@ def test_attestation_exposes_every_exact_dynamic_semantic_identity(monkeypatch):
     assert evidence.policy_sha256 == authority.policy_sha256
 
 
-def test_semantic_attestation_rejects_runtime_identity_drift(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("identity_field", "current_identity"),
+    (("runtime_uid", os.geteuid), ("runtime_gid", os.getegid)),
+)
+def test_semantic_attestation_rejects_runtime_identity_drift(
+    monkeypatch, identity_field, current_identity,
+) -> None:
     """Changing a fixture plan identity must still fail the production check."""
     import packages.runtime_release.semantic as module
 
     active, plan, manifest = _publication("v1")
-    plan["runtime_uid"] = os.geteuid() + 1
+    plan[identity_field] = current_identity() + 1
     monkeypatch.setattr(
         module,
         "read_protected_canonical_json_current",
@@ -313,8 +319,9 @@ def test_semantic_attestation_rejects_runtime_identity_drift(monkeypatch) -> Non
         ACTIVE_PATH, semantic_policy_digest(BACKEND, ACTIVE_PATH),
     )
 
-    with pytest.raises(SemanticAttestationError):
+    with pytest.raises(SemanticAttestationError) as error:
         attest_current_semantic_inputs(authority, BACKEND, clock=lambda: NOW)
+    assert str(error.value) == "semantic input attestation failed"
 
 
 def test_corrupted_rotating_active_fails_under_unchanged_stable_policy(monkeypatch):
