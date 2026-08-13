@@ -436,8 +436,10 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
         "audit-portable",
         "test-portable-embedded-proof",
         "test-all-portable-private",
+        "test-all-portable-topology-private",
         "ci-portable",
         "ci-portable-private",
+        "check-test-governance-topology",
     }
     logical_makefile = makefile.replace("\\\n", " ")
     phony = re.search(r"^\.PHONY\s*:(.*)$", logical_makefile, re.MULTILINE)
@@ -462,6 +464,17 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
     ]
     assert targets["ci-portable"] == []
     assert targets["ci-portable-private"] == []
+    assert targets["test-all-portable-topology-private"] == [
+        "audit-portable",
+        "check-d0-closure",
+        "check-contracts",
+        "check-secrets",
+        "test-backend",
+        "test-dashboard",
+        "typecheck-dashboard",
+        "lint-dashboard",
+        "ci-portable-topology",
+    ]
 
     strict_aggregate = targets["test-all-private"]
     assert "test" in strict_aggregate
@@ -482,7 +495,7 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
     )
     assert portable_private_recipe is not None
     assert portable_private_recipe.group(1).count("prepare-root-test-install") == 1
-    assert "$(MAKE) test-all-portable-private check-test-skips check-critical-coverage " in (
+    assert "$(MAKE) test-all-portable-topology-private check-test-governance-topology check-critical-coverage " in (
         portable_private_recipe.group(1)
     )
     for gate in ("build-dashboard", "audit-python-source", "audit-dependencies"):

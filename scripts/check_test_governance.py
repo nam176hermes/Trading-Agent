@@ -15,6 +15,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from scripts import t_g03_capability_topology as capability_topology
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALLOWLIST = ROOT / "tests/skip-allowlist.yaml"
@@ -758,6 +760,127 @@ def run_suites(report_dir: Path) -> tuple[list[dict[str, object]], dict[str, int
     return records, exit_codes
 
 
+def audit_topology_root_records(
+    *,
+    evidence_root: Path,
+    inventory: Path,
+    foundation_run_id: str,
+    foundation_head_sha: str,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Bind every root topology receipt to its exact no-clobber observation."""
+    try:
+        capability_topology._require_topology_reservation(
+            evidence_root, foundation_run_id, foundation_head_sha,
+        )
+        source_rows = capability_topology.load_inventory(inventory)
+        installed = evidence_root / "t-g03a-hosted-failure-inventory.tsv"
+        if installed.read_bytes() != inventory.read_bytes():
+            raise GovernanceError("installed topology inventory binding drift")
+        rows = capability_topology.load_inventory(installed)
+        if rows != source_rows:
+            raise GovernanceError("installed topology inventory row mapping drift")
+        topology_root = evidence_root / "capability-topology"
+        receipts = [
+            topology_root / f"{code}.json"
+            for code in sorted(capability_topology.CODE_CLASSIFICATION)
+        ]
+        disclosure = capability_topology.aggregate_receipts(
+            receipts,
+            rows=rows,
+            foundation_run_id=foundation_run_id,
+            foundation_head_sha=foundation_head_sha,
+        )
+        root_records: list[dict[str, object]] = []
+        for receipt_path in receipts:
+            receipt = capability_topology.validate_receipt(
+                receipt_path.read_bytes(),
+                rows=rows,
+                foundation_run_id=foundation_run_id,
+                foundation_head_sha=foundation_head_sha,
+            )
+            code = str(receipt["capability_or_authority_code"])
+            governance_path = topology_root / f"{code}.governance.json"
+            if receipt["outcome"] == "DEFERRED":
+                if os.path.lexists(governance_path):
+                    raise GovernanceError(
+                        f"deferred receipt {code} has a root governance record"
+                    )
+                continue
+            metadata = governance_path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                raise GovernanceError(f"root governance record for {code} is unsafe")
+            document = _read_json(governance_path)
+            if not isinstance(document, dict) or document.get("component") != "root":
+                raise GovernanceError(f"root governance record for {code} is malformed")
+            if document.get("pytest_exit_status") != 0 or not isinstance(document.get("tests"), list):
+                raise GovernanceError(f"root governance record for {code} is not a passing pytest report")
+            expected = tuple(receipt["expected_node_ids"])
+            observed: list[dict[str, object]] = []
+            for index, item in enumerate(document["tests"]):
+                record = _validate_observation(item, index)
+                if record["component"] != "root" or record["outcome"] != "passed":
+                    raise GovernanceError(
+                        f"root governance record for {code} contains a non-passing node"
+                    )
+                observed.append(record)
+            observed_nodes = tuple(sorted(str(record["test_node_id"]) for record in observed))
+            if observed_nodes != expected or len(observed) != len(expected):
+                raise GovernanceError(
+                    f"root topology governance record for {code} does not exactly match its receipt"
+                )
+            root_records.extend(observed)
+        if len({str(record["test_node_id"]) for record in root_records}) != len(root_records):
+            raise GovernanceError("root topology governance records overlap")
+        return disclosure, root_records
+    except (capability_topology.TopologyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise GovernanceError(f"root topology governance audit failed: {exc}") from exc
+
+
+def run_topology_suites(
+    report_dir: Path,
+    *,
+    topology_evidence_root: Path,
+    inventory: Path,
+    foundation_run_id: str,
+    foundation_head_sha: str,
+) -> tuple[list[dict[str, object]], dict[str, int], dict[str, object]]:
+    """Audit sealed root lanes, then retain the existing legacy/dashboard governance."""
+    _prepare_private_directory(report_dir)
+    disclosure, root_records = audit_topology_root_records(
+        evidence_root=topology_evidence_root,
+        inventory=inventory,
+        foundation_run_id=foundation_run_id,
+        foundation_head_sha=foundation_head_sha,
+    )
+    legacy_raw = report_dir / "legacy-raw.json"
+    exit_codes = {
+        "legacy": _run(
+            [
+                "uv",
+                "run",
+                "--frozen",
+                "--extra",
+                "test",
+                "pytest",
+                "-q",
+                "-p",
+                "scripts.test_governance_pytest",
+            ],
+            cwd=ROOT / "legacy/research-backend",
+            env=_pytest_environment("legacy", legacy_raw),
+            log_path=report_dir / "legacy.log",
+        ),
+    }
+    exit_codes["dashboard"], dashboard_raw = _run_dashboard(report_dir)
+    records = list(root_records)
+    for path in (legacy_raw, dashboard_raw):
+        document = _read_json(path)
+        if not isinstance(document, dict) or not isinstance(document.get("tests"), list):
+            raise GovernanceError(f"invalid raw test report: {path}")
+        records.extend(dict(item) for item in document["tests"])
+    return records, exit_codes, disclosure
+
+
 def _bootstrap_classification(record: dict[str, object]) -> dict[str, object]:
     node_id = str(record["test_node_id"])
     component = str(record["component"])
@@ -856,6 +979,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--bootstrap-allowlist", type=Path)
     parser.add_argument("--today", type=date.fromisoformat, default=date.today())
+    parser.add_argument("--topology-audit", action="store_true")
+    parser.add_argument("--topology-evidence-root", type=Path)
+    parser.add_argument("--inventory", type=Path)
+    parser.add_argument("--foundation-run-id")
+    parser.add_argument("--foundation-head-sha")
     args = parser.parse_args(argv)
 
     report_dir = args.report_dir if args.report_dir.is_absolute() else ROOT / args.report_dir
@@ -863,6 +991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     error_output = report_dir / "test-governance-error.json"
     records: list[dict[str, object]] = []
     exit_codes: dict[str, int] = {}
+    topology_disclosure: dict[str, object] | None = None
     try:
         _prepare_private_directory(report_dir)
         _remove_artifacts(
@@ -876,7 +1005,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         bootstrap_path = args.bootstrap_allowlist
         if bootstrap_path is not None and not bootstrap_path.is_absolute():
             bootstrap_path = ROOT / bootstrap_path
-        records, exit_codes = run_suites(report_dir)
+        if args.topology_audit:
+            if args.bootstrap_allowlist is not None:
+                raise GovernanceError("topology audit cannot bootstrap an allowlist")
+            if (
+                args.topology_evidence_root is None
+                or args.inventory is None
+                or args.foundation_run_id is None
+                or args.foundation_head_sha is None
+            ):
+                raise GovernanceError("topology audit requires evidence, inventory, Foundation run, and Foundation head")
+            topology_evidence_root = args.topology_evidence_root
+            if not topology_evidence_root.is_absolute():
+                topology_evidence_root = ROOT / topology_evidence_root
+            inventory = args.inventory if args.inventory.is_absolute() else ROOT / args.inventory
+            capability_topology.require_foundation_context(
+                args.foundation_run_id, args.foundation_head_sha,
+            )
+            records, exit_codes, topology_disclosure = run_topology_suites(
+                report_dir,
+                topology_evidence_root=topology_evidence_root,
+                inventory=inventory,
+                foundation_run_id=args.foundation_run_id,
+                foundation_head_sha=args.foundation_head_sha,
+            )
+        else:
+            records, exit_codes = run_suites(report_dir)
         if args.bootstrap_allowlist is not None:
             candidate = bootstrap_allowlist(records)
             if bootstrap_path is None:
@@ -899,6 +1053,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         entries = _load_allowlist(allowlist_path, args.today)
         compare_inventory(records, entries)
         report = build_governed_report(records, entries)
+        if topology_disclosure is not None:
+            report["capability_topology"] = topology_disclosure
         report["generated_at_utc"] = datetime.now(timezone.utc).isoformat()
         report["suite_exit_codes"] = exit_codes
         try:

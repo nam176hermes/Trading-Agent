@@ -8,9 +8,10 @@
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
-	build-dashboard prepare-root-test-install test-all-private test-all-portable-private test-all \
-	ci ci-private ci-portable ci-portable-private
-	ci-portable-topology test-portable-source test-native-capabilities test-external-authorities
+	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
+	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private \
+	ci-portable-topology test-portable-source test-native-capabilities test-external-authorities \
+	check-test-governance-topology
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 RUNTIME_RELEASE_WHEELHOUSE_ROOT ?= $(HOME)/.cache/trading-agent/runtime-release-wheelhouse
@@ -97,6 +98,18 @@ check-test-skips:
 		PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256" \
 			uv run python scripts/check_test_governance.py \
 				--report-dir "$(TEST_EVIDENCE_DIR)/test-governance"
+
+check-test-governance-topology:
+	@set -eu; \
+		test -n "$${GITHUB_RUN_ID:?}"; \
+		foundation_head=$$(git rev-parse HEAD); \
+		uv run python scripts/check_test_governance.py \
+			--topology-audit \
+			--report-dir "$(TEST_EVIDENCE_DIR)/test-governance-topology" \
+			--topology-evidence-root "$(TEST_EVIDENCE_DIR)" \
+			--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
+			--foundation-run-id "$$GITHUB_RUN_ID" \
+			--foundation-head-sha "$$foundation_head"
 
 check-critical-coverage:
 	uv run python scripts/check_critical_coverage.py \
@@ -264,6 +277,8 @@ test-all-private: audit check-d0-closure check-contracts check-secrets test test
 
 test-all-portable-private: audit-portable check-d0-closure check-contracts check-secrets test-portable-embedded-proof test-backend test-dashboard typecheck-dashboard lint-dashboard
 
+test-all-portable-topology-private: audit-portable check-d0-closure check-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard ci-portable-topology
+
 test-all:
 	@set -eu; \
 		test_tmpdir=$$(mktemp -d /tmp/trading-agent-test-all.XXXXXXXXXX); \
@@ -308,8 +323,7 @@ ci-portable:
 
 ci-portable-private:
 	$(MAKE) prepare-root-test-install
-	$(MAKE) test-all-portable-private check-test-skips check-critical-coverage build-dashboard audit-python-source audit-dependencies
-	$(MAKE) ci-portable-topology
+	$(MAKE) test-all-portable-topology-private check-test-governance-topology check-critical-coverage build-dashboard audit-python-source audit-dependencies
 
 # Capability topology is separate from strict ci/audit and never releases runtime proof.
 test-portable-source:
