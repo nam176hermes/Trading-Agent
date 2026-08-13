@@ -228,6 +228,15 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
         ("uv", "run", "python", "-m", "scripts.check_test_governance"),
     })
     display_commands = frozenset({"echo", "printf"})
+    make_assignment = re.compile(
+        r"^([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:::=|::=|:=|\?=|\+=|=)[ \t]*(.*)$"
+    )
+    make_variable = re.compile(r"^\$\(([^(){}\s]+)\)$|^\$\{([^(){}\s]+)\}$")
+    make_values = {
+        match.group(1): match.group(2)
+        for line in source.splitlines()
+        if (match := make_assignment.match(line)) is not None
+    }
 
     def is_shell_indirection(word: str) -> bool:
         """Recognize shell evaluation syntax without interpreting it.
@@ -241,6 +250,31 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
     def is_make_indirection(word: str) -> bool:
         """Recognize raw Make expansion without resolving a variable value."""
         return "$(" in word or "${" in word
+
+    def resolved_make_recipe_head(argv: tuple[str, ...]) -> tuple[str, ...] | None:
+        """Resolve one bounded ordinary Make recipe-head variable.
+
+        ``$(MAKE)`` is the one approved recursive-Make form.  Any other
+        recipe-head variable must be fully resolvable from a simple Make
+        assignment; otherwise the launcher contract cannot prove it does not
+        materialize a guarded program.  This deliberately does not interpret
+        Make functions, modifiers, or recursive assignment graphs.
+        """
+        if not argv:
+            return ()
+        match = make_variable.fullmatch(argv[0])
+        if match is None:
+            return argv
+        name = next(value for value in match.groups() if value is not None)
+        if name == "MAKE":
+            return ()
+        value = make_values.get(name)
+        if value is None or is_make_indirection(value) or "$$" in value or "`" in value:
+            return None
+        try:
+            return tuple(shlex.split(value, posix=True)) + argv[1:]
+        except ValueError:
+            return None
 
     def is_opaque_evaluator(argv: tuple[str, ...]) -> bool:
         if not argv:
@@ -277,6 +311,22 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
         program_index = 4 if argv[3] == "-m" else 3
         return is_make_indirection(argv[program_index])
 
+    def has_make_recipe_head_guarded_launch(argv: tuple[str, ...]) -> bool:
+        """Reject ordinary Make command macros that hide a guarded launcher."""
+        if not argv or make_variable.fullmatch(argv[0]) is None:
+            return False
+        resolved = resolved_make_recipe_head(argv)
+        if resolved is None:
+            return True
+        if not resolved:
+            return False
+        return (
+            is_opaque_evaluator(resolved)
+            or has_indirect_guarded_launch(resolved)
+            or has_make_expanded_guarded_launch(resolved)
+            or any(token in guarded for token in resolved)
+        )
+
     def has_indirect_guarded_launch(argv: tuple[str, ...]) -> bool:
         """Reject dynamic words where the protected launcher selects code."""
         if argv and is_shell_indirection(argv[0]):
@@ -299,6 +349,7 @@ def _make_noncanonical_guarded_commands(source: str) -> list[tuple[str, tuple[st
             is_opaque_evaluator(argv)
             or has_indirect_guarded_launch(argv)
             or has_make_expanded_guarded_launch(argv)
+            or has_make_recipe_head_guarded_launch(argv)
             or (
                 any(token in guarded for token in argv)
                 and argv[:5] not in canonical
@@ -320,7 +371,10 @@ def _make_opaque_guarded_evaluations(source: str) -> list[str]:
         line
         for line in source.splitlines()
         if ("$(eval" in line or "${eval" in line)
-        and any(marker in line for marker in guarded_markers)
+        and (
+            any(marker in line for marker in guarded_markers)
+            or re.search(r"\$[({]eval\s+[^)}]*\$[({]", line) is not None
+        )
     ]
 
 
@@ -680,6 +734,44 @@ def test_t_g03_make_contract_rejects_recursive_or_make_expanded_entrypoints(
         assert [observed_target for observed_target, _argv in _make_noncanonical_guarded_commands(source)] == [target]
     with pytest.raises(AssertionError):
         _assert_t_g03_make_launch_contract(source)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    (
+        (
+            "\nRULE = future-make-eval-variable.t-g03-noncanonical: ; "
+            "uv run python scripts/t_g03_capability_topology.py reserve\n"
+            "$(eval $(RULE))"
+        ),
+        (
+            "\nRUN = uv run python scripts/t_g03_capability_topology.py reserve\n"
+            "future-make-command-variable.t-g03-noncanonical:\n"
+            "\t$(RUN)"
+        ),
+    ),
+    ids=("eval-variable-rule", "recipe-command-variable"),
+)
+def test_t_g03_make_contract_rejects_generic_make_indirection_to_guarded_launcher(
+    suffix: str,
+) -> None:
+    """Break caught: an ordinary Make macro materializes a guarded non-module launch."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + suffix
+
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
+
+
+def test_t_g03_make_contract_allows_a_statically_resolved_benign_recipe_macro() -> None:
+    """Break caught: a safe non-launcher Make command macro becomes overblocked."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nSAFE_DISPLAY = printf 'topology contract intact\\n'\n"
+        "future-safe-recipe-macro:\n"
+        "\t$(SAFE_DISPLAY)"
+    )
+
+    assert not _make_noncanonical_guarded_commands(source)
+    _assert_t_g03_make_launch_contract(source)
 
 
 def test_t_g03_make_contract_keeps_safe_evidence_path_expansions_outside_launcher() -> None:
