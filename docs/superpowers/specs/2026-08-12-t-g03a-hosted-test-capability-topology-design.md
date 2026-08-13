@@ -222,6 +222,137 @@ any skipped, deselected, xfailed, xpassed, failed, not-run, duplicate, omitted,
 or additional node fails the lane. An empty remainder still needs a sealed
 empty record and may not bypass collection or aggregation.
 
+#### Failure-only portable-root diagnostic
+
+The successful governance record deliberately cannot preserve a failed run's
+provisional execution evidence. To make a failed exact run diagnosable without
+weakening governance, T-G03D must add exactly one separate, failure-only
+record at
+`$(TEST_EVIDENCE_DIR)/capability-topology/portable-root-remainder.failure-diagnostic.json`.
+It is not a lane receipt, does not replace the governance record, and is never
+written on a passing remainder lane.
+
+The runner may publish that record only after it has completed every existing
+no-clobber, baseline, generated-remainder, candidate/list-hash, and raw
+per-node completeness validation, and after the retained native-custody
+**postcheck** has passed. The output name is reserved as absent before the
+run; publication writes a private complete file, fsyncs it, and atomically
+installs it with a no-replace operation. A pre-existing destination, failed
+atomic publication, or post-write byte/hash reread is fatal. If custody
+postcheck, selector/raw-report validation, or complete one-node-per-selected-ID
+evidence is unavailable, no diagnostic may be published: that condition fails
+closed rather than emitting an incomplete diagnostic. Only the remaining case
+of a completely evidenced exact execution with a non-pass proof may publish
+the diagnostic, and must then exit nonzero. It must not also publish a passing
+remainder governance record or a `PASS` receipt.
+
+The record has the one versioned schema
+`"t-g03a-portable-root-failure-diagnostic/v1"`. Its complete top-level key set
+is exactly:
+
+```text
+schema_version
+diagnostic_only
+foundation_run_id
+foundation_head_sha
+inventory_sha256
+baseline_candidate_ids_sha256
+baseline_node_list_sha256
+remainder_candidate_ids_sha256
+remainder_node_list_sha256
+custody_policy_sha256
+custody_postcheck_status
+pytest_exit_status
+observations
+diagnostic_sha256
+```
+
+`diagnostic_only` is the literal JSON boolean `true` and
+`custody_postcheck_status` is the literal string `PASS`; every other scalar is
+a string. Run IDs and nonzero pytest exit status are canonical decimal strings
+without leading zeros. The head is the exact lowercase 40-character Git SHA;
+the listed top-level `*_sha256` fields, including `diagnostic_sha256`, are
+lowercase 64-character SHA-256 hex strings. No timestamp, filesystem path,
+command line, environment value, raw pytest output, secret, corpus data, or
+authority material is permitted.
+
+`observations` is a non-empty array sorted by bytewise `test_node_id`; each
+entry has exactly these keys:
+
+```text
+test_node_id
+component
+outcome
+redacted_reason_class
+phase
+governance_link_kind
+existing_policy_entry_sha256
+```
+
+It contains every selected generated remainder ID exactly once, no more and no
+less. `component` is the fixed root component. `outcome` is the final outcome
+for that node and distinguishes at least `passed`, `skipped`, `xfailed`,
+`xpassed`, `deselected`, `failed`, `error`, and `not_run`; `phase` identifies
+the final reporting phase. `redacted_reason_class` is produced by the existing
+safe governance normalizer and may contain only its normalized, path- and
+secret-free class, never a raw reason or traceback. A record with duplicate,
+missing, additional, unknown, uncollected, or malformed node/outcome/phase
+data is invalid rather than diagnostic evidence.
+
+Approval linkage is informational provenance only and must be derived solely
+from already validated existing policy data, never from this diagnostic or a
+new inferred allowlist entry. For a skip-like observation,
+`governance_link_kind` is exactly one of `NO_EXISTING_POLICY_KEY`,
+`EXISTING_POLICY_KEY_ONLY`, or `EXACT_EXISTING_POLICY_ENTRY`; the final form
+uses `existing_policy_entry_sha256` for the canonical existing policy entry
+only when its current component/node/outcome/reason/CI semantics match exactly.
+The other two forms carry an empty linkage hash. Non-skip-like outcomes use
+`NOT_APPLICABLE` and an empty linkage hash. A matching existing entry is not an
+accepted outcome: `skipped`, `deselected`, `xfailed`, `xpassed`, and every
+other non-pass state remain a failed remainder lane.
+
+The exact diagnostic bytes are strict UTF-8 without a BOM or trailing newline,
+with every object key sorted by Unicode code point, `ensure_ascii=false`, and
+separators exactly `(',', ':')`. Strings must be valid UTF-8 and all IDs and
+enums are ASCII. JSON numbers, `null`, alternate escapes, duplicate keys,
+insignificant whitespace, or any byte sequence that does not reserialize to
+the same bytes are rejected. The payload is the same object with
+`diagnostic_sha256` omitted; SHA-256 of those canonical UTF-8 payload bytes
+must equal `diagnostic_sha256`, and every diagnostic reader must verify that
+self-hash before using any observation.
+
+The diagnostic is uploaded only as part of the existing Foundation artifact
+`test-governance-${{ github.run_id }}` from
+`/tmp/trading-agent-test-evidence`, with the locked 14-day retention and an
+always-on failed-job upload path. It has no other publication destination.
+Topology aggregation and source-required green evaluation reject a present
+diagnostic before receipt/remainder reconciliation; they never consume it as
+`PASS` governance evidence, a receipt, a deferred mapping, or a substitute for
+the normal exact record. Empty, malformed, stale-run/head/inventory/baseline/
+remainder/custody bindings, duplicate, missing, foreign, or tampered
+diagnostics fail closed. The only permitted consumer is a separate
+failure-review reader that reports its verified node IDs for remediation; it
+cannot alter policy or emit a receipt.
+
+Before any allowlist or other skip-policy change after such a failure, the next
+exact hosted or reproducible topology run must first verify and consume this
+diagnostic to identify the exact affected node IDs, then compare them against
+the existing policy in review. Missing or invalid diagnostic evidence blocks
+that policy-change path. This adds no broad skip/xfail policy and cannot turn
+the prior run's 281 skips, or any future skip, into an accepted result.
+
+T-G03D tests must prove the record is absent before custody postcheck and is
+published only for a fully validated, non-pass exact execution; a custody,
+baseline, list, raw-report, or no-clobber failure must publish no record.
+They must prove canonical bytes/self-hash and all current run/head/inventory/
+baseline/remainder/custody bindings, one complete observation per selected ID,
+redaction, and every final outcome class. Hostile tests must reject a tampered,
+stale, missing, duplicate, foreign, or malformed diagnostic and prove that it
+cannot satisfy receipt aggregation, root reconciliation, a `PASS` governance
+record, or deferred acceptance. A policy-review sequencing test must prove the
+next exact run exposes verified diagnostic node IDs before any allowlist/policy
+input can be changed.
+
 The root-accounting set is closed only when the baseline candidate set equals
 the disjoint union of: the passed remainder IDs; all passed portable-source
 IDs; all passed native/external IDs whose capability/authority is available;
@@ -239,7 +370,9 @@ changed marker/plugin/root/extension identity; inventory IDs are a subset of
 the baseline; the generated remainder has no duplicates and is its exact set
 difference; a new ordinary root node enters the next baseline; every execution
 argv comes only from the verified generated file; and baseline/receipt/remainder
-union or execution-count drift is fatal. These are test-governance/orchestration
+union or execution-count drift is fatal. They must additionally exercise the
+failure-only diagnostic contract above, including its postcheck ordering and
+failure-only/non-acceptance boundary. These are test-governance/orchestration
 contracts only: they change no production validator, authority, runtime, live
 flag, service, database, or trading behavior.
 
@@ -257,7 +390,11 @@ records at `$(TEST_EVIDENCE_DIR)/capability-topology/<code>.governance.json`
 together with their exact lane receipts. It must first perform the baseline
 record's policy/list-digest/current-run/head binding and each receipt's
 canonical-byte, self-hash, current Foundation run/head, tracked-inventory hash,
-and completeness checks. It requires the remainder governance record to have
+and completeness checks. It must also reject any failure-only remainder
+diagnostic it finds before reconciliation, whether current, stale, foreign, or
+malformed; the diagnostic is available only to the separate failure-review
+reader and cannot enter an aggregate. It requires the remainder governance
+record to have
 complete collected and passed sets exactly equal to the generated remainder. For
 every inventory code it then requires exactly one of:
 
