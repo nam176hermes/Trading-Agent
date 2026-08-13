@@ -547,6 +547,51 @@ or a pure GNU Make function.  Canonical count/argv drift, a duplicate site, an
 omitted site, an unexpected target/prerequisite site, or an unparseable
 guarded command all fail before any acceptance claim.
 
+#### Pre-expansion conditional quarantine
+
+One controlled GNU Make expansion cannot prove the contents of an inactive
+conditional branch: GNU Make removes that branch before its target database
+and `--trace` observable exist.  Enumerating all valuations is not a finite or
+safe substitute for ordinary/dynamic variables, environment-derived `ifdef`,
+or macros that construct the guarded words in pieces.  Therefore this
+contract adopts the narrower source-compatible policy that the root Makefile
+has **no active GNU Make conditional directives at all** while the guarded
+launch contract is in force.  The reviewed current root Makefile has none;
+this is a test-only future-regression guard, not authorization to change
+Foundation behavior.
+
+Before creating the projection or invoking GNU Make, a lexical directive
+scanner over the original root Makefile must reject every real top-level
+`ifeq`, `ifneq`, `ifdef`, `ifndef`, `else` (including `else ifeq`, `else
+ifneq`, `else ifdef`, and `else ifndef`), and `endif` directive.  It must form
+Make logical lines by conservatively joining continued directive lines, track
+balanced/nested directive state, and reject malformed, unmatched, ambiguous,
+or nonstandard conditional spelling even if GNU Make would select a branch
+under the fixed test environment.  A directive cannot be waived because its
+currently selected branch has no observed guarded argv.
+
+This is deliberately a structural conditional quarantine rather than another
+attempt to infer a generic macro's meaning from its name.  It closes a future
+`ifeq`/`ifneq`/`ifdef`/`ifndef` branch containing a direct topology/governance
+file launch, a canonical-looking extra module launch, or a `define`/`call`/
+`value`/assignment fragment that only materializes a guarded launcher when
+the branch becomes active.  Because current source has no conditional
+directives, accepting an unrelated future conditional would be less defensible
+than rejecting it before the expansion proof.
+
+The scanner must not falsely treat a full-line Make comment, a tab-prefixed
+recipe/shell line, an ordinary variable value, or literal display text inside
+a `define` body as a Make conditional directive.  It must recognize and skip
+comments/recipe bodies and balanced `define`/`endef` value bodies before
+directive classification; a real conditional directive outside those regions
+is fatal irrespective of comments that follow it.  The hostile matrix must
+include an otherwise-inactive `ifeq`, `ifneq`, `ifdef`, and `ifndef` direct
+file or extra-module branch, plus a generic macro defined within an inactive
+branch, and assert each fails in this pre-launch guard with no GNU Make
+subprocess or recipe attempt.  It must also assert the current Makefile's
+zero-directive result and retain positive comment, recipe-display, and
+`define`-literal cases.
+
 #### Hermetic expansion harness and safety boundary
 
 The new test helper must make a test-owned copy/projection of the root
