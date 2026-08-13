@@ -39,50 +39,71 @@ def _reachable(targets: dict[str, tuple[str, ...]], root: str) -> set[str]:
     return found
 
 
-def _make_module_commands(source: str, module: str) -> list[tuple[str, tuple[str, ...]]]:
-    """Return every direct Make recipe command that launches one Python module."""
+def _logical_make_recipe_argvs(source: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Tokenize every logical Make recipe command, joining shell continuations."""
     target: str | None = None
+    pending: list[str] = []
     commands: list[tuple[str, tuple[str, ...]]] = []
-    pending: tuple[str, str] | None = None
-    target_pattern = re.compile(r"^([A-Za-z0-9_-]+)[ \t]*:(?:[^=\n]*)$")
-    prefix = ("uv", "run", "python", "-m", module)
-    invocation = " ".join(prefix)
+    target_pattern = re.compile(r"^([A-Za-z0-9_.-]+)[ \t]*:(?:[^=\n]*)$")
 
-    def record(command_target: str, command: str) -> None:
-        command = command.removesuffix(";").rstrip()
-        tokens = tuple(shlex.split(command))
-        assert tokens[: len(prefix)] == prefix
-        commands.append((command_target, tokens[len(prefix):]))
+    def record(command_target: str, fragments: list[str]) -> None:
+        lexer = shlex.shlex(" ".join(fragments), posix=True, punctuation_chars=";")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = tuple(lexer)
+        start = 0
+        while start < len(tokens):
+            try:
+                end = tokens.index(";", start)
+            except ValueError:
+                end = len(tokens)
+            argv = tokens[start:end]
+            if argv:
+                commands.append((command_target, argv))
+            start = end + 1
 
     for line in source.splitlines():
         match = target_pattern.match(line)
         if match is not None:
-            assert pending is None
+            assert not pending
             target = match.group(1)
             continue
         if not line.startswith("\t"):
+            assert not pending
+            target = None
             continue
-        fragment = line.lstrip("\t").strip()
-        if pending is not None:
-            command_target, command = pending
-            fragment_without_continuation = fragment.removesuffix("\\").rstrip()
-            command = f"{command} {fragment_without_continuation}"
-            if fragment.endswith("\\"):
-                pending = (command_target, command)
-            else:
-                record(command_target, command)
-                pending = None
+        if target is None:
             continue
-        if invocation not in fragment:
-            continue
-        assert target is not None
-        command = fragment.removesuffix("\\").rstrip()
-        if fragment.endswith("\\") and not command.endswith(";"):
-            pending = (target, command)
-        else:
-            record(target, command)
-    assert pending is None
+        fragment = line.lstrip("\t").rstrip()
+        continues = fragment.endswith("\\")
+        pending.append(fragment[:-1].rstrip() if continues else fragment)
+        if not continues:
+            record(target, pending)
+            pending = []
+    assert not pending
     return commands
+
+
+def _make_module_commands(source: str, module: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Return every Make logical command that launches one canonical Python module."""
+    prefix = ("uv", "run", "python", "-m", module)
+    return [
+        (target, argv[index + len(prefix):])
+        for target, argv in _logical_make_recipe_argvs(source)
+        for index in range(len(argv) - len(prefix) + 1)
+        if argv[index:index + len(prefix)] == prefix
+    ]
+
+
+def _make_direct_file_commands(source: str, script: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Return every Make logical command that directly executes one guarded script file."""
+    prefix = ("uv", "run", "python", script)
+    return [
+        (target, argv[index:])
+        for target, argv in _logical_make_recipe_argvs(source)
+        for index in range(len(argv) - len(prefix) + 1)
+        if argv[index:index + len(prefix)] == prefix
+    ]
 
 
 def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
@@ -160,9 +181,8 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     assert portable_source_sequence.index("collect-baseline") < portable_source_sequence.index("run-lane --lane portable-source")
 
 
-def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> None:
-    """Break caught: a T-G03 Make launch bypasses the package module boundary."""
-    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+def _assert_t_g03_make_launch_contract(makefile: str) -> None:
+    """Assert the complete canonical-module launch contract for one Makefile source."""
 
     topology_commands = _make_module_commands(
         makefile, "scripts.t_g03_capability_topology",
@@ -206,8 +226,33 @@ def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> Non
     ]
     assert len(topology_commands) == 15
     assert len(governance_commands) == 2
-    assert "uv run python scripts/t_g03_capability_topology.py" not in makefile
-    assert "uv run python scripts/check_test_governance.py" not in makefile
+    assert not _make_direct_file_commands(
+        makefile, "scripts/t_g03_capability_topology.py",
+    )
+    assert not _make_direct_file_commands(makefile, "scripts/check_test_governance.py")
+
+
+def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> None:
+    """Break caught: a T-G03 Make launch bypasses the package module boundary."""
+    _assert_t_g03_make_launch_contract((ROOT / "Makefile").read_text(encoding="utf-8"))
+
+
+def test_t_g03_make_contract_rejects_a_continuation_split_direct_file_launch() -> None:
+    """Break caught: a future direct-file launch hides its argv across Make continuations."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nfuture.t-g03-direct-file:\n"
+        "\tuv run python \\\n"
+        "\t\tscripts/t_g03_capability_topology.py reserve"
+    )
+
+    assert _make_direct_file_commands(source, "scripts/t_g03_capability_topology.py") == [
+        (
+            "future.t-g03-direct-file",
+            ("uv", "run", "python", "scripts/t_g03_capability_topology.py", "reserve"),
+        ),
+    ]
+    with pytest.raises(AssertionError):
+        _assert_t_g03_make_launch_contract(source)
 
 
 def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = False) -> tuple[str, str]:
