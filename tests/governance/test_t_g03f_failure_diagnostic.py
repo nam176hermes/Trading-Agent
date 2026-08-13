@@ -416,6 +416,55 @@ def test_policy_nonacceptance_parser_rejects_untyped_closed_domain_values(
             topology.parse_policy_validation_nonacceptance(topology.canonical_json_bytes(document))
 
 
+def test_policy_nonacceptance_public_parser_exhausts_stage_class_and_hash_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a canonical record accepts a pair outside A2's closed matrix."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        monkeypatch.setattr(topology, "_allowlist_bytes_at_head", lambda _head: (_ for _ in ()).throw(RuntimeError("x")))
+        with pytest.raises(topology.TopologyError):
+            topology.execute_portable_root_remainder(inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=evidence / "capability-topology/foundation-context.json")
+        base = topology.parse_policy_validation_nonacceptance((evidence / "capability-topology/policy-validation-nonacceptance.json").read_bytes())
+        for stage, classes in topology.POLICY_STAGE_CLASSES.items():
+            for public_class in classes:
+                document = dict(base, policy_validation_stage=stage, policy_validation_class=public_class)
+                if stage == "SOURCE_ACQUISITION_HEAD_BINDING":
+                    document.update(policy_source_hash_status="UNAVAILABLE", policy_source_sha256="", custody_status="PRE_EXECUTION_VALIDATED")
+                elif stage == "POST_CUSTODY_REREAD_COMPARISON":
+                    document.update(policy_source_hash_status="PRE_EXECUTION_SNAPSHOT", policy_source_sha256="a" * 64, custody_status="POST_CUSTODY_POSTCHECK_PASS")
+                else:
+                    document.update(policy_source_hash_status="CURRENT_STAGE_BYTES", policy_source_sha256="a" * 64, custody_status="PRE_EXECUTION_VALIDATED")
+                document["nonacceptance_sha256"] = topology._sha256({key: value for key, value in document.items() if key != "nonacceptance_sha256"})
+                assert topology.parse_policy_validation_nonacceptance(topology.canonical_json_bytes(document))["policy_validation_stage"] == stage
+        invalid = dict(base, policy_validation_stage="SHARED_VALIDATOR_IMPORT", policy_validation_class="POLICY_SOURCE_DRIFT", policy_source_hash_status="CURRENT_STAGE_BYTES", policy_source_sha256="a" * 64)
+        invalid["nonacceptance_sha256"] = topology._sha256({key: value for key, value in invalid.items() if key != "nonacceptance_sha256"})
+        with pytest.raises(topology.TopologyError, match="stage/class"):
+            topology.parse_policy_validation_nonacceptance(topology.canonical_json_bytes(invalid))
+
+
+def test_policy_nonacceptance_presence_blocks_every_named_public_acceptance_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: any named acceptance path treats this diagnostic as green evidence."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        monkeypatch.setattr(topology, "_allowlist_bytes_at_head", lambda _head: (_ for _ in ()).throw(RuntimeError("x")))
+        context = evidence / "capability-topology/foundation-context.json"
+        with pytest.raises(topology.TopologyError):
+            topology.execute_portable_root_remainder(inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=context)
+        with pytest.raises(topology.TopologyError, match="nonacceptance"):
+            topology.run_lane(lane="native-capabilities", inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=context)
+        with pytest.raises(topology.TopologyError, match="nonacceptance"):
+            topology.reconcile_portable_root_accounting(inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=context)
+        with pytest.raises(governance.GovernanceError, match="nonacceptance"):
+            governance.audit_topology_root_records(evidence_root=evidence, inventory=INVENTORY, foundation_run_id=run_id, foundation_head_sha=head_sha, foundation_context_path=context)
+        with pytest.raises(topology.TopologyError, match="nonacceptance"):
+            topology.read_failure_diagnostic(evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json", inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=context)
+
+
 def test_policy_nonacceptance_reader_rebinds_present_source_before_other_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
