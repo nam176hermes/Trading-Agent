@@ -381,6 +381,187 @@ diagnostics.  It adds no policy renewal, workflow dependency, authority
 acquisition, network action, runtime/service/database change, or live-trading
 behavior.
 
+### Amendment A2 — policy-validation non-acceptance stage evidence
+
+Hosted Foundation `31668464716` at `9b5ae3f` proved a valid sealed context,
+baseline, and generated remainder, then reported only the existing public
+class `POLICY_VALIDATION_INVALID`.  Replaying the exact source bytes at the
+sealed date validates the same policy locally.  That evidence does not prove a
+policy defect, a clock defect, or which protected snapshot branch raised.  No
+allowlist renewal, edit, broadening, workflow change, receipt-v1 change, or
+runtime-authority action is authorized by this amendment.
+
+The portable-root executor must therefore add one diagnostic-only,
+non-acceptance record at:
+
+```text
+$(TEST_EVIDENCE_DIR)/capability-topology/policy-validation-nonacceptance.json
+```
+
+It is written only by the executor that has already reopened the verified
+Foundation context, reservation, installed inventory, baseline, and generated
+remainder for the active run/head.  Pure snapshot helpers, failure-diagnostic
+readers, receipt readers, aggregate/reconciliation paths, and direct developer
+invocations are readers only and must never create this record.  A direct
+filesystem record is internally checkable evidence only; it becomes hosted
+review evidence solely at the existing matching `foundation.yml` Foundation
+artifact/run/head boundary described below.
+
+The stage is a structural control-flow fact, never a guess from an exception
+message, class text, stack trace, or policy content.  The closed v1 stage
+domain is exactly:
+
+```text
+SOURCE_ACQUISITION_HEAD_BINDING
+SHARED_VALIDATOR_IMPORT
+STRICT_JSON_PARSE
+SHARED_ALLOWLIST_VALIDATION
+ROOT_PROJECTION_REASON_NORMALIZATION
+POST_CUSTODY_REREAD_COMPARISON
+```
+
+`SOURCE_ACQUISITION_HEAD_BINDING` covers opening the fixed allowlist source,
+obtaining its exact `git show <Foundation-head>` bytes, strict UTF-8/BOM
+checks, and byte equality.  `SHARED_VALIDATOR_IMPORT` covers only loading the
+existing standard governance validator.  `STRICT_JSON_PARSE` covers strict
+duplicate-key-rejecting JSON parsing.  `SHARED_ALLOWLIST_VALIDATION` covers
+only `validate_allowlist_document(..., today=<sealed-date>)` and retains its
+existing fail-closed policy semantics.  `ROOT_PROJECTION_REASON_NORMALIZATION`
+covers root filtering, required-key access, exact literal-boolean handling,
+v1 reason normalization, commitments, entry hashes, sorting, and final
+snapshot construction.  `POST_CUSTODY_REREAD_COMPARISON` covers the second
+complete acquisition/import/parse/validation/projection after successful
+retained-custody exit and the equality comparison with the pre-execution
+snapshot.  A second-read failure is this final stage even when its underlying
+operation would have been one of the earlier stages.  No unknown, default,
+combined, or caller-supplied stage is valid.
+
+The existing closed public `policy_validation_class` domain and redacted
+console spelling remain unchanged.  The writer may use the existing redacted
+class mapper only to produce that public class, but must select and retain the
+stage at the direct structural boundary before any broad exception mapper runs.
+Neither the record nor the console may contain an exception type or text,
+traceback, chained cause, entry index, node ID, reason, owner, approval,
+target, service, filesystem path, raw policy bytes, or an inferred cause.
+
+The exact record schema is
+`"t-g03a-policy-validation-nonacceptance/v1"` with exactly these top-level
+keys:
+
+```text
+schema_version
+diagnostic_only
+foundation_run_id
+foundation_head_sha
+foundation_validation_date
+foundation_context_sha256
+inventory_sha256
+baseline_sha256
+baseline_candidate_ids_sha256
+baseline_node_list_sha256
+remainder_sha256
+remainder_candidate_ids_sha256
+remainder_node_list_sha256
+custody_policy_sha256
+custody_status
+policy_validation_stage
+policy_validation_class
+policy_source_hash_status
+policy_source_sha256
+nonacceptance_sha256
+```
+
+`diagnostic_only` is the literal JSON boolean `true`.  All other fields are
+strings.  Run/head/date/hash spellings use the already defined canonical
+validators.  `inventory_sha256` equals the locked inventory hash;
+`baseline_sha256` and `remainder_sha256` equal the verified self-hashes of
+those records; candidate/remainder ID hashes are hashes of their canonical
+sorted arrays; list hashes equal the verified canonical node-list-file
+digests; and `custody_policy_sha256` hashes the already verified baseline
+custody policy using the existing canonical JSON rule.  Thus the record binds
+the exact Foundation context/date, inventory, baseline, remainder, and custody
+policy without copying their node IDs, policy content, paths, commands, or raw
+test report.
+
+`custody_status` has the closed domain
+`PRE_EXECUTION_VALIDATED` and `POST_CUSTODY_POSTCHECK_PASS`.  An error in any
+of the first five stages may be published only after the baseline custody
+policy has been validated but before an exact runner is entered, and must use
+`PRE_EXECUTION_VALIDATED`; it must not claim a retained-custody postcheck.
+The final stage may be published only after the retained custody context has
+exited successfully and its postcheck has passed, and must use
+`POST_CUSTODY_POSTCHECK_PASS`.  If the applicable context, reservation,
+inventory, baseline, remainder, custody-policy validation, or required
+postcheck is missing, malformed, stale, foreign, or fails, no non-acceptance
+record may be emitted; that earlier condition itself fails closed.
+
+`policy_source_hash_status` has the exact closed domain
+`UNAVAILABLE`, `CURRENT_STAGE_BYTES`, and `PRE_EXECUTION_SNAPSHOT`.
+`UNAVAILABLE` requires `policy_source_sha256` to be the empty string and is
+permitted only for `SOURCE_ACQUISITION_HEAD_BINDING`, when no source bytes were
+safely acquired and head-bound.  `CURRENT_STAGE_BYTES` requires a lowercase
+SHA-256 digest of the exact successfully source-acquired/head-bound bytes and
+is required for the import, parse, validator, and projection stages; it is a
+commitment only, never raw policy content.  `PRE_EXECUTION_SNAPSHOT` requires
+the verified digest of the first successfully validated source bytes and is
+required for `POST_CUSTODY_REREAD_COMPARISON`; it makes no claim that second
+read bytes were safely acquired.  No other blank, fallback, synthesized, or
+late-recomputed source hash is allowed.
+
+`nonacceptance_sha256` is SHA-256 of the canonical UTF-8 payload with that
+field omitted.  Canonical bytes are strict UTF-8 without BOM or trailing
+newline, Unicode-code-point sorted keys, `ensure_ascii=false`, and separators
+`(',', ':')`.  Writer and reader compute and verify the self-hash
+independently.  Publication reserves the destination as absent, writes and
+fsyncs a private staging file, atomically installs it with a no-replace
+operation, fsyncs the directory, then rereads/parses/self-hash-verifies exact
+bytes before raising the original redacted failure.  A pre-existing target,
+staging collision, publication failure, or failed reread is fatal.  Cleanup
+may remove only the writer-owned uninstalled staging file; it must never
+replace, truncate, or unlink a final destination whose ownership or contents
+can no longer be proven.  A malformed or post-write-drifted final destination
+therefore remains a blocking artifact, not an acceptance fallback.
+
+Before the first snapshot attempt, the executor must reserve the
+non-acceptance destination and verify that no failure diagnostic, portable-root
+PASS governance record, lane receipt, or aggregation result exists.  On any
+pre-execution stage non-acceptance it publishes this record, starts no runner,
+cleans only its provisional staging file, and exits nonzero.  On a post-custody
+stage non-acceptance it may publish only after the stated postcheck; it must
+not publish a failure diagnostic, PASS governance record, receipt, or
+aggregate.  On policy success no non-acceptance record is published.  A
+nonacceptance record and a failure diagnostic are mutually exclusive.  All
+attempts to publish a lane/receipt, root PASS governance record, reconciliation
+or aggregate while either artifact exists must fail closed; a non-acceptance
+record is never a receipt, PASS, deferred receipt, reconciliation input, or
+substitute for a skipped runtime proof.
+
+The new diagnostic-only reader must reject a missing, noncanonical,
+malformed, self-hash-invalid, stale, foreign-run/head, context/date/inventory/
+baseline/remainder/custody-binding-drifted, source-hash-status-invalid, or
+stage/class-invalid record.  It may return only the verified redacted payload
+to a separate failure-review flow and has no API that writes policy, changes
+approval, emits a receipt, or changes a lane outcome.  The ordinary receipt
+aggregator, portable-root reconciliation, topology-governance audit, lane
+publication, and failure-diagnostic reader must reject the *presence* of the
+record before evaluating acceptance evidence, including if it is malformed or
+foreign.  A subsequent exact run must use a new evidence root/run context;
+the existing no-clobber context rule rejects reuse.
+
+Focused implementation tests must inject one failure at every listed stage and
+prove all of the following: the emitted class/stage is exact and structural;
+the artifact and console contain no raw exception/policy content; the schema,
+canonical bytes, self-hash, all declared bindings, custody status, and source
+hash status are exact; pre-execution stages never run pytest; the post-custody
+stage requires a real successful retained-custody exit; and policy success
+emits no artifact.  They must prove failed publication/staging collisions,
+post-write tamper, missing/malformed/stale/foreign records, cross-run/head
+reuse, every illegal source-hash convention, and coexistence with a failure
+diagnostic, PASS governance record, receipt, aggregate, or deferred claim all
+fail closed.  Existing validator dates, allowlist rules, workflow invocation,
+strict/release routes, and capability-receipt/v1 exact bytes must be shown
+unchanged.
+
 ### Portable-root remainder lane
 
 The locked 62 explain the historical hosted failures; they are not the whole
