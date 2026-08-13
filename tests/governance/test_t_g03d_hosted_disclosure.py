@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import shlex
 import tempfile
 import subprocess
 import os
@@ -36,6 +37,52 @@ def _reachable(targets: dict[str, tuple[str, ...]], root: str) -> set[str]:
         found.add(current)
         pending.extend(targets.get(current, ()))
     return found
+
+
+def _make_module_commands(source: str, module: str) -> list[tuple[str, tuple[str, ...]]]:
+    """Return every direct Make recipe command that launches one Python module."""
+    target: str | None = None
+    commands: list[tuple[str, tuple[str, ...]]] = []
+    pending: tuple[str, str] | None = None
+    target_pattern = re.compile(r"^([A-Za-z0-9_-]+)[ \t]*:(?:[^=\n]*)$")
+    prefix = ("uv", "run", "python", "-m", module)
+    invocation = " ".join(prefix)
+
+    def record(command_target: str, command: str) -> None:
+        command = command.removesuffix(";").rstrip()
+        tokens = tuple(shlex.split(command))
+        assert tokens[: len(prefix)] == prefix
+        commands.append((command_target, tokens[len(prefix):]))
+
+    for line in source.splitlines():
+        match = target_pattern.match(line)
+        if match is not None:
+            assert pending is None
+            target = match.group(1)
+            continue
+        if not line.startswith("\t"):
+            continue
+        fragment = line.lstrip("\t").strip()
+        if pending is not None:
+            command_target, command = pending
+            fragment_without_continuation = fragment.removesuffix("\\").rstrip()
+            command = f"{command} {fragment_without_continuation}"
+            if fragment.endswith("\\"):
+                pending = (command_target, command)
+            else:
+                record(command_target, command)
+                pending = None
+            continue
+        if invocation not in fragment:
+            continue
+        assert target is not None
+        command = fragment.removesuffix("\\").rstrip()
+        if fragment.endswith("\\") and not command.endswith(";"):
+            pending = (target, command)
+        else:
+            record(target, command)
+    assert pending is None
+    return commands
 
 
 def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
@@ -81,7 +128,7 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     )
     assert topology_target is not None
     recipe = topology_target.group(1)
-    assert "scripts/check_test_governance.py" in recipe
+    assert "uv run python -m scripts.check_test_governance" in recipe
     assert "--topology-audit" in recipe
     assert '$(TEST_EVIDENCE_DIR)/test-governance-topology' in recipe
     assert '$(TEST_EVIDENCE_DIR)' in recipe
@@ -111,6 +158,56 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     assert "PACKAGE6_FD_CUSTODY_EXTENSION_PATH" in portable_source_sequence
     assert "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256" in portable_source_sequence
     assert portable_source_sequence.index("collect-baseline") < portable_source_sequence.index("run-lane --lane portable-source")
+
+
+def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> None:
+    """Break caught: a T-G03 Make launch bypasses the package module boundary."""
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    topology_commands = _make_module_commands(
+        makefile, "scripts.t_g03_capability_topology",
+    )
+    governance_commands = _make_module_commands(
+        makefile, "scripts.check_test_governance",
+    )
+
+    evidence_root = "$(TEST_EVIDENCE_DIR)"
+    context_path = "$$FOUNDATION_CONTEXT_PATH"
+    topology_arguments = ("--evidence-root", evidence_root, "--foundation-context-path", context_path)
+    assert topology_commands == [
+        ("test-portable-source", ("reserve", *topology_arguments)),
+        ("test-portable-source", ("collect-baseline", *topology_arguments)),
+        ("test-portable-source", ("run-lane", "--lane", "portable-source", *topology_arguments)),
+        ("test-native-capabilities", ("reserve", *topology_arguments)),
+        ("test-native-capabilities", ("run-lane", "--lane", "native-capabilities", *topology_arguments)),
+        ("test-external-authorities", ("reserve", *topology_arguments)),
+        ("test-external-authorities", ("run-lane", "--lane", "external-authorities", *topology_arguments)),
+        ("test-portable-root-remainder", ("collect-baseline", *topology_arguments)),
+        ("test-portable-root-remainder", ("prepare-remainder", *topology_arguments)),
+        ("test-portable-root-remainder", ("run-remainder", *topology_arguments)),
+        ("ci-portable-topology", ("reserve", *topology_arguments)),
+        ("ci-portable-topology", ("run-lane", "--lane", "portable-source", *topology_arguments)),
+        ("ci-portable-topology", ("run-lane", "--lane", "native-capabilities", *topology_arguments)),
+        ("ci-portable-topology", ("run-lane", "--lane", "external-authorities", *topology_arguments)),
+        ("ci-portable-topology", ("aggregate", *topology_arguments)),
+    ]
+    assert governance_commands == [
+        ("check-test-skips", ("--report-dir", "$(TEST_EVIDENCE_DIR)/test-governance")),
+        (
+            "check-test-governance-topology",
+            (
+                "--topology-audit",
+                "--report-dir", "$(TEST_EVIDENCE_DIR)/test-governance-topology",
+                "--topology-evidence-root", evidence_root,
+                "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+                "--foundation-context-path", context_path,
+            ),
+        ),
+    ]
+    assert len(topology_commands) == 15
+    assert len(governance_commands) == 2
+    assert "uv run python scripts/t_g03_capability_topology.py" not in makefile
+    assert "uv run python scripts/check_test_governance.py" not in makefile
 
 
 def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = False) -> tuple[str, str]:

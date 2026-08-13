@@ -13,6 +13,182 @@ from scripts import t_g03_capability_topology as topology
 from scripts import check_test_governance as governance
 
 
+ROOT = Path(__file__).resolve().parents[2]
+INVENTORY = ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv"
+
+
+@pytest.mark.parametrize(
+    "module",
+    ("scripts.t_g03_capability_topology", "scripts.check_test_governance"),
+)
+def test_t_g03_package_module_entrypoints_preserve_the_help_contract(module: str) -> None:
+    """Break caught: a Make-routed T-G03 package module cannot import from the repository root."""
+    completed = subprocess.run(
+        ["uv", "run", "python", "-m", module, "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "ModuleNotFoundError" not in completed.stderr
+    assert "SHARED_VALIDATOR_IMPORT" not in completed.stderr
+
+
+def test_t_g03_topology_module_reaches_policy_validation_before_absent_custody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: module entrypoint fails at its reciprocal import instead of the sealed custody boundary."""
+    run_id = "31641536482"
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        custody = Path(raw) / "custody.so"
+        custody.write_bytes(b"module probe custody fixture")
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(custody))
+        monkeypatch.setenv(
+            "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256",
+            topology.hashlib.sha256(custody.read_bytes()).hexdigest(),
+        )
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        rows = topology.load_inventory(INVENTORY)
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+        topology.collect_portable_root_baseline(
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            foundation_context_path=context_path,
+            collector=lambda: tuple(sorted([
+                *(row.node_id for row in rows),
+                "tests/ordinary/test_module_probe.py::test_unreachable_runner",
+            ])),
+        )
+        topology.prepare_portable_root_remainder(
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+
+        environment = os.environ.copy()
+        environment.pop("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", None)
+        environment.pop("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", None)
+        completed = subprocess.run(
+            [
+                "uv", "run", "python", "-m", "scripts.t_g03_capability_topology",
+                "run-remainder",
+                "--evidence-root", str(evidence),
+                "--foundation-context-path", str(context_path),
+            ],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        topology_root = evidence / "capability-topology"
+        assert completed.returncode == 2
+        assert completed.stdout == ""
+        assert completed.stderr == (
+            "t-g03 capability topology: portable root collection requires native custody identity\n"
+        )
+        assert "SHARED_VALIDATOR_IMPORT" not in completed.stderr
+        assert not (topology_root / "portable-root-remainder.governance.json").exists()
+        assert not (topology_root / "portable-root-remainder.failure-diagnostic.json").exists()
+        assert not (topology_root / "policy-validation-nonacceptance.json").exists()
+        assert not any((topology_root / f"{code}.json").exists() for code in topology.CODE_CLASSIFICATION)
+
+
+def test_t_g03_topology_module_reaches_the_shared_validator_before_custody(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: module launch no longer reaches the shared policy validator before any runner or custody use."""
+    run_id = "31641536482"
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        custody = Path(raw) / "custody.so"
+        custody.write_bytes(b"module validator probe custody fixture")
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(custody))
+        monkeypatch.setenv(
+            "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256",
+            topology.hashlib.sha256(custody.read_bytes()).hexdigest(),
+        )
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 11, 1, tzinfo=timezone.utc),
+        )
+        rows = topology.load_inventory(INVENTORY)
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+        topology.collect_portable_root_baseline(
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            foundation_context_path=context_path,
+            collector=lambda: tuple(sorted([
+                *(row.node_id for row in rows),
+                "tests/ordinary/test_module_validator_probe.py::test_unreachable_runner",
+            ])),
+        )
+        topology.prepare_portable_root_remainder(
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+
+        environment = os.environ.copy()
+        environment.pop("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", None)
+        environment.pop("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", None)
+        completed = subprocess.run(
+            [
+                "uv", "run", "python", "-m", "scripts.t_g03_capability_topology",
+                "run-remainder",
+                "--evidence-root", str(evidence),
+                "--foundation-context-path", str(context_path),
+            ],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        topology_root = evidence / "capability-topology"
+        assert completed.returncode == 2
+        assert completed.stdout == ""
+        assert completed.stderr == (
+            "t-g03 capability topology: policy validation failed: POLICY_REVIEW_DATE_EXPIRED\n"
+        )
+        nonacceptance = topology.parse_policy_validation_nonacceptance(
+            (topology_root / "policy-validation-nonacceptance.json").read_bytes(),
+        )
+        assert nonacceptance["policy_validation_stage"] == "SHARED_ALLOWLIST_VALIDATION"
+        assert nonacceptance["policy_validation_class"] == "POLICY_REVIEW_DATE_EXPIRED"
+        assert not (topology_root / "portable-root-remainder.governance.json").exists()
+        assert not (topology_root / "portable-root-remainder.failure-diagnostic.json").exists()
+        assert not any((topology_root / f"{code}.json").exists() for code in topology.CODE_CLASSIFICATION)
+
+
 def test_foundation_context_seals_the_capture_date_and_rejects_date_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
