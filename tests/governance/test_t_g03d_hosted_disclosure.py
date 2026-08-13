@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import re
 import json
 import shlex
@@ -463,23 +464,24 @@ _GUARDED_WORDS = frozenset({
     "scripts.t_g03_capability_topology", "scripts.check_test_governance",
     "scripts/t_g03_capability_topology.py", "scripts/check_test_governance.py",
 })
-_APPROVED_RECURSIVE_MAKE_FORMS = frozenset({
-    ("check-test-skips", (83, 100), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
-    ("test", (121, 137), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
-    ("build-package6-custodian", (187, 187), ("-C", "native/package6_custodian", "build")),
-    ("test-package6-custodian-native", (190, 195), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "test")),
-    ("test-all", (282, 291), ("prepare-root-test-install",)),
-    ("test-all", (282, 291), ("test-all-private",)),
-    ("ci", (294, 304), ("ci-private",)),
-    ("ci-private", (307, 307), ("prepare-root-test-install",)),
-    ("ci-private", (308, 308), ("test-all-private", "check-test-skips", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies")),
-    ("ci-portable", (311, 323), ("ci-portable-private",)),
-    ("ci-portable-private", (326, 326), ("prepare-root-test-install",)),
-    ("ci-portable-private", (327, 327), ("test-all-portable-topology-private", "check-test-governance-topology", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies")),
-    ("test-portable-source", (331, 347), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
-    ("ci-portable-topology", (367, 389), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
-    ("ci-portable-topology", (367, 389), ("test-portable-root-remainder",)),
-})
+# Each entry binds target, logical recipe span, argv, and command-local span.
+_APPROVED_RECURSIVE_MAKE_OCCURRENCES = (
+    ("check-test-skips", (83, 100), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (170, 177)),
+    ("test", (121, 137), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (164, 171)),
+    ("build-package6-custodian", (187, 187), ("-C", "native/package6_custodian", "build"), (0, 7)),
+    ("test-package6-custodian-native", (190, 195), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "test"), (171, 178)),
+    ("test-all", (282, 291), ("prepare-root-test-install",), (385, 392)),
+    ("test-all", (282, 291), ("test-all-private",), (484, 491)),
+    ("ci", (294, 304), ("ci-private",), (359, 366)),
+    ("ci-private", (307, 307), ("prepare-root-test-install",), (0, 7)),
+    ("ci-private", (308, 308), ("test-all-private", "check-test-skips", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
+    ("ci-portable", (311, 323), ("ci-portable-private",), (681, 688)),
+    ("ci-portable-private", (326, 326), ("prepare-root-test-install",), (0, 7)),
+    ("ci-portable-private", (327, 327), ("test-all-portable-topology-private", "check-test-governance-topology", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
+    ("test-portable-source", (331, 347), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (287, 294)),
+    ("ci-portable-topology", (367, 389), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (289, 296)),
+    ("ci-portable-topology", (367, 389), ("test-portable-root-remainder",), (949, 956)),
+)
 
 
 def _make_logical_lines(source: str) -> list[tuple[int, int, str]]:
@@ -662,6 +664,7 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
             result.append(("".join(value), start, cursor, quoted))
         return result
 
+    discovered_occurrences: list[tuple[str, tuple[int, int], tuple[str, ...], tuple[int, int]]] = []
     spans: list[tuple[int, int]] = []
     for target_name, recipe, offsets, recipe_span in recipes:
         current: list[tuple[str, int, int, bool]] = []
@@ -672,16 +675,19 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
                     command += 1
                 if command < len(current) and current[command][0] == "$(MAKE)" and not current[command][3]:
                     argv = tuple(token for token, _start, _end, _quoted in current[command + 1:])
-                    if (target_name, recipe_span, argv) not in _APPROVED_RECURSIVE_MAKE_FORMS:
-                        raise MakeContractError("unapproved recursive Make form")
                     make_start, make_end = current[command][1:3]
                     if offsets[make_start] is None or offsets[make_end - 1] is None:
                         raise MakeContractError("recursive Make word crosses a source rewrite boundary")
-                    spans.append((offsets[make_start], offsets[make_end - 1] + 1))
+                    source_span = (offsets[make_start], offsets[make_end - 1] + 1)
+                    command_span = (make_start, make_end)
+                    discovered_occurrences.append((target_name, recipe_span, argv, command_span))
+                    spans.append(source_span)
                 current = []
                 continue
             current.append((word, start, end, quoted))
 
+    if Counter(discovered_occurrences) != Counter(_APPROVED_RECURSIVE_MAKE_OCCURRENCES):
+        raise MakeContractError("unapproved recursive Make form")
     occurrences = [(match.start(), match.end()) for match in re.finditer(r"\$\(MAKE\)", source)]
     if occurrences != spans:
         raise MakeContractError("unapproved recursive Make form")
@@ -900,6 +906,36 @@ def test_t_g03_make_contract_rejects_a_new_recursive_make_form_before_projection
 
     with pytest.raises(MakeContractError, match="recursive Make"):
         _assert_t_g03_make_launch_contract(source)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "\t$(MAKE) prepare-root-test-install; $(MAKE) prepare-root-test-install",
+        "\t:",
+    ),
+)
+def test_t_g03_make_contract_requires_each_approved_recursive_make_occurrence_exactly_once(
+    replacement: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: an approved recursive Make command is duplicated or removed."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8")
+    approved = "ci-private:\n\t$(MAKE) prepare-root-test-install\n"
+    assert source.count(approved) == 1
+    source = source.replace(approved, f"ci-private:\n{replacement}\n")
+    invoked = False
+
+    def forbidden(*_args, **_kwargs):
+        nonlocal invoked
+        invoked = True
+        pytest.fail("Make must not start for recursive Make occurrence drift")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+
+    with pytest.raises(MakeContractError, match="recursive Make"):
+        _assert_t_g03_make_launch_contract(source)
+    assert not invoked
 
 
 def test_t_g03_make_contract_rejects_call_expansion_that_materializes_a_direct_file() -> None:
