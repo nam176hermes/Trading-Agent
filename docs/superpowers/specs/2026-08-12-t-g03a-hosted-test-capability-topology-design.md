@@ -960,6 +960,196 @@ written. Existing validator dates, allowlist rules, workflow invocation,
 strict/release routes, and capability-receipt/v1 exact bytes must be shown
 unchanged.
 
+### Amendment A2.1 — unsafe raw-reason post-custody nonacceptance
+
+Hosted Foundation `31717174149` at `d35f29d` completed pytest (`5635 passed,
+281 skipped`) and then stopped at the topology reader's generic
+`raw diagnostic observation has unsafe reason` error.  The retained artifact
+does not identify the raw literal, node, or predicate, and must not be used to
+infer either.  The rejection is necessary: an untrusted pytest reason can
+contain a path, URI, credential, control text, or other unsafe value.  The
+defect is only that the all-or-nothing reader discarded every safe
+nonacceptance result after successful custody.
+
+This amendment adds exactly one separate diagnostic-only record for that case.
+It does not relax `_reason_is_safe`, normalize, persist, log, hash, or map an
+unsafe raw reason; change an allowlist, policy validation, approval, receipt,
+lane outcome, workflow, strict `make ci`, runtime authority, or live flag; or
+authorize a hosted retry.  It intentionally remains non-green: a later retry
+must classify the actual non-pass state and is not READY merely because this
+generic error is replaced by redacted evidence.
+
+The record is deliberately not an extension of the per-node failure
+diagnostic.  That schema binds observations to node IDs and (for skips and
+deselections) policy-reason commitments.  An unsafe raw reason must enter
+neither binding.  Keeping the schemas distinct preserves the existing
+failure-diagnostic observation domain and A2's closed
+`policy_validation_stage`/`policy_validation_class` matrices unchanged.
+
+#### Fixed state, schema, and redaction boundary
+
+The only new public state is the literal `UNSAFE_RAW_REASON_OBSERVED`.  It
+means exactly that, after a successful retained-custody exit and postcheck, the
+executor proved one structurally valid raw observation for every selected node
+and at least one raw `reason` failed the existing direct-safe-evidence rule.
+It does not disclose which observation, why it was unsafe, whether it was a
+path/URI/secret/control value/non-normalized value, or how many occurrences
+there were.
+
+The only path is:
+
+```text
+$(TEST_EVIDENCE_DIR)/capability-topology/portable-root-remainder.unsafe-raw-reason-nonacceptance.json
+```
+
+The schema is exactly `"t-g03a-unsafe-raw-reason-nonacceptance/v1"`, with this
+complete top-level key set:
+
+```text
+schema_version
+diagnostic_only
+foundation_run_id
+foundation_head_sha
+foundation_validation_date
+foundation_context_sha256
+inventory_sha256
+baseline_sha256
+baseline_candidate_ids_sha256
+baseline_node_list_sha256
+remainder_sha256
+remainder_candidate_ids_sha256
+remainder_node_list_sha256
+custody_policy_sha256
+custody_postcheck_status
+pytest_exit_status
+raw_reason_nonacceptance_state
+nonacceptance_sha256
+```
+
+`diagnostic_only` is literal JSON `true`; `custody_postcheck_status` is the
+literal `PASS`; and `raw_reason_nonacceptance_state` is the literal
+`UNSAFE_RAW_REASON_OBSERVED`.  All other fields are strings.  Run/head/date
+and digest spellings use the existing canonical validators.  The existing
+Foundation context/date, locked inventory, verified baseline and generated
+remainder self-hashes plus their ID/list digests, and verified custody-policy
+digest bind the record to the active execution without copying any node ID.
+
+`pytest_exit_status` is a canonical non-negative decimal string and may be
+`"0"`, because pytest can exit zero for a skipped report; the fixed state is
+itself the nonacceptance proof.  It emits no occurrence count.
+`nonacceptance_sha256` is SHA-256 of the canonical payload without that key.
+Canonical bytes remain strict UTF-8 without BOM/trailing newline,
+Unicode-code-point-sorted keys, `ensure_ascii=false`, and `(',', ':')`
+separators.
+
+The schema contains no `observations`, `test_node_id`, raw or normalized
+reason, reason commitment/hash, policy match/snapshot, node count, path, URI,
+exception text/type, traceback, command, environment, raw report, receipt, or
+acceptance field.  In particular, it must not hash an unsafe raw reason or
+substitute a fixed fake reason.
+
+#### Exact writer ordering and custody requirement
+
+Only `_execute_exact_with_retained_custody` with an explicit immutable
+`portable_root_remainder` selector may write this record.  The selector is a
+hard precondition, never inferred from a report filename or node set.  The
+executor reserves the destination as absent together with the provisional
+report, normal failure diagnostic, and A2 policy-validation nonacceptance
+destination before a runner starts.  Every lane/non-remainder caller writes
+none of those terminal artifacts.
+
+The writer order is exact:
+
+1. Validate the Foundation context/reservation, locked inventory, baseline,
+   generated remainder, candidate/list digests, and custody policy; reserve
+   the mutually exclusive destinations and reject pre-existing terminal,
+   portable-root PASS, or exact lane receipt evidence.
+2. Acquire the current A2 policy snapshot normally.  A typed pre-execution A2
+   failure starts no runner and may write only A2 evidence.
+3. Execute the generated node list under retained custody.  Leave custody and
+   require its postcheck to pass.  A failed postcheck writes nothing.
+4. Reacquire/revalidate the policy snapshot.  An A2 post-custody failure or
+   source drift writes only A2 evidence and is decided before reading a raw
+   reason.
+5. Strictly parse the provisional report, require sealed custody equality, and
+   validate every observation's envelope, component, portable-root node-ID
+   syntax, outcome/phase/xfail closed domain, uniqueness, sorted identity
+   projection, exact selected-node equality, and one-record-per-node.  This
+   evidence is private working state; a malformed/duplicate/missing/foreign
+   observation is a structural failure and writes nothing.
+6. Only then apply the existing direct-evidence reason rule to each valid raw
+   observation: `reason` is a string, is already v1-normalized, and satisfies
+   `_reason_is_safe`.  Retain only a private boolean that at least one failed.
+   Do not call a normalizer commitment, policy comparator, reason mapper, or
+   error-text classifier for a rejected raw value.
+7. If that boolean is true, make the exact fixed payload; self-hash it; write
+   and fsync a private staging file; atomically no-replace install it; fsync
+   the directory; and byte-reread, strict-parse, and self-hash verify it before
+   raising only `UNSAFE_RAW_REASON_NONACCEPTANCE`.  Cleanup may remove only an
+   uninstalled writer-owned staging file.
+8. If no unsafe value exists, leave the normal per-node failure diagnostic and
+   PASS paths exactly unchanged.
+
+A pre-existing target or staging collision, publication failure, final-byte
+change, parse failure, or self-hash failure is fatal and never becomes another
+diagnostic or PASS.  The provisional raw report is removed by the existing
+`finally` path after the decision and is never retained/published/reused.
+
+#### Reader, coexistence, and acceptance guards
+
+The diagnostic-only reader strict-parses canonical bytes, validates the exact
+key/type/domain set and self-hash, independently reloads the Foundation
+context, inventory, baseline, remainder, and custody policy, and re-derives
+every binding.  It has no writer, allowlist/approval, receipt, or lane-outcome
+capability.
+
+Presence of this record—valid, malformed, stale, or foreign—must cause
+`read_failure_diagnostic`, the A2 reader, root PASS publication, lane
+publication, receipt aggregation, portable-root reconciliation, and topology
+governance audit to fail closed before evaluating their normal acceptance
+inputs.  The new reader likewise rejects a normal failure diagnostic, A2
+nonacceptance, PASS governance report, lane governance report/receipt,
+aggregate/reconciliation output, deferred claim, or a second unsafe-reason
+record.  These terminal artifacts are mutually exclusive; none may be treated
+as absent, a receipt, `PASS`, `DEFERRED`, an aggregate input, or an allowlist
+candidate.  A retry needs a new Foundation run/evidence root; no-clobber
+rejects reuse.
+
+#### Focused hostile proof and stop conditions
+
+T-G03F tests must prove that an otherwise complete report containing each
+existing unsafe category (slash/backslash, C0/C1 control, URI scheme,
+credential word, long credential-like token), a non-string, or a
+non-v1-normalized reason produces only this post-custody record and fixed
+public error.  Artifact bytes and public errors must omit raw fragments,
+raw-derived digests, every affected node identity, count, path/URI,
+secret-like text, exception material, and raw report.  A mixed safe/unsafe
+report discloses neither observation.  A complete unsafe skipped report with
+pytest exit zero is still nonaccepting; a safe non-pass and safe all-pass keep
+their existing flows.
+
+Tests must also prove that duplicate/missing/extra/foreign/unordered/non-root
+or unsafe-node-ID observations, custody/runner-list drift, missing/invalid
+context/baseline/remainder, failed postcheck, and any A2 snapshot failure
+publish no unsafe-reason record.  Mutation tests reject every missing/extra/
+retyped key, nonliteral boolean, unknown state, non-`PASS` custody, invalid
+status/digest, noncanonical bytes, duplicate JSON key, changed self-hash,
+binding drift, and forbidden observation/node/reason/receipt field.  They must
+cover no-clobber/staging collision, partial publication, post-write tamper,
+reader drift, every named acceptance-reader presence guard, pairwise terminal
+coexistence, and a non-remainder `run_lane` injection that cannot create the
+record.  The current combined unsafe-or-duplicate test must split: only the
+complete unsafe branch expects this record; structural-invalid evidence still
+publishes nothing.
+
+Stop for a new design if a proof requires relaxing `_reason_is_safe`,
+normalizing/persisting/hash-committing an unsafe reason, revealing an unsafe
+node identity, inferring the state from exception text, altering A2's matrix,
+altering allowlist/CI approval or receipt-v1 semantics, or admitting this
+record to any lane/aggregate.  Also stop if exact one-record-per-selected-node
+proof cannot complete before reason classification, or custody postcheck cannot
+remain the publication boundary.
+
 ### Portable-root remainder lane
 
 The locked 62 explain the historical hosted failures; they are not the whole
