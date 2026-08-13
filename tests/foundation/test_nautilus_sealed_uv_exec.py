@@ -355,17 +355,17 @@ def _synthetic_sandbox(tmp_path: Path) -> Path:
     return sandbox
 
 
-def _synthetic_sandbox_fd(module) -> int:
-    """No synthetic fixture is ever executed or treated as Bubblewrap."""
+def _synthetic_sandbox_fd(module, policy: dict[str, object]) -> int:
+    """Seal only production-validated fixture bytes; never execute them."""
     return module._sealed_memfd(
-        "portable-synthetic-sandbox", b"synthetic-test-sandbox", mode=0o500
+        "portable-synthetic-sandbox", module._read_bound_sandbox(policy), mode=0o500
     )
 
 
 def _bind_portable_sandbox(module, sandbox: Path) -> None:
     """Inject no more than the policy-only test boundary into this fresh module."""
     module.SANDBOX_PATH = str(sandbox)
-    module._verify_sandbox = lambda _policy: _synthetic_sandbox_fd(module)
+    module._verify_sandbox = lambda policy: _synthetic_sandbox_fd(module, policy)
 
 
 def _task3_policy(
@@ -453,10 +453,11 @@ def _write_policy(
     return policy
 
 
-def test_portable_policy_fixture_binds_private_synthetic_sandbox_and_rejects_drift(
-    native_tmp_path: Path,
+@pytest.mark.parametrize("mutation", ("digest", "unsafe-mode", "symlink-replacement"))
+def test_portable_policy_fixture_revalidates_bound_synthetic_sandbox_before_sealing(
+    native_tmp_path: Path, mutation: str
 ) -> None:
-    """Portable policy tests bind fixture bytes; they never attest Bubblewrap."""
+    """Injected policy-only verification must fail closed on fixture drift."""
     module = _load_materializer()
     sandbox = _synthetic_sandbox(native_tmp_path)
 
@@ -468,10 +469,21 @@ def test_portable_policy_fixture_binds_private_synthetic_sandbox_and_rejects_dri
     assert policy["sandbox_gid"] == os.getegid()
     assert policy["sandbox_mode"] == "0755"
     assert stat.S_IMODE(sandbox.parent.stat().st_mode) == 0o700
-    sandbox.chmod(0o777)
 
-    with pytest.raises(module.MaterializationError, match="Bubblewrap identity is unsafe"):
-        module._read_bound_sandbox(policy)
+    if mutation == "digest":
+        sandbox.write_bytes(b"sealed-uv synthetic sandbox fixture drift\n")
+        sandbox.chmod(0o755)
+    elif mutation == "unsafe-mode":
+        sandbox.chmod(0o777)
+    else:
+        replacement = sandbox.with_name("synthetic-sandbox-replacement")
+        replacement.write_bytes(b"sealed-uv portable synthetic sandbox fixture\n")
+        replacement.chmod(0o755)
+        sandbox.unlink()
+        sandbox.symlink_to(replacement)
+
+    with pytest.raises(module.MaterializationError, match="Bubblewrap"):
+        module._verify_sandbox(policy)
 
 
 def _fake_verified_toolchains(
