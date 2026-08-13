@@ -540,20 +540,136 @@ def _conditional_quarantine(source: str) -> None:
         raise MakeContractError("; ".join(errors))
 
 
-def _approved_recursive_make(line: str) -> bool:
-    """Allow only the checked-in literal root/package6 recursive Make forms."""
-    forms = line.split("$(MAKE)")[1:]
-    if not forms:
-        return False
+def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
+    """Return only verified literal recursive-Make command-word source spans."""
+    target: str | None = None
+    pending_target: str | None = None
+    pending_text: list[str] = []
+    pending_offsets: list[int | None] = []
+    recipes: list[tuple[str, str, list[int | None]]] = []
+    target_pattern = re.compile(r"^([^\s:=#][^:=#]*?)[ \t]*:(?![=])(.*)$")
+    assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
     root_targets = _make_targets((ROOT / "Makefile").read_text(encoding="utf-8"))
-    for form in forms:
-        after = re.sub(r"\s+", " ", form.split(";", 1)[0].replace("\\", " ")).strip()
-        if after.startswith("-C native/package6_custodian"):
-            if not re.fullmatch(r'-C native/package6_custodian(?: "BUILD_DIR=\$\$build_dir")?(?: build| test)?', after):
-                return False
-        elif not after or not all(word in root_targets for word in after.split()):
-            return False
-    return True
+
+    def continued(value: str) -> bool:
+        return (len(value) - len(value.rstrip("\\"))) % 2 == 1
+
+    def append_recipe(target_name: str, text: str, start: int) -> None:
+        nonlocal pending_target, pending_text, pending_offsets
+        normalized = text.lstrip().rstrip()
+        left = len(text) - len(text.lstrip())
+        offset = start + left
+        continues = continued(normalized)
+        content = normalized[:-1].rstrip() if continues else normalized
+        pending_target = target_name if pending_target is None else pending_target
+        if pending_target != target_name:
+            raise MakeContractError("mixed Make recipe continuation")
+        pending_text.append(content)
+        pending_offsets.extend(range(offset, offset + len(content)))
+        if continues:
+            pending_text.append(" ")
+            pending_offsets.append(None)
+            return
+        recipes.append((target_name, "".join(pending_text), pending_offsets))
+        pending_target, pending_text, pending_offsets = None, [], []
+
+    offset = 0
+    for raw in source.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        match = target_pattern.match(line)
+        if match is not None:
+            if pending_text:
+                raise MakeContractError("unterminated Make recipe continuation")
+            target = match.group(1).strip()
+            remainder = match.group(2)
+            if ";" in remainder:
+                prefix, _separator, inline = remainder.partition(";")
+                append_recipe(target, inline, offset + match.start(2) + len(prefix) + 1)
+            elif continued(line.rstrip()):
+                target = None
+        elif line.startswith("\t") and target is not None:
+            append_recipe(target, line[1:], offset + 1)
+        elif pending_text:
+            raise MakeContractError("unterminated Make recipe continuation")
+        else:
+            target = None
+        offset += len(raw)
+    if pending_text:
+        raise MakeContractError("unterminated Make recipe continuation")
+
+    def tokens(text: str) -> list[tuple[str, int, int, bool]]:
+        """Lex the bounded command words needed to verify a root command word."""
+        result: list[tuple[str, int, int, bool]] = []
+        cursor = 0
+        punctuation = ";|&"
+        while cursor < len(text):
+            if text[cursor].isspace():
+                cursor += 1
+                continue
+            if text[cursor] in punctuation:
+                start = cursor
+                marker = text[cursor]
+                cursor += 1
+                if cursor < len(text) and text[cursor] == marker and marker in ";|&":
+                    cursor += 1
+                result.append((text[start:cursor], start, cursor, False))
+                continue
+            start, value, quoted = cursor, [], False
+            while cursor < len(text) and not text[cursor].isspace() and text[cursor] not in punctuation:
+                char = text[cursor]
+                if char in "'\"":
+                    quoted = True
+                    quote = char
+                    cursor += 1
+                    while cursor < len(text) and text[cursor] != quote:
+                        value.append(text[cursor])
+                        cursor += 1
+                    if cursor == len(text):
+                        raise MakeContractError("unterminated shell quote near recursive Make")
+                    cursor += 1
+                elif char == "\\":
+                    quoted = True
+                    cursor += 1
+                    if cursor == len(text):
+                        raise MakeContractError("unterminated shell escape near recursive Make")
+                    value.append(text[cursor])
+                    cursor += 1
+                else:
+                    value.append(char)
+                    cursor += 1
+            result.append(("".join(value), start, cursor, quoted))
+        return result
+
+    spans: list[tuple[int, int]] = []
+    for _target, recipe, offsets in recipes:
+        current: list[tuple[str, int, int, bool]] = []
+        for word, start, end, quoted in [*tokens(recipe), (";", len(recipe), len(recipe), False)]:
+            if word in {";", "&&", "||", "|", "&"}:
+                command = 0
+                while command < len(current) and assignment.fullmatch(current[command][0]):
+                    command += 1
+                if command < len(current) and current[command][0] == "$(MAKE)" and not current[command][3]:
+                    argv = tuple(token for token, _start, _end, _quoted in current[command + 1:])
+                    allowed_package6 = argv in {
+                        ("-C", "native/package6_custodian", "build"),
+                        ("-C", "native/package6_custodian", "test"),
+                        ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"),
+                        ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "test"),
+                    }
+                    if not allowed_package6 and (not argv or not all(item in root_targets for item in argv)):
+                        raise MakeContractError("unapproved recursive Make form")
+                    make_start, make_end = current[command][1:3]
+                    if offsets[make_start] is None or offsets[make_end - 1] is None:
+                        raise MakeContractError("recursive Make word crosses a source rewrite boundary")
+                    spans.append((offsets[make_start], offsets[make_end - 1] + 1))
+                current = []
+                continue
+            current.append((word, start, end, quoted))
+
+    occurrences = [(match.start(), match.end()) for match in re.finditer(r"\$\(MAKE\)", source)]
+    if occurrences != spans:
+        raise MakeContractError("unapproved recursive Make form")
+    return spans
 
 
 def _prelaunch_quarantine(source: str) -> None:
@@ -581,8 +697,7 @@ def _prelaunch_quarantine(source: str) -> None:
     for _first, _last, line in logical:
         if re.match(r"\s*(?:-|s)?include\b", line):
             raise MakeContractError("included Makefile is not observable")
-        if "$(MAKE)" in line and not _approved_recursive_make(line):
-            raise MakeContractError(f"unapproved recursive Make form: {line}")
+    _recursive_make_projection_spans(source)
 
 
 def _database_concrete_targets(database: str) -> list[str]:
@@ -617,10 +732,20 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
         sandbox = Path(raw)
         source_digest = hashlib.sha256(makefile.encode()).hexdigest()
         projection = sandbox / "Makefile"
-        replacements = [(match.start(), match.end()) for match in re.finditer(r"\$\(MAKE\)", makefile)]
-        projected = makefile.replace("$(MAKE)", "make-t-g03-noop")
+        replacements = _recursive_make_projection_spans(makefile)
+        projected_parts: list[str] = []
+        cursor = 0
+        for start, end in replacements:
+            projected_parts.extend((makefile[cursor:start], "make-t-g03-noop"))
+            cursor = end
+        projected_parts.append(makefile[cursor:])
+        projected = "".join(projected_parts)
         assert hashlib.sha256(makefile.encode()).hexdigest() == source_digest
-        assert all("scripts.t_g03_capability_topology" not in makefile[start:end] for start, end in replacements)
+        assert all(
+            makefile[start:end] == "$(MAKE)"
+            and not any(word in makefile[start:end] for word in _GUARDED_WORDS)
+            for start, end in replacements
+        )
         projection.write_text(projected, encoding="utf-8")
         env = {
             "PATH": "/usr/bin:/bin", "HOME": str(sandbox / "home"),
@@ -725,6 +850,23 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
 def test_t_g03_make_launches_use_the_complete_canonical_module_contract() -> None:
     """Break caught: a T-G03 Make launch bypasses the package module boundary."""
     _assert_t_g03_make_launch_contract((ROOT / "Makefile").read_text(encoding="utf-8"))
+
+
+def test_t_g03_make_contract_rejects_a_nonrecursive_make_display_before_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: projection rewrites a display argument as recursive Make."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nfuture-display: ; @echo $(MAKE) ci\n"
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("Make must not start for display data"),
+    )
+
+    with pytest.raises(MakeContractError, match="recursive Make"):
+        _assert_t_g03_make_launch_contract(source)
 
 
 def test_t_g03_make_contract_rejects_call_expansion_that_materializes_a_direct_file() -> None:
