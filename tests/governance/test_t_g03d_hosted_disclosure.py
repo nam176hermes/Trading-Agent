@@ -463,6 +463,23 @@ _GUARDED_WORDS = frozenset({
     "scripts.t_g03_capability_topology", "scripts.check_test_governance",
     "scripts/t_g03_capability_topology.py", "scripts/check_test_governance.py",
 })
+_APPROVED_RECURSIVE_MAKE_FORMS = frozenset({
+    ("check-test-skips", (83, 100), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
+    ("test", (121, 137), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
+    ("build-package6-custodian", (187, 187), ("-C", "native/package6_custodian", "build")),
+    ("test-package6-custodian-native", (190, 195), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "test")),
+    ("test-all", (282, 291), ("prepare-root-test-install",)),
+    ("test-all", (282, 291), ("test-all-private",)),
+    ("ci", (294, 304), ("ci-private",)),
+    ("ci-private", (307, 307), ("prepare-root-test-install",)),
+    ("ci-private", (308, 308), ("test-all-private", "check-test-skips", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies")),
+    ("ci-portable", (311, 323), ("ci-portable-private",)),
+    ("ci-portable-private", (326, 326), ("prepare-root-test-install",)),
+    ("ci-portable-private", (327, 327), ("test-all-portable-topology-private", "check-test-governance-topology", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies")),
+    ("test-portable-source", (331, 347), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
+    ("ci-portable-topology", (367, 389), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build")),
+    ("ci-portable-topology", (367, 389), ("test-portable-root-remainder",)),
+})
 
 
 def _make_logical_lines(source: str) -> list[tuple[int, int, str]]:
@@ -546,16 +563,16 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
     pending_target: str | None = None
     pending_text: list[str] = []
     pending_offsets: list[int | None] = []
-    recipes: list[tuple[str, str, list[int | None]]] = []
+    pending_span: tuple[int, int] | None = None
+    recipes: list[tuple[str, str, list[int | None], tuple[int, int]]] = []
     target_pattern = re.compile(r"^([^\s:=#][^:=#]*?)[ \t]*:(?![=])(.*)$")
     assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
-    root_targets = _make_targets((ROOT / "Makefile").read_text(encoding="utf-8"))
 
     def continued(value: str) -> bool:
         return (len(value) - len(value.rstrip("\\"))) % 2 == 1
 
-    def append_recipe(target_name: str, text: str, start: int) -> None:
-        nonlocal pending_target, pending_text, pending_offsets
+    def append_recipe(target_name: str, text: str, start: int, line_number: int) -> None:
+        nonlocal pending_target, pending_text, pending_offsets, pending_span
         normalized = text.lstrip().rstrip()
         left = len(text) - len(text.lstrip())
         offset = start + left
@@ -564,17 +581,22 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
         pending_target = target_name if pending_target is None else pending_target
         if pending_target != target_name:
             raise MakeContractError("mixed Make recipe continuation")
+        if pending_span is None:
+            pending_span = (line_number, line_number)
+        else:
+            pending_span = (pending_span[0], line_number)
         pending_text.append(content)
         pending_offsets.extend(range(offset, offset + len(content)))
         if continues:
             pending_text.append(" ")
             pending_offsets.append(None)
             return
-        recipes.append((target_name, "".join(pending_text), pending_offsets))
-        pending_target, pending_text, pending_offsets = None, [], []
+        assert pending_span is not None
+        recipes.append((target_name, "".join(pending_text), pending_offsets, pending_span))
+        pending_target, pending_text, pending_offsets, pending_span = None, [], [], None
 
     offset = 0
-    for raw in source.splitlines(keepends=True):
+    for line_number, raw in enumerate(source.splitlines(keepends=True), 1):
         line = raw.rstrip("\r\n")
         match = target_pattern.match(line)
         if match is not None:
@@ -584,11 +606,11 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
             remainder = match.group(2)
             if ";" in remainder:
                 prefix, _separator, inline = remainder.partition(";")
-                append_recipe(target, inline, offset + match.start(2) + len(prefix) + 1)
+                append_recipe(target, inline, offset + match.start(2) + len(prefix) + 1, line_number)
             elif continued(line.rstrip()):
                 target = None
         elif line.startswith("\t") and target is not None:
-            append_recipe(target, line[1:], offset + 1)
+            append_recipe(target, line[1:], offset + 1, line_number)
         elif pending_text:
             raise MakeContractError("unterminated Make recipe continuation")
         else:
@@ -641,7 +663,7 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
         return result
 
     spans: list[tuple[int, int]] = []
-    for _target, recipe, offsets in recipes:
+    for target_name, recipe, offsets, recipe_span in recipes:
         current: list[tuple[str, int, int, bool]] = []
         for word, start, end, quoted in [*tokens(recipe), (";", len(recipe), len(recipe), False)]:
             if word in {";", "&&", "||", "|", "&"}:
@@ -650,13 +672,7 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
                     command += 1
                 if command < len(current) and current[command][0] == "$(MAKE)" and not current[command][3]:
                     argv = tuple(token for token, _start, _end, _quoted in current[command + 1:])
-                    allowed_package6 = argv in {
-                        ("-C", "native/package6_custodian", "build"),
-                        ("-C", "native/package6_custodian", "test"),
-                        ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"),
-                        ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "test"),
-                    }
-                    if not allowed_package6 and (not argv or not all(item in root_targets for item in argv)):
+                    if (target_name, recipe_span, argv) not in _APPROVED_RECURSIVE_MAKE_FORMS:
                         raise MakeContractError("unapproved recursive Make form")
                     make_start, make_end = current[command][1:3]
                     if offsets[make_start] is None or offsets[make_end - 1] is None:
@@ -863,6 +879,23 @@ def test_t_g03_make_contract_rejects_a_nonrecursive_make_display_before_projecti
         subprocess,
         "run",
         lambda *_args, **_kwargs: pytest.fail("Make must not start for display data"),
+    )
+
+    with pytest.raises(MakeContractError, match="recursive Make"):
+        _assert_t_g03_make_launch_contract(source)
+
+
+def test_t_g03_make_contract_rejects_a_new_recursive_make_form_before_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a new root recursive Make route reaches the observer."""
+    source = (ROOT / "Makefile").read_text(encoding="utf-8") + (
+        "\nfuture-recursive-review: ; $(MAKE) ci\n"
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("Make must not start for a new recursive form"),
     )
 
     with pytest.raises(MakeContractError, match="recursive Make"):
