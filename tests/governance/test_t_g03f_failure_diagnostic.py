@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import os
 import subprocess
@@ -15,7 +16,9 @@ from scripts import check_test_governance as governance
 INVENTORY = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
 
 
-def _seal_remainder(monkeypatch: pytest.MonkeyPatch, evidence: Path, raw: str) -> tuple[str, str, tuple[str, ...]]:
+def _seal_remainder(
+    monkeypatch: pytest.MonkeyPatch, evidence: Path, raw: str, *, with_context: bool = False,
+) -> tuple[str, str, tuple[str, ...]]:
     run_id = "31641536482"
     head_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     extension = Path(raw) / "custody.so"
@@ -23,15 +26,23 @@ def _seal_remainder(monkeypatch: pytest.MonkeyPatch, evidence: Path, raw: str) -
     monkeypatch.setenv("GITHUB_RUN_ID", run_id)
     monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
     monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", topology.hashlib.sha256(extension.read_bytes()).hexdigest())
+    context_path = (
+        topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        ) if with_context else None
+    )
     rows = topology.load_inventory(INVENTORY)
     candidates = tuple(sorted([*(row.node_id for row in rows), "tests/ordinary/test_failure.py::test_failure"]))
-    topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head_sha)
+    topology.reserve_topology_evidence(
+        evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=context_path,
+    )
     topology.collect_portable_root_baseline(
         inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
-        collector=lambda: candidates,
+        collector=lambda: candidates, foundation_context_path=context_path,
     )
     remainder = topology.prepare_portable_root_remainder(
         inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=context_path,
     )
     return run_id, head_sha, tuple(remainder["remainder_node_ids"])
 
@@ -318,6 +329,34 @@ def test_receipt_first_complete_nonpass_does_not_publish_a_diagnostic(
             )
         assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists()
         assert {path: path.read_bytes() for path in receipts} == before
+
+
+def test_preexecution_policy_snapshot_failure_publishes_only_the_redacted_nonacceptance_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a masked pre-execution policy failure loses its structural stage."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        private_value = "policy-content-that-must-not-leak"
+        monkeypatch.setattr(
+            topology,
+            "_allowlist_bytes_at_head",
+            lambda _head: (_ for _ in ()).throw(topology.TopologyError(private_value)),
+        )
+
+        with pytest.raises(topology.TopologyError, match="POLICY_VALIDATION_INVALID"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                exact_runner=lambda *_args: (_ for _ in ()).throw(AssertionError("runner must not start")),
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+
+        record = evidence / "capability-topology/policy-validation-nonacceptance.json"
+        assert record.is_file()
+        assert private_value.encode("utf-8") not in record.read_bytes()
+        assert not (evidence / "capability-topology/portable-root-remainder.governance.json").exists()
+        assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists()
 
 
 @pytest.mark.parametrize("allowed", [False, None, "true", 1, 0, [], {}])

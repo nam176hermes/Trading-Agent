@@ -28,6 +28,7 @@ RESERVATION_SCHEMA = "t-g03a-topology-reservation/v2"
 BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v3"
 REMAINDER_SCHEMA = "t-g03a-portable-root-remainder/v1"
 FAILURE_DIAGNOSTIC_SCHEMA = "t-g03a-portable-root-failure-diagnostic/v3"
+POLICY_NONACCEPTANCE_SCHEMA = "t-g03a-policy-validation-nonacceptance/v1"
 POLICY_SNAPSHOT_SCHEMA = "t-g03a-portable-root-policy-snapshot/v1"
 POLICY_ENTRY_SCHEMA = "t-g03a-skip-policy-entry/v1"
 REASON_COMMITMENT_SCHEMA = "t-g03a-policy-reason-commitment/v1"
@@ -44,6 +45,38 @@ FAILURE_DIAGNOSTIC_KEYS = frozenset({
     "custody_postcheck_status", "pytest_exit_status", "policy_snapshot",
     "policy_snapshot_sha256", "observations", "diagnostic_sha256",
 })
+POLICY_NONACCEPTANCE_KEYS = frozenset({
+    "schema_version", "diagnostic_only", "foundation_run_id", "foundation_head_sha",
+    "foundation_validation_date", "foundation_context_sha256", "inventory_sha256",
+    "baseline_sha256", "baseline_candidate_ids_sha256", "baseline_node_list_sha256",
+    "remainder_sha256", "remainder_candidate_ids_sha256", "remainder_node_list_sha256",
+    "custody_policy_sha256", "custody_status", "policy_validation_stage",
+    "policy_validation_class", "policy_source_hash_status", "policy_source_sha256",
+    "nonacceptance_sha256",
+})
+POLICY_VALIDATION_STAGES = frozenset({
+    "SOURCE_ACQUISITION_HEAD_BINDING", "SHARED_VALIDATOR_IMPORT", "STRICT_JSON_PARSE",
+    "SHARED_ALLOWLIST_VALIDATION", "ROOT_PROJECTION_REASON_NORMALIZATION",
+    "POST_CUSTODY_REREAD_COMPARISON",
+})
+POLICY_STAGE_CLASSES = {
+    "SOURCE_ACQUISITION_HEAD_BINDING": frozenset({"POLICY_SOURCE_DRIFT", "POLICY_VALIDATION_INVALID"}),
+    "SHARED_VALIDATOR_IMPORT": frozenset({"POLICY_VALIDATION_INVALID"}),
+    "STRICT_JSON_PARSE": frozenset({"POLICY_SCHEMA_INVALID", "POLICY_VALIDATION_INVALID"}),
+    "SHARED_ALLOWLIST_VALIDATION": frozenset({
+        "POLICY_SCHEMA_INVALID", "POLICY_FIELD_TYPE_INVALID", "POLICY_REVIEW_DATE_INVALID",
+        "POLICY_REVIEW_DATE_EXPIRED", "POLICY_REASON_NORMALIZATION_INVALID",
+        "POLICY_DUPLICATE_ENTRY", "POLICY_VALIDATION_INVALID",
+    }),
+    "ROOT_PROJECTION_REASON_NORMALIZATION": frozenset({
+        "POLICY_FIELD_TYPE_INVALID", "POLICY_REASON_NORMALIZATION_INVALID", "POLICY_VALIDATION_INVALID",
+    }),
+    "POST_CUSTODY_REREAD_COMPARISON": frozenset({
+        "POLICY_SOURCE_DRIFT", "POLICY_SCHEMA_INVALID", "POLICY_FIELD_TYPE_INVALID",
+        "POLICY_REVIEW_DATE_INVALID", "POLICY_REVIEW_DATE_EXPIRED",
+        "POLICY_REASON_NORMALIZATION_INVALID", "POLICY_DUPLICATE_ENTRY", "POLICY_VALIDATION_INVALID",
+    }),
+}
 POLICY_SNAPSHOT_KEYS = frozenset({
     "snapshot_schema_version", "allowlist_schema_version", "allowlist_source_sha256",
     "policy_entry_schema_version", "entries",
@@ -65,6 +98,20 @@ V1_WHITE_SPACE = frozenset({
 
 class TopologyError(RuntimeError):
     """A topology binding or receipt is invalid."""
+
+
+@dataclass(frozen=True)
+class _PolicyStageFailure:
+    stage: str
+    public_class: str
+    source_hash_status: str
+    source_sha256: str
+
+
+class _PolicyStageError(TopologyError):
+    def __init__(self, failure: _PolicyStageFailure) -> None:
+        self.failure = failure
+        super().__init__(f"policy validation failed: {failure.public_class}")
 
 
 def _prepare_private_evidence_directory(path: Path) -> None:
@@ -229,6 +276,7 @@ def reserve_topology_evidence(
         topology_root / "portable-root-remainder.txt",
         topology_root / "portable-root-remainder.governance.json",
         topology_root / "portable-root-remainder.failure-diagnostic.json",
+        topology_root / "policy-validation-nonacceptance.json",
     ]
     for code in CODE_CLASSIFICATION:
         targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
@@ -347,6 +395,7 @@ def _capture_foundation_context(
         topology_root / "portable-root-baseline.json",
         topology_root / "portable-root-remainder.governance.json",
         topology_root / "portable-root-remainder.failure-diagnostic.json",
+        topology_root / "policy-validation-nonacceptance.json",
     ]
     acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CODE_CLASSIFICATION for suffix in (".json", ".governance.json"))
     if os.path.lexists(context_path) or any(os.path.lexists(path) for path in acceptance_paths):
@@ -440,6 +489,15 @@ def _reject_failure_diagnostic_coexistence(topology_root: Path) -> None:
         accepted.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
     if any(os.path.lexists(path) for path in accepted):
         raise TopologyError("failure diagnostic conflicts with existing topology acceptance artifact")
+
+
+def _policy_nonacceptance_path(topology_root: Path) -> Path:
+    return topology_root / "policy-validation-nonacceptance.json"
+
+
+def _reject_policy_nonacceptance_presence(topology_root: Path) -> None:
+    if os.path.lexists(_policy_nonacceptance_path(topology_root)):
+        raise TopologyError("policy validation nonacceptance is present; topology acceptance is forbidden")
 
 
 def _candidate_file_bytes(node_ids: tuple[str, ...]) -> bytes:
@@ -922,18 +980,41 @@ def _validate_exact_governance_record(
 def _execute_exact_with_retained_custody(
     *, baseline: dict[str, object], nodes: tuple[str, ...], report: Path,
     runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+    portable_root_remainder: bool = False, remainder_document: dict[str, object] | None = None,
+    foundation_context_verified: bool = False,
 ) -> tuple[str, ...]:
     """Publish PASS evidence only for all-pass raw execution; retain complete non-pass diagnostics."""
     provisional = report.with_name(f".{report.name}.executing")
     diagnostic = report.with_name("portable-root-remainder.failure-diagnostic.json")
-    if os.path.lexists(provisional) or os.path.lexists(diagnostic):
+    nonacceptance = _policy_nonacceptance_path(report.parent)
+    if os.path.lexists(provisional) or os.path.lexists(diagnostic) or os.path.lexists(nonacceptance):
         raise TopologyError("exact governance staging record already exists")
     validation_date = parse_foundation_validation_date(
         baseline["foundation_validation_date"],
     ) if "foundation_validation_date" in baseline else None
-    policy_snapshot, policy_source = _validated_policy_snapshot(
-        str(baseline["foundation_head_sha"]), validation_date,
-    )
+    nonacceptance_mode = foundation_context_verified and portable_root_remainder and {
+        "foundation_validation_date", "foundation_context_sha256",
+    }.issubset(baseline)
+    if nonacceptance_mode:
+        if remainder_document is None:
+            raise TopologyError("portable root remainder requires a verified remainder record")
+        _reject_failure_diagnostic_coexistence(report.parent)
+        custody = _validate_custody_policy(baseline["collector_policy"])
+        try:
+            policy_snapshot, policy_source = _policy_snapshot_for_nonacceptance(
+                str(baseline["foundation_head_sha"]), validation_date,
+            )
+        except _PolicyStageError as exc:
+            payload = _policy_nonacceptance_payload(
+                baseline=baseline, remainder=remainder_document, nodes=nodes, custody=custody,
+                failure=exc.failure, custody_status="PRE_EXECUTION_VALIDATED",
+            )
+            _publish_policy_nonacceptance(nonacceptance, payload)
+            raise TopologyError(str(exc)) from None
+    else:
+        policy_snapshot, policy_source = _validated_policy_snapshot(
+            str(baseline["foundation_head_sha"]), validation_date,
+        )
     try:
         with _retained_sealed_custody(baseline) as (sealed_custody, descriptor):
             with _governance_custody_policy(sealed_custody, descriptor):
@@ -941,13 +1022,37 @@ def _execute_exact_with_retained_custody(
             if selected != nodes:
                 raise TopologyError("exact runner changed the generated node list")
         # Leaving retained custody is the postcheck; only now may either record be considered.
-        reread_snapshot, reread_source = _validated_policy_snapshot(
-            str(baseline["foundation_head_sha"]), validation_date,
-        )
-        if reread_source != policy_source or reread_snapshot != policy_snapshot:
-            raise _policy_validation_error(
-                TopologyError("allowlist source drifted during exact execution"),
+        if nonacceptance_mode:
+            try:
+                reread_snapshot, reread_source = _policy_snapshot_for_nonacceptance(
+                    str(baseline["foundation_head_sha"]), validation_date,
+                )
+            except _PolicyStageError as exc:
+                payload = _policy_nonacceptance_payload(
+                    baseline=baseline, remainder=remainder_document, nodes=nodes, custody=sealed_custody,
+                    failure=_PolicyStageFailure(
+                        "POST_CUSTODY_REREAD_COMPARISON", exc.failure.public_class,
+                        "PRE_EXECUTION_SNAPSHOT", hashlib.sha256(policy_source).hexdigest(),
+                    ), custody_status="POST_CUSTODY_POSTCHECK_PASS",
+                )
+                _publish_policy_nonacceptance(nonacceptance, payload)
+                raise TopologyError(str(exc)) from None
+        else:
+            reread_snapshot, reread_source = _validated_policy_snapshot(
+                str(baseline["foundation_head_sha"]), validation_date,
             )
+        if reread_source != policy_source or reread_snapshot != policy_snapshot:
+            if nonacceptance_mode:
+                payload = _policy_nonacceptance_payload(
+                    baseline=baseline, remainder=remainder_document, nodes=nodes, custody=sealed_custody,
+                    failure=_PolicyStageFailure(
+                        "POST_CUSTODY_REREAD_COMPARISON", "POLICY_SOURCE_DRIFT",
+                        "PRE_EXECUTION_SNAPSHOT", hashlib.sha256(policy_source).hexdigest(),
+                    ), custody_status="POST_CUSTODY_POSTCHECK_PASS",
+                )
+                _publish_policy_nonacceptance(nonacceptance, payload)
+                raise TopologyError("policy validation failed: POLICY_SOURCE_DRIFT")
+            raise _policy_validation_error(TopologyError("allowlist source drifted during exact execution"))
         raw_report = _strict_json(provisional.read_bytes(), label="raw exact report")
         if raw_report.get("custody_policy") != sealed_custody:
             raise TopologyError("raw diagnostic report has custody policy drift")
@@ -1021,7 +1126,7 @@ def execute_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
     )
-    _, remainder = _load_portable_root_remainder(
+    remainder_document, remainder = _load_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
     )
@@ -1030,12 +1135,16 @@ def execute_portable_root_remainder(
         runner = _run_exact_observations if exact_runner is None else exact_runner
         return _execute_exact_with_retained_custody(
             baseline=baseline, nodes=remainder, report=report, runner=runner,
+            portable_root_remainder=True, remainder_document=remainder_document,
+            foundation_context_verified=foundation_context_path is not None,
         )
     return _execute_exact_with_retained_custody(
         baseline=baseline,
         nodes=remainder,
         report=report,
         runner=_write_empty_exact_governance_report,
+        portable_root_remainder=True, remainder_document=remainder_document,
+        foundation_context_verified=foundation_context_path is not None,
     )
 
 
@@ -1171,6 +1280,183 @@ def _validated_policy_snapshot(
         return snapshot, raw
     except Exception as exc:
         raise _policy_validation_error(exc) from exc
+
+
+def _stage_failure(
+    stage: str, *, source: bytes | None, source_hash_status: str | None = None,
+    public_class: str = "POLICY_VALIDATION_INVALID",
+) -> _PolicyStageError:
+    """Construct the record-only redacted outcome without inspecting exception details."""
+    if source is None:
+        status, digest = "UNAVAILABLE", ""
+    else:
+        status, digest = source_hash_status or "CURRENT_STAGE_BYTES", hashlib.sha256(source).hexdigest()
+    return _PolicyStageError(_PolicyStageFailure(stage, public_class, status, digest))
+
+
+def _policy_snapshot_for_nonacceptance(
+    head_sha: str, validation_date: date,
+) -> tuple[dict[str, object], bytes]:
+    """Run snapshot operations at their named boundaries for a diagnostic-only writer."""
+    try:
+        raw = _allowlist_bytes_at_head(head_sha)
+    except Exception:
+        raise _stage_failure("SOURCE_ACQUISITION_HEAD_BINDING", source=None) from None
+    try:
+        from scripts import check_test_governance as governance
+    except Exception:
+        raise _stage_failure("SHARED_VALIDATOR_IMPORT", source=raw) from None
+    try:
+        document = _strict_json(raw, label="allowlist")
+    except Exception:
+        raise _stage_failure("STRICT_JSON_PARSE", source=raw) from None
+    try:
+        entries = governance.validate_allowlist_document(document, today=validation_date)
+    except governance.AllowlistValidationError as exc:
+        raise _stage_failure(
+            "SHARED_ALLOWLIST_VALIDATION", source=raw, public_class=exc.policy_class,
+        ) from None
+    except Exception:
+        raise _stage_failure("SHARED_ALLOWLIST_VALIDATION", source=raw) from None
+    try:
+        snapshot_entries: list[dict[str, object]] = []
+        for entry in entries:
+            if entry["component"] != "root":
+                continue
+            outcome = entry["outcome"]
+            normalized_reason = _normalize_v1_reason(str(entry["reason"]))
+            if str(entry["reason"]) != normalized_reason:
+                raise TopologyError("reason normalization failed")
+            snapshot_entries.append({
+                "component": "root", "test_node_id": entry["test_node_id"], "outcome": outcome,
+                "allowed_in_ci": entry["allowed_in_ci"],
+                "reason_class": "POLICY_SKIP_REASON" if outcome == "skipped" else "POLICY_DESELECT_REASON",
+                "normalized_reason_commitment_sha256": reason_commitment_sha256(normalized_reason),
+                "policy_entry_sha256": _sha256(_policy_entry_payload(entry)),
+            })
+        snapshot_entries.sort(key=lambda item: (str(item["component"]).encode(), str(item["test_node_id"]).encode()))
+        return {
+            "snapshot_schema_version": POLICY_SNAPSHOT_SCHEMA,
+            "allowlist_schema_version": "1",
+            "allowlist_source_sha256": hashlib.sha256(raw).hexdigest(),
+            "policy_entry_schema_version": POLICY_ENTRY_SCHEMA,
+            "entries": snapshot_entries,
+        }, raw
+    except Exception:
+        raise _stage_failure("ROOT_PROJECTION_REASON_NORMALIZATION", source=raw) from None
+
+
+def _policy_nonacceptance_payload(
+    *, baseline: dict[str, object], remainder: dict[str, object], nodes: tuple[str, ...],
+    custody: dict[str, str], failure: _PolicyStageFailure, custody_status: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": POLICY_NONACCEPTANCE_SCHEMA, "diagnostic_only": True,
+        "foundation_run_id": baseline["foundation_run_id"], "foundation_head_sha": baseline["foundation_head_sha"],
+        "foundation_validation_date": baseline["foundation_validation_date"],
+        "foundation_context_sha256": baseline["foundation_context_sha256"],
+        "inventory_sha256": LOCKED_INVENTORY_SHA256, "baseline_sha256": baseline["baseline_sha256"],
+        "baseline_candidate_ids_sha256": _ids_sha256(tuple(baseline["candidate_node_ids"])),
+        "baseline_node_list_sha256": baseline["candidate_file_sha256"],
+        "remainder_sha256": remainder["remainder_sha256"],
+        "remainder_candidate_ids_sha256": _ids_sha256(nodes),
+        "remainder_node_list_sha256": remainder["remainder_file_sha256"],
+        "custody_policy_sha256": _sha256(custody), "custody_status": custody_status,
+        "policy_validation_stage": failure.stage, "policy_validation_class": failure.public_class,
+        "policy_source_hash_status": failure.source_hash_status,
+        "policy_source_sha256": failure.source_sha256,
+    }
+
+
+def parse_policy_validation_nonacceptance(raw: bytes) -> dict[str, object]:
+    document = _strict_json(raw, label="policy validation nonacceptance")
+    if not isinstance(document, dict) or set(document) != POLICY_NONACCEPTANCE_KEYS:
+        raise TopologyError("policy validation nonacceptance has invalid schema keys")
+    if canonical_json_bytes(document) != raw or document["schema_version"] != POLICY_NONACCEPTANCE_SCHEMA or document["diagnostic_only"] is not True:
+        raise TopologyError("policy validation nonacceptance is invalid")
+    if document["policy_validation_stage"] not in POLICY_VALIDATION_STAGES or document["policy_validation_class"] not in POLICY_STAGE_CLASSES[document["policy_validation_stage"]]:
+        raise TopologyError("policy validation nonacceptance stage/class is invalid")
+    if document["custody_status"] not in {"PRE_EXECUTION_VALIDATED", "POST_CUSTODY_POSTCHECK_PASS"}:
+        raise TopologyError("policy validation nonacceptance custody status is invalid")
+    if document["policy_validation_stage"] == "POST_CUSTODY_REREAD_COMPARISON":
+        if document["custody_status"] != "POST_CUSTODY_POSTCHECK_PASS":
+            raise TopologyError("policy validation nonacceptance custody binding is invalid")
+    elif document["custody_status"] != "PRE_EXECUTION_VALIDATED":
+        raise TopologyError("policy validation nonacceptance custody binding is invalid")
+    for field in ("foundation_run_id", "foundation_head_sha", "foundation_validation_date"):
+        if not isinstance(document[field], str):
+            raise TopologyError("policy validation nonacceptance binding is invalid")
+    if not RUN_ID.fullmatch(document["foundation_run_id"]) or not HEAD_SHA.fullmatch(document["foundation_head_sha"]):
+        raise TopologyError("policy validation nonacceptance binding is invalid")
+    parse_foundation_validation_date(document["foundation_validation_date"])
+    for field in (
+        "foundation_context_sha256", "inventory_sha256", "baseline_sha256", "baseline_candidate_ids_sha256",
+        "baseline_node_list_sha256", "remainder_sha256", "remainder_candidate_ids_sha256",
+        "remainder_node_list_sha256", "custody_policy_sha256", "nonacceptance_sha256",
+    ):
+        if not isinstance(document[field], str) or not HEX64.fullmatch(document[field]):
+            raise TopologyError("policy validation nonacceptance hash is invalid")
+    status = document["policy_source_hash_status"]
+    digest = document["policy_source_sha256"]
+    if status == "UNAVAILABLE":
+        if document["policy_validation_stage"] != "SOURCE_ACQUISITION_HEAD_BINDING" or digest != "":
+            raise TopologyError("policy validation nonacceptance source binding is invalid")
+    elif status in {"CURRENT_STAGE_BYTES", "PRE_EXECUTION_SNAPSHOT"}:
+        if not isinstance(digest, str) or not HEX64.fullmatch(digest):
+            raise TopologyError("policy validation nonacceptance source binding is invalid")
+        if status == "PRE_EXECUTION_SNAPSHOT" and document["policy_validation_stage"] != "POST_CUSTODY_REREAD_COMPARISON":
+            raise TopologyError("policy validation nonacceptance source binding is invalid")
+    else:
+        raise TopologyError("policy validation nonacceptance source binding is invalid")
+    if document["nonacceptance_sha256"] != _sha256({key: value for key, value in document.items() if key != "nonacceptance_sha256"}):
+        raise TopologyError("policy validation nonacceptance self-hash mismatch")
+    return document
+
+
+def _publish_policy_nonacceptance(path: Path, payload: dict[str, object]) -> None:
+    payload["nonacceptance_sha256"] = _sha256(payload)
+    encoded = canonical_json_bytes(payload)
+    _publish_failure_diagnostic(path, encoded)
+    if path.read_bytes() != encoded or parse_policy_validation_nonacceptance(path.read_bytes()) != payload:
+        raise TopologyError("policy validation nonacceptance post-write reread failed")
+
+
+def read_policy_validation_nonacceptance(
+    path: Path, *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
+) -> dict[str, object]:
+    """Read diagnostic-only policy evidence without parsing or approving its policy source."""
+    try:
+        document = parse_policy_validation_nonacceptance(path.read_bytes())
+    except OSError as exc:
+        raise TopologyError("policy validation nonacceptance is missing") from exc
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
+    )
+    remainder, nodes = _load_portable_root_remainder(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
+    )
+    custody = _validate_custody_policy(baseline["collector_policy"])
+    expected = _policy_nonacceptance_payload(
+        baseline=baseline, remainder=remainder, nodes=nodes, custody=custody,
+        failure=_PolicyStageFailure(
+            str(document["policy_validation_stage"]), str(document["policy_validation_class"]),
+            str(document["policy_source_hash_status"]), str(document["policy_source_sha256"]),
+        ), custody_status=str(document["custody_status"]),
+    )
+    for field, value in expected.items():
+        if document[field] != value:
+            raise TopologyError("policy validation nonacceptance binding drift")
+    if document["policy_source_hash_status"] != "UNAVAILABLE":
+        try:
+            source = _allowlist_bytes_at_head(head_sha)
+        except Exception:
+            raise TopologyError("policy validation nonacceptance source binding drift") from None
+        if hashlib.sha256(source).hexdigest() != document["policy_source_sha256"]:
+            raise TopologyError("policy validation nonacceptance source binding drift")
+    return document
 
 
 def _ids_sha256(nodes: tuple[str, ...]) -> str:
@@ -1442,6 +1728,7 @@ def read_failure_diagnostic(
     foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Read and bind a failure record; this reader cannot publish receipts or change policy."""
+    _reject_policy_nonacceptance_presence(path.parent)
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -1606,6 +1893,7 @@ def reconcile_portable_root_accounting(
     diagnostic = evidence_root / "capability-topology" / "portable-root-remainder.failure-diagnostic.json"
     if os.path.lexists(diagnostic):
         raise TopologyError("failure diagnostic is present; topology aggregation is forbidden")
+    _reject_policy_nonacceptance_presence(evidence_root / "capability-topology")
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
@@ -1978,6 +2266,7 @@ def run_lane(
     require_foundation_context(run_id, head_sha)
     context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha, context)
+    _reject_policy_nonacceptance_presence(evidence_root / "capability-topology")
     if os.path.lexists(evidence_root / "capability-topology/portable-root-remainder.failure-diagnostic.json"):
         raise TopologyError("failure diagnostic is present; lane publication is forbidden")
     rows = _installed_inventory_rows(inventory, evidence_root)

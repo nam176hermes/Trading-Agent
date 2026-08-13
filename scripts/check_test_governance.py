@@ -68,6 +68,14 @@ class GovernanceError(RuntimeError):
     """A fail-closed test-governance policy violation."""
 
 
+class AllowlistValidationError(GovernanceError):
+    """A stable redacted class for topology diagnostics; message stays legacy-compatible."""
+
+    def __init__(self, policy_class: str, message: str) -> None:
+        self.policy_class = policy_class
+        super().__init__(message)
+
+
 def _entry_key(item: dict[str, object]) -> tuple[str, str]:
     return str(item["component"]), str(item["test_node_id"])
 
@@ -79,7 +87,7 @@ def _normalize_reason(reason: str) -> str:
 def _require_nonempty_string(entry: dict[str, object], field: str, index: int) -> None:
     value = entry[field]
     if not isinstance(value, str) or not value.strip():
-        raise GovernanceError(f"allowlist entry {index} has invalid {field}")
+        raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID", f"allowlist entry {index} has invalid {field}")
 
 
 def validate_allowlist_document(
@@ -90,16 +98,16 @@ def validate_allowlist_document(
     """Validate the JSON-compatible YAML inventory without third-party parsers."""
 
     if not isinstance(document, dict) or document.get("schema_version") != 1:
-        raise GovernanceError("allowlist schema_version must be 1")
+        raise AllowlistValidationError("POLICY_SCHEMA_INVALID", "allowlist schema_version must be 1")
     raw_entries = document.get("entries")
     if not isinstance(raw_entries, list):
-        raise GovernanceError("allowlist entries must be a list")
+        raise AllowlistValidationError("POLICY_SCHEMA_INVALID", "allowlist entries must be a list")
     current_date = today or date.today()
     entries: list[dict[str, object]] = []
     seen: set[tuple[str, str]] = set()
     for index, raw in enumerate(raw_entries):
         if not isinstance(raw, dict) or set(raw) != REQUIRED_FIELDS:
-            raise GovernanceError(f"allowlist entry {index} has invalid fields")
+            raise AllowlistValidationError("POLICY_SCHEMA_INVALID", f"allowlist entry {index} has invalid fields")
         entry = dict(raw)
         for field in (
             "test_node_id",
@@ -114,41 +122,41 @@ def validate_allowlist_document(
             _require_nonempty_string(entry, field, index)
         category = str(entry["reason_category"])
         if category not in APPROVED_CATEGORIES:
-            raise GovernanceError(
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID",
                 f"allowlist entry {index} has unapproved category {category}"
             )
         if category == "UNKNOWN":
-            raise GovernanceError(f"allowlist entry {index} uses forbidden UNKNOWN category")
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID", f"allowlist entry {index} uses forbidden UNKNOWN category")
         component = str(entry["component"])
         owner = str(entry["owner"])
         if component not in OWNERS_BY_COMPONENT:
-            raise GovernanceError(f"allowlist entry {index} has unapproved component")
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID", f"allowlist entry {index} has unapproved component")
         if owner not in OWNERS_BY_COMPONENT[component]:
-            raise GovernanceError(f"allowlist entry {index} has unapproved owner")
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID", f"allowlist entry {index} has unapproved owner")
         try:
             review_by = date.fromisoformat(str(entry["review_by"]))
         except ValueError as exc:
-            raise GovernanceError(
+            raise AllowlistValidationError("POLICY_REVIEW_DATE_INVALID",
                 f"allowlist entry {index} has invalid review_by"
             ) from exc
         if review_by < current_date:
-            raise GovernanceError(
+            raise AllowlistValidationError("POLICY_REVIEW_DATE_EXPIRED",
                 f"allowlist entry {index} expired on {review_by.isoformat()}"
             )
         if not isinstance(entry["security_critical"], bool):
-            raise GovernanceError(
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID",
                 f"allowlist entry {index} has invalid security_critical"
             )
         if not isinstance(entry["allowed_in_ci"], bool):
-            raise GovernanceError(f"allowlist entry {index} has invalid allowed_in_ci")
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID", f"allowlist entry {index} has invalid allowed_in_ci")
         if entry["outcome"] not in INVENTORY_OUTCOMES:
-            raise GovernanceError(f"allowlist entry {index} has invalid outcome")
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID", f"allowlist entry {index} has invalid outcome")
         derived_security_critical = (
             category == "DISPOSABLE_POSTGRES_REQUIRED"
             or str(entry["test_node_id"]).startswith(SECURITY_PATH_PREFIXES)
         )
         if entry["security_critical"] is not derived_security_critical:
-            raise GovernanceError(
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID",
                 f"allowlist entry {index} has invalid derived security criticality"
             )
         if derived_security_critical and (
@@ -156,21 +164,21 @@ def validate_allowlist_document(
             or not isinstance(entry["reason"], str)
             or not entry["reason"].strip()
         ):
-            raise GovernanceError(
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID",
                 f"allowlist entry {index} is security-critical without explicit approval reason"
             )
         expected_approval = APPROVAL_RECORD_BY_CATEGORY.get(category)
         if entry["approval_record_type"] != expected_approval:
-            raise GovernanceError(
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID",
                 f"allowlist entry {index} has invalid category approval record"
             )
         if not isinstance(entry["reason"], str) or not entry["reason"].strip():
-            raise GovernanceError(f"allowlist entry {index} has invalid reason")
+            raise AllowlistValidationError("POLICY_FIELD_TYPE_INVALID", f"allowlist entry {index} has invalid reason")
         if entry["reason"] != _normalize_reason(entry["reason"]):
-            raise GovernanceError(f"allowlist entry {index} has non-normalized reason")
+            raise AllowlistValidationError("POLICY_REASON_NORMALIZATION_INVALID", f"allowlist entry {index} has non-normalized reason")
         key = _entry_key(entry)
         if key in seen:
-            raise GovernanceError(f"duplicate allowlist entry: {key[0]}::{key[1]}")
+            raise AllowlistValidationError("POLICY_DUPLICATE_ENTRY", f"duplicate allowlist entry: {key[0]}::{key[1]}")
         seen.add(key)
         entries.append(entry)
     return entries
@@ -785,6 +793,8 @@ def audit_topology_root_records(
         )
         rows = capability_topology._installed_inventory_rows(inventory, evidence_root)
         topology_root = evidence_root / "capability-topology"
+        if os.path.lexists(topology_root / "policy-validation-nonacceptance.json"):
+            raise GovernanceError("policy validation nonacceptance is present; topology aggregation is forbidden")
         if os.path.lexists(topology_root / "portable-root-remainder.failure-diagnostic.json"):
             raise GovernanceError("failure diagnostic is present; topology aggregation is forbidden")
         baseline = capability_topology.load_portable_root_baseline(
