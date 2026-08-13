@@ -29,6 +29,7 @@ BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v3"
 REMAINDER_SCHEMA = "t-g03a-portable-root-remainder/v1"
 FAILURE_DIAGNOSTIC_SCHEMA = "t-g03a-portable-root-failure-diagnostic/v3"
 POLICY_NONACCEPTANCE_SCHEMA = "t-g03a-policy-validation-nonacceptance/v1"
+UNSAFE_RAW_REASON_NONACCEPTANCE_SCHEMA = "t-g03a-unsafe-raw-reason-nonacceptance/v1"
 POLICY_SNAPSHOT_SCHEMA = "t-g03a-portable-root-policy-snapshot/v1"
 POLICY_ENTRY_SCHEMA = "t-g03a-skip-policy-entry/v1"
 REASON_COMMITMENT_SCHEMA = "t-g03a-policy-reason-commitment/v1"
@@ -53,6 +54,14 @@ POLICY_NONACCEPTANCE_KEYS = frozenset({
     "custody_policy_sha256", "custody_status", "policy_validation_stage",
     "policy_validation_class", "policy_source_hash_status", "policy_source_sha256",
     "nonacceptance_sha256",
+})
+UNSAFE_RAW_REASON_NONACCEPTANCE_KEYS = frozenset({
+    "schema_version", "diagnostic_only", "foundation_run_id", "foundation_head_sha",
+    "foundation_validation_date", "foundation_context_sha256", "inventory_sha256",
+    "baseline_sha256", "baseline_candidate_ids_sha256", "baseline_node_list_sha256",
+    "remainder_sha256", "remainder_candidate_ids_sha256", "remainder_node_list_sha256",
+    "custody_policy_sha256", "custody_postcheck_status", "pytest_exit_status",
+    "raw_reason_nonacceptance_state", "nonacceptance_sha256",
 })
 POLICY_VALIDATION_STAGES = frozenset({
     "SOURCE_ACQUISITION_HEAD_BINDING", "SHARED_VALIDATOR_IMPORT", "STRICT_JSON_PARSE",
@@ -276,6 +285,7 @@ def reserve_topology_evidence(
         topology_root / "portable-root-remainder.txt",
         topology_root / "portable-root-remainder.governance.json",
         topology_root / "portable-root-remainder.failure-diagnostic.json",
+        topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json",
         topology_root / "policy-validation-nonacceptance.json",
     ]
     for code in CODE_CLASSIFICATION:
@@ -395,6 +405,7 @@ def _capture_foundation_context(
         topology_root / "portable-root-baseline.json",
         topology_root / "portable-root-remainder.governance.json",
         topology_root / "portable-root-remainder.failure-diagnostic.json",
+        topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json",
         topology_root / "policy-validation-nonacceptance.json",
     ]
     acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CODE_CLASSIFICATION for suffix in (".json", ".governance.json"))
@@ -487,12 +498,27 @@ def _reject_failure_diagnostic_coexistence(topology_root: Path) -> None:
     accepted = [topology_root / "portable-root-remainder.governance.json"]
     for code in CODE_CLASSIFICATION:
         accepted.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
-    if any(os.path.lexists(path) for path in accepted):
+    rejected = [
+        *accepted,
+        topology_root / "portable-root-remainder.failure-diagnostic.json",
+        topology_root / "policy-validation-nonacceptance.json",
+        topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json",
+    ]
+    if any(os.path.lexists(path) for path in rejected):
         raise TopologyError("failure diagnostic conflicts with existing topology acceptance artifact")
 
 
 def _policy_nonacceptance_path(topology_root: Path) -> Path:
     return topology_root / "policy-validation-nonacceptance.json"
+
+
+def _unsafe_raw_reason_nonacceptance_path(topology_root: Path) -> Path:
+    return topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json"
+
+
+def _reject_unsafe_raw_reason_nonacceptance_presence(topology_root: Path) -> None:
+    if os.path.lexists(_unsafe_raw_reason_nonacceptance_path(topology_root)):
+        raise TopologyError("unsafe raw reason nonacceptance is present; topology acceptance is forbidden")
 
 
 def _reject_policy_nonacceptance_presence(topology_root: Path) -> None:
@@ -987,7 +1013,13 @@ def _execute_exact_with_retained_custody(
     provisional = report.with_name(f".{report.name}.executing")
     diagnostic = report.with_name("portable-root-remainder.failure-diagnostic.json")
     nonacceptance = _policy_nonacceptance_path(report.parent)
-    if os.path.lexists(provisional) or os.path.lexists(diagnostic) or os.path.lexists(nonacceptance):
+    unsafe_nonacceptance = _unsafe_raw_reason_nonacceptance_path(report.parent)
+    if (
+        os.path.lexists(provisional)
+        or os.path.lexists(diagnostic)
+        or os.path.lexists(nonacceptance)
+        or os.path.lexists(unsafe_nonacceptance)
+    ):
         raise TopologyError("exact governance staging record already exists")
     validation_date = parse_foundation_validation_date(
         baseline["foundation_validation_date"],
@@ -1056,6 +1088,18 @@ def _execute_exact_with_retained_custody(
         raw_report = _strict_json(provisional.read_bytes(), label="raw exact report")
         if raw_report.get("custody_policy") != sealed_custody:
             raise TopologyError("raw diagnostic report has custody policy drift")
+        raw_observations, raw_exit_status = _structurally_valid_raw_observations(raw_report, nodes)
+        if _has_unsafe_raw_reason(raw_observations):
+            if not nonacceptance_mode:
+                raise TopologyError("raw diagnostic observation has unsafe reason")
+            assert remainder_document is not None
+            _reject_failure_diagnostic_coexistence(report.parent)
+            payload = _unsafe_raw_reason_nonacceptance_payload(
+                baseline=baseline, remainder=remainder_document, nodes=nodes, custody=sealed_custody,
+                pytest_exit_status=raw_exit_status,
+            )
+            _publish_unsafe_raw_reason_nonacceptance(unsafe_nonacceptance, payload)
+            raise TopologyError("UNSAFE_RAW_REASON_NONACCEPTANCE")
         observations, raw_exit_status = _diagnostic_observations(raw_report, nodes, policy_snapshot)
         is_nonpass = raw_exit_status != "0" or any(item["outcome"] != "passed" for item in observations)
         if is_nonpass:
@@ -1170,6 +1214,16 @@ def _normalize_v1_reason(reason: str) -> str:
     return " ".join("".join(group) for group in re.split(
         "[" + "".join(chr(codepoint) for codepoint in V1_WHITE_SPACE) + "]+", reason,
     ) if group)
+
+
+def _is_v1_normalized_reason(reason: str) -> bool:
+    """Check v1 shape without producing a normalized copy of untrusted evidence."""
+    return (
+        not reason.startswith(" ")
+        and not reason.endswith(" ")
+        and "  " not in reason
+        and all(ord(character) not in V1_WHITE_SPACE or character == " " for character in reason)
+    )
 
 
 def reason_commitment_sha256(reason: str) -> str:
@@ -1431,6 +1485,7 @@ def read_policy_validation_nonacceptance(
     foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Read diagnostic-only policy evidence without parsing or approving its policy source."""
+    _reject_unsafe_raw_reason_nonacceptance_presence(path.parent)
     try:
         document = parse_policy_validation_nonacceptance(path.read_bytes())
     except OSError as exc:
@@ -1461,6 +1516,110 @@ def read_policy_validation_nonacceptance(
     for field, value in expected.items():
         if document[field] != value:
             raise TopologyError("policy validation nonacceptance binding drift")
+    return document
+
+
+def _unsafe_raw_reason_nonacceptance_payload(
+    *, baseline: dict[str, object], remainder: dict[str, object], nodes: tuple[str, ...],
+    custody: dict[str, str], pytest_exit_status: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": UNSAFE_RAW_REASON_NONACCEPTANCE_SCHEMA, "diagnostic_only": True,
+        "foundation_run_id": baseline["foundation_run_id"], "foundation_head_sha": baseline["foundation_head_sha"],
+        "foundation_validation_date": baseline["foundation_validation_date"],
+        "foundation_context_sha256": baseline["foundation_context_sha256"],
+        "inventory_sha256": LOCKED_INVENTORY_SHA256, "baseline_sha256": baseline["baseline_sha256"],
+        "baseline_candidate_ids_sha256": _ids_sha256(tuple(baseline["candidate_node_ids"])),
+        "baseline_node_list_sha256": baseline["candidate_file_sha256"],
+        "remainder_sha256": remainder["remainder_sha256"],
+        "remainder_candidate_ids_sha256": _ids_sha256(nodes),
+        "remainder_node_list_sha256": remainder["remainder_file_sha256"],
+        "custody_policy_sha256": _sha256(custody), "custody_postcheck_status": "PASS",
+        "pytest_exit_status": pytest_exit_status,
+        "raw_reason_nonacceptance_state": "UNSAFE_RAW_REASON_OBSERVED",
+    }
+
+
+def parse_unsafe_raw_reason_nonacceptance(raw: bytes) -> dict[str, object]:
+    document = _strict_json(raw, label="unsafe raw reason nonacceptance")
+    if not isinstance(document, dict) or set(document) != UNSAFE_RAW_REASON_NONACCEPTANCE_KEYS:
+        raise TopologyError("unsafe raw reason nonacceptance has invalid schema keys")
+    if (
+        canonical_json_bytes(document) != raw
+        or document["schema_version"] != UNSAFE_RAW_REASON_NONACCEPTANCE_SCHEMA
+        or document["diagnostic_only"] is not True
+        or document["custody_postcheck_status"] != "PASS"
+        or document["raw_reason_nonacceptance_state"] != "UNSAFE_RAW_REASON_OBSERVED"
+    ):
+        raise TopologyError("unsafe raw reason nonacceptance is invalid")
+    for field in ("foundation_run_id", "foundation_head_sha", "foundation_validation_date", "pytest_exit_status"):
+        if not isinstance(document[field], str):
+            raise TopologyError("unsafe raw reason nonacceptance binding is invalid")
+    if (
+        not RUN_ID.fullmatch(document["foundation_run_id"])
+        or document["foundation_run_id"] == "0"
+        or not HEAD_SHA.fullmatch(document["foundation_head_sha"])
+        or not re.fullmatch(r"(?:0|[1-9][0-9]*)", document["pytest_exit_status"])
+    ):
+        raise TopologyError("unsafe raw reason nonacceptance binding is invalid")
+    parse_foundation_validation_date(document["foundation_validation_date"])
+    for field in (
+        "foundation_context_sha256", "inventory_sha256", "baseline_sha256", "baseline_candidate_ids_sha256",
+        "baseline_node_list_sha256", "remainder_sha256", "remainder_candidate_ids_sha256",
+        "remainder_node_list_sha256", "custody_policy_sha256", "nonacceptance_sha256",
+    ):
+        if not isinstance(document[field], str) or not HEX64.fullmatch(document[field]):
+            raise TopologyError("unsafe raw reason nonacceptance hash is invalid")
+    if document["nonacceptance_sha256"] != _sha256({
+        key: value for key, value in document.items() if key != "nonacceptance_sha256"
+    }):
+        raise TopologyError("unsafe raw reason nonacceptance self-hash mismatch")
+    return document
+
+
+def _publish_unsafe_raw_reason_nonacceptance(path: Path, payload: dict[str, object]) -> None:
+    payload["nonacceptance_sha256"] = _sha256(payload)
+    encoded = canonical_json_bytes(payload)
+    _publish_failure_diagnostic(path, encoded)
+    if path.read_bytes() != encoded or parse_unsafe_raw_reason_nonacceptance(path.read_bytes()) != payload:
+        raise TopologyError("unsafe raw reason nonacceptance post-write reread failed")
+
+
+def read_unsafe_raw_reason_nonacceptance(
+    path: Path, *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
+) -> dict[str, object]:
+    """Read fixed diagnostic-only evidence; it cannot approve, aggregate, or publish anything."""
+    topology_root = path.parent
+    conflicts = [
+        topology_root / "portable-root-remainder.failure-diagnostic.json",
+        _policy_nonacceptance_path(topology_root),
+        topology_root / "portable-root-remainder.governance.json",
+    ]
+    for code in CODE_CLASSIFICATION:
+        conflicts.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+    if any(os.path.lexists(candidate) for candidate in conflicts):
+        raise TopologyError("unsafe raw reason nonacceptance conflicts with topology terminal evidence")
+    try:
+        document = parse_unsafe_raw_reason_nonacceptance(path.read_bytes())
+    except OSError as exc:
+        raise TopologyError("unsafe raw reason nonacceptance is missing") from exc
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
+    )
+    remainder, nodes = _load_portable_root_remainder(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
+    )
+    custody = _validate_custody_policy(baseline["collector_policy"])
+    expected = _unsafe_raw_reason_nonacceptance_payload(
+        baseline=baseline, remainder=remainder, nodes=nodes, custody=custody,
+        pytest_exit_status=str(document["pytest_exit_status"]),
+    )
+    for field, value in expected.items():
+        if document[field] != value:
+            raise TopologyError("unsafe raw reason nonacceptance binding drift")
     return document
 
 
@@ -1537,7 +1696,8 @@ def _raw_observation_domain(item: dict[str, object]) -> tuple[str, str, str, str
     return canonical_outcome, str(phase), xfail_state, reason_class, provenance
 
 
-def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot: dict[str, object]) -> tuple[list[dict[str, object]], str]:
+def _structurally_valid_raw_observations(document: object, nodes: tuple[str, ...]) -> tuple[list[dict[str, object]], str]:
+    """Validate complete private raw evidence before inspecting any untrusted reason."""
     if not isinstance(document, dict) or document.get("component") != "root" or not isinstance(document.get("tests"), list):
         raise TopologyError("raw diagnostic report is malformed")
     exit_status = document.get("pytest_exit_status")
@@ -1547,10 +1707,34 @@ def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot:
     for raw in document["tests"]:
         if not isinstance(raw, dict) or raw.get("component") != "root" or not _is_portable_root_pytest_node_id(raw.get("test_node_id")):
             raise TopologyError("raw diagnostic observation is malformed")
+        _raw_observation_domain(raw)
+        observations.append(raw)
+    observations.sort(key=lambda item: str(item["test_node_id"]).encode())
+    if tuple(item["test_node_id"] for item in observations) != nodes or len(observations) != len(nodes):
+        raise TopologyError("raw diagnostic observations do not exactly match selected nodes")
+    if not observations:
+        raise TopologyError("failure diagnostic has no observations")
+    return observations, str(exit_status)
+
+
+def _has_unsafe_raw_reason(observations: list[dict[str, object]]) -> bool:
+    """Return one private boolean; rejected values are never normalized, committed, or compared."""
+    for raw in observations:
+        reason = raw.get("reason")
+        if not isinstance(reason, str) or not _is_v1_normalized_reason(reason) or not _reason_is_safe(reason):
+            return True
+    return False
+
+
+def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot: dict[str, object]) -> tuple[list[dict[str, object]], str]:
+    raw_observations, exit_status = _structurally_valid_raw_observations(document, nodes)
+    if _has_unsafe_raw_reason(raw_observations):
+        raise TopologyError("raw diagnostic observation has unsafe reason")
+    observations: list[dict[str, object]] = []
+    for raw in raw_observations:
         outcome, phase, xfail_state, reason_class, provenance = _raw_observation_domain(raw)
         reason = raw.get("reason", "")
-        if not isinstance(reason, str) or _normalize_v1_reason(reason) != reason or not _reason_is_safe(reason):
-            raise TopologyError("raw diagnostic observation has unsafe reason")
+        assert isinstance(reason, str)  # Proven by _has_unsafe_raw_reason above.
         commitment = "" if reason_class == "NONE" else reason_commitment_sha256(reason)
         policy_match, policy_hash = "NOT_APPLICABLE", ""
         if outcome in {"skipped", "deselected"}:
@@ -1564,12 +1748,7 @@ def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot:
             "normalized_reason_commitment_sha256": commitment, "policy_match_result": policy_match,
             "existing_policy_entry_sha256": policy_hash,
         })
-    observations.sort(key=lambda item: str(item["test_node_id"]).encode())
-    if tuple(item["test_node_id"] for item in observations) != nodes or len(observations) != len(nodes):
-        raise TopologyError("raw diagnostic observations do not exactly match selected nodes")
-    if not observations:
-        raise TopologyError("failure diagnostic has no observations")
-    return observations, str(exit_status)
+    return observations, exit_status
 
 
 def _failure_diagnostic_payload(
@@ -1734,6 +1913,7 @@ def read_failure_diagnostic(
 ) -> dict[str, object]:
     """Read and bind a failure record; this reader cannot publish receipts or change policy."""
     _reject_policy_nonacceptance_presence(path.parent)
+    _reject_unsafe_raw_reason_nonacceptance_presence(path.parent)
     try:
         raw = path.read_bytes()
     except OSError as exc:
@@ -1861,6 +2041,9 @@ def validate_receipt(
 def aggregate_receipts(
     paths: list[Path], *, rows: tuple[InventoryRow, ...], foundation_run_id: str, foundation_head_sha: str,
 ) -> dict[str, object]:
+    if not paths or any(path.parent != paths[0].parent for path in paths):
+        raise TopologyError("receipt aggregation has an invalid topology root")
+    _reject_unsafe_raw_reason_nonacceptance_presence(paths[0].parent)
     expected_codes = set(CODE_CLASSIFICATION)
     try:
         receipts = [
@@ -1895,6 +2078,7 @@ def reconcile_portable_root_accounting(
     foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Require the dynamic baseline to be a closed one-execution-or-deferred union."""
+    _reject_unsafe_raw_reason_nonacceptance_presence(evidence_root / "capability-topology")
     diagnostic = evidence_root / "capability-topology" / "portable-root-remainder.failure-diagnostic.json"
     if os.path.lexists(diagnostic):
         raise TopologyError("failure diagnostic is present; topology aggregation is forbidden")
@@ -1962,6 +2146,7 @@ def publish_receipt(receipt: dict[str, object], evidence_root: Path) -> Path:
     destination = evidence_root / "capability-topology" / f"{code}.json"
     _prepare_private_evidence_directory(destination.parent)
     _reject_policy_nonacceptance_presence(destination.parent)
+    _reject_unsafe_raw_reason_nonacceptance_presence(destination.parent)
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(canonical_json_bytes(receipt))
@@ -2273,6 +2458,7 @@ def run_lane(
     context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha, context)
     _reject_policy_nonacceptance_presence(evidence_root / "capability-topology")
+    _reject_unsafe_raw_reason_nonacceptance_presence(evidence_root / "capability-topology")
     if os.path.lexists(evidence_root / "capability-topology/portable-root-remainder.failure-diagnostic.json"):
         raise TopologyError("failure diagnostic is present; lane publication is forbidden")
     rows = _installed_inventory_rows(inventory, evidence_root)

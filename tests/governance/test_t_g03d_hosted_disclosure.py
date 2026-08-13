@@ -1510,6 +1510,27 @@ def test_topology_audit_discloses_deferred_receipts_without_claiming_pass() -> N
     assert {record["outcome"] for record in root_records} == {"passed"}
 
 
+def test_topology_audit_rejects_unsafe_raw_reason_presence_before_acceptance_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: malformed unsafe-reason evidence is ignored while aggregation still claims a result."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw)
+        run_id, head_sha = _write_topology_evidence(evidence)
+        (evidence / "capability-topology/portable-root-remainder.unsafe-raw-reason-nonacceptance.json").write_bytes(b"foreign")
+        monkeypatch.setattr(
+            topology, "load_portable_root_baseline",
+            lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unsafe presence must stop before baseline")),
+        )
+        with pytest.raises(GovernanceError, match="unsafe raw reason nonacceptance is present"):
+            audit_topology_root_records(
+                evidence_root=evidence,
+                inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+                foundation_run_id=run_id,
+                foundation_head_sha=head_sha,
+            )
+
+
 def test_topology_audit_rejects_a_root_record_that_does_not_match_its_receipt() -> None:
     """Break caught: a partial, extra, or unbound root lane record passes governance."""
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:

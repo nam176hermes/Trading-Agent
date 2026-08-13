@@ -1012,7 +1012,62 @@ def test_raw_observation_mapping_accepts_only_the_closed_v1_domain(
         topology._raw_observation_domain({"outcome": outcome, "phase": "report", "wasxfail": wasxfail})
 
 
-def test_unsafe_or_duplicate_raw_failure_evidence_does_not_publish_a_diagnostic(
+@pytest.mark.parametrize("reason", [
+    "/private/raw-path",
+    r"private\\raw-path",
+    "private\x01control",
+    "https://private.example.invalid/reason",
+    "bearer private-value",
+    "A" * 20,
+    7,
+    "not\tv1-normalized",
+])
+def test_complete_unsafe_raw_reason_publishes_only_the_fixed_nonacceptance_record_after_custody(
+    monkeypatch: pytest.MonkeyPatch, reason: object,
+) -> None:
+    """Break caught: unsafe raw evidence either leaks, reaches policy logic, or disappears after custody."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, nodes = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+
+        def unsafe_exact(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1, "component": "root", "pytest_exit_status": 0,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node, "component": "root", "outcome": "skipped",
+                    "reason": reason, "phase": "call",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="^UNSAFE_RAW_REASON_NONACCEPTANCE$") as raised:
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                exact_runner=unsafe_exact,
+                foundation_context_path=evidence / "capability-topology/foundation-context.json",
+            )
+
+        record = evidence / "capability-topology/portable-root-remainder.unsafe-raw-reason-nonacceptance.json"
+        document = topology.read_unsafe_raw_reason_nonacceptance(
+            record, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+            foundation_context_path=evidence / "capability-topology/foundation-context.json",
+        )
+        assert document["schema_version"] == "t-g03a-unsafe-raw-reason-nonacceptance/v1"
+        assert document["diagnostic_only"] is True
+        assert document["custody_postcheck_status"] == "PASS"
+        assert document["pytest_exit_status"] == "0"
+        assert document["raw_reason_nonacceptance_state"] == "UNSAFE_RAW_REASON_OBSERVED"
+        record_bytes = record.read_bytes()
+        forbidden = [nodes[0].encode(), b"private", b"raw-path"]
+        if isinstance(reason, str):
+            forbidden.extend((reason.encode(), topology.hashlib.sha256(reason.encode()).hexdigest().encode()))
+        assert all(fragment not in record_bytes and fragment not in str(raised.value).encode() for fragment in forbidden)
+        assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists()
+        assert not (evidence / "capability-topology/portable-root-remainder.governance.json").exists()
+
+
+def test_structural_invalid_raw_failure_evidence_does_not_publish_any_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Break caught: a secret/path-like reason or duplicate selected node becomes retained evidence."""
