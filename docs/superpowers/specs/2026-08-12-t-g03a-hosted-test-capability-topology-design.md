@@ -160,7 +160,7 @@ ci-portable-topology:
   receipt aggregation
 
 check-test-governance-topology:
-  uv run python scripts/check_test_governance.py --topology-audit \
+  uv run python -m scripts.check_test_governance --topology-audit \
     --report-dir "$(TEST_EVIDENCE_DIR)/test-governance-topology" \
     --topology-evidence-root "$(TEST_EVIDENCE_DIR)" \
     --inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
@@ -241,7 +241,7 @@ have no hosted acceptance authority even when they are internally well-formed.
 Only an isolated unit-test function may inject a clock, and it writes no
 Foundation evidence.
 
-Every invocation of `scripts/t_g03_capability_topology.py` in the portable
+Every module invocation of `scripts.t_g03_capability_topology` in the portable
 route receives only `--foundation-context-path "$FOUNDATION_CONTEXT_PATH"`.
 Its `reserve`, baseline collector/loader, remainder preparation/execution,
 lane runner, aggregation, and failure reader validate the context and derive
@@ -380,6 +380,97 @@ This amendment is limited to portable test-governance/topology provenance and
 diagnostics.  It adds no policy renewal, workflow dependency, authority
 acquisition, network action, runtime/service/database change, or live-trading
 behavior.
+
+### Supplemental design — canonical package-module entrypoints
+
+Hosted Foundation `31671498668` at `4b9fd51` retained a canonical sealed
+context, baseline, collection, and generated remainder, then emitted only the
+redacted `SHARED_VALIDATOR_IMPORT` / `POLICY_VALIDATION_INVALID` nonacceptance
+record.  The retained source digest equals the current tracked allowlist, so
+this evidence authorizes neither an allowlist change nor a policy/authority
+change.  The confirmed source-owned defect is launch shape: executing either
+package-importing tool as `python scripts/<tool>.py` puts `scripts/` rather
+than the repository root at the direct script import boundary, while the tools
+import each other as `scripts.<module>`.
+
+The only canonical Make entrypoints for these two package-importing tools are:
+
+```text
+uv run python -m scripts.t_g03_capability_topology <unchanged arguments>
+uv run python -m scripts.check_test_governance <unchanged arguments>
+```
+
+The eventual Make-only implementation must replace each of the following
+current direct-file launch sites, preserving every argument token, environment
+assignment, shell guard, order, exit propagation, evidence path, and custody
+binding exactly:
+
+| Make target | Tool | Required module invocations |
+| --- | --- | --- |
+| `check-test-skips` | `scripts.check_test_governance` | one strict governance invocation |
+| `check-test-governance-topology` | `scripts.check_test_governance` | one topology-audit invocation |
+| `test-portable-source` | `scripts.t_g03_capability_topology` | `reserve`, `collect-baseline`, `run-lane --lane portable-source` |
+| `test-native-capabilities` | `scripts.t_g03_capability_topology` | `reserve`, `run-lane --lane native-capabilities` |
+| `test-external-authorities` | `scripts.t_g03_capability_topology` | `reserve`, `run-lane --lane external-authorities` |
+| `test-portable-root-remainder` | `scripts.t_g03_capability_topology` | `collect-baseline`, `prepare-remainder`, `run-remainder` |
+| `ci-portable-topology` | `scripts.t_g03_capability_topology` | `reserve`, three exact `run-lane` calls, `aggregate` |
+
+At the reviewed current source this is exactly two governance invocations and
+fifteen topology invocations.  The earlier fourteen-topology count was stale:
+the current `ci-portable-topology` target also launches `aggregate`, and this
+amendment deliberately includes it.  Every direct Make spelling
+`uv run python scripts/t_g03_capability_topology.py` or
+`uv run python scripts/check_test_governance.py` is prohibited after this
+repair.  This prohibition is confined to these two tools; no unrelated
+`scripts/*.py` Make invocation, helper, package layout, `PYTHONPATH`,
+dependency, workflow command, or source import is changed.
+
+Module execution is an invocation normalization, not a new interface.  The
+two modules retain their current parser arguments, validation order, redacted
+public errors, nonzero failure behavior, evidence/custody rules, and direct
+unit-level `main(argv)` behavior.  Process-level CLI tests that intend a
+supported executable interface must invoke `uv run python -m
+scripts.<module>` from the repository root.  The known file-execution import
+failure is not a supported successful CLI contract and must not be preserved
+as an acceptance route.  In particular, `-m scripts.check_test_governance
+--help` must load its reciprocal import successfully and retain its normal help
+exit behavior; the equivalent topology module help route must do the same.
+
+The source contract tests for this amendment must be hermetic and cover all of
+the following without a hosted workflow, native-capability extension, external
+authority, engine build, network, policy edit, or evidence acceptance:
+
+1. Parse the root Makefile and assert the exact two governance and fifteen
+   topology commands above use `uv run python -m` with the stated module name,
+   while preserving their target/action membership, ordering, and existing
+   argument fragments.  Assert no direct-file spelling for either tool remains
+   anywhere in the Makefile.  The test must fail if a future target reintroduces
+   either direct executable shape.
+2. Invoke both module entrypoints with `--help` from the repository root and
+   assert the existing successful help/exit contract with no
+   `ModuleNotFoundError` or raw reciprocal-import detail.  Retain focused
+   parser tests that invoke `main(argv)` directly; they test command parsing,
+   not Make routing.
+3. Use the existing sealed-context fixture and a test-owned evidence root to
+   prove the module-launched portable-root snapshot reaches the shared
+   validator boundary.  With the deliberately absent native custody extension,
+   it must stop at the already governed custody boundary before any exact
+   runner starts; it must not publish `SHARED_VALIDATOR_IMPORT`, acceptance,
+   receipt, deferred claim, or policy change.  Any genuine import failure after
+   module launch remains redacted as the existing A2 stage/class and fails
+   closed.
+4. Keep the strict `check-test-skips` and all strict/release targets' policy,
+   receipt, audit, and fail-closed semantics unchanged.  This amendment changes
+   only their Python module launch spelling; it creates no portable fallback,
+   release acceptance, or workflow-level direct command.
+
+Foundation still invokes only `make ci-portable`; no workflow edit or new
+workflow variable is authorized.  Capability receipt-v1, Foundation context,
+baseline, failure/nonacceptance diagnostics, allowlist, approval date, policy
+stage/class domains, live flags, and all runtime/external authorities remain
+unchanged.  After a successful package-module launch, the existing A2 shared
+validator remains the sole policy validator and all of its redaction,
+nonacceptance, and no-acceptance-artifact rules continue to apply.
 
 ### Amendment A2 — policy-validation non-acceptance stage evidence
 
