@@ -839,6 +839,7 @@ def audit_topology_root_records(
             foundation_head_sha=foundation_head_sha,
             foundation_context=context,
             closure_proof_path=topology_root / "portable-defect-closure-proof.json",
+            sealed_custody=sealed_custody,
         )
         root_records: list[dict[str, object]] = [
             {
@@ -856,6 +857,7 @@ def audit_topology_root_records(
             foundation_run_id=foundation_run_id,
             foundation_head_sha=foundation_head_sha,
             foundation_context=context,
+            sealed_custody=sealed_custody,
         )
         closure_nodes = tuple(closure_proof["closure_node_ids"])
         root_records.extend({

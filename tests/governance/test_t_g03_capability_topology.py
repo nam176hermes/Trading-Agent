@@ -138,6 +138,7 @@ def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(
     summary = topology.aggregate_receipts(
         paths, rows=rows, foundation_run_id=run, foundation_head_sha=head,
         foundation_context={}, closure_proof_path=tmp_path / "closure-proof.json",
+        sealed_custody={},
     )
     assert summary["runtime_proof"] == "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS"
     forged = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="external-authorities", capability_or_authority_code="EXT-PHASE3B-CORPUS", expected_node_ids=list(topology._expected_rows(rows, "EXT-PHASE3B-CORPUS")[1]), collected_node_ids=["tests/control_api/test_phase3b_backfill.py::test_real_backfill_plan_has_only_approved_evidence"], preflight_state="ABSENT", outcome="DEFERRED")
@@ -290,7 +291,7 @@ def test_aggregate_rejects_duplicate_missing_and_unlisted_receipts(
         topology.aggregate_receipts(
             paths[:-1] + [paths[0]], rows=rows, foundation_run_id=run,
             foundation_head_sha=head, foundation_context={},
-            closure_proof_path=tmp_path / "closure-proof.json",
+            closure_proof_path=tmp_path / "closure-proof.json", sealed_custody={},
         )
     altered = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="native-capabilities", capability_or_authority_code="NATIVE-USERNS-ROOT-PROVISION", expected_node_ids=["tests/not-inventory.py::test_hidden"], collected_node_ids=[], preflight_state="UNAVAILABLE", outcome="DEFERRED")
     with pytest.raises(topology.TopologyError, match="mapping"):

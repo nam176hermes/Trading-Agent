@@ -1490,6 +1490,7 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
             "reason": "", "phase": "call",
         } for node in observed_closure],
     }), encoding="utf-8")
+    closure_governance.chmod(0o600)
     closure_proof: dict[str, object] = {
         "schema_version": topology.PORTABLE_CLOSURE_PROOF_SCHEMA,
         "foundation_run_id": run_id,
@@ -1515,9 +1516,11 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
     closure_proof["closure_proof_sha256"] = topology._closure_proof_payload_sha256(
         closure_proof,
     )
-    (topology_root / "portable-defect-closure-proof.json").write_bytes(
+    closure_proof_path = topology_root / "portable-defect-closure-proof.json"
+    closure_proof_path.write_bytes(
         topology.canonical_json_bytes(closure_proof),
     )
+    closure_proof_path.chmod(0o600)
     for code in topology.CODE_CLASSIFICATION:
         lane, expected = topology._expected_rows(rows, code)
         state, outcome = {

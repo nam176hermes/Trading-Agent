@@ -116,6 +116,55 @@ def test_closure_rejects_a_count_preserving_former_code_swap() -> None:
         topology.parse_portable_defect_closure(_closure_bytes(fields, rows), head_sha=head)
 
 
+@pytest.mark.parametrize("line_ending", ("\r\n", "quoted"))
+def test_closure_rejects_nonliteral_tsv_encodings(line_ending: str) -> None:
+    raw = CLOSURE.read_bytes()
+    changed = raw.replace(b"\n", b"\r\n") if line_ending == "\r\n" else raw.replace(
+        b"test_node_id", b'"test_node_id"', 1,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    with pytest.raises(topology.TopologyError, match="nonliteral|noncanonical"):
+        topology.parse_portable_defect_closure(changed, head_sha=head)
+
+
+def _mutate_fix_commit(rows: list[dict[str, str]], commit: str) -> None:
+    rows[0]["fix_commit"] = commit
+    row = rows[0]
+    changed = topology.ClosureRow(
+        row["test_node_id"], row["source_file"], row["former_capability_code"],
+        row["fix_commit"], row["proof_command"], row["proof_result_digest"],
+        row["closed_at_foundation_date"],
+    )
+    rows[0]["proof_result_digest"] = topology.closed_node_proof_digest(changed)
+
+
+def test_closure_rejects_an_existing_nonancestor_commit() -> None:
+    fields, rows = _closure_document()
+    nonancestor = subprocess.run(
+        ["git", "rev-list", "--all", "--not", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()[0]
+    _mutate_fix_commit(rows, nonancestor)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    with pytest.raises(topology.TopologyError, match="nonancestor"):
+        topology.parse_portable_defect_closure(_closure_bytes(fields, rows), head_sha=head)
+
+
+def test_closure_rejects_ancestor_commit_that_does_not_touch_declared_source() -> None:
+    fields, rows = _closure_document()
+    commit = "62e11f2180331f865f80b5d73a3cc961b28a95b3"
+    _mutate_fix_commit(rows, commit)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    with pytest.raises(topology.TopologyError, match="does not touch"):
+        topology.parse_portable_defect_closure(_closure_bytes(fields, rows), head_sha=head)
+
+
 def test_governance_state_rejects_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
     active = topology.load_inventory(INVENTORY)
     head = subprocess.run(
@@ -271,6 +320,7 @@ def test_closure_proof_rejects_failure_stale_artifact_and_tampering(
             exact_runner=_passing_exact,
         )
         document = json.loads(proof.read_text(encoding="utf-8"))
+        sealed_custody = topology._validate_custody_policy(document["custody_policy"])
         document["closure_node_ids"] = document["closure_node_ids"][:-1]
         proof.write_bytes(topology.canonical_json_bytes(document))
         with pytest.raises(topology.TopologyError, match="binding drift"):
@@ -279,4 +329,163 @@ def test_closure_proof_rejects_failure_stale_artifact_and_tampering(
                 foundation_context=topology.load_foundation_context(
                     context, run_id=run_id, head_sha=head,
                 ),
+                sealed_custody=sealed_custody,
+            )
+
+
+def _rehash_proof(proof: Path, governance: Path, mutate: object) -> None:
+    proof_document = json.loads(proof.read_text(encoding="utf-8"))
+    governance_document = json.loads(governance.read_text(encoding="utf-8"))
+    mutate(proof_document, governance_document)  # type: ignore[operator]
+    governance.write_bytes(topology.canonical_json_bytes(governance_document))
+    proof_document["governance_report_sha256"] = topology.hashlib.sha256(
+        governance.read_bytes(),
+    ).hexdigest()
+    proof_document["closure_proof_sha256"] = topology._closure_proof_payload_sha256(
+        proof_document,
+    )
+    proof.write_bytes(topology.canonical_json_bytes(proof_document))
+
+
+def test_aggregate_rejects_proof_custody_forged_away_from_sealed_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head, context_path = _sealed_empty_remainder(monkeypatch, evidence, raw)
+        proof = topology.execute_portable_defect_closure(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+            head_sha=head, foundation_context_path=context_path,
+            exact_runner=_passing_exact,
+        )
+        governance = proof.parent / "portable-defect-closure.governance.json"
+        baseline = topology.load_portable_root_baseline(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        sealed_custody = topology._validate_custody_policy(baseline["collector_policy"])
+
+        def forge_custody(proof_document: dict[str, object], governance_document: dict[str, object]) -> None:
+            forged = dict(sealed_custody)
+            forged["native_custody_extension_identity"] = "9:9:9:600:9"
+            proof_document["custody_policy"] = forged
+            proof_document["custody_policy_sha256"] = topology._sha256(forged)
+            governance_document["custody_policy"] = forged
+
+        _rehash_proof(proof, governance, forge_custody)
+        rows = topology.load_inventory(INVENTORY)
+        context = topology.load_foundation_context(context_path, run_id=run_id, head_sha=head)
+        receipt_paths = [proof.parent / f"{code}.json" for code in sorted(topology.CODE_CLASSIFICATION)]
+        with pytest.raises(topology.TopologyError, match="closure proof"):
+            topology.aggregate_receipts(
+                receipt_paths, rows=rows, foundation_run_id=run_id,
+                foundation_head_sha=head, foundation_context=context,
+                closure_proof_path=proof,
+            )
+        with pytest.raises(topology.TopologyError, match="sealed custody"):
+            topology.aggregate_receipts(
+                receipt_paths, rows=rows, foundation_run_id=run_id,
+                foundation_head_sha=head, foundation_context=context,
+                closure_proof_path=proof, sealed_custody=sealed_custody,
+            )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    (
+        "proof-symlink", "governance-symlink", "proof-mode", "governance-mode",
+        "owner", "replacement",
+    ),
+)
+def test_closure_artifact_reader_rejects_unsafe_identity(
+    monkeypatch: pytest.MonkeyPatch, attack: str,
+) -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head, context_path = _sealed_empty_remainder(monkeypatch, evidence, raw)
+        proof = topology.execute_portable_defect_closure(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+            head_sha=head, foundation_context_path=context_path,
+            exact_runner=_passing_exact,
+        )
+        governance = proof.parent / "portable-defect-closure.governance.json"
+        context = topology.load_foundation_context(context_path, run_id=run_id, head_sha=head)
+        baseline = topology.load_portable_root_baseline(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        custody = topology._validate_custody_policy(baseline["collector_policy"])
+        if attack == "proof-symlink":
+            saved = proof.with_name("saved-proof.json")
+            proof.rename(saved)
+            proof.symlink_to(saved.name)
+        elif attack == "governance-symlink":
+            saved = governance.with_name("saved-governance.json")
+            governance.rename(saved)
+            governance.symlink_to(saved.name)
+        elif attack == "proof-mode":
+            proof.chmod(0o640)
+        elif attack == "governance-mode":
+            governance.chmod(0o640)
+        elif attack == "owner":
+            monkeypatch.setattr(topology.os, "geteuid", lambda: proof.stat().st_uid + 1)
+        else:
+            replacement = governance.with_name("replacement-governance.json")
+            replacement.write_bytes(governance.read_bytes())
+            replacement.chmod(0o600)
+            real_reader = topology._read_descriptor_bytes
+            calls = 0
+
+            def swap_reader(descriptor: int) -> bytes:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    os.replace(replacement, governance)
+                return real_reader(descriptor)
+
+            monkeypatch.setattr(topology, "_read_descriptor_bytes", swap_reader)
+        with pytest.raises(topology.TopologyError, match="private regular|identity changed"):
+            topology.validate_portable_closure_proof(
+                proof, foundation_run_id=run_id, foundation_head_sha=head,
+                foundation_context=context, sealed_custody=custody,
+            )
+
+
+def test_closure_proof_recomputes_each_digest_from_actual_governance_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head, context_path = _sealed_empty_remainder(monkeypatch, evidence, raw)
+        proof = topology.execute_portable_defect_closure(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+            head_sha=head, foundation_context_path=context_path,
+            exact_runner=_passing_exact,
+        )
+        governance = proof.parent / "portable-defect-closure.governance.json"
+        baseline = topology.load_portable_root_baseline(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        custody = topology._validate_custody_policy(baseline["collector_policy"])
+
+        def alter_record(
+            proof_document: dict[str, object], governance_document: dict[str, object],
+        ) -> None:
+            record = governance_document["tests"][0]  # type: ignore[index]
+            record["phase"] = "setup"
+            first_row = sorted(
+                topology.load_portable_defect_closure(head_sha=head),
+                key=lambda row: row.node_id,
+            )[0]
+            proof_document["proof_result_digests"][0] = (  # type: ignore[index]
+                topology.closed_node_proof_digest(first_row, record)
+            )
+
+        _rehash_proof(proof, governance, alter_record)
+        context = topology.load_foundation_context(context_path, run_id=run_id, head_sha=head)
+        with pytest.raises(topology.TopologyError, match="observed proof digest"):
+            topology.validate_portable_closure_proof(
+                proof, foundation_run_id=run_id, foundation_head_sha=head,
+                foundation_context=context, sealed_custody=custody,
             )

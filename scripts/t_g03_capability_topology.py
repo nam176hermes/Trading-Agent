@@ -22,11 +22,11 @@ from typing import Any
 
 
 LOCKED_INVENTORY_SHA256 = "86c157c8394f16e381d1e53a6884b6c3d93af5520ea9bdd6b3abd9efbc588a93"
-LOCKED_CLOSURE_SHA256 = "f2171ed1362cc2a681021ac0cfe1ae3a098e9a27034a0cbefc33bc87808a0e8e"
+LOCKED_CLOSURE_SHA256 = "4feaed5b9e73f60ab192938a8b8b51b873f61e139a66b4926e7429c80144154a"
 LOCKED_GOVERNED_NODE_IDS_SHA256 = "aedeffcf5b9ad3d7704b3f6a15822f9862d9b84b279cc8a66b193b331262f7f0"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
-PORTABLE_CLOSURE_PROOF_SCHEMA = "t-g03a-portable-closure-proof/v1"
-CLOSED_NODE_PROOF_SCHEMA = "t-g03a-closed-node-proof/v1"
+PORTABLE_CLOSURE_PROOF_SCHEMA = "t-g03a-portable-closure-proof/v2"
+CLOSED_NODE_PROOF_SCHEMA = "t-g03a-closed-node-proof/v2"
 FOUNDATION_CONTEXT_SCHEMA = "t-g03a-foundation-context/v1"
 RESERVATION_SCHEMA = "t-g03a-topology-reservation/v2"
 BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v4"
@@ -139,6 +139,64 @@ def _prepare_private_evidence_directory(path: Path) -> None:
     current = path.lstat()
     if current.st_uid != os.geteuid() or stat.S_IMODE(current.st_mode) != 0o700:
         raise TopologyError("evidence directory is not private")
+
+
+def _artifact_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+        info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
+def _read_descriptor_bytes(descriptor: int) -> bytes:
+    """Read a descriptor without reopening its pathname."""
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _read_private_regular_file(path: Path, *, label: str) -> bytes:
+    """Read one publisher-owned 0600 artifact with no-follow identity checks."""
+    try:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+        ):
+            raise TopologyError(f"{label} is not a private regular file")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+    except TopologyError:
+        raise
+    except OSError as exc:
+        raise TopologyError(f"{label} is not a private regular file") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if _artifact_identity(opened) != _artifact_identity(before):
+            raise TopologyError(f"{label} identity changed before read")
+        raw = _read_descriptor_bytes(descriptor)
+        after_descriptor = os.fstat(descriptor)
+        after_path = path.lstat()
+        if (
+            _artifact_identity(after_descriptor) != _artifact_identity(opened)
+            or _artifact_identity(after_path) != _artifact_identity(opened)
+        ):
+            raise TopologyError(f"{label} identity changed during read")
+        return raw
+    except TopologyError:
+        raise
+    except OSError as exc:
+        raise TopologyError(f"{label} identity changed during read") from exc
+    finally:
+        os.close(descriptor)
 
 
 INVENTORY_COLUMNS = (
@@ -289,7 +347,19 @@ def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
     return tuple(rows)
 
 
-def _closed_node_proof_payload(row: ClosureRow) -> dict[str, str]:
+def _canonical_passing_observation(node_id: str) -> dict[str, object]:
+    return {
+        "test_node_id": node_id,
+        "component": "root",
+        "outcome": "passed",
+        "reason": "",
+        "phase": "call",
+    }
+
+
+def _closed_node_proof_payload(
+    row: ClosureRow, observation: dict[str, object] | None = None,
+) -> dict[str, object]:
     """Canonical row proof reproduced only after its exact pytest node passes."""
     return {
         "schema_version": CLOSED_NODE_PROOF_SCHEMA,
@@ -298,12 +368,17 @@ def _closed_node_proof_payload(row: ClosureRow) -> dict[str, str]:
         "former_capability_code": row.former_code,
         "fix_commit": row.fix_commit,
         "proof_command": row.proof_command,
-        "outcome": "passed",
+        "observed_governance_record": (
+            _canonical_passing_observation(row.node_id)
+            if observation is None else observation
+        ),
     }
 
 
-def closed_node_proof_digest(row: ClosureRow) -> str:
-    return _sha256(_closed_node_proof_payload(row))
+def closed_node_proof_digest(
+    row: ClosureRow, observation: dict[str, object] | None = None,
+) -> str:
+    return _sha256(_closed_node_proof_payload(row, observation))
 
 
 def _commit_touches_source(commit: str, source_file: str, *, head_sha: str) -> bool:
@@ -336,11 +411,19 @@ def parse_portable_defect_closure(raw: bytes, *, head_sha: str) -> tuple[Closure
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise TopologyError("closure ledger is not UTF-8") from exc
-    if text.startswith("\ufeff") or not text.endswith("\n") or "\n\n" in text:
-        raise TopologyError("closure ledger has noncanonical rows")
+    if (
+        text.startswith("\ufeff")
+        or not text.endswith("\n")
+        or "\n\n" in text
+        or "\r" in text
+        or '"' in text
+    ):
+        raise TopologyError("closure ledger has nonliteral or noncanonical rows")
     reader = csv.DictReader(text.splitlines(), delimiter="\t")
     if tuple(reader.fieldnames or ()) != CLOSURE_COLUMNS:
         raise TopologyError("closure ledger schema drift")
+    if any(line.count("\t") != len(CLOSURE_COLUMNS) - 1 for line in text.splitlines()):
+        raise TopologyError("closure ledger has nonliteral or noncanonical rows")
     rows: list[ClosureRow] = []
     seen: set[str] = set()
     commit_bindings: set[tuple[str, str]] = set()
@@ -1283,12 +1366,12 @@ def _load_portable_root_remainder(
     return document, remainder
 
 
-def _validate_exact_governance_record(
-    path: Path, expected: tuple[str, ...], custody_policy: dict[str, str],
-) -> tuple[str, ...]:
+def _validate_exact_governance_bytes(
+    raw: bytes, expected: tuple[str, ...], custody_policy: dict[str, str],
+) -> tuple[dict[str, object], ...]:
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TopologyError("exact governance record is malformed") from exc
     if (
         not isinstance(document, dict)
@@ -1299,21 +1382,55 @@ def _validate_exact_governance_record(
     ):
         raise TopologyError("exact governance record is not a passing root report")
     records = document["tests"]
-    observed: list[str] = []
+    observed: dict[str, dict[str, object]] = {}
     for item in records:
         if (
             not isinstance(item, dict)
+            or set(item) != {"test_node_id", "component", "outcome", "reason", "phase"}
             or item.get("component") != "root"
             or item.get("outcome") != "passed"
-            or item.get("wasxfail")
             or not isinstance(item.get("test_node_id"), str)
+            or not isinstance(item.get("reason"), str)
+            or not isinstance(item.get("phase"), str)
         ):
             raise TopologyError("exact governance record has a non-passing outcome")
-        observed.append(str(item["test_node_id"]))
+        node_id = str(item["test_node_id"])
+        if node_id in observed:
+            raise TopologyError("exact governance record has duplicate nodes")
+        observed[node_id] = {
+            "test_node_id": node_id,
+            "component": item["component"],
+            "outcome": item["outcome"],
+            "reason": item["reason"],
+            "phase": item["phase"],
+        }
     result = tuple(sorted(observed))
     if result != expected or len(records) != len(expected):
         raise TopologyError("exact governance record does not match selected nodes")
-    return result
+    return tuple(observed[node] for node in expected)
+
+
+def _validate_exact_governance_record(
+    path: Path, expected: tuple[str, ...], custody_policy: dict[str, str],
+) -> tuple[str, ...]:
+    try:
+        records = _validate_exact_governance_bytes(path.read_bytes(), expected, custody_policy)
+    except OSError as exc:
+        raise TopologyError("exact governance record is malformed") from exc
+    return tuple(str(item["test_node_id"]) for item in records)
+
+
+def _observed_closure_digests(
+    closure: tuple[ClosureRow, ...], governance_raw: bytes, custody_policy: dict[str, str],
+) -> list[str]:
+    ordered = tuple(sorted(closure, key=lambda row: row.node_id))
+    records = _validate_exact_governance_bytes(
+        governance_raw, tuple(row.node_id for row in ordered), custody_policy,
+    )
+    return [
+        closed_node_proof_digest(row, record)
+        for row, record in zip(ordered, records, strict=True)
+    ]
 
 
 def _closure_proof_payload_sha256(document: dict[str, object]) -> str:
@@ -1324,15 +1441,13 @@ def _closure_proof_payload_sha256(document: dict[str, object]) -> str:
 
 def validate_portable_closure_proof(
     path: Path, *, foundation_run_id: str, foundation_head_sha: str,
-    foundation_context: dict[str, object], closure_path: Path = CLOSURE_PATH,
+    foundation_context: dict[str, object], sealed_custody: dict[str, str],
+    closure_path: Path = CLOSURE_PATH,
 ) -> dict[str, object]:
     """Validate the one exact-execution proof that replaces all closed SRC receipts."""
     _reject_closed_source_artifacts(path.parent)
-    try:
-        raw = path.read_bytes()
-        document = _strict_json(raw, label="portable closure proof")
-    except OSError as exc:
-        raise TopologyError("portable closure proof is missing") from exc
+    raw = _read_private_regular_file(path, label="portable closure proof")
+    document = _strict_json(raw, label="portable closure proof")
     if (
         not isinstance(document, dict)
         or set(document) != CLOSURE_PROOF_KEYS
@@ -1342,12 +1457,23 @@ def validate_portable_closure_proof(
     closure = load_portable_defect_closure(closure_path, head_sha=foundation_head_sha)
     _validate_closure_date(closure, foundation_context)
     nodes = tuple(sorted(row.node_id for row in closure))
-    digests = [row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)]
+    ledger_digests = [
+        row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)
+    ]
     custody = document["custody_policy"]
     if not isinstance(custody, dict):
         raise TopologyError("portable closure proof custody is malformed")
-    _validate_custody_policy(custody)
+    custody = _validate_custody_policy(custody)
+    expected_custody = _validate_custody_policy(sealed_custody)
+    if custody != expected_custody:
+        raise TopologyError("portable closure proof does not match sealed custody")
     governance_path = path.parent / "portable-defect-closure.governance.json"
+    governance_raw = _read_private_regular_file(
+        governance_path, label="portable closure governance report",
+    )
+    observed_digests = _observed_closure_digests(closure, governance_raw, custody)
+    if observed_digests != ledger_digests or document["proof_result_digests"] != observed_digests:
+        raise TopologyError("portable closure observed proof digest drift")
     if (
         document["schema_version"] != PORTABLE_CLOSURE_PROOF_SCHEMA
         or document["foundation_run_id"] != foundation_run_id
@@ -1359,14 +1485,12 @@ def validate_portable_closure_proof(
         or tuple(document["closure_node_ids"]) != nodes
         or document["closure_node_ids_sha256"] != _ids_sha256(nodes)
         or document["proof_command"] != CLOSURE_PROOF_COMMAND
-        or document["proof_result_digests"] != digests
         or document["custody_policy_sha256"] != _sha256(custody)
-        or document["governance_report_sha256"] != hashlib.sha256(governance_path.read_bytes()).hexdigest()
+        or document["governance_report_sha256"] != hashlib.sha256(governance_raw).hexdigest()
         or document["outcome"] != "PASS"
         or document["closure_proof_sha256"] != _closure_proof_payload_sha256(document)
     ):
         raise TopologyError("portable closure proof binding drift")
-    _validate_exact_governance_record(governance_path, nodes, custody)
     return document
 
 
@@ -1401,6 +1525,15 @@ def execute_portable_defect_closure(
     if selected != nodes:
         raise TopologyError("portable closure proof did not execute all closed nodes")
     custody = _validate_custody_policy(baseline["collector_policy"])
+    governance_raw = _read_private_regular_file(
+        report, label="portable closure governance report",
+    )
+    observed_digests = _observed_closure_digests(closure, governance_raw, custody)
+    ledger_digests = [
+        row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)
+    ]
+    if observed_digests != ledger_digests:
+        raise TopologyError("portable closure observed proof digest drift")
     proof: dict[str, object] = {
         "schema_version": PORTABLE_CLOSURE_PROOF_SCHEMA,
         "foundation_run_id": run_id,
@@ -1412,12 +1545,10 @@ def execute_portable_defect_closure(
         "closure_node_ids": list(nodes),
         "closure_node_ids_sha256": _ids_sha256(nodes),
         "proof_command": CLOSURE_PROOF_COMMAND,
-        "proof_result_digests": [
-            row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)
-        ],
+        "proof_result_digests": observed_digests,
         "custody_policy": custody,
         "custody_policy_sha256": _sha256(custody),
-        "governance_report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
+        "governance_report_sha256": hashlib.sha256(governance_raw).hexdigest(),
         "outcome": "PASS",
         "closure_proof_sha256": "",
     }
@@ -1426,7 +1557,7 @@ def execute_portable_defect_closure(
     _publish_no_clobber(destination, canonical_json_bytes(proof))
     if validate_portable_closure_proof(
         destination, foundation_run_id=run_id, foundation_head_sha=head_sha,
-        foundation_context=context,
+        foundation_context=context, sealed_custody=custody,
     ) != proof:
         raise TopologyError("portable closure proof post-write reread failed")
     return destination
@@ -2482,17 +2613,18 @@ def validate_receipt(
 def aggregate_receipts(
     paths: list[Path], *, rows: tuple[InventoryRow, ...], foundation_run_id: str,
     foundation_head_sha: str, foundation_context: dict[str, object] | None = None,
-    closure_proof_path: Path | None = None,
+    closure_proof_path: Path | None = None, sealed_custody: dict[str, str] | None = None,
 ) -> dict[str, object]:
     if not paths or any(path.parent != paths[0].parent for path in paths):
         raise TopologyError("receipt aggregation has an invalid topology root")
     _reject_unsafe_raw_reason_nonacceptance_presence(paths[0].parent)
     _reject_closed_source_artifacts(paths[0].parent)
-    if foundation_context is None or closure_proof_path is None:
+    if foundation_context is None or closure_proof_path is None or sealed_custody is None:
         raise TopologyError("portable closure proof is required for aggregation")
     validate_portable_closure_proof(
         closure_proof_path, foundation_run_id=foundation_run_id,
         foundation_head_sha=foundation_head_sha, foundation_context=foundation_context,
+        sealed_custody=sealed_custody,
     )
     expected_codes = set(CODE_CLASSIFICATION)
     try:
@@ -2560,10 +2692,11 @@ def reconcile_portable_root_accounting(
     disclosure = aggregate_receipts(
         receipt_paths, rows=rows, foundation_run_id=run_id, foundation_head_sha=head_sha,
         foundation_context=context, closure_proof_path=closure_proof_path,
+        sealed_custody=sealed_custody,
     )
     proof = validate_portable_closure_proof(
         closure_proof_path, foundation_run_id=run_id, foundation_head_sha=head_sha,
-        foundation_context=context,
+        foundation_context=context, sealed_custody=sealed_custody,
     )
     accounted: list[str] = [*executed_remainder, *proof["closure_node_ids"]]
     for path in receipt_paths:
