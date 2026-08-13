@@ -2441,3 +2441,20 @@ source. P0-04 must run the exact 27 locked nodes and review the security and
 test-fidelity invariants, but it must not duplicate the existing source change
 or update unresolved/closure TSVs. P0-06 alone owns the atomic 32-row closure
 schema and inventory mutation.
+
+### Evidence-corrected P0-05
+
+P0-05 qualifies the existing identity-fixture repair instead of repeating
+source work. The locked inventory still lists three
+`SRC-SEMANTIC-FIXTURE-IDENTITY` and two
+`SRC-PHASE4B-FAKEROOT-IDENTITY` nodes, while candidate commit
+`1b1b47a4c51e106e3f2aab96613a80886422ccba`
+(`test: repair portable Phase 1 fixtures`) already updates the semantic and
+fakeroot fixtures for current-process signed identity and distinct simulated
+file ownership.
+
+The unresolved inventory is historical with respect to candidate source.
+P0-05 must run the exact five locked nodes and review signed-runtime versus
+simulated-ownership behavior, adding source or test changes only for a
+demonstrated RED. It must not update unresolved/closure TSVs. P0-06 alone owns
+the atomic 32-row closure schema and inventory mutation.
