@@ -1374,14 +1374,21 @@ def parse_policy_validation_nonacceptance(raw: bytes) -> dict[str, object]:
         raise TopologyError("policy validation nonacceptance has invalid schema keys")
     if canonical_json_bytes(document) != raw or document["schema_version"] != POLICY_NONACCEPTANCE_SCHEMA or document["diagnostic_only"] is not True:
         raise TopologyError("policy validation nonacceptance is invalid")
-    if document["policy_validation_stage"] not in POLICY_VALIDATION_STAGES or document["policy_validation_class"] not in POLICY_STAGE_CLASSES[document["policy_validation_stage"]]:
+    stage = document["policy_validation_stage"]
+    public_class = document["policy_validation_class"]
+    custody_status = document["custody_status"]
+    source_status = document["policy_source_hash_status"]
+    source_digest = document["policy_source_sha256"]
+    if not all(isinstance(value, str) for value in (stage, public_class, custody_status, source_status, source_digest)):
+        raise TopologyError("policy validation nonacceptance typed fields are invalid")
+    if stage not in POLICY_VALIDATION_STAGES or public_class not in POLICY_STAGE_CLASSES[stage]:
         raise TopologyError("policy validation nonacceptance stage/class is invalid")
-    if document["custody_status"] not in {"PRE_EXECUTION_VALIDATED", "POST_CUSTODY_POSTCHECK_PASS"}:
+    if custody_status not in {"PRE_EXECUTION_VALIDATED", "POST_CUSTODY_POSTCHECK_PASS"}:
         raise TopologyError("policy validation nonacceptance custody status is invalid")
-    if document["policy_validation_stage"] == "POST_CUSTODY_REREAD_COMPARISON":
-        if document["custody_status"] != "POST_CUSTODY_POSTCHECK_PASS":
+    if stage == "POST_CUSTODY_REREAD_COMPARISON":
+        if custody_status != "POST_CUSTODY_POSTCHECK_PASS":
             raise TopologyError("policy validation nonacceptance custody binding is invalid")
-    elif document["custody_status"] != "PRE_EXECUTION_VALIDATED":
+    elif custody_status != "PRE_EXECUTION_VALIDATED":
         raise TopologyError("policy validation nonacceptance custody binding is invalid")
     for field in ("foundation_run_id", "foundation_head_sha", "foundation_validation_date"):
         if not isinstance(document[field], str):
@@ -1396,11 +1403,11 @@ def parse_policy_validation_nonacceptance(raw: bytes) -> dict[str, object]:
     ):
         if not isinstance(document[field], str) or not HEX64.fullmatch(document[field]):
             raise TopologyError("policy validation nonacceptance hash is invalid")
-    status = document["policy_source_hash_status"]
-    digest = document["policy_source_sha256"]
-    if document["policy_validation_stage"] == "SOURCE_ACQUISITION_HEAD_BINDING":
+    status = source_status
+    digest = source_digest
+    if stage == "SOURCE_ACQUISITION_HEAD_BINDING":
         source_valid = status == "UNAVAILABLE" and digest == ""
-    elif document["policy_validation_stage"] == "POST_CUSTODY_REREAD_COMPARISON":
+    elif stage == "POST_CUSTODY_REREAD_COMPARISON":
         source_valid = status == "PRE_EXECUTION_SNAPSHOT" and isinstance(digest, str) and HEX64.fullmatch(digest)
     else:
         source_valid = status == "CURRENT_STAGE_BYTES" and isinstance(digest, str) and HEX64.fullmatch(digest)

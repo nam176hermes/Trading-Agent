@@ -394,6 +394,28 @@ def test_policy_nonacceptance_parser_and_receipt_writer_close_the_source_and_acc
             topology.publish_receipt(receipt, evidence)
 
 
+@pytest.mark.parametrize("field,value", [
+    ("policy_validation_stage", []), ("policy_validation_stage", {}),
+    ("policy_validation_class", []), ("custody_status", {}),
+    ("policy_source_hash_status", []), ("policy_source_sha256", {}),
+])
+def test_policy_nonacceptance_parser_rejects_untyped_closed_domain_values(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object,
+) -> None:
+    """Break caught: a canonical hostile artifact leaks a Python container exception."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw, with_context=True)
+        monkeypatch.setattr(topology, "_allowlist_bytes_at_head", lambda _head: (_ for _ in ()).throw(RuntimeError("x")))
+        with pytest.raises(topology.TopologyError):
+            topology.execute_portable_root_remainder(inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=evidence / "capability-topology/foundation-context.json")
+        document = topology.parse_policy_validation_nonacceptance((evidence / "capability-topology/policy-validation-nonacceptance.json").read_bytes())
+        document[field] = value
+        document["nonacceptance_sha256"] = topology._sha256({key: item for key, item in document.items() if key != "nonacceptance_sha256"})
+        with pytest.raises(topology.TopologyError):
+            topology.parse_policy_validation_nonacceptance(topology.canonical_json_bytes(document))
+
+
 def test_policy_nonacceptance_reader_rebinds_present_source_before_other_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
