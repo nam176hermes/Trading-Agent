@@ -263,18 +263,115 @@ remainder_node_list_sha256
 custody_policy_sha256
 custody_postcheck_status
 pytest_exit_status
+policy_snapshot
+policy_snapshot_sha256
 observations
 diagnostic_sha256
 ```
 
 `diagnostic_only` is the literal JSON boolean `true` and
-`custody_postcheck_status` is the literal string `PASS`; every other scalar is
-a string. Run IDs and nonzero pytest exit status are canonical decimal strings
-without leading zeros. The head is the exact lowercase 40-character Git SHA;
-the listed top-level `*_sha256` fields, including `diagnostic_sha256`, are
-lowercase 64-character SHA-256 hex strings. No timestamp, filesystem path,
-command line, environment value, raw pytest output, secret, corpus data, or
-authority material is permitted.
+`custody_postcheck_status` is the literal string `PASS`. Apart from
+`diagnostic_only` and the literal `allowed_in_ci` boolean within each snapshot
+entry, booleans are forbidden; all other scalars are strings. Run IDs and
+nonzero pytest exit status are canonical decimal strings without leading zeros.
+The head is the exact lowercase 40-character Git SHA; the listed top-level
+`*_sha256` fields, including `diagnostic_sha256`, are lowercase 64-character
+SHA-256 hex strings. No timestamp, filesystem path, command line, environment
+value, raw pytest output, secret, corpus data, or authority material is
+permitted.
+
+`policy_snapshot` is the complete, canonical, privacy-safe projection of the
+validated existing root skip policy used for this execution. It is constructed
+before the test command from the exact strict-UTF-8 bytes of the tracked
+`tests/skip-allowlist.yaml` at the checked-out Foundation head, retained only
+in private memory until diagnostic publication, and re-read unchanged after
+custody postcheck. It has exactly these keys:
+
+```text
+snapshot_schema_version
+allowlist_schema_version
+allowlist_source_sha256
+policy_entry_schema_version
+entries
+```
+
+`snapshot_schema_version` is exactly
+`"t-g03a-portable-root-policy-snapshot/v1"`; `allowlist_schema_version` is
+the canonical decimal string `"1"`; and `policy_entry_schema_version` is
+exactly `"t-g03a-skip-policy-entry/v1"`.
+`allowlist_source_sha256` is SHA-256 of the exact strict-UTF-8 source bytes,
+without a BOM, before parsing. The source document must first pass the current
+allowlist-v1 schema, owner/security derivation, approval, review-date,
+allowed-in-CI, and normalized-reason validation. Any source-byte drift, parse
+failure, duplicate `(component, test_node_id)`, invalid entry, or changed
+postcheck reread prevents diagnostic publication.
+
+The snapshot's `entries` are the complete validated existing `component=root`
+allowlist entries, not merely entries that match an observed node. They are
+sorted by the bytewise `(component, test_node_id)` tuple, duplicate-free, and
+each has exactly these keys:
+
+```text
+component
+test_node_id
+outcome
+allowed_in_ci
+reason_class
+normalized_reason_commitment_sha256
+policy_entry_sha256
+```
+
+`outcome` is the existing policy's `skipped` or `deselected` value;
+`allowed_in_ci` is its literal JSON boolean; and `reason_class` is exactly
+`POLICY_SKIP_REASON` for `skipped` or `POLICY_DESELECT_REASON` for
+`deselected`. No raw policy reason, owner, approval text, target, service,
+filesystem path, or other policy content is copied into the snapshot.
+
+For reproducible entry provenance, each `policy_entry_sha256` is SHA-256 of
+the canonical UTF-8 bytes of this complete policy-entry payload, with keys
+sorted as defined below:
+
+```text
+approval_record_type
+allowed_in_ci
+component
+outcome
+owner
+reason
+reason_category
+required_binary_or_service
+review_by
+security_critical
+target_phase
+test_node_id
+```
+
+The payload copies every validated source field exactly except that `reason`
+is first normalized by the fixed v1 reason normalizer: split the decoded
+Unicode scalar sequence on Unicode 15.1 `White_Space` runs, discard empty
+leading/trailing runs, and join the remaining runs with one ASCII `U+0020`
+space. The source validator must already require byte-for-byte equality with
+that result. There are no defaults, inferred fields, YAML formatting
+dependencies, or runtime-message substitutions. Every payload is serialized
+as strict UTF-8 without BOM/trailing newline, sorted Unicode-code-point keys,
+`ensure_ascii=false`, and separators `(',', ':')`. The raw payload is hashed
+but is never retained in the diagnostic. Its
+`normalized_reason_commitment_sha256` is SHA-256 of the same canonical-byte
+rule applied to an object whose complete key set is `schema_version` and
+`normalized_reason`, whose first value is exactly
+`"t-g03a-policy-reason-commitment/v1"` and whose second value is exactly the
+fixed-normalizer result.
+
+`policy_snapshot_sha256` is SHA-256 of the canonical bytes of the complete
+`policy_snapshot` object. A writer and reader must compute it independently;
+it is both a required diagnostic binding and the provenance root for every
+per-node policy link. This snapshot is a record of the policy that actually
+governed the failing execution, not a newly proposed policy and not an
+authority to approve an outcome. `allowlist_source_sha256`, every snapshot
+`normalized_reason_commitment_sha256`, and every `policy_entry_sha256` are
+lowercase 64-character SHA-256 hex strings; any other type, spelling, order,
+extra field, omitted root entry, or noncanonical snapshot byte sequence is
+invalid.
 
 `observations` is a non-empty array sorted by bytewise `test_node_id`; each
 entry has exactly these keys:
@@ -283,40 +380,76 @@ entry has exactly these keys:
 test_node_id
 component
 outcome
-redacted_reason_class
 phase
-governance_link_kind
+xfail_state
+reason_class
+reason_provenance
+normalized_reason_commitment_sha256
+policy_match_result
 existing_policy_entry_sha256
 ```
 
 It contains every selected generated remainder ID exactly once, no more and no
-less. `component` is the fixed root component. `outcome` is the final outcome
-for that node and distinguishes at least `passed`, `skipped`, `xfailed`,
-`xpassed`, `deselected`, `failed`, `error`, and `not_run`; `phase` identifies
-the final reporting phase. `redacted_reason_class` is produced by the existing
-safe governance normalizer and may contain only its normalized, path- and
-secret-free class, never a raw reason or traceback. A record with duplicate,
-missing, additional, unknown, uncollected, or malformed node/outcome/phase
-data is invalid rather than diagnostic evidence.
+less. `component` is the literal ASCII string `root`. The following table is
+the complete closed v1 domain; any outcome, phase, xfail representation,
+reason class, provenance, or combination not listed is rejected before a
+diagnostic can be created or read.
 
-Approval linkage is informational provenance only and must be derived solely
-from already validated existing policy data, never from this diagnostic or a
-new inferred allowlist entry. For a skip-like observation,
-`governance_link_kind` is exactly one of `NO_EXISTING_POLICY_KEY`,
-`EXISTING_POLICY_KEY_ONLY`, or `EXACT_EXISTING_POLICY_ENTRY`; the final form
-uses `existing_policy_entry_sha256` for the canonical existing policy entry
-only when its current component/node/outcome/reason/CI semantics match exactly.
-The other two forms carry an empty linkage hash. Non-skip-like outcomes use
-`NOT_APPLICABLE` and an empty linkage hash. A matching existing entry is not an
-accepted outcome: `skipped`, `deselected`, `xfailed`, `xpassed`, and every
-other non-pass state remain a failed remainder lane.
+| `outcome` | Permitted `phase` | Required `xfail_state` | Required `reason_class` | Required `reason_provenance` |
+| --- | --- | --- | --- | --- |
+| `passed` | `call` | `NOT_WAS_XFAIL` | `NONE` | `NONE` |
+| `skipped` | `setup`, `call`, or `teardown` | `NOT_WAS_XFAIL` | `PYTEST_SKIP_REASON` | `PYTEST_REPORT` |
+| `xfailed` | `setup`, `call`, or `teardown` | `WAS_XFAIL` | `PYTEST_XFAIL_MARKER` | `PYTEST_WASXFAIL` |
+| `xpassed` | `call` | `WAS_XFAIL` | `PYTEST_XPASS_MARKER` | `PYTEST_WASXFAIL` |
+| `deselected` | `collection` | `NOT_WAS_XFAIL` | `MARKER_DESELECT_REASON` | `PYTEST_DESELECT_HOOK` |
+| `failed` | `setup`, `call`, or `teardown` | `NOT_WAS_XFAIL` | `PYTEST_FAILURE_REASON` | `PYTEST_REPORT` |
+| `failed` | `collection` | `NOT_WAS_XFAIL` | `GOVERNANCE_COLLECTION_FAILURE` | `GOVERNANCE_COLLECTION_HOOK` |
+| `error` | `setup` or `teardown` | `NOT_WAS_XFAIL` | `PYTEST_ERROR_REASON` | `PYTEST_REPORT` |
+| `error` | `collection` | `NOT_WAS_XFAIL` | `PYTEST_COLLECTION_ERROR` | `PYTEST_COLLECTOR` |
+| `not_run` | `session` | `NOT_WAS_XFAIL` | `MISSING_FINAL_REPORT` | `GOVERNANCE_SESSION` |
+
+The writer derives that table entry solely from the raw pytest/governance
+event type and final outcome, never by classifying arbitrary message text.
+It normalizes the event reason by the same fixed v1 Unicode-15.1 whitespace
+rule and writes only the domain-separated
+`normalized_reason_commitment_sha256` defined for the snapshot. It writes the
+empty string for that field only for the `passed`/`NONE` row. Before hashing, a
+redaction gate rejects a normalized reason containing `/`, `\\`, a Unicode
+control code point, a substring matching the ASCII regex
+`(?i)[a-z][a-z0-9+.-]{1,31}://`, a whole-word match for `token`, `secret`,
+`password`, `authorization`, or `bearer` under ASCII case-folding, or a token
+matching `[A-Za-z0-9+/_=-]{20,}`. A rejected reason is a
+diagnostic-publication failure, not an `UNKNOWN` class, so diagnostic bytes
+contain no content paths or secrets beyond the test node IDs.
+
+`policy_match_result` also has a closed v1 domain. It is `NOT_APPLICABLE` with
+an empty `existing_policy_entry_sha256` for every outcome other than `skipped`
+or `deselected`. For a skip-like outcome, the writer looks up exactly one
+snapshot entry by `(component, test_node_id)` and applies this ordered rule:
+
+1. No entry: `NO_POLICY_ENTRY` and an empty existing-entry hash.
+2. Different outcome: `OUTCOME_MISMATCH` and that entry's
+   `policy_entry_sha256`.
+3. Same outcome but different normalized-reason commitment:
+   `REASON_MISMATCH` and that entry's `policy_entry_sha256`.
+4. Same outcome/reason but `allowed_in_ci=false`: `CI_DISALLOWED` and that
+   entry's `policy_entry_sha256`.
+5. Otherwise: `EXACT_POLICY_MATCH` and that entry's `policy_entry_sha256`.
+
+Thus every observation has an exact, mechanically reproducible policy result;
+there is no category, count, common-text, or newly inferred approval path.
+`existing_policy_entry_sha256` is either the lowercase 64-character hash
+required by the rule above or the empty string exactly where required. A
+matching snapshot entry remains informational provenance only: no non-pass
+outcome becomes an accepted remainder result, a `PASS` record, or a receipt.
 
 The exact diagnostic bytes are strict UTF-8 without a BOM or trailing newline,
 with every object key sorted by Unicode code point, `ensure_ascii=false`, and
 separators exactly `(',', ':')`. Strings must be valid UTF-8 and all IDs and
-enums are ASCII. JSON numbers, `null`, alternate escapes, duplicate keys,
-insignificant whitespace, or any byte sequence that does not reserialize to
-the same bytes are rejected. The payload is the same object with
+enums are ASCII. JSON booleans are permitted only in the two positions defined
+above; JSON numbers, `null`, alternate escapes, duplicate keys, insignificant
+whitespace, or any byte sequence that does not reserialize to the same bytes
+are rejected. The payload is the same object with
 `diagnostic_sha256` omitted; SHA-256 of those canonical UTF-8 payload bytes
 must equal `diagnostic_sha256`, and every diagnostic reader must verify that
 self-hash before using any observation.
@@ -336,22 +469,46 @@ cannot alter policy or emit a receipt.
 
 Before any allowlist or other skip-policy change after such a failure, the next
 exact hosted or reproducible topology run must first verify and consume this
-diagnostic to identify the exact affected node IDs, then compare them against
-the existing policy in review. Missing or invalid diagnostic evidence blocks
-that policy-change path. This adds no broad skip/xfail policy and cannot turn
-the prior run's 281 skips, or any future skip, into an accepted result.
+diagnostic. Its failure-review reader must: verify the diagnostic self-hash and
+all run/head/inventory/baseline/remainder/custody bindings; obtain the exact
+historical allowlist source at the diagnostic's bound Foundation head; require
+its raw-byte hash, parsed validation result, and reconstructed canonical root
+snapshot to equal the retained snapshot; and recompute every observation's
+reason commitment, entry hash, and `policy_match_result`. It then reports each
+verified node's ID, outcome, phase, xfail state, closed reason
+class/provenance, reason commitment, existing-entry hash, and exact match
+result—never a count-only or category-only conclusion. A missing, unavailable,
+changed, or inconsistent source/snapshot/link blocks review and the
+policy-change path.
+
+For any proposed new approval, the reader must first validate the proposed
+entry with the same allowlist-v1 rules and then prove its component, node ID,
+outcome, and normalized-reason commitment exactly equal the retained
+observation before that proposal reaches review. A same-node/same-outcome
+entry with a changed reason, a matching reason class, an equal count, or common
+text is insufficient. The reader is diagnostic-only: it cannot write the
+allowlist, alter authority, emit a receipt, or turn the prior run's 281 skips,
+or any future skip, into an accepted result. This adds no broad skip/xfail
+policy.
 
 T-G03D tests must prove the record is absent before custody postcheck and is
 published only for a fully validated, non-pass exact execution; a custody,
 baseline, list, raw-report, or no-clobber failure must publish no record.
 They must prove canonical bytes/self-hash and all current run/head/inventory/
-baseline/remainder/custody bindings, one complete observation per selected ID,
-redaction, and every final outcome class. Hostile tests must reject a tampered,
-stale, missing, duplicate, foreign, or malformed diagnostic and prove that it
-cannot satisfy receipt aggregation, root reconciliation, a `PASS` governance
-record, or deferred acceptance. A policy-review sequencing test must prove the
-next exact run exposes verified diagnostic node IDs before any allowlist/policy
-input can be changed.
+baseline/remainder/custody bindings, the exact canonical policy snapshot and
+source hash, one complete observation per selected ID, redaction, and every
+closed outcome/phase/xfail/reason/provenance/match-result combination. Hostile
+tests must reject policy-document digest drift, policy-entry canonicalization
+or hash drift, a same-node/same-outcome changed reason, and each
+`NO_POLICY_ENTRY`, `OUTCOME_MISMATCH`, `REASON_MISMATCH`, `CI_DISALLOWED`, and
+`EXACT_POLICY_MATCH` transition. They must reject an unsafe or unrecognized
+reason class, unknown outcome/phase/xfail state/provenance/match result, a
+reader-created approval candidate without the verified per-node commitment,
+and a tampered, stale, missing, duplicate, foreign, or malformed diagnostic.
+They must also prove that no diagnostic can satisfy receipt aggregation, root
+reconciliation, a `PASS` governance record, or deferred acceptance, and that
+the next exact run exposes verified diagnostic node IDs and bindings before any
+allowlist/policy input can be changed.
 
 The root-accounting set is closed only when the baseline candidate set equals
 the disjoint union of: the passed remainder IDs; all passed portable-source
