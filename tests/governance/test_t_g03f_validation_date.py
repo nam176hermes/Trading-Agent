@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -48,6 +49,79 @@ def test_ci_portable_captures_context_before_its_private_wrapper() -> None:
     assert "_capture_foundation_context" in recipe
     assert recipe.index("_capture_foundation_context") < recipe.index("mktemp -d")
     assert "FOUNDATION_VALIDATION_DATE" not in recipe
+
+
+def test_ci_portable_passes_its_resolved_evidence_root_to_capture() -> None:
+    """Break caught: Make defaults are not necessarily exported to inline Python."""
+    environment = os.environ.copy()
+    environment.pop("TEST_EVIDENCE_DIR", None)
+    environment["GITHUB_RUN_ID"] = "31668147300"
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    recipe = makefile.split("ci-portable:\n", 1)[1].split("\nci-portable-private:", 1)[0]
+    capture_code = recipe.split("foundation_context_path=$$(uv run python -c '", 1)[1].split(
+        "' \"$(TEST_EVIDENCE_DIR)\"); \\",
+        1,
+    )[0]
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        captured = subprocess.run(
+            ["uv", "run", "python", "-c", capture_code, str(Path(raw) / "evidence")],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=environment,
+        )
+
+        raw_path = Path(raw)
+        capture_arguments = raw_path / "capture-arguments"
+        fake_bin = raw_path / "bin"
+        fake_bin.mkdir()
+        fake_uv = fake_bin / "uv"
+        fake_uv.write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE_ARGUMENTS\"\n",
+            encoding="utf-8",
+        )
+        fake_uv.chmod(0o755)
+        seam_makefile = raw_path / "Makefile"
+        seam_makefile.write_text(
+            "TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence\n"
+            "capture:\n"
+            f"\t@uv run python -c '{capture_code}' \"$(TEST_EVIDENCE_DIR)\"\n",
+            encoding="utf-8",
+        )
+        seam_environment = environment | {
+            "CAPTURE_ARGUMENTS": str(capture_arguments),
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+        }
+        subprocess.run(
+            ["make", "--no-print-directory", "-f", str(seam_makefile), "capture"],
+            check=True,
+            env=seam_environment,
+        )
+        assert capture_arguments.read_text(encoding="utf-8").splitlines()[-1] == (
+            "/tmp/trading-agent-test-evidence"
+        )
+
+        override = "/tmp/t-g03f evidence;not-a-command"
+        subprocess.run(
+            [
+                "make",
+                "--no-print-directory",
+                "-f",
+                str(seam_makefile),
+                "capture",
+                f"TEST_EVIDENCE_DIR={override}",
+            ],
+            check=True,
+            env=seam_environment,
+        )
+        assert capture_arguments.read_text(encoding="utf-8").splitlines()[-1] == override
+
+    assert 'Path(sys.argv[1])' in capture_code
+    assert 'Path(os.environ["TEST_EVIDENCE_DIR"])' not in capture_code
+    assert 'TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence' in makefile
+    assert '"$(TEST_EVIDENCE_DIR)"' in recipe
+    assert Path(captured.stdout.strip()).name == "foundation-context.json"
 
 
 def test_sealed_date_controls_policy_validation_and_binds_the_v3_baseline(

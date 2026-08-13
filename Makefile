@@ -309,7 +309,7 @@ ci-private:
 
 ci-portable:
 	@set -eu; \
-		foundation_context_path=$$(uv run python -c 'import os; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(os.environ["TEST_EVIDENCE_DIR"])))'); \
+		foundation_context_path=$$(uv run python -c 'import sys; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(sys.argv[1])))' "$(TEST_EVIDENCE_DIR)"); \
 		export FOUNDATION_CONTEXT_PATH="$$foundation_context_path"; \
 		ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable.XXXXXXXXXX"); \
 		chmod 0700 "$$ci_tmpdir"; \
