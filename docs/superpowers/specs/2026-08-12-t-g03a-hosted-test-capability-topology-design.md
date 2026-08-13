@@ -166,6 +166,7 @@ check-test-governance-topology:
     --inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
     --foundation-run-id "$$GITHUB_RUN_ID" \
     --foundation-head-sha "$$foundation_head" \
+    --foundation-context-path "$$FOUNDATION_CONTEXT_PATH" \
     --today "$$FOUNDATION_VALIDATION_DATE"
 ```
 
@@ -186,16 +187,35 @@ proven fact about that run.  It does **not** authorize an allowlist renewal or
 edit.  A policy whose review date has already expired when the Foundation
 invocation begins must continue to fail closed.
 
-The only time authority for the portable Foundation route is one canonical UTC
-calendar date, named `FOUNDATION_VALIDATION_DATE`.  At the first executable
-step of the source-owned `make ci-portable` recipe, before its private temp
-wrapper or any topology/governance operation, it must reject a pre-set value,
-capture `datetime.now(timezone.utc).date().isoformat()` exactly once, validate
-the resulting ASCII `YYYY-MM-DD` string, and export it to its
-`ci-portable-private` child.  Foundation continues to invoke only `make
-ci-portable`; no workflow variable, workflow clock expression, or workflow
-conditional is added.  The capture helper is not callable by topology leaves
-and must not fall back to `date.today()` after this point.
+The sole time authority for an accepting portable Foundation route is a
+canonical, no-clobber Foundation-context record at
+`$(TEST_EVIDENCE_DIR)/capability-topology/foundation-context.json`.  At the
+first executable action of the source-owned `make ci-portable` recipe, before
+its private temp wrapper, topology reservation, or any governance operation,
+an internal capture helper must reject a pre-set
+`FOUNDATION_VALIDATION_DATE`, a pre-existing context record, or any existing
+topology acceptance artifact.  It independently obtains the active
+`GITHUB_RUN_ID` and checked-out `git rev-parse HEAD`, captures
+`datetime.now(timezone.utc).date().isoformat()` exactly once, validates all
+three values, and atomically publishes/reopens the private record before it
+exports the record-derived date and context path to `ci-portable-private`.
+
+The record uses the exact schema `"t-g03a-foundation-context/v1"` and complete
+key set `schema_version`, `foundation_run_id`, `foundation_head_sha`,
+`foundation_validation_date`, and `foundation_context_sha256`.  It is strict
+canonical UTF-8 with no BOM/trailing newline; its self-hash covers the same
+object with `foundation_context_sha256` omitted.  Its directory and file use
+the existing private-owner/no-symlink/no-replace/fsync/re-read discipline.
+Record validation requires the run ID to equal the current Foundation context,
+the head to equal the current checkout, and the date to satisfy the parser
+below.  The helper is a private source function called only from the
+`ci-portable` recipe, not a Make target or topology-script CLI action; leaves
+have no creation mode or environment/argument that can mint this record.
+Foundation continues to invoke only `make ci-portable`; no workflow variable,
+workflow clock expression, or workflow conditional is added.  Production code
+uses only this UTC capture; a controlled clock parameter is a unit-test seam
+inside that private function and cannot be selected through Make, environment,
+or a production CLI argument.
 
 The canonical date parser accepts only ten ASCII bytes matching
 `^[0-9]{4}-[0-9]{2}-[0-9]{2}$`, for which `date.fromisoformat(value)` succeeds
@@ -207,23 +227,44 @@ approval, and neither receipt-v1 nor the tracked allowlist schema changes.
 `ci-portable-private`, `test-all-portable-topology-private`,
 `ci-portable-topology`, `test-portable-root-remainder`,
 `test-portable-source`, `test-native-capabilities`,
-`test-external-authorities`, and `check-test-governance-topology` must require
-that exported value; none may generate, default, substitute, or reformat it.
-For a direct invocation of any of those targets, the caller must explicitly
-supply the same canonical value along with the existing Foundation run/head
-context.  An absent or malformed direct value fails before collection, test
-selection, policy snapshot, receipt, or failure-diagnostic publication.  A
-direct target does not become a second portable Foundation invocation.
+`test-external-authorities`, and `check-test-governance-topology` are consumers
+only.  Each must require the exported context path and date, first reopen and
+verify the pre-existing context record, and compare the supplied date
+byte-for-byte to the record before reservation, collection, preflight, test
+selection, snapshot, receipt, failure diagnostic, governance report, or
+aggregate work.  None may generate, default, substitute, reformat, or accept a
+caller-supplied historical date.  A direct invocation without the context
+record is a non-Foundation diagnostic/test-only invocation: it must fail before
+creating any acceptance evidence and may use an injected clock only in an
+isolated unit-test function that writes no Foundation evidence.  Thus a direct
+target cannot become a second portable Foundation invocation or turn an old
+but syntactically valid date into a baseline, receipt, diagnostic, or green
+result.
 
 Every invocation of `scripts/t_g03_capability_topology.py` in the portable
-route receives `--validation-date "$FOUNDATION_VALIDATION_DATE"`.  Its
-`reserve`, baseline collector/loader, remainder preparation/execution, lane
-runner, aggregation, and failure reader validate that argument before use.
-The collector writes it as `foundation_validation_date` into the canonical
-baseline and includes it in the baseline self-hash.  Every later topology
-operation must reopen the baseline and require exact equality, not merely a
-valid date.  A mismatch is fatal before an acceptance artifact; a changed
-environment/argv cannot make a different date govern later work.
+route receives `--foundation-context-path "$FOUNDATION_CONTEXT_PATH"` and
+`--validation-date "$FOUNDATION_VALIDATION_DATE"`.  Its `reserve`, baseline
+collector/loader, remainder preparation/execution, lane runner, aggregation,
+and failure reader validate the context before use.  `reserve` moves to
+`"t-g03a-topology-reservation/v2"` and binds the verified
+`foundation_context_sha256`; it cannot reserve an evidence namespace without
+that context.  The collector writes both `foundation_validation_date` and
+`foundation_context_sha256` into the canonical baseline and includes both in
+the baseline self-hash.  Every later topology operation must reopen the
+context and baseline and require exact equality, not merely a valid date.  A
+missing, forged, stale, cross-run, cross-head, changed, or mismatched context
+is fatal before an acceptance artifact.
+
+The standard topology-governance invocation receives the same
+`--foundation-context-path` in addition to `--today`; it must verify the
+context first and then require that `--today`, the context date, and the
+baseline date are identical.  The receipt aggregator and failure reader repeat
+that verification rather than trusting a prior process.  A new Foundation run
+has a different run ID; a new checkout has a different head; and a rerun in an
+already used evidence root encounters the no-clobber context record.  Each is
+rejected, so a record cannot be reused across runs, heads, or attempted
+Foundation starts.  A same-run consumer may only use the exact context made by
+the preceding `ci-portable` first action and cannot replace it.
 
 The existing standard governance CLI remains the sole allowlist validator.
 In topology mode its required `--today` is the exact
@@ -239,21 +280,23 @@ reader reconstructs with the date bound in the diagnostic/baseline.  There is
 no downstream bare call that may read the wall clock.
 
 Baseline records therefore move to
-`"t-g03a-portable-root-baseline/v2"`; their exact key set is the prior v1 set
-plus `foundation_validation_date`, and v1 is not accepted by this route.  The
-failure-only record likewise moves to
-`"t-g03a-portable-root-failure-diagnostic/v2"`; its exact key set is the prior
-v1 set plus `foundation_validation_date`, included in `diagnostic_sha256` and
-required to equal the sealed baseline value.  The policy snapshot remains v1:
-it is already source-byte-bound and the enclosing baseline/diagnostic binds
-which valid date was used to validate those bytes.  Remainder records bind the
-new baseline hash transitively.  The locked
+`"t-g03a-portable-root-baseline/v3"`; their exact key set is the prior v1 set
+plus `foundation_validation_date` and `foundation_context_sha256`, and v1/v2
+are not accepted by this route.  The failure-only record likewise moves to
+`"t-g03a-portable-root-failure-diagnostic/v3"`; its exact key set is the prior
+v1 set plus those two fields, both included in `diagnostic_sha256` and required
+to equal the verified context/baseline values.  The policy snapshot remains
+v1: it is already source-byte-bound and the enclosing baseline/diagnostic
+binds which valid date and Foundation context validated those bytes.  Remainder
+records bind the new baseline hash transitively.  The locked
 `"t-g03a-capability-receipt/v1"` key set and bytes remain unchanged; receipt
 aggregation obtains the date binding from the verified baseline rather than
 adding a redundant receipt field.
 
 If snapshot validation fails, the topology command and its redacted
 non-acceptance error report may expose only one closed class:
+`FOUNDATION_CONTEXT_ABSENT`, `FOUNDATION_CONTEXT_MALFORMED`,
+`FOUNDATION_CONTEXT_BINDING_MISMATCH`, `FOUNDATION_CONTEXT_REUSE_REJECTED`,
 `POLICY_DATE_CONTEXT_ABSENT`, `POLICY_DATE_CONTEXT_MALFORMED`,
 `POLICY_DATE_CONTEXT_MISMATCH`, `POLICY_REVIEW_DATE_EXPIRED`,
 `POLICY_SCHEMA_INVALID`, `POLICY_FIELD_TYPE_INVALID`,
@@ -282,13 +325,22 @@ workflow run:
    with only `POLICY_REVIEW_DATE_EXPIRED`; no snapshot, diagnostic, receipt,
    or acceptance report is published.  Literal JSON `allowed_in_ci: true`
    remains required.
-3. Exercise absent, whitespace, non-ASCII, timestamp, impossible, malformed,
-   and baseline/argv/`--today` mismatch cases at every direct target boundary;
-   each fails before execution and cannot self-capture a replacement date.
-4. Tamper the baseline or v2 failure diagnostic date and self-hash, then prove
-   remainder execution, aggregation, and the diagnostic reader reject it.
-   Prove receipt-v1 canonical bytes/key validation is unchanged.
-5. Retain hostile malformed-schema, field-type/non-boolean,
+3. At every direct topology/governance target boundary, supply an old but
+   otherwise canonical date without a context record; then use missing,
+   malformed, forged, stale, cross-run, cross-head, reused, and date-mismatched
+   context records.  Each fails before reserve, execution, snapshot, receipt,
+   diagnostic, governance report, or aggregate publication.  Prove the leaf
+   cannot invoke the capture helper or self-capture a replacement date.
+4. Invoke the sole capture helper through the `ci-portable` first-action seam
+   with a controlled test clock.  Prove it writes one canonical/self-hashed
+   context, rejects a pre-set date and an existing context/acceptance namespace,
+   and that the normal topology/governance children can consume only that exact
+   record.  The seam itself must create no production bypass or public CLI.
+5. Tamper the baseline or v3 failure diagnostic date/context hash and
+   self-hash, then prove remainder execution, aggregation, and the diagnostic
+   reader reject it.  Prove receipt-v1 canonical bytes/key validation is
+   unchanged.
+6. Retain hostile malformed-schema, field-type/non-boolean,
    review-date-format, non-normalized-reason, duplicate-entry, and source-byte
    drift matrices.  Assert their exposed class is one of the closed redacted
    domain and contains no allowlist detail.
@@ -370,7 +422,7 @@ the diagnostic, and must then exit nonzero. It must not also publish a passing
 remainder governance record or a `PASS` receipt.
 
 The record has the one versioned schema
-`"t-g03a-portable-root-failure-diagnostic/v2"`. Its complete top-level key set
+`"t-g03a-portable-root-failure-diagnostic/v3"`. Its complete top-level key set
 is exactly:
 
 ```text
@@ -379,6 +431,7 @@ diagnostic_only
 foundation_run_id
 foundation_head_sha
 foundation_validation_date
+foundation_context_sha256
 inventory_sha256
 baseline_candidate_ids_sha256
 baseline_node_list_sha256
