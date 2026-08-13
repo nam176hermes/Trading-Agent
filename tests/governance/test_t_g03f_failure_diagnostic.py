@@ -14,10 +14,15 @@ from scripts import check_test_governance as governance
 
 
 INVENTORY = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
+HOSTED_SPACE_NODE_ID = (
+    "tests/control_api/test_deployment_evidence.py::"
+    "test_observed_at_requires_exact_rfc3339_utc_before_parsing[2026-07-16 12:00:00Z]"
+)
 
 
 def _seal_remainder(
     monkeypatch: pytest.MonkeyPatch, evidence: Path, raw: str, *, with_context: bool = False,
+    extra_node_ids: tuple[str, ...] = (),
 ) -> tuple[str, str, tuple[str, ...]]:
     run_id = "31641536482"
     head_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
@@ -32,7 +37,9 @@ def _seal_remainder(
         ) if with_context else None
     )
     rows = topology.load_inventory(INVENTORY)
-    candidates = tuple(sorted([*(row.node_id for row in rows), "tests/ordinary/test_failure.py::test_failure"]))
+    candidates = tuple(sorted([
+        *(row.node_id for row in rows), "tests/ordinary/test_failure.py::test_failure", *extra_node_ids,
+    ]))
     topology.reserve_topology_evidence(
         evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=context_path,
     )
@@ -45,6 +52,73 @@ def _seal_remainder(
         foundation_context_path=context_path,
     )
     return run_id, head_sha, tuple(remainder["remainder_node_ids"])
+
+
+def test_space_bearing_portable_root_node_id_normalizes_and_round_trips_as_diagnostic_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: candidate-valid node IDs with spaces are rejected only by diagnostics."""
+    raw_observation = {
+        "test_node_id": HOSTED_SPACE_NODE_ID, "component": "root", "outcome": "passed",
+        "reason": "", "phase": "call",
+    }
+    observations, exit_status = topology._diagnostic_observations(
+        {"component": "root", "pytest_exit_status": 0, "tests": [raw_observation]},
+        (HOSTED_SPACE_NODE_ID,), {"entries": []},
+    )
+    assert exit_status == "0"
+    assert observations[0]["test_node_id"] == HOSTED_SPACE_NODE_ID
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha, nodes = _seal_remainder(
+            monkeypatch, evidence, raw, extra_node_ids=(HOSTED_SPACE_NODE_ID,),
+        )
+        assert HOSTED_SPACE_NODE_ID in nodes
+
+        def nonpassing_exact(selected: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1,
+                "component": "root",
+                "pytest_exit_status": 1,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "failed" if node == HOSTED_SPACE_NODE_ID else "passed",
+                    "reason": "assertion failed" if node == HOSTED_SPACE_NODE_ID else "",
+                    "phase": "call",
+                } for node in selected],
+            }), encoding="utf-8")
+            return selected
+
+        with pytest.raises(topology.TopologyError, match="EXACT_EXECUTION_NONPASS"):
+            topology.execute_portable_root_remainder(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                exact_runner=nonpassing_exact,
+            )
+
+        diagnostic = evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json"
+        document = topology.read_failure_diagnostic(
+            diagnostic, inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+        )
+        assert topology.parse_failure_diagnostic(diagnostic.read_bytes()) == document
+        hosted = next(item for item in document["observations"] if item["test_node_id"] == HOSTED_SPACE_NODE_ID)
+        assert hosted["outcome"] == "failed"
+        assert not (evidence / "capability-topology/portable-root-remainder.governance.json").exists()
+
+
+@pytest.mark.parametrize("node_id", ["", "other/test.py::test_outside_root", "tests/test_bad.py::test_bad\x1f"])
+def test_portable_root_diagnostic_rejects_empty_nonroot_and_control_node_ids(node_id: str) -> None:
+    """Break caught: widening diagnostic IDs accepts non-root or non-printable observations."""
+    with pytest.raises(topology.TopologyError, match="raw diagnostic observation"):
+        topology._diagnostic_observations(
+            {"component": "root", "pytest_exit_status": 1, "tests": [{
+                "test_node_id": node_id, "component": "root", "outcome": "failed",
+                "reason": "assertion failed", "phase": "call",
+            }]},
+            (node_id,), {"entries": []},
+        )
 
 
 def test_complete_nonpass_remainder_publishes_redacted_diagnostic_only_after_custody_postcheck(
@@ -895,6 +969,11 @@ def test_failure_reader_requires_empty_passed_commitment_and_hashes_every_other_
         "normalized_reason_commitment_sha256": "", "policy_match_result": "NOT_APPLICABLE", "existing_policy_entry_sha256": "",
     }
     assert topology.parse_failure_diagnostic(document(passed))["observations"] == [passed]
+    for hostile_node_id in ("", "other/test.py::test_outside_root", "tests/test_bad.py::test_bad\x1f"):
+        with pytest.raises(topology.TopologyError, match="duplicate or unordered"):
+            topology.parse_failure_diagnostic(
+                document(dict(passed, test_node_id=hostile_node_id)),
+            )
     malformed_passed = dict(passed, normalized_reason_commitment_sha256="7" * 64)
     with pytest.raises(topology.TopologyError, match="non-policy binding"):
         topology.parse_failure_diagnostic(document(malformed_passed))

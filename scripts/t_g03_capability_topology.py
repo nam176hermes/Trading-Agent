@@ -550,10 +550,10 @@ def _validate_root_candidates(node_ids: tuple[str, ...]) -> None:
     if node_ids != tuple(sorted(set(node_ids))):
         raise TopologyError("portable root candidates are duplicate or unordered")
     if any(
-        not isinstance(node_id, str)
-        or not node_id.startswith("tests/")
-        or not node_id
-        or any(ord(character) < 0x20 or ord(character) > 0x7E for character in node_id)
+        # Candidate sealing and diagnostics share this portable-root predicate.
+        not _is_portable_root_pytest_node_id(
+            node_id
+        )
         for node_id in node_ids
     ):
         raise TopologyError("portable root candidate is outside the root test tree")
@@ -1545,7 +1545,7 @@ def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot:
         raise TopologyError("raw diagnostic report has invalid pytest exit status")
     observations: list[dict[str, object]] = []
     for raw in document["tests"]:
-        if not isinstance(raw, dict) or raw.get("component") != "root" or not isinstance(raw.get("test_node_id"), str) or not ASCII.fullmatch(raw["test_node_id"]):
+        if not isinstance(raw, dict) or raw.get("component") != "root" or not _is_portable_root_pytest_node_id(raw.get("test_node_id")):
             raise TopologyError("raw diagnostic observation is malformed")
         outcome, phase, xfail_state, reason_class, provenance = _raw_observation_domain(raw)
         reason = raw.get("reason", "")
@@ -1661,7 +1661,7 @@ def _validate_failure_diagnostic_shape(document: object) -> dict[str, object]:
         if not isinstance(observation, dict) or set(observation) != DIAGNOSTIC_OBSERVATION_KEYS:
             raise TopologyError("failure diagnostic has malformed observation")
         node = observation["test_node_id"]
-        if not isinstance(node, str) or not ASCII.fullmatch(node) or (previous_node is not None and node.encode() <= previous_node):
+        if not _is_portable_root_pytest_node_id(node) or (previous_node is not None and node.encode() <= previous_node):
             raise TopologyError("failure diagnostic observations are duplicate or unordered")
         previous_node = node.encode()
         if observation["component"] != "root":
@@ -2298,6 +2298,15 @@ def run_lane(
             receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=selected, state=state, fact=fact, outcome="PASS")
         publications.append(publish_receipt(receipt, evidence_root))
     return publications
+
+
+def _is_portable_root_pytest_node_id(node_id: object) -> bool:
+    return (
+        isinstance(node_id, str)
+        and bool(node_id)
+        and node_id.startswith("tests/")
+        and all(0x20 <= ord(character) <= 0x7E for character in node_id)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
