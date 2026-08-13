@@ -2424,3 +2424,20 @@ reason rejection, receipt custody, or redaction.
 Before starting P0-04 or later, revalidate every named path, inventory count,
 classification, and command against the candidate. Record corrections in the
 tracked plan rather than creating nonexistent files or synthetic failures.
+
+### Evidence-corrected P0-04
+
+P0-04 qualifies the existing sealed-UV fixture repair instead of repeating
+source work. The locked inventory still lists 27
+`PORTABLE_SOURCE_DEFECT` / `SRC-SEALEDUV-BWRAP-PREFLIGHT` nodes, while the
+candidate already contains commit `1b1b47a4c51e106e3f2aab96613a80886422ccba`
+(`test: repair portable Phase 1 fixtures`). That change supplies a private
+synthetic sandbox only for policy-only proofs and retains real Bubblewrap for
+native execution/isolation proofs. At the reviewed P0-03 head, the complete
+sealed-UV test module collects 57 nodes and passes 57/57 locally.
+
+The unresolved inventory is consequently historical with respect to candidate
+source. P0-04 must run the exact 27 locked nodes and review the security and
+test-fidelity invariants, but it must not duplicate the existing source change
+or update unresolved/closure TSVs. P0-06 alone owns the atomic 32-row closure
+schema and inventory mutation.
