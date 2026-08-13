@@ -472,6 +472,174 @@ unchanged.  After a successful package-module launch, the existing A2 shared
 validator remains the sole policy validator and all of its redaction,
 nonacceptance, and no-acceptance-artifact rules continue to apply.
 
+### Amendment A3.1 — hermetic GNU Make expansion proof for package entrypoints
+
+Round 7 correctly repaired a literal and one simple-variable shape, but a
+source-only hand-written Make extractor is not an authority for GNU Make
+semantics.  At `08a46fb`, each of the following generic expressions can still
+materialize a prohibited direct-file topology launcher while escaping the
+extractor's 15+2 count:
+
+```make
+RUN = uv run python scripts/t_g03_capability_topology.py reserve
+future: ; $(call RUN)
+future: ; $(value RUN)
+future: ; $(strip $(RUN))
+future: ; $(addprefix ,$(RUN))
+
+RUN = uv run python scripts/t_g03_capability_topology.py
+RUN += reserve
+future: ; $(RUN)
+```
+
+This is a contract-test defect only.  It authorizes replacing the current
+hand-rolled launch extractor in
+`tests/governance/test_t_g03d_hosted_disclosure.py`; it does **not** authorize
+a Makefile, workflow, package, policy, topology-script, receipt, diagnostic,
+runtime, dependency, service, database, engine, network, authority, or live
+behavior change.
+
+#### Canonical authority and exact observable
+
+The contract test must use a real GNU Make evaluator, not another partial
+parser, as the authority for Make expansion.  It must reject a non-GNU Make
+binary before inspecting evidence.  Its observable is the complete list of
+literal shell command words that GNU Make emits **after Make expansion and
+before recipe execution**, paired with the traced target/recipe source span.
+The test must conservatively parse the printed shell command into command
+segments.  A guarded invocation is valid only when its complete literal argv
+is one of the entries below; a quoted, escaped, shell-variable, substitution,
+`eval`, wrapper, option-shifted, or otherwise non-literal executable/module
+position is noncanonical and fails closed.
+
+| Target recipe | Required expanded guarded argv suffixes |
+| --- | --- |
+| `check-test-skips` | `scripts.check_test_governance --report-dir <controlled-governance-root>` |
+| `check-test-governance-topology` | `scripts.check_test_governance --topology-audit --report-dir <controlled-topology-report-root> --topology-evidence-root <controlled-evidence-root> --inventory tests/fixtures/t-g03a-hosted-failure-inventory.tsv --foundation-context-path <controlled-context-path>` |
+| `test-portable-source` | `scripts.t_g03_capability_topology reserve ...`; `collect-baseline ...`; `run-lane --lane portable-source ...` |
+| `test-native-capabilities` | `scripts.t_g03_capability_topology reserve ...`; `run-lane --lane native-capabilities ...` |
+| `test-external-authorities` | `scripts.t_g03_capability_topology reserve ...`; `run-lane --lane external-authorities ...` |
+| `test-portable-root-remainder` | `scripts.t_g03_capability_topology collect-baseline ...`; `prepare-remainder ...`; `run-remainder ...` |
+| `ci-portable-topology` | `scripts.t_g03_capability_topology reserve ...`; `run-lane --lane portable-source ...`; `run-lane --lane native-capabilities ...`; `run-lane --lane external-authorities ...`; `aggregate ...` |
+
+Here every topology suffix after its action retains exactly the current
+`--evidence-root <controlled-evidence-root>` then
+`--foundation-context-path <controlled-context-path>` tokens.  The command
+line controls `TEST_EVIDENCE_DIR`, `FOUNDATION_CONTEXT_PATH`, `GITHUB_RUN_ID`,
+`RUNNER_TEMP`, and the few required test-only custody values with fixed,
+temporary, shell-safe paths.  Thus the expected expanded argv is exact, has no
+ambient home, runner, clock, policy, or environment dependency, and proves
+both ordering and the argument values rather than merely a module-name count.
+The one existing `ci-portable` inline `python -c` Foundation-context capture is
+not a package-tool launch and may remain only as its current exact literal
+source/expanded command; it cannot contribute to the 15+2 inventory or become
+a generic alternate launcher.
+
+Across the complete root Makefile, the canonical set is exactly **15**
+`uv run python -m scripts.t_g03_capability_topology` invocations and exactly
+**2** `uv run python -m scripts.check_test_governance` invocations, with the
+target/action membership and order in the table.  There may be no other
+rendered or source-materialized reference to either guarded tool.  A direct
+`scripts/<tool>.py` argv is always fatal, even when it is constructed through
+a variable, a continuation, an inline shell clause, a `define`, a target- or
+pattern-specific variable, an ordinary/conditional/simple assignment, `+=`,
+or a pure GNU Make function.  Canonical count/argv drift, a duplicate site, an
+omitted site, an unexpected target/prerequisite site, or an unparseable
+guarded command all fail before any acceptance claim.
+
+#### Hermetic expansion harness and safety boundary
+
+The new test helper must make a test-owned copy/projection of the root
+`Makefile`, retain a source-byte digest and a recorded, allowlisted transform
+map, then invoke GNU Make only with an argument-vector subprocess equivalent
+to:
+
+```text
+env -i <controlled make variables> \
+  make --no-builtin-rules --no-builtin-variables --always-make \
+  --dry-run --trace --file <test-owned-projection> <one-concrete-target>
+```
+
+It must enumerate the concrete root targets from the GNU Make database of the
+same projected bytes, dry-run every one in an isolated fresh process, and use
+`--trace` plus the source map to associate each rendered guarded command with
+its actual target and logical recipe span.  This covers command sites reached
+through prerequisites as well as an otherwise orphaned future target.  The
+test deduplicates only the same traced source recipe span observed from more
+than one requested target; it must never deduplicate distinct expansion
+contexts or argv.  Pattern/generated guarded recipes and target-specific
+variable contexts must be included where GNU Make can instantiate them;
+ambiguous/unenumerable generated target machinery is a fail-closed error.
+
+Before GNU Make is launched, the helper must reject parse-time or evaluator
+routes that could execute, write, import, or synthesize an uninspectable
+recipe: `include`/`-include`/`sinclude`, `$(eval ...)`, `$(shell ...)`,
+`$(file ...)`, `$(guile ...)`, `$(load ...)`, recipe `+` execution escapes,
+shell-level `MAKE` indirection, and any equivalent spelling.  The sole
+current exception is the exact checked-in
+`RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)`
+assignment: the harness supplies that variable as a fixed command-line value
+so GNU Make need not evaluate its body, and asserts the ignored source span is
+byte-for-byte that one declaration.  Any second, altered, or guarded-reachable
+parse-time evaluator is fatal.  `$(call ...)`, `$(value ...)`, `$(strip ...)`,
+`$(addprefix ...)`, continuations, `define`, and ordinary Make assignment
+forms including `+=` are not hand-interpreted; genuine GNU Make expands them
+and the resulting argv is checked.
+
+GNU Make normally executes a recursive `$(MAKE)` recipe even under
+`--dry-run`.  The projection may replace only a syntactically verified,
+literal root recursive-Make word with a non-recursive no-op word, preserving
+the rest of that same logical shell command for inspection.  It must record
+each replacement, and accept only the checked-in literal recursive forms:
+declared literal root target names, or the existing `-C
+native/package6_custodian` form with its current literal `build` target and
+the exact existing `BUILD_DIR=$$build_dir` assignment where present.  Any new
+option, target, variable expansion, altered subdirectory, or shell-level
+`$$MAKE` form is rejected.  The helper must prove no replacement span contains
+or removes a guarded tool word.  No other source rewriting, included file,
+environment inheritance, shell command, recipe, prerequisite, or recursive
+Make process is allowed.  The projection uses a test-owned temporary current
+directory, fixed `PATH`, empty inherited environment, and a shell tripwire
+that fails the test if GNU Make attempts to execute a recipe.  Therefore the
+proof performs no build, installation, network input, external-authority
+acquisition, engine action, service/database mutation, runtime release, or
+live-trading operation; it is expansion evidence only.
+
+The output reader must accept normal path-valued Make interpolation only after
+an already literal canonical module head and must reject a guarded identifier
+created through shell syntax or opaque tokenization.  It must also prove that
+the current target/prerequisite graph and all unrelated Make variables retain
+their current semantics: the test harness is an observer, not a new Make
+entrypoint or a replacement for Foundation orchestration.
+
+#### Required hostile and positive proof matrix
+
+The focused test suite must pass the unmodified current Makefile and then use
+temporary Makefile variants (never the tracked Makefile) to prove all of the
+following fail before a recipe or external action occurs:
+
+1. direct-file topology and governance forms on one line, an inline shell
+   clause, and a backslash continuation;
+2. the five concrete bypasses above: `call`, `value`, nested `strip`,
+   `addprefix`, and `RUN +=` composition, using a generic variable name;
+3. a `define`/function expansion, target-specific or prerequisite-provided
+   variable, and a new otherwise-orphaned target that materializes a guarded
+   launcher;
+4. a second/modified `shell`, `eval`, `file`, include, recursive-Make escape,
+   shell substitution, or opaque evaluator route; and
+5. an extra, missing, reordered, option-shifted, direct-file, or dynamically
+   selected module site relative to the exact 15+2 table.
+
+At least one benign non-launcher macro, including the existing
+`$(SAFE_DISPLAY)` positive case, must remain accepted.  Tests retain the
+module `--help`, sealed-context custody-boundary, direct `main(argv)`, and
+strict/release non-regression checks already required by A3.  The reviewed
+implementation must remove superseded hand-rolled parser authority rather
+than retaining it as an alternate acceptance path.  `check-test-skips`,
+`make ci`, `make audit`, `make audit-release`, all strict/release policy and
+receipt semantics, and the single workflow `make ci-portable` invocation stay
+behaviorally unchanged.
+
 ### Amendment A2 — policy-validation non-acceptance stage evidence
 
 Hosted Foundation `31668464716` at `9b5ae3f` proved a valid sealed context,
