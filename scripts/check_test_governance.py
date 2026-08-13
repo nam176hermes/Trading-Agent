@@ -781,16 +781,6 @@ def audit_topology_root_records(
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     """Bind every root topology receipt to its exact no-clobber observation."""
     try:
-        context = (
-            capability_topology.load_foundation_context(
-                foundation_context_path,
-                run_id=foundation_run_id,
-                head_sha=foundation_head_sha,
-            ) if foundation_context_path is not None else None
-        )
-        capability_topology._require_topology_reservation(
-            evidence_root, foundation_run_id, foundation_head_sha, context,
-        )
         topology_root = evidence_root / "capability-topology"
         if capability_topology._unsafe_raw_reason_nonacceptance_instances(topology_root):
             raise GovernanceError("unsafe raw reason nonacceptance is present; topology aggregation is forbidden")
@@ -798,13 +788,28 @@ def audit_topology_root_records(
             raise GovernanceError("policy validation nonacceptance is present; topology aggregation is forbidden")
         if os.path.lexists(topology_root / "portable-root-remainder.failure-diagnostic.json"):
             raise GovernanceError("failure diagnostic is present; topology aggregation is forbidden")
-        rows = capability_topology._installed_inventory_rows(inventory, evidence_root)
+        context_path = (
+            foundation_context_path
+            if foundation_context_path is not None
+            else evidence_root / "capability-topology/foundation-context.json"
+        )
+        context = capability_topology._validated_foundation_context(
+            context_path,
+            run_id=foundation_run_id,
+            head_sha=foundation_head_sha,
+        )
+        capability_topology._require_topology_reservation(
+            evidence_root, foundation_run_id, foundation_head_sha, context,
+        )
+        rows, closure = capability_topology._installed_governance_state(
+            inventory, evidence_root, head_sha=foundation_head_sha,
+        )
         baseline = capability_topology.load_portable_root_baseline(
             inventory=inventory,
             evidence_root=evidence_root,
             run_id=foundation_run_id,
             head_sha=foundation_head_sha,
-            foundation_context_path=foundation_context_path,
+            foundation_context_path=context_path,
         )
         sealed_custody = capability_topology._validate_custody_policy(
             baseline["collector_policy"],
@@ -818,7 +823,7 @@ def audit_topology_root_records(
             evidence_root=evidence_root,
             run_id=foundation_run_id,
             head_sha=foundation_head_sha,
-            foundation_context_path=foundation_context_path,
+            foundation_context_path=context_path,
         )
         remainder_records = capability_topology._validate_exact_governance_record(
             topology_root / "portable-root-remainder.governance.json", remainder, sealed_custody,
@@ -832,6 +837,8 @@ def audit_topology_root_records(
             rows=rows,
             foundation_run_id=foundation_run_id,
             foundation_head_sha=foundation_head_sha,
+            foundation_context=context,
+            closure_proof_path=topology_root / "portable-defect-closure-proof.json",
         )
         root_records: list[dict[str, object]] = [
             {
@@ -844,7 +851,21 @@ def audit_topology_root_records(
             for node in remainder_records
         ]
         root_records.extend(collection_deselections)
-        accounted = list(remainder_records)
+        closure_proof = capability_topology.validate_portable_closure_proof(
+            topology_root / "portable-defect-closure-proof.json",
+            foundation_run_id=foundation_run_id,
+            foundation_head_sha=foundation_head_sha,
+            foundation_context=context,
+        )
+        closure_nodes = tuple(closure_proof["closure_node_ids"])
+        root_records.extend({
+            "test_node_id": node,
+            "component": "root",
+            "outcome": "passed",
+            "reason": "",
+            "phase": "call",
+        } for node in closure_nodes)
+        accounted = [*remainder_records, *closure_nodes]
         for receipt_path in receipts:
             receipt = capability_topology.validate_receipt(
                 receipt_path.read_bytes(),

@@ -38,8 +38,10 @@ def _seal_remainder(
         ) if with_context else None
     )
     rows = topology.load_inventory(INVENTORY)
+    closure = topology.load_portable_defect_closure(head_sha=head_sha)
     candidates = tuple(sorted([
-        *(row.node_id for row in rows), "tests/ordinary/test_failure.py::test_failure", *extra_node_ids,
+        *(row.node_id for row in rows), *(row.node_id for row in closure),
+        "tests/ordinary/test_failure.py::test_failure", *extra_node_ids,
     ]))
     topology.reserve_topology_evidence(
         evidence, run_id=run_id, head_sha=head_sha, foundation_context_path=context_path,
@@ -796,7 +798,7 @@ def test_valid_context_receipt_first_blocks_policy_nonacceptance_and_nonremainde
         )
         topology.publish_receipt(receipt, evidence)
         monkeypatch.setattr(topology, "_allowlist_bytes_at_head", lambda _head: (_ for _ in ()).throw(RuntimeError("x")))
-        with pytest.raises(topology.TopologyError, match="acceptance artifact"):
+        with pytest.raises(topology.TopologyError, match="stale closed-code"):
             topology.execute_portable_root_remainder(
                 inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
                 foundation_context_path=context,

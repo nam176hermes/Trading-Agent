@@ -11,7 +11,7 @@
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
 	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private \
 	ci-portable-topology test-portable-root-remainder test-portable-source test-native-capabilities test-external-authorities \
-	check-test-governance-topology
+	check-test-governance-topology check-portable-defect-closure
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 PYTHON ?= uv run python
@@ -348,7 +348,14 @@ test-portable-source:
 		export PACKAGE6_FD_CUSTODY_EXTENSION_SHA256=$${digest_line%% *}; \
 		uv run python -m scripts.t_g03_capability_topology reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
 		uv run python -m scripts.t_g03_capability_topology collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
-		uv run python -m scripts.t_g03_capability_topology run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
+		TMPDIR=/tmp TMP=/tmp TEMP=/tmp \
+			uv run python -m scripts.t_g03_capability_topology check-closure --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
+
+check-portable-defect-closure:
+	@set -eu; \
+		test -n "$${GITHUB_RUN_ID:?}"; \
+		TMPDIR=/tmp TMP=/tmp TEMP=/tmp \
+			uv run python -m scripts.t_g03_capability_topology check-closure --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 test-native-capabilities:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
@@ -387,7 +394,8 @@ ci-portable-topology:
 		export PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256"; \
 		uv run python -m scripts.t_g03_capability_topology reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
 		$(MAKE) test-portable-root-remainder; \
-		uv run python -m scripts.t_g03_capability_topology run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		TMPDIR=/tmp TMP=/tmp TEMP=/tmp \
+			uv run python -m scripts.t_g03_capability_topology check-closure --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
 		uv run python -m scripts.t_g03_capability_topology run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
 		uv run python -m scripts.t_g03_capability_topology run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
 		uv run python -m scripts.t_g03_capability_topology aggregate --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"

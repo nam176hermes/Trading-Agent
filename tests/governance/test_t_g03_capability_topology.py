@@ -14,6 +14,7 @@ from scripts import test_governance_pytest as governance_plugin
 
 def _seal_portable_root_baseline(
     monkeypatch: pytest.MonkeyPatch, evidence: Path, raw: str, *, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> None:
     extension = Path(raw) / "custody.so"
     extension.write_bytes(b"verified custody fixture")
@@ -25,15 +26,20 @@ def _seal_portable_root_baseline(
     )
     inventory = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
     rows = topology.load_inventory(inventory)
+    closure = topology.load_portable_defect_closure(head_sha=head_sha)
     topology.collect_portable_root_baseline(
         inventory=inventory,
         evidence_root=evidence,
         run_id=run_id,
         head_sha=head_sha,
-        collector=lambda: tuple(sorted(row.node_id for row in rows)),
+        collector=lambda: tuple(sorted(
+            {row.node_id for row in rows} | {row.node_id for row in closure}
+        )),
+        foundation_context_path=foundation_context_path,
     )
     topology.prepare_portable_root_remainder(
         inventory=inventory, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
     )
 
 
@@ -107,14 +113,16 @@ def test_locked_inventory_installs_exact_bytes_once_and_rejects_tampering(tmp_pa
         assert installed.read_bytes() == tracked.read_bytes()
         with pytest.raises(FileExistsError):
             topology.install_inventory(tracked, evidence)
-    assert len(rows) == 62
+    assert len(rows) == 30
     changed = tmp_path / "changed.tsv"
-    changed.write_bytes(tracked.read_bytes().replace(b"PORTABLE_SOURCE_DEFECT", b"PORTABLE_SOURCE_DEFEKT", 1))
+    changed.write_bytes(tracked.read_bytes().replace(b"NATIVE_CAPABILITY_REQUIRED", b"NATIVE_CAPABILITY_REQUIREX", 1))
     with pytest.raises(topology.TopologyError, match="hash drift"):
         topology.load_inventory(changed)
 
 
-def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(tmp_path: Path) -> None:
+def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Break caught: partial or execution-bearing deferred evidence makes CI green."""
     rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
@@ -126,7 +134,11 @@ def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(tmp_p
         path = tmp_path / f"{code}.json"
         path.write_bytes(topology.canonical_json_bytes(receipt))
         paths.append(path)
-    summary = topology.aggregate_receipts(paths, rows=rows, foundation_run_id=run, foundation_head_sha=head)
+    monkeypatch.setattr(topology, "validate_portable_closure_proof", lambda *_args, **_kwargs: {})
+    summary = topology.aggregate_receipts(
+        paths, rows=rows, foundation_run_id=run, foundation_head_sha=head,
+        foundation_context={}, closure_proof_path=tmp_path / "closure-proof.json",
+    )
     assert summary["runtime_proof"] == "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS"
     forged = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="external-authorities", capability_or_authority_code="EXT-PHASE3B-CORPUS", expected_node_ids=list(topology._expected_rows(rows, "EXT-PHASE3B-CORPUS")[1]), collected_node_ids=["tests/control_api/test_phase3b_backfill.py::test_real_backfill_plan_has_only_approved_evidence"], preflight_state="ABSENT", outcome="DEFERRED")
     with pytest.raises(topology.TopologyError, match="DEFERRED receipt selected"):
@@ -144,15 +156,15 @@ def test_receipt_rejects_unredacted_fact_payload_and_stale_or_wrong_mapping() ->
     """Break caught: redacted receipt fields carry details or stale/mapped evidence passes."""
     rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
-    code = "SRC-SEMANTIC-FIXTURE-IDENTITY"
+    code = "NATIVE-USERNS-ROOT-PROVISION"
     _, expected = topology._expected_rows(rows, code)
-    receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected), redacted_fact_class="/home/operator/secret")
+    receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="native-capabilities", capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=[], preflight_state="UNAVAILABLE", outcome="DEFERRED", redacted_fact_class="/home/operator/secret")
     with pytest.raises(topology.TopologyError, match="redacted"):
         topology.parse_receipt(topology.canonical_json_bytes(receipt))
-    receipt = _receipt(foundation_run_id="31641536481", foundation_head_sha=head, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected))
+    receipt = _receipt(foundation_run_id="31641536481", foundation_head_sha=head, lane="native-capabilities", capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=[], preflight_state="UNAVAILABLE", outcome="DEFERRED")
     with pytest.raises(topology.TopologyError, match="stale"):
         topology.validate_receipt(topology.canonical_json_bytes(receipt), rows=rows, foundation_run_id=run, foundation_head_sha=head)
-    receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="native-capabilities", capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected))
+    receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="external-authorities", capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=[], preflight_state="ABSENT", outcome="DEFERRED")
     with pytest.raises(topology.TopologyError, match="mapping"):
         topology.validate_receipt(topology.canonical_json_bytes(receipt), rows=rows, foundation_run_id=run, foundation_head_sha=head)
 
@@ -259,7 +271,9 @@ def test_governance_plugin_labels_xfail_and_xpass_for_exact_lane_rejection(tmp_p
     assert reporter.records["tests/xfail.py::test_case"]["outcome"] == "xfailed"
 
 
-def test_aggregate_rejects_duplicate_missing_and_unlisted_receipts(tmp_path: Path) -> None:
+def test_aggregate_rejects_duplicate_missing_and_unlisted_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Break caught: a code receipt can be duplicated, omitted, or replaced by an unlisted node."""
     rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
@@ -271,9 +285,14 @@ def test_aggregate_rejects_duplicate_missing_and_unlisted_receipts(tmp_path: Pat
         path = tmp_path / f"{code}.json"
         path.write_bytes(topology.canonical_json_bytes(receipt))
         paths.append(path)
+    monkeypatch.setattr(topology, "validate_portable_closure_proof", lambda *_args, **_kwargs: {})
     with pytest.raises(topology.TopologyError, match="receipt set"):
-        topology.aggregate_receipts(paths[:-1] + [paths[0]], rows=rows, foundation_run_id=run, foundation_head_sha=head)
-    altered = _receipt(foundation_run_id=run, foundation_head_sha=head, capability_or_authority_code="SRC-SEMANTIC-FIXTURE-IDENTITY", expected_node_ids=["tests/not-inventory.py::test_hidden"], collected_node_ids=["tests/not-inventory.py::test_hidden"])
+        topology.aggregate_receipts(
+            paths[:-1] + [paths[0]], rows=rows, foundation_run_id=run,
+            foundation_head_sha=head, foundation_context={},
+            closure_proof_path=tmp_path / "closure-proof.json",
+        )
+    altered = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="native-capabilities", capability_or_authority_code="NATIVE-USERNS-ROOT-PROVISION", expected_node_ids=["tests/not-inventory.py::test_hidden"], collected_node_ids=[], preflight_state="UNAVAILABLE", outcome="DEFERRED")
     with pytest.raises(topology.TopologyError, match="mapping"):
         topology.validate_receipt(topology.canonical_json_bytes(altered), rows=rows, foundation_run_id=run, foundation_head_sha=head)
 
@@ -417,8 +436,17 @@ def test_runner_boundary_byte_identical_custody_replacement_cannot_publish_pass(
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
-        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head)
-        _seal_portable_root_baseline(monkeypatch, evidence, raw, run_id=run_id, head_sha=head)
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+        context = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head, foundation_context_path=context,
+        )
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id=run_id, head_sha=head,
+            foundation_context_path=context,
+        )
         extension = Path(os.environ["PACKAGE6_FD_CUSTODY_EXTENSION_PATH"])
         replacement = Path(raw) / "same-byte-replacement.so"
         replacement.write_bytes(extension.read_bytes())
@@ -438,6 +466,7 @@ def test_runner_boundary_byte_identical_custody_replacement_cannot_publish_pass(
                 run_id=run_id,
                 head_sha=head,
                 exact_runner=replace_at_runner_boundary,
+                foundation_context_path=context,
             )
 
         assert invoked
@@ -670,24 +699,33 @@ def test_completed_topology_retry_preserves_inventory_governance_and_receipt_bef
 
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
-        topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
+        context = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id="31641536482", head_sha=head,
+            foundation_context_path=context,
+        )
         _seal_portable_root_baseline(
             monkeypatch, evidence, raw, run_id="31641536482", head_sha=head,
+            foundation_context_path=context,
         )
         receipts = topology.run_lane(
             lane="portable-source", inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
             evidence_root=evidence, run_id="31641536482", head_sha=head, exact_runner=exact,
+            foundation_context_path=context,
         )
         installed = evidence / "t-g03a-hosted-failure-inventory.tsv"
-        governance = evidence / "capability-topology/SRC-SEALEDUV-BWRAP-PREFLIGHT.governance.json"
-        receipt = next(path for path in receipts if path.name == "SRC-SEALEDUV-BWRAP-PREFLIGHT.json")
-        preserved = (installed.read_bytes(), governance.read_bytes(), receipt.read_bytes())
+        governance = evidence / "capability-topology/portable-defect-closure.governance.json"
+        proof = evidence / "capability-topology/portable-defect-closure-proof.json"
+        assert receipts == []
+        preserved = (installed.read_bytes(), governance.read_bytes(), proof.read_bytes())
 
         with pytest.raises(topology.TopologyError, match="reserved or populated"):
             topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
 
-        assert len(calls) == 3
-        assert (installed.read_bytes(), governance.read_bytes(), receipt.read_bytes()) == preserved
+        assert len(calls) == 1
+        assert (installed.read_bytes(), governance.read_bytes(), proof.read_bytes()) == preserved
 
 
 def test_retained_uv_rejects_named_replacement_after_descriptor_execution(tmp_path: Path) -> None:

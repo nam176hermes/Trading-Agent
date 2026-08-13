@@ -21,12 +21,16 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 
-LOCKED_INVENTORY_SHA256 = "99e2e9f0ea91c65fd841a0b81b8948eb6d3967203627d0911c151794737a8bfe"
+LOCKED_INVENTORY_SHA256 = "86c157c8394f16e381d1e53a6884b6c3d93af5520ea9bdd6b3abd9efbc588a93"
+LOCKED_CLOSURE_SHA256 = "f2171ed1362cc2a681021ac0cfe1ae3a098e9a27034a0cbefc33bc87808a0e8e"
+LOCKED_GOVERNED_NODE_IDS_SHA256 = "aedeffcf5b9ad3d7704b3f6a15822f9862d9b84b279cc8a66b193b331262f7f0"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
+PORTABLE_CLOSURE_PROOF_SCHEMA = "t-g03a-portable-closure-proof/v1"
+CLOSED_NODE_PROOF_SCHEMA = "t-g03a-closed-node-proof/v1"
 FOUNDATION_CONTEXT_SCHEMA = "t-g03a-foundation-context/v1"
 RESERVATION_SCHEMA = "t-g03a-topology-reservation/v2"
-BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v3"
-REMAINDER_SCHEMA = "t-g03a-portable-root-remainder/v1"
+BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v4"
+REMAINDER_SCHEMA = "t-g03a-portable-root-remainder/v2"
 FAILURE_DIAGNOSTIC_SCHEMA = "t-g03a-portable-root-failure-diagnostic/v3"
 POLICY_NONACCEPTANCE_SCHEMA = "t-g03a-policy-validation-nonacceptance/v1"
 UNSAFE_RAW_REASON_NONACCEPTANCE_SCHEMA = "t-g03a-unsafe-raw-reason-nonacceptance/v1"
@@ -148,14 +152,40 @@ CLASSIFICATION_LANE = {
     "EXTERNAL_AUTHORITY_REQUIRED": "external-authorities",
 }
 CODE_CLASSIFICATION = {
-    "SRC-PHASE4B-FAKEROOT-IDENTITY": "PORTABLE_SOURCE_DEFECT",
-    "SRC-SEALEDUV-BWRAP-PREFLIGHT": "PORTABLE_SOURCE_DEFECT",
-    "SRC-SEMANTIC-FIXTURE-IDENTITY": "PORTABLE_SOURCE_DEFECT",
     "NATIVE-BWRAP-OS-SANDBOX": "NATIVE_CAPABILITY_REQUIRED",
     "NATIVE-USERNS-ROOT-PROVISION": "NATIVE_CAPABILITY_REQUIRED",
     "EXT-PHASE3B-CORPUS": "EXTERNAL_AUTHORITY_REQUIRED",
     "EXT-LEGACY-UV-AUTHORITY": "EXTERNAL_AUTHORITY_REQUIRED",
 }
+CLOSED_CODE_CLASSIFICATION = {
+    "SRC-PHASE4B-FAKEROOT-IDENTITY": "PORTABLE_SOURCE_DEFECT",
+    "SRC-SEALEDUV-BWRAP-PREFLIGHT": "PORTABLE_SOURCE_DEFECT",
+    "SRC-SEMANTIC-FIXTURE-IDENTITY": "PORTABLE_SOURCE_DEFECT",
+}
+CLOSED_CODE_COUNTS = {
+    "SRC-PHASE4B-FAKEROOT-IDENTITY": 2,
+    "SRC-SEALEDUV-BWRAP-PREFLIGHT": 27,
+    "SRC-SEMANTIC-FIXTURE-IDENTITY": 3,
+}
+CLOSED_SOURCE_CODE = {
+    "tests/foundation/test_nautilus_sealed_uv_exec.py": "SRC-SEALEDUV-BWRAP-PREFLIGHT",
+    "tests/runtime_release/test_provision_script.py": "SRC-PHASE4B-FAKEROOT-IDENTITY",
+    "tests/runtime_release/test_semantic.py": "SRC-SEMANTIC-FIXTURE-IDENTITY",
+}
+CLOSURE_COLUMNS = (
+    "test_node_id", "source_file", "former_capability_code", "fix_commit",
+    "proof_command", "proof_result_digest", "closed_at_foundation_date",
+)
+CLOSURE_PROOF_COMMAND = "PYTEST_EXACT_NODE_V1"
+CLOSURE_RELATIVE_PATH = Path("docs/implementation/foundation-portable-defect-closure.tsv")
+CLOSURE_PROOF_KEYS = frozenset({
+    "schema_version", "foundation_run_id", "foundation_head_sha",
+    "foundation_validation_date", "foundation_context_sha256",
+    "inventory_sha256", "closure_sha256", "closure_node_ids",
+    "closure_node_ids_sha256", "proof_command", "proof_result_digests",
+    "custody_policy", "custody_policy_sha256", "governance_report_sha256",
+    "outcome", "closure_proof_sha256",
+})
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEAD_SHA = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^(0|[1-9][0-9]*)$")
@@ -173,6 +203,7 @@ LEGACY_UV = Path("/home/thenam176/.local/bin/uv")
 LEGACY_UV_SHA256 = "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
 LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 ROOT = Path(__file__).resolve().parents[1]
+CLOSURE_PATH = ROOT / CLOSURE_RELATIVE_PATH
 PHASE3B_REQUIRED_ENTRIES = (
     ("asset_registry.py", False),
     ("memory/decisions.jsonl", False),
@@ -202,6 +233,17 @@ class InventoryRow:
     node_id: str
     classification: str
     code: str
+
+
+@dataclass(frozen=True)
+class ClosureRow:
+    node_id: str
+    source_file: str
+    former_code: str
+    fix_commit: str
+    proof_command: str
+    proof_result_digest: str
+    closed_at_foundation_date: str
 
 
 def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
@@ -234,9 +276,145 @@ def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
             raise TopologyError(f"inventory row {index} has unknown classification or code")
         seen.add(node_id)
         rows.append(InventoryRow(node_id, classification, code))
-    if len(rows) != 62:
+    if len(rows) != 30:
         raise TopologyError("inventory row count drift")
+    counts = {code: sum(row.code == code for row in rows) for code in CODE_CLASSIFICATION}
+    if counts != {
+        "NATIVE-BWRAP-OS-SANDBOX": 16,
+        "NATIVE-USERNS-ROOT-PROVISION": 8,
+        "EXT-PHASE3B-CORPUS": 3,
+        "EXT-LEGACY-UV-AUTHORITY": 3,
+    }:
+        raise TopologyError("inventory native or external mapping drift")
     return tuple(rows)
+
+
+def _closed_node_proof_payload(row: ClosureRow) -> dict[str, str]:
+    """Canonical row proof reproduced only after its exact pytest node passes."""
+    return {
+        "schema_version": CLOSED_NODE_PROOF_SCHEMA,
+        "test_node_id": row.node_id,
+        "source_file": row.source_file,
+        "former_capability_code": row.former_code,
+        "fix_commit": row.fix_commit,
+        "proof_command": row.proof_command,
+        "outcome": "passed",
+    }
+
+
+def closed_node_proof_digest(row: ClosureRow) -> str:
+    return _sha256(_closed_node_proof_payload(row))
+
+
+def _commit_touches_source(commit: str, source_file: str, *, head_sha: str) -> bool:
+    try:
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=ROOT,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, head_sha], cwd=ROOT,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, check=True, timeout=10,
+        )
+        changed = subprocess.run(
+            ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit, "--", source_file],
+            cwd=ROOT, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            check=True, timeout=10,
+        ).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return source_file in changed
+
+
+def parse_portable_defect_closure(raw: bytes, *, head_sha: str) -> tuple[ClosureRow, ...]:
+    """Validate canonical closure bytes, historical commit evidence, and proof digests."""
+    if not HEAD_SHA.fullmatch(head_sha):
+        raise TopologyError("closure head is malformed")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise TopologyError("closure ledger is not UTF-8") from exc
+    if text.startswith("\ufeff") or not text.endswith("\n") or "\n\n" in text:
+        raise TopologyError("closure ledger has noncanonical rows")
+    reader = csv.DictReader(text.splitlines(), delimiter="\t")
+    if tuple(reader.fieldnames or ()) != CLOSURE_COLUMNS:
+        raise TopologyError("closure ledger schema drift")
+    rows: list[ClosureRow] = []
+    seen: set[str] = set()
+    commit_bindings: set[tuple[str, str]] = set()
+    for index, item in enumerate(reader, start=2):
+        if item is None or set(item) != set(CLOSURE_COLUMNS) or any(
+            not isinstance(value, str) or not value for value in item.values()
+        ):
+            raise TopologyError(f"closure row {index} is blank or malformed")
+        row = ClosureRow(
+            item["test_node_id"], item["source_file"], item["former_capability_code"],
+            item["fix_commit"], item["proof_command"], item["proof_result_digest"],
+            item["closed_at_foundation_date"],
+        )
+        if row.node_id in seen or not ASCII.fullmatch(row.node_id):
+            raise TopologyError(f"closure row {index} has duplicate or invalid node")
+        if not row.node_id.startswith(f"{row.source_file}::") or not _is_portable_root_pytest_node_id(row.node_id):
+            raise TopologyError(f"closure row {index} has wrong source file")
+        if row.former_code not in CLOSED_CODE_CLASSIFICATION:
+            raise TopologyError(f"closure row {index} has unknown former code")
+        if CLOSED_SOURCE_CODE.get(row.source_file) != row.former_code:
+            raise TopologyError(f"closure row {index} has wrong former code for source")
+        if row.proof_command != CLOSURE_PROOF_COMMAND:
+            raise TopologyError(f"closure row {index} has unknown proof command")
+        if not HEAD_SHA.fullmatch(row.fix_commit):
+            raise TopologyError(f"closure row {index} has malformed fix commit")
+        if not HEX64.fullmatch(row.proof_result_digest):
+            raise TopologyError(f"closure row {index} has malformed proof digest")
+        if parse_foundation_validation_date(row.closed_at_foundation_date) != date(2026, 8, 13):
+            raise TopologyError(f"closure row {index} has wrong Foundation date")
+        if row.proof_result_digest != closed_node_proof_digest(row):
+            raise TopologyError(f"closure row {index} has mismatched proof digest")
+        seen.add(row.node_id)
+        commit_bindings.add((row.fix_commit, row.source_file))
+        rows.append(row)
+    if len(rows) != 32:
+        raise TopologyError("closure row count drift")
+    counts = {code: sum(row.former_code == code for row in rows) for code in CLOSED_CODE_COUNTS}
+    if counts != CLOSED_CODE_COUNTS:
+        raise TopologyError("closure former-code mapping drift")
+    for commit, source_file in sorted(commit_bindings):
+        if not _commit_touches_source(commit, source_file, head_sha=head_sha):
+            raise TopologyError("closure fix commit is absent, nonancestor, or does not touch source")
+    return tuple(rows)
+
+
+def load_portable_defect_closure(
+    path: Path = CLOSURE_PATH, *, head_sha: str | None = None,
+) -> tuple[ClosureRow, ...]:
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != LOCKED_CLOSURE_SHA256:
+        raise TopologyError("locked closure hash drift")
+    if head_sha is None:
+        try:
+            head_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, check=True, timeout=10,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise TopologyError("closure head is unavailable") from exc
+    return parse_portable_defect_closure(raw, head_sha=head_sha)
+
+
+def load_governance_state(
+    inventory: Path, closure: Path = CLOSURE_PATH, *, head_sha: str,
+) -> tuple[tuple[InventoryRow, ...], tuple[ClosureRow, ...]]:
+    active = load_inventory(inventory)
+    closed = load_portable_defect_closure(closure, head_sha=head_sha)
+    overlap = {row.node_id for row in active} & {row.node_id for row in closed}
+    if overlap:
+        raise TopologyError("active inventory overlaps portable closure")
+    governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
+    if len(governed) != 62 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+        raise TopologyError("active and closure governed-node set drift")
+    return active, closed
 
 
 def install_inventory(source: Path, evidence_root: Path) -> Path:
@@ -262,6 +440,31 @@ def install_inventory(source: Path, evidence_root: Path) -> Path:
     return destination
 
 
+def install_portable_defect_closure(
+    source: Path, evidence_root: Path, *, head_sha: str,
+) -> Path:
+    """Install the validated closure bytes once beside the active inventory."""
+    load_portable_defect_closure(source, head_sha=head_sha)
+    _prepare_private_evidence_directory(evidence_root)
+    destination = evidence_root / CLOSURE_RELATIVE_PATH.name
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(source.read_bytes())
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    if destination.read_bytes() != source.read_bytes():
+        raise TopologyError("installed closure byte comparison failed")
+    load_portable_defect_closure(destination, head_sha=head_sha)
+    return destination
+
+
 def reserve_topology_evidence(
     evidence_root: Path, *, run_id: str, head_sha: str,
     foundation_context_path: Path | None = None,
@@ -278,6 +481,7 @@ def reserve_topology_evidence(
         )
     targets = [
         evidence_root / "t-g03a-hosted-failure-inventory.tsv",
+        evidence_root / CLOSURE_RELATIVE_PATH.name,
         topology_root / ".reservation",
         topology_root / "portable-root-baseline.json",
         topology_root / "portable-root-candidates.txt",
@@ -288,8 +492,12 @@ def reserve_topology_evidence(
         topology_root / "portable-root-remainder.failure-diagnostic.json",
         topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json",
         topology_root / "policy-validation-nonacceptance.json",
+        topology_root / "portable-defect-closure.governance.json",
+        topology_root / "portable-defect-closure-proof.json",
     ]
     for code in CODE_CLASSIFICATION:
+        targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+    for code in CLOSED_CODE_CLASSIFICATION:
         targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
     if any(os.path.lexists(path) for path in targets):
         raise TopologyError("topology evidence namespace is already reserved or populated")
@@ -297,6 +505,7 @@ def reserve_topology_evidence(
         "foundation_head_sha": head_sha,
         "foundation_run_id": run_id,
         "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "closure_sha256": LOCKED_CLOSURE_SHA256,
     }
     if context is not None:
         reservation_document = {
@@ -326,6 +535,7 @@ def _require_topology_reservation(
         "foundation_head_sha": head_sha,
         "foundation_run_id": run_id,
         "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "closure_sha256": LOCKED_CLOSURE_SHA256,
     }
     if foundation_context is not None:
         expected = {
@@ -409,8 +619,11 @@ def _capture_foundation_context(
         topology_root / "portable-root-remainder.failure-diagnostic.json",
         topology_root / "portable-root-remainder.unsafe-raw-reason-nonacceptance.json",
         topology_root / "policy-validation-nonacceptance.json",
+        topology_root / "portable-defect-closure.governance.json",
+        topology_root / "portable-defect-closure-proof.json",
     ]
     acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CODE_CLASSIFICATION for suffix in (".json", ".governance.json"))
+    acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CLOSED_CODE_CLASSIFICATION for suffix in (".json", ".governance.json"))
     if os.path.lexists(context_path) or any(os.path.lexists(path) for path in acceptance_paths):
         raise TopologyError("Foundation context reuse is rejected")
     context: dict[str, object] = {
@@ -518,6 +731,10 @@ def _reject_failure_diagnostic_coexistence(topology_root: Path) -> None:
     accepted = [topology_root / "portable-root-remainder.governance.json"]
     for code in CODE_CLASSIFICATION:
         accepted.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+    accepted.extend((
+        topology_root / "portable-defect-closure.governance.json",
+        topology_root / "portable-defect-closure-proof.json",
+    ))
     rejected = [
         *accepted,
         topology_root / "portable-root-remainder.failure-diagnostic.json",
@@ -557,6 +774,23 @@ def _reject_unsafe_raw_reason_nonacceptance_presence(topology_root: Path) -> Non
 def _reject_policy_nonacceptance_presence(topology_root: Path) -> None:
     if os.path.lexists(_policy_nonacceptance_path(topology_root)):
         raise TopologyError("policy validation nonacceptance is present; topology acceptance is forbidden")
+
+
+def _reject_closed_source_artifacts(topology_root: Path) -> None:
+    """Closed `SRC-*` code artifacts are stale acceptance evidence in P0-06."""
+    try:
+        stale = [
+            path for path in topology_root.iterdir()
+            if path.name.startswith("SRC-")
+            and (path.name.endswith(".json") or path.name.endswith(".governance.json"))
+            and os.path.lexists(path)
+        ]
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise TopologyError("topology artifact directory is unavailable") from exc
+    if stale:
+        raise TopologyError("stale closed-code receipt or governance artifact is present")
 
 
 def _candidate_file_bytes(node_ids: tuple[str, ...]) -> bytes:
@@ -759,6 +993,34 @@ def _installed_inventory_rows(inventory: Path, evidence_root: Path) -> tuple[Inv
     return installed_rows
 
 
+def _installed_governance_state(
+    inventory: Path, evidence_root: Path, *, head_sha: str,
+) -> tuple[tuple[InventoryRow, ...], tuple[ClosureRow, ...]]:
+    active = _installed_inventory_rows(inventory, evidence_root)
+    installed = evidence_root / CLOSURE_RELATIVE_PATH.name
+    if installed.exists():
+        if installed.read_bytes() != CLOSURE_PATH.read_bytes():
+            raise TopologyError("installed closure binding drift")
+    else:
+        install_portable_defect_closure(CLOSURE_PATH, evidence_root, head_sha=head_sha)
+    closed = load_portable_defect_closure(installed, head_sha=head_sha)
+    overlap = {row.node_id for row in active} & {row.node_id for row in closed}
+    if overlap:
+        raise TopologyError("active inventory overlaps portable closure")
+    governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
+    if len(governed) != 62 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+        raise TopologyError("installed active and closure governed-node set drift")
+    return active, closed
+
+
+def _validate_closure_date(
+    closure: tuple[ClosureRow, ...], context: dict[str, object],
+) -> None:
+    sealed = parse_foundation_validation_date(context["foundation_validation_date"])
+    if any(parse_foundation_validation_date(row.closed_at_foundation_date) > sealed for row in closure):
+        raise TopologyError("closure date is later than sealed Foundation date")
+
+
 def _optional_foundation_context(
     foundation_context_path: Path | None, *, run_id: str, head_sha: str,
 ) -> dict[str, object] | None:
@@ -778,13 +1040,16 @@ def collect_portable_root_baseline(
     _require_topology_reservation(evidence_root, run_id, head_sha, context)
     topology_root = evidence_root / "capability-topology"
     _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
-    rows = _installed_inventory_rows(inventory, evidence_root)
+    _reject_closed_source_artifacts(topology_root)
+    rows, closure = _installed_governance_state(inventory, evidence_root, head_sha=head_sha)
+    if context is not None:
+        _validate_closure_date(closure, context)
     policy = _native_custody_policy()
     candidates = _collect_portable_root_candidates(evidence_root) if collector is None else collector()
     _validate_root_candidates(candidates)
-    inventory_ids = {row.node_id for row in rows}
-    if not inventory_ids <= set(candidates):
-        raise TopologyError("portable root baseline omitted a locked inventory node")
+    governed_ids = {row.node_id for row in rows} | {row.node_id for row in closure}
+    if not governed_ids <= set(candidates):
+        raise TopologyError("portable root baseline omitted a governed node")
     collection_report = _collection_record_path(evidence_root)
     if collector is not None:
         _publish_no_clobber(
@@ -818,6 +1083,7 @@ def collect_portable_root_baseline(
         "foundation_run_id": run_id,
         "foundation_head_sha": head_sha,
         "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "closure_sha256": LOCKED_CLOSURE_SHA256,
         "collector_policy": policy,
         "candidate_node_ids": list(candidates),
         "candidate_file_sha256": candidate_digest,
@@ -842,7 +1108,9 @@ def load_portable_root_baseline(
     """Reopen and verify the sealed baseline and candidate file before execution."""
     context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha, context)
-    rows = _installed_inventory_rows(inventory, evidence_root)
+    rows, closure = _installed_governance_state(inventory, evidence_root, head_sha=head_sha)
+    if context is not None:
+        _validate_closure_date(closure, context)
     topology_root = evidence_root / "capability-topology"
     try:
         raw = (topology_root / "portable-root-baseline.json").read_bytes()
@@ -850,7 +1118,7 @@ def load_portable_root_baseline(
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TopologyError("portable root baseline is missing") from exc
     required = {
-        "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256",
+        "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256", "closure_sha256",
         "collector_policy", "candidate_node_ids", "candidate_file_sha256", "collection_report_sha256", "baseline_sha256",
     }
     if context is not None:
@@ -862,6 +1130,7 @@ def load_portable_root_baseline(
         or baseline["foundation_run_id"] != run_id
         or baseline["foundation_head_sha"] != head_sha
         or baseline["inventory_sha256"] != LOCKED_INVENTORY_SHA256
+        or baseline["closure_sha256"] != LOCKED_CLOSURE_SHA256
         or baseline["baseline_sha256"] != _baseline_payload_sha256(baseline)
         or not isinstance(baseline["collector_policy"], dict)
         or (context is not None and (
@@ -890,8 +1159,8 @@ def load_portable_root_baseline(
     ):
         raise TopologyError("portable root collection report digest drift")
     _validate_collection_record(_collection_record_path(evidence_root), candidates)
-    if not {row.node_id for row in rows} <= set(candidates):
-        raise TopologyError("portable root baseline omitted a locked inventory node")
+    if not ({row.node_id for row in rows} | {row.node_id for row in closure}) <= set(candidates):
+        raise TopologyError("portable root baseline omitted a governed node")
     return baseline
 
 
@@ -909,9 +1178,10 @@ def prepare_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
     )
-    rows = _installed_inventory_rows(inventory, evidence_root)
+    rows, closure = _installed_governance_state(inventory, evidence_root, head_sha=head_sha)
     candidates = tuple(baseline["candidate_node_ids"])
-    remainder = tuple(sorted(set(candidates) - {row.node_id for row in rows}))
+    governed = {row.node_id for row in rows} | {row.node_id for row in closure}
+    remainder = tuple(sorted(set(candidates) - governed))
     _validate_root_candidates(remainder)
     remainder_bytes = _candidate_file_bytes(remainder)
     document: dict[str, object] = {
@@ -919,6 +1189,7 @@ def prepare_portable_root_remainder(
         "foundation_run_id": run_id,
         "foundation_head_sha": head_sha,
         "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "closure_sha256": LOCKED_CLOSURE_SHA256,
         "baseline_sha256": baseline["baseline_sha256"],
         "remainder_node_ids": list(remainder),
         "remainder_file_sha256": hashlib.sha256(remainder_bytes).hexdigest(),
@@ -978,7 +1249,7 @@ def _load_portable_root_remainder(
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TopologyError("portable root remainder is missing") from exc
     required = {
-        "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256",
+        "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256", "closure_sha256",
         "baseline_sha256", "remainder_node_ids", "remainder_file_sha256", "remainder_sha256",
     }
     if not isinstance(document, dict) or set(document) != required or canonical_json_bytes(document) != raw:
@@ -988,6 +1259,7 @@ def _load_portable_root_remainder(
         or document["foundation_run_id"] != run_id
         or document["foundation_head_sha"] != head_sha
         or document["inventory_sha256"] != LOCKED_INVENTORY_SHA256
+        or document["closure_sha256"] != LOCKED_CLOSURE_SHA256
         or document["baseline_sha256"] != baseline["baseline_sha256"]
         or document["remainder_sha256"] != _remainder_payload_sha256(document)
         or not isinstance(document["remainder_node_ids"], list)
@@ -996,7 +1268,11 @@ def _load_portable_root_remainder(
         raise TopologyError("portable root remainder binding drift")
     remainder = tuple(document["remainder_node_ids"])
     _validate_root_candidates(remainder)
-    expected = tuple(sorted(set(baseline["candidate_node_ids"]) - {row.node_id for row in _installed_inventory_rows(inventory, evidence_root)}))
+    active, closure = _installed_governance_state(inventory, evidence_root, head_sha=head_sha)
+    expected = tuple(sorted(
+        set(baseline["candidate_node_ids"])
+        - ({row.node_id for row in active} | {row.node_id for row in closure})
+    ))
     if remainder != expected:
         raise TopologyError("portable root remainder is not baseline minus inventory")
     contents = _candidate_file_bytes(remainder)
@@ -1038,6 +1314,122 @@ def _validate_exact_governance_record(
     if result != expected or len(records) != len(expected):
         raise TopologyError("exact governance record does not match selected nodes")
     return result
+
+
+def _closure_proof_payload_sha256(document: dict[str, object]) -> str:
+    return _sha256({
+        key: value for key, value in document.items() if key != "closure_proof_sha256"
+    })
+
+
+def validate_portable_closure_proof(
+    path: Path, *, foundation_run_id: str, foundation_head_sha: str,
+    foundation_context: dict[str, object], closure_path: Path = CLOSURE_PATH,
+) -> dict[str, object]:
+    """Validate the one exact-execution proof that replaces all closed SRC receipts."""
+    _reject_closed_source_artifacts(path.parent)
+    try:
+        raw = path.read_bytes()
+        document = _strict_json(raw, label="portable closure proof")
+    except OSError as exc:
+        raise TopologyError("portable closure proof is missing") from exc
+    if (
+        not isinstance(document, dict)
+        or set(document) != CLOSURE_PROOF_KEYS
+        or canonical_json_bytes(document) != raw
+    ):
+        raise TopologyError("portable closure proof is noncanonical or malformed")
+    closure = load_portable_defect_closure(closure_path, head_sha=foundation_head_sha)
+    _validate_closure_date(closure, foundation_context)
+    nodes = tuple(sorted(row.node_id for row in closure))
+    digests = [row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)]
+    custody = document["custody_policy"]
+    if not isinstance(custody, dict):
+        raise TopologyError("portable closure proof custody is malformed")
+    _validate_custody_policy(custody)
+    governance_path = path.parent / "portable-defect-closure.governance.json"
+    if (
+        document["schema_version"] != PORTABLE_CLOSURE_PROOF_SCHEMA
+        or document["foundation_run_id"] != foundation_run_id
+        or document["foundation_head_sha"] != foundation_head_sha
+        or document["foundation_validation_date"] != foundation_context["foundation_validation_date"]
+        or document["foundation_context_sha256"] != foundation_context["foundation_context_sha256"]
+        or document["inventory_sha256"] != LOCKED_INVENTORY_SHA256
+        or document["closure_sha256"] != LOCKED_CLOSURE_SHA256
+        or tuple(document["closure_node_ids"]) != nodes
+        or document["closure_node_ids_sha256"] != _ids_sha256(nodes)
+        or document["proof_command"] != CLOSURE_PROOF_COMMAND
+        or document["proof_result_digests"] != digests
+        or document["custody_policy_sha256"] != _sha256(custody)
+        or document["governance_report_sha256"] != hashlib.sha256(governance_path.read_bytes()).hexdigest()
+        or document["outcome"] != "PASS"
+        or document["closure_proof_sha256"] != _closure_proof_payload_sha256(document)
+    ):
+        raise TopologyError("portable closure proof binding drift")
+    _validate_exact_governance_record(governance_path, nodes, custody)
+    return document
+
+
+def execute_portable_defect_closure(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] | None = None,
+) -> Path:
+    """Execute all 32 closed nodes exactly once and publish one no-clobber proof."""
+    require_foundation_context(run_id, head_sha)
+    context = load_foundation_context(
+        foundation_context_path, run_id=run_id, head_sha=head_sha,
+    )
+    _require_topology_reservation(evidence_root, run_id, head_sha, context)
+    topology_root = evidence_root / "capability-topology"
+    _reject_policy_nonacceptance_presence(topology_root)
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
+    _reject_closed_source_artifacts(topology_root)
+    active, closure = _installed_governance_state(inventory, evidence_root, head_sha=head_sha)
+    del active
+    _validate_closure_date(closure, context)
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id,
+        head_sha=head_sha, foundation_context_path=foundation_context_path,
+    )
+    nodes = tuple(sorted(row.node_id for row in closure))
+    report = topology_root / "portable-defect-closure.governance.json"
+    selected = _execute_exact_with_retained_custody(
+        baseline=baseline, nodes=nodes, report=report,
+        runner=_run_exact if exact_runner is None else exact_runner,
+    )
+    if selected != nodes:
+        raise TopologyError("portable closure proof did not execute all closed nodes")
+    custody = _validate_custody_policy(baseline["collector_policy"])
+    proof: dict[str, object] = {
+        "schema_version": PORTABLE_CLOSURE_PROOF_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "closure_sha256": LOCKED_CLOSURE_SHA256,
+        "closure_node_ids": list(nodes),
+        "closure_node_ids_sha256": _ids_sha256(nodes),
+        "proof_command": CLOSURE_PROOF_COMMAND,
+        "proof_result_digests": [
+            row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)
+        ],
+        "custody_policy": custody,
+        "custody_policy_sha256": _sha256(custody),
+        "governance_report_sha256": hashlib.sha256(report.read_bytes()).hexdigest(),
+        "outcome": "PASS",
+        "closure_proof_sha256": "",
+    }
+    proof["closure_proof_sha256"] = _closure_proof_payload_sha256(proof)
+    destination = topology_root / "portable-defect-closure-proof.json"
+    _publish_no_clobber(destination, canonical_json_bytes(proof))
+    if validate_portable_closure_proof(
+        destination, foundation_run_id=run_id, foundation_head_sha=head_sha,
+        foundation_context=context,
+    ) != proof:
+        raise TopologyError("portable closure proof post-write reread failed")
+    return destination
 
 
 def _execute_exact_with_retained_custody(
@@ -1204,7 +1596,9 @@ def execute_portable_root_remainder(
 ) -> tuple[str, ...]:
     """Execute the sealed ordinary-root list exactly once, including an empty list."""
     require_foundation_context(run_id, head_sha)
-    _reject_unsafe_raw_reason_nonacceptance_presence(evidence_root / "capability-topology")
+    topology_root = evidence_root / "capability-topology"
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
+    _reject_closed_source_artifacts(topology_root)
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
         foundation_context_path=foundation_context_path,
@@ -2086,11 +2480,20 @@ def validate_receipt(
 
 
 def aggregate_receipts(
-    paths: list[Path], *, rows: tuple[InventoryRow, ...], foundation_run_id: str, foundation_head_sha: str,
+    paths: list[Path], *, rows: tuple[InventoryRow, ...], foundation_run_id: str,
+    foundation_head_sha: str, foundation_context: dict[str, object] | None = None,
+    closure_proof_path: Path | None = None,
 ) -> dict[str, object]:
     if not paths or any(path.parent != paths[0].parent for path in paths):
         raise TopologyError("receipt aggregation has an invalid topology root")
     _reject_unsafe_raw_reason_nonacceptance_presence(paths[0].parent)
+    _reject_closed_source_artifacts(paths[0].parent)
+    if foundation_context is None or closure_proof_path is None:
+        raise TopologyError("portable closure proof is required for aggregation")
+    validate_portable_closure_proof(
+        closure_proof_path, foundation_run_id=foundation_run_id,
+        foundation_head_sha=foundation_head_sha, foundation_context=foundation_context,
+    )
     expected_codes = set(CODE_CLASSIFICATION)
     try:
         receipts = [
@@ -2105,7 +2508,7 @@ def aggregate_receipts(
     codes = [str(receipt["capability_or_authority_code"]) for receipt in receipts]
     if len(codes) != len(set(codes)) or set(codes) != expected_codes:
         raise TopologyError("receipt set is missing, duplicate, or unknown")
-    statuses = {lane: "PASS" for lane in CLASSIFICATION_LANE.values()}
+    statuses = {"portable-source": "PASS", "native-capabilities": "PASS", "external-authorities": "PASS"}
     for receipt in receipts:
         lane = str(receipt["lane"])
         if receipt["outcome"] == "DEFERRED":
@@ -2126,6 +2529,7 @@ def reconcile_portable_root_accounting(
 ) -> dict[str, object]:
     """Require the dynamic baseline to be a closed one-execution-or-deferred union."""
     _reject_unsafe_raw_reason_nonacceptance_presence(evidence_root / "capability-topology")
+    _reject_closed_source_artifacts(evidence_root / "capability-topology")
     diagnostic = evidence_root / "capability-topology" / "portable-root-remainder.failure-diagnostic.json"
     if os.path.lexists(diagnostic):
         raise TopologyError("failure diagnostic is present; topology aggregation is forbidden")
@@ -2144,13 +2548,24 @@ def reconcile_portable_root_accounting(
         remainder,
         sealed_custody,
     )
-    rows = _installed_inventory_rows(inventory, evidence_root)
+    rows, closure = _installed_governance_state(inventory, evidence_root, head_sha=head_sha)
     topology_root = evidence_root / "capability-topology"
     receipt_paths = [topology_root / f"{code}.json" for code in sorted(CODE_CLASSIFICATION)]
+    context = load_foundation_context(
+        foundation_context_path, run_id=run_id, head_sha=head_sha,
+    ) if foundation_context_path is not None else None
+    if context is None:
+        raise TopologyError("portable closure proof requires sealed Foundation context")
+    closure_proof_path = topology_root / "portable-defect-closure-proof.json"
     disclosure = aggregate_receipts(
         receipt_paths, rows=rows, foundation_run_id=run_id, foundation_head_sha=head_sha,
+        foundation_context=context, closure_proof_path=closure_proof_path,
     )
-    accounted: list[str] = list(executed_remainder)
+    proof = validate_portable_closure_proof(
+        closure_proof_path, foundation_run_id=run_id, foundation_head_sha=head_sha,
+        foundation_context=context,
+    )
+    accounted: list[str] = [*executed_remainder, *proof["closure_node_ids"]]
     for path in receipt_paths:
         receipt = validate_receipt(
             path.read_bytes(), rows=rows, foundation_run_id=run_id, foundation_head_sha=head_sha,
@@ -2509,6 +2924,15 @@ def run_lane(
     if os.path.lexists(evidence_root / "capability-topology/portable-root-remainder.failure-diagnostic.json"):
         raise TopologyError("failure diagnostic is present; lane publication is forbidden")
     rows = _installed_inventory_rows(inventory, evidence_root)
+    if lane == "portable-source":
+        if foundation_context_path is None:
+            raise TopologyError("portable closure proof requires sealed Foundation context")
+        execute_portable_defect_closure(
+            inventory=inventory, evidence_root=evidence_root, run_id=run_id,
+            head_sha=head_sha, foundation_context_path=foundation_context_path,
+            exact_runner=exact_runner,
+        )
+        return []
     publications: list[Path] = []
     for code in sorted(CODE_CLASSIFICATION):
         expected_lane, expected = _expected_rows(rows, code)
@@ -2545,7 +2969,8 @@ def _is_portable_root_pytest_node_id(node_id: object) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=(
-        "reserve", "collect-baseline", "prepare-remainder", "run-remainder", "run-lane", "aggregate",
+        "reserve", "collect-baseline", "prepare-remainder", "run-remainder", "run-lane",
+        "check-closure", "aggregate",
     ))
     parser.add_argument("--lane", choices=tuple(CLASSIFICATION_LANE.values()))
     parser.add_argument("--inventory", type=Path, default=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
@@ -2575,6 +3000,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "run-remainder":
             execute_portable_root_remainder(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
+            )
+        elif args.action == "check-closure":
+            execute_portable_defect_closure(
                 inventory=args.inventory, evidence_root=args.evidence_root,
                 run_id=run_id, head_sha=head_sha,
                 foundation_context_path=args.foundation_context_path,

@@ -436,7 +436,7 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     )
     assert topology_recipe is not None
     sequence = topology_recipe.group(1)
-    assert sequence.index("$(MAKE) test-portable-root-remainder") < sequence.index("run-lane --lane portable-source")
+    assert sequence.index("$(MAKE) test-portable-root-remainder") < sequence.index("check-closure")
     remainder_target = re.search(
         r"^test-portable-root-remainder:\n((?:\t.*\n)+)", makefile, re.MULTILINE,
     )
@@ -452,7 +452,7 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     assert "native/package6_custodian" in portable_source_sequence
     assert "PACKAGE6_FD_CUSTODY_EXTENSION_PATH" in portable_source_sequence
     assert "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256" in portable_source_sequence
-    assert portable_source_sequence.index("collect-baseline") < portable_source_sequence.index("run-lane --lane portable-source")
+    assert portable_source_sequence.index("collect-baseline") < portable_source_sequence.index("check-closure")
 
 
 class MakeContractError(AssertionError):
@@ -466,21 +466,21 @@ _GUARDED_WORDS = frozenset({
 })
 # Each entry binds target, logical recipe span, argv, and command-local span.
 _APPROVED_RECURSIVE_MAKE_OCCURRENCES = (
-    ("check-test-skips", (83, 100), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (170, 177)),
-    ("test", (121, 137), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (164, 171)),
-    ("build-package6-custodian", (187, 187), ("-C", "native/package6_custodian", "build"), (0, 7)),
-    ("test-package6-custodian-native", (190, 195), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "test"), (171, 178)),
-    ("test-all", (282, 291), ("prepare-root-test-install",), (385, 392)),
-    ("test-all", (282, 291), ("test-all-private",), (484, 491)),
-    ("ci", (294, 304), ("ci-private",), (359, 366)),
-    ("ci-private", (307, 307), ("prepare-root-test-install",), (0, 7)),
-    ("ci-private", (308, 308), ("test-all-private", "check-test-skips", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
-    ("ci-portable", (311, 323), ("ci-portable-private",), (681, 688)),
-    ("ci-portable-private", (326, 326), ("prepare-root-test-install",), (0, 7)),
-    ("ci-portable-private", (327, 327), ("test-all-portable-topology-private", "check-test-governance-topology", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
-    ("test-portable-source", (331, 347), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (287, 294)),
-    ("ci-portable-topology", (367, 389), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (289, 296)),
-    ("ci-portable-topology", (367, 389), ("test-portable-root-remainder",), (949, 956)),
+    ("check-test-skips", (87, 104), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (170, 177)),
+    ("test", (125, 141), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (164, 171)),
+    ("build-package6-custodian", (191, 191), ("-C", "native/package6_custodian", "build"), (0, 7)),
+    ("test-package6-custodian-native", (194, 199), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "test"), (171, 178)),
+    ("test-all", (286, 295), ("prepare-root-test-install",), (385, 392)),
+    ("test-all", (286, 295), ("test-all-private",), (484, 491)),
+    ("ci", (298, 308), ("ci-private",), (359, 366)),
+    ("ci-private", (311, 311), ("prepare-root-test-install",), (0, 7)),
+    ("ci-private", (312, 312), ("test-all-private", "check-test-skips", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
+    ("ci-portable", (315, 327), ("ci-portable-private",), (681, 688)),
+    ("ci-portable-private", (330, 330), ("prepare-root-test-install",), (0, 7)),
+    ("ci-portable-private", (331, 331), ("test-all-portable-topology-private", "check-test-governance-topology", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
+    ("test-portable-source", (335, 352), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (287, 294)),
+    ("ci-portable-topology", (378, 401), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (289, 296)),
+    ("ci-portable-topology", (378, 401), ("test-portable-root-remainder",), (949, 956)),
 )
 
 
@@ -857,11 +857,12 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
         topology = ("--evidence-root", evidence, "--foundation-context-path", context)
         expected = [
             ("check-test-skips", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--report-dir", evidence + "/test-governance")), ("check-test-governance-topology", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--topology-audit", "--report-dir", evidence + "/test-governance-topology", "--topology-evidence-root", evidence, "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv", "--foundation-context-path", context)),
-            ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "portable-source", *topology)),
+            ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)),
             ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)),
             ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)),
             ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "prepare-remainder", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-remainder", *topology)),
-            ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "portable-source", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "aggregate", *topology)),
+            ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "aggregate", *topology)),
+            ("check-portable-defect-closure", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)),
         ]
         target_order = {target: index for index, target in enumerate(dict.fromkeys(target for target, _argv in expected))}
         observed.sort(key=lambda entry: target_order.get(entry[0], len(target_order)))
@@ -1384,11 +1385,42 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
     ).stdout.strip()
     inventory = ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv"
     rows = topology.load_inventory(inventory)
-    topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head_sha)
-    (evidence / "t-g03a-hosted-failure-inventory.tsv").write_bytes(inventory.read_bytes())
+    closure = topology.load_portable_defect_closure(head_sha=head_sha)
     topology_root = evidence / "capability-topology"
+    topology_root.mkdir(parents=True, mode=0o700)
+    context: dict[str, object] = {
+        "schema_version": topology.FOUNDATION_CONTEXT_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "foundation_validation_date": "2026-08-13",
+        "foundation_context_sha256": "",
+    }
+    context["foundation_context_sha256"] = topology._sha256({
+        key: value for key, value in context.items()
+        if key != "foundation_context_sha256"
+    })
+    context_path = topology_root / "foundation-context.json"
+    context_path.write_bytes(topology.canonical_json_bytes(context))
+    previous_run = os.environ.get("GITHUB_RUN_ID")
+    os.environ["GITHUB_RUN_ID"] = run_id
+    try:
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+    finally:
+        if previous_run is None:
+            os.environ.pop("GITHUB_RUN_ID", None)
+        else:
+            os.environ["GITHUB_RUN_ID"] = previous_run
+    (evidence / "t-g03a-hosted-failure-inventory.tsv").write_bytes(inventory.read_bytes())
+    (evidence / topology.CLOSURE_RELATIVE_PATH.name).write_bytes(
+        topology.CLOSURE_PATH.read_bytes(),
+    )
     ordinary = "tests/ordinary/test_portable.py::test_ordinary"
-    candidates = tuple(sorted([*(row.node_id for row in rows), ordinary]))
+    candidates = tuple(sorted([
+        *(row.node_id for row in rows), *(row.node_id for row in closure), ordinary,
+    ]))
     candidate_bytes = topology._candidate_file_bytes(candidates)
     collection = {
         "schema_version": 1,
@@ -1406,6 +1438,9 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
         "foundation_run_id": run_id,
         "foundation_head_sha": head_sha,
         "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
         "collector_policy": {
             **topology.PORTABLE_ROOT_POLICY,
             "native_custody_extension_identity": "1:2:1000:600:1",
@@ -1425,6 +1460,7 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
         "foundation_run_id": run_id,
         "foundation_head_sha": head_sha,
         "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
         "baseline_sha256": baseline["baseline_sha256"],
         "remainder_node_ids": [ordinary],
         "remainder_file_sha256": topology.hashlib.sha256(remainder_bytes).hexdigest(),
@@ -1438,6 +1474,49 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
             "test_node_id": ordinary, "component": "root", "outcome": "passed", "reason": "", "phase": "call",
         }]}),
         encoding="utf-8",
+    )
+    closure_nodes = tuple(sorted(row.node_id for row in closure))
+    observed_closure = list(closure_nodes)
+    if malformed_root_record:
+        observed_closure[-1] = "tests/hidden.py::test_not_selected"
+    closure_governance = topology_root / "portable-defect-closure.governance.json"
+    closure_governance.write_text(json.dumps({
+        "schema_version": 1,
+        "component": "root",
+        "pytest_exit_status": 0,
+        "custody_policy": baseline["collector_policy"],
+        "tests": [{
+            "test_node_id": node, "component": "root", "outcome": "passed",
+            "reason": "", "phase": "call",
+        } for node in observed_closure],
+    }), encoding="utf-8")
+    closure_proof: dict[str, object] = {
+        "schema_version": topology.PORTABLE_CLOSURE_PROOF_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
+        "closure_node_ids": list(closure_nodes),
+        "closure_node_ids_sha256": topology._ids_sha256(closure_nodes),
+        "proof_command": topology.CLOSURE_PROOF_COMMAND,
+        "proof_result_digests": [
+            row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)
+        ],
+        "custody_policy": baseline["collector_policy"],
+        "custody_policy_sha256": topology._sha256(baseline["collector_policy"]),
+        "governance_report_sha256": topology.hashlib.sha256(
+            closure_governance.read_bytes(),
+        ).hexdigest(),
+        "outcome": "PASS",
+        "closure_proof_sha256": "",
+    }
+    closure_proof["closure_proof_sha256"] = topology._closure_proof_payload_sha256(
+        closure_proof,
+    )
+    (topology_root / "portable-defect-closure-proof.json").write_bytes(
+        topology.canonical_json_bytes(closure_proof),
     )
     for code in topology.CODE_CLASSIFICATION:
         lane, expected = topology._expected_rows(rows, code)
@@ -1462,8 +1541,6 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
         (topology_root / f"{code}.json").write_bytes(topology.canonical_json_bytes(receipt))
         if outcome == "PASS":
             observed = list(expected)
-            if malformed_root_record:
-                observed[-1] = "tests/hidden.py::test_not_selected"
             (topology_root / f"{code}.governance.json").write_text(
                 json.dumps(
                     {
@@ -1488,11 +1565,14 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
     return run_id, head_sha
 
 
-def test_topology_audit_discloses_deferred_receipts_without_claiming_pass() -> None:
+def test_topology_audit_discloses_deferred_receipts_without_claiming_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Break caught: deferred runtime proofs become PASS or omit exact root evidence."""
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw)
         run_id, head_sha = _write_topology_evidence(evidence)
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
         disclosure, root_records = audit_topology_root_records(
             evidence_root=evidence,
             inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
@@ -1517,6 +1597,7 @@ def test_topology_audit_rejects_unsafe_raw_reason_presence_before_acceptance_inp
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw)
         run_id, head_sha = _write_topology_evidence(evidence)
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
         (evidence / "capability-topology/portable-root-remainder.unsafe-raw-reason-nonacceptance.json").write_bytes(b"foreign")
         monkeypatch.setattr(
             topology, "load_portable_root_baseline",
@@ -1531,11 +1612,14 @@ def test_topology_audit_rejects_unsafe_raw_reason_presence_before_acceptance_inp
             )
 
 
-def test_topology_audit_rejects_a_root_record_that_does_not_match_its_receipt() -> None:
+def test_topology_audit_rejects_a_root_record_that_does_not_match_its_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Break caught: a partial, extra, or unbound root lane record passes governance."""
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw)
         run_id, head_sha = _write_topology_evidence(evidence, malformed_root_record=True)
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
         with pytest.raises(GovernanceError, match="root topology governance"):
             audit_topology_root_records(
                 evidence_root=evidence,
@@ -1575,6 +1659,7 @@ def test_topology_runner_merges_sealed_root_with_retained_component_governance(
         evidence = Path(evidence_raw)
         report_dir = Path(report_raw)
         run_id, head_sha = _write_topology_evidence(evidence)
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
         commands: list[tuple[str, ...]] = []
 
         def fake_run(command, *, env, **_kwargs):
@@ -1630,7 +1715,11 @@ def test_dynamic_baseline_includes_a_new_ordinary_root_node_and_derives_the_exac
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
     ).stdout.strip()
     rows = topology.load_inventory(ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
-    candidates = tuple(sorted([*(row.node_id for row in rows), "tests/ordinary/test_new.py::test_new"] ))
+    closure = topology.load_portable_defect_closure(head_sha=head_sha)
+    candidates = tuple(sorted([
+        *(row.node_id for row in rows), *(row.node_id for row in closure),
+        "tests/ordinary/test_new.py::test_new",
+    ]))
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
         extension = Path(raw) / "custody.so"
@@ -1684,6 +1773,10 @@ def test_remainder_executor_uses_only_the_verified_generated_node_list(
 
         # Rebuild the sealed baseline with the real custody identity expected by the executor.
         topology_root = evidence / "capability-topology"
+        (topology_root / "portable-defect-closure-proof.json").unlink()
+        (topology_root / "portable-defect-closure.governance.json").unlink()
+        for code in topology.CODE_CLASSIFICATION:
+            (topology_root / f"{code}.json").unlink()
         baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
         baseline["collector_policy"] = topology._native_custody_policy()
         baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
@@ -1699,6 +1792,7 @@ def test_remainder_executor_uses_only_the_verified_generated_node_list(
             run_id=run_id,
             head_sha=head_sha,
             exact_runner=exact,
+            foundation_context_path=topology_root / "foundation-context.json",
         )
 
     assert selected == [("tests/ordinary/test_portable.py::test_ordinary",)]
@@ -1721,6 +1815,10 @@ def test_extension_drift_after_remainder_blocks_the_next_pass_lane_and_closed_ag
             topology.hashlib.sha256(extension.read_bytes()).hexdigest(),
         )
         topology_root = evidence / "capability-topology"
+        (topology_root / "portable-defect-closure-proof.json").unlink()
+        (topology_root / "portable-defect-closure.governance.json").unlink()
+        for code in topology.CODE_CLASSIFICATION:
+            (topology_root / f"{code}.json").unlink()
         baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
         baseline["collector_policy"] = topology._native_custody_policy()
         baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
@@ -1767,11 +1865,8 @@ def test_extension_drift_after_remainder_blocks_the_next_pass_lane_and_closed_ag
             run_id=run_id,
             head_sha=head_sha,
             exact_runner=exact,
+            foundation_context_path=topology_root / "foundation-context.json",
         )
-        for code, classification in topology.CODE_CLASSIFICATION.items():
-            if classification == "PORTABLE_SOURCE_DEFECT":
-                (topology_root / f"{code}.json").unlink()
-                (topology_root / f"{code}.governance.json").unlink()
 
         extension.write_bytes(b"replaced custody")
         invoked = False
@@ -1789,6 +1884,7 @@ def test_extension_drift_after_remainder_blocks_the_next_pass_lane_and_closed_ag
                 run_id=run_id,
                 head_sha=head_sha,
                 exact_runner=must_not_run,
+                foundation_context_path=topology_root / "foundation-context.json",
             )
         assert not invoked
         assert not any(topology_root.glob("SRC-*.json"))
@@ -1798,14 +1894,18 @@ def test_extension_drift_after_remainder_blocks_the_next_pass_lane_and_closed_ag
                 evidence_root=evidence,
                 run_id=run_id,
                 head_sha=head_sha,
+                foundation_context_path=topology_root / "foundation-context.json",
             )
 
 
-def test_closed_root_accounting_rejects_duplicate_execution_between_remainder_and_inventory() -> None:
+def test_closed_root_accounting_rejects_duplicate_execution_between_remainder_and_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Break caught: an inventory node is also counted as an ordinary-root execution."""
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw)
         run_id, head_sha = _write_topology_evidence(evidence)
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
         topology_root = evidence / "capability-topology"
         remainder = json.loads((topology_root / "portable-root-remainder.json").read_text(encoding="utf-8"))
         duplicate = topology.load_inventory(
@@ -1824,4 +1924,5 @@ def test_closed_root_accounting_rejects_duplicate_execution_between_remainder_an
                 evidence_root=evidence,
                 run_id=run_id,
                 head_sha=head_sha,
+                foundation_context_path=topology_root / "foundation-context.json",
             )
