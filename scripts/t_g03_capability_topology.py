@@ -702,6 +702,30 @@ def _execute_exact_with_retained_custody(
             pass
 
 
+def _write_empty_exact_governance_report(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+    if nodes:
+        raise TopologyError("empty governance report received selected nodes")
+    try:
+        custody_policy = json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"])
+    except (KeyError, json.JSONDecodeError) as exc:
+        raise TopologyError("empty governance report lacks scoped custody policy") from exc
+    _publish_no_clobber(
+        report,
+        json.dumps(
+            {
+                "schema_version": 1,
+                "component": "root",
+                "pytest_exit_status": 0,
+                "custody_policy": custody_policy,
+                "summary": {},
+                "tests": [],
+            },
+            sort_keys=True,
+        ).encode("utf-8"),
+    )
+    return ()
+
+
 def execute_portable_root_remainder(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] | None = None,
@@ -720,23 +744,12 @@ def execute_portable_root_remainder(
         return _execute_exact_with_retained_custody(
             baseline=baseline, nodes=remainder, report=report, runner=runner,
         )
-    else:
-        with _retained_sealed_custody(baseline) as (sealed_custody, _descriptor):
-            _publish_no_clobber(
-                report,
-                json.dumps(
-                    {
-                        "schema_version": 1,
-                        "component": "root",
-                        "pytest_exit_status": 0,
-                        "custody_policy": sealed_custody,
-                        "summary": {},
-                        "tests": [],
-                    },
-                    sort_keys=True,
-                ).encode("utf-8"),
-            )
-        return _validate_exact_governance_record(report, remainder, sealed_custody)
+    return _execute_exact_with_retained_custody(
+        baseline=baseline,
+        nodes=remainder,
+        report=report,
+        runner=_write_empty_exact_governance_report,
+    )
 
 
 def _sha256(document: object) -> str:

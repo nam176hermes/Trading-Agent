@@ -405,6 +405,50 @@ def test_runner_boundary_byte_identical_custody_replacement_cannot_publish_pass(
         assert not any((evidence / "capability-topology").glob("SRC-*.json"))
 
 
+def test_empty_remainder_replacement_after_provisional_write_cannot_publish_or_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: empty remainder publishes final PASS evidence before custody exit."""
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head)
+        _seal_portable_root_baseline(monkeypatch, evidence, raw, run_id=run_id, head_sha=head)
+        extension = Path(os.environ["PACKAGE6_FD_CUSTODY_EXTENSION_PATH"])
+        replacement = Path(raw) / "same-byte-replacement.so"
+        replacement.write_bytes(extension.read_bytes())
+        final = evidence / "capability-topology/portable-root-remainder.governance.json"
+        real_publish = topology._publish_no_clobber
+
+        def replace_after_empty_provisional_write(path: Path, content: bytes) -> None:
+            real_publish(path, content)
+            if path.name == ".portable-root-remainder.governance.json.executing":
+                os.replace(replacement, extension)
+
+        monkeypatch.setattr(topology, "_publish_no_clobber", replace_after_empty_provisional_write)
+
+        with pytest.raises(topology.TopologyError, match="custody"):
+            topology.execute_portable_root_remainder(
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head,
+            )
+
+        assert not final.exists()
+        assert not list(final.parent.glob(".portable-root-remainder.governance.json.executing"))
+        with pytest.raises(topology.TopologyError, match="exact governance record"):
+            topology.reconcile_portable_root_accounting(
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head,
+            )
+
+
 def test_exact_pytest_child_inherits_the_retained_custody_descriptor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

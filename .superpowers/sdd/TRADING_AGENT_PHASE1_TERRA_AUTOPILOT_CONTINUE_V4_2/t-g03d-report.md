@@ -247,3 +247,47 @@ v1 and hosted topology routing intact while correcting them:
   ci-portable` remains the canonical full-root execution.
 - `make check-contracts` is still blocked by the missing ignored dashboard
   `openapi-typescript` executable.  No dependency install was performed.
+
+## Round 4/5: empty remainder final publication follows custody postcheck
+
+The round-3 re-review found that the empty ordinary-root remainder published
+its final no-clobber governance record while the retained custody context was
+still active.  This repair gives the empty branch the same staged lifecycle as
+every nonempty exact execution:
+
+- The empty report is written only to the task-owned private
+  `.portable-root-remainder.governance.json.executing` provisional path while
+  the descriptor is retained.
+- Exiting retained custody performs its no-follow pathname/identity and
+  descriptor-digest postchecks before the provisional bytes are validated and
+  published to the final no-clobber governance path.
+- If the postcheck fails, the `finally` cleanup removes only that provisional
+  file.  No final remainder governance record is created, so topology
+  reconciliation cannot accept an aggregate.
+
+### Round-4 TDD and validation
+
+1. Added the hostile empty-remainder test first.  It performs a byte-identical
+   `os.replace` immediately after the empty branch writes the provisional
+   report, the branch-equivalent boundary to a runner returning its report.
+   On the pre-fix code it was RED: no custody error was raised because final
+   governance had already been published before context-exit postcheck.
+2. The staged empty implementation is GREEN: the replacement raises the
+   custody error, leaves neither final nor `.executing` remainder governance
+   evidence, and `reconcile_portable_root_accounting()` rejects the incomplete
+   aggregate.
+3. `TMPDIR=/tmp TMP=/tmp TEMP=/tmp uv run pytest -q
+   tests/governance/test_t_g03_capability_topology.py
+   tests/governance/test_t_g03d_hosted_disclosure.py` — `41 passed`.
+4. `GITHUB_RUN_ID=31641536482 TEST_EVIDENCE_DIR=<fresh-private-/tmp-root>
+   TMPDIR=/tmp TMP=/tmp TEMP=/tmp make test-portable-source` — passed after a
+   fresh private custody build.  Collection reported `5838` candidates and
+   `29` deselections; portable source groups passed with `2`, `27`, and `3`
+   tests.
+
+### Round-4 limitations
+
+- Full generated-remainder execution was not run locally; hosted `make
+  ci-portable` remains the canonical full-root execution.
+- `make check-contracts` remains blocked by the missing ignored dashboard
+  `openapi-typescript` executable.  No dependency install was performed.
