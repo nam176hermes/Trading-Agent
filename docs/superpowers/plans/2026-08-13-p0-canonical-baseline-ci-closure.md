@@ -2335,3 +2335,80 @@ implementation began:
 
 These decisions replace conflicting `qualified_sha` and same-commit closure
 instructions elsewhere in this plan. All other requirements remain binding.
+
+---
+
+## Evidence-corrected execution
+
+This correction was approved by the operator on 2026-08-13 and supersedes
+conflicting P0-02/P0-03 text in the committed plan.
+
+### Verified facts
+
+- GitHub Actions run `31724355034` is bound to candidate head
+  `417c17452ea31f0ca8c8e9893ac3c03a3a90a7c1`.
+- `POLICY_DATE_CONTEXT_MISMATCH` appeared while the existing negative test
+  suite was running. The run subsequently reported `5681 passed, 281 skipped`.
+- The blocking topology result was
+  `UNSAFE_RAW_REASON_NONACCEPTANCE`, followed by failure of
+  `test-portable-root-remainder`, `ci-portable-topology`, and `ci-portable`.
+- The real topology governance test path is
+  `tests/governance/test_t_g03_capability_topology.py`.
+- The real governance CLI is launched as
+  `python -m scripts.check_test_governance` and uses `--allowlist`,
+  `--inventory`, `--topology-evidence-root`, and
+  `--foundation-context-path`.
+- The locked inventory is
+  `tests/fixtures/t-g03a-hosted-failure-inventory.tsv`.
+- Foundation context schema `t-g03a-foundation-context/v1` contains run ID,
+  head SHA, validation date, and self-hash. It does not contain an inventory
+  digest. Do not fabricate that field in P0-02.
+
+### Revised P0-02 - Verify and instrument the real date-authority boundary
+
+Goal: prove the current clean sealed-context path succeeds through the actual
+production subprocess contract, keep CLI/environment overrides fail-closed,
+and add redacted source diagnostics. Do not manufacture a clean-context
+failure and do not leave an intentional failing test.
+
+Required work:
+
+1. Append this evidence correction to the tracked implementation plan under
+   an `Evidence-corrected execution` section and commit that documentation
+   separately as `docs(p0): correct CI failure evidence`.
+2. Add a subprocess-level regression using the real module entry point and
+   real option names. With a valid temporary v1 foundation context and the
+   production topology inputs, an environment without
+   `FOUNDATION_VALIDATION_DATE`, and no `--today`, it must exit 0.
+3. Add subprocess-level negative coverage proving `--today` and
+   `FOUNDATION_VALIDATION_DATE` each exit non-zero with
+   `POLICY_DATE_CONTEXT_MISMATCH`.
+4. On a date-context error, the JSON error artifact may add only:
+   `cli_today_present`, `environment_override_present`,
+   `sealed_context_present`, and `sealed_context_valid`. Values are booleans;
+   never include the override value, arbitrary environment data, credentials,
+   or raw external paths. `sealed_context_valid` must mean the context was
+   actually validated, not merely present.
+5. Preserve v1 context validation order and semantics already implemented:
+   strict schema/canonical bytes, self-hash, run ID, head SHA, then date use.
+   Do not add an inventory digest or redesign receipts in this packet.
+6. Follow TDD. RED must demonstrate a missing subprocess/diagnostic behavior,
+   not a fabricated production defect. GREEN requires all focused validation
+   date and topology tests to pass.
+7. Commit implementation as
+   `test(ci): verify sealed validation-date authority`.
+
+### Revised P0-03 - Close the actual hosted topology blocker
+
+After P0-02 review passes, reproduce
+`UNSAFE_RAW_REASON_NONACCEPTANCE` through the exact portable topology lane,
+write a failing regression against the real unsafe-reason nonacceptance path,
+implement the minimal fail-closed correction, and verify the focused failure
+diagnostic/topology suites plus the production Make lane. Do not weaken raw
+reason rejection, receipt custody, or redaction.
+
+### Later tasks
+
+Before starting P0-04 or later, revalidate every named path, inventory count,
+classification, and command against the candidate. Record corrections in the
+tracked plan rather than creating nonexistent files or synthetic failures.
