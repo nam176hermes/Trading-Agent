@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -15,6 +16,100 @@ from scripts import check_test_governance as governance
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv"
+ALLOWLIST = ROOT / "tests/skip-allowlist.yaml"
+RUN_ID = "31641536482"
+
+
+def _governance_topology_command(
+    *, evidence: Path, report_dir: Path, context_path: Path,
+    allowlist: Path = ALLOWLIST,
+) -> list[str]:
+    return [
+        "uv", "run", "python", "-m", "scripts.check_test_governance",
+        "--allowlist", str(allowlist),
+        "--topology-audit",
+        "--report-dir", str(report_dir),
+        "--topology-evidence-root", str(evidence),
+        "--inventory", str(INVENTORY),
+        "--foundation-context-path", str(context_path),
+    ]
+
+
+def _capture_valid_context(
+    evidence: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, str]:
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", RUN_ID)
+    monkeypatch.delenv("FOUNDATION_VALIDATION_DATE", raising=False)
+    context_path = topology._capture_foundation_context(
+        evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+    return context_path, head_sha
+
+
+def _write_passing_exact_report(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+    report.write_text(
+        topology.json.dumps(
+            {
+                "schema_version": 1,
+                "component": "root",
+                "pytest_exit_status": 0,
+                "custody_policy": topology.json.loads(
+                    os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]
+                ),
+                "tests": [
+                    {
+                        "test_node_id": node,
+                        "component": "root",
+                        "outcome": "passed",
+                        "reason": "",
+                        "phase": "call",
+                    }
+                    for node in nodes
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return nodes
+
+
+def _write_component_process_fixtures(root: Path) -> Path:
+    """Isolate the date-boundary subprocess from unrelated component test execution."""
+    fake_bin = root / "bin"
+    fake_bin.mkdir(mode=0o700)
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '{\"schema_version\":1,\"tests\":[]}' "
+        "> \"$TEST_GOVERNANCE_REPORT\"\n",
+        encoding="utf-8",
+    )
+    fake_node = fake_bin / "node"
+    fake_node.write_text(
+        "#!/bin/sh\n"
+        "if test \"$1\" = tests/run-test-inventory.mjs; then\n"
+        "  printf '%s\\n' "
+        "'{\"schema_version\":1,\"node_tests\":[\"tests/api-access-boundary.test.mjs\"],"
+        "\"integration_tests\":[\"tests/dashboard-security.integration.sh\"]}'\n"
+        "else\n"
+        "  printf '%s\\n' 'TAP version 13' '# Subtest: sealed date boundary' "
+        "'ok 1 - sealed date boundary' '1..1'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    fake_bash = fake_bin / "bash"
+    fake_bash.write_text(
+        "#!/bin/sh\nprintf '%s\\n' 'isolated integration: PASS'\n",
+        encoding="utf-8",
+    )
+    for fixture in (fake_uv, fake_node, fake_bash):
+        fixture.chmod(0o700)
+    return fake_bin
 
 
 @pytest.mark.parametrize(
@@ -34,6 +129,264 @@ def test_t_g03_package_module_entrypoints_preserve_the_help_contract(module: str
     assert completed.returncode == 0
     assert "ModuleNotFoundError" not in completed.stderr
     assert "SHARED_VALIDATOR_IMPORT" not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_sources"),
+    (
+        (
+            "cli",
+            {
+                "cli_today_present": True,
+                "environment_override_present": False,
+                "sealed_context_present": True,
+                "sealed_context_valid": True,
+            },
+        ),
+        (
+            "environment",
+            {
+                "cli_today_present": False,
+                "environment_override_present": True,
+                "sealed_context_present": True,
+                "sealed_context_valid": True,
+            },
+        ),
+    ),
+)
+def test_topology_governance_subprocess_rejects_date_overrides_with_safe_diagnostics(
+    source: str,
+    expected_sources: dict[str, bool],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a date override lacks bounded provenance or leaks its injected value."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        report_dir = root / "report"
+        context_path, _head_sha = _capture_valid_context(evidence, monkeypatch)
+        command = _governance_topology_command(
+            evidence=evidence, report_dir=report_dir, context_path=context_path,
+        )
+        environment = os.environ.copy()
+        injected_value = "P0_02_INJECTED_ENVIRONMENT_VALUE"
+        environment["P0_02_UNRELATED_ENVIRONMENT_VALUE"] = injected_value
+        if source == "cli":
+            command.extend(("--today", "2026-08-13"))
+        else:
+            environment["FOUNDATION_VALIDATION_DATE"] = "2026-08-13"
+
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        artifact_path = report_dir / "test-governance-error.json"
+        artifact_bytes = artifact_path.read_bytes()
+        artifact = topology.json.loads(artifact_bytes)
+        assert completed.returncode == 1
+        assert completed.stdout == ""
+        assert completed.stderr == (
+            "TEST_GOVERNANCE_ERROR: policy validation failed: "
+            "POLICY_DATE_CONTEXT_MISMATCH\n"
+        )
+        assert artifact["error"] == (
+            "policy validation failed: POLICY_DATE_CONTEXT_MISMATCH"
+        )
+        assert set(artifact) == {
+            "schema_version",
+            "status",
+            "generated_at_utc",
+            "error",
+            "suite_exit_codes",
+            "date_context_sources",
+        }
+        assert artifact["date_context_sources"] == expected_sources
+        assert set(artifact["date_context_sources"]) == {
+            "cli_today_present",
+            "environment_override_present",
+            "sealed_context_present",
+            "sealed_context_valid",
+        }
+        assert all(type(value) is bool for value in artifact["date_context_sources"].values())
+        assert injected_value not in completed.stdout
+        assert injected_value not in completed.stderr
+        assert injected_value.encode("utf-8") not in artifact_bytes
+
+
+def test_topology_governance_date_diagnostic_does_not_treat_presence_as_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: sealed_context_valid is true for bytes that never passed v1 validation."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        report_dir = root / "report"
+        context_path = evidence / "capability-topology/foundation-context.json"
+        context_path.parent.mkdir(parents=True, mode=0o700)
+        context_path.write_bytes(b"{}")
+        monkeypatch.setenv("GITHUB_RUN_ID", RUN_ID)
+        monkeypatch.delenv("FOUNDATION_VALIDATION_DATE", raising=False)
+        completed = subprocess.run(
+            [
+                *_governance_topology_command(
+                    evidence=evidence,
+                    report_dir=report_dir,
+                    context_path=context_path,
+                ),
+                "--today", "2026-08-13",
+            ],
+            cwd=ROOT,
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        artifact = topology.json.loads(
+            (report_dir / "test-governance-error.json").read_text(encoding="utf-8")
+        )
+        assert completed.returncode == 1
+        assert "POLICY_DATE_CONTEXT_MISMATCH" in completed.stderr
+        assert artifact["date_context_sources"] == {
+            "cli_today_present": True,
+            "environment_override_present": False,
+            "sealed_context_present": True,
+            "sealed_context_valid": False,
+        }
+
+
+def test_topology_governance_production_subprocess_accepts_clean_sealed_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: the real governance module rejects its sole sealed validation-date authority."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        report_dir = root / "report"
+        context_path, head_sha = _capture_valid_context(evidence, monkeypatch)
+        custody = root / "custody.so"
+        custody.write_bytes(b"p0-02 subprocess custody fixture")
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(custody))
+        monkeypatch.setenv(
+            "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256",
+            topology.hashlib.sha256(custody.read_bytes()).hexdigest(),
+        )
+        topology.reserve_topology_evidence(
+            evidence,
+            run_id=RUN_ID,
+            head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+        rows = topology.load_inventory(INVENTORY)
+        candidates = tuple(sorted(
+            [
+                *(row.node_id for row in rows),
+                (
+                    "tests/governance/test_t_g03f_validation_date.py::"
+                    "test_topology_governance_production_subprocess_accepts_clean_sealed_context"
+                ),
+            ]
+        ))
+        topology.collect_portable_root_baseline(
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=RUN_ID,
+            head_sha=head_sha,
+            collector=lambda: candidates,
+            foundation_context_path=context_path,
+        )
+        topology.prepare_portable_root_remainder(
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=RUN_ID,
+            head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+        topology.execute_portable_root_remainder(
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=RUN_ID,
+            head_sha=head_sha,
+            exact_runner=_write_passing_exact_report,
+            foundation_context_path=context_path,
+        )
+        topology.run_lane(
+            lane="portable-source",
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=RUN_ID,
+            head_sha=head_sha,
+            exact_runner=_write_passing_exact_report,
+            foundation_context_path=context_path,
+        )
+        monkeypatch.setattr(
+            topology,
+            "_native_preflight",
+            lambda _code: ("UNAVAILABLE", "NATIVE_COMPONENT_ABSENT"),
+        )
+        topology.run_lane(
+            lane="native-capabilities",
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=RUN_ID,
+            head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+        topology.run_lane(
+            lane="external-authorities",
+            inventory=INVENTORY,
+            evidence_root=evidence,
+            run_id=RUN_ID,
+            head_sha=head_sha,
+            external_preflight=lambda _code: ("ABSENT", "AUTHORITY_ROOT_ABSENT"),
+            foundation_context_path=context_path,
+        )
+        environment = os.environ.copy()
+        environment.pop("FOUNDATION_VALIDATION_DATE", None)
+        environment.pop("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", None)
+        environment.pop("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", None)
+        fake_bin = _write_component_process_fixtures(root)
+        environment["PATH"] = os.pathsep.join((str(fake_bin), "/usr/bin", "/bin"))
+        allowlist = root / "allowlist.json"
+        allowlist.write_text(
+            '{"schema_version":1,"entries":[]}', encoding="utf-8",
+        )
+        command = _governance_topology_command(
+            evidence=evidence,
+            report_dir=report_dir,
+            context_path=context_path,
+            allowlist=allowlist,
+        )
+        uv = shutil.which("uv", path=os.environ.get("PATH"))
+        assert uv is not None
+        command[0] = uv
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert completed.returncode == 0, completed.stderr
+        assert "POLICY_DATE_CONTEXT_MISMATCH" not in completed.stderr
+        report = topology.json.loads(
+            (report_dir / "test-governance.json").read_text(encoding="utf-8")
+        )
+        assert report["status"] == "pass"
+        assert report["capability_topology"] == {
+            "portable_source_status": "PASS",
+            "native_capabilities_status": "DEFERRED",
+            "external_authorities_status": "DEFERRED",
+            "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
+        }
+        assert not (report_dir / "test-governance-error.json").exists()
 
 
 def test_t_g03_topology_module_reaches_policy_validation_before_absent_custody(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import pytest
 from pathlib import Path
@@ -195,6 +196,44 @@ def test_foundation_context_requires_current_github_run_and_checked_out_head(mon
     monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
     with pytest.raises(topology.TopologyError, match="GitHub run"):
         topology.require_foundation_context("31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78")
+
+
+def test_foundation_context_diagnostic_probe_requires_full_v1_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a diagnostic labels a merely present or forged context as validated."""
+    run_id = "31641536482"
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    monkeypatch.delenv("FOUNDATION_VALIDATION_DATE", raising=False)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        valid_path = topology._capture_foundation_context(
+            root / "valid",
+            clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        malformed_path = root / "malformed.json"
+        malformed_path.write_bytes(b"{}")
+        forged_path = root / "forged.json"
+        forged = topology.json.loads(valid_path.read_text(encoding="utf-8"))
+        forged["foundation_validation_date"] = "2026-08-14"
+        forged_path.write_bytes(topology.canonical_json_bytes(forged))
+
+        assert topology._foundation_context_is_valid_for_diagnostics(
+            valid_path, run_id=run_id, head_sha=head_sha,
+        ) is True
+        assert topology._foundation_context_is_valid_for_diagnostics(
+            malformed_path, run_id=run_id, head_sha=head_sha,
+        ) is False
+        assert topology._foundation_context_is_valid_for_diagnostics(
+            forged_path, run_id=run_id, head_sha=head_sha,
+        ) is False
+        monkeypatch.setenv("FOUNDATION_VALIDATION_DATE", "P0_02_OVERRIDE_SENTINEL")
+        assert topology._foundation_context_is_valid_for_diagnostics(
+            valid_path, run_id=run_id, head_sha=head_sha,
+        ) is True
 
 
 def test_exact_collection_rejects_xpass_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

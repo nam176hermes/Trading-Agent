@@ -1072,6 +1072,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     records: list[dict[str, object]] = []
     exit_codes: dict[str, int] = {}
     topology_disclosure: dict[str, object] | None = None
+    date_context_sources = {
+        "cli_today_present": args.today is not None,
+        "environment_override_present": "FOUNDATION_VALIDATION_DATE" in os.environ,
+        "sealed_context_present": False,
+        "sealed_context_valid": False,
+    }
     try:
         _prepare_private_directory(report_dir)
         _remove_artifacts(
@@ -1086,9 +1092,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         if bootstrap_path is not None and not bootstrap_path.is_absolute():
             bootstrap_path = ROOT / bootstrap_path
         if args.topology_audit:
-            if args.today is not None:
-                raise GovernanceError("policy validation failed: POLICY_DATE_CONTEXT_MISMATCH")
-            if "FOUNDATION_VALIDATION_DATE" in os.environ:
+            context_path = args.foundation_context_path
+            if context_path is not None:
+                if not context_path.is_absolute():
+                    context_path = ROOT / context_path
+                date_context_sources["sealed_context_present"] = os.path.lexists(
+                    context_path
+                )
+            if (
+                date_context_sources["cli_today_present"]
+                or date_context_sources["environment_override_present"]
+            ):
+                if context_path is not None:
+                    try:
+                        diagnostic_run_id, diagnostic_head_sha = (
+                            capability_topology._active_foundation_identity()
+                        )
+                    except capability_topology.TopologyError:
+                        pass
+                    else:
+                        date_context_sources["sealed_context_valid"] = (
+                            capability_topology._foundation_context_is_valid_for_diagnostics(
+                                context_path,
+                                run_id=diagnostic_run_id,
+                                head_sha=diagnostic_head_sha,
+                            )
+                        )
                 raise GovernanceError("policy validation failed: POLICY_DATE_CONTEXT_MISMATCH")
             if args.bootstrap_allowlist is not None:
                 raise GovernanceError("topology audit cannot bootstrap an allowlist")
@@ -1104,6 +1133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             inventory = args.inventory if args.inventory.is_absolute() else ROOT / args.inventory
             foundation_run_id, foundation_head_sha = capability_topology._active_foundation_identity()
             context_path = args.foundation_context_path
+            assert context_path is not None
             if not context_path.is_absolute():
                 context_path = ROOT / context_path
             context = capability_topology.load_foundation_context(
@@ -1111,6 +1141,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_id=foundation_run_id,
                 head_sha=foundation_head_sha,
             )
+            date_context_sources["sealed_context_present"] = True
+            date_context_sources["sealed_context_valid"] = True
             records, exit_codes, topology_disclosure = run_topology_suites(
                 report_dir,
                 topology_evidence_root=topology_evidence_root,
@@ -1170,15 +1202,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if failed_suites:
             raise GovernanceError(f"test suites failed: {failed_suites}")
     except GovernanceError as exc:
+        error_document: dict[str, object] = {
+            "schema_version": 1,
+            "status": "error",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "error": str(exc),
+            "suite_exit_codes": exit_codes,
+        }
+        if str(exc) == "policy validation failed: POLICY_DATE_CONTEXT_MISMATCH":
+            error_document["date_context_sources"] = date_context_sources
         _write_json(
             error_output,
-            {
-                "schema_version": 1,
-                "status": "error",
-                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-                "error": str(exc),
-                "suite_exit_codes": exit_codes,
-            },
+            error_document,
         )
         print(f"TEST_GOVERNANCE_ERROR: {exc}", file=sys.stderr)
         return 1

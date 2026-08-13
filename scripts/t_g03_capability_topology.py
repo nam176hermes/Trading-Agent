@@ -430,12 +430,10 @@ def _capture_foundation_context(
     return context_path
 
 
-def load_foundation_context(path: Path, *, run_id: str, head_sha: str) -> dict[str, object]:
-    """Reopen canonical context bytes; this proves consistency, never writer identity."""
-    _reject_validation_date_environment()
-    current_run, current_head = _active_foundation_identity()
-    if run_id != current_run or head_sha != current_head:
-        raise TopologyError("Foundation context binding mismatch")
+def _validated_foundation_context(
+    path: Path, *, run_id: str, head_sha: str,
+) -> dict[str, object]:
+    """Validate canonical context bytes against an already-established identity."""
     try:
         raw = path.read_bytes()
         document = _strict_json(raw, label="Foundation context")
@@ -461,6 +459,26 @@ def load_foundation_context(path: Path, *, run_id: str, head_sha: str) -> dict[s
     }):
         raise TopologyError("Foundation context self-hash mismatch")
     return document
+
+
+def _foundation_context_is_valid_for_diagnostics(
+    path: Path, *, run_id: str, head_sha: str,
+) -> bool:
+    """Return only whether context bytes pass full v1 validation for this identity."""
+    try:
+        _validated_foundation_context(path, run_id=run_id, head_sha=head_sha)
+    except (TopologyError, OSError, UnicodeError, ValueError):
+        return False
+    return True
+
+
+def load_foundation_context(path: Path, *, run_id: str, head_sha: str) -> dict[str, object]:
+    """Reopen canonical context bytes; this proves consistency, never writer identity."""
+    _reject_validation_date_environment()
+    current_run, current_head = _active_foundation_identity()
+    if run_id != current_run or head_sha != current_head:
+        raise TopologyError("Foundation context binding mismatch")
+    return _validated_foundation_context(path, run_id=run_id, head_sha=head_sha)
 
 
 def _publish_no_clobber(path: Path, content: bytes) -> None:
