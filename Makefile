@@ -328,8 +328,22 @@ ci-portable-private:
 # Capability topology is separate from strict ci/audit and never releases runtime proof.
 test-portable-source:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
+		build_dir=$$(mktemp -d /tmp/package6-custodian-portable-source.XXXXXXXXXX); \
+		chmod 0700 "$$build_dir"; \
+		cleanup_build_dir() { find -P "$$build_dir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$build_dir"; }; \
+		trap 'cleanup_build_dir' EXIT; \
+		$(MAKE) -C native/package6_custodian "BUILD_DIR=$$build_dir" build; \
+		set -- "$$build_dir"/python/_package6_fd_custody*.so; \
+		if test "$$#" -ne 1 || test -L "$$1" || ! test -f "$$1"; then \
+			printf '%s\n' "portable source requires exactly one regular native custody extension" >&2; \
+			exit 2; \
+		fi; \
+		digest_line=$$(sha256sum -- "$$1"); \
+		export PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$1"; \
+		export PACKAGE6_FD_CUSTODY_EXTENSION_SHA256=$${digest_line%% *}; \
 		foundation_head=$$(git rev-parse HEAD); \
 		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		uv run python scripts/t_g03_capability_topology.py collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
 		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
 
 test-native-capabilities:

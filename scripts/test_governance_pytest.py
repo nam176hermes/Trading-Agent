@@ -15,6 +15,7 @@ import pytest
 
 _REPORT_ENV = "TEST_GOVERNANCE_REPORT"
 _COMPONENT_ENV = "TEST_GOVERNANCE_COMPONENT"
+_CUSTODY_POLICY_ENV = "TEST_GOVERNANCE_CUSTODY_POLICY"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -288,6 +289,15 @@ class _GovernanceReporter:
             "summary": counts,
             "tests": records,
         }
+        raw_custody_policy = os.environ.get(_CUSTODY_POLICY_ENV)
+        if raw_custody_policy is not None:
+            try:
+                custody_policy = json.loads(raw_custody_policy)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("test governance custody policy is malformed") from exc
+            if not isinstance(custody_policy, dict):
+                raise RuntimeError("test governance custody policy is malformed")
+            document["custody_policy"] = custody_policy
         _atomic_json(
             self.destination,
             document,

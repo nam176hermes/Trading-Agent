@@ -780,6 +780,9 @@ def audit_topology_root_records(
             run_id=foundation_run_id,
             head_sha=foundation_head_sha,
         )
+        sealed_custody = capability_topology._validate_custody_policy(
+            baseline["collector_policy"],
+        )
         collection_deselections = capability_topology._validate_collection_record(
             topology_root / "portable-root-collection.governance.json",
             tuple(baseline["candidate_node_ids"]),
@@ -791,7 +794,7 @@ def audit_topology_root_records(
             head_sha=foundation_head_sha,
         )
         remainder_records = capability_topology._validate_exact_governance_record(
-            topology_root / "portable-root-remainder.governance.json", remainder,
+            topology_root / "portable-root-remainder.governance.json", remainder, sealed_custody,
         )
         receipts = [
             topology_root / f"{code}.json"
@@ -838,6 +841,8 @@ def audit_topology_root_records(
             document = _read_json(governance_path)
             if not isinstance(document, dict) or document.get("component") != "root":
                 raise GovernanceError(f"root governance record for {code} is malformed")
+            if document.get("custody_policy") != sealed_custody:
+                raise GovernanceError(f"root governance record for {code} has custody policy drift")
             if document.get("pytest_exit_status") != 0 or not isinstance(document.get("tests"), list):
                 raise GovernanceError(f"root governance record for {code} is not a passing pytest report")
             observed: list[dict[str, object]] = []

@@ -8,6 +8,7 @@ import json
 import csv
 import argparse
 from collections.abc import Callable
+from contextlib import contextmanager
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -300,7 +301,64 @@ def _native_custody_policy() -> dict[str, str]:
         raise TopologyError("portable root custody extension is unsafe") from exc
     if digest != expected:
         raise TopologyError("portable root custody extension digest drift")
-    return {**PORTABLE_ROOT_POLICY, "native_custody_extension_sha256": expected}
+    identity = ":".join(
+        str(value)
+        for value in (
+            info.st_dev,
+            info.st_ino,
+            info.st_uid,
+            f"{stat.S_IMODE(info.st_mode):o}",
+            info.st_nlink,
+        )
+    )
+    return {
+        **PORTABLE_ROOT_POLICY,
+        "native_custody_extension_identity": identity,
+        "native_custody_extension_sha256": expected,
+    }
+
+
+def _validate_custody_policy(policy: object) -> dict[str, str]:
+    if not isinstance(policy, dict) or set(policy) != {
+        *PORTABLE_ROOT_POLICY,
+        "native_custody_extension_identity",
+        "native_custody_extension_sha256",
+    }:
+        raise TopologyError("portable root collector policy drift")
+    if any(policy.get(key) != value for key, value in PORTABLE_ROOT_POLICY.items()):
+        raise TopologyError("portable root collector policy drift")
+    digest = policy.get("native_custody_extension_sha256")
+    identity = policy.get("native_custody_extension_identity")
+    if (
+        not isinstance(digest, str)
+        or not HEX64.fullmatch(digest)
+        or not isinstance(identity, str)
+        or not re.fullmatch(r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:[0-9]+", identity)
+    ):
+        raise TopologyError("portable root collector policy drift")
+    return {key: str(value) for key, value in policy.items()}
+
+
+def _require_current_sealed_custody(baseline: dict[str, object]) -> dict[str, str]:
+    sealed = _validate_custody_policy(baseline["collector_policy"])
+    current = _native_custody_policy()
+    if current != sealed:
+        raise TopologyError("portable root custody identity drift")
+    return sealed
+
+
+@contextmanager
+def _governance_custody_policy(policy: dict[str, str]):
+    key = "TEST_GOVERNANCE_CUSTODY_POLICY"
+    previous = os.environ.get(key)
+    os.environ[key] = canonical_json_bytes(policy).decode("utf-8")
+    try:
+        yield
+    finally:
+        if previous is None:
+            del os.environ[key]
+        else:
+            os.environ[key] = previous
 
 
 def _baseline_payload_sha256(document: dict[str, object]) -> str:
@@ -414,14 +472,7 @@ def load_portable_root_baseline(
         or not isinstance(baseline["collector_policy"], dict)
     ):
         raise TopologyError("portable root baseline binding drift")
-    policy = baseline["collector_policy"]
-    if (
-        set(policy) != {*PORTABLE_ROOT_POLICY, "native_custody_extension_sha256"}
-        or any(policy.get(key) != value for key, value in PORTABLE_ROOT_POLICY.items())
-        or not isinstance(policy.get("native_custody_extension_sha256"), str)
-        or not HEX64.fullmatch(str(policy["native_custody_extension_sha256"]))
-    ):
-        raise TopologyError("portable root collector policy drift")
+    _validate_custody_policy(baseline["collector_policy"])
     values = baseline["candidate_node_ids"]
     if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
         raise TopologyError("portable root baseline candidates are malformed")
@@ -550,7 +601,9 @@ def _load_portable_root_remainder(
     return document, remainder
 
 
-def _validate_exact_governance_record(path: Path, expected: tuple[str, ...]) -> tuple[str, ...]:
+def _validate_exact_governance_record(
+    path: Path, expected: tuple[str, ...], custody_policy: dict[str, str],
+) -> tuple[str, ...]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -559,6 +612,7 @@ def _validate_exact_governance_record(path: Path, expected: tuple[str, ...]) -> 
         not isinstance(document, dict)
         or document.get("component") != "root"
         or document.get("pytest_exit_status") != 0
+        or document.get("custody_policy") != custody_policy
         or not isinstance(document.get("tests"), list)
     ):
         raise TopologyError("exact governance record is not a passing root report")
@@ -586,19 +640,18 @@ def execute_portable_root_remainder(
 ) -> tuple[str, ...]:
     """Execute the sealed ordinary-root list exactly once, including an empty list."""
     require_foundation_context(run_id, head_sha)
-    current_policy = _native_custody_policy()
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
     )
-    if baseline["collector_policy"] != current_policy:
-        raise TopologyError("portable root custody identity drift")
+    sealed_custody = _require_current_sealed_custody(baseline)
     _, remainder = _load_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
     )
     report = evidence_root / "capability-topology" / "portable-root-remainder.governance.json"
     if remainder:
         runner = _run_exact if exact_runner is None else exact_runner
-        selected = runner(remainder, report)
+        with _governance_custody_policy(sealed_custody):
+            selected = runner(remainder, report)
         if selected != remainder:
             raise TopologyError("portable root remainder runner changed the generated list")
     else:
@@ -609,13 +662,14 @@ def execute_portable_root_remainder(
                     "schema_version": 1,
                     "component": "root",
                     "pytest_exit_status": 0,
+                    "custody_policy": sealed_custody,
                     "summary": {},
                     "tests": [],
                 },
                 sort_keys=True,
             ).encode("utf-8"),
         )
-    return _validate_exact_governance_record(report, remainder)
+    return _validate_exact_governance_record(report, remainder, sealed_custody)
 
 
 def _sha256(document: object) -> str:
@@ -717,7 +771,16 @@ def aggregate_receipts(
     paths: list[Path], *, rows: tuple[InventoryRow, ...], foundation_run_id: str, foundation_head_sha: str,
 ) -> dict[str, object]:
     expected_codes = set(CODE_CLASSIFICATION)
-    receipts = [validate_receipt(path.read_bytes(), rows=rows, foundation_run_id=foundation_run_id, foundation_head_sha=foundation_head_sha) for path in paths]
+    try:
+        receipts = [
+            validate_receipt(
+                path.read_bytes(), rows=rows, foundation_run_id=foundation_run_id,
+                foundation_head_sha=foundation_head_sha,
+            )
+            for path in paths
+        ]
+    except OSError as exc:
+        raise TopologyError("receipt set is missing or unreadable") from exc
     codes = [str(receipt["capability_or_authority_code"]) for receipt in receipts]
     if len(codes) != len(set(codes)) or set(codes) != expected_codes:
         raise TopologyError("receipt set is missing, duplicate, or unknown")
@@ -743,12 +806,14 @@ def reconcile_portable_root_accounting(
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
     )
+    sealed_custody = _validate_custody_policy(baseline["collector_policy"])
     _, remainder = _load_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
     )
     executed_remainder = _validate_exact_governance_record(
         evidence_root / "capability-topology" / "portable-root-remainder.governance.json",
         remainder,
+        sealed_custody,
     )
     rows = _installed_inventory_rows(inventory, evidence_root)
     topology_root = evidence_root / "capability-topology"
@@ -765,7 +830,7 @@ def reconcile_portable_root_accounting(
         code = str(receipt["capability_or_authority_code"])
         governance = topology_root / f"{code}.governance.json"
         if receipt["outcome"] == "PASS":
-            accounted.extend(_validate_exact_governance_record(governance, expected))
+            accounted.extend(_validate_exact_governance_record(governance, expected, sealed_custody))
         else:
             if os.path.lexists(governance):
                 raise TopologyError("deferred receipt has an execution record")
@@ -1080,6 +1145,9 @@ def run_lane(
     require_foundation_context(run_id, head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha)
     rows = _installed_inventory_rows(inventory, evidence_root)
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+    )
     publications: list[Path] = []
     for code in sorted(CODE_CLASSIFICATION):
         expected_lane, expected = _expected_rows(rows, code)
@@ -1091,7 +1159,14 @@ def run_lane(
         if state in {"UNAVAILABLE", "ABSENT"}:
             receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=(), state=state, fact=fact, outcome="DEFERRED")
         else:
-            selected = exact_runner(expected, evidence_root / "capability-topology" / f"{code}.governance.json")
+            # This is deliberately adjacent to the executable invocation: a
+            # replacement after the generated remainder must stop every later
+            # root lane before it can publish a PASS receipt.
+            sealed_custody = _require_current_sealed_custody(baseline)
+            governance = evidence_root / "capability-topology" / f"{code}.governance.json"
+            with _governance_custody_policy(sealed_custody):
+                selected = exact_runner(expected, governance)
+            _validate_exact_governance_record(governance, expected, sealed_custody)
             receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=selected, state=state, fact=fact, outcome="PASS")
         publications.append(publish_receipt(receipt, evidence_root))
     return publications

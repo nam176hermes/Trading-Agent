@@ -100,6 +100,15 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     remainder_sequence = remainder_target.group(1)
     assert remainder_sequence.index("collect-baseline") < remainder_sequence.index("prepare-remainder")
     assert remainder_sequence.index("prepare-remainder") < remainder_sequence.index("run-remainder")
+    portable_source_target = re.search(
+        r"^test-portable-source:\n((?:\t.*\n)+)", makefile, re.MULTILINE,
+    )
+    assert portable_source_target is not None
+    portable_source_sequence = portable_source_target.group(1)
+    assert "native/package6_custodian" in portable_source_sequence
+    assert "PACKAGE6_FD_CUSTODY_EXTENSION_PATH" in portable_source_sequence
+    assert "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256" in portable_source_sequence
+    assert portable_source_sequence.index("collect-baseline") < portable_source_sequence.index("run-lane --lane portable-source")
 
 
 def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = False) -> tuple[str, str]:
@@ -133,6 +142,7 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
         "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
         "collector_policy": {
             **topology.PORTABLE_ROOT_POLICY,
+            "native_custody_extension_identity": "1:2:1000:600:1",
             "native_custody_extension_sha256": "0" * 64,
         },
         "candidate_node_ids": list(candidates),
@@ -158,7 +168,7 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
     (topology_root / "portable-root-remainder.txt").write_bytes(remainder_bytes)
     (topology_root / "portable-root-remainder.json").write_bytes(topology.canonical_json_bytes(remainder))
     (topology_root / "portable-root-remainder.governance.json").write_text(
-        json.dumps({"schema_version": 1, "component": "root", "pytest_exit_status": 0, "tests": [{
+        json.dumps({"schema_version": 1, "component": "root", "pytest_exit_status": 0, "custody_policy": baseline["collector_policy"], "tests": [{
             "test_node_id": ordinary, "component": "root", "outcome": "passed", "reason": "", "phase": "call",
         }]}),
         encoding="utf-8",
@@ -194,6 +204,7 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
                         "schema_version": 1,
                         "component": "root",
                         "pytest_exit_status": 0,
+                        "custody_policy": baseline["collector_policy"],
                         "tests": [
                             {
                                 "test_node_id": node,
@@ -379,15 +390,15 @@ def test_remainder_executor_uses_only_the_verified_generated_node_list(
 
         def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
             selected.append(nodes)
-            report.write_text(json.dumps({"schema_version": 1, "component": "root", "pytest_exit_status": 0, "tests": [{
+            report.write_text(json.dumps({"schema_version": 1, "component": "root", "pytest_exit_status": 0, "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]), "tests": [{
                 "test_node_id": node, "component": "root", "outcome": "passed", "reason": "", "phase": "call",
             } for node in nodes]}), encoding="utf-8")
             return nodes
 
-        # Rebuild the sealed baseline with the real custody digest expected by the executor.
+        # Rebuild the sealed baseline with the real custody identity expected by the executor.
         topology_root = evidence / "capability-topology"
         baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
-        baseline["collector_policy"]["native_custody_extension_sha256"] = os.environ["PACKAGE6_FD_CUSTODY_EXTENSION_SHA256"]
+        baseline["collector_policy"] = topology._native_custody_policy()
         baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
         (topology_root / "portable-root-baseline.json").write_bytes(topology.canonical_json_bytes(baseline))
         remainder = json.loads((topology_root / "portable-root-remainder.json").read_text(encoding="utf-8"))
@@ -405,6 +416,102 @@ def test_remainder_executor_uses_only_the_verified_generated_node_list(
 
     assert selected == [("tests/ordinary/test_portable.py::test_ordinary",)]
     assert executed == selected[0]
+
+
+def test_extension_drift_after_remainder_blocks_the_next_pass_lane_and_closed_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a replaced custody extension permits a later green inventory lane."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head_sha = _write_topology_evidence(evidence)
+        extension = Path(raw) / "custody.so"
+        extension.write_bytes(b"sealed custody")
+        monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv(
+            "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256",
+            topology.hashlib.sha256(extension.read_bytes()).hexdigest(),
+        )
+        topology_root = evidence / "capability-topology"
+        baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
+        baseline["collector_policy"] = topology._native_custody_policy()
+        baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
+        (topology_root / "portable-root-baseline.json").write_bytes(topology.canonical_json_bytes(baseline))
+        remainder = json.loads((topology_root / "portable-root-remainder.json").read_text(encoding="utf-8"))
+        remainder["baseline_sha256"] = baseline["baseline_sha256"]
+        remainder["remainder_sha256"] = topology._remainder_payload_sha256(remainder)
+        (topology_root / "portable-root-remainder.json").write_bytes(topology.canonical_json_bytes(remainder))
+        for report in [
+            topology_root / "portable-root-remainder.governance.json",
+            *(
+                topology_root / f"{code}.governance.json"
+                for code, classification in topology.CODE_CLASSIFICATION.items()
+                if classification == "PORTABLE_SOURCE_DEFECT"
+            ),
+        ]:
+            document = json.loads(report.read_text(encoding="utf-8"))
+            if document.get("component") == "root" and document.get("pytest_exit_status") == 0:
+                document["custody_policy"] = baseline["collector_policy"]
+                report.write_text(json.dumps(document), encoding="utf-8")
+
+        remainder_report = topology_root / "portable-root-remainder.governance.json"
+        remainder_report.unlink()
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            report.write_text(json.dumps({
+                "schema_version": 1,
+                "component": "root",
+                "pytest_exit_status": 0,
+                "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+                "tests": [{
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "passed",
+                    "reason": "",
+                    "phase": "call",
+                } for node in nodes],
+            }), encoding="utf-8")
+            return nodes
+
+        topology.execute_portable_root_remainder(
+            inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            exact_runner=exact,
+        )
+        for code, classification in topology.CODE_CLASSIFICATION.items():
+            if classification == "PORTABLE_SOURCE_DEFECT":
+                (topology_root / f"{code}.json").unlink()
+                (topology_root / f"{code}.governance.json").unlink()
+
+        extension.write_bytes(b"replaced custody")
+        invoked = False
+
+        def must_not_run(_nodes: tuple[str, ...], _report: Path) -> tuple[str, ...]:
+            nonlocal invoked
+            invoked = True
+            raise AssertionError("custody drift must fail before pytest")
+
+        with pytest.raises(topology.TopologyError, match="custody extension digest drift"):
+            topology.run_lane(
+                lane="portable-source",
+                inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head_sha,
+                exact_runner=must_not_run,
+            )
+        assert not invoked
+        assert not any(topology_root.glob("SRC-*.json"))
+        with pytest.raises(topology.TopologyError):
+            topology.reconcile_portable_root_accounting(
+                inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+                evidence_root=evidence,
+                run_id=run_id,
+                head_sha=head_sha,
+            )
 
 
 def test_closed_root_accounting_rejects_duplicate_execution_between_remainder_and_inventory() -> None:

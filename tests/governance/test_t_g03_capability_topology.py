@@ -11,6 +11,55 @@ from scripts import t_g03_capability_topology as topology
 from scripts import test_governance_pytest as governance_plugin
 
 
+def _seal_portable_root_baseline(
+    monkeypatch: pytest.MonkeyPatch, evidence: Path, raw: str, *, run_id: str, head_sha: str,
+) -> None:
+    extension = Path(raw) / "custody.so"
+    extension.write_bytes(b"verified custody fixture")
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+    monkeypatch.setenv(
+        "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256",
+        topology.hashlib.sha256(extension.read_bytes()).hexdigest(),
+    )
+    inventory = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
+    rows = topology.load_inventory(inventory)
+    topology.collect_portable_root_baseline(
+        inventory=inventory,
+        evidence_root=evidence,
+        run_id=run_id,
+        head_sha=head_sha,
+        collector=lambda: tuple(sorted(row.node_id for row in rows)),
+    )
+    topology.prepare_portable_root_remainder(
+        inventory=inventory, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+    )
+
+
+def _passing_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+    report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    report.write_text(
+        topology.json.dumps({
+            "schema_version": 1,
+            "component": "root",
+            "pytest_exit_status": 0,
+            "custody_policy": topology.json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+            "tests": [
+                {
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "passed",
+                    "reason": "",
+                    "phase": "call",
+                }
+                for node in nodes
+            ],
+        }),
+        encoding="utf-8",
+    )
+    return nodes
+
+
 def _receipt(**overrides: object) -> dict[str, object]:
     document: dict[str, object] = {
         "schema_version": "t-g03a-capability-receipt/v1",
@@ -302,13 +351,16 @@ def test_valid_external_preflight_is_the_only_path_that_selects_external_nodes(t
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     selected: list[tuple[str, ...]] = []
 
-    def exact(nodes: tuple[str, ...], _report: Path) -> tuple[str, ...]:
+    def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
         selected.append(nodes)
-        return nodes
+        return _passing_exact(nodes, report)
 
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "artifact"
         topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id="31641536482", head_sha=head,
+        )
         paths = topology.run_lane(
             lane="external-authorities", inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
             evidence_root=evidence, run_id="31641536482", head_sha=head,
@@ -408,13 +460,14 @@ def test_completed_topology_retry_preserves_inventory_governance_and_receipt_bef
 
     def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
         calls.append(nodes)
-        report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        report.write_bytes(b'{"completed":"first"}')
-        return nodes
+        return _passing_exact(nodes, report)
 
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
         topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id="31641536482", head_sha=head,
+        )
         receipts = topology.run_lane(
             lane="portable-source", inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
             evidence_root=evidence, run_id="31641536482", head_sha=head, exact_runner=exact,
