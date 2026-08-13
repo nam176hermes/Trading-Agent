@@ -292,7 +292,9 @@ def test_raw_wasxfail_rejects_nonboolean_values(raw: object) -> None:
 def test_policy_snapshot_hashes_and_public_policy_link_precedence_are_closed() -> None:
     """Break caught: snapshot provenance drifts or a policy link infers/counts an approval."""
     head_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    snapshot, source = topology._validated_policy_snapshot(head_sha)
+    snapshot, source = topology._validated_policy_snapshot(
+        head_sha, topology.date(2026, 10, 31),
+    )
     entries = snapshot["entries"]
     assert snapshot["allowlist_source_sha256"] == topology.hashlib.sha256(source).hexdigest()
     assert entries == sorted(entries, key=lambda item: (item["component"].encode(), item["test_node_id"].encode()))
@@ -324,9 +326,10 @@ def test_policy_snapshot_hashes_and_public_policy_link_precedence_are_closed() -
 def test_failure_reader_requires_empty_passed_commitment_and_hashes_every_other_domain() -> None:
     """Break caught: malformed reason commitments are read as verified failure evidence."""
     base = {
-        "schema_version": topology.FAILURE_DIAGNOSTIC_SCHEMA, "diagnostic_only": True,
-        "foundation_run_id": "31641536482", "foundation_head_sha": "a" * 40,
-        "inventory_sha256": "0" * 64, "baseline_candidate_ids_sha256": "1" * 64,
+            "schema_version": topology.FAILURE_DIAGNOSTIC_SCHEMA, "diagnostic_only": True,
+            "foundation_run_id": "31641536482", "foundation_head_sha": "a" * 40,
+            "foundation_validation_date": "2026-10-31", "foundation_context_sha256": "f" * 64,
+            "inventory_sha256": "0" * 64, "baseline_candidate_ids_sha256": "1" * 64,
         "baseline_node_list_sha256": "2" * 64, "remainder_candidate_ids_sha256": "3" * 64,
         "remainder_node_list_sha256": "4" * 64, "custody_policy_sha256": "5" * 64,
         "custody_postcheck_status": "PASS", "pytest_exit_status": "1",

@@ -86,7 +86,9 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     assert '$(TEST_EVIDENCE_DIR)/test-governance-topology' in recipe
     assert '$(TEST_EVIDENCE_DIR)' in recipe
     assert 'tests/fixtures/t-g03a-hosted-failure-inventory.tsv' in recipe
-    assert '"$$GITHUB_RUN_ID"' in recipe
+    assert '"$$FOUNDATION_CONTEXT_PATH"' in recipe
+    assert "--foundation-run-id" not in recipe
+    assert "--foundation-head-sha" not in recipe
     topology_recipe = re.search(
         r"^ci-portable-topology:\n((?:\t.*\n)+)", makefile, re.MULTILINE,
     )

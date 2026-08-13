@@ -102,14 +102,13 @@ check-test-skips:
 check-test-governance-topology:
 	@set -eu; \
 		test -n "$${GITHUB_RUN_ID:?}"; \
-		foundation_head=$$(git rev-parse HEAD); \
+		test -n "$${FOUNDATION_CONTEXT_PATH:?}"; \
 		uv run python scripts/check_test_governance.py \
 			--topology-audit \
 			--report-dir "$(TEST_EVIDENCE_DIR)/test-governance-topology" \
 			--topology-evidence-root "$(TEST_EVIDENCE_DIR)" \
 			--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
-			--foundation-run-id "$$GITHUB_RUN_ID" \
-			--foundation-head-sha "$$foundation_head"
+			--foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 check-critical-coverage:
 	uv run python scripts/check_critical_coverage.py \
@@ -310,6 +309,8 @@ ci-private:
 
 ci-portable:
 	@set -eu; \
+		foundation_context_path=$$(uv run python -c 'import os; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(os.environ["TEST_EVIDENCE_DIR"])))'); \
+		export FOUNDATION_CONTEXT_PATH="$$foundation_context_path"; \
 		ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable.XXXXXXXXXX"); \
 		chmod 0700 "$$ci_tmpdir"; \
 		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
@@ -341,30 +342,26 @@ test-portable-source:
 		digest_line=$$(sha256sum -- "$$1"); \
 		export PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$1"; \
 		export PACKAGE6_FD_CUSTODY_EXTENSION_SHA256=$${digest_line%% *}; \
-		foundation_head=$$(git rev-parse HEAD); \
-		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 test-native-capabilities:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
-		foundation_head=$$(git rev-parse HEAD); \
-		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 test-external-authorities:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
-		foundation_head=$$(git rev-parse HEAD); \
-		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 test-portable-root-remainder:
 	@set -eu; \
 		test -n "$${GITHUB_RUN_ID:?}"; \
-		foundation_head=$$(git rev-parse HEAD); \
-		uv run python scripts/t_g03_capability_topology.py collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py prepare-remainder --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py run-remainder --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
+		uv run python scripts/t_g03_capability_topology.py collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py prepare-remainder --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py run-remainder --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 ci-portable-topology:
 	@set -eu; \
@@ -384,10 +381,9 @@ ci-portable-topology:
 		expected_sha256=$${digest_line%% *}; \
 		export PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$extension"; \
 		export PACKAGE6_FD_CUSTODY_EXTENSION_SHA256="$$expected_sha256"; \
-		foundation_head=$$(git rev-parse HEAD); \
-		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
+		uv run python scripts/t_g03_capability_topology.py reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
 		$(MAKE) test-portable-root-remainder; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"; \
-		uv run python scripts/t_g03_capability_topology.py aggregate --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-run-id "$$GITHUB_RUN_ID" --foundation-head-sha "$$foundation_head"
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane portable-source --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane native-capabilities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python scripts/t_g03_capability_topology.py aggregate --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"

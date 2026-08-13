@@ -769,11 +769,19 @@ def audit_topology_root_records(
     inventory: Path,
     foundation_run_id: str,
     foundation_head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     """Bind every root topology receipt to its exact no-clobber observation."""
     try:
+        context = (
+            capability_topology.load_foundation_context(
+                foundation_context_path,
+                run_id=foundation_run_id,
+                head_sha=foundation_head_sha,
+            ) if foundation_context_path is not None else None
+        )
         capability_topology._require_topology_reservation(
-            evidence_root, foundation_run_id, foundation_head_sha,
+            evidence_root, foundation_run_id, foundation_head_sha, context,
         )
         rows = capability_topology._installed_inventory_rows(inventory, evidence_root)
         topology_root = evidence_root / "capability-topology"
@@ -784,6 +792,7 @@ def audit_topology_root_records(
             evidence_root=evidence_root,
             run_id=foundation_run_id,
             head_sha=foundation_head_sha,
+            foundation_context_path=foundation_context_path,
         )
         sealed_custody = capability_topology._validate_custody_policy(
             baseline["collector_policy"],
@@ -797,6 +806,7 @@ def audit_topology_root_records(
             evidence_root=evidence_root,
             run_id=foundation_run_id,
             head_sha=foundation_head_sha,
+            foundation_context_path=foundation_context_path,
         )
         remainder_records = capability_topology._validate_exact_governance_record(
             topology_root / "portable-root-remainder.governance.json", remainder, sealed_custody,
@@ -881,6 +891,7 @@ def run_topology_suites(
     inventory: Path,
     foundation_run_id: str,
     foundation_head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, int], dict[str, object]]:
     """Audit sealed root lanes, then retain the existing legacy/dashboard governance."""
     _prepare_private_directory(report_dir)
@@ -889,6 +900,7 @@ def run_topology_suites(
         inventory=inventory,
         foundation_run_id=foundation_run_id,
         foundation_head_sha=foundation_head_sha,
+        foundation_context_path=foundation_context_path,
     )
     legacy_raw = report_dir / "legacy-raw.json"
     exit_codes = {
@@ -1011,17 +1023,35 @@ def _load_allowlist(path: Path, current_date: date) -> list[dict[str, object]]:
     return validate_allowlist_document(_read_json(path), today=current_date)
 
 
+def _topology_policy_error(exc: GovernanceError) -> GovernanceError:
+    message = str(exc).lower()
+    if "expired" in message:
+        code = "POLICY_REVIEW_DATE_EXPIRED"
+    elif "schema" in message:
+        code = "POLICY_SCHEMA_INVALID"
+    elif "review_by" in message:
+        code = "POLICY_REVIEW_DATE_INVALID"
+    elif "non-normalized" in message:
+        code = "POLICY_REASON_NORMALIZATION_INVALID"
+    elif "duplicate" in message:
+        code = "POLICY_DUPLICATE_ENTRY"
+    elif "invalid" in message or "unapproved" in message:
+        code = "POLICY_FIELD_TYPE_INVALID"
+    else:
+        code = "POLICY_VALIDATION_INVALID"
+    return GovernanceError(f"policy validation failed: {code}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--allowlist", type=Path, default=DEFAULT_ALLOWLIST)
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--bootstrap-allowlist", type=Path)
-    parser.add_argument("--today", type=date.fromisoformat, default=date.today())
+    parser.add_argument("--today", type=date.fromisoformat)
     parser.add_argument("--topology-audit", action="store_true")
     parser.add_argument("--topology-evidence-root", type=Path)
     parser.add_argument("--inventory", type=Path)
-    parser.add_argument("--foundation-run-id")
-    parser.add_argument("--foundation-head-sha")
+    parser.add_argument("--foundation-context-path", type=Path)
     args = parser.parse_args(argv)
 
     report_dir = args.report_dir if args.report_dir.is_absolute() else ROOT / args.report_dir
@@ -1044,31 +1074,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         if bootstrap_path is not None and not bootstrap_path.is_absolute():
             bootstrap_path = ROOT / bootstrap_path
         if args.topology_audit:
+            if args.today is not None:
+                raise GovernanceError("policy validation failed: POLICY_DATE_CONTEXT_MISMATCH")
+            if "FOUNDATION_VALIDATION_DATE" in os.environ:
+                raise GovernanceError("policy validation failed: POLICY_DATE_CONTEXT_MISMATCH")
             if args.bootstrap_allowlist is not None:
                 raise GovernanceError("topology audit cannot bootstrap an allowlist")
             if (
                 args.topology_evidence_root is None
                 or args.inventory is None
-                or args.foundation_run_id is None
-                or args.foundation_head_sha is None
+                or args.foundation_context_path is None
             ):
                 raise GovernanceError("topology audit requires evidence, inventory, Foundation run, and Foundation head")
             topology_evidence_root = args.topology_evidence_root
             if not topology_evidence_root.is_absolute():
                 topology_evidence_root = ROOT / topology_evidence_root
             inventory = args.inventory if args.inventory.is_absolute() else ROOT / args.inventory
-            capability_topology.require_foundation_context(
-                args.foundation_run_id, args.foundation_head_sha,
+            foundation_run_id, foundation_head_sha = capability_topology._active_foundation_identity()
+            context_path = args.foundation_context_path
+            if not context_path.is_absolute():
+                context_path = ROOT / context_path
+            context = capability_topology.load_foundation_context(
+                context_path,
+                run_id=foundation_run_id,
+                head_sha=foundation_head_sha,
             )
             records, exit_codes, topology_disclosure = run_topology_suites(
                 report_dir,
                 topology_evidence_root=topology_evidence_root,
                 inventory=inventory,
-                foundation_run_id=args.foundation_run_id,
-                foundation_head_sha=args.foundation_head_sha,
+                foundation_run_id=foundation_run_id,
+                foundation_head_sha=foundation_head_sha,
+                foundation_context_path=context_path,
             )
         else:
             records, exit_codes = run_suites(report_dir)
+            context = None
         if args.bootstrap_allowlist is not None:
             candidate = bootstrap_allowlist(records)
             if bootstrap_path is None:
@@ -1085,10 +1126,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise GovernanceError(
                     f"bootstrap produced {len(unknown)} UNKNOWN entries"
                 )
-            validate_allowlist_document(candidate, today=args.today)
+            validate_allowlist_document(candidate, today=args.today or date.today())
             _write_json(bootstrap_path, candidate)
             print(f"wrote candidate allowlist: {bootstrap_path}")
-        entries = _load_allowlist(allowlist_path, args.today)
+        validation_date = (
+            capability_topology.parse_foundation_validation_date(context["foundation_validation_date"])
+            if context is not None else args.today or date.today()
+        )
+        try:
+            entries = _load_allowlist(allowlist_path, validation_date)
+        except GovernanceError as exc:
+            if args.topology_audit:
+                raise _topology_policy_error(exc) from exc
+            raise
         compare_inventory(records, entries)
         report = build_governed_report(records, entries)
         if topology_disclosure is not None:

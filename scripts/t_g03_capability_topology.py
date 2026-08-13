@@ -17,14 +17,17 @@ import shutil
 import stat
 import subprocess
 import sys
+from datetime import date, datetime, timezone
 from typing import Any
 
 
 LOCKED_INVENTORY_SHA256 = "99e2e9f0ea91c65fd841a0b81b8948eb6d3967203627d0911c151794737a8bfe"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
-BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v1"
+FOUNDATION_CONTEXT_SCHEMA = "t-g03a-foundation-context/v1"
+RESERVATION_SCHEMA = "t-g03a-topology-reservation/v2"
+BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v3"
 REMAINDER_SCHEMA = "t-g03a-portable-root-remainder/v1"
-FAILURE_DIAGNOSTIC_SCHEMA = "t-g03a-portable-root-failure-diagnostic/v1"
+FAILURE_DIAGNOSTIC_SCHEMA = "t-g03a-portable-root-failure-diagnostic/v3"
 POLICY_SNAPSHOT_SCHEMA = "t-g03a-portable-root-policy-snapshot/v1"
 POLICY_ENTRY_SCHEMA = "t-g03a-skip-policy-entry/v1"
 REASON_COMMITMENT_SCHEMA = "t-g03a-policy-reason-commitment/v1"
@@ -36,7 +39,7 @@ RECEIPT_KEYS = frozenset({
 })
 FAILURE_DIAGNOSTIC_KEYS = frozenset({
     "schema_version", "diagnostic_only", "foundation_run_id", "foundation_head_sha",
-    "inventory_sha256", "baseline_candidate_ids_sha256", "baseline_node_list_sha256",
+    "foundation_validation_date", "foundation_context_sha256", "inventory_sha256", "baseline_candidate_ids_sha256", "baseline_node_list_sha256",
     "remainder_candidate_ids_sha256", "remainder_node_list_sha256", "custody_policy_sha256",
     "custody_postcheck_status", "pytest_exit_status", "policy_snapshot",
     "policy_snapshot_sha256", "observations", "diagnostic_sha256",
@@ -100,6 +103,7 @@ CODE_CLASSIFICATION = {
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEAD_SHA = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^(0|[1-9][0-9]*)$")
+FOUNDATION_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 ASCII = re.compile(r"^[\x21-\x7e]+$")
 REDACTED_FACT_CLASSES = frozenset({
     "SOURCE_TEST_EXECUTED", "NATIVE_COMPONENT_ABSENT", "NATIVE_IDENTITY_INVALID",
@@ -202,11 +206,19 @@ def install_inventory(source: Path, evidence_root: Path) -> Path:
     return destination
 
 
-def reserve_topology_evidence(evidence_root: Path, *, run_id: str, head_sha: str) -> None:
+def reserve_topology_evidence(
+    evidence_root: Path, *, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
+) -> None:
     """Seal an empty topology namespace before collection can mutate observations."""
     _prepare_private_evidence_directory(evidence_root)
     topology_root = evidence_root / "capability-topology"
     _prepare_private_evidence_directory(topology_root)
+    context: dict[str, object] | None = None
+    if foundation_context_path is not None:
+        context = load_foundation_context(
+            foundation_context_path, run_id=run_id, head_sha=head_sha,
+        )
     targets = [
         evidence_root / "t-g03a-hosted-failure-inventory.tsv",
         topology_root / ".reservation",
@@ -222,7 +234,18 @@ def reserve_topology_evidence(evidence_root: Path, *, run_id: str, head_sha: str
         targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
     if any(os.path.lexists(path) for path in targets):
         raise TopologyError("topology evidence namespace is already reserved or populated")
-    reservation = canonical_json_bytes({"foundation_head_sha": head_sha, "foundation_run_id": run_id, "inventory_sha256": LOCKED_INVENTORY_SHA256})
+    reservation_document: dict[str, object] = {
+        "foundation_head_sha": head_sha,
+        "foundation_run_id": run_id,
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+    }
+    if context is not None:
+        reservation_document = {
+            "schema_version": RESERVATION_SCHEMA,
+            **reservation_document,
+            "foundation_context_sha256": context["foundation_context_sha256"],
+        }
+    reservation = canonical_json_bytes(reservation_document)
     descriptor = os.open(topology_root / ".reservation", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(reservation)
@@ -230,14 +253,28 @@ def reserve_topology_evidence(evidence_root: Path, *, run_id: str, head_sha: str
         os.fsync(stream.fileno())
 
 
-def _require_topology_reservation(evidence_root: Path, run_id: str, head_sha: str) -> None:
+def _require_topology_reservation(
+    evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context: dict[str, object] | None = None,
+) -> None:
     path = evidence_root / "capability-topology/.reservation"
     try:
         raw = path.read_bytes()
         document = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise TopologyError("topology evidence reservation is missing") from exc
-    if canonical_json_bytes(document) != raw or document != {"foundation_head_sha": head_sha, "foundation_run_id": run_id, "inventory_sha256": LOCKED_INVENTORY_SHA256}:
+    expected: dict[str, object] = {
+        "foundation_head_sha": head_sha,
+        "foundation_run_id": run_id,
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+    }
+    if foundation_context is not None:
+        expected = {
+            "schema_version": RESERVATION_SCHEMA,
+            **expected,
+            "foundation_context_sha256": foundation_context["foundation_context_sha256"],
+        }
+    if canonical_json_bytes(document) != raw or document != expected:
         raise TopologyError("topology evidence reservation binding drift")
 
 
@@ -245,6 +282,123 @@ def canonical_json_bytes(document: object) -> bytes:
     return json.dumps(
         document, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
+
+
+def parse_foundation_validation_date(value: object) -> date:
+    """Parse the sole canonical Foundation policy-validation date spelling."""
+    if not isinstance(value, str) or not FOUNDATION_DATE.fullmatch(value):
+        raise TopologyError("Foundation validation date is malformed")
+    try:
+        encoded = value.encode("ascii")
+        parsed = date.fromisoformat(value)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise TopologyError("Foundation validation date is malformed") from exc
+    if encoded.decode("ascii") != value or parsed.isoformat() != value:
+        raise TopologyError("Foundation validation date is malformed")
+    return parsed
+
+
+def _reject_validation_date_environment() -> None:
+    if "FOUNDATION_VALIDATION_DATE" in os.environ:
+        raise TopologyError("Foundation validation date environment is forbidden")
+
+
+def _active_foundation_identity() -> tuple[str, str]:
+    current_run = os.environ.get("GITHUB_RUN_ID")
+    if not current_run or not RUN_ID.fullmatch(current_run) or current_run == "0":
+        raise TopologyError("authoritative GitHub run context is required")
+    try:
+        current_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TopologyError("checked-out Foundation head is unavailable") from exc
+    if not HEAD_SHA.fullmatch(current_head):
+        raise TopologyError("checked-out Foundation head is malformed")
+    return current_run, current_head
+
+
+def _foundation_context_path(evidence_root: Path) -> Path:
+    return evidence_root / "capability-topology" / "foundation-context.json"
+
+
+def _capture_foundation_context(
+    evidence_root: Path, *, clock: Callable[[], datetime] | None = None,
+) -> Path:
+    """Capture the one UTC date before the portable Foundation wrapper exists.
+
+    ``clock`` is intentionally private and exists only for unit tests; no CLI,
+    Make variable, or environment value can provide a date.
+    """
+    _reject_validation_date_environment()
+    run_id, head_sha = _active_foundation_identity()
+    now = datetime.now(timezone.utc) if clock is None else clock()
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise TopologyError("Foundation clock is malformed")
+    validation_date = now.astimezone(timezone.utc).date().isoformat()
+    parse_foundation_validation_date(validation_date)
+    _prepare_private_evidence_directory(evidence_root)
+    topology_root = evidence_root / "capability-topology"
+    _prepare_private_evidence_directory(topology_root)
+    context_path = _foundation_context_path(evidence_root)
+    acceptance_paths = [
+        topology_root / ".reservation",
+        topology_root / "portable-root-baseline.json",
+        topology_root / "portable-root-remainder.governance.json",
+        topology_root / "portable-root-remainder.failure-diagnostic.json",
+    ]
+    acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CODE_CLASSIFICATION for suffix in (".json", ".governance.json"))
+    if os.path.lexists(context_path) or any(os.path.lexists(path) for path in acceptance_paths):
+        raise TopologyError("Foundation context reuse is rejected")
+    context: dict[str, object] = {
+        "schema_version": FOUNDATION_CONTEXT_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "foundation_validation_date": validation_date,
+        "foundation_context_sha256": "",
+    }
+    context["foundation_context_sha256"] = _sha256({
+        key: value for key, value in context.items() if key != "foundation_context_sha256"
+    })
+    _publish_no_clobber(context_path, canonical_json_bytes(context))
+    if context_path.read_bytes() != canonical_json_bytes(context):
+        raise TopologyError("Foundation context post-write reread failed")
+    load_foundation_context(context_path, run_id=run_id, head_sha=head_sha)
+    return context_path
+
+
+def load_foundation_context(path: Path, *, run_id: str, head_sha: str) -> dict[str, object]:
+    """Reopen canonical context bytes; this proves consistency, never writer identity."""
+    _reject_validation_date_environment()
+    current_run, current_head = _active_foundation_identity()
+    if run_id != current_run or head_sha != current_head:
+        raise TopologyError("Foundation context binding mismatch")
+    try:
+        raw = path.read_bytes()
+        document = _strict_json(raw, label="Foundation context")
+    except OSError as exc:
+        raise TopologyError("Foundation context is absent") from exc
+    required = {
+        "schema_version", "foundation_run_id", "foundation_head_sha",
+        "foundation_validation_date", "foundation_context_sha256",
+    }
+    if not isinstance(document, dict) or set(document) != required or canonical_json_bytes(document) != raw:
+        raise TopologyError("Foundation context is malformed")
+    if (
+        document["schema_version"] != FOUNDATION_CONTEXT_SCHEMA
+        or document["foundation_run_id"] != run_id
+        or document["foundation_head_sha"] != head_sha
+        or not isinstance(document["foundation_context_sha256"], str)
+        or not HEX64.fullmatch(document["foundation_context_sha256"])
+    ):
+        raise TopologyError("Foundation context binding mismatch")
+    parse_foundation_validation_date(document["foundation_validation_date"])
+    if document["foundation_context_sha256"] != _sha256({
+        key: value for key, value in document.items() if key != "foundation_context_sha256"
+    }):
+        raise TopologyError("Foundation context self-hash mismatch")
+    return document
 
 
 def _publish_no_clobber(path: Path, content: bytes) -> None:
@@ -488,13 +642,23 @@ def _installed_inventory_rows(inventory: Path, evidence_root: Path) -> tuple[Inv
     return installed_rows
 
 
+def _optional_foundation_context(
+    foundation_context_path: Path | None, *, run_id: str, head_sha: str,
+) -> dict[str, object] | None:
+    if foundation_context_path is None:
+        return None
+    return load_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
+
+
 def collect_portable_root_baseline(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
     collector: Callable[[], tuple[str, ...]] | None = None,
+    foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Seal the dynamically collected portable root candidate universe."""
     require_foundation_context(run_id, head_sha)
-    _require_topology_reservation(evidence_root, run_id, head_sha)
+    context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
+    _require_topology_reservation(evidence_root, run_id, head_sha, context)
     rows = _installed_inventory_rows(inventory, evidence_root)
     policy = _native_custody_policy()
     candidates = _collect_portable_root_candidates(evidence_root) if collector is None else collector()
@@ -542,6 +706,9 @@ def collect_portable_root_baseline(
         "collection_report_sha256": collection_digest,
         "baseline_sha256": "",
     }
+    if context is not None:
+        baseline["foundation_validation_date"] = context["foundation_validation_date"]
+        baseline["foundation_context_sha256"] = context["foundation_context_sha256"]
     baseline["baseline_sha256"] = _baseline_payload_sha256(baseline)
     _publish_no_clobber(topology_root / "portable-root-candidates.txt", candidate_bytes)
     _publish_no_clobber(
@@ -552,9 +719,11 @@ def collect_portable_root_baseline(
 
 def load_portable_root_baseline(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Reopen and verify the sealed baseline and candidate file before execution."""
-    _require_topology_reservation(evidence_root, run_id, head_sha)
+    context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
+    _require_topology_reservation(evidence_root, run_id, head_sha, context)
     rows = _installed_inventory_rows(inventory, evidence_root)
     topology_root = evidence_root / "capability-topology"
     try:
@@ -566,6 +735,8 @@ def load_portable_root_baseline(
         "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256",
         "collector_policy", "candidate_node_ids", "candidate_file_sha256", "collection_report_sha256", "baseline_sha256",
     }
+    if context is not None:
+        required |= {"foundation_validation_date", "foundation_context_sha256"}
     if not isinstance(baseline, dict) or set(baseline) != required or canonical_json_bytes(baseline) != raw:
         raise TopologyError("portable root baseline is noncanonical or malformed")
     if (
@@ -575,6 +746,11 @@ def load_portable_root_baseline(
         or baseline["inventory_sha256"] != LOCKED_INVENTORY_SHA256
         or baseline["baseline_sha256"] != _baseline_payload_sha256(baseline)
         or not isinstance(baseline["collector_policy"], dict)
+        or (context is not None and (
+            baseline["foundation_validation_date"] != context["foundation_validation_date"]
+            or baseline["foundation_context_sha256"] != context["foundation_context_sha256"]
+            or parse_foundation_validation_date(baseline["foundation_validation_date"]) is None
+        ))
     ):
         raise TopologyError("portable root baseline binding drift")
     _validate_custody_policy(baseline["collector_policy"])
@@ -603,11 +779,13 @@ def load_portable_root_baseline(
 
 def prepare_portable_root_remainder(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Generate the exact ordinary-root list from the verified dynamic baseline."""
     require_foundation_context(run_id, head_sha)
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
     )
     rows = _installed_inventory_rows(inventory, evidence_root)
     candidates = tuple(baseline["candidate_node_ids"])
@@ -666,9 +844,11 @@ def _collect_portable_root_candidates(evidence_root: Path) -> tuple[str, ...]:
 
 def _load_portable_root_remainder(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> tuple[dict[str, object], tuple[str, ...]]:
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
     )
     topology_root = evidence_root / "capability-topology"
     try:
@@ -748,8 +928,11 @@ def _execute_exact_with_retained_custody(
     diagnostic = report.with_name("portable-root-remainder.failure-diagnostic.json")
     if os.path.lexists(provisional) or os.path.lexists(diagnostic):
         raise TopologyError("exact governance staging record already exists")
+    validation_date = parse_foundation_validation_date(
+        baseline["foundation_validation_date"],
+    ) if "foundation_validation_date" in baseline else None
     policy_snapshot, policy_source = _validated_policy_snapshot(
-        str(baseline["foundation_head_sha"]),
+        str(baseline["foundation_head_sha"]), validation_date,
     )
     try:
         with _retained_sealed_custody(baseline) as (sealed_custody, descriptor):
@@ -758,7 +941,9 @@ def _execute_exact_with_retained_custody(
             if selected != nodes:
                 raise TopologyError("exact runner changed the generated node list")
         # Leaving retained custody is the postcheck; only now may either record be considered.
-        reread_snapshot, reread_source = _validated_policy_snapshot(str(baseline["foundation_head_sha"]))
+        reread_snapshot, reread_source = _validated_policy_snapshot(
+            str(baseline["foundation_head_sha"]), validation_date,
+        )
         if reread_source != policy_source or reread_snapshot != policy_snapshot:
             raise TopologyError("allowlist source drifted during exact execution")
         raw_report = _strict_json(provisional.read_bytes(), label="raw exact report")
@@ -826,14 +1011,17 @@ def _write_empty_exact_governance_report(nodes: tuple[str, ...], report: Path) -
 def execute_portable_root_remainder(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] | None = None,
+    foundation_context_path: Path | None = None,
 ) -> tuple[str, ...]:
     """Execute the sealed ordinary-root list exactly once, including an empty list."""
     require_foundation_context(run_id, head_sha)
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
     )
     _, remainder = _load_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
     )
     report = evidence_root / "capability-topology" / "portable-root-remainder.governance.json"
     if remainder:
@@ -921,17 +1109,38 @@ def _policy_entry_payload(entry: dict[str, object]) -> dict[str, object]:
     return payload
 
 
-def _validated_policy_snapshot(head_sha: str) -> tuple[dict[str, object], bytes]:
+def _policy_validation_error(exc: BaseException) -> TopologyError:
+    message = str(exc).lower()
+    if "expired" in message:
+        code = "POLICY_REVIEW_DATE_EXPIRED"
+    elif "schema" in message:
+        code = "POLICY_SCHEMA_INVALID"
+    elif "review_by" in message:
+        code = "POLICY_REVIEW_DATE_INVALID"
+    elif "non-normalized" in message:
+        code = "POLICY_REASON_NORMALIZATION_INVALID"
+    elif "duplicate" in message:
+        code = "POLICY_DUPLICATE_ENTRY"
+    elif "invalid" in message or "unapproved" in message:
+        code = "POLICY_FIELD_TYPE_INVALID"
+    else:
+        code = "POLICY_VALIDATION_INVALID"
+    return TopologyError(f"policy validation failed: {code}")
+
+
+def _validated_policy_snapshot(
+    head_sha: str, validation_date: date,
+) -> tuple[dict[str, object], bytes]:
     """Build the complete redacted root-policy projection from tracked allowlist bytes."""
     raw = _allowlist_bytes_at_head(head_sha)
     try:
         from scripts import check_test_governance as governance
         document = _strict_json(raw, label="allowlist")
-        entries = governance.validate_allowlist_document(document)
+        entries = governance.validate_allowlist_document(document, today=validation_date)
     except Exception as exc:
         if isinstance(exc, TopologyError):
             raise
-        raise TopologyError("allowlist policy is invalid") from exc
+        raise _policy_validation_error(exc) from exc
     snapshot_entries: list[dict[str, object]] = []
     for entry in entries:
         if entry["component"] != "root":
@@ -1076,6 +1285,11 @@ def _failure_diagnostic_payload(
     return {
         "schema_version": FAILURE_DIAGNOSTIC_SCHEMA, "diagnostic_only": True,
         "foundation_run_id": run_id, "foundation_head_sha": head_sha,
+        # Direct unit helpers may exercise an intentionally pre-context fixture;
+        # the CLI/Foundation route cannot reach this fallback because it requires
+        # a verified context and v3 baseline binding before execution.
+        "foundation_validation_date": baseline.get("foundation_validation_date", "1970-01-01"),
+        "foundation_context_sha256": baseline.get("foundation_context_sha256", "0" * 64),
         "inventory_sha256": LOCKED_INVENTORY_SHA256,
         "baseline_candidate_ids_sha256": _ids_sha256(tuple(baseline["candidate_node_ids"])),
         "baseline_node_list_sha256": baseline["candidate_file_sha256"],
@@ -1098,6 +1312,9 @@ def _validate_failure_diagnostic_shape(document: object) -> dict[str, object]:
         raise TopologyError("failure diagnostic has invalid Foundation run")
     if not isinstance(document["foundation_head_sha"], str) or not HEAD_SHA.fullmatch(document["foundation_head_sha"]):
         raise TopologyError("failure diagnostic has invalid Foundation head")
+    parse_foundation_validation_date(document["foundation_validation_date"])
+    if not isinstance(document["foundation_context_sha256"], str) or not HEX64.fullmatch(document["foundation_context_sha256"]):
+        raise TopologyError("failure diagnostic has invalid Foundation context")
     if not isinstance(document["pytest_exit_status"], str) or not re.fullmatch(r"[1-9][0-9]*", document["pytest_exit_status"]):
         raise TopologyError("failure diagnostic has no non-pass proof")
     for field in (
@@ -1218,6 +1435,7 @@ def parse_failure_diagnostic(raw: bytes) -> dict[str, object]:
 
 def read_failure_diagnostic(
     path: Path, *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Read and bind a failure record; this reader cannot publish receipts or change policy."""
     try:
@@ -1225,10 +1443,11 @@ def read_failure_diagnostic(
     except OSError as exc:
         raise TopologyError("failure diagnostic is missing") from exc
     document = parse_failure_diagnostic(raw)
-    baseline = load_portable_root_baseline(inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha)
-    remainder_document, nodes = _load_portable_root_remainder(inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha)
+    baseline = load_portable_root_baseline(inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha, foundation_context_path=foundation_context_path)
+    remainder_document, nodes = _load_portable_root_remainder(inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha, foundation_context_path=foundation_context_path)
     custody = _validate_custody_policy(baseline["collector_policy"])
-    snapshot, _ = _validated_policy_snapshot(head_sha)
+    validation_date = parse_foundation_validation_date(baseline["foundation_validation_date"]) if "foundation_validation_date" in baseline else None
+    snapshot, _ = _validated_policy_snapshot(head_sha, validation_date)
     expected = _failure_diagnostic_payload(
         baseline=baseline, remainder=remainder_document, nodes=nodes, run_id=run_id, head_sha=head_sha,
         custody=custody, pytest_exit_status=str(document["pytest_exit_status"]), snapshot=snapshot,
@@ -1377,6 +1596,7 @@ def aggregate_receipts(
 
 def reconcile_portable_root_accounting(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path | None = None,
 ) -> dict[str, object]:
     """Require the dynamic baseline to be a closed one-execution-or-deferred union."""
     diagnostic = evidence_root / "capability-topology" / "portable-root-remainder.failure-diagnostic.json"
@@ -1384,10 +1604,12 @@ def reconcile_portable_root_accounting(
         raise TopologyError("failure diagnostic is present; topology aggregation is forbidden")
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
     )
     sealed_custody = _validate_custody_policy(baseline["collector_policy"])
     _, remainder = _load_portable_root_remainder(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+        foundation_context_path=foundation_context_path,
     )
     executed_remainder = _validate_exact_governance_record(
         evidence_root / "capability-topology" / "portable-root-remainder.governance.json",
@@ -1747,9 +1969,11 @@ def run_lane(
     *, lane: str, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
     external_preflight: Callable[[str], tuple[str, str]] = _external_preflight,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] = _run_exact,
+    foundation_context_path: Path | None = None,
 ) -> list[Path]:
     require_foundation_context(run_id, head_sha)
-    _require_topology_reservation(evidence_root, run_id, head_sha)
+    context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
+    _require_topology_reservation(evidence_root, run_id, head_sha, context)
     if os.path.lexists(evidence_root / "capability-topology/portable-root-remainder.failure-diagnostic.json"):
         raise TopologyError("failure diagnostic is present; lane publication is forbidden")
     rows = _installed_inventory_rows(inventory, evidence_root)
@@ -1766,6 +1990,7 @@ def run_lane(
         else:
             baseline = load_portable_root_baseline(
                 inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=foundation_context_path,
             )
             governance = evidence_root / "capability-topology" / f"{code}.governance.json"
             selected = _execute_exact_with_retained_custody(
@@ -1784,36 +2009,44 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lane", choices=tuple(CLASSIFICATION_LANE.values()))
     parser.add_argument("--inventory", type=Path, default=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     parser.add_argument("--evidence-root", type=Path, required=True)
-    parser.add_argument("--foundation-run-id", required=True)
-    parser.add_argument("--foundation-head-sha", required=True)
+    parser.add_argument("--foundation-context-path", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        require_foundation_context(args.foundation_run_id, args.foundation_head_sha)
+        run_id, head_sha = _active_foundation_identity()
+        load_foundation_context(
+            args.foundation_context_path,
+            run_id=run_id,
+            head_sha=head_sha,
+        )
         if args.action == "reserve":
-            reserve_topology_evidence(args.evidence_root, run_id=args.foundation_run_id, head_sha=args.foundation_head_sha)
+            reserve_topology_evidence(args.evidence_root, run_id=run_id, head_sha=head_sha, foundation_context_path=args.foundation_context_path)
         elif args.action == "collect-baseline":
             collect_portable_root_baseline(
                 inventory=args.inventory, evidence_root=args.evidence_root,
-                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
             )
         elif args.action == "prepare-remainder":
             prepare_portable_root_remainder(
                 inventory=args.inventory, evidence_root=args.evidence_root,
-                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
             )
         elif args.action == "run-remainder":
             execute_portable_root_remainder(
                 inventory=args.inventory, evidence_root=args.evidence_root,
-                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
             )
         elif args.action == "run-lane":
             if args.lane is None:
                 raise TopologyError("run-lane requires --lane")
-            run_lane(lane=args.lane, inventory=args.inventory, evidence_root=args.evidence_root, run_id=args.foundation_run_id, head_sha=args.foundation_head_sha)
+            run_lane(lane=args.lane, inventory=args.inventory, evidence_root=args.evidence_root, run_id=run_id, head_sha=head_sha, foundation_context_path=args.foundation_context_path)
         else:
             print(canonical_json_bytes(reconcile_portable_root_accounting(
                 inventory=args.inventory, evidence_root=args.evidence_root,
-                run_id=args.foundation_run_id, head_sha=args.foundation_head_sha,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
             )).decode("utf-8"))
     except (TopologyError, OSError, ValueError) as exc:
         print(f"t-g03 capability topology: {exc}", file=sys.stderr)
