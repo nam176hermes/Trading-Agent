@@ -26,7 +26,7 @@ PRIVATE_LLVM = Path(
     "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
 )
 PRIVATE_TOOLCHAINS_UNAVAILABLE_REASON = (
-    "sealed private Rust and LLVM toolchains are unavailable"
+    "required sealed private Rust or LLVM toolchain executable is unavailable"
 )
 TARGET = "x86_64-unknown-linux-gnu"
 GUARD_TARGET = "/engine/bin/nautilus-entry-guard"

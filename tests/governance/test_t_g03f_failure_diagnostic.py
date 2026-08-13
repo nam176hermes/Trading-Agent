@@ -1103,6 +1103,9 @@ def test_missing_native_toolchain_skip_reaches_the_redacted_failure_diagnostic(
         with pytest.raises(pytest.skip.Exception) as skipped:
             build_guard(Path(raw) / "build", Path(raw) / "guarded")
         reason = str(skipped.value)
+        assert reason == (
+            "required sealed private Rust or LLVM toolchain executable is unavailable"
+        )
 
         evidence = Path(raw) / "evidence"
         run_id, head_sha, _ = _seal_remainder(
