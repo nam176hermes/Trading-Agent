@@ -737,7 +737,7 @@ def _execute_exact_with_retained_custody(
     """Publish PASS evidence only for all-pass raw execution; retain complete non-pass diagnostics."""
     provisional = report.with_name(f".{report.name}.executing")
     diagnostic = report.with_name("portable-root-remainder.failure-diagnostic.json")
-    if os.path.lexists(provisional):
+    if os.path.lexists(provisional) or os.path.lexists(diagnostic):
         raise TopologyError("exact governance staging record already exists")
     policy_snapshot, policy_source = _validated_policy_snapshot(
         str(baseline["foundation_head_sha"]),
@@ -954,10 +954,48 @@ def _ids_sha256(nodes: tuple[str, ...]) -> str:
     return _sha256(list(nodes))
 
 
+def compare_failure_policy_link(
+    snapshot: dict[str, object], *, component: str, test_node_id: str, outcome: str,
+    normalized_reason_commitment_sha256: str,
+) -> tuple[str, str]:
+    """Apply the closed v1 policy-link precedence without approving an outcome."""
+    entries = snapshot.get("entries")
+    if not isinstance(entries, list):
+        raise TopologyError("failure diagnostic policy snapshot is malformed")
+    policy: dict[str, object] | None = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise TopologyError("failure diagnostic policy snapshot is malformed")
+        if entry.get("component") == component and entry.get("test_node_id") == test_node_id:
+            if policy is not None:
+                raise TopologyError("failure diagnostic policy snapshot has duplicate entry")
+            policy = entry
+    if policy is None:
+        return "NO_POLICY_ENTRY", ""
+    allowed = policy.get("allowed_in_ci")
+    if type(allowed) is not bool:
+        raise TopologyError("failure diagnostic policy has non-boolean allowed_in_ci")
+    policy_hash = policy.get("policy_entry_sha256")
+    if not isinstance(policy_hash, str) or not HEX64.fullmatch(policy_hash):
+        raise TopologyError("failure diagnostic policy has invalid entry hash")
+    if policy.get("outcome") != outcome:
+        return "OUTCOME_MISMATCH", policy_hash
+    if policy.get("normalized_reason_commitment_sha256") != normalized_reason_commitment_sha256:
+        return "REASON_MISMATCH", policy_hash
+    if allowed is not True:
+        return "CI_DISALLOWED", policy_hash
+    return "EXACT_POLICY_MATCH", policy_hash
+
+
 def _raw_observation_domain(item: dict[str, object]) -> tuple[str, str, str, str, str]:
     outcome = item.get("outcome")
     phase = item.get("phase")
+    has_wasxfail = "wasxfail" in item
     wasxfail = item.get("wasxfail")
+    if has_wasxfail and type(wasxfail) is not bool:
+        raise TopologyError("raw diagnostic observation has invalid wasxfail")
+    if outcome in {"xfailed", "xpassed"} and has_wasxfail and wasxfail is not True:
+        raise TopologyError("raw diagnostic observation has invalid wasxfail")
     if wasxfail or outcome in {"xfailed", "xpassed"}:
         if outcome in {"passed", "xpassed"} and phase == "call":
             return "xpassed", "call", "WAS_XFAIL", "PYTEST_XPASS_MARKER", "PYTEST_WASXFAIL"
@@ -991,10 +1029,6 @@ def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot:
     exit_status = document.get("pytest_exit_status")
     if isinstance(exit_status, bool) or not isinstance(exit_status, int) or exit_status < 0:
         raise TopologyError("raw diagnostic report has invalid pytest exit status")
-    policies = {
-        (str(entry["component"]), str(entry["test_node_id"])): entry
-        for entry in snapshot["entries"] if isinstance(entry, dict)
-    }
     observations: list[dict[str, object]] = []
     for raw in document["tests"]:
         if not isinstance(raw, dict) or raw.get("component") != "root" or not isinstance(raw.get("test_node_id"), str) or not ASCII.fullmatch(raw["test_node_id"]):
@@ -1006,19 +1040,10 @@ def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot:
         commitment = "" if reason_class == "NONE" else reason_commitment_sha256(reason)
         policy_match, policy_hash = "NOT_APPLICABLE", ""
         if outcome in {"skipped", "deselected"}:
-            policy = policies.get(("root", raw["test_node_id"]))
-            if policy is None:
-                policy_match = "NO_POLICY_ENTRY"
-            else:
-                policy_hash = str(policy["policy_entry_sha256"])
-                if policy["outcome"] != outcome:
-                    policy_match = "OUTCOME_MISMATCH"
-                elif policy["normalized_reason_commitment_sha256"] != commitment:
-                    policy_match = "REASON_MISMATCH"
-                elif policy["allowed_in_ci"] is not True:
-                    policy_match = "CI_DISALLOWED"
-                else:
-                    policy_match = "EXACT_POLICY_MATCH"
+            policy_match, policy_hash = compare_failure_policy_link(
+                snapshot, component="root", test_node_id=raw["test_node_id"], outcome=outcome,
+                normalized_reason_commitment_sha256=commitment,
+            )
         observations.append({
             "test_node_id": raw["test_node_id"], "component": "root", "outcome": outcome, "phase": phase,
             "xfail_state": xfail_state, "reason_class": reason_class, "reason_provenance": provenance,
@@ -1152,11 +1177,19 @@ def _validate_failure_diagnostic_shape(document: object) -> dict[str, object]:
             if match not in {"NO_POLICY_ENTRY", "OUTCOME_MISMATCH", "REASON_MISMATCH", "CI_DISALLOWED", "EXACT_POLICY_MATCH"}:
                 raise TopologyError("failure diagnostic policy match is invalid")
             if match == "NO_POLICY_ENTRY":
-                if commitment == "" or existing != "":
+                if not isinstance(commitment, str) or not HEX64.fullmatch(commitment) or existing != "":
                     raise TopologyError("failure diagnostic no-policy binding is invalid")
             elif not (isinstance(commitment, str) and HEX64.fullmatch(commitment) and isinstance(existing, str) and HEX64.fullmatch(existing)):
                 raise TopologyError("failure diagnostic policy binding is invalid")
-        elif match != "NOT_APPLICABLE" or existing != "" or (commitment != "" and (not isinstance(commitment, str) or not HEX64.fullmatch(commitment))):
+        elif outcome == "passed":
+            if match != "NOT_APPLICABLE" or existing != "" or commitment != "":
+                raise TopologyError("failure diagnostic non-policy binding is invalid")
+        elif (
+            match != "NOT_APPLICABLE"
+            or existing != ""
+            or not isinstance(commitment, str)
+            or not HEX64.fullmatch(commitment)
+        ):
             raise TopologyError("failure diagnostic non-policy binding is invalid")
     return document
 
@@ -1196,22 +1229,14 @@ def read_failure_diagnostic(
             raise TopologyError("failure diagnostic binding drift")
     if tuple(item["test_node_id"] for item in document["observations"]) != nodes:
         raise TopologyError("failure diagnostic observations are foreign or incomplete")
-    policies = {(entry["component"], entry["test_node_id"]): entry for entry in snapshot["entries"]}
     for observation in document["observations"]:
         outcome = observation["outcome"]
         if outcome not in {"skipped", "deselected"}:
             continue
-        policy = policies.get(("root", observation["test_node_id"]))
-        if policy is None:
-            expected_match, expected_hash = "NO_POLICY_ENTRY", ""
-        elif policy["outcome"] != outcome:
-            expected_match, expected_hash = "OUTCOME_MISMATCH", policy["policy_entry_sha256"]
-        elif policy["normalized_reason_commitment_sha256"] != observation["normalized_reason_commitment_sha256"]:
-            expected_match, expected_hash = "REASON_MISMATCH", policy["policy_entry_sha256"]
-        elif policy["allowed_in_ci"] is not True:
-            expected_match, expected_hash = "CI_DISALLOWED", policy["policy_entry_sha256"]
-        else:
-            expected_match, expected_hash = "EXACT_POLICY_MATCH", policy["policy_entry_sha256"]
+        expected_match, expected_hash = compare_failure_policy_link(
+            snapshot, component="root", test_node_id=observation["test_node_id"], outcome=outcome,
+            normalized_reason_commitment_sha256=observation["normalized_reason_commitment_sha256"],
+        )
         if observation["policy_match_result"] != expected_match or observation["existing_policy_entry_sha256"] != expected_hash:
             raise TopologyError("failure diagnostic policy-link binding drift")
     return document
@@ -1715,6 +1740,8 @@ def run_lane(
 ) -> list[Path]:
     require_foundation_context(run_id, head_sha)
     _require_topology_reservation(evidence_root, run_id, head_sha)
+    if os.path.lexists(evidence_root / "capability-topology/portable-root-remainder.failure-diagnostic.json"):
+        raise TopologyError("failure diagnostic is present; lane publication is forbidden")
     rows = _installed_inventory_rows(inventory, evidence_root)
     publications: list[Path] = []
     for code in sorted(CODE_CLASSIFICATION):

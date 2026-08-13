@@ -237,7 +237,10 @@ def compare_inventory(
     new = sorted(set(actual) - set(approved))
     stale = sorted(set(approved) - set(actual))
     disallowed = sorted(
-        key for key in set(actual) & set(approved) if not approved[key]["allowed_in_ci"]
+        key
+        for key in set(actual) & set(approved)
+        if type(approved[key].get("allowed_in_ci")) is not bool
+        or approved[key].get("allowed_in_ci") is not True
     )
     changed_reasons = sorted(
         key
