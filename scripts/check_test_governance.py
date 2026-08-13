@@ -1056,11 +1056,12 @@ def _topology_policy_error(exc: GovernanceError) -> GovernanceError:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--allowlist", type=Path, default=DEFAULT_ALLOWLIST)
+    parser.add_argument("--allowlist", type=Path)
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--bootstrap-allowlist", type=Path)
     parser.add_argument("--today", type=date.fromisoformat)
     parser.add_argument("--topology-audit", action="store_true")
+    parser.add_argument("--topology-context-preflight", action="store_true")
     parser.add_argument("--topology-evidence-root", type=Path)
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--foundation-context-path", type=Path)
@@ -1087,10 +1088,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_dir / "legacy-raw.json",
             report_dir / "dashboard-raw.json",
         )
-        allowlist_path = args.allowlist if args.allowlist.is_absolute() else ROOT / args.allowlist
+        allowlist_argument = args.allowlist or DEFAULT_ALLOWLIST
+        allowlist_path = (
+            allowlist_argument
+            if allowlist_argument.is_absolute()
+            else ROOT / allowlist_argument
+        )
         bootstrap_path = args.bootstrap_allowlist
         if bootstrap_path is not None and not bootstrap_path.is_absolute():
             bootstrap_path = ROOT / bootstrap_path
+        if args.topology_context_preflight and not args.topology_audit:
+            raise GovernanceError("topology context preflight requires topology audit")
         if args.topology_audit:
             context_path = args.foundation_context_path
             if context_path is not None:
@@ -1121,6 +1129,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise GovernanceError("policy validation failed: POLICY_DATE_CONTEXT_MISMATCH")
             if args.bootstrap_allowlist is not None:
                 raise GovernanceError("topology audit cannot bootstrap an allowlist")
+            if args.topology_context_preflight and (
+                args.allowlist is None
+                or args.topology_evidence_root is None
+                or args.inventory is None
+                or args.foundation_context_path is None
+            ):
+                raise GovernanceError(
+                    "topology context preflight requires explicit allowlist, inventory, "
+                    "evidence, and Foundation context inputs"
+                )
             if (
                 args.topology_evidence_root is None
                 or args.inventory is None
@@ -1143,6 +1161,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             date_context_sources["sealed_context_present"] = True
             date_context_sources["sealed_context_valid"] = True
+            if args.topology_context_preflight:
+                try:
+                    capability_topology.load_inventory(inventory)
+                except capability_topology.TopologyError as exc:
+                    raise GovernanceError(
+                        f"topology context preflight failed: {exc}"
+                    ) from exc
+                validation_date = capability_topology.parse_foundation_validation_date(
+                    context["foundation_validation_date"]
+                )
+                try:
+                    _load_allowlist(allowlist_path, validation_date)
+                except GovernanceError as exc:
+                    raise _topology_policy_error(exc) from exc
+                print("topology context preflight: PASS")
+                return 0
             records, exit_codes, topology_disclosure = run_topology_suites(
                 report_dir,
                 topology_evidence_root=topology_evidence_root,

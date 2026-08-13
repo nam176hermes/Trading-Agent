@@ -2398,6 +2398,18 @@ Required work:
 7. Commit implementation as
    `test(ci): verify sealed validation-date authority`.
 
+#### P0-02 review correction: explicit context preflight
+
+The full topology-governance command is downstream-coupled to root topology
+receipts plus legacy and dashboard execution, so it cannot isolate the P0-02
+date-authority boundary. P0-02 therefore uses the explicit production CLI
+`--topology-context-preflight` together with `--topology-audit` and explicit
+production allowlist, locked inventory, topology evidence root, and foundation
+context inputs. This preflight validates the active run/head-bound strict v1
+context and the production allowlist policy at its sealed date, then exits
+without executing component suites or claiming topology acceptance. The full
+topology command remains unchanged for the downstream closure packet.
+
 ### Revised P0-03 - Close the actual hosted topology blocker
 
 After P0-02 review passes, reproduce
