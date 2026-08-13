@@ -563,12 +563,43 @@ Foundation behavior.
 Before creating the projection or invoking GNU Make, a lexical directive
 scanner over the original root Makefile must reject every real top-level
 `ifeq`, `ifneq`, `ifdef`, `ifndef`, `else` (including `else ifeq`, `else
-ifneq`, `else ifdef`, and `else ifndef`), and `endif` directive.  It must form
-Make logical lines by conservatively joining continued directive lines, track
-balanced/nested directive state, and reject malformed, unmatched, ambiguous,
-or nonstandard conditional spelling even if GNU Make would select a branch
-under the fixed test environment.  A directive cannot be waived because its
-currently selected branch has no observed guarded argv.
+ifneq`, `else ifdef`, and `else ifndef`), and `endif` directive.  A directive
+cannot be waived because its currently selected branch has no observed guarded
+argv.
+
+The scanner must first construct logical lines for the **whole original
+file**, before looking for any conditional word.  It must use the GNU
+Make-compatible trailing-backslash parity rule for every eligible physical
+line: an odd final run of unescaped backslashes joins the next physical line;
+an even run does not.  It must retain the complete physical-span map and the
+first-line prefix for each resulting logical line.  Only then, in this order,
+it classifies the logical line as a full-line comment, a tab-prefixed recipe,
+a balanced `define`/`endef` value-body line, an ordinary variable assignment,
+a rule/target declaration, or an eligible root directive.  Assignment and
+rule classification take precedence over conditional matching.  Consequently:
+
+```make
+SAFE_DISPLAY = first \
+               ifeq literal display data
+```
+
+is one assignment value and is not an `ifeq` directive.  Likewise, a comment,
+recipe display, or literal `ifeq` text inside a `define` body is not a root
+directive.  A `define` body becomes executable Make syntax only through an
+evaluator route, which the preceding evaluator quarantine already rejects.
+
+For an eligible root logical line, the scanner recognizes only the exact GNU
+directive words above with a lexical word boundary after the word, then parses
+the structural sequence (`else` optionally followed by one exact `if*` word,
+or standalone `endif`) and tracks a nested conditional stack.  It must scan
+the complete file rather than stop at the first detection so structural
+errors remain observable.  Any unmatched `else`/`endif`, duplicate `else`,
+missing closing `endif`, unterminated continuation, malformed `else if*`,
+unexpected trailing directive material, nonstandard conditional spelling that
+is ambiguous with a directive, or an inability to distinguish an eligible
+line from assignment/rule syntax is a pre-launch fail-closed error.  No GNU
+Make database, projection, target enumeration, or subprocess may be created
+after any such error.
 
 This is deliberately a structural conditional quarantine rather than another
 attempt to infer a generic macro's meaning from its name.  It closes a future
@@ -584,13 +615,21 @@ recipe/shell line, an ordinary variable value, or literal display text inside
 a `define` body as a Make conditional directive.  It must recognize and skip
 comments/recipe bodies and balanced `define`/`endef` value bodies before
 directive classification; a real conditional directive outside those regions
-is fatal irrespective of comments that follow it.  The hostile matrix must
-include an otherwise-inactive `ifeq`, `ifneq`, `ifdef`, and `ifndef` direct
-file or extra-module branch, plus a generic macro defined within an inactive
-branch, and assert each fails in this pre-launch guard with no GNU Make
-subprocess or recipe attempt.  It must also assert the current Makefile's
-zero-directive result and retain positive comment, recipe-display, and
-`define`-literal cases.
+is fatal irrespective of comments that follow it.
+
+The hostile test matrix must use temporary Makefile variants and prove, each
+without creating a projection or GNU Make subprocess, the pre-launch failure
+of: every inactive `ifeq`, `ifneq`, `ifdef`, and `ifndef` guarded-route
+branch; standalone `else` and standalone `endif`; each `else ifeq`, `else
+ifneq`, `else ifdef`, and `else ifndef` spelling; valid nested conditionals;
+unmatched `else`/`endif`, duplicate `else`, missing `endif`, malformed
+directive headers, and an unterminated or backslash-continued conditional
+directive.  It must include a guarded macro/`define` defined in an inactive
+branch and a condition nested beneath an inactive parent.  The complementary
+positive matrix must assert the current Makefile's zero-directive result and
+accept a comment display, a tab recipe display, a literal `ifeq` inside a
+balanced `define` body, and continued ordinary assignment/display/comment
+values whose later physical line begins `ifeq`; none may be misclassified.
 
 #### Hermetic expansion harness and safety boundary
 
