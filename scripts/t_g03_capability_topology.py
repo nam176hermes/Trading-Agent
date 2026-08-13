@@ -199,6 +199,139 @@ def _read_private_regular_file(path: Path, *, label: str) -> bytes:
         os.close(descriptor)
 
 
+@dataclass(frozen=True)
+class _RetainedClosureArtifacts:
+    directory_path: Path
+    directory_descriptor: int
+    directory_identity: tuple[int, ...]
+    proof_descriptor: int
+    proof_identity: tuple[int, ...]
+    proof_raw: bytes
+    governance_descriptor: int
+    governance_identity: tuple[int, ...]
+    governance_raw: bytes
+
+
+def _open_private_artifact_leaf(
+    directory_descriptor: int, name: str, *, label: str,
+) -> tuple[int, tuple[int, ...]]:
+    descriptor = -1
+    try:
+        before = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+        ):
+            raise TopologyError(f"{label} is not a private regular file")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_descriptor,
+        )
+        opened = os.fstat(descriptor)
+    except TopologyError:
+        raise
+    except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise TopologyError(f"{label} is not a private regular file") from exc
+    if _artifact_identity(opened) != _artifact_identity(before):
+        os.close(descriptor)
+        raise TopologyError(f"{label} identity changed before read")
+    return descriptor, _artifact_identity(opened)
+
+
+@contextmanager
+def _retained_private_closure_artifacts(path: Path):
+    """Retain the private directory and both closure leaves as one artifact set."""
+    if path.name != "portable-defect-closure-proof.json":
+        raise TopologyError("portable closure proof path is malformed")
+    directory_path = path.parent
+    directory_descriptor = -1
+    proof_descriptor = -1
+    governance_descriptor = -1
+    try:
+        try:
+            before = directory_path.lstat()
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or stat.S_IMODE(before.st_mode) != 0o700
+            ):
+                raise TopologyError("portable closure private artifact directory is unsafe")
+            directory_descriptor = os.open(
+                directory_path,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            opened_directory = os.fstat(directory_descriptor)
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("portable closure private artifact directory is unsafe") from exc
+        directory_identity = _artifact_identity(opened_directory)
+        if directory_identity != _artifact_identity(before):
+            raise TopologyError("portable closure artifact directory identity changed")
+        proof_descriptor, proof_identity = _open_private_artifact_leaf(
+            directory_descriptor, path.name, label="portable closure proof",
+        )
+        governance_descriptor, governance_identity = _open_private_artifact_leaf(
+            directory_descriptor,
+            "portable-defect-closure.governance.json",
+            label="portable closure governance report",
+        )
+        proof_raw = _read_descriptor_bytes(proof_descriptor)
+        governance_raw = _read_descriptor_bytes(governance_descriptor)
+        yield _RetainedClosureArtifacts(
+            directory_path=directory_path,
+            directory_descriptor=directory_descriptor,
+            directory_identity=directory_identity,
+            proof_descriptor=proof_descriptor,
+            proof_identity=proof_identity,
+            proof_raw=proof_raw,
+            governance_descriptor=governance_descriptor,
+            governance_identity=governance_identity,
+            governance_raw=governance_raw,
+        )
+    finally:
+        for descriptor in (governance_descriptor, proof_descriptor, directory_descriptor):
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _postcheck_private_closure_artifacts(artifacts: _RetainedClosureArtifacts) -> None:
+    """Reject any directory or leaf replacement before accepting cross-artifact PASS."""
+    try:
+        named_directory = artifacts.directory_path.lstat()
+        held_directory = os.fstat(artifacts.directory_descriptor)
+        named_proof = os.stat(
+            "portable-defect-closure-proof.json",
+            dir_fd=artifacts.directory_descriptor,
+            follow_symlinks=False,
+        )
+        named_governance = os.stat(
+            "portable-defect-closure.governance.json",
+            dir_fd=artifacts.directory_descriptor,
+            follow_symlinks=False,
+        )
+        held_proof = os.fstat(artifacts.proof_descriptor)
+        held_governance = os.fstat(artifacts.governance_descriptor)
+    except OSError as exc:
+        raise TopologyError("portable closure artifact identity changed during validation") from exc
+    if (
+        _artifact_identity(named_directory) != artifacts.directory_identity
+        or _artifact_identity(held_directory) != artifacts.directory_identity
+        or _artifact_identity(named_proof) != artifacts.proof_identity
+        or _artifact_identity(held_proof) != artifacts.proof_identity
+        or _artifact_identity(named_governance) != artifacts.governance_identity
+        or _artifact_identity(held_governance) != artifacts.governance_identity
+    ):
+        raise TopologyError("portable closure artifact identity changed during validation")
+
+
 INVENTORY_COLUMNS = (
     "test_node_id", "source_file", "primary_invariant", "failure_before_primary_assertion",
     "classification", "capability_or_authority_code", "source_fix_required",
@@ -1446,52 +1579,54 @@ def validate_portable_closure_proof(
 ) -> dict[str, object]:
     """Validate the one exact-execution proof that replaces all closed SRC receipts."""
     _reject_closed_source_artifacts(path.parent)
-    raw = _read_private_regular_file(path, label="portable closure proof")
-    document = _strict_json(raw, label="portable closure proof")
-    if (
-        not isinstance(document, dict)
-        or set(document) != CLOSURE_PROOF_KEYS
-        or canonical_json_bytes(document) != raw
-    ):
-        raise TopologyError("portable closure proof is noncanonical or malformed")
-    closure = load_portable_defect_closure(closure_path, head_sha=foundation_head_sha)
-    _validate_closure_date(closure, foundation_context)
-    nodes = tuple(sorted(row.node_id for row in closure))
-    ledger_digests = [
-        row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)
-    ]
-    custody = document["custody_policy"]
-    if not isinstance(custody, dict):
-        raise TopologyError("portable closure proof custody is malformed")
-    custody = _validate_custody_policy(custody)
-    expected_custody = _validate_custody_policy(sealed_custody)
-    if custody != expected_custody:
-        raise TopologyError("portable closure proof does not match sealed custody")
-    governance_path = path.parent / "portable-defect-closure.governance.json"
-    governance_raw = _read_private_regular_file(
-        governance_path, label="portable closure governance report",
-    )
-    observed_digests = _observed_closure_digests(closure, governance_raw, custody)
-    if observed_digests != ledger_digests or document["proof_result_digests"] != observed_digests:
-        raise TopologyError("portable closure observed proof digest drift")
-    if (
-        document["schema_version"] != PORTABLE_CLOSURE_PROOF_SCHEMA
-        or document["foundation_run_id"] != foundation_run_id
-        or document["foundation_head_sha"] != foundation_head_sha
-        or document["foundation_validation_date"] != foundation_context["foundation_validation_date"]
-        or document["foundation_context_sha256"] != foundation_context["foundation_context_sha256"]
-        or document["inventory_sha256"] != LOCKED_INVENTORY_SHA256
-        or document["closure_sha256"] != LOCKED_CLOSURE_SHA256
-        or tuple(document["closure_node_ids"]) != nodes
-        or document["closure_node_ids_sha256"] != _ids_sha256(nodes)
-        or document["proof_command"] != CLOSURE_PROOF_COMMAND
-        or document["custody_policy_sha256"] != _sha256(custody)
-        or document["governance_report_sha256"] != hashlib.sha256(governance_raw).hexdigest()
-        or document["outcome"] != "PASS"
-        or document["closure_proof_sha256"] != _closure_proof_payload_sha256(document)
-    ):
-        raise TopologyError("portable closure proof binding drift")
-    return document
+    with _retained_private_closure_artifacts(path) as artifacts:
+        raw = artifacts.proof_raw
+        governance_raw = artifacts.governance_raw
+        document = _strict_json(raw, label="portable closure proof")
+        if (
+            not isinstance(document, dict)
+            or set(document) != CLOSURE_PROOF_KEYS
+            or canonical_json_bytes(document) != raw
+        ):
+            raise TopologyError("portable closure proof is noncanonical or malformed")
+        closure = load_portable_defect_closure(closure_path, head_sha=foundation_head_sha)
+        _validate_closure_date(closure, foundation_context)
+        nodes = tuple(sorted(row.node_id for row in closure))
+        ledger_digests = [
+            row.proof_result_digest for row in sorted(closure, key=lambda row: row.node_id)
+        ]
+        custody = document["custody_policy"]
+        if not isinstance(custody, dict):
+            raise TopologyError("portable closure proof custody is malformed")
+        custody = _validate_custody_policy(custody)
+        expected_custody = _validate_custody_policy(sealed_custody)
+        if custody != expected_custody:
+            raise TopologyError("portable closure proof does not match sealed custody")
+        observed_digests = _observed_closure_digests(closure, governance_raw, custody)
+        if (
+            observed_digests != ledger_digests
+            or document["proof_result_digests"] != observed_digests
+        ):
+            raise TopologyError("portable closure observed proof digest drift")
+        if (
+            document["schema_version"] != PORTABLE_CLOSURE_PROOF_SCHEMA
+            or document["foundation_run_id"] != foundation_run_id
+            or document["foundation_head_sha"] != foundation_head_sha
+            or document["foundation_validation_date"] != foundation_context["foundation_validation_date"]
+            or document["foundation_context_sha256"] != foundation_context["foundation_context_sha256"]
+            or document["inventory_sha256"] != LOCKED_INVENTORY_SHA256
+            or document["closure_sha256"] != LOCKED_CLOSURE_SHA256
+            or tuple(document["closure_node_ids"]) != nodes
+            or document["closure_node_ids_sha256"] != _ids_sha256(nodes)
+            or document["proof_command"] != CLOSURE_PROOF_COMMAND
+            or document["custody_policy_sha256"] != _sha256(custody)
+            or document["governance_report_sha256"] != hashlib.sha256(governance_raw).hexdigest()
+            or document["outcome"] != "PASS"
+            or document["closure_proof_sha256"] != _closure_proof_payload_sha256(document)
+        ):
+            raise TopologyError("portable closure proof binding drift")
+        _postcheck_private_closure_artifacts(artifacts)
+        return document
 
 
 def execute_portable_defect_closure(

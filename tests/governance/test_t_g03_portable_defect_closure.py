@@ -444,7 +444,76 @@ def test_closure_artifact_reader_rejects_unsafe_identity(
                 return real_reader(descriptor)
 
             monkeypatch.setattr(topology, "_read_descriptor_bytes", swap_reader)
-        with pytest.raises(topology.TopologyError, match="private regular|identity changed"):
+        with pytest.raises(
+            topology.TopologyError,
+            match="private regular|private artifact directory|identity changed",
+        ):
+            topology.validate_portable_closure_proof(
+                proof, foundation_run_id=run_id, foundation_head_sha=head,
+                foundation_context=context, sealed_custody=custody,
+            )
+
+
+def test_closure_artifact_set_rejects_symlinked_replacement_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head, context_path = _sealed_empty_remainder(monkeypatch, evidence, raw)
+        proof = topology.execute_portable_defect_closure(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+            head_sha=head, foundation_context_path=context_path,
+            exact_runner=_passing_exact,
+        )
+        context = topology.load_foundation_context(context_path, run_id=run_id, head_sha=head)
+        baseline = topology.load_portable_root_baseline(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        custody = topology._validate_custody_policy(baseline["collector_policy"])
+        topology_root = proof.parent
+        retained = topology_root.with_name("retained-capability-topology")
+        topology_root.rename(retained)
+        topology_root.symlink_to(retained.name, target_is_directory=True)
+        with pytest.raises(topology.TopologyError, match="private artifact directory"):
+            topology.validate_portable_closure_proof(
+                proof, foundation_run_id=run_id, foundation_head_sha=head,
+                foundation_context=context, sealed_custody=custody,
+            )
+
+
+def test_closure_artifact_set_rejects_proof_replaced_while_governance_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        run_id, head, context_path = _sealed_empty_remainder(monkeypatch, evidence, raw)
+        proof = topology.execute_portable_defect_closure(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+            head_sha=head, foundation_context_path=context_path,
+            exact_runner=_passing_exact,
+        )
+        context = topology.load_foundation_context(context_path, run_id=run_id, head_sha=head)
+        baseline = topology.load_portable_root_baseline(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        custody = topology._validate_custody_policy(baseline["collector_policy"])
+        replacement = proof.with_name("replacement-proof.json")
+        replacement.write_bytes(proof.read_bytes())
+        replacement.chmod(0o600)
+        real_reader = topology._read_descriptor_bytes
+        calls = 0
+
+        def swap_proof_while_governance_is_read(descriptor: int) -> bytes:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                os.replace(replacement, proof)
+            return real_reader(descriptor)
+
+        monkeypatch.setattr(topology, "_read_descriptor_bytes", swap_proof_while_governance_is_read)
+        with pytest.raises(topology.TopologyError, match="identity changed"):
             topology.validate_portable_closure_proof(
                 proof, foundation_run_id=run_id, foundation_head_sha=head,
                 foundation_context=context, sealed_custody=custody,
