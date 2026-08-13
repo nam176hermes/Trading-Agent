@@ -1,0 +1,2337 @@
+# P0 Canonical Baseline and CI Closure Implementation Plan
+
+> **For Codex:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Use `superpowers:test-driven-development` for every behavior change and `superpowers:verification-before-completion` before any completion claim.
+
+**Goal:** Qualify one canonical source baseline for `nam176hermes/Trading-Agent`, make the default CI fully portable and reproducible, close all portable source defects, isolate genuine native/external requirements behind explicit receipts, and prepare a fast-forward-only promotion to `main`.
+
+**Architecture:** Keep the current contract-first, paper-only foundation. Use the existing candidate branch as the implementation base. The default source gate must never require Bubblewrap, user namespaces, operator-local executables, retained research corpora, protected PostgreSQL, production services, brokers, exchanges, or live credentials. Genuine host requirements remain testable in dedicated lanes and may be reported as `UNAVAILABLE` in portable CI, but they may never be reported as executed or passed. A separate host-authority gate must require real `PASS`.
+
+**Tech Stack:** Python 3.11, pytest, Pydantic, Make, GitHub Actions, `uv`, Node 20, npm, JSON/TSV evidence artifacts, Git worktrees.
+
+---
+
+## 1. Verified starting point
+
+This plan is based on the repository state verified on **2026-08-13**.
+
+### Canonical branch
+
+```text
+branch: main
+head:   19627785c140c502260f864e462fed9b9925436e
+```
+
+### Qualification candidate
+
+```text
+branch: codex/phase1-terra-autopilot-19627785c140
+head:   417c17452ea31f0ca8c8e9893ac3c03a3a90a7c1
+relation to main:
+  ahead:  106 commits
+  behind: 0 commits
+```
+
+The candidate is therefore a fast-forward descendant of `main`. P0 must qualify this candidate lineage rather than restart implementation from `main`.
+
+### Current default workflow
+
+The candidate workflow:
+
+```text
+.github/workflows/foundation.yml
+```
+
+uses Python 3.11, Node 20, `uv sync --frozen`, `npm ci`, and:
+
+```bash
+make ci-portable NONINTERACTIVE=1
+```
+
+It always uploads:
+
+```text
+runtime/state/ci-portable/**
+```
+
+### Current blocking result
+
+The latest inspected candidate run stops at governance validation with:
+
+```text
+POLICY_DATE_CONTEXT_MISMATCH
+```
+
+The same run produced a valid sealed foundation context bound to:
+
+```text
+foundation_head_sha:        417c17452ea31f0ca8c8e9893ac3c03a3a90a7c1
+foundation_run_id:           31724355034
+foundation_validation_date:  2026-08-13
+```
+
+P0 must reproduce and fix the context-authority mismatch before interpreting later suite results.
+
+### Current hosted-failure inventory
+
+The retained inventory contains **62** cases:
+
+| Classification | Count | Required P0 treatment |
+|---|---:|---|
+| `PORTABLE_SOURCE_DEFECT` | **32** | Fix source/test fixtures; zero may remain unresolved |
+| `NATIVE_CAPABILITY_REQUIRED` | **24** | Real capability lane or structured `UNAVAILABLE` receipt |
+| `EXTERNAL_AUTHORITY_REQUIRED` | **6** | Real authority lane or structured `UNAVAILABLE` receipt |
+
+Exact subgroups:
+
+```text
+PORTABLE_SOURCE_DEFECT
+├── 27 SRC-SEALEDUV-BWRAP-PREFLIGHT
+├── 3  SRC-SEMANTIC-FIXTURE-IDENTITY
+└── 2  SRC-PHASE4B-FAKEROOT-IDENTITY
+
+NATIVE_CAPABILITY_REQUIRED
+├── 16 NATIVE-BWRAP-OS-SANDBOX
+└── 8  NATIVE-USERNS-ROOT-PROVISION
+
+EXTERNAL_AUTHORITY_REQUIRED
+├── 3 EXT-PHASE3B-CORPUS
+└── 3 EXT-LEGACY-UV-AUTHORITY
+```
+
+---
+
+## 2. Required P0 end state
+
+P0 is complete only when all of the following are true:
+
+1. A single candidate lineage descends from `main` without merge-base divergence.
+2. `make ci` is the canonical source-safe gate.
+3. `make ci-portable` passes from a clean hosted runner without host authorities.
+4. Topology validation derives its date only from a validated sealed foundation context.
+5. CLI or environment date overrides are rejected during topology audits.
+6. All **32 portable source defects** are fixed and removed from the unresolved hosted inventory.
+7. The remaining unresolved inventory contains exactly:
+   - 24 native-capability cases;
+   - 6 external-authority cases;
+   - zero portable defects.
+8. Portable CI can accept a properly bound `UNAVAILABLE` receipt for absent native/external resources, but never label that lane `PASS`.
+9. `make ci-host-authority` requires real execution and returns non-zero for `UNAVAILABLE`.
+10. CI artifacts are schema-validated, hash-bound, no-clobber, secret-safe, and tied to the exact head SHA and failure-inventory digest.
+11. Two consecutive GitHub Actions executions on the same qualified SHA pass with the same semantic result digest.
+12. Promotion to `main` is fast-forward only and occurs only after explicit operator authorization.
+13. No production service, database, scheduler, broker, exchange, account, order endpoint, or live-trading gate is changed.
+
+---
+
+## 3. Non-goals
+
+P0 must not include:
+
+- real Nautilus backtest/paper engine integration;
+- Qlib, FinRL-X, TradingAgents, or Freqtrade code harvesting;
+- strategy or portfolio-algorithm changes;
+- live execution;
+- production deployment or release activation;
+- production PostgreSQL access or migration;
+- changing broker/exchange credentials;
+- weakening risk, kill-switch, source-custody, or publication invariants;
+- broad test skipping;
+- synthesizing an external corpus or replacing an authority-bound executable.
+
+Those belong to later packages.
+
+---
+
+## 4. P0 invariants
+
+### P0-I01 — One source lineage
+
+```text
+origin/main
+    ↓ fast-forward ancestry only
+P0 candidate
+    ↓ qualification
+origin/main
+```
+
+No merge commit may hide divergence.
+
+### P0-I02 — One validation-date authority
+
+For topology audits:
+
+```text
+sealed foundation context
+            ↓
+foundation_validation_date
+```
+
+Forbidden sources:
+
+```text
+--today
+FOUNDATION_VALIDATION_DATE
+wall-clock date.today()
+datetime.now()
+GitHub runner local date
+policy-file fallback interpreted as runtime authority
+```
+
+### P0-I03 — No false portable pass
+
+```text
+portable source defect      → FIX or FAIL
+native capability absent    → UNAVAILABLE receipt
+external authority absent   → UNAVAILABLE receipt
+resource present but invalid→ FAIL
+resource present and valid  → RUN and PASS/FAIL
+```
+
+### P0-I04 — One receipt cannot prove another lane
+
+A Bubblewrap receipt cannot prove user-namespace availability. A corpus receipt cannot prove the retained UV executable. Every capability/authority code requires an exact receipt.
+
+### P0-I05 — Production validators stay strict
+
+Fixture portability must be fixed in test construction. Do not relax production UID/GID, source digest, executable identity, ownership, sandbox, publication, or authority checks.
+
+### P0-I06 — Portable CI has no money-moving authority
+
+The default GitHub workflow must have:
+
+```yaml
+permissions:
+  contents: read
+```
+
+and no secrets, production environment, broker call, exchange call, migration, deployment, service restart, scheduler mutation, or live-trading action.
+
+---
+
+## 5. Execution order
+
+```text
+P0-00  Establish isolated candidate workspace
+   ↓
+P0-01  Pin machine-readable baseline
+   ↓
+P0-02  Reproduce date-context failure
+   ↓
+P0-03  Fix sealed validation-date authority
+   ↓
+P0-04  Fix 27 sealed-UV/Bubblewrap fixture defects
+   ↓
+P0-05  Fix 5 UID/GID and fakeroot fixture defects
+   ↓
+P0-06  Regenerate failure inventory and close portable lane
+   ↓
+P0-07  Harden native-capability receipts
+   ↓
+P0-08  Harden external-authority receipts
+   ↓
+P0-09  Normalize Make targets and GitHub workflow split
+   ↓
+P0-10  Seal deterministic evidence and artifact firewall
+   ↓
+P0-11  Close documentation and executable matrix
+   ↓
+P0-12  Clean-clone qualification and adversarial review
+   ↓
+P0-13  Fast-forward promotion and post-promotion proof
+```
+
+Do not run P0-04 through P0-10 in parallel when they modify the same topology, Makefile, inventory, or governance files.
+
+---
+
+# Task P0-00 — Establish the isolated qualification workspace
+
+**Owner/model:** Hermes orchestrator with Codex `gpt-5.6-terra`, reasoning medium.  
+**Reviewer:** `gpt-5.6-sol`, reasoning high.
+
+**Purpose:** Ensure all work begins from the existing candidate, not stale `main`, and prevent accidental changes to another worktree.
+
+**Files:**
+
+- No source changes in the setup step.
+- Later create:
+  - `docs/superpowers/plans/2026-08-13-p0-canonical-baseline-ci-closure.md`
+
+### Step 1 — Fetch and verify the remote graph
+
+Run:
+
+```bash
+git fetch --prune origin \
+  main \
+  codex/phase1-terra-autopilot-19627785c140
+
+git rev-parse origin/main
+git rev-parse origin/codex/phase1-terra-autopilot-19627785c140
+
+git merge-base --is-ancestor \
+  origin/main \
+  origin/codex/phase1-terra-autopilot-19627785c140
+
+git rev-list --count \
+  origin/main..origin/codex/phase1-terra-autopilot-19627785c140
+
+git rev-list --count \
+  origin/codex/phase1-terra-autopilot-19627785c140..origin/main
+```
+
+Expected at plan creation:
+
+```text
+origin/main:
+19627785c140c502260f864e462fed9b9925436e
+
+candidate:
+417c17452ea31f0ca8c8e9893ac3c03a3a90a7c1
+
+ancestor check: exit 0
+ahead: 106
+behind: 0
+```
+
+### Step 2 — Stop on drift
+
+Stop immediately if:
+
+- `origin/main` is no longer an ancestor;
+- the candidate branch was force-pushed;
+- the candidate head differs and its new commits have not been reviewed;
+- the current worktree has unrelated modifications.
+
+Do not merge `main` into the candidate. Reassess ancestry first.
+
+### Step 3 — Create a dedicated worktree
+
+```bash
+git worktree add \
+  ../trading-agent-p0-canonical-baseline \
+  -b p0/canonical-baseline-ci-closure \
+  origin/codex/phase1-terra-autopilot-19627785c140
+
+cd ../trading-agent-p0-canonical-baseline
+git status --short
+```
+
+Expected:
+
+```text
+clean worktree
+```
+
+### Step 4 — Verify no production/runtime path is mounted into the worktree
+
+Check:
+
+```bash
+find . -xdev -type l -print
+git submodule status
+git worktree list --porcelain
+```
+
+No repository symlink or nested runtime authority may be introduced.
+
+### Step 5 — Save this plan in the repository
+
+Create:
+
+```text
+docs/superpowers/plans/2026-08-13-p0-canonical-baseline-ci-closure.md
+```
+
+with this exact plan.
+
+### Step 6 — Commit
+
+```bash
+git add -- \
+  docs/superpowers/plans/2026-08-13-p0-canonical-baseline-ci-closure.md
+
+git commit -m "docs(p0): add canonical baseline and CI closure plan"
+```
+
+---
+
+# Task P0-01 — Pin the P0 baseline in a machine-readable manifest
+
+**Owner/model:** Codex `gpt-5.6-terra`, medium.  
+**Reviewer:** Sol high.
+
+**Files:**
+
+- Create: `ops/consolidation/p0-canonical-baseline.json`
+- Create: `tests/consolidation/test_p0_canonical_baseline.py`
+- Modify: `scripts/audit_canonical_repo.py`
+- Modify: `Makefile`
+
+### Step 1 — Write the failing manifest test
+
+The test must require:
+
+```json
+{
+  "schema_version": "p0-canonical-baseline/v1",
+  "base_branch": "main",
+  "base_sha": "19627785c140c502260f864e462fed9b9925436e",
+  "candidate_source_branch": "codex/phase1-terra-autopilot-19627785c140",
+  "candidate_start_sha": "417c17452ea31f0ca8c8e9893ac3c03a3a90a7c1",
+  "qualified_sha": null,
+  "promotion_mode": "fast-forward-only",
+  "paper_only": true,
+  "live_execution_authorized": false
+}
+```
+
+Also require:
+
+- strict keys, no unknown fields;
+- all SHA fields are lowercase 40-character hex;
+- `base_sha` and `candidate_start_sha` exist in local Git history;
+- both are ancestors of current `HEAD`;
+- `qualified_sha`, when non-null, equals current qualified head and descends from `candidate_start_sha`;
+- `paper_only` is `true`;
+- `live_execution_authorized` is `false`.
+
+### Step 2 — Run the failing test
+
+```bash
+uv run pytest -q \
+  tests/consolidation/test_p0_canonical_baseline.py
+```
+
+Expected:
+
+```text
+FAIL: manifest missing
+```
+
+### Step 3 — Add the manifest and audit integration
+
+Implement:
+
+- strict JSON schema validation;
+- ancestry checks using argument-vector subprocess calls, never shell interpolation;
+- no remote network fetch inside the audit;
+- clear error codes:
+  - `P0_BASELINE_MISSING`
+  - `P0_BASELINE_SCHEMA_INVALID`
+  - `P0_BASELINE_SHA_MISSING`
+  - `P0_BASELINE_ANCESTRY_INVALID`
+  - `P0_LIVE_AUTHORITY_FORBIDDEN`.
+
+Add a Make target:
+
+```make
+check-p0-baseline:
+	$(PYTHON) scripts/audit_canonical_repo.py --portable --check-p0-baseline
+```
+
+### Step 4 — Run focused tests
+
+```bash
+uv run pytest -q \
+  tests/consolidation/test_p0_canonical_baseline.py
+
+make check-p0-baseline
+```
+
+Expected:
+
+```text
+PASS
+```
+
+### Step 5 — Run the existing portable canonical audit
+
+```bash
+uv run python scripts/audit_canonical_repo.py --portable
+```
+
+Expected:
+
+```text
+PASS
+```
+
+### Step 6 — Commit
+
+```bash
+git add -- \
+  ops/consolidation/p0-canonical-baseline.json \
+  tests/consolidation/test_p0_canonical_baseline.py \
+  scripts/audit_canonical_repo.py \
+  Makefile
+
+git commit -m "feat(p0): pin canonical candidate baseline"
+```
+
+---
+
+# Task P0-02 — Reproduce and instrument `POLICY_DATE_CONTEXT_MISMATCH`
+
+**Owner/model:** Codex Sol, reasoning xhigh.  
+**Reviewer:** Sol xhigh with fresh context.
+
+**Files:**
+
+- Modify: `tests/governance/test_t_g03f_validation_date.py`
+- Modify: `tests/test_t_g03_capability_topology.py`
+- Modify: `scripts/check_test_governance.py`
+- Modify: `scripts/t_g03_capability_topology.py`
+- Create: `tests/fixtures/governance/README.md` only if a static fixture is unavoidable; prefer temporary fixtures.
+
+### Step 1 — Add a subprocess-level failing regression
+
+The new test must reproduce the production command shape, not call only an internal helper:
+
+```bash
+uv run python scripts/check_test_governance.py \
+  --policy docs/implementation/foundation-test-governance.json \
+  --failure-inventory docs/implementation/foundation-hosted-failure-inventory.tsv \
+  --topology-audit \
+  --foundation-context-path <temporary-valid-context>
+```
+
+Test conditions:
+
+- environment starts without `FOUNDATION_VALIDATION_DATE`;
+- context has:
+  - exact head SHA;
+  - run ID;
+  - ISO date;
+  - inventory digest;
+  - valid context digest;
+- no `--today` is passed.
+
+Expected behavior:
+
+```text
+exit 0
+```
+
+Before the fix, preserve evidence of the current failure:
+
+```text
+POLICY_DATE_CONTEXT_MISMATCH
+```
+
+### Step 2 — Add negative tests
+
+Require all of the following:
+
+1. `--today 2026-08-13` during topology audit:
+   - exit non-zero;
+   - code `POLICY_DATE_CONTEXT_MISMATCH`.
+
+2. `FOUNDATION_VALIDATION_DATE=2026-08-13` during topology audit:
+   - exit non-zero;
+   - code `POLICY_DATE_CONTEXT_MISMATCH`.
+
+3. Missing context:
+   - code `POLICY_FOUNDATION_CONTEXT_REQUIRED`.
+
+4. Context head SHA mismatch:
+   - code `POLICY_FOUNDATION_HEAD_MISMATCH`.
+
+5. Context inventory digest mismatch:
+   - code `POLICY_FOUNDATION_INVENTORY_MISMATCH`.
+
+6. Malformed context:
+   - code `POLICY_FOUNDATION_CONTEXT_INVALID`.
+
+7. Error output must not print the value of an injected environment variable.
+
+### Step 3 — Run the tests and record current behavior
+
+```bash
+uv run pytest -q \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py
+```
+
+Expected before implementation:
+
+```text
+at least the clean-context regression fails
+```
+
+### Step 4 — Add safe diagnostics
+
+Extend the error artifact with booleans and origin labels only:
+
+```json
+{
+  "date_context_sources": {
+    "cli_today_present": false,
+    "environment_override_present": false,
+    "sealed_context_present": true,
+    "sealed_context_valid": true
+  }
+}
+```
+
+Do not record:
+
+- arbitrary environment values;
+- secrets;
+- full environment dumps;
+- raw credential-bearing paths.
+
+### Step 5 — Re-run focused tests
+
+```bash
+uv run pytest -q \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py
+```
+
+The clean-context test may remain failing until P0-03, but every negative test and diagnostic assertion must be stable.
+
+### Step 6 — Commit
+
+```bash
+git add -- \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py \
+  scripts/check_test_governance.py \
+  scripts/t_g03_capability_topology.py
+
+git commit -m "test(ci): reproduce sealed validation-date authority mismatch"
+```
+
+---
+
+# Task P0-03 — Make the sealed foundation context the only topology date authority
+
+**Owner/model:** Codex Sol, xhigh.  
+**Reviewer:** Sol xhigh, fresh context.
+
+**Files:**
+
+- Modify: `scripts/check_test_governance.py`
+- Modify: `scripts/t_g03_capability_topology.py`
+- Modify: `tests/governance/test_t_g03f_validation_date.py`
+- Modify: `tests/test_t_g03_capability_topology.py`
+- Modify: `Makefile` only if the caller currently passes a standalone date.
+
+### Step 1 — Introduce explicit date-origin classification
+
+Represent date input origins as an enum or equivalent strict values:
+
+```text
+SEALED_FOUNDATION_CONTEXT
+CLI_OVERRIDE
+ENVIRONMENT_OVERRIDE
+POLICY_FALLBACK
+WALL_CLOCK
+NONE
+```
+
+For `--topology-audit`, only:
+
+```text
+SEALED_FOUNDATION_CONTEXT
+```
+
+is accepted.
+
+### Step 2 — Validate context before deriving the date
+
+Required order:
+
+```text
+read bytes
+  ↓
+parse strict schema
+  ↓
+verify context digest
+  ↓
+verify head SHA
+  ↓
+verify run ID
+  ↓
+verify failure-inventory digest
+  ↓
+parse foundation_validation_date
+  ↓
+use date in governance checks
+```
+
+Do not parse the date from an unverified object.
+
+### Step 3 — Distinguish policy metadata from runtime date authority
+
+A date or expiry field inside the governance policy may constrain validity, but it must not be treated as a standalone runtime validation-date source during topology audit.
+
+Required semantic:
+
+```text
+sealed date = evaluation date
+policy dates = constraints evaluated against sealed date
+```
+
+### Step 4 — Preserve negative override guards
+
+Do not solve the current failure by silently unsetting or ignoring:
+
+```text
+--today
+FOUNDATION_VALIDATION_DATE
+```
+
+The caller must stop supplying them. If they are present, topology audit must fail.
+
+### Step 5 — Remove wall-clock fallback from topology paths
+
+Search:
+
+```bash
+rg -n \
+  'date\.today|datetime\.now|FOUNDATION_VALIDATION_DATE|--today' \
+  scripts/check_test_governance.py \
+  scripts/t_g03_capability_topology.py \
+  .github/workflows/foundation.yml \
+  Makefile
+```
+
+Expected:
+
+- negative-test and non-topology support references may remain;
+- topology execution has no wall-clock fallback;
+- workflow/Make caller passes no standalone date.
+
+### Step 6 — Run focused tests
+
+```bash
+uv run pytest -q \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py \
+  tests/test_test_governance_audit.py
+```
+
+Expected:
+
+```text
+PASS
+```
+
+### Step 7 — Run the production command shape
+
+```bash
+rm -rf runtime/state/ci-portable/capability-topology \
+       runtime/state/ci-portable/test-governance
+
+make ci-portable-topology NONINTERACTIVE=1
+make check-test-governance-topology NONINTERACTIVE=1
+```
+
+Expected:
+
+- no `POLICY_DATE_CONTEXT_MISMATCH`;
+- valid context and aggregate receipts;
+- later suite failures may now surface and are handled in subsequent tasks.
+
+### Step 8 — Adversarial verification
+
+```bash
+FOUNDATION_VALIDATION_DATE=2099-01-01 \
+make check-test-governance-topology NONINTERACTIVE=1
+```
+
+Expected:
+
+```text
+non-zero
+POLICY_DATE_CONTEXT_MISMATCH
+```
+
+Then rerun without the variable and require success through the date-authority stage.
+
+### Step 9 — Commit
+
+```bash
+git add -- \
+  scripts/check_test_governance.py \
+  scripts/t_g03_capability_topology.py \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py \
+  Makefile
+
+git commit -m "fix(ci): derive topology date only from sealed context"
+```
+
+---
+
+# Task P0-04 — Close 27 sealed-UV portable fixture defects
+
+**Owner/model:** Codex Terra medium for mechanical fixture extraction; Sol xhigh for security review.  
+**Reviewer:** Sol xhigh.
+
+**Files:**
+
+- Modify: `tests/foundation/test_nautilus_sealed_uv_exec.py`
+- Optionally create: `tests/foundation/sealed_uv_test_fixtures.py`
+- Modify production code only if a genuine source bug is demonstrated after fixture repair.
+- Modify: `docs/implementation/foundation-hosted-failure-inventory.tsv` only after tests pass.
+
+### Problem
+
+Twenty-seven tests prove source, policy, descriptor, publication, or rejection semantics but construct a policy by statting:
+
+```text
+/usr/bin/bwrap
+```
+
+before reaching their primary assertion.
+
+These are test-fixture defects. They must not be deferred as native-capability tests.
+
+### Step 1 — Add a controlled executable fixture
+
+Create a helper that:
+
+1. creates a temporary regular file;
+2. writes deterministic inert bytes;
+3. sets executable mode;
+4. opens/stat-checks it without following symlinks;
+5. derives exact:
+   - path;
+   - SHA-256;
+   - UID;
+   - GID;
+   - mode;
+6. returns a policy binding object.
+
+Example logical API:
+
+```python
+@dataclass(frozen=True)
+class SandboxExecutableFixture:
+    path: Path
+    sha256: str
+    uid: int
+    gid: int
+    mode: int
+
+def create_synthetic_sandbox_executable(tmp_path: Path) -> SandboxExecutableFixture:
+    ...
+```
+
+Do not make the synthetic executable claim to provide Bubblewrap isolation.
+
+### Step 2 — Make pure-policy helpers accept an injected binding
+
+Refactor helpers such as `_task3_policy` or `_write_policy` so tests can pass:
+
+```python
+sandbox_binding=synthetic_fixture
+```
+
+The helper must no longer stat `/usr/bin/bwrap` unless the specific test is classified as `NATIVE-BWRAP-OS-SANDBOX`.
+
+### Step 3 — Keep native tests explicit
+
+Tests that actually execute Bubblewrap or prove namespace/mount isolation must call an explicit helper such as:
+
+```python
+real_bubblewrap_binding()
+```
+
+and remain in the native capability lane.
+
+Do not use the synthetic executable to make these tests green.
+
+### Step 4 — Run the exact portable selection
+
+Use the inventory-driven lane rather than a hand-maintained skip list:
+
+```bash
+uv run python scripts/t_g03_capability_topology.py \
+  run-lane \
+  --lane portable_source \
+  --failure-inventory docs/implementation/foundation-hosted-failure-inventory.tsv \
+  --foundation-context-path runtime/state/ci-portable/capability-topology/foundation-context.json \
+  --evidence-root runtime/state/ci-portable/capability-topology
+```
+
+Also run:
+
+```bash
+uv run pytest -q \
+  tests/foundation/test_nautilus_sealed_uv_exec.py
+```
+
+The full file may still report genuine native-capability cases on a host without Bubblewrap. The inventory-driven portable selection must pass all 27 target cases.
+
+### Step 5 — Add anti-regression tests
+
+Require:
+
+- pure-policy helpers never open `/usr/bin/bwrap`;
+- synthetic executable is regular, executable, non-symlink, and digest-bound;
+- a changed synthetic executable digest is rejected;
+- a symlink replacement is rejected;
+- native tests cannot accidentally receive the synthetic marker;
+- production validators remain unchanged.
+
+### Step 6 — Update closure evidence
+
+Do not simply delete the 27 rows. Move them to:
+
+```text
+docs/implementation/foundation-portable-defect-closure.tsv
+```
+
+with:
+
+```text
+test_node_id
+former_classification
+fix_commit
+proof_command
+proof_status
+```
+
+Remove them from the unresolved hosted inventory only after proof passes.
+
+### Step 7 — Commit
+
+```bash
+git add -- \
+  tests/foundation/test_nautilus_sealed_uv_exec.py \
+  tests/foundation/sealed_uv_test_fixtures.py \
+  docs/implementation/foundation-hosted-failure-inventory.tsv \
+  docs/implementation/foundation-portable-defect-closure.tsv
+
+git commit -m "fix(test): decouple portable sealed-uv proofs from bwrap"
+```
+
+Omit the optional helper path from `git add` if it was not created.
+
+---
+
+# Task P0-05 — Close five UID/GID and fakeroot fixture defects
+
+**Owner/model:** Codex Sol high.  
+**Reviewer:** Sol xhigh.
+
+**Files:**
+
+- Modify: `tests/runtime_release/test_semantic.py`
+- Modify: `tests/runtime_release/test_provision_script.py`
+- Modify test helpers in those files or a narrowly scoped shared fixture file.
+- Do not weaken production identity validation.
+
+## P0-05A — Three semantic identity fixtures
+
+Exact tests:
+
+```text
+tests/runtime_release/test_semantic.py::
+  test_semantic_attestation_uses_the_v2_authority_input_root
+
+tests/runtime_release/test_semantic.py::
+  test_stable_policy_accepts_valid_active_rotation_without_authority_rewrite
+
+tests/runtime_release/test_semantic.py::
+  test_attestation_exposes_every_exact_dynamic_semantic_identity
+```
+
+### Step 1 — Write negative identity tests first
+
+For each fixture path, prove:
+
+- current process UID/GID is accepted;
+- `uid + 1` is rejected;
+- `gid + 1` is rejected;
+- production error does not leak unrelated data.
+
+### Step 2 — Fix fixture construction
+
+Replace hard-coded runtime identity:
+
+```text
+1000:1000
+```
+
+with:
+
+```python
+os.geteuid()
+os.getegid()
+```
+
+only for the authority identity of the process executing the hermetic unit test.
+
+### Step 3 — Run focused tests
+
+```bash
+uv run pytest -q \
+  tests/runtime_release/test_semantic.py::test_semantic_attestation_uses_the_v2_authority_input_root \
+  tests/runtime_release/test_semantic.py::test_stable_policy_accepts_valid_active_rotation_without_authority_rewrite \
+  tests/runtime_release/test_semantic.py::test_attestation_exposes_every_exact_dynamic_semantic_identity
+```
+
+Expected:
+
+```text
+PASS
+```
+
+## P0-05B — Two fakeroot identity fixtures
+
+Exact tests:
+
+```text
+tests/runtime_release/test_provision_script.py::
+  test_root_snapshot_keeps_root_owned_boundary_for_user_owned_stage
+
+tests/runtime_release/test_provision_script.py::
+  test_fakeroot_generates_all_four_envs_with_exact_safe_environment
+```
+
+### Step 4 — Separate signed runtime identity from simulated payload ownership
+
+Use distinct fields/helpers:
+
+```text
+signed_runtime_uid/gid
+simulated_file_uid/gid
+```
+
+Required semantics:
+
+- signed runtime identity matches the executing process;
+- fakeroot may simulate target payload ownership;
+- simulated ownership cannot overwrite or masquerade as signed runtime identity.
+
+### Step 5 — Add adversarial tests
+
+Require rejection when:
+
+- signed UID/GID does not match the process;
+- simulated owner is used as authority owner;
+- fakeroot output changes ownership beyond the expected inventory;
+- signed identity fields are missing.
+
+### Step 6 — Run focused tests
+
+```bash
+uv run pytest -q \
+  tests/runtime_release/test_provision_script.py::test_root_snapshot_keeps_root_owned_boundary_for_user_owned_stage \
+  tests/runtime_release/test_provision_script.py::test_fakeroot_generates_all_four_envs_with_exact_safe_environment
+```
+
+Expected:
+
+```text
+PASS
+```
+
+### Step 7 — Record closure and commit
+
+Move the five rows to the portable defect closure inventory only after passing.
+
+```bash
+git add -- \
+  tests/runtime_release/test_semantic.py \
+  tests/runtime_release/test_provision_script.py \
+  docs/implementation/foundation-hosted-failure-inventory.tsv \
+  docs/implementation/foundation-portable-defect-closure.tsv
+
+git commit -m "fix(test): bind portable runtime identity to current process"
+```
+
+---
+
+# Task P0-06 — Regenerate the inventory and close the portable-source lane
+
+**Owner/model:** Codex Sol high.  
+**Reviewer:** Sol xhigh.
+
+**Files:**
+
+- Modify: `docs/implementation/foundation-hosted-failure-inventory.tsv`
+- Modify/Create: `docs/implementation/foundation-portable-defect-closure.tsv`
+- Modify: `scripts/audit_test_governance.py`
+- Modify: `scripts/t_g03_capability_topology.py`
+- Modify: `tests/test_test_governance_audit.py`
+- Modify: `tests/test_t_g03_capability_topology.py`
+- Modify: `Makefile`
+
+### Step 1 — Add a failing governance assertion
+
+The unresolved hosted inventory must reject:
+
+```text
+classification == PORTABLE_SOURCE_DEFECT
+source_fix_required == YES
+dedicated_gate == planned:portable-source
+```
+
+after P0 source closure.
+
+Expected final inventory:
+
+```text
+total unresolved: 30
+native:           24
+external:          6
+portable defects:  0
+```
+
+### Step 2 — Preserve historical closure separately
+
+`foundation-portable-defect-closure.tsv` must contain all 32 former rows with:
+
+```text
+test_node_id
+source_file
+former_capability_code
+fix_commit
+proof_command
+proof_result_digest
+closed_at_foundation_date
+```
+
+`closed_at_foundation_date` comes from the sealed context, not the wall clock.
+
+### Step 3 — Reject stale or fabricated closure records
+
+Tests must prove rejection for:
+
+- missing test node;
+- duplicate test node;
+- non-existent fix commit;
+- fix commit not in current history;
+- proof command absent;
+- malformed digest;
+- a supposedly closed test still failing;
+- a row present in both unresolved and closed inventories.
+
+### Step 4 — Run governance tests
+
+```bash
+uv run pytest -q \
+  tests/test_test_governance_audit.py \
+  tests/test_t_g03_capability_topology.py
+```
+
+### Step 5 — Run portable topology
+
+```bash
+make ci-portable-topology NONINTERACTIVE=1
+```
+
+Expected:
+
+```text
+portable_source: PASS
+native_capability: PASS or UNAVAILABLE receipt
+external_authority: PASS or UNAVAILABLE receipt
+aggregate source verdict: PASS
+```
+
+The aggregate must include the non-pass lane statuses explicitly.
+
+### Step 6 — Commit
+
+```bash
+git add -- \
+  docs/implementation/foundation-hosted-failure-inventory.tsv \
+  docs/implementation/foundation-portable-defect-closure.tsv \
+  scripts/audit_test_governance.py \
+  scripts/t_g03_capability_topology.py \
+  tests/test_test_governance_audit.py \
+  tests/test_t_g03_capability_topology.py \
+  Makefile
+
+git commit -m "governance: close portable hosted-failure inventory"
+```
+
+---
+
+# Task P0-07 — Harden native-capability receipts
+
+**Owner/model:** Codex Sol xhigh.  
+**Reviewer:** Sol xhigh, fresh context.
+
+**Files:**
+
+- Modify: `scripts/t_g03_capability_topology.py`
+- Modify: `tests/test_t_g03_capability_topology.py`
+- Modify: `docs/implementation/foundation-test-governance.json`
+- Modify: `docs/implementation/foundation-test-governance.md`
+- Modify: `Makefile`
+
+### Required groups
+
+```text
+16 NATIVE-BWRAP-OS-SANDBOX
+8  NATIVE-USERNS-ROOT-PROVISION
+```
+
+### Step 1 — Define the receipt schema
+
+Each native capability receipt must contain:
+
+```json
+{
+  "schema_version": "t-g03-capability-receipt/v1",
+  "lane": "native_capability",
+  "capability_code": "NATIVE-BWRAP-OS-SANDBOX",
+  "status": "PASS|FAIL|UNAVAILABLE",
+  "foundation_head_sha": "...",
+  "foundation_run_id": "...",
+  "foundation_context_sha256": "...",
+  "failure_inventory_sha256": "...",
+  "probe": {
+    "command_id": "...",
+    "exit_code": 0,
+    "stdout_sha256": "...",
+    "stderr_sha256": "..."
+  },
+  "selected_test_count": 16,
+  "passed": 0,
+  "failed": 0,
+  "unavailable": 16
+}
+```
+
+No raw secret-bearing stdout/stderr is required in the summary.
+
+### Step 2 — Implement a real Bubblewrap probe
+
+The probe must distinguish:
+
+```text
+binary absent                 → UNAVAILABLE
+binary present but nonregular → FAIL
+identity/digest policy invalid→ FAIL
+namespace operation denied    → UNAVAILABLE only when classified host limitation
+probe succeeds                → execute all 16 tests
+test failure                  → FAIL
+```
+
+Do not use a synthetic executable in this lane.
+
+### Step 3 — Implement a real user-namespace/root-provision probe
+
+The probe must test the exact capability needed by the eight tests, such as an isolated:
+
+```bash
+unshare --user --map-root-user true
+```
+
+or the project’s stricter equivalent.
+
+Required semantics:
+
+```text
+command absent                  → UNAVAILABLE
+host policy prohibits uid map   → UNAVAILABLE
+partial namespace setup         → FAIL
+probe succeeds                  → execute all 8 tests
+test failure                    → FAIL
+```
+
+### Step 4 — Define exit behavior by caller
+
+For portable aggregation:
+
+```text
+PASS        accepted
+UNAVAILABLE accepted but surfaced
+FAIL        rejected
+```
+
+For host-authority qualification:
+
+```text
+PASS        accepted
+UNAVAILABLE rejected
+FAIL        rejected
+```
+
+### Step 5 — Add adversarial tests
+
+Test:
+
+- forged `PASS` without a successful probe;
+- receipt for the wrong head SHA;
+- receipt for the wrong inventory digest;
+- capability code mismatch;
+- selected-test count mismatch;
+- missing test node;
+- partial test execution;
+- present-but-invalid resource mislabeled unavailable;
+- duplicate receipt publication;
+- receipt overwrite attempt.
+
+### Step 6 — Run tests and lane
+
+```bash
+uv run pytest -q \
+  tests/test_t_g03_capability_topology.py
+
+make ci-portable-topology NONINTERACTIVE=1
+```
+
+### Step 7 — Commit
+
+```bash
+git add -- \
+  scripts/t_g03_capability_topology.py \
+  tests/test_t_g03_capability_topology.py \
+  docs/implementation/foundation-test-governance.json \
+  docs/implementation/foundation-test-governance.md \
+  Makefile
+
+git commit -m "feat(ci): seal native capability receipts"
+```
+
+---
+
+# Task P0-08 — Harden external-authority receipts
+
+**Owner/model:** Codex Sol xhigh.  
+**Reviewer:** Sol xhigh.
+
+**Files:**
+
+- Modify: `scripts/t_g03_capability_topology.py`
+- Modify: `tests/test_t_g03_capability_topology.py`
+- Modify: `docs/implementation/foundation-test-governance.json`
+- Modify: `docs/implementation/foundation-test-governance.md`
+- Modify: `Makefile`
+
+### Required groups
+
+```text
+3 EXT-PHASE3B-CORPUS
+3 EXT-LEGACY-UV-AUTHORITY
+```
+
+### Step 1 — Implement Phase 3B corpus preflight
+
+State classification:
+
+```text
+root absent
+  → UNAVAILABLE
+
+root present, manifest missing
+  → FAIL
+
+root present, count/hash mismatch
+  → FAIL
+
+root present, exact reviewed authority validates
+  → run 3 tests
+```
+
+Do not:
+
+- create a fake corpus;
+- download replacement data;
+- change reviewed counts to match the current host;
+- mark an invalid partial corpus unavailable.
+
+### Step 2 — Implement legacy UV authority preflight
+
+State classification:
+
+```text
+exact path absent
+  → UNAVAILABLE
+
+path is symlink/special file
+  → FAIL
+
+digest/version/UID/GID/mode mismatch
+  → FAIL
+
+authority and sealed environment valid
+  → run 3 tests
+```
+
+Do not substitute a different `uv` binary.
+
+### Step 3 — Bind receipts to exact authority facts
+
+Receipt must include only safe identity evidence:
+
+```text
+authority code
+regular-file status
+expected digest
+observed digest
+expected version
+observed version
+expected ownership/mode
+observed ownership/mode
+corpus manifest digest/counts
+```
+
+Do not include secrets or mutable research contents.
+
+### Step 4 — Add adversarial tests
+
+Require rejection for:
+
+- absent authority labeled `PASS`;
+- partial corpus labeled `UNAVAILABLE`;
+- wrong UV binary accepted by version only;
+- correct digest at wrong path;
+- symlink replacement;
+- authority changed after probe but before test;
+- stale receipt from another head SHA;
+- receipt reused across run IDs.
+
+### Step 5 — Run tests
+
+```bash
+uv run pytest -q \
+  tests/test_t_g03_capability_topology.py
+
+make ci-portable-topology NONINTERACTIVE=1
+```
+
+Expected on a normal hosted runner:
+
+```text
+external_authority: UNAVAILABLE
+portable aggregate: PASS with explicit unavailable status
+```
+
+Expected on the approved authority host:
+
+```text
+external_authority: PASS
+```
+
+### Step 6 — Commit
+
+```bash
+git add -- \
+  scripts/t_g03_capability_topology.py \
+  tests/test_t_g03_capability_topology.py \
+  docs/implementation/foundation-test-governance.json \
+  docs/implementation/foundation-test-governance.md \
+  Makefile
+
+git commit -m "feat(ci): seal external authority receipts"
+```
+
+---
+
+# Task P0-09 — Normalize Make targets and split portable versus host workflows
+
+**Owner/model:** Codex Terra medium.  
+**Reviewer:** Sol high.
+
+**Files:**
+
+- Modify: `Makefile`
+- Modify: `.github/workflows/foundation.yml`
+- Create: `.github/workflows/host-authority.yml`
+- Modify: `tests/test_test_all_host_split.py`
+- Add/modify workflow source tests under the existing governance test suite.
+- Modify: `README.md`
+
+### Step 1 — Write target-graph tests
+
+Required final graph:
+
+```text
+ci
+└── ci-portable
+
+ci-portable
+├── ci-source
+├── ci-portable-topology
+├── check-test-governance-topology
+├── artifact-firewall-check
+└── audit-delivery-contract
+
+ci-host-authority
+├── check-p0-baseline
+├── native capability lane with require-pass=true
+├── external authority lane with require-pass=true
+└── host/package qualification
+```
+
+Avoid executing common test suites twice by extracting one private/common prerequisite target.
+
+### Step 2 — Refactor Make targets
+
+Recommended logical form:
+
+```make
+ci: ci-portable
+
+ci-source-private:
+	# source-safe tests/build/audits only
+
+ci-portable: ci-source-private ci-portable-topology \
+	check-test-governance-topology \
+	artifact-firewall-check \
+	audit-delivery-contract
+
+ci-host-authority:
+	# explicit host authority qualification
+```
+
+No host target may be a prerequisite of `ci` or `ci-portable`.
+
+### Step 3 — Harden the default workflow
+
+`.github/workflows/foundation.yml` must include:
+
+```yaml
+permissions:
+  contents: read
+
+concurrency:
+  group: foundation-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+Also require:
+
+- `ubuntu-latest`;
+- fixed Python/Node/uv versions;
+- `uv sync --frozen`;
+- `npm ci`;
+- timeout;
+- no `pull_request_target`;
+- no production environment;
+- no secrets;
+- `make ci-portable NONINTERACTIVE=1`;
+- always upload portable evidence;
+- artifact retention bounded explicitly.
+
+### Step 4 — Create the host-authority workflow
+
+`.github/workflows/host-authority.yml`:
+
+- `workflow_dispatch` only;
+- protected GitHub environment, e.g. `trading-authority`;
+- approved self-hosted labels;
+- read-only repository permission unless a later separate plan authorizes more;
+- calls:
+
+```bash
+make ci-host-authority NONINTERACTIVE=1
+```
+
+- `UNAVAILABLE` must fail this workflow;
+- no deployment, activation, migration, broker, exchange, or live action.
+
+### Step 5 — Add workflow adversarial tests
+
+Reject:
+
+- default workflow using `self-hosted`;
+- host workflow triggered by pull request;
+- `pull_request_target`;
+- write permissions;
+- secret interpolation in portable workflow;
+- standalone validation-date env;
+- production environment in portable workflow;
+- missing artifact upload on failure;
+- host target reachable from `ci-portable`.
+
+### Step 6 — Run tests
+
+```bash
+uv run pytest -q \
+  tests/test_test_all_host_split.py \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py
+
+make ci-portable NONINTERACTIVE=1
+```
+
+### Step 7 — Commit
+
+```bash
+git add -- \
+  Makefile \
+  .github/workflows/foundation.yml \
+  .github/workflows/host-authority.yml \
+  tests/test_test_all_host_split.py \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py \
+  README.md
+
+git commit -m "refactor(ci): isolate portable and host authority gates"
+```
+
+---
+
+# Task P0-10 — Seal deterministic evidence and enforce the artifact firewall
+
+**Owner/model:** Codex Sol high.  
+**Reviewer:** Sol xhigh.
+
+**Files:**
+
+- Modify: `scripts/t_g03_capability_topology.py`
+- Modify: `scripts/check_test_governance.py`
+- Modify: `scripts/check_artifact_firewall.py`
+- Modify: `tests/test_t_g03_capability_topology.py`
+- Modify/add artifact-firewall tests.
+- Modify: `.github/workflows/foundation.yml`
+- Modify: `Makefile`
+
+### Step 1 — Define the final artifact layout
+
+```text
+runtime/state/ci-portable/
+├── manifest.json
+├── SHA256SUMS
+├── capability-topology/
+│   ├── foundation-context.json
+│   ├── portable-source-receipt.json
+│   ├── native-capability-receipt.json
+│   ├── external-authority-receipt.json
+│   └── aggregate.json
+├── test-governance/
+│   ├── summary.json
+│   └── error.json              # only on error
+└── phase-evidence/
+    └── ...
+```
+
+### Step 2 — Separate semantic digest from run metadata
+
+The semantic result digest must exclude nondeterministic fields such as upload time.
+
+Bind semantic output to:
+
+```text
+head SHA
+source tree
+foundation context
+failure inventory
+policy digest
+selected test node IDs
+test outcomes
+capability/authority statuses
+```
+
+Run metadata may separately contain:
+
+```text
+run ID
+attempt
+generated_at_utc
+```
+
+Two runs on the same source/context must yield the same semantic digest.
+
+### Step 3 — Enforce no-clobber publication
+
+Evidence writing must:
+
+1. create a private staging directory;
+2. write all files;
+3. fsync where the existing publication policy requires it;
+4. validate schema and digests;
+5. publish without overwriting an existing evidence set;
+6. retain/quarantine partial evidence safely on failure;
+7. never follow symlinks.
+
+### Step 4 — Expand the artifact firewall
+
+Reject evidence containing patterns for:
+
+```text
+TRADING_MASTER_KEY
+LIVE_EXECUTION_ENABLED=true
+LIVE_TRADING_ENABLED=true
+password=
+secret=
+api_key=
+authorization:
+private key material
+database URL credentials
+exchange credentials
+```
+
+Avoid broad false positives by testing structured keys and known secret formats.
+
+### Step 5 — Add adversarial tests
+
+Test:
+
+- symlink artifact root;
+- existing destination;
+- partial manifest;
+- digest mismatch;
+- duplicate file;
+- extra unmanifested file;
+- stale head SHA;
+- stale run ID;
+- secret in stdout;
+- secret in stderr;
+- mutable evidence after manifest generation;
+- attempted receipt overwrite.
+
+### Step 6 — Run tests and inspect artifact
+
+```bash
+uv run pytest -q \
+  tests/test_t_g03_capability_topology.py \
+  tests/test_artifact_firewall.py
+
+make ci-portable NONINTERACTIVE=1
+
+find runtime/state/ci-portable -type f -maxdepth 4 -print
+sha256sum -c runtime/state/ci-portable/SHA256SUMS
+```
+
+Use the repository’s actual artifact-firewall test path if named differently.
+
+### Step 7 — Commit
+
+```bash
+git add -- \
+  scripts/t_g03_capability_topology.py \
+  scripts/check_test_governance.py \
+  scripts/check_artifact_firewall.py \
+  tests/test_t_g03_capability_topology.py \
+  tests/test_artifact_firewall.py \
+  .github/workflows/foundation.yml \
+  Makefile
+
+git commit -m "feat(ci): seal deterministic portable evidence"
+```
+
+---
+
+# Task P0-11 — Close the executable P0 matrix and documentation
+
+**Owner/model:** Codex Terra medium.  
+**Reviewer:** Sol high.
+
+**Files:**
+
+- Create: `docs/implementation/p0-ci-closure-matrix.json`
+- Create: `docs/implementation/p0-ci-closure.md`
+- Modify: `docs/implementation/foundation-test-governance.md`
+- Modify: `README.md`
+- Create: `scripts/check_p0_ci_closure.py`
+- Create: `tests/test_p0_ci_closure.py`
+- Modify: `Makefile`
+- Modify: `ops/consolidation/p0-canonical-baseline.json`
+
+### Step 1 — Write the failing closure-matrix test
+
+Every P0 requirement must bind:
+
+```text
+requirement_id
+implementation_paths
+test_node_ids
+make_target
+workflow
+evidence_path
+required_status
+```
+
+Example:
+
+```json
+{
+  "requirement_id": "P0-I02",
+  "implementation_paths": [
+    "scripts/check_test_governance.py",
+    "scripts/t_g03_capability_topology.py"
+  ],
+  "test_node_ids": [
+    "tests/governance/test_t_g03f_validation_date.py::..."
+  ],
+  "make_target": "check-test-governance-topology",
+  "workflow": ".github/workflows/foundation.yml",
+  "evidence_path": "runtime/state/ci-portable/capability-topology/foundation-context.json",
+  "required_status": "PASS"
+}
+```
+
+### Step 2 — Implement the checker
+
+`check_p0_ci_closure.py` must reject:
+
+- missing implementation file;
+- missing test;
+- uncollected test node;
+- unknown Make target;
+- workflow not invoking the target;
+- duplicate requirement;
+- unresolved portable defect;
+- missing evidence binding;
+- live-trading authority enabled;
+- `qualified_sha` not equal to current `HEAD` when closure is marked complete.
+
+### Step 3 — Add Make target
+
+```make
+check-p0-ci-closure:
+	$(PYTHON) scripts/check_p0_ci_closure.py \
+	  --matrix docs/implementation/p0-ci-closure-matrix.json
+```
+
+Add it to `ci-portable` only after its own tests pass.
+
+### Step 4 — Update documentation
+
+Document clearly:
+
+```text
+P0 SOURCE COMPLETE
+```
+
+does not imply:
+
+```text
+HOST AUTHORITY QUALIFIED
+PRODUCTION ACTIVATED
+LIVE TRADING ENABLED
+```
+
+README must state:
+
+- `make ci` is source-safe;
+- `make ci-host-authority` is explicit and operator-managed;
+- host `UNAVAILABLE` receipts are not PASS;
+- real Nautilus integration is P1.
+
+### Step 5 — Update baseline manifest
+
+Set:
+
+```json
+"qualified_sha": "<current candidate HEAD>"
+```
+
+only after all prior tasks and local clean-clone verification pass. Do not set a future/predicted SHA.
+
+### Step 6 — Run tests
+
+```bash
+uv run pytest -q \
+  tests/test_p0_ci_closure.py \
+  tests/consolidation/test_p0_canonical_baseline.py
+
+make check-p0-ci-closure
+make check-p0-baseline
+```
+
+### Step 7 — Commit
+
+```bash
+git add -- \
+  docs/implementation/p0-ci-closure-matrix.json \
+  docs/implementation/p0-ci-closure.md \
+  docs/implementation/foundation-test-governance.md \
+  README.md \
+  scripts/check_p0_ci_closure.py \
+  tests/test_p0_ci_closure.py \
+  Makefile \
+  ops/consolidation/p0-canonical-baseline.json
+
+git commit -m "docs(ci): close executable P0 qualification matrix"
+```
+
+---
+
+# Task P0-12 — Clean-clone qualification and adversarial final review
+
+**Owner/model:** Hermes orchestrator.  
+**Implementer:** No new feature work unless verification finds a defect.  
+**Final reviewer:** Sol xhigh with fresh context and no prior verdict.
+
+### Step 1 — Create a separate clean qualification clone/worktree
+
+Do not clean the development worktree destructively.
+
+```bash
+git worktree add \
+  ../trading-agent-p0-qualification \
+  HEAD
+
+cd ../trading-agent-p0-qualification
+git status --short
+```
+
+Expected:
+
+```text
+clean
+```
+
+### Step 2 — Install only locked dependencies
+
+```bash
+uv sync --frozen
+
+cd apps/dashboard
+npm ci
+cd ../..
+```
+
+### Step 3 — Run focused gates
+
+```bash
+make check-p0-baseline
+make check-p0-ci-closure
+
+uv run pytest -q \
+  tests/governance/test_t_g03f_validation_date.py \
+  tests/test_t_g03_capability_topology.py \
+  tests/test_test_governance_audit.py \
+  tests/test_test_all_host_split.py \
+  tests/consolidation/test_p0_canonical_baseline.py \
+  tests/test_p0_ci_closure.py
+```
+
+### Step 4 — Run full portable CI twice locally
+
+```bash
+rm -rf runtime/state/ci-portable
+make ci-portable NONINTERACTIVE=1
+
+cp runtime/state/ci-portable/manifest.json /tmp/p0-manifest-run1.json
+
+rm -rf runtime/state/ci-portable
+make ci-portable NONINTERACTIVE=1
+
+cp runtime/state/ci-portable/manifest.json /tmp/p0-manifest-run2.json
+```
+
+Compare semantic digests:
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+
+a = json.loads(Path("/tmp/p0-manifest-run1.json").read_text())
+b = json.loads(Path("/tmp/p0-manifest-run2.json").read_text())
+
+assert a["semantic_result_sha256"] == b["semantic_result_sha256"]
+print(a["semantic_result_sha256"])
+PY
+```
+
+### Step 5 — Verify host gate fails closed on an ordinary host
+
+Run only when safe and non-mutating:
+
+```bash
+make ci-host-authority NONINTERACTIVE=1
+```
+
+Expected on a host lacking authority:
+
+```text
+non-zero
+native/external lane reported UNAVAILABLE
+no production mutation attempted
+```
+
+Do not require host PASS for the portable source-complete verdict.
+
+### Step 6 — Push the qualification branch only after explicit authorization
+
+The implementation plan itself does not authorize push.
+
+When authorized:
+
+```bash
+git push -u origin p0/canonical-baseline-ci-closure
+```
+
+### Step 7 — Require two GitHub Actions attempts on the exact same head SHA
+
+Both must show:
+
+```text
+portable source: PASS
+native lane: PASS or bound UNAVAILABLE
+external lane: PASS or bound UNAVAILABLE
+aggregate source verdict: PASS
+artifact firewall: PASS
+closure matrix: PASS
+```
+
+The semantic result digest must match.
+
+### Step 8 — Final adversarial review
+
+Reviewer must inspect:
+
+1. exact diff from `417c174...` to final candidate;
+2. topology date authority;
+3. all 32 portable-defect closures;
+4. all 30 unresolved receipt paths;
+5. portable/host Make target reachability;
+6. workflow permissions and triggers;
+7. artifact publication and no-clobber semantics;
+8. secret firewall;
+9. baseline ancestry;
+10. absence of production/live mutation.
+
+Required reviewer output:
+
+```text
+VERDICT: PASS | FAIL
+
+BLOCKING FINDINGS:
+- severity
+- file and exact line
+- invariant
+- concrete failure path
+- minimal remediation
+- adversarial test
+
+PORTABLE SOURCE:
+PASS | FAIL
+
+NATIVE CAPABILITY RECEIPTS:
+PASS | FAIL
+
+EXTERNAL AUTHORITY RECEIPTS:
+PASS | FAIL
+
+FAST-FORWARD ELIGIBILITY:
+YES | NO
+
+PRODUCTION/LIVE AUTHORIZATION:
+UNAVAILABLE
+```
+
+### Step 9 — Stop on any blocker
+
+Do not proceed to promotion if:
+
+- any portable defect remains;
+- CI is green because of a broad skip;
+- an unavailable lane is labeled PASS;
+- candidate no longer fast-forwards from `main`;
+- semantic digest differs between identical runs;
+- artifact contains secrets;
+- production/live behavior changes;
+- final reviewer returns FAIL.
+
+---
+
+# Task P0-13 — Fast-forward promotion and post-promotion proof
+
+**Owner:** Operator.  
+**Codex role:** Read-only verification unless separately authorized for the exact Git action.
+
+### Preconditions
+
+```text
+[ ] P0 final reviewer PASS
+[ ] Two green workflow attempts on same SHA
+[ ] Semantic digests equal
+[ ] Candidate is descendant of origin/main
+[ ] Candidate behind main by zero commits
+[ ] Worktree/index clean
+[ ] Explicit operator authorization to update main
+```
+
+### Step 1 — Reverify immediately before promotion
+
+```bash
+git fetch --prune origin main p0/canonical-baseline-ci-closure
+
+git merge-base --is-ancestor \
+  origin/main \
+  origin/p0/canonical-baseline-ci-closure
+
+test "$(git rev-list --count \
+  origin/p0/canonical-baseline-ci-closure..origin/main)" -eq 0
+```
+
+### Step 2 — Promote by fast-forward only
+
+Preferred Git operation after authorization:
+
+```bash
+git push origin \
+  origin/p0/canonical-baseline-ci-closure:refs/heads/main
+```
+
+Do not:
+
+- force-push;
+- create a merge commit;
+- squash away qualification history;
+- delete the candidate immediately.
+
+### Step 3 — Verify remote head
+
+```bash
+git fetch origin main
+git rev-parse origin/main
+```
+
+Expected:
+
+```text
+exact qualified SHA
+```
+
+### Step 4 — Require post-promotion CI
+
+The workflow on `main` must pass with the same semantic digest as the qualified candidate.
+
+### Step 5 — Update status documentation only if needed
+
+No document may claim:
+
+```text
+host authority qualified
+production deployed
+Nautilus real runtime activated
+live trading enabled
+```
+
+unless separately proven.
+
+### Step 6 — Retain rollback provenance
+
+Keep:
+
+```text
+codex/phase1-terra-autopilot-19627785c140
+p0/canonical-baseline-ci-closure
+```
+
+until the post-promotion run and source audit pass.
+
+---
+
+## 6. Required final test matrix
+
+| Gate | Required portable result | Required host result |
+|---|---|---|
+| `make check-p0-baseline` | PASS | PASS |
+| `make check-p0-ci-closure` | PASS | PASS |
+| Validation-date tests | PASS | PASS |
+| Portable source lane | PASS | PASS |
+| Native Bubblewrap lane | PASS or UNAVAILABLE | PASS |
+| Native user-namespace lane | PASS or UNAVAILABLE | PASS |
+| Phase 3B corpus lane | PASS or UNAVAILABLE | PASS |
+| Legacy UV authority lane | PASS or UNAVAILABLE | PASS |
+| Artifact firewall | PASS | PASS |
+| Dashboard typecheck/build | PASS | PASS |
+| Canonical portable audit | PASS | PASS |
+| Host authority audit | not required | PASS |
+| Production mutation | FORBIDDEN | FORBIDDEN |
+| Live trading | UNAVAILABLE | UNAVAILABLE |
+
+---
+
+## 7. Commit sequence
+
+Recommended commits:
+
+```text
+1. docs(p0): add canonical baseline and CI closure plan
+2. feat(p0): pin canonical candidate baseline
+3. test(ci): reproduce sealed validation-date authority mismatch
+4. fix(ci): derive topology date only from sealed context
+5. fix(test): decouple portable sealed-uv proofs from bwrap
+6. fix(test): bind portable runtime identity to current process
+7. governance: close portable hosted-failure inventory
+8. feat(ci): seal native capability receipts
+9. feat(ci): seal external authority receipts
+10. refactor(ci): isolate portable and host authority gates
+11. feat(ci): seal deterministic portable evidence
+12. docs(ci): close executable P0 qualification matrix
+```
+
+Do not combine all P0 work into one commit. Each commit must have focused test evidence and be independently reviewable.
+
+---
+
+## 8. Hermes/Codex operating protocol
+
+### Orchestrator
+
+Hermes Agent:
+
+```text
+model: gpt-5.6-sol
+reasoning: high
+```
+
+Responsibilities:
+
+- enforce task order;
+- create isolated worktrees;
+- prevent overlapping edits;
+- collect test evidence;
+- reject broad skips;
+- retain per-task review packets;
+- stop at explicit approval boundaries.
+
+### Worker routing
+
+| Tasks | Worker |
+|---|---|
+| P0-00, P0-01, P0-09, P0-11 | Terra medium |
+| P0-02, P0-03 | Sol xhigh |
+| P0-04 mechanical fixture extraction | Terra medium |
+| P0-04 security review | Sol xhigh |
+| P0-05 through P0-08 | Sol high/xhigh |
+| P0-10 | Sol high, reviewer xhigh |
+| P0-12 final review | Sol xhigh fresh context |
+
+### Per-task worker output
+
+Every worker must return:
+
+```text
+TASK:
+STATUS: COMPLETE | PARTIAL | BLOCKED
+
+BASE SHA:
+HEAD SHA:
+
+FILES CHANGED:
+- ...
+
+TESTS ADDED:
+- ...
+
+COMMANDS RUN:
+- command
+  exit code
+  concise result
+
+INVARIANTS PRESERVED:
+- ...
+
+UNRESOLVED:
+- ...
+
+DIFF REVIEW NOTES:
+- ...
+
+NEXT SAFE TASK:
+- ...
+```
+
+No worker may push, merge, deploy, migrate, restart production, access a broker/exchange, or enable live trading without separate explicit authorization.
+
+---
+
+## 9. P0 completion checklist
+
+```text
+[ ] Candidate ancestry verified
+[ ] Machine-readable baseline manifest PASS
+[ ] Current date-context failure reproduced
+[ ] Sealed context is sole topology date authority
+[ ] CLI date override rejected
+[ ] Environment date override rejected
+[ ] 27 sealed-UV fixture defects fixed
+[ ] 3 semantic UID/GID fixture defects fixed
+[ ] 2 fakeroot identity fixture defects fixed
+[ ] Unresolved portable defects = 0
+[ ] Native unresolved cases = 24
+[ ] External unresolved cases = 6
+[ ] Native receipts fail closed
+[ ] External receipts fail closed
+[ ] `ci` cannot reach host authority
+[ ] Default workflow is read-only and portable
+[ ] Host workflow is manual/protected
+[ ] Artifact manifest and SHA256SUMS validate
+[ ] Artifact firewall PASS
+[ ] Closure matrix PASS
+[ ] Clean-clone portable run 1 PASS
+[ ] Clean-clone portable run 2 PASS
+[ ] Semantic result digests match
+[ ] Final adversarial reviewer PASS
+[ ] Fast-forward eligibility YES
+[ ] Explicit promotion authorization received
+[ ] `main` post-promotion CI PASS
+[ ] Production/live authority remains unavailable
+```
+
+---
+
+## 10. P0 exit verdict
+
+Use exactly one of:
+
+```text
+P0_SOURCE_COMPLETE
+```
+
+Meaning:
+
+- portable canonical source is qualified;
+- main may be fast-forwarded after authorization;
+- host capabilities/authorities may still be unavailable;
+- production and live remain unavailable.
+
+```text
+P0_HOST_QUALIFIED
+```
+
+Meaning:
+
+- `P0_SOURCE_COMPLETE`;
+- all native and external lanes ran on the approved host and passed;
+- still does not authorize production activation or live trading.
+
+```text
+P0_NOT_READY
+```
+
+Meaning:
+
+- any portable defect, governance mismatch, evidence defect, divergence, or final-review blocker remains.
+
+For the current workstream, the required target is:
+
+```text
+P0_SOURCE_COMPLETE
+```
+
+`P0_HOST_QUALIFIED` may be obtained separately when the approved host inputs are available.
+
+---
+
+## 11. Approved implementation decisions
+
+The operator approved the following corrections on **2026-08-13** before
+implementation began:
+
+1. The source-controlled baseline manifest keeps `qualified_sha` as `null`.
+   A commit cannot contain its own Git object ID without creating a different
+   commit. Exact qualification authority therefore belongs to a sealed
+   runtime/CI qualification receipt whose head SHA must equal the checked-out
+   `HEAD`.
+2. `check_p0_ci_closure.py` must validate that sealed receipt against the
+   current `HEAD` when closure is marked complete; it must not require a
+   self-referential SHA in the source manifest.
+3. Closure evidence that names a `fix_commit` uses a two-commit sequence:
+   first commit the code and tests, then commit the evidence that references
+   that already-existing fix commit. A closure row may not claim the same
+   commit that contains the row.
+
+These decisions replace conflicting `qualified_sha` and same-commit closure
+instructions elsewhere in this plan. All other requirements remain binding.
