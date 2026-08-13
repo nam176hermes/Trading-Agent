@@ -24,11 +24,39 @@ LOCKED_INVENTORY_SHA256 = "99e2e9f0ea91c65fd841a0b81b8948eb6d3967203627d0911c151
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
 BASELINE_SCHEMA = "t-g03a-portable-root-baseline/v1"
 REMAINDER_SCHEMA = "t-g03a-portable-root-remainder/v1"
+FAILURE_DIAGNOSTIC_SCHEMA = "t-g03a-portable-root-failure-diagnostic/v1"
+POLICY_SNAPSHOT_SCHEMA = "t-g03a-portable-root-policy-snapshot/v1"
+POLICY_ENTRY_SCHEMA = "t-g03a-skip-policy-entry/v1"
+REASON_COMMITMENT_SCHEMA = "t-g03a-policy-reason-commitment/v1"
 RECEIPT_KEYS = frozenset({
     "schema_version", "foundation_run_id", "foundation_head_sha", "inventory_sha256",
     "lane", "capability_or_authority_code", "expected_node_ids", "collected_node_ids",
     "completeness_sha256", "preflight_state", "redacted_fact_class", "outcome",
     "receipt_sha256",
+})
+FAILURE_DIAGNOSTIC_KEYS = frozenset({
+    "schema_version", "diagnostic_only", "foundation_run_id", "foundation_head_sha",
+    "inventory_sha256", "baseline_candidate_ids_sha256", "baseline_node_list_sha256",
+    "remainder_candidate_ids_sha256", "remainder_node_list_sha256", "custody_policy_sha256",
+    "custody_postcheck_status", "pytest_exit_status", "policy_snapshot",
+    "policy_snapshot_sha256", "observations", "diagnostic_sha256",
+})
+POLICY_SNAPSHOT_KEYS = frozenset({
+    "snapshot_schema_version", "allowlist_schema_version", "allowlist_source_sha256",
+    "policy_entry_schema_version", "entries",
+})
+POLICY_SNAPSHOT_ENTRY_KEYS = frozenset({
+    "component", "test_node_id", "outcome", "allowed_in_ci", "reason_class",
+    "normalized_reason_commitment_sha256", "policy_entry_sha256",
+})
+DIAGNOSTIC_OBSERVATION_KEYS = frozenset({
+    "test_node_id", "component", "outcome", "phase", "xfail_state", "reason_class",
+    "reason_provenance", "normalized_reason_commitment_sha256", "policy_match_result",
+    "existing_policy_entry_sha256",
+})
+V1_WHITE_SPACE = frozenset({
+    *range(0x0009, 0x000E), 0x0020, 0x0085, 0x00A0, 0x1680,
+    *range(0x2000, 0x200B), 0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
 })
 
 
@@ -188,6 +216,7 @@ def reserve_topology_evidence(evidence_root: Path, *, run_id: str, head_sha: str
         topology_root / "portable-root-remainder.json",
         topology_root / "portable-root-remainder.txt",
         topology_root / "portable-root-remainder.governance.json",
+        topology_root / "portable-root-remainder.failure-diagnostic.json",
     ]
     for code in CODE_CLASSIFICATION:
         targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
@@ -225,6 +254,29 @@ def _publish_no_clobber(path: Path, content: bytes) -> None:
         stream.write(content)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _publish_failure_diagnostic(path: Path, content: bytes) -> None:
+    """Atomically install complete diagnostic bytes without replacing prior evidence."""
+    _prepare_private_evidence_directory(path.parent)
+    staging = path.with_name(f".{path.name}.staging")
+    descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(staging, path, follow_symlinks=False)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            staging.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _candidate_file_bytes(node_ids: tuple[str, ...]) -> bytes:
@@ -682,16 +734,51 @@ def _execute_exact_with_retained_custody(
     *, baseline: dict[str, object], nodes: tuple[str, ...], report: Path,
     runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
 ) -> tuple[str, ...]:
-    """Publish a PASS report only after the retained extension survives execution."""
+    """Publish PASS evidence only for all-pass raw execution; retain complete non-pass diagnostics."""
     provisional = report.with_name(f".{report.name}.executing")
+    diagnostic = report.with_name("portable-root-remainder.failure-diagnostic.json")
     if os.path.lexists(provisional):
         raise TopologyError("exact governance staging record already exists")
+    policy_snapshot, policy_source = _validated_policy_snapshot(
+        str(baseline["foundation_head_sha"]),
+    )
     try:
         with _retained_sealed_custody(baseline) as (sealed_custody, descriptor):
             with _governance_custody_policy(sealed_custody, descriptor):
                 selected = runner(nodes, provisional)
             if selected != nodes:
                 raise TopologyError("exact runner changed the generated node list")
+        # Leaving retained custody is the postcheck; only now may either record be considered.
+        reread_snapshot, reread_source = _validated_policy_snapshot(str(baseline["foundation_head_sha"]))
+        if reread_source != policy_source or reread_snapshot != policy_snapshot:
+            raise TopologyError("allowlist source drifted during exact execution")
+        raw_report = _strict_json(provisional.read_bytes(), label="raw exact report")
+        if raw_report.get("custody_policy") != sealed_custody:
+            raise TopologyError("raw diagnostic report has custody policy drift")
+        observations, raw_exit_status = _diagnostic_observations(raw_report, nodes, policy_snapshot)
+        is_nonpass = raw_exit_status != "0" or any(item["outcome"] != "passed" for item in observations)
+        if is_nonpass:
+            payload = _failure_diagnostic_payload(
+                baseline=baseline,
+                remainder={
+                    "remainder_file_sha256": hashlib.sha256(_candidate_file_bytes(nodes)).hexdigest(),
+                },
+                nodes=nodes,
+                run_id=str(baseline["foundation_run_id"]),
+                head_sha=str(baseline["foundation_head_sha"]),
+                custody=sealed_custody,
+                # Pytest returns zero for a skipped collection; the exact lane's own
+                # non-pass status is nevertheless required to be nonzero on disk.
+                pytest_exit_status=raw_exit_status if raw_exit_status != "0" else "1",
+                snapshot=policy_snapshot,
+                observations=observations,
+            )
+            payload["diagnostic_sha256"] = _sha256(payload)
+            encoded = canonical_json_bytes(payload)
+            _publish_failure_diagnostic(diagnostic, encoded)
+            if diagnostic.read_bytes() != encoded or parse_failure_diagnostic(diagnostic.read_bytes()) != payload:
+                raise TopologyError("failure diagnostic post-write reread failed")
+            raise TopologyError("EXACT_EXECUTION_NONPASS")
         _validate_exact_governance_record(provisional, nodes, sealed_custody)
         _publish_no_clobber(report, provisional.read_bytes())
         return _validate_exact_governance_record(report, nodes, sealed_custody)
@@ -740,7 +827,7 @@ def execute_portable_root_remainder(
     )
     report = evidence_root / "capability-topology" / "portable-root-remainder.governance.json"
     if remainder:
-        runner = _run_exact if exact_runner is None else exact_runner
+        runner = _run_exact_observations if exact_runner is None else exact_runner
         return _execute_exact_with_retained_custody(
             baseline=baseline, nodes=remainder, report=report, runner=runner,
         )
@@ -754,6 +841,380 @@ def execute_portable_root_remainder(
 
 def _sha256(document: object) -> str:
     return hashlib.sha256(canonical_json_bytes(document)).hexdigest()
+
+
+def _strict_json(raw: bytes, *, label: str) -> object:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+    try:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise TopologyError(f"{label} is not strict UTF-8 JSON") from exc
+
+
+def _normalize_v1_reason(reason: str) -> str:
+    return " ".join("".join(group) for group in re.split(
+        "[" + "".join(chr(codepoint) for codepoint in V1_WHITE_SPACE) + "]+", reason,
+    ) if group)
+
+
+def reason_commitment_sha256(reason: str) -> str:
+    normalized = _normalize_v1_reason(reason)
+    return _sha256({"schema_version": REASON_COMMITMENT_SCHEMA, "normalized_reason": normalized})
+
+
+def _reason_is_safe(reason: str) -> bool:
+    return (
+        "/" not in reason
+        and "\\" not in reason
+        and not any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in reason)
+        and re.search(r"(?i)[a-z][a-z0-9+.-]{1,31}://", reason) is None
+        and re.search(r"(?i)\b(?:token|secret|password|authorization|bearer)\b", reason) is None
+        and re.search(r"[A-Za-z0-9+/_=-]{20,}", reason) is None
+    )
+
+
+def _allowlist_bytes_at_head(head_sha: str) -> bytes:
+    source = ROOT / "tests/skip-allowlist.yaml"
+    try:
+        raw = source.read_bytes()
+        tracked = subprocess.run(
+            ["git", "show", f"{head_sha}:tests/skip-allowlist.yaml"], cwd=ROOT,
+            stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise TopologyError("tracked allowlist is unavailable") from exc
+    if raw != tracked:
+        raise TopologyError("allowlist source drifted from Foundation head")
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise TopologyError("allowlist is not strict UTF-8") from exc
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise TopologyError("allowlist has a UTF-8 BOM")
+    return raw
+
+
+def _policy_entry_payload(entry: dict[str, object]) -> dict[str, object]:
+    fields = (
+        "approval_record_type", "allowed_in_ci", "component", "outcome", "owner", "reason",
+        "reason_category", "required_binary_or_service", "review_by", "security_critical",
+        "target_phase", "test_node_id",
+    )
+    payload = {field: entry[field] for field in fields}
+    payload["reason"] = _normalize_v1_reason(str(payload["reason"]))
+    return payload
+
+
+def _validated_policy_snapshot(head_sha: str) -> tuple[dict[str, object], bytes]:
+    """Build the complete redacted root-policy projection from tracked allowlist bytes."""
+    raw = _allowlist_bytes_at_head(head_sha)
+    try:
+        from scripts import check_test_governance as governance
+        document = _strict_json(raw, label="allowlist")
+        entries = governance.validate_allowlist_document(document)
+    except Exception as exc:
+        if isinstance(exc, TopologyError):
+            raise
+        raise TopologyError("allowlist policy is invalid") from exc
+    snapshot_entries: list[dict[str, object]] = []
+    for entry in entries:
+        if entry["component"] != "root":
+            continue
+        outcome = entry["outcome"]
+        normalized_reason = _normalize_v1_reason(str(entry["reason"]))
+        if str(entry["reason"]) != normalized_reason:
+            raise TopologyError("allowlist policy reason is not v1-normalized")
+        snapshot_entries.append({
+            "component": "root",
+            "test_node_id": entry["test_node_id"],
+            "outcome": outcome,
+            "allowed_in_ci": entry["allowed_in_ci"],
+            "reason_class": "POLICY_SKIP_REASON" if outcome == "skipped" else "POLICY_DESELECT_REASON",
+            "normalized_reason_commitment_sha256": reason_commitment_sha256(normalized_reason),
+            "policy_entry_sha256": _sha256(_policy_entry_payload(entry)),
+        })
+    snapshot_entries.sort(key=lambda item: (str(item["component"]).encode(), str(item["test_node_id"]).encode()))
+    snapshot: dict[str, object] = {
+        "snapshot_schema_version": POLICY_SNAPSHOT_SCHEMA,
+        "allowlist_schema_version": "1",
+        "allowlist_source_sha256": hashlib.sha256(raw).hexdigest(),
+        "policy_entry_schema_version": POLICY_ENTRY_SCHEMA,
+        "entries": snapshot_entries,
+    }
+    return snapshot, raw
+
+
+def _ids_sha256(nodes: tuple[str, ...]) -> str:
+    return _sha256(list(nodes))
+
+
+def _raw_observation_domain(item: dict[str, object]) -> tuple[str, str, str, str, str]:
+    outcome = item.get("outcome")
+    phase = item.get("phase")
+    wasxfail = item.get("wasxfail")
+    if wasxfail or outcome in {"xfailed", "xpassed"}:
+        if outcome in {"passed", "xpassed"} and phase == "call":
+            return "xpassed", "call", "WAS_XFAIL", "PYTEST_XPASS_MARKER", "PYTEST_WASXFAIL"
+        if outcome in {"skipped", "xfailed"} and phase in {"setup", "call", "teardown"}:
+            return "xfailed", str(phase), "WAS_XFAIL", "PYTEST_XFAIL_MARKER", "PYTEST_WASXFAIL"
+    mapping = {
+        ("passed", "call"): ("passed", "NOT_WAS_XFAIL", "NONE", "NONE"),
+        ("skipped", "setup"): ("skipped", "NOT_WAS_XFAIL", "PYTEST_SKIP_REASON", "PYTEST_REPORT"),
+        ("skipped", "call"): ("skipped", "NOT_WAS_XFAIL", "PYTEST_SKIP_REASON", "PYTEST_REPORT"),
+        ("skipped", "teardown"): ("skipped", "NOT_WAS_XFAIL", "PYTEST_SKIP_REASON", "PYTEST_REPORT"),
+        ("deselected", "collection"): ("deselected", "NOT_WAS_XFAIL", "MARKER_DESELECT_REASON", "PYTEST_DESELECT_HOOK"),
+        ("failed", "setup"): ("failed", "NOT_WAS_XFAIL", "PYTEST_FAILURE_REASON", "PYTEST_REPORT"),
+        ("failed", "call"): ("failed", "NOT_WAS_XFAIL", "PYTEST_FAILURE_REASON", "PYTEST_REPORT"),
+        ("failed", "teardown"): ("failed", "NOT_WAS_XFAIL", "PYTEST_FAILURE_REASON", "PYTEST_REPORT"),
+        ("failed", "collection"): ("failed", "NOT_WAS_XFAIL", "GOVERNANCE_COLLECTION_FAILURE", "GOVERNANCE_COLLECTION_HOOK"),
+        ("error", "setup"): ("error", "NOT_WAS_XFAIL", "PYTEST_ERROR_REASON", "PYTEST_REPORT"),
+        ("error", "teardown"): ("error", "NOT_WAS_XFAIL", "PYTEST_ERROR_REASON", "PYTEST_REPORT"),
+        ("error", "collection"): ("error", "NOT_WAS_XFAIL", "PYTEST_COLLECTION_ERROR", "PYTEST_COLLECTOR"),
+        ("not_run", "session"): ("not_run", "NOT_WAS_XFAIL", "MISSING_FINAL_REPORT", "GOVERNANCE_SESSION"),
+    }
+    try:
+        canonical_outcome, xfail_state, reason_class, provenance = mapping[(outcome, phase)]
+    except KeyError as exc:
+        raise TopologyError("raw diagnostic observation has an invalid closed domain") from exc
+    return canonical_outcome, str(phase), xfail_state, reason_class, provenance
+
+
+def _diagnostic_observations(document: object, nodes: tuple[str, ...], snapshot: dict[str, object]) -> tuple[list[dict[str, object]], str]:
+    if not isinstance(document, dict) or document.get("component") != "root" or not isinstance(document.get("tests"), list):
+        raise TopologyError("raw diagnostic report is malformed")
+    exit_status = document.get("pytest_exit_status")
+    if isinstance(exit_status, bool) or not isinstance(exit_status, int) or exit_status < 0:
+        raise TopologyError("raw diagnostic report has invalid pytest exit status")
+    policies = {
+        (str(entry["component"]), str(entry["test_node_id"])): entry
+        for entry in snapshot["entries"] if isinstance(entry, dict)
+    }
+    observations: list[dict[str, object]] = []
+    for raw in document["tests"]:
+        if not isinstance(raw, dict) or raw.get("component") != "root" or not isinstance(raw.get("test_node_id"), str) or not ASCII.fullmatch(raw["test_node_id"]):
+            raise TopologyError("raw diagnostic observation is malformed")
+        outcome, phase, xfail_state, reason_class, provenance = _raw_observation_domain(raw)
+        reason = raw.get("reason", "")
+        if not isinstance(reason, str) or _normalize_v1_reason(reason) != reason or not _reason_is_safe(reason):
+            raise TopologyError("raw diagnostic observation has unsafe reason")
+        commitment = "" if reason_class == "NONE" else reason_commitment_sha256(reason)
+        policy_match, policy_hash = "NOT_APPLICABLE", ""
+        if outcome in {"skipped", "deselected"}:
+            policy = policies.get(("root", raw["test_node_id"]))
+            if policy is None:
+                policy_match = "NO_POLICY_ENTRY"
+            else:
+                policy_hash = str(policy["policy_entry_sha256"])
+                if policy["outcome"] != outcome:
+                    policy_match = "OUTCOME_MISMATCH"
+                elif policy["normalized_reason_commitment_sha256"] != commitment:
+                    policy_match = "REASON_MISMATCH"
+                elif policy["allowed_in_ci"] is not True:
+                    policy_match = "CI_DISALLOWED"
+                else:
+                    policy_match = "EXACT_POLICY_MATCH"
+        observations.append({
+            "test_node_id": raw["test_node_id"], "component": "root", "outcome": outcome, "phase": phase,
+            "xfail_state": xfail_state, "reason_class": reason_class, "reason_provenance": provenance,
+            "normalized_reason_commitment_sha256": commitment, "policy_match_result": policy_match,
+            "existing_policy_entry_sha256": policy_hash,
+        })
+    observations.sort(key=lambda item: str(item["test_node_id"]).encode())
+    if tuple(item["test_node_id"] for item in observations) != nodes or len(observations) != len(nodes):
+        raise TopologyError("raw diagnostic observations do not exactly match selected nodes")
+    if not observations:
+        raise TopologyError("failure diagnostic has no observations")
+    return observations, str(exit_status)
+
+
+def _failure_diagnostic_payload(
+    *, baseline: dict[str, object], remainder: dict[str, object], nodes: tuple[str, ...], run_id: str,
+    head_sha: str, custody: dict[str, str], pytest_exit_status: str, snapshot: dict[str, object],
+    observations: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "schema_version": FAILURE_DIAGNOSTIC_SCHEMA, "diagnostic_only": True,
+        "foundation_run_id": run_id, "foundation_head_sha": head_sha,
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "baseline_candidate_ids_sha256": _ids_sha256(tuple(baseline["candidate_node_ids"])),
+        "baseline_node_list_sha256": baseline["candidate_file_sha256"],
+        "remainder_candidate_ids_sha256": _ids_sha256(nodes),
+        "remainder_node_list_sha256": remainder["remainder_file_sha256"],
+        "custody_policy_sha256": _sha256(custody), "custody_postcheck_status": "PASS",
+        "pytest_exit_status": pytest_exit_status, "policy_snapshot": snapshot,
+        "policy_snapshot_sha256": _sha256(snapshot), "observations": observations,
+    }
+
+
+def _validate_failure_diagnostic_shape(document: object) -> dict[str, object]:
+    if not isinstance(document, dict) or set(document) != FAILURE_DIAGNOSTIC_KEYS:
+        raise TopologyError("failure diagnostic has invalid schema keys")
+    if document["schema_version"] != FAILURE_DIAGNOSTIC_SCHEMA or document["diagnostic_only"] is not True:
+        raise TopologyError("failure diagnostic has invalid schema")
+    if document["custody_postcheck_status"] != "PASS":
+        raise TopologyError("failure diagnostic has no custody postcheck")
+    if not isinstance(document["foundation_run_id"], str) or not RUN_ID.fullmatch(document["foundation_run_id"]) or document["foundation_run_id"] == "0":
+        raise TopologyError("failure diagnostic has invalid Foundation run")
+    if not isinstance(document["foundation_head_sha"], str) or not HEAD_SHA.fullmatch(document["foundation_head_sha"]):
+        raise TopologyError("failure diagnostic has invalid Foundation head")
+    if not isinstance(document["pytest_exit_status"], str) or not re.fullmatch(r"[1-9][0-9]*", document["pytest_exit_status"]):
+        raise TopologyError("failure diagnostic has no non-pass proof")
+    for field in (
+        "inventory_sha256", "baseline_candidate_ids_sha256", "baseline_node_list_sha256",
+        "remainder_candidate_ids_sha256", "remainder_node_list_sha256", "custody_policy_sha256",
+        "policy_snapshot_sha256", "diagnostic_sha256",
+    ):
+        if not isinstance(document[field], str) or not HEX64.fullmatch(document[field]):
+            raise TopologyError(f"failure diagnostic has invalid {field}")
+    snapshot = document["policy_snapshot"]
+    if not isinstance(snapshot, dict) or set(snapshot) != POLICY_SNAPSHOT_KEYS:
+        raise TopologyError("failure diagnostic has malformed policy snapshot")
+    if (
+        snapshot["snapshot_schema_version"] != POLICY_SNAPSHOT_SCHEMA
+        or snapshot["allowlist_schema_version"] != "1"
+        or snapshot["policy_entry_schema_version"] != POLICY_ENTRY_SCHEMA
+        or not isinstance(snapshot["entries"], list)
+        or not isinstance(snapshot["allowlist_source_sha256"], str)
+        or not HEX64.fullmatch(snapshot["allowlist_source_sha256"])
+    ):
+        raise TopologyError("failure diagnostic has invalid policy snapshot")
+    entries = snapshot["entries"]
+    previous: tuple[bytes, bytes] | None = None
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != POLICY_SNAPSHOT_ENTRY_KEYS:
+            raise TopologyError("failure diagnostic has malformed policy entry")
+        key = (entry.get("component"), entry.get("test_node_id"))
+        if not all(isinstance(value, str) and value for value in key) or key in seen:
+            raise TopologyError("failure diagnostic has duplicate policy entry")
+        current = (key[0].encode(), key[1].encode())
+        if previous is not None and current <= previous:
+            raise TopologyError("failure diagnostic policy entries are unordered")
+        previous, seen = current, seen | {key}
+        if entry["component"] != "root" or entry["outcome"] not in {"skipped", "deselected"}:
+            raise TopologyError("failure diagnostic has invalid policy entry")
+        if entry["allowed_in_ci"] is not True and entry["allowed_in_ci"] is not False:
+            raise TopologyError("failure diagnostic has non-boolean allowed_in_ci")
+        if entry["reason_class"] != ("POLICY_SKIP_REASON" if entry["outcome"] == "skipped" else "POLICY_DESELECT_REASON"):
+            raise TopologyError("failure diagnostic has invalid policy reason class")
+        for field in ("normalized_reason_commitment_sha256", "policy_entry_sha256"):
+            if not isinstance(entry[field], str) or not HEX64.fullmatch(entry[field]):
+                raise TopologyError("failure diagnostic has invalid policy hash")
+    observations = document["observations"]
+    if not isinstance(observations, list) or not observations:
+        raise TopologyError("failure diagnostic has no observations")
+    previous_node: bytes | None = None
+    for observation in observations:
+        if not isinstance(observation, dict) or set(observation) != DIAGNOSTIC_OBSERVATION_KEYS:
+            raise TopologyError("failure diagnostic has malformed observation")
+        node = observation["test_node_id"]
+        if not isinstance(node, str) or not ASCII.fullmatch(node) or (previous_node is not None and node.encode() <= previous_node):
+            raise TopologyError("failure diagnostic observations are duplicate or unordered")
+        previous_node = node.encode()
+        if observation["component"] != "root":
+            raise TopologyError("failure diagnostic observation component is invalid")
+        outcome = observation["outcome"]
+        phase = observation["phase"]
+        xfail_state = observation["xfail_state"]
+        reason_class = observation["reason_class"]
+        provenance = observation["reason_provenance"]
+        allowed = {
+            ("passed", "call", "NOT_WAS_XFAIL", "NONE", "NONE"),
+            ("skipped", "setup", "NOT_WAS_XFAIL", "PYTEST_SKIP_REASON", "PYTEST_REPORT"),
+            ("skipped", "call", "NOT_WAS_XFAIL", "PYTEST_SKIP_REASON", "PYTEST_REPORT"),
+            ("skipped", "teardown", "NOT_WAS_XFAIL", "PYTEST_SKIP_REASON", "PYTEST_REPORT"),
+            ("xfailed", "setup", "WAS_XFAIL", "PYTEST_XFAIL_MARKER", "PYTEST_WASXFAIL"),
+            ("xfailed", "call", "WAS_XFAIL", "PYTEST_XFAIL_MARKER", "PYTEST_WASXFAIL"),
+            ("xfailed", "teardown", "WAS_XFAIL", "PYTEST_XFAIL_MARKER", "PYTEST_WASXFAIL"),
+            ("xpassed", "call", "WAS_XFAIL", "PYTEST_XPASS_MARKER", "PYTEST_WASXFAIL"),
+            ("deselected", "collection", "NOT_WAS_XFAIL", "MARKER_DESELECT_REASON", "PYTEST_DESELECT_HOOK"),
+            ("failed", "setup", "NOT_WAS_XFAIL", "PYTEST_FAILURE_REASON", "PYTEST_REPORT"),
+            ("failed", "call", "NOT_WAS_XFAIL", "PYTEST_FAILURE_REASON", "PYTEST_REPORT"),
+            ("failed", "teardown", "NOT_WAS_XFAIL", "PYTEST_FAILURE_REASON", "PYTEST_REPORT"),
+            ("failed", "collection", "NOT_WAS_XFAIL", "GOVERNANCE_COLLECTION_FAILURE", "GOVERNANCE_COLLECTION_HOOK"),
+            ("error", "setup", "NOT_WAS_XFAIL", "PYTEST_ERROR_REASON", "PYTEST_REPORT"),
+            ("error", "teardown", "NOT_WAS_XFAIL", "PYTEST_ERROR_REASON", "PYTEST_REPORT"),
+            ("error", "collection", "NOT_WAS_XFAIL", "PYTEST_COLLECTION_ERROR", "PYTEST_COLLECTOR"),
+            ("not_run", "session", "NOT_WAS_XFAIL", "MISSING_FINAL_REPORT", "GOVERNANCE_SESSION"),
+        }
+        if (outcome, phase, xfail_state, reason_class, provenance) not in allowed:
+            raise TopologyError("failure diagnostic observation domain is invalid")
+        commitment = observation["normalized_reason_commitment_sha256"]
+        existing = observation["existing_policy_entry_sha256"]
+        match = observation["policy_match_result"]
+        if outcome in {"skipped", "deselected"}:
+            if match not in {"NO_POLICY_ENTRY", "OUTCOME_MISMATCH", "REASON_MISMATCH", "CI_DISALLOWED", "EXACT_POLICY_MATCH"}:
+                raise TopologyError("failure diagnostic policy match is invalid")
+            if match == "NO_POLICY_ENTRY":
+                if commitment == "" or existing != "":
+                    raise TopologyError("failure diagnostic no-policy binding is invalid")
+            elif not (isinstance(commitment, str) and HEX64.fullmatch(commitment) and isinstance(existing, str) and HEX64.fullmatch(existing)):
+                raise TopologyError("failure diagnostic policy binding is invalid")
+        elif match != "NOT_APPLICABLE" or existing != "" or (commitment != "" and (not isinstance(commitment, str) or not HEX64.fullmatch(commitment))):
+            raise TopologyError("failure diagnostic non-policy binding is invalid")
+    return document
+
+
+def parse_failure_diagnostic(raw: bytes) -> dict[str, object]:
+    document = _strict_json(raw, label="failure diagnostic")
+    if canonical_json_bytes(document) != raw:
+        raise TopologyError("failure diagnostic is not canonical")
+    parsed = _validate_failure_diagnostic_shape(document)
+    if parsed["policy_snapshot_sha256"] != _sha256(parsed["policy_snapshot"]):
+        raise TopologyError("failure diagnostic policy snapshot hash mismatch")
+    if parsed["diagnostic_sha256"] != _sha256({key: value for key, value in parsed.items() if key != "diagnostic_sha256"}):
+        raise TopologyError("failure diagnostic self-hash mismatch")
+    return parsed
+
+
+def read_failure_diagnostic(
+    path: Path, *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+) -> dict[str, object]:
+    """Read and bind a failure record; this reader cannot publish receipts or change policy."""
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise TopologyError("failure diagnostic is missing") from exc
+    document = parse_failure_diagnostic(raw)
+    baseline = load_portable_root_baseline(inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha)
+    remainder_document, nodes = _load_portable_root_remainder(inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha)
+    custody = _validate_custody_policy(baseline["collector_policy"])
+    snapshot, _ = _validated_policy_snapshot(head_sha)
+    expected = _failure_diagnostic_payload(
+        baseline=baseline, remainder=remainder_document, nodes=nodes, run_id=run_id, head_sha=head_sha,
+        custody=custody, pytest_exit_status=str(document["pytest_exit_status"]), snapshot=snapshot,
+        observations=list(document["observations"]),
+    )
+    for field, value in expected.items():
+        if field != "observations" and document[field] != value:
+            raise TopologyError("failure diagnostic binding drift")
+    if tuple(item["test_node_id"] for item in document["observations"]) != nodes:
+        raise TopologyError("failure diagnostic observations are foreign or incomplete")
+    policies = {(entry["component"], entry["test_node_id"]): entry for entry in snapshot["entries"]}
+    for observation in document["observations"]:
+        outcome = observation["outcome"]
+        if outcome not in {"skipped", "deselected"}:
+            continue
+        policy = policies.get(("root", observation["test_node_id"]))
+        if policy is None:
+            expected_match, expected_hash = "NO_POLICY_ENTRY", ""
+        elif policy["outcome"] != outcome:
+            expected_match, expected_hash = "OUTCOME_MISMATCH", policy["policy_entry_sha256"]
+        elif policy["normalized_reason_commitment_sha256"] != observation["normalized_reason_commitment_sha256"]:
+            expected_match, expected_hash = "REASON_MISMATCH", policy["policy_entry_sha256"]
+        elif policy["allowed_in_ci"] is not True:
+            expected_match, expected_hash = "CI_DISALLOWED", policy["policy_entry_sha256"]
+        else:
+            expected_match, expected_hash = "EXACT_POLICY_MATCH", policy["policy_entry_sha256"]
+        if observation["policy_match_result"] != expected_match or observation["existing_policy_entry_sha256"] != expected_hash:
+            raise TopologyError("failure diagnostic policy-link binding drift")
+    return document
 
 
 def completeness_sha256(receipt: dict[str, object]) -> str:
@@ -883,6 +1344,9 @@ def reconcile_portable_root_accounting(
     *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
 ) -> dict[str, object]:
     """Require the dynamic baseline to be a closed one-execution-or-deferred union."""
+    diagnostic = evidence_root / "capability-topology" / "portable-root-remainder.failure-diagnostic.json"
+    if os.path.lexists(diagnostic):
+        raise TopologyError("failure diagnostic is present; topology aggregation is forbidden")
     baseline = load_portable_root_baseline(
         inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
     )
@@ -1186,7 +1650,7 @@ def _external_preflight(
     raise TopologyError("unknown external authority")
 
 
-def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+def _run_exact_observations(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(report.parent, 0o700)
     environment = dict(os.environ, TEST_GOVERNANCE_REPORT=str(report), TEST_GOVERNANCE_COMPONENT="root", TEST_GOVERNANCE_NO_CLOBBER="1")
@@ -1211,12 +1675,27 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
         pass_fds=pass_fds,
         check=False,
     )
-    if completed.returncode != 0 or not report.is_file():
+    if not report.is_file():
         raise TopologyError("selected pytest collection or execution failed")
-    document = json.loads(report.read_text(encoding="utf-8"))
+    document = _strict_json(report.read_bytes(), label="raw exact report")
+    if not isinstance(document, dict):
+        raise TopologyError("governance report is malformed")
     observed = document.get("tests")
     if not isinstance(observed, list):
         raise TopologyError("governance report is malformed")
+    # The caller validates the complete report after the retained-custody postcheck,
+    # so a non-pass can become a failure-only record rather than being discarded here.
+    return nodes
+
+
+def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+    """Legacy strict public runner retained for exact all-pass lane callers."""
+    if _run_exact_observations((*nodes,), report) != nodes:
+        raise TopologyError("exact runner changed the generated node list")
+    document = _strict_json(report.read_bytes(), label="raw exact report")
+    if not isinstance(document, dict) or not isinstance(document.get("tests"), list):
+        raise TopologyError("governance report is malformed")
+    observed = document["tests"]
     if any(
         isinstance(item, dict)
         and (item.get("outcome") in {"xfailed", "xpassed"} or item.get("wasxfail"))
