@@ -482,11 +482,17 @@ changed, or inconsistent source/snapshot/link blocks review and the
 policy-change path.
 
 For any proposed new approval, the reader must first validate the proposed
-entry with the same allowlist-v1 rules and then prove its component, node ID,
-outcome, and normalized-reason commitment exactly equal the retained
-observation before that proposal reaches review. A same-node/same-outcome
-entry with a changed reason, a matching reason class, an equal count, or common
-text is insufficient. The reader is diagnostic-only: it cannot write the
+entry with the same allowlist-v1 rules and then require that
+`allowed_in_ci` is the literal JSON boolean `true`. `false`, a missing field,
+or any non-boolean value is nonmatching and fails before review, even where
+the general v1 schema merely type-checks that field. Only then may it prove the
+candidate's component, node ID, outcome, and normalized-reason commitment
+exactly equal the retained observation. A same-node/same-outcome entry with a
+changed reason, a matching reason class, an equal count, common text, or
+`allowed_in_ci=false` is insufficient. This true-only predicate must be the
+same one used by the topology failure-review reader and the current exact
+governance comparator's CI-permission decision; neither path may accept an
+entry the other rejects. The reader is diagnostic-only: it cannot write the
 allowlist, alter authority, emit a receipt, or turn the prior run's 281 skips,
 or any future skip, into an accepted result. This adds no broad skip/xfail
 policy.
@@ -503,12 +509,15 @@ or hash drift, a same-node/same-outcome changed reason, and each
 `NO_POLICY_ENTRY`, `OUTCOME_MISMATCH`, `REASON_MISMATCH`, `CI_DISALLOWED`, and
 `EXACT_POLICY_MATCH` transition. They must reject an unsafe or unrecognized
 reason class, unknown outcome/phase/xfail state/provenance/match result, a
-reader-created approval candidate without the verified per-node commitment,
-and a tampered, stale, missing, duplicate, foreign, or malformed diagnostic.
-They must also prove that no diagnostic can satisfy receipt aggregation, root
-reconciliation, a `PASS` governance record, or deferred acceptance, and that
-the next exact run exposes verified diagnostic node IDs and bindings before any
-allowlist/policy input can be changed.
+reader-created approval candidate without the verified per-node commitment, or
+an otherwise matching node/outcome/reason candidate whose `allowed_in_ci` is
+false, missing, or non-boolean. A differential hostile test must prove the
+failure-review reader and current exact governance comparator both reject that
+false-CI candidate. They must reject a tampered, stale, missing, duplicate,
+foreign, or malformed diagnostic. They must also prove that no diagnostic can
+satisfy receipt aggregation, root reconciliation, a `PASS` governance record,
+or deferred acceptance, and that the next exact run exposes verified diagnostic
+node IDs and bindings before any allowlist/policy input can be changed.
 
 The root-accounting set is closed only when the baseline candidate set equals
 the disjoint union of: the passed remainder IDs; all passed portable-source
