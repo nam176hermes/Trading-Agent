@@ -41,31 +41,36 @@ def _text(name: str) -> str:
     return (OPS / name).read_text(encoding="utf-8")
 
 
-def _private_fakeroot_test_root() -> Path:
+def _private_fakeroot_test_root(root: Path | None = None) -> Path:
     """Fakeroot ownership proof requires a real mode-preserving private root."""
-    root = Path("/run/user") / str(os.geteuid())
+    root = root if root is not None else Path("/run/user") / str(os.geteuid())
     try:
-        info = root.stat()
+        info = root.lstat()
     except OSError as error:
         raise AssertionError(f"private fakeroot test root is unavailable: {error}")
     if (
-        not root.is_dir()
+        not stat.S_ISDIR(info.st_mode)
         or info.st_uid != os.geteuid()
+        or info.st_gid != os.getegid()
         or stat.S_IMODE(info.st_mode) != 0o700
     ):
         raise AssertionError("private fakeroot test root is not owner-only")
     return root
 
 
-def _dynamic_provision_test_root(prefix: str) -> tempfile.TemporaryDirectory[str]:
+def _dynamic_provision_test_root(
+    prefix: str,
+    *,
+    trusted_anchor: Path | None = None,
+) -> tempfile.TemporaryDirectory[str]:
     return tempfile.TemporaryDirectory(
         prefix=prefix,
-        dir=_private_fakeroot_test_root(),
+        dir=_private_fakeroot_test_root(trusted_anchor),
     )
 
 
 def test_dynamic_provision_fixture_root_has_verifier_safe_ancestry() -> None:
-    trusted_anchor = _private_fakeroot_test_root()
+    trusted_anchor = Path("/run/user") / str(os.geteuid())
     with _dynamic_provision_test_root("phase4b-private-root-") as raw:
         fixture_root = Path(raw)
 
@@ -80,6 +85,62 @@ def test_dynamic_provision_fixture_root_has_verifier_safe_ancestry() -> None:
             if current == trusted_anchor:
                 break
             current = current.parent
+
+
+def test_dynamic_provision_fixture_accepts_explicit_safe_anchor(
+    tmp_path: Path,
+) -> None:
+    trusted_anchor = tmp_path / "trusted-anchor"
+    trusted_anchor.mkdir(mode=0o700)
+
+    with _dynamic_provision_test_root(
+        "phase4b-explicit-root-",
+        trusted_anchor=trusted_anchor,
+    ) as raw:
+        assert Path(raw).parent == trusted_anchor
+
+
+@pytest.mark.parametrize("mutation", ("symlink", "uid", "gid", "mode"))
+def test_dynamic_provision_fixture_rejects_unsafe_anchor_before_child_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    trusted_anchor = tmp_path / "trusted-anchor"
+    if mutation == "symlink":
+        target = tmp_path / "target"
+        target.mkdir(mode=0o700)
+        trusted_anchor.symlink_to(target, target_is_directory=True)
+    else:
+        trusted_anchor.mkdir(mode=0o700)
+        if mutation == "mode":
+            trusted_anchor.chmod(0o755)
+        else:
+            original_lstat = Path.lstat
+
+            def lstat_with_wrong_identity(path: Path) -> os.stat_result:
+                info = original_lstat(path)
+                if path == trusted_anchor:
+                    values = list(info)
+                    index = 4 if mutation == "uid" else 5
+                    values[index] += 1
+                    return os.stat_result(values)
+                return info
+
+            monkeypatch.setattr(Path, "lstat", lstat_with_wrong_identity)
+
+    def reject_child_creation(*args: object, **kwargs: object) -> None:
+        raise AssertionError("temporary directory constructor was called")
+
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", reject_child_creation)
+    with pytest.raises(
+        AssertionError,
+        match="private fakeroot test root is not owner-only",
+    ):
+        _dynamic_provision_test_root(
+            "phase4b-rejected-root-",
+            trusted_anchor=trusted_anchor,
+        )
 
 
 def _assert_exact_safe_environment(path: Path) -> None:
