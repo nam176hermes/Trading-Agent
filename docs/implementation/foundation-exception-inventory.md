@@ -536,8 +536,8 @@ scripts/t_g03_capability_topology.py|1307|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|1311|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|1319|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|1345|Exception|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|1434|Exception|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|2155|Exception|TOOLING_MIGRATION|RETURN
+scripts/t_g03_capability_topology.py|1441|Exception|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|2162|Exception|TOOLING_MIGRATION|RETURN
 scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
