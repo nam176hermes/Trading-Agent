@@ -492,10 +492,16 @@ changed reason, a matching reason class, an equal count, common text, or
 `allowed_in_ci=false` is insufficient. This true-only predicate must be the
 same one used by the topology failure-review reader and the current exact
 governance comparator's CI-permission decision; neither path may accept an
-entry the other rejects. The reader is diagnostic-only: it cannot write the
-allowlist, alter authority, emit a receipt, or turn the prior run's 281 skips,
-or any future skip, into an accepted result. This adds no broad skip/xfail
-policy.
+entry the other rejects. It is type-exact, not truthy: the reference predicate
+is `type(value) is bool and value is True`, so the string `"true"`, integer
+`1`, and every other non-boolean fail exactly like `false` or an absent value.
+The comparator must either enforce that type-exact predicate itself or accept
+only a sealed typed-entry value produced by an unbypassable validation boundary
+that performs it; no public reader/comparator route may pass a raw mapping to a
+truthiness check or bypass validation. The reader is diagnostic-only: it
+cannot write the allowlist, alter authority, emit a receipt, or turn the prior
+run's 281 skips, or any future skip, into an accepted result. This adds no
+broad skip/xfail policy.
 
 T-G03D tests must prove the record is absent before custody postcheck and is
 published only for a fully validated, non-pass exact execution; a custody,
@@ -511,13 +517,18 @@ or hash drift, a same-node/same-outcome changed reason, and each
 reason class, unknown outcome/phase/xfail state/provenance/match result, a
 reader-created approval candidate without the verified per-node commitment, or
 an otherwise matching node/outcome/reason candidate whose `allowed_in_ci` is
-false, missing, or non-boolean. A differential hostile test must prove the
-failure-review reader and current exact governance comparator both reject that
-false-CI candidate. They must reject a tampered, stale, missing, duplicate,
-foreign, or malformed diagnostic. They must also prove that no diagnostic can
-satisfy receipt aggregation, root reconciliation, a `PASS` governance record,
-or deferred acceptance, and that the next exact run exposes verified diagnostic
-node IDs and bindings before any allowlist/policy input can be changed.
+false, missing, or non-boolean. A differential validation-plus-comparison
+boundary matrix must exercise the public failure-review reader and public
+governance-comparator route—not merely a prevalidated internal helper—with an
+otherwise exact candidate: literal JSON boolean `true` accepts; `false`, an
+absent field, string `"true"`, integer `1`, and every other non-boolean reject.
+It must prove that no direct/raw caller can bypass the type-exact validation
+boundary or obtain truthiness-based acceptance. They must reject a tampered,
+stale, missing, duplicate, foreign, or malformed diagnostic. They must also
+prove that no diagnostic can satisfy receipt aggregation, root reconciliation,
+a `PASS` governance record, or deferred acceptance, and that the next exact
+run exposes verified diagnostic node IDs and bindings before any
+allowlist/policy input can be changed.
 
 The root-accounting set is closed only when the baseline candidate set equals
 the disjoint union of: the passed remainder IDs; all passed portable-source
