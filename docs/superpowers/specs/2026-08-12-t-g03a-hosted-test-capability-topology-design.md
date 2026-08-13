@@ -437,12 +437,36 @@ operation would have been one of the earlier stages.  No unknown, default,
 combined, or caller-supplied stage is valid.
 
 The existing closed public `policy_validation_class` domain and redacted
-console spelling remain unchanged.  The writer may use the existing redacted
-class mapper only to produce that public class, but must select and retain the
-stage at the direct structural boundary before any broad exception mapper runs.
-Neither the record nor the console may contain an exception type or text,
-traceback, chained cause, entry index, node ID, reason, owner, approval,
-target, service, filesystem path, raw policy bytes, or an inferred cause.
+console spelling remain unchanged, but this record has the following exhaustive
+stage/class compatibility matrix. A listed `POLICY_VALIDATION_INVALID` is the
+intentional generic class for an unexpected non-content error at that named
+structural boundary; it is not a fallback to message matching. All other
+public context/date classes, and every pair not listed here, are invalid in
+this record and readers reject them.
+
+| Structural stage | Exactly permitted public class or classes |
+| --- | --- |
+| `SOURCE_ACQUISITION_HEAD_BINDING` | `POLICY_SOURCE_DRIFT`, `POLICY_VALIDATION_INVALID` |
+| `SHARED_VALIDATOR_IMPORT` | `POLICY_VALIDATION_INVALID` |
+| `STRICT_JSON_PARSE` | `POLICY_SCHEMA_INVALID`, `POLICY_VALIDATION_INVALID` |
+| `SHARED_ALLOWLIST_VALIDATION` | `POLICY_SCHEMA_INVALID`, `POLICY_FIELD_TYPE_INVALID`, `POLICY_REVIEW_DATE_INVALID`, `POLICY_REVIEW_DATE_EXPIRED`, `POLICY_REASON_NORMALIZATION_INVALID`, `POLICY_DUPLICATE_ENTRY`, `POLICY_VALIDATION_INVALID` |
+| `ROOT_PROJECTION_REASON_NORMALIZATION` | `POLICY_FIELD_TYPE_INVALID`, `POLICY_REASON_NORMALIZATION_INVALID`, `POLICY_VALIDATION_INVALID` |
+| `POST_CUSTODY_REREAD_COMPARISON` | `POLICY_SOURCE_DRIFT`, `POLICY_SCHEMA_INVALID`, `POLICY_FIELD_TYPE_INVALID`, `POLICY_REVIEW_DATE_INVALID`, `POLICY_REVIEW_DATE_EXPIRED`, `POLICY_REASON_NORMALIZATION_INVALID`, `POLICY_DUPLICATE_ENTRY`, `POLICY_VALIDATION_INVALID` |
+
+The writer must construct a typed internal stage result before any broad
+exception boundary: source and parser wrappers select their known class at
+their own operation; the shared validator exposes a typed redacted validation
+result/code at the same check that currently raises (without changing its
+allowlist acceptance semantics); and the projection wrapper selects its own
+code. The post-custody wrapper propagates the already typed second-read result
+under the post-custody stage, or selects `POLICY_SOURCE_DRIFT` for a successful
+second snapshot that does not equal the first. It must not select either field
+from exception-message fragments, exception text, or an external mapper. The
+legacy broad mapper may remain only for non-recorded caller compatibility and
+must not feed this artifact. Neither the record nor the console may contain an
+exception type or text, traceback, chained cause, entry index, node ID, reason,
+owner, approval, target, service, filesystem path, raw policy bytes, or an
+inferred cause.
 
 The exact record schema is
 `"t-g03a-policy-validation-nonacceptance/v1"` with exactly these top-level
@@ -508,6 +532,19 @@ required for `POST_CUSTODY_REREAD_COMPARISON`; it makes no claim that second
 read bytes were safely acquired.  No other blank, fallback, synthesized, or
 late-recomputed source hash is allowed.
 
+The diagnostic-only reader independently reacquires only the tracked,
+Foundation-head-bound allowlist bytes using the same safe source-acquisition
+operation; it must not parse or validate the document merely to read this
+artifact. For `CURRENT_STAGE_BYTES` and `PRE_EXECUTION_SNAPSHOT`, it requires
+`sha256(reacquired_bytes) == policy_source_sha256` before considering any other
+record binding. A reacquisition failure or digest mismatch rejects the record
+without exposing the failure detail. For `UNAVAILABLE`, the reader requires
+the source-acquisition stage and the literal empty digest, performs no
+substitute digest comparison, and still independently verifies every
+non-source binding. Thus the reader never turns an inability to reacquire a
+source into a claimed source digest, and it never reparses a document whose
+recorded failure was strict parsing, shared validation, or projection.
+
 `nonacceptance_sha256` is SHA-256 of the canonical UTF-8 payload with that
 field omitted.  Canonical bytes are strict UTF-8 without BOM or trailing
 newline, Unicode-code-point sorted keys, `ensure_ascii=false`, and separators
@@ -524,7 +561,13 @@ therefore remains a blocking artifact, not an acceptance fallback.
 
 Before the first snapshot attempt, the executor must reserve the
 non-acceptance destination and verify that no failure diagnostic, portable-root
-PASS governance record, lane receipt, or aggregation result exists.  On any
+PASS governance record, or exact per-code lane receipt (`<code>.json`) exists.
+`aggregate` intentionally writes no aggregate artifact; its only acceptance
+inputs are that portable-root PASS governance record and the per-code receipts,
+so no invented “aggregation result” path is reserved. The aggregate action,
+portable-root reconciliation, and topology-governance audit must instead
+reject the concrete non-acceptance artifact's presence before they inspect
+those inputs. On any
 pre-execution stage non-acceptance it publishes this record, starts no runner,
 cleans only its provisional staging file, and exits nonzero.  On a post-custody
 stage non-acceptance it may publish only after the stated postcheck; it must
@@ -548,6 +591,14 @@ record before evaluating acceptance evidence, including if it is malformed or
 foreign.  A subsequent exact run must use a new evidence root/run context;
 the existing no-clobber context rule rejects reuse.
 
+The shared exact-execution helper is also used by the inventory lane runners;
+its API must carry an explicit immutable `portable_root_remainder` mode (or
+equivalent closed selector) that is set only by
+`execute_portable_root_remainder`. It is a hard precondition of this writer,
+not an inferred report filename or node set. A `run-lane` call, including one
+whose injected snapshot operation fails at any listed stage, must fail closed
+without creating `policy-validation-nonacceptance.json`.
+
 Focused implementation tests must inject one failure at every listed stage and
 prove all of the following: the emitted class/stage is exact and structural;
 the artifact and console contain no raw exception/policy content; the schema,
@@ -556,9 +607,13 @@ hash status are exact; pre-execution stages never run pytest; the post-custody
 stage requires a real successful retained-custody exit; and policy success
 emits no artifact.  They must prove failed publication/staging collisions,
 post-write tamper, missing/malformed/stale/foreign records, cross-run/head
-reuse, every illegal source-hash convention, and coexistence with a failure
+reuse, every illegal source-hash convention, a wrong-but-hex source digest,
+source drift during reader reacquisition, a post-custody pre-execution-snapshot
+digest, every matrix-invalid stage/class pair, and coexistence with a failure
 diagnostic, PASS governance record, receipt, aggregate, or deferred claim all
-fail closed.  Existing validator dates, allowlist rules, workflow invocation,
+fail closed. They must also inject a snapshot-stage error through a
+non-remainder `run-lane` invocation and prove no non-acceptance record is
+written. Existing validator dates, allowlist rules, workflow invocation,
 strict/release routes, and capability-receipt/v1 exact bytes must be shown
 unchanged.
 
