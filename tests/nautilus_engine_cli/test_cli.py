@@ -92,6 +92,7 @@ def _run(
 def _bubblewrap_mount_parent_arguments() -> list[str]:
     targets = [
         CLI,
+        Path(sys.executable),
         VENV_ROOT / "bin" / "python3",
         VENV_ROOT / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages",
     ]
@@ -122,6 +123,7 @@ def _bubblewrap_command(
     bind_pairs = [
         _validated_bwrap_bind(Path("/usr"), Path("/usr")),
         _validated_bwrap_bind(CLI_SOURCE, CLI),
+        _validated_bwrap_bind(RESOLVED_INTERPRETER, Path(sys.executable)),
         _validated_bwrap_bind(RESOLVED_INTERPRETER, VENV_ROOT / "bin" / "python3"),
         _validated_bwrap_bind(
             VENV_SITE_PACKAGES,
