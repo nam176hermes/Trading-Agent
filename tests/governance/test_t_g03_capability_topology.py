@@ -1126,7 +1126,7 @@ def test_native_exact_nonpass_uses_only_inert_append_only_diagnostic_bytes(
         native_call_active = False
 
         def forbid_native_unlink(path: Path, *args: object, **kwargs: object) -> None:
-            if native_call_active and ".native-execution-" in str(path):
+            if native_call_active:
                 native_unlink_calls.append(path)
                 raise AssertionError("native Architecture A forbids pathname unlink")
             real_unlink(path, *args, **kwargs)
