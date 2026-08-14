@@ -2248,6 +2248,38 @@ scheduler action, or broker/exchange access.
 
 ---
 
+## P0-12R5 correction — Hosted workflow Node runtime alignment
+
+Push-triggered Foundation run `31820434403`, attempt 1, at exact reviewed SHA
+`fa8855a138bc72d3bbfb80448ccfa2495390b6ff` passed the legacy backend with 507
+passed and two skipped, then failed dashboard tests under workflow Node
+20.20.2 with eight passed and 24 failed. The dashboard test harness imports
+`node:module.registerHooks`, which requires Node 22.15.0 or newer; the reviewed
+local Node 22.23.0 run passed all 171 dashboard tests. No artifact was uploaded
+and the known failing SHA must not be rerun.
+
+P0-12R5 may add one repository-shape contract requiring exactly one
+`node-version` entry with scalar value `22` in each of Foundation and Host
+Authority, then change only those two workflow scalar values from `20` to
+`22`. Capture the focused contract RED before either workflow edit. Preserve
+every other workflow byte and semantic, including triggers, permissions,
+runners, live gates, steps, cache paths, Make commands, artifact rules, and
+the protected host environment. Dashboard source, package manifests,
+dependencies, lockfiles, Makefile, matrix state, and qualification artifacts
+remain unchanged.
+
+Run the focused and affected repository-shape, D0, and P0-closure tests; all
+four dashboard gates under `TMPDIR=/tmp TMP=/tmp TEMP=/tmp`; secret, D0,
+baseline, closure, contract, and workflow-lint gates; and an independent
+byte-level comparison proving the workflows differ from the exact base only
+at the two approved scalar values. Write the local task report and leave a
+clean committed worktree. This packet does not authorize push, remote update,
+hosted rerun or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler action, or broker/exchange
+access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
