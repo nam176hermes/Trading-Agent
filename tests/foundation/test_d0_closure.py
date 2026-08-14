@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "docs/implementation/d0-closure-matrix.json"
@@ -174,15 +176,17 @@ def test_portable_ci_uses_a_private_linux_temp_root() -> None:
     portable_recipe = makefile.split("ci-portable:\n", 1)[1].split(
         "\n\nci-portable-private:", 1
     )[0]
+    portable_private_recipe = makefile.split("\nci-portable-private:\n", 1)[1].split(
+        "\n\nci-common-private:", 1
+    )[0]
 
     assert "ci-portable:\n\t@set -eu;" in makefile
-    assert (
-        "ci-portable-private:\n"
+    assert portable_private_recipe == (
         "\t$(MAKE) ci-common-private ci-portable-topology "
         "check-portable-defect-closure check-p0-baseline "
         "check-test-governance-topology check-p0-ci-closure "
         "artifact-firewall-check audit-delivery-contract"
-    ) in makefile
+    )
     assert "scripts.check_artifact_firewall publish-error" in makefile
     assert "ci-common-private:\n\t$(MAKE) prepare-root-test-install" in makefile
     assert (
@@ -200,6 +204,32 @@ def test_portable_ci_uses_a_private_linux_temp_root() -> None:
         'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir"'
     ) == 1
     assert portable_recipe.count("$(MAKE) ci-portable-private") == 1
+
+
+def test_portable_ci_rejects_an_appended_duplicate_private_route_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    approved_route = (
+        "\t$(MAKE) ci-common-private ci-portable-topology "
+        "check-portable-defect-closure check-p0-baseline "
+        "check-test-governance-topology check-p0-ci-closure "
+        "artifact-firewall-check audit-delivery-contract"
+    )
+    assert makefile.count(approved_route) == 1
+    mutated_makefile = tmp_path / "Makefile"
+    mutated_makefile.write_text(
+        makefile.replace(
+            approved_route,
+            f"{approved_route} check-p0-baseline",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(globals(), "MAKEFILE", mutated_makefile)
+
+    with pytest.raises(AssertionError):
+        test_portable_ci_uses_a_private_linux_temp_root()
 
 
 def test_portable_ci_uses_common_test_target_after_one_source_reinstall() -> None:
