@@ -1,0 +1,4 @@
+# Closed label set used only by the protected host-authority workflow.
+self-hosted-runner:
+  labels:
+    - trading-authority

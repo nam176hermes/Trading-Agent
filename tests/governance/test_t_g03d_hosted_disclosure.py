@@ -694,7 +694,7 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
     } | {
         ("ci-portable-private", ("ci-common-private", "ci-portable-topology", "check-test-governance-topology", "artifact-firewall-check", "audit-delivery-contract")),
         ("ci-common-private", ("prepare-root-test-install",)),
-        ("ci-common-private", ("test-all-portable-private", "build-dashboard", "audit-python-source", "audit-dependencies")),
+        ("ci-common-private", ("audit-portable", "check-d0-closure", "check-contracts", "check-secrets", "test-backend", "test-dashboard", "typecheck-dashboard", "lint-dashboard", "build-dashboard", "audit-python-source", "audit-dependencies")),
         ("ci-host-authority", ("ci-host-authority-private",)),
         ("ci-host-authority-private", ("ci-portable-topology",)),
         ("ci-host-authority-private", ("test-runtime-release-host",)),

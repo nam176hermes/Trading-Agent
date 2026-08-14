@@ -503,7 +503,7 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
     )
     assert common_private_recipe is not None
     assert common_private_recipe.group(1).count("prepare-root-test-install") == 1
-    for gate in ("test-all-portable-private", "build-dashboard", "audit-python-source", "audit-dependencies"):
+    for gate in ("audit-portable", "check-d0-closure", "check-contracts", "check-secrets", "test-backend", "test-dashboard", "typecheck-dashboard", "lint-dashboard", "build-dashboard", "audit-python-source", "audit-dependencies"):
         assert gate in common_private_recipe.group(1)
 
     portable_recipe = re.search(

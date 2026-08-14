@@ -199,7 +199,7 @@ def test_portable_ci_uses_common_test_target_after_one_source_reinstall() -> Non
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
     assert "$(MAKE) prepare-root-test-install" in makefile
-    assert "$(MAKE) test-all-portable-private" in makefile
+    assert "$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend" in makefile
     common_private = makefile.split("ci-common-private:\n", 1)[1].split("\n\nartifact-firewall-check:", 1)[0]
     assert common_private.count("prepare-root-test-install") == 1
 

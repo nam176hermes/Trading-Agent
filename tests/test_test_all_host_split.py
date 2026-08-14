@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from collections import Counter
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,6 +31,23 @@ def _reachable(targets: dict[str, tuple[tuple[str, ...], str]], start: str) -> s
     return seen
 
 
+def _route_multiplicity(
+    targets: dict[str, tuple[tuple[str, ...], str]], start: str,
+) -> Counter[str]:
+    """Count every target reached by the concrete recursive-Make target graph."""
+    counts: Counter[str] = Counter()
+    pending = [start]
+    while pending:
+        current = pending.pop()
+        counts[current] += 1
+        prerequisites, recipe = targets[current]
+        children = list(prerequisites)
+        for command in re.findall(r"\$\(MAKE\)\s+([^\\\n]+)", recipe):
+            children.extend(token for token in command.split() if token in targets)
+        pending.extend(children)
+    return counts
+
+
 def test_ci_routes_only_to_the_portable_gate_and_never_host_authority() -> None:
     """Break caught: the default CI route can execute host authority qualification."""
     targets = _make_targets()
@@ -52,6 +70,17 @@ def test_portable_and_host_routes_have_distinct_required_semantics() -> None:
     assert "validate-native" in host_recipe and "--require-pass" in host_recipe
     assert "validate-external" in host_recipe and "--require-pass" in host_recipe
     assert "check-p0-baseline" in host
+
+
+def test_portable_route_uses_topology_once_without_repeating_its_root_universe() -> None:
+    """Break caught: the common source route reruns portable root nodes beside topology."""
+    counts = _route_multiplicity(_make_targets(), "ci-portable")
+
+    assert counts["ci-common-private"] == 1
+    assert counts["ci-portable-topology"] == 1
+    assert counts["test"] == 0
+    assert counts["test-portable-embedded-proof"] == 0
+    assert counts["test-all-portable-private"] == 0
 
 
 def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authority() -> None:
