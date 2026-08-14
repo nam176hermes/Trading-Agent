@@ -813,6 +813,31 @@ def test_publisher_rejects_phase_manifest_that_does_not_bind_its_entries(
         _publish(staging, tmp_path / "runtime/state/ci-portable")
 
 
+def test_publisher_accepts_manifested_nonempty_phase_tree(tmp_path: Path) -> None:
+    staging = _staging(tmp_path)
+    result = b"PASS\n"
+    _write_leaf(staging, "phase-evidence/result.txt", result)
+    _write_leaf(
+        staging,
+        "phase-evidence/manifest.json",
+        {
+            "schema_version": "phase-evidence-manifest/v1",
+            "files": [{
+                "path": "result.txt",
+                "sha256": hashlib.sha256(result).hexdigest(),
+                "size": len(result),
+                "mode": "0400",
+            }],
+        },
+    )
+    destination = tmp_path / "runtime/state/ci-portable"
+
+    _publish(staging, destination)
+
+    firewall.validate_published_evidence(destination)
+    assert (destination / "phase-evidence/result.txt").read_bytes() == result
+
+
 def test_publisher_rejects_unmanifested_empty_phase_directory(tmp_path: Path) -> None:
     staging = _staging(tmp_path)
     result = b"PASS\n"
