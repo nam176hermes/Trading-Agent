@@ -20,7 +20,7 @@ import stat
 import subprocess
 import sys
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 
 
 LOCKED_INVENTORY_SHA256 = "86c157c8394f16e381d1e53a6884b6c3d93af5520ea9bdd6b3abd9efbc588a93"
@@ -4198,6 +4198,71 @@ def reconcile_portable_root_accounting(
     if tuple(sorted(accounted)) != candidates:
         raise TopologyError("portable root accounting union does not equal baseline")
     return {**disclosure, "portable_root_remainder_status": "PASS", "baseline_candidate_count": str(len(candidates))}
+
+
+def build_final_semantic_projection(
+    foundation_context: dict[str, object],
+    baseline: dict[str, object],
+    disclosure: dict[str, object],
+    receipts: Sequence[dict[str, object]],
+) -> dict[str, object]:
+    """Project validated topology meaning without per-attempt custody hashes."""
+    head_sha = foundation_context.get("foundation_head_sha")
+    validation_date = foundation_context.get("foundation_validation_date")
+    inventory_sha256 = baseline.get("inventory_sha256")
+    closure_sha256 = baseline.get("closure_sha256")
+    collector_policy = baseline.get("collector_policy")
+    if (
+        not isinstance(head_sha, str) or not HEAD_SHA.fullmatch(head_sha)
+        or not isinstance(validation_date, str)
+        or not FOUNDATION_DATE.fullmatch(validation_date)
+        or not isinstance(inventory_sha256, str) or not HEX64.fullmatch(inventory_sha256)
+        or not isinstance(closure_sha256, str) or not HEX64.fullmatch(closure_sha256)
+        or not isinstance(collector_policy, dict)
+    ):
+        raise TopologyError("final topology semantic inputs are malformed")
+    status_keys = (
+        "portable_source_status", "native_capabilities_status",
+        "external_authorities_status", "portable_root_remainder_status",
+        "runtime_proof", "baseline_candidate_count",
+    )
+    if any(key not in disclosure for key in status_keys):
+        raise TopologyError("final topology disclosure is incomplete")
+    receipt_results: list[dict[str, object]] = []
+    for receipt in sorted(
+        receipts, key=lambda item: str(item.get("capability_or_authority_code", "")),
+    ):
+        code = receipt.get("capability_or_authority_code")
+        outcome = receipt.get("outcome")
+        counts = {
+            key: receipt.get(key)
+            for key in ("selected_test_count", "passed", "failed", "unavailable")
+        }
+        if (
+            not isinstance(code, str) or code not in CODE_CLASSIFICATION
+            or outcome not in {"PASS", "DEFERRED"}
+            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts.values())
+        ):
+            raise TopologyError("final topology receipt meaning is malformed")
+        receipt_results.append({
+            "code": code,
+            "outcome": outcome,
+            "selected": counts["selected_test_count"],
+            "passed": counts["passed"],
+            "failed": counts["failed"],
+            "unavailable": counts["unavailable"],
+        })
+    return {
+        "foundation": {
+            "head_sha": head_sha,
+            "validation_date": validation_date,
+        },
+        "inventory_sha256": inventory_sha256,
+        "closure_sha256": closure_sha256,
+        "policy_sha256": _sha256(collector_policy),
+        "statuses": {key: disclosure[key] for key in status_keys},
+        "receipt_results": receipt_results,
+    }
 
 
 def make_receipt(*, run_id: str, head_sha: str, lane: str, code: str, expected: tuple[str, ...], collected: tuple[str, ...], state: str, fact: str, outcome: str) -> dict[str, object]:

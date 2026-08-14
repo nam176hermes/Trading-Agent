@@ -15,6 +15,50 @@ from scripts import t_g03_capability_topology as topology
 from scripts import test_governance_pytest as governance_plugin
 
 
+def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning() -> None:
+    builder = getattr(topology, "build_final_semantic_projection", None)
+    assert callable(builder), "P0-10 final semantic projection is missing"
+    context = {
+        "foundation_run_id": "101",
+        "foundation_head_sha": "1" * 40,
+        "foundation_validation_date": "2026-08-13",
+        "foundation_context_sha256": "2" * 64,
+    }
+    baseline = {
+        "inventory_sha256": "3" * 64,
+        "closure_sha256": "4" * 64,
+        "collector_policy": {"custody": "retained"},
+    }
+    disclosure = {
+        "portable_source_status": "PASS",
+        "native_capabilities_status": "DEFERRED",
+        "external_authorities_status": "DEFERRED",
+        "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
+        "portable_root_remainder_status": "PASS",
+        "baseline_candidate_count": "62",
+    }
+    receipts = [{
+        "capability_or_authority_code": "NATIVE-BWRAP-OS-SANDBOX",
+        "outcome": "DEFERRED",
+        "selected_test_count": 0,
+        "passed": 0,
+        "failed": 0,
+        "unavailable": 8,
+        "foundation_run_id": "101",
+        "foundation_context_sha256": "2" * 64,
+        "receipt_sha256": "5" * 64,
+        "probe": {"stdout_sha256": "6" * 64},
+    }]
+    first = builder(context, baseline, disclosure, receipts)
+    rerun_context = dict(context, foundation_run_id="202", foundation_context_sha256="7" * 64)
+    rerun_receipts = [dict(receipts[0], foundation_run_id="202", foundation_context_sha256="7" * 64, receipt_sha256="8" * 64)]
+    assert builder(rerun_context, baseline, disclosure, rerun_receipts) == first
+    assert "foundation_run_id" not in json.dumps(first)
+    assert "receipt_sha256" not in json.dumps(first)
+    changed = [dict(receipts[0], outcome="PASS", selected_test_count=8, passed=8, unavailable=0)]
+    assert builder(context, baseline, disclosure, changed) != first
+
+
 def _seal_portable_root_baseline(
     monkeypatch: pytest.MonkeyPatch, evidence: Path, raw: str, *, run_id: str, head_sha: str,
     foundation_context_path: Path | None = None,

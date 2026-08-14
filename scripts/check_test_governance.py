@@ -378,6 +378,123 @@ def build_governed_report(
     }
 
 
+def build_final_governed_summary(
+    report: dict[str, object],
+) -> tuple[bytes, list[dict[str, str]]]:
+    """Validate and project the governed report used by the final evidence set."""
+    required = {
+        "schema_version", "summary", "postgres_disclosure", "tests",
+        "capability_topology", "generated_at_utc", "suite_exit_codes",
+        "allowlist", "status",
+    }
+    if set(report) != required or report.get("schema_version") != 1:
+        raise GovernanceError("final governed report schema is invalid")
+    if report.get("status") != "pass":
+        raise GovernanceError("final governed report is not PASS")
+    exit_codes = report.get("suite_exit_codes")
+    tests = report.get("tests")
+    if (
+        not isinstance(exit_codes, dict)
+        or any(not isinstance(key, str) or not isinstance(value, int) or value != 0 for key, value in exit_codes.items())
+        or not isinstance(tests, list)
+        or not isinstance(report.get("summary"), dict)
+        or not isinstance(report.get("postgres_disclosure"), dict)
+        or not isinstance(report.get("capability_topology"), dict)
+        or not isinstance(report.get("generated_at_utc"), str)
+        or not isinstance(report.get("allowlist"), str)
+    ):
+        raise GovernanceError("final governed report fields are invalid")
+    semantic: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in tests:
+        if not isinstance(item, dict):
+            raise GovernanceError("final governed test record is invalid")
+        node_id = item.get("test_node_id")
+        component = item.get("component")
+        phase = item.get("phase")
+        outcome = item.get("governed_outcome", item.get("raw_outcome", item.get("outcome")))
+        if (
+            not isinstance(node_id, str) or not node_id
+            or not isinstance(component, str) or not component
+            or not isinstance(phase, str) or phase not in OBSERVATION_PHASES
+            or not isinstance(outcome, str) or outcome not in {
+                *OBSERVED_OUTCOMES, "approval_blocked",
+            }
+            or (component, node_id) in seen
+        ):
+            raise GovernanceError("final governed test meaning is invalid")
+        seen.add((component, node_id))
+        semantic.append({
+            "component": component,
+            "node_id": node_id,
+            "outcome": outcome,
+            "phase": phase,
+        })
+    semantic.sort(key=lambda item: (item["component"], item["node_id"]))
+    summary = {
+        "schema_version": "test-governance-final-summary/v1",
+        "status": report["status"],
+        "summary": report["summary"],
+        "postgres_disclosure": report["postgres_disclosure"],
+        "capability_topology": report["capability_topology"],
+        "tests": tests,
+        "suite_exit_codes": exit_codes,
+        "allowlist": report["allowlist"],
+        "generated_at_utc": report["generated_at_utc"],
+    }
+    return json.dumps(
+        summary, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8"), semantic
+
+
+def build_final_governed_error(
+    error_report: dict[str, object],
+) -> tuple[bytes, dict[str, object]]:
+    """Project an error without copying its potentially sensitive raw message."""
+    required = {
+        "schema_version", "status", "generated_at_utc", "error",
+        "suite_exit_codes",
+    }
+    received = set(error_report)
+    if (
+        received not in (required, required | {"date_context_sources"})
+        or error_report.get("schema_version") != 1
+        or error_report.get("status") != "error"
+        or not isinstance(error_report.get("generated_at_utc"), str)
+        or not isinstance(error_report.get("error"), str)
+        or not isinstance(error_report.get("suite_exit_codes"), dict)
+    ):
+        raise GovernanceError("final governed error report is invalid")
+    exit_codes = error_report["suite_exit_codes"]
+    assert isinstance(exit_codes, dict)
+    if any(
+        not isinstance(key, str) or not isinstance(value, int)
+        for key, value in exit_codes.items()
+    ):
+        raise GovernanceError("final governed error exit codes are invalid")
+    message = str(error_report["error"])
+    if message.startswith("policy validation failed: "):
+        candidate = message.removeprefix("policy validation failed: ")
+        error_code = candidate if re.fullmatch(r"[A-Z0-9_]+", candidate) else "POLICY_VALIDATION_FAILURE"
+    elif message.startswith("test suites failed:"):
+        error_code = "SUITE_FAILURE"
+    else:
+        error_code = "GOVERNANCE_FAILURE"
+    semantic: dict[str, object] = {
+        "error_code": error_code,
+        "suite_exit_codes": dict(exit_codes),
+    }
+    document = {
+        "schema_version": "test-governance-final-error/v1",
+        "status": "error",
+        "generated_at_utc": error_report["generated_at_utc"],
+        **semantic,
+    }
+    return json.dumps(
+        document, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8"), semantic
+
+
 def _read_json(path: Path) -> object:
     try:
         return json.loads(path.read_text(encoding="utf-8"))

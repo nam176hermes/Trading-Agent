@@ -83,6 +83,20 @@ def test_portable_route_uses_topology_once_without_repeating_its_root_universe()
     assert counts["test-all-portable-private"] == 0
 
 
+def test_portable_route_uses_private_raw_evidence_then_one_final_publisher() -> None:
+    targets = _make_targets()
+    outer = targets["ci-portable"][1]
+    firewall = targets["artifact-firewall-check"][1]
+
+    assert "raw_evidence_root=" in outer
+    assert 'chmod 0700 "$$raw_evidence_root"' in outer
+    assert 'TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private' in outer
+    assert "scripts.check_artifact_firewall publish" in firewall
+    assert '--raw-root "$(TEST_EVIDENCE_DIR)"' in firewall
+    assert '--destination "$(CURDIR)/runtime/state/ci-portable"' in firewall
+    assert "check-portable-defect-closure" not in firewall
+
+
 def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authority() -> None:
     """Break caught: hosted or privileged workflow routing enters the portable default."""
     foundation = (ROOT / ".github/workflows/foundation.yml").read_text(encoding="utf-8")
@@ -94,7 +108,9 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert re.search(r"^    runs-on: ubuntu-(latest|24\.04)$", foundation, re.MULTILINE)
     assert "run: make ci-portable NONINTERACTIVE=1" in foundation
     assert "if: always()" in foundation
-    assert "path: /tmp/trading-agent-test-evidence" in foundation
+    assert "path: runtime/state/ci-portable/**" in foundation
+    assert "retention-days: 14" in foundation
+    assert "/tmp/trading-agent-test-evidence" not in foundation
     assert re.search(r"^  push:$", foundation, re.MULTILINE)
     assert re.search(r"^  pull_request:$", foundation, re.MULTILINE)
     assert "pull_request_target" not in foundation

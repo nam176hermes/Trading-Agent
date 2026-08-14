@@ -303,7 +303,10 @@ ci-private:
 
 ci-portable:
 	@set -eu; \
-		foundation_context_path=$$(uv run python -c 'import sys; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(sys.argv[1])))' "$(TEST_EVIDENCE_DIR)"); \
+		raw_evidence_root=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable-evidence.XXXXXXXXXX"); \
+		chmod 0700 "$$raw_evidence_root"; \
+		test "$$(stat -c '%u:%a' -- "$$raw_evidence_root")" = "$$(id -u):700"; \
+		foundation_context_path=$$(TEST_EVIDENCE_DIR="$$raw_evidence_root" uv run python -c 'import sys; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(sys.argv[1])))' "$$raw_evidence_root"); \
 		export FOUNDATION_CONTEXT_PATH="$$foundation_context_path"; \
 		ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable.XXXXXXXXXX"); \
 		chmod 0700 "$$ci_tmpdir"; \
@@ -314,7 +317,7 @@ ci-portable:
 		}; \
 		trap 'cleanup_ci_tmpdir' EXIT; \
 		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
-			$(MAKE) ci-portable-private
+			TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private
 
 ci-portable-private:
 	$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology artifact-firewall-check audit-delivery-contract
@@ -323,7 +326,13 @@ ci-common-private:
 	$(MAKE) prepare-root-test-install
 	$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies
 
-artifact-firewall-check: check-portable-defect-closure
+artifact-firewall-check:
+	uv run python -m scripts.check_artifact_firewall publish \
+		--raw-root "$(TEST_EVIDENCE_DIR)" \
+		--destination "$(CURDIR)/runtime/state/ci-portable" \
+		--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
+		--foundation-context-path "$$FOUNDATION_CONTEXT_PATH" \
+		--repository-root "$(CURDIR)"
 
 audit-delivery-contract: check-critical-coverage
 

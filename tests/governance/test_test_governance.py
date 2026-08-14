@@ -51,6 +51,58 @@ REQUIRED_FIELDS = {
 }
 
 
+def test_final_governed_summary_contract_is_canonical_and_timestamp_independent() -> None:
+    builder = getattr(test_governance, "build_final_governed_summary", None)
+    assert callable(builder), "P0-10 governed summary projection is missing"
+    report = build_governed_report(
+        [{
+            "test_node_id": "tests/test_safe.py::test_one",
+            "component": "root",
+            "outcome": "passed",
+            "reason": "",
+            "phase": "call",
+        }],
+        [],
+    )
+    report.update({
+        "capability_topology": {"portable_source_status": "PASS"},
+        "generated_at_utc": "2026-08-13T12:00:00+00:00",
+        "suite_exit_codes": {"root": 0},
+        "allowlist": "tests/skip-allowlist.yaml",
+        "status": "pass",
+    })
+    raw, semantic = builder(report)
+    parsed = json.loads(raw)
+    assert raw == json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    assert parsed["schema_version"] == "test-governance-final-summary/v1"
+    assert semantic == [{
+        "component": "root",
+        "node_id": "tests/test_safe.py::test_one",
+        "outcome": "passed",
+        "phase": "call",
+    }]
+    rerun = dict(report, generated_at_utc="2026-08-14T00:00:00+00:00")
+    _, rerun_semantic = builder(rerun)
+    assert rerun_semantic == semantic
+
+
+def test_final_governed_error_contract_is_closed_and_never_copies_raw_error() -> None:
+    builder = getattr(test_governance, "build_final_governed_error", None)
+    assert callable(builder), "P0-10 governed error projection is missing"
+    raw, semantic = builder({
+        "schema_version": 1,
+        "status": "error",
+        "generated_at_utc": "2026-08-13T12:00:00+00:00",
+        "error": "test suites failed: nested password=must-not-leak",
+        "suite_exit_codes": {"legacy": 1},
+    })
+    parsed = json.loads(raw)
+    assert parsed["schema_version"] == "test-governance-final-error/v1"
+    assert parsed["error_code"] == "SUITE_FAILURE"
+    assert "must-not-leak" not in raw.decode()
+    assert semantic == {"error_code": "SUITE_FAILURE", "suite_exit_codes": {"legacy": 1}}
+
+
 def entry(**changes: object) -> dict[str, object]:
     document: dict[str, object] = {
         "test_node_id": "tests/jobs/test_runtime.py::test_requires_database",
