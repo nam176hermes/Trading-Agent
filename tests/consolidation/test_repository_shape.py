@@ -554,6 +554,24 @@ def test_foundation_workflow_delegates_to_the_canonical_local_ci_gate() -> None:
     assert "bandit" not in workflow
 
 
+@pytest.mark.parametrize(
+    "workflow",
+    ["foundation.yml", "host-authority.yml"],
+)
+def test_hosted_workflow_has_exactly_one_node_22_runtime(workflow: str) -> None:
+    """Break caught: a hosted workflow duplicates or downgrades its Node pin."""
+    content = _read_current_regular(
+        ROOT, f".github/workflows/{workflow}",
+    ).decode("utf-8")
+    node_versions = re.findall(
+        r"^[ \t]+node-version:[ \t]*([^\s#]+)[ \t]*(?:#.*)?$",
+        content,
+        re.MULTILINE,
+    )
+
+    assert node_versions == ["22"]
+
+
 def _init_shape_fixture(repository: Path) -> None:
     repository.mkdir()
     subprocess.run(

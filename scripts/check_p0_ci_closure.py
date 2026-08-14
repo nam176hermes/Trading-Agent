@@ -565,7 +565,7 @@ def _approved_common_steps() -> list[tuple[dict[str, str], dict[str, str]]]:
             {"name": "Install Node.js", "uses": "actions/setup-node@v4", "with": ""},
             {
                 "cache": "npm", "cache-dependency-path": "apps/dashboard/package-lock.json",
-                "node-version": "20",
+                "node-version": "22",
             },
         ),
         (
