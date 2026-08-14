@@ -1445,6 +1445,14 @@ git commit -m "feat(ci): seal external authority receipts"
 
 ### Step 1 — Write target-graph tests
 
+Evidence correction: the focused topology suite is
+`tests/governance/test_t_g03_capability_topology.py` (not
+`tests/test_t_g03_capability_topology.py`). At the reviewed base, the focused
+validation-date command reports four fixture-only failures because fixture
+collectors include the active 30-row inventory but omit the P0-06 32-row
+closure ledger. Repair those collectors to include all governed active and
+closure nodes; do not weaken production accounting or closure policy.
+
 Required final graph:
 
 ```text
@@ -1452,7 +1460,7 @@ ci
 └── ci-portable
 
 ci-portable
-├── ci-source
+├── one common/private source-safe prerequisite route
 ├── ci-portable-topology
 ├── check-test-governance-topology
 ├── artifact-firewall-check
@@ -1472,12 +1480,12 @@ Avoid executing common test suites twice by extracting one private/common prereq
 Recommended logical form:
 
 ```make
-ci: ci-portable
-
-ci-source-private:
+ci-common-private:
 	# source-safe tests/build/audits only
 
-ci-portable: ci-source-private ci-portable-topology \
+ci: ci-portable
+
+ci-portable: ci-common-private ci-portable-topology \
 	check-test-governance-topology \
 	artifact-firewall-check \
 	audit-delivery-contract
@@ -1552,7 +1560,7 @@ Reject:
 uv run pytest -q \
   tests/test_test_all_host_split.py \
   tests/governance/test_t_g03f_validation_date.py \
-  tests/test_t_g03_capability_topology.py
+  tests/governance/test_t_g03_capability_topology.py
 
 make ci-portable NONINTERACTIVE=1
 ```
