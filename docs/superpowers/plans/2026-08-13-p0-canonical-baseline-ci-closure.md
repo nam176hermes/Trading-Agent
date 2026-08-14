@@ -2431,42 +2431,50 @@ scheduler action, or broker/exchange access.
 
 ---
 
-## P0-12R10 correction — Hosted failure-publication workspace lineage
+## P0-12R10 correction — Private runner-temp final artifact lineage
 
 Hosted Foundation run `31833372257` reached the intended root-remainder
 non-pass with exactly 6,063 passed and 281 skipped nodes. The P0-12R8 catch
 invoked the failure-only publisher exactly once, but publication failed closed
 with `ARTIFACT_FIREWALL_REJECTED LAYOUT`. Reconstructing the exact partial
 evidence shape and counts proves those retained raw bytes publish successfully
-under a private temporary lineage. The same validated bytes fail at the real
-Make destination when an ancestor above the canonical repository is mode 0775:
+under a private temporary lineage. The same validated bytes fail at the former
+repository-local destination when an ancestor above the checkout is mode 0775:
 the absolute-lineage validator reports `artifact path ancestor is writable`
 before creating `runtime/state/ci-portable`.
 
-P0-12R10 may correct only the failure-only publisher's destination-lineage
-contract. The publisher must require the exact
-`<repository-root>/runtime/state/ci-portable` destination, retain and postcheck
-the complete absolute lineage, and keep the canonical repository root itself
-current-user-owned, non-writable by group/other, and identity-stable. Only
-ancestor writability above that sealed repository boundary may be ignored;
-foreign ownership, links, replacement, an unsafe repository root, an unsafe
-destination suffix, coexistence, and no-clobber violations still fail closed.
-Raw Foundation context, reservation, baseline, remainder, custody, inventory,
-closure, and strict diagnostic validation are unchanged, as are source-tree
-binding, secret-safe projection, original-exit preservation, final artifact
-sealing, and all success or later-governance publication routes.
+Ignoring writable checkout ancestors is not safe: after the publisher closes
+its retained descriptors, a same-user namespace swap could make the later
+upload action re-resolve foreign bytes. P0-12R10 therefore keeps
+`_validate_lineage` fully strict and moves the final artifact for all three
+portable routes (success, governed error, and early root-remainder failure) to
+one deterministic private `RUNNER_TEMP` path bound to the exact GitHub run ID
+and attempt. The outer `ci-portable` wrapper must overwrite any inherited
+artifact-path value with that closed derivation, export it to recursive Make,
+reject pre-existing destination occupancy, and pass the same exact destination
+to every publisher. The Foundation workflow must upload only that exact
+runner-temp path, including hidden files; it must never upload the raw evidence
+root or re-resolve a repository-local artifact.
 
-Strict TDD must first reproduce the hosted-shaped mode-0775 outer workspace
-with a safe mode-0755 repository boundary and prove the current failure. The
-focused failure-firewall packet must then prove that exact canonical layout
-publishes, while a writable repository root and a destination outside the
-repository remain rejected. Full P0-12R8 adversarial, topology, Make-route,
-baseline, closure, contracts, source/security audit, actionlint, and diff gates
-must pass before independent review. Workflow, Make, skip/native acceptance,
-PASS semantics, dependencies, locks, remote update, hosted rerun or dispatch,
-P0-12 continuation, P0-13, promotion, production/live/runtime/DB/service/
-scheduler mutation, broker/provider access, and live trading remain out of
-scope.
+Strict TDD must first prove the current Make/workflow contract still targets
+the checkout and demonstrate an upload-style reread observing foreign bytes
+after a repository-ancestor namespace swap. GREEN requires the exact private
+run/attempt-bound path across the success, governed-error, and failure-only
+routes, while preserving single invocation, original nonzero status, no-clobber,
+sealed final modes, and `if: always()` upload behavior. Malformed run/attempt,
+inherited destination injection, stale occupancy, symlink/hardlink/unsafe mode
+or owner, replacement, coexistence, raw-root upload, and workflow/Make path
+drift must fail closed. Raw Foundation context, reservation, baseline,
+remainder, custody, inventory, closure, strict diagnostic validation,
+source-tree binding, secret-safe projection, skip/native acceptance, and PASS
+semantics remain unchanged.
+
+Require full P0-12R8 adversarial, artifact-firewall, topology, Make-route,
+repository-shape, D0, baseline, closure, P0 contracts, source/security audit,
+actionlint, and exact diff gates before independent review. Dependencies,
+locks, remote update, hosted rerun or dispatch, P0-12 continuation, P0-13,
+promotion, production/live/runtime/DB/service/scheduler mutation,
+broker/provider access, and live trading remain out of scope.
 
 ---
 
