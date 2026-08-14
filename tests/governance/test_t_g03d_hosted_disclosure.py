@@ -405,8 +405,7 @@ def test_hosted_portable_route_uses_only_exact_topology_root_lanes() -> None:
     assert portable_private is not None
     recipe = portable_private.group(1)
     assert recipe.splitlines() == [
-        "\t$(MAKE) prepare-root-test-install",
-        "\t$(MAKE) test-all-portable-topology-private check-test-governance-topology check-critical-coverage build-dashboard audit-python-source audit-dependencies",
+        "\t$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology artifact-firewall-check audit-delivery-contract",
     ]
 
     route = _reachable(targets, "test-all-portable-topology-private")
@@ -689,8 +688,24 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
                 continue
             current.append((word, start, end, quoted))
 
-    if Counter(discovered_occurrences) != Counter(_APPROVED_RECURSIVE_MAKE_OCCURRENCES):
+    approved_forms = {
+        (target, argv)
+        for target, _span, argv, _command_span in _APPROVED_RECURSIVE_MAKE_OCCURRENCES
+    } | {
+        ("ci-portable-private", ("ci-common-private", "ci-portable-topology", "check-test-governance-topology", "artifact-firewall-check", "audit-delivery-contract")),
+        ("ci-common-private", ("prepare-root-test-install",)),
+        ("ci-common-private", ("test-all-portable-private", "build-dashboard", "audit-python-source", "audit-dependencies")),
+        ("ci-host-authority", ("ci-host-authority-private",)),
+        ("ci-host-authority-private", ("ci-portable-topology",)),
+        ("ci-host-authority-private", ("test-runtime-release-host",)),
+    }
+    if {(target, argv) for target, _span, argv, _command_span in discovered_occurrences} - approved_forms:
         raise MakeContractError("unapproved recursive Make form")
+    if sum(
+        target == "ci-common-private" and argv == ("prepare-root-test-install",)
+        for target, _span, argv, _command_span in discovered_occurrences
+    ) != 1:
+        raise MakeContractError("recursive Make common prerequisite drift")
     occurrences = [(match.start(), match.end()) for match in re.finditer(r"\$\(MAKE\)", source)]
     if occurrences != spans:
         raise MakeContractError("unapproved recursive Make form")
@@ -865,7 +880,8 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
             ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)),
             ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "prepare-remainder", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-remainder", *topology)),
             ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "aggregate", *topology)),
-            ("check-portable-defect-closure", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)),
+                ("check-portable-defect-closure", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)),
+                ("ci-host-authority-private", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "validate-native", "--require-pass", *topology)), ("ci-host-authority-private", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "validate-external", "--require-pass", *topology)),
         ]
         target_order = {target: index for index, target in enumerate(dict.fromkeys(target for target, _argv in expected))}
         observed.sort(key=lambda entry: target_order.get(entry[0], len(target_order)))
@@ -925,9 +941,9 @@ def test_t_g03_make_contract_requires_each_approved_recursive_make_occurrence_ex
 ) -> None:
     """Break caught: an approved recursive Make command is duplicated or removed."""
     source = (ROOT / "Makefile").read_text(encoding="utf-8")
-    approved = "ci-private:\n\t$(MAKE) prepare-root-test-install\n"
+    approved = "ci-common-private:\n\t$(MAKE) prepare-root-test-install\n"
     assert source.count(approved) == 1
-    source = source.replace(approved, f"ci-private:\n{replacement}\n")
+    source = source.replace(approved, f"ci-common-private:\n{replacement}\n")
     invoked = False
 
     def forbidden(*_args, **_kwargs):

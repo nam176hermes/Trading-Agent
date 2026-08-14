@@ -162,18 +162,11 @@ def test_portable_component_snapshot_proof_is_root_test_local() -> None:
     assert "test-dashboard:\n\tcd apps/dashboard && npm test" in makefile
 
 
-def test_canonical_ci_uses_a_private_linux_temp_root() -> None:
+def test_canonical_ci_is_an_alias_for_the_portable_gate() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
-    assert "ci:\n\t@set -eu;" in makefile
-    assert "ci-private:\n\t$(MAKE) prepare-root-test-install" in makefile
-    assert "ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci.XXXXXXXXXX)" in makefile
-    assert 'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700"' in makefile
-    assert "cleanup_ci_tmpdir() {" in makefile
-    assert 'find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +' in makefile
-    assert "trap 'cleanup_ci_tmpdir' EXIT" in makefile
-    assert 'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir"' in makefile
-    assert "$(MAKE) ci-private" in makefile
+    assert "ci: ci-portable" in makefile
+    assert "ci:\n\t" not in makefile
 
 
 def test_portable_ci_uses_a_private_linux_temp_root() -> None:
@@ -183,7 +176,8 @@ def test_portable_ci_uses_a_private_linux_temp_root() -> None:
     )[0]
 
     assert "ci-portable:\n\t@set -eu;" in makefile
-    assert "ci-portable-private:\n\t$(MAKE) prepare-root-test-install" in makefile
+    assert "ci-portable-private:\n\t$(MAKE) ci-common-private ci-portable-topology" in makefile
+    assert "ci-common-private:\n\t$(MAKE) prepare-root-test-install" in makefile
     assert (
         'ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/'
         'trading-agent-ci-portable.XXXXXXXXXX")'
@@ -201,13 +195,13 @@ def test_portable_ci_uses_a_private_linux_temp_root() -> None:
     assert portable_recipe.count("$(MAKE) ci-portable-private") == 1
 
 
-def test_ci_uses_private_test_target_after_one_source_reinstall() -> None:
+def test_portable_ci_uses_common_test_target_after_one_source_reinstall() -> None:
     makefile = MAKEFILE.read_text(encoding="utf-8")
 
     assert "$(MAKE) prepare-root-test-install" in makefile
-    assert "$(MAKE) test-all-private" in makefile
-    ci_private = makefile.split("ci-private:\n", 1)[1].split("\n\nci-portable:", 1)[0]
-    assert ci_private.count("prepare-root-test-install") == 1
+    assert "$(MAKE) test-all-portable-private" in makefile
+    common_private = makefile.split("ci-common-private:\n", 1)[1].split("\n\nartifact-firewall-check:", 1)[0]
+    assert common_private.count("prepare-root-test-install") == 1
 
 
 def test_test_all_rebuilds_the_current_root_package_and_uses_private_tmp() -> None:

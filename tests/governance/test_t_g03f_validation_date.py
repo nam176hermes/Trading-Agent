@@ -19,6 +19,52 @@ ALLOWLIST = ROOT / "tests/skip-allowlist.yaml"
 RUN_ID = "31641536482"
 
 
+def _fixture_collector(
+    rows: tuple[topology.InventoryRow, ...], *, head_sha: str, extra: str | None = None,
+) -> tuple[str, ...]:
+    """Model the full governed universe required by fixture-only baseline collectors."""
+    closure = topology.load_portable_defect_closure(head_sha=head_sha)
+    nodes = {row.node_id for row in rows} | {row.node_id for row in closure}
+    if extra is not None:
+        nodes.add(extra)
+    return tuple(sorted(nodes))
+
+
+def test_fixture_collector_cannot_omit_p0_06_closure_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a fixture-only collector bypasses active-plus-closure accounting."""
+    run_id = RUN_ID
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        custody = Path(raw) / "custody.so"
+        custody.write_bytes(b"fixture collector custody")
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(custody))
+        monkeypatch.setenv(
+            "PACKAGE6_FD_CUSTODY_EXTENSION_SHA256",
+            topology.hashlib.sha256(custody.read_bytes()).hexdigest(),
+        )
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head_sha,
+            foundation_context_path=context_path,
+        )
+        rows = topology.load_inventory(INVENTORY)
+
+        with pytest.raises(topology.TopologyError, match="omitted a governed node"):
+            topology.collect_portable_root_baseline(
+                inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+                head_sha=head_sha, foundation_context_path=context_path,
+                collector=lambda: tuple(sorted(row.node_id for row in rows)),
+            )
+
+
 def _governance_topology_command(
     *, evidence: Path, report_dir: Path, context_path: Path,
     allowlist: Path = ALLOWLIST,
@@ -412,10 +458,10 @@ def test_t_g03_topology_module_reaches_policy_validation_before_absent_custody(
             run_id=run_id,
             head_sha=head_sha,
             foundation_context_path=context_path,
-            collector=lambda: tuple(sorted([
-                *(row.node_id for row in rows),
-                "tests/ordinary/test_module_probe.py::test_unreachable_runner",
-            ])),
+            collector=lambda: _fixture_collector(
+                rows, head_sha=head_sha,
+                extra="tests/ordinary/test_module_probe.py::test_unreachable_runner",
+            ),
         )
         topology.prepare_portable_root_remainder(
             inventory=INVENTORY,
@@ -487,10 +533,10 @@ def test_t_g03_topology_module_reaches_the_shared_validator_before_custody(
             run_id=run_id,
             head_sha=head_sha,
             foundation_context_path=context_path,
-            collector=lambda: tuple(sorted([
-                *(row.node_id for row in rows),
-                "tests/ordinary/test_module_validator_probe.py::test_unreachable_runner",
-            ])),
+            collector=lambda: _fixture_collector(
+                rows, head_sha=head_sha,
+                extra="tests/ordinary/test_module_validator_probe.py::test_unreachable_runner",
+            ),
         )
         topology.prepare_portable_root_remainder(
             inventory=INVENTORY,
@@ -674,10 +720,10 @@ def test_sealed_date_controls_policy_validation_and_binds_the_v3_baseline(
         baseline = topology.collect_portable_root_baseline(
             inventory=inventory, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
             foundation_context_path=context_path,
-            collector=lambda: tuple(sorted(row.node_id for row in rows)),
+            collector=lambda: _fixture_collector(rows, head_sha=head_sha),
         )
 
-        assert baseline["schema_version"] == "t-g03a-portable-root-baseline/v3"
+        assert baseline["schema_version"] == "t-g03a-portable-root-baseline/v4"
         assert baseline["foundation_validation_date"] == "2026-10-31"
         assert baseline["foundation_context_sha256"] == topology.load_foundation_context(
             context_path, run_id=run_id, head_sha=head_sha,
@@ -743,7 +789,7 @@ def test_expired_sealed_date_publishes_no_acceptance_evidence(
         topology.collect_portable_root_baseline(
             inventory=inventory, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
             foundation_context_path=context_path,
-            collector=lambda: tuple(sorted(row.node_id for row in rows)),
+            collector=lambda: _fixture_collector(rows, head_sha=head_sha),
         )
         topology.prepare_portable_root_remainder(
             inventory=inventory, evidence_root=evidence, run_id=run_id, head_sha=head_sha,

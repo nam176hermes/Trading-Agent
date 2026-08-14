@@ -393,7 +393,7 @@ def test_makefile_exposes_safe_component_orchestration() -> None:
 
     ci_gate = re.search(r"^ci\s*:(.*)$", makefile, re.MULTILINE)
     assert ci_gate is not None
-    assert ci_gate.group(1).split() == []
+    assert ci_gate.group(1).split() == ["ci-portable"]
 
     ci_private_gate = re.search(r"^ci-private\s*:(.*)$", makefile, re.MULTILINE)
     assert ci_private_gate is not None
@@ -494,12 +494,17 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
         r"^ci-portable-private:\n((?:\t.*\n)+)", makefile, re.MULTILINE
     )
     assert portable_private_recipe is not None
-    assert portable_private_recipe.group(1).count("prepare-root-test-install") == 1
-    assert "$(MAKE) test-all-portable-topology-private check-test-governance-topology check-critical-coverage " in (
-        portable_private_recipe.group(1)
+    assert portable_private_recipe.group(1).strip() == (
+        "$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology "
+        "artifact-firewall-check audit-delivery-contract"
     )
-    for gate in ("build-dashboard", "audit-python-source", "audit-dependencies"):
-        assert gate in portable_private_recipe.group(1)
+    common_private_recipe = re.search(
+        r"^ci-common-private:\n((?:\t.*\n)+)", makefile, re.MULTILINE
+    )
+    assert common_private_recipe is not None
+    assert common_private_recipe.group(1).count("prepare-root-test-install") == 1
+    for gate in ("test-all-portable-private", "build-dashboard", "audit-python-source", "audit-dependencies"):
+        assert gate in common_private_recipe.group(1)
 
     portable_recipe = re.search(
         r"^ci-portable:\n((?:\t.*\n)+)", makefile, re.MULTILINE
@@ -530,7 +535,7 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
     workflow = _read_current_regular(ROOT, ".github/workflows/foundation.yml").decode("utf-8")
     workflow_run_values = re.findall(r"^\s*run:\s*([^\n#]+?)\s*$", workflow, re.MULTILINE)
     make_run_values = [value for value in workflow_run_values if value.startswith("make ")]
-    assert make_run_values == ["make ci-portable"]
+    assert make_run_values == ["make ci-portable NONINTERACTIVE=1"]
     assert "make ci" not in make_run_values
 
 
@@ -540,7 +545,7 @@ def test_foundation_workflow_delegates_to_the_canonical_local_ci_gate() -> None:
     make_run_values = [value for value in workflow_run_values if value.startswith("make ")]
 
     assert "uses: actions/checkout@v4\n        with:\n          fetch-depth: 0" in workflow
-    assert make_run_values == ["make ci-portable"]
+    assert make_run_values == ["make ci-portable NONINTERACTIVE=1"]
     assert "make ci" not in make_run_values
     assert "run: make test-all" not in workflow
     assert "run: make build-dashboard" not in workflow

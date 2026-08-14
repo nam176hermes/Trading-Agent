@@ -1,20 +1,15 @@
-name: Foundation
+name: Host Authority
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: foundation-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  verify:
-    runs-on: ubuntu-24.04
+  qualify:
+    runs-on: [self-hosted, linux, x64, trading-authority]
+    environment: trading-authority
     timeout-minutes: 45
     env:
       CI: "true"
@@ -47,14 +42,5 @@ jobs:
       - name: Install Dashboard dependencies
         run: npm ci --prefix apps/dashboard
 
-      - name: Run canonical local and CI gate
-        run: make ci-portable NONINTERACTIVE=1
-
-      - name: Publish test governance evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-governance-${{ github.run_id }}
-          path: /tmp/trading-agent-test-evidence
-          if-no-files-found: warn
-          retention-days: 14
+      - name: Run host authority qualification
+        run: make ci-host-authority NONINTERACTIVE=1

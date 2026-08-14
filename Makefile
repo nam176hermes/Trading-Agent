@@ -9,7 +9,8 @@
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
-	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private \
+	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private ci-common-private \
+	ci-host-authority ci-host-authority-private artifact-firewall-check audit-delivery-contract \
 	ci-portable-topology test-portable-root-remainder test-portable-source test-native-capabilities test-external-authorities \
 	check-test-governance-topology check-portable-defect-closure
 
@@ -294,18 +295,7 @@ test-all:
 		TMPDIR="$$test_tmpdir" TEMP="$$test_tmpdir" TMP="$$test_tmpdir" \
 			$(MAKE) test-all-private
 
-ci:
-	@set -eu; \
-		ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci.XXXXXXXXXX); \
-		chmod 0700 "$$ci_tmpdir"; \
-		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
-		cleanup_ci_tmpdir() { \
-			find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; \
-			rm -rf -- "$$ci_tmpdir"; \
-		}; \
-		trap 'cleanup_ci_tmpdir' EXIT; \
-		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
-			$(MAKE) ci-private
+ci: ci-portable
 
 ci-private:
 	$(MAKE) prepare-root-test-install
@@ -327,8 +317,33 @@ ci-portable:
 			$(MAKE) ci-portable-private
 
 ci-portable-private:
+	$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology artifact-firewall-check audit-delivery-contract
+
+ci-common-private:
 	$(MAKE) prepare-root-test-install
-	$(MAKE) test-all-portable-topology-private check-test-governance-topology check-critical-coverage build-dashboard audit-python-source audit-dependencies
+	$(MAKE) test-all-portable-private build-dashboard audit-python-source audit-dependencies
+
+artifact-firewall-check: check-portable-defect-closure
+
+audit-delivery-contract: check-critical-coverage
+
+ci-host-authority: check-p0-baseline
+	@set -eu; \
+		foundation_context_path=$$(uv run python -c 'import sys; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(sys.argv[1])))' "$(TEST_EVIDENCE_DIR)"); \
+		export FOUNDATION_CONTEXT_PATH="$$foundation_context_path"; \
+		ci_tmpdir=$$(mktemp -d /tmp/trading-agent-ci-host-authority.XXXXXXXXXX); \
+		chmod 0700 "$$ci_tmpdir"; \
+		test "$$(stat -c '%u:%a' -- "$$ci_tmpdir")" = "$$(id -u):700"; \
+		cleanup_ci_tmpdir() { find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$ci_tmpdir"; }; \
+		trap 'cleanup_ci_tmpdir' EXIT; \
+		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
+			$(MAKE) ci-host-authority-private
+
+ci-host-authority-private:
+	$(MAKE) ci-portable-topology
+	uv run python -m scripts.t_g03_capability_topology validate-native --require-pass --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
+	uv run python -m scripts.t_g03_capability_topology validate-external --require-pass --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
+	$(MAKE) test-runtime-release-host
 
 # Capability topology is separate from strict ci/audit and never releases runtime proof.
 test-portable-source:

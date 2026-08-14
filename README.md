@@ -84,12 +84,18 @@ From the repository root:
 make ci
 ```
 
-`make ci` is the canonical local and GitHub Actions gate. It runs repository
+`make ci` is the canonical alias for the portable `make ci-portable` gate. It runs repository
 and generated-contract audits, secret hygiene, the source-safe root suite,
 backend and dashboard tests, dashboard type checking, lint and build, Python
 source security analysis, and production plus dev/test dependency audits.
 It does not start persistent services, run migrations, invoke a broker, or
 contact production mutation routes.
+
+Host-only authority qualification is deliberately separate behind
+`make ci-host-authority`. It requires both native and external authority
+artifacts to validate as PASS; DEFERRED or UNAVAILABLE is a non-zero result.
+It is dispatched only to the protected Linux/x64 authority-host workflow and
+is never reachable from `make ci` or portable GitHub Actions.
 
 The narrower non-building aggregate remains available as `make test-all`.
 Useful focused gates include:
