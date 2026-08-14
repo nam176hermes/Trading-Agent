@@ -57,6 +57,17 @@ def _safe_file(root: Path, value: object, *, label: str) -> Path:
         raise ClosureError(f"P0_CLOSURE_{label}_MISSING") from exc
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         _fail(f"P0_CLOSURE_{label}_UNSAFE")
+    for parent in (path.parent, *path.parents):
+        if parent == root.parent:
+            break
+        if parent.is_symlink() or not parent.is_dir():
+            _fail(f"P0_CLOSURE_{label}_UNSAFE")
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", value], cwd=root,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if tracked.returncode != 0:
+        _fail(f"P0_CLOSURE_{label}_UNTRACKED")
     return path
 
 
