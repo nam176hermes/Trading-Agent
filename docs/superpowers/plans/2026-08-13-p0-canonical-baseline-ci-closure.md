@@ -2553,3 +2553,19 @@ mounts at `.venv/bin/python3`. It must not change node selection, production
 code, CLI arguments, assertions, namespace flags, network isolation, or the
 four governed tests' intended behavior. The exact four nodes and the complete
 CLI test module must pass before P0-07 resumes.
+
+#### P0-07R fix round 1
+
+The first fixture packet incorrectly expressed the required shebang target as
+`Path(sys.executable)`. That passed when pytest itself was launched through the
+`.venv/bin/python` shebang, but the exact governance runner is launched as
+`python -m` and reports `.venv/bin/python3`. The real standalone lane therefore
+still produced the same four fixture failures, with 12 of the 16 Bubblewrap
+nodes passing before fail-closed termination.
+
+The fixture target must instead be the fixed console-script shebang location
+`CLI.parent / "python"`, independent of the interpreter path used to launch
+pytest. The read-only bind source remains the already validated
+`RESOLVED_INTERPRETER`; no shebang bytes are parsed or executed to construct
+authority. Both launcher shapes and the real exact 16-plus-eight native lane
+must pass before P0-07 resumes.
