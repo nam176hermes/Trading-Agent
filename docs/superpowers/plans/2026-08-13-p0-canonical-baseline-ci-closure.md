@@ -2478,6 +2478,37 @@ broker/provider access, and live trading remain out of scope.
 
 ---
 
+## P0-12R10 fix round 1 — Recursive Make command-variable confinement
+
+Independent review of implementation `79f0d8956c85179cd0f055b37169a05addf3cf96`
+found that the outer shell's canonical exported
+`PORTABLE_CI_ARTIFACT_ROOT` is not authoritative inside recursive GNU Make.
+A command-line assignment, an inherited `MAKEFLAGS` assignment, or an explicit
+`MAKEOVERRIDES` assignment retains command-variable precedence in
+`ci-portable-private`; both Make expansion and the recipe shell therefore see
+an attacker-selected path instead of the run/attempt-bound `RUNNER_TEMP` path.
+
+P0-12R10 fix round 1 must capture the real recursive-GNU-Make RED for all three
+injection forms before implementation. GREEN must establish the canonical
+private destination as the exact child-Make authority for success,
+governance-error, and early-failure publication without broadening the closed
+recursive-Make grammar. The implementation may alter only the outer Make
+boundary, its exact closure checker mirror, and focused regression tests.
+Artifact schemas, publisher validation, strict lineage, skip/native policy,
+PASS semantics, workflow upload path, dependencies, and locks remain
+unchanged. The caught failure status must remain original and all three routes
+must remain destination-identical.
+
+Require the focused RED/GREEN, full failure-output and P0 closure modules,
+affected topology/Make-route/static gates, a fresh standalone affected packet,
+exact diff review, corrected full plan-commit identifiers in the ignored
+report, and a clean committed worktree before another independent review. No
+push, hosted rerun or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler mutation, broker/provider access,
+or live trading is authorized.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
