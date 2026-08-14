@@ -14,9 +14,37 @@ P0_HOST_QUALIFIED != PRODUCTION ACTIVATED
 PRODUCTION ACTIVATED != LIVE TRADING ENABLED
 ```
 
-Only P0-12 may request completion mode with an exact-head sealed P0-10 final
-evidence receipt. Completion mode reuses the published-evidence validator and
-rejects stale, partial, mutable, or noncanonical evidence.
+Only P0-12 may request transient completion mode. The committed matrix remains
+`QUALIFICATION_PENDING`; it is not rewritten to claim its own qualification.
+The public command requires exactly two sealed P0-10 evidence trees plus the
+canonical final-review receipt:
+
+```bash
+python scripts/check_p0_ci_closure.py \
+  --matrix docs/implementation/p0-ci-closure-matrix.json \
+  --qualification-receipt runtime/state/p0-qualification/run-1/manifest.json \
+  --qualification-receipt runtime/state/p0-qualification/run-2/manifest.json \
+  --final-review-receipt runtime/state/p0-qualification/final-review.json \
+  --require-complete
+```
+
+Both evidence trees must pass the P0-10 strict validator at the exact current
+HEAD and source tree, have distinct run identities, equal semantic-result
+digests, and a source PASS. The canonical read-only review receipt must bind
+the exact HEAD/tree, both manifest byte hashes, both semantic digests, both run
+identities, and verdict `APPROVED`. Success returns `P0_SOURCE_COMPLETE`, which
+earns E11 only. E12 remains `PENDING` and operator-owned until separately
+authorized fast-forward promotion and post-promotion proof.
+
+The final-review receipt is canonical JSON with a trailing newline and exact
+top-level fields `schema_version`, `verdict`, `head_sha`,
+`source_tree_sha256`, `receipts`, and `review_receipt_sha256`. Its two ordered
+receipt entries use exact fields `path`, `manifest_sha256`,
+`semantic_result_sha256`, `run_id`, and `run_attempt`. The self-hash is SHA-256
+of those canonical bytes with `review_receipt_sha256` set to the empty string.
+The qualification directory is owner-held mode `0500`; the review leaf is
+owner-held mode `0400`. Human review `VERDICT: PASS` is represented as
+`verdict: "APPROVED"` only after the exact bindings are populated.
 
 The thirteen end-state bindings are one-for-one with the plan's exit
 conditions. The checker rejects a requirement ID whose executable binding is
@@ -38,6 +66,6 @@ substituted for another condition:
 | P0-E12 | Explicitly authorized fast-forward promotion and post-promotion `main` CI proof exist | PENDING |
 | P0-E13 | Production and live authority remain unavailable and no production/live mutation occurred | PASS |
 
-`PENDING` is not a deferred runtime PASS. E11 can change to `PASS` only in
-explicit completion mode with the exact sealed final receipt; E12 remains
-operator-owned and cannot be earned by this source checker.
+`PENDING` is not a deferred runtime PASS. E11 is promoted only in the transient
+completion verdict above; its committed source row remains truthful. E12
+cannot be earned by this source checker.

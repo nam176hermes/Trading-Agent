@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -24,7 +25,11 @@ HOST_WORKFLOW_RELATIVE = ".github/workflows/host-authority.yml"
 INVENTORY_RELATIVE = "tests/fixtures/t-g03a-hosted-failure-inventory.tsv"
 CLOSURE_RELATIVE = "docs/implementation/foundation-portable-defect-closure.tsv"
 BASELINE_RELATIVE = "ops/consolidation/p0-canonical-baseline.json"
-RECEIPT_RELATIVE = "runtime/state/ci-portable/manifest.json"
+QUALIFICATION_RECEIPTS = (
+    "runtime/state/p0-qualification/run-1/manifest.json",
+    "runtime/state/p0-qualification/run-2/manifest.json",
+)
+FINAL_REVIEW_RELATIVE = "runtime/state/p0-qualification/final-review.json"
 
 TOP_KEYS = {"schema_version", "state", "requirement_order", "requirements"}
 ENTRY_KEYS = {
@@ -60,7 +65,8 @@ class _ValidationContext:
     active_rows: tuple[object, ...]
     closed_rows: tuple[object, ...]
     collected_node_ids: frozenset[str] | None = None
-    receipt_relative: str | None = None
+    receipt_relatives: tuple[str, ...] = ()
+    review_relative: str | None = None
 
 
 _Binding = tuple[tuple[str, ...], str, str, tuple[str, ...]]
@@ -122,7 +128,7 @@ END_STATE_BINDINGS: dict[str, _Binding] = {
     ),
     "P0-E11": (
         ("scripts/check_artifact_firewall.py", "scripts/check_p0_ci_closure.py"),
-        "tests/test_p0_ci_closure.py::test_valid_strict_p0_10_fixture_exercises_completion_mode",
+        "tests/test_p0_ci_closure.py::test_public_completion_cli_uses_canonical_temp_repository",
         "artifact-firewall-check", ("docs/implementation/p0-ci-closure.md",),
     ),
     "P0-E12": (
@@ -173,7 +179,10 @@ def _relative(value: object, *, label: str) -> str:
     return value
 
 
-def _safe_read(context: _ValidationContext, value: object, *, label: str) -> bytes:
+def _safe_read(
+    context: _ValidationContext, value: object, *, label: str,
+    require_tracked: bool = True, expected_mode: int | None = None,
+) -> bytes:
     """Read one tracked regular file through no-follow descriptors and revalidate."""
     relative = _relative(value, label=label)
     parts = PurePosixPath(relative).parts
@@ -199,11 +208,23 @@ def _safe_read(context: _ValidationContext, value: object, *, label: str) -> byt
             descriptors.append(current)
         leaf_descriptor = os.open(
             parts[-1],
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             dir_fd=current,
         )
         before = os.fstat(leaf_descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or (
+                expected_mode is not None
+                and (
+                    stat.S_IMODE(before.st_mode) != expected_mode
+                    or before.st_uid != os.geteuid()
+                    or before.st_gid != os.getegid()
+                )
+            )
+        ):
             _fail(f"P0_CLOSURE_{label}_UNSAFE")
         chunks: list[bytes] = []
         while True:
@@ -226,13 +247,14 @@ def _safe_read(context: _ValidationContext, value: object, *, label: str) -> byt
             os.close(leaf_descriptor)
         for descriptor in reversed(descriptors):
             os.close(descriptor)
-    tracked = subprocess.run(
-        ["git", "ls-files", "--error-unmatch", "--", relative],
-        cwd=context.root, stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    if tracked.returncode != 0:
-        _fail(f"P0_CLOSURE_{label}_UNTRACKED")
+    if require_tracked:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", relative],
+            cwd=context.root, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if tracked.returncode != 0:
+            _fail(f"P0_CLOSURE_{label}_UNTRACKED")
     try:
         root_final = context.root.lstat()
         final = (context.root / relative).lstat()
@@ -296,6 +318,28 @@ def _strip_shell_comment(line: str) -> str:
     return line
 
 
+def _recursive_make_targets(recipe: str) -> set[str]:
+    """Accept only one unconditional top-level simple command segment."""
+    targets: set[str] = set()
+    for segment in recipe.split(";"):
+        command = segment.strip().lstrip("@+-").strip()
+        match = re.fullmatch(
+            r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s]+)\s+)*"
+            r"\$\(\s*MAKE\s*\)\s+(.+)",
+            command,
+        )
+        if match is None:
+            continue
+        words = match.group(1).split()
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9_.-]+|[A-Za-z_][A-Za-z0-9_]*=.*", word)
+            for word in words
+        ):
+            continue
+        targets.update(word for word in words if "=" not in word)
+    return targets
+
+
 def _make_graph(raw: bytes) -> dict[str, set[str]]:
     try:
         lines = raw.decode("utf-8").splitlines()
@@ -303,11 +347,22 @@ def _make_graph(raw: bytes) -> dict[str, set[str]]:
         raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID") from exc
     graph: dict[str, set[str]] = {}
     current_targets: tuple[str, ...] = ()
+    recipe_parts: list[str] = []
+
+    def flush_recipe() -> None:
+        if not recipe_parts:
+            return
+        called = _recursive_make_targets(" ".join(recipe_parts))
+        for target in current_targets:
+            graph[target].update(called)
+        recipe_parts.clear()
+
     for source_line in lines:
         line = _strip_shell_comment(source_line).rstrip()
         if not line:
             continue
         if not line[0].isspace() and ":" in line and "=" not in line.split(":", 1)[0]:
+            flush_recipe()
             names_raw, dependencies_raw = line.split(":", 1)
             names = tuple(name for name in names_raw.split() if re.fullmatch(r"[A-Za-z0-9_.-]+", name))
             dependencies = {
@@ -320,16 +375,10 @@ def _make_graph(raw: bytes) -> dict[str, set[str]]:
             continue
         if not current_targets or not source_line.startswith("\t"):
             continue
-        for match in re.finditer(r"\$\(\s*MAKE\s*\)\s+([^;&|]+)", line):
-            words = match.group(1).replace("\\", " ").split()
-            called: list[str] = []
-            for word in words:
-                if word.startswith("-") or "=" in word or word.startswith("$(") or word.startswith("\"$"):
-                    continue
-                if re.fullmatch(r"[A-Za-z0-9_.-]+", word):
-                    called.append(word)
-            for target in current_targets:
-                graph[target].update(called)
+        recipe_parts.append(line.lstrip().removesuffix("\\").rstrip())
+        if not line.endswith("\\"):
+            flush_recipe()
+    flush_recipe()
     return graph
 
 
@@ -411,6 +460,47 @@ def _steps(job: tuple[_YamlLine, ...]) -> list[tuple[_YamlLine, ...]]:
     return result
 
 
+def _step_contract(step: tuple[_YamlLine, ...]) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    direct = _direct_map(step, 8)
+    with_values = _direct_map(_block(step, 8, "with"), 10) if "with" in direct else {}
+    return tuple(sorted(direct.items())), tuple(sorted(with_values.items()))
+
+
+def _approved_common_steps() -> list[tuple[dict[str, str], dict[str, str]]]:
+    return [
+        (
+            {"name": "Check out repository", "uses": "actions/checkout@v4", "with": ""},
+            {"fetch-depth": "0"},
+        ),
+        (
+            {"name": "Install uv", "uses": "astral-sh/setup-uv@v7", "with": ""},
+            {"enable-cache": "true"},
+        ),
+        ({"name": "Install Python 3.11", "run": "uv python install 3.11"}, {}),
+        ({"name": "Sync root Python environment", "run": "uv sync --frozen"}, {}),
+        (
+            {"name": "Install Node.js", "uses": "actions/setup-node@v4", "with": ""},
+            {
+                "cache": "npm", "cache-dependency-path": "apps/dashboard/package-lock.json",
+                "node-version": "20",
+            },
+        ),
+        (
+            {"name": "Install Dashboard dependencies", "run": "npm ci --prefix apps/dashboard"},
+            {},
+        ),
+    ]
+
+
+def _expected_step_contracts(
+    steps: list[tuple[dict[str, str], dict[str, str]]],
+) -> list[tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]]:
+    return [
+        (tuple(sorted(direct.items())), tuple(sorted(with_values.items())))
+        for direct, with_values in steps
+    ]
+
+
 def _workflow_common(lines: tuple[_YamlLine, ...]) -> tuple[dict[str, str], tuple[_YamlLine, ...]]:
     top = _direct_map(lines, 0)
     if not {"name", "on", "permissions", "jobs"} <= set(top) or set(top) - {
@@ -444,7 +534,10 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
             return False
         job = _block(lines, 2, "verify")
         direct = _direct_map(job, 4)
-        if direct.get("runs-on") != "ubuntu-24.04" or "environment" in direct:
+        if direct != {
+            "runs-on": "ubuntu-24.04", "timeout-minutes": "45",
+            "env": "", "steps": "",
+        }:
             return False
         env = _direct_map(_block(job, 4, "env"), 6)
         if env != {
@@ -452,25 +545,24 @@ def _foundation_workflow_valid(raw: bytes) -> bool:
             "LIVE_TRADING_APPROVED": '"false"',
         }:
             return False
-        steps = _steps(job)
-        routes = [step for step in steps if _direct_map(step, 8).get("run") == "make ci-portable NONINTERACTIVE=1"]
-        if len(routes) != 1:
-            return False
-        uploads = [step for step in steps if _direct_map(step, 8).get("uses") == "actions/upload-artifact@v4"]
-        if len(uploads) != 1:
-            return False
-        upload = uploads[0]
-        direct_upload = _direct_map(upload, 8)
-        if direct_upload.get("name") != "Publish sealed portable evidence" or direct_upload.get("if") != "always()":
-            return False
-        with_values = _direct_map(_block(upload, 8, "with"), 10)
-        return with_values == {
-            "name": "ci-portable-${{ github.run_id }}-${{ github.run_attempt }}",
-            "path": "runtime/state/ci-portable/**",
-            "include-hidden-files": "true",
-            "if-no-files-found": "warn",
-            "retention-days": "14",
-        }
+        expected = _approved_common_steps() + [
+            (
+                {"name": "Run canonical local and CI gate", "run": "make ci-portable NONINTERACTIVE=1"},
+                {},
+            ),
+            (
+                {
+                    "name": "Publish sealed portable evidence", "if": "always()",
+                    "uses": "actions/upload-artifact@v4", "with": "",
+                },
+                {
+                    "name": "ci-portable-${{ github.run_id }}-${{ github.run_attempt }}",
+                    "path": "runtime/state/ci-portable/**", "include-hidden-files": "true",
+                    "if-no-files-found": "warn", "retention-days": "14",
+                },
+            ),
+        ]
+        return [_step_contract(step) for step in _steps(job)] == _expected_step_contracts(expected)
     except (ClosureError, ValueError):
         return False
 
@@ -484,9 +576,11 @@ def _host_workflow_valid(raw: bytes) -> bool:
             return False
         job = _block(lines, 2, "qualify")
         direct = _direct_map(job, 4)
-        if direct.get("runs-on") != "[self-hosted, linux, x64, trading-authority]":
-            return False
-        if direct.get("environment") != "trading-authority":
+        if direct != {
+            "runs-on": "[self-hosted, linux, x64, trading-authority]",
+            "environment": "trading-authority", "timeout-minutes": "45",
+            "env": "", "steps": "",
+        }:
             return False
         env = _direct_map(_block(job, 4, "env"), 6)
         if env != {
@@ -494,12 +588,13 @@ def _host_workflow_valid(raw: bytes) -> bool:
             "LIVE_TRADING_APPROVED": '"false"',
         }:
             return False
-        steps = _steps(job)
-        routes = [step for step in steps if _direct_map(step, 8).get("run") == "make ci-host-authority NONINTERACTIVE=1"]
-        return len(routes) == 1 and not any(
-            _direct_map(step, 8).get("uses", "").startswith("actions/upload-artifact@")
-            for step in steps
-        )
+        expected = _approved_common_steps() + [
+            (
+                {"name": "Run host authority qualification", "run": "make ci-host-authority NONINTERACTIVE=1"},
+                {},
+            ),
+        ]
+        return [_step_contract(step) for step in _steps(job)] == _expected_step_contracts(expected)
     except (ClosureError, ValueError):
         return False
 
@@ -599,39 +694,116 @@ def _production_context() -> _ValidationContext:
     )
 
 
+def _review_payload_sha256(review: dict[str, object]) -> str:
+    payload = dict(review)
+    payload["review_receipt_sha256"] = ""
+    return hashlib.sha256(_canonical(payload)).hexdigest()
+
+
+def _review_receipt(context: _ValidationContext) -> dict[str, object]:
+    if context.review_relative is None:
+        _fail("P0_CLOSURE_REVIEW_REQUIRED")
+    if context.review_relative != FINAL_REVIEW_RELATIVE:
+        _fail("P0_CLOSURE_REVIEW_PATH_INVALID")
+    qualification_root = context.root / "runtime/state/p0-qualification"
+    try:
+        root_info = qualification_root.lstat()
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or qualification_root.is_symlink()
+            or root_info.st_uid != os.geteuid()
+            or root_info.st_gid != os.getegid()
+            or stat.S_IMODE(root_info.st_mode) != 0o500
+        ):
+            _fail("P0_CLOSURE_REVIEW_UNSAFE")
+        raw = _safe_read(
+            context, FINAL_REVIEW_RELATIVE, label="REVIEW",
+            require_tracked=False, expected_mode=0o400,
+        )
+    except ClosureError as exc:
+        if str(exc).endswith("_MISSING"):
+            raise ClosureError("P0_CLOSURE_REVIEW_MISSING") from exc
+        raise
+    try:
+        return _json_object(raw, canonical=True, label="REVIEW_JSON")
+    except ClosureError as exc:
+        raise ClosureError("P0_CLOSURE_REVIEW_INVALID") from exc
+
+
 def _validate_completion(context: _ValidationContext) -> None:
-    if context.receipt_relative is None:
-        _fail("P0_CLOSURE_RECEIPT_REQUIRED")
-    if context.receipt_relative != RECEIPT_RELATIVE:
+    if len(context.receipt_relatives) != 2:
+        _fail("P0_CLOSURE_RECEIPT_COUNT_INVALID")
+    if len(set(context.receipt_relatives)) != 2:
+        _fail("P0_CLOSURE_RECEIPT_SET_INVALID")
+    if context.receipt_relatives != QUALIFICATION_RECEIPTS:
         _fail("P0_CLOSURE_RECEIPT_PATH_INVALID")
     from scripts.check_artifact_firewall import (
-        FirewallError, _source_tree_identity, validate_published_evidence,
+        FirewallError, _canonical_json_bytes, _source_tree_identity,
+        validate_published_evidence,
     )
     expected_tree = context.source_tree_sha256
+    manifests: list[dict[str, object]] = []
     try:
         if expected_tree is None:
             expected_tree = _source_tree_identity(context.root, context.head_sha)
         if not HEAD_SHA.fullmatch(context.head_sha) or not HEX64.fullmatch(expected_tree):
             _fail("P0_CLOSURE_RECEIPT_INVALID")
-        receipt = context.root / RECEIPT_RELATIVE
-        manifest = validate_published_evidence(
-            receipt.parent,
-            expected_head_sha=context.head_sha,
-            expected_source_tree_sha256=expected_tree,
-        )
-        semantic = manifest.get("semantic_projection")
-        statuses = semantic.get("statuses") if isinstance(semantic, dict) else None
-        if (
-            not isinstance(statuses, dict)
-            or statuses.get("portable_source_status") != "PASS"
-            or "governance_error" in semantic
-            or not isinstance(semantic.get("selected_tests"), list)
-        ):
-            _fail("P0_CLOSURE_RECEIPT_INVALID")
+        for relative in context.receipt_relatives:
+            manifest = validate_published_evidence(
+                (context.root / relative).parent,
+                expected_head_sha=context.head_sha,
+                expected_source_tree_sha256=expected_tree,
+            )
+            semantic = manifest.get("semantic_projection")
+            statuses = semantic.get("statuses") if isinstance(semantic, dict) else None
+            if (
+                not isinstance(statuses, dict)
+                or statuses.get("portable_source_status") != "PASS"
+                or "governance_error" in semantic
+                or not isinstance(semantic.get("selected_tests"), list)
+            ):
+                _fail("P0_CLOSURE_RECEIPT_INVALID")
+            manifests.append(manifest)
     except ClosureError:
         raise
     except (FirewallError, OSError, subprocess.SubprocessError) as exc:
         raise ClosureError("P0_CLOSURE_RECEIPT_INVALID") from exc
+
+    identities = {
+        (manifest["run_metadata"]["run_id"], manifest["run_metadata"]["attempt"])
+        for manifest in manifests
+    }
+    if len(identities) != 2:
+        _fail("P0_CLOSURE_RUN_IDENTITY_INVALID")
+    semantic_digests = {manifest["semantic_result_sha256"] for manifest in manifests}
+    if len(semantic_digests) != 1:
+        _fail("P0_CLOSURE_SEMANTIC_MISMATCH")
+
+    review = _review_receipt(context)
+    expected_entries = [
+        {
+            "path": relative,
+            "manifest_sha256": hashlib.sha256(_canonical_json_bytes(manifest)).hexdigest(),
+            "semantic_result_sha256": manifest["semantic_result_sha256"],
+            "run_id": manifest["run_metadata"]["run_id"],
+            "run_attempt": manifest["run_metadata"]["attempt"],
+        }
+        for relative, manifest in zip(context.receipt_relatives, manifests, strict=True)
+    ]
+    if (
+        set(review) != {
+            "schema_version", "verdict", "head_sha", "source_tree_sha256",
+            "receipts", "review_receipt_sha256",
+        }
+        or review.get("schema_version") != "p0-final-adversarial-review/v1"
+        or review.get("verdict") != "APPROVED"
+        or review.get("head_sha") != context.head_sha
+        or review.get("source_tree_sha256") != expected_tree
+        or review.get("receipts") != expected_entries
+        or not isinstance(review.get("review_receipt_sha256"), str)
+        or review.get("review_receipt_sha256") != _review_payload_sha256(review)
+    ):
+        _fail("P0_CLOSURE_REVIEW_INVALID")
 
 
 def _validate(context: _ValidationContext, *, require_complete: bool) -> str:
@@ -706,10 +878,11 @@ def _validate(context: _ValidationContext, *, require_complete: bool) -> str:
         _fail("P0_CLOSURE_REQUIREMENT_SET_DRIFT")
 
     if state == "P0_SOURCE_COMPLETE":
-        if not require_complete:
-            _fail("P0_CLOSURE_RECEIPT_REQUIRED")
+        _fail("P0_CLOSURE_COMPLETION_MODE_INVALID")
+    if require_complete:
         _validate_completion(context)
-    elif require_complete or context.receipt_relative is not None:
+        return "P0_SOURCE_COMPLETE"
+    if context.receipt_relatives or context.review_relative is not None:
         _fail("P0_CLOSURE_COMPLETION_MODE_INVALID")
     return str(state)
 
@@ -724,17 +897,32 @@ def _canonical_cli_path(value: Path, relative: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--matrix", type=Path, required=True)
-    parser.add_argument("--qualification-receipt", type=Path)
+    parser.add_argument("--qualification-receipt", type=Path, action="append", default=[])
+    parser.add_argument("--final-review-receipt", type=Path)
     parser.add_argument("--require-complete", action="store_true")
     arguments = parser.parse_args(argv)
     try:
         if not _canonical_cli_path(arguments.matrix, MATRIX_RELATIVE):
             _fail("P0_CLOSURE_MATRIX_PATH_INVALID")
         context = _production_context()
-        if arguments.qualification_receipt is not None:
-            if not _canonical_cli_path(arguments.qualification_receipt, RECEIPT_RELATIVE):
+        receipt_relatives: list[str] = []
+        for receipt in arguments.qualification_receipt:
+            matched = next(
+                (relative for relative in QUALIFICATION_RECEIPTS if _canonical_cli_path(receipt, relative)),
+                None,
+            )
+            if matched is None:
                 _fail("P0_CLOSURE_RECEIPT_PATH_INVALID")
-            context = replace(context, receipt_relative=RECEIPT_RELATIVE)
+            receipt_relatives.append(matched)
+        review_relative: str | None = None
+        if arguments.final_review_receipt is not None:
+            if not _canonical_cli_path(arguments.final_review_receipt, FINAL_REVIEW_RELATIVE):
+                _fail("P0_CLOSURE_REVIEW_PATH_INVALID")
+            review_relative = FINAL_REVIEW_RELATIVE
+        context = replace(
+            context, receipt_relatives=tuple(receipt_relatives),
+            review_relative=review_relative,
+        )
         state = _validate(context, require_complete=arguments.require_complete)
     except (ClosureError, subprocess.SubprocessError) as exc:
         print(str(exc), file=sys.stderr)

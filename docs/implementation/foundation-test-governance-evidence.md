@@ -3,8 +3,9 @@
 ## P0 source closure boundary
 
 The executable P0 matrix is checked by `make check-p0-ci-closure`. Its current
-state is `QUALIFICATION_PENDING`, not `P0_SOURCE_COMPLETE`; P0-12 owns the
-clean-clone receipt and final review required for that later verdict. A host
+state is `QUALIFICATION_PENDING`, not `P0_SOURCE_COMPLETE`; P0-12 owns two
+same-head qualification receipts with equal semantic digests and the canonical
+final-review receipt required for that transient later verdict. A host
 DEFERRED or UNAVAILABLE result is not PASS, and no source evidence enables
 production or live trading.
 

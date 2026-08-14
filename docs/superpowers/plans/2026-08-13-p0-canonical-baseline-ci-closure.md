@@ -1940,15 +1940,16 @@ uv run pytest -q \
 ### Step 4 — Run full portable CI twice locally
 
 ```bash
+rm -rf runtime/state/ci-portable runtime/state/p0-qualification
+make ci-portable NONINTERACTIVE=1
+
+mkdir -p -m 0700 runtime/state/p0-qualification
+cp -a runtime/state/ci-portable runtime/state/p0-qualification/run-1
+
 rm -rf runtime/state/ci-portable
 make ci-portable NONINTERACTIVE=1
 
-cp runtime/state/ci-portable/manifest.json /tmp/p0-manifest-run1.json
-
-rm -rf runtime/state/ci-portable
-make ci-portable NONINTERACTIVE=1
-
-cp runtime/state/ci-portable/manifest.json /tmp/p0-manifest-run2.json
+cp -a runtime/state/ci-portable runtime/state/p0-qualification/run-2
 ```
 
 Compare semantic digests:
@@ -1958,8 +1959,8 @@ python - <<'PY'
 import json
 from pathlib import Path
 
-a = json.loads(Path("/tmp/p0-manifest-run1.json").read_text())
-b = json.loads(Path("/tmp/p0-manifest-run2.json").read_text())
+a = json.loads(Path("runtime/state/p0-qualification/run-1/manifest.json").read_text())
+b = json.loads(Path("runtime/state/p0-qualification/run-2/manifest.json").read_text())
 
 assert a["semantic_result_sha256"] == b["semantic_result_sha256"]
 print(a["semantic_result_sha256"])
@@ -2052,6 +2053,26 @@ YES | NO
 PRODUCTION/LIVE AUTHORIZATION:
 UNAVAILABLE
 ```
+
+After a human `VERDICT: PASS`, encode that result as the canonical
+`runtime/state/p0-qualification/final-review.json` receipt defined in
+`docs/implementation/p0-ci-closure.md`, including exact HEAD/tree, both
+manifest byte hashes, semantic digests, and run identities. Seal the
+qualification root and review leaf to modes `0500` and `0400`, then require the
+public checker to prove E11 without changing the committed pending matrix:
+
+```bash
+python scripts/check_p0_ci_closure.py \
+  --matrix docs/implementation/p0-ci-closure-matrix.json \
+  --qualification-receipt runtime/state/p0-qualification/run-1/manifest.json \
+  --qualification-receipt runtime/state/p0-qualification/run-2/manifest.json \
+  --final-review-receipt runtime/state/p0-qualification/final-review.json \
+  --require-complete
+```
+
+Expected verdict: `P0_SOURCE_COMPLETE`. This proves E11 only; E12 remains
+pending until the separately authorized P0-13 promotion and post-promotion
+proof.
 
 ### Step 9 — Stop on any blocker
 
