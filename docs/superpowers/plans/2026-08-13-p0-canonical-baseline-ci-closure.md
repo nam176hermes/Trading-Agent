@@ -1767,7 +1767,8 @@ git commit -m "feat(ci): seal deterministic portable evidence"
 - Create: `scripts/check_p0_ci_closure.py`
 - Create: `tests/test_p0_ci_closure.py`
 - Modify: `Makefile`
-- Modify: `ops/consolidation/p0-canonical-baseline.json`
+- Validate unchanged: `ops/consolidation/p0-canonical-baseline.json` with
+  `qualified_sha: null`
 
 ### Step 1 — Write the failing closure-matrix test
 
@@ -1797,7 +1798,7 @@ Example:
   ],
   "make_target": "check-test-governance-topology",
   "workflow": ".github/workflows/foundation.yml",
-  "evidence_path": "runtime/state/ci-portable/capability-topology/foundation-context.json",
+  "evidence_paths": ["runtime/state/ci-portable/capability-topology/foundation-context.json"],
   "required_status": "PASS"
 }
 ```
@@ -1815,7 +1816,8 @@ Example:
 - unresolved portable defect;
 - missing evidence binding;
 - live-trading authority enabled;
-- `qualified_sha` not equal to current `HEAD` when closure is marked complete.
+- a complete state unless explicit completion mode validates an exact-head,
+  sealed P0-10 final evidence receipt through the published-evidence validator.
 
 ### Step 3 — Add Make target
 
@@ -1829,7 +1831,8 @@ Add it to `ci-portable` only after its own tests pass.
 
 ### Step 4 — Update documentation
 
-Document clearly:
+Document clearly that `QUALIFICATION_PENDING` is not `P0_SOURCE_COMPLETE`, and
+that source completion does not authorize any later authority:
 
 ```text
 P0 SOURCE COMPLETE
@@ -1852,13 +1855,9 @@ README must state:
 
 ### Step 5 — Update baseline manifest
 
-Set:
-
-```json
-"qualified_sha": "<current candidate HEAD>"
-```
-
-only after all prior tasks and local clean-clone verification pass. Do not set a future/predicted SHA.
+Keep `qualified_sha: null`. P0-12 owns clean-clone qualification and binds the
+exact candidate head in its sealed final receipt; do not set a future or
+self-referential source SHA.
 
 ### Step 6 — Run tests
 
@@ -1877,12 +1876,11 @@ make check-p0-baseline
 git add -- \
   docs/implementation/p0-ci-closure-matrix.json \
   docs/implementation/p0-ci-closure.md \
-  docs/implementation/foundation-test-governance.md \
+  docs/implementation/foundation-test-governance-evidence.md \
   README.md \
   scripts/check_p0_ci_closure.py \
   tests/test_p0_ci_closure.py \
   Makefile \
-  ops/consolidation/p0-canonical-baseline.json
 
 git commit -m "docs(ci): close executable P0 qualification matrix"
 ```
