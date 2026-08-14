@@ -5,12 +5,15 @@ import argparse
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 TOP_KEYS = {"schema_version", "state", "requirement_order", "requirements"}
 ENTRY_KEYS = {"requirement_id", "implementation_paths", "test_node_ids", "make_target", "workflow", "evidence_paths", "required_status"}
 REQUIREMENTS = tuple([f"P0-I0{number}" for number in range(1, 7)] + [f"P0-E{number:02d}" for number in range(1, 14)])
@@ -64,17 +67,51 @@ def _array(value: object, *, label: str) -> list[str]:
     return value
 
 
-def _make_targets(makefile: Path) -> set[str]:
-    targets: set[str] = set()
+def _make_graph(makefile: Path) -> dict[str, set[str]]:
+    graph: dict[str, set[str]] = {}
+    current: str | None = None
     for line in makefile.read_text(encoding="utf-8").splitlines():
         if line and not line[0].isspace() and ":" in line and not line.startswith("."):
-            targets.update(item for item in line.split(":", 1)[0].split() if item)
-    return targets
+            names, dependencies = line.split(":", 1)
+            for name in names.split():
+                graph[name] = set(dependencies.split())
+                current = name
+        elif current is not None and line.startswith("\t"):
+            graph[current].update(re.findall(r"\$\(MAKE\)\s+([A-Za-z0-9_ -]+)", line)[0].split() if "$(MAKE)" in line else ())
+    return graph
 
 
 def _workflow_reaches_portable(workflow: Path) -> bool:
     text = workflow.read_text(encoding="utf-8")
-    return "make ci-portable" in text and "permissions:\n  contents: read" in text and "workflow_dispatch:" in text
+    return bool(re.search(r"^\s*run:\s*make ci-portable(?:\s|$)", text, re.MULTILINE)) and "permissions:\n  contents: read" in text and all(token in text for token in ("push:", "pull_request:", "workflow_dispatch:"))
+
+
+def _reachable(graph: dict[str, set[str]], start: str, wanted: str) -> bool:
+    pending = [start]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == wanted:
+            return True
+        if current not in seen:
+            seen.add(current)
+            pending.extend(graph.get(current, ()))
+    return False
+
+
+def _topology(root: Path) -> None:
+    from scripts import t_g03_capability_topology as topology
+    rows = topology.load_inventory(root / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
+    closure = topology.load_portable_defect_closure(head_sha=head)
+    native = [row for row in rows if row.classification == "NATIVE_CAPABILITY_REQUIRED"]
+    external = [row for row in rows if row.classification == "EXTERNAL_AUTHORITY_REQUIRED"]
+    if len(rows) != 30 or len(native) != 24 or len(external) != 6 or len(closure) != 32:
+        _fail("P0_CLOSURE_TOPOLOGY_COUNT_INVALID")
+    if any(row.classification == "PORTABLE_SOURCE_DEFECT" or row.code.startswith("SRC-") for row in rows):
+        _fail("P0_CLOSURE_TOPOLOGY_ACTIVE_SOURCE_DEFECT")
+    if {row.node_id for row in rows} & {row.node_id for row in closure}:
+        _fail("P0_CLOSURE_TOPOLOGY_OVERLAP")
 
 
 def _collected(root: Path, node: str) -> bool:
@@ -119,7 +156,9 @@ def validate(root: Path, matrix: Path, *, require_complete: bool, receipt: Path 
     if not isinstance(entries, list) or len(entries) != len(REQUIREMENTS):
         _fail("P0_CLOSURE_REQUIREMENT_SET_DRIFT")
     identifiers: list[str] = []
-    targets = _make_targets(root / "Makefile")
+    graph = _make_graph(root / "Makefile")
+    targets = set(graph)
+    _topology(root)
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != ENTRY_KEYS:
             _fail("P0_CLOSURE_ENTRY_SCHEMA_INVALID")
@@ -140,7 +179,7 @@ def validate(root: Path, matrix: Path, *, require_complete: bool, receipt: Path 
             _fail("P0_CLOSURE_MAKE_TARGET_UNKNOWN")
         workflow = entry.get("workflow")
         workflow_path = _safe_file(root, workflow, label="WORKFLOW")
-        if workflow != ".github/workflows/foundation.yml" or not _workflow_reaches_portable(workflow_path):
+        if workflow != ".github/workflows/foundation.yml" or not _workflow_reaches_portable(workflow_path) or not _reachable(graph, "ci-portable", target):
             _fail("P0_CLOSURE_PORTABLE_WORKFLOW_INVALID")
         if entry.get("required_status") not in {"PASS", "PENDING"}:
             _fail("P0_CLOSURE_STATUS_INVALID")
