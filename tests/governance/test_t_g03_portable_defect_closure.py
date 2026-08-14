@@ -140,16 +140,39 @@ def _mutate_fix_commit(rows: list[dict[str, str]], commit: str) -> None:
     rows[0]["proof_result_digest"] = topology.closed_node_proof_digest(changed)
 
 
-def test_closure_rejects_an_existing_nonancestor_commit() -> None:
+def test_closure_rejects_an_existing_nonancestor_commit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     fields, rows = _closure_document()
+    repository = tmp_path / "repository"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--no-hardlinks", str(topology.ROOT), str(repository)],
+        check=True,
+    )
+    empty_tree = subprocess.run(
+        ["git", "mktree"], cwd=repository, input="", capture_output=True,
+        text=True, check=True,
+    ).stdout.strip()
+    commit_environment = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "P0 fixture",
+        "GIT_AUTHOR_EMAIL": "p0-fixture@example.invalid",
+        "GIT_AUTHOR_DATE": "2026-08-13T00:00:00+00:00",
+        "GIT_COMMITTER_NAME": "P0 fixture",
+        "GIT_COMMITTER_EMAIL": "p0-fixture@example.invalid",
+        "GIT_COMMITTER_DATE": "2026-08-13T00:00:00+00:00",
+    }
     nonancestor = subprocess.run(
-        ["git", "rev-list", "--all", "--not", "HEAD"],
-        capture_output=True, text=True, check=True,
-    ).stdout.splitlines()[0]
+        ["git", "commit-tree", empty_tree, "-m", "deterministic nonancestor"],
+        cwd=repository, env=commit_environment, capture_output=True, text=True,
+        check=True,
+    ).stdout.strip()
     _mutate_fix_commit(rows, nonancestor)
     head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        ["git", "rev-parse", "HEAD"], cwd=repository,
+        capture_output=True, text=True, check=True,
     ).stdout.strip()
+    monkeypatch.setattr(topology, "ROOT", repository)
     with pytest.raises(topology.TopologyError, match="nonancestor"):
         topology.parse_portable_defect_closure(_closure_bytes(fields, rows), head_sha=head)
 
@@ -259,13 +282,20 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
             run_id=run_id, head_sha=head, foundation_context_path=context,
             exact_runner=_passing_exact,
         ) == []
-        monkeypatch.setattr(
-            topology, "_native_preflight",
-            lambda _code: ("UNAVAILABLE", "NATIVE_COMPONENT_ABSENT"),
-        )
+        @topology.contextmanager
+        def absent_native_probe(code: str):
+            yield topology.NativeProbeSession(
+                code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                topology._native_probe_record(
+                    code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                ),
+                -1, None, None, None, None,
+            )
+
         topology.run_lane(
             lane="native-capabilities", inventory=INVENTORY, evidence_root=evidence,
             run_id=run_id, head_sha=head, foundation_context_path=context,
+            native_probe_factory=absent_native_probe,
         )
 
         @topology.contextmanager

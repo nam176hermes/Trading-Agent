@@ -372,7 +372,9 @@ def test_legacy_session_executes_only_retained_uv_and_detects_closure_drift() ->
                 topology._postcheck_external_authority(session)
 
 
-def test_legacy_group_writable_exception_is_scoped_to_exact_real_component() -> None:
+def test_legacy_group_writable_exception_is_scoped_to_exact_real_component(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Break caught: the real 0775 exception is broadened to an arbitrary root."""
 
     def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
@@ -386,20 +388,25 @@ def test_legacy_group_writable_exception_is_scoped_to_exact_real_component() -> 
         projects = root / "projects"
         projects.mkdir(mode=0o775)
         projects.chmod(0o775)
-        legacy = projects / "legacy"
-        _complete_legacy(legacy)
+        arbitrary = projects / "arbitrary"
+        _complete_legacy(arbitrary)
         with topology._retained_external_authority(
-            "EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy,
+            "EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=arbitrary,
             expected_uv_sha256=hashlib.sha256(uv.read_bytes()).hexdigest(),
             expected_uv_version="fixture-uv 1.0", runner=runner,
         ) as session:
             assert session.state == "INVALID"
 
-    real_legacy = topology.ROOT / "legacy/research-backend"
-    assert topology._external_parent_chain_safe(real_legacy) is False
-    assert topology._external_parent_chain_safe(
-        real_legacy, legacy_component_policy=True,
-    ) is True
+        exact_legacy = projects / "legacy"
+        _complete_legacy(exact_legacy)
+        monkeypatch.setattr(topology, "REAL_LEGACY_ROOT", exact_legacy)
+        assert topology._external_parent_chain_safe(exact_legacy) is False
+        assert topology._external_parent_chain_safe(
+            exact_legacy, legacy_component_policy=True,
+        ) is True
+        assert topology._external_parent_chain_safe(
+            arbitrary, legacy_component_policy=True,
+        ) is False
 
 
 @pytest.mark.parametrize(

@@ -421,26 +421,40 @@ def test_real_native_probe_argv_uses_retained_fd_and_exact_namespace_operations(
         observed.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
 
-    for code, suffix in (
-        (
-            "NATIVE-BWRAP-OS-SANDBOX",
-            [
-                "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-net",
-                "--new-session", "--clearenv", "--ro-bind", "/usr", "/usr",
-                "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
-                "--tmpfs", "/tmp", "--", "/usr/bin/true",
-            ],
-        ),
-        ("NATIVE-USERNS-ROOT-PROVISION", ["--user", "--map-root-user", "/usr/bin/true"]),
-    ):
-        with topology._retained_native_probe(code, runner=successful_runner) as probe:
-            assert probe.state == "AVAILABLE"
-            assert probe.probe["exit_code"] == 0
-            command, kwargs = observed[-1]
-            assert command[0].startswith("/proc/self/fd/")
-            assert command[1:] == suffix
-            assert kwargs["pass_fds"] == (probe.descriptor,)
-            assert kwargs["env"] == {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"}
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        probe_factory = _available_native_probe_factory(Path(raw))
+        for code, suffix in (
+            (
+                "NATIVE-BWRAP-OS-SANDBOX",
+                [
+                    "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-net",
+                    "--new-session", "--clearenv", "--ro-bind", "/usr", "/usr",
+                    "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+                    "--tmpfs", "/tmp", "--", "/usr/bin/true",
+                ],
+            ),
+            ("NATIVE-USERNS-ROOT-PROVISION", ["--user", "--map-root-user", "/usr/bin/true"]),
+        ):
+            with probe_factory(code) as fixture:
+                pending = topology.NativeProbeSession(
+                    code, "PROBE_PENDING", "NATIVE_PROBE_INVALID",
+                    topology._native_probe_record(
+                        code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                        executable_sha256=str(fixture.probe["executable_sha256"]),
+                    ),
+                    fixture.descriptor, fixture.executable_path,
+                    fixture.named_identity, fixture.descriptor_identity, fixture.policy,
+                )
+                probe = topology._execute_native_probe(
+                    pending, runner=successful_runner,
+                )
+                assert probe.state == "AVAILABLE"
+                assert probe.probe["exit_code"] == 0
+                command, kwargs = observed[-1]
+                assert command[0].startswith("/proc/self/fd/")
+                assert command[1:] == suffix
+                assert kwargs["pass_fds"] == (probe.descriptor,)
+                assert kwargs["env"] == {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"}
 
 
 def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
@@ -520,14 +534,7 @@ def test_native_available_path_runs_exact_16_and_8_once_and_failure_publishes_fa
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
     ).stdout.strip()
     monkeypatch.setenv("GITHUB_RUN_ID", run_id)
-
-    def successful_probe_runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
-
-    @topology.contextmanager
-    def real_authority_success(code: str):
-        with topology._retained_native_probe(code, runner=successful_probe_runner) as session:
-            yield session
+    _patch_native_identity_postcheck(monkeypatch)
 
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
@@ -552,7 +559,7 @@ def test_native_available_path_runs_exact_16_and_8_once_and_failure_publishes_fa
             inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
             evidence_root=evidence, run_id=run_id, head_sha=head,
             foundation_context_path=context, exact_runner=exact,
-            native_probe_factory=real_authority_success,
+            native_probe_factory=_available_native_probe_factory(Path(raw)),
         )
         assert sorted(len(nodes) for nodes in selected) == [8, 16]
         assert len({node for group in selected for node in group}) == 24
@@ -580,7 +587,7 @@ def test_native_available_path_runs_exact_16_and_8_once_and_failure_publishes_fa
                 inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
                 evidence_root=evidence, run_id=run_id, head_sha=head,
                 foundation_context_path=context, exact_runner=broken_exact,
-                native_probe_factory=real_authority_success,
+                native_probe_factory=_available_native_probe_factory(Path(raw)),
             )
         fail_path = evidence / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"
         assert topology.parse_receipt(fail_path.read_bytes())["outcome"] == "FAIL"

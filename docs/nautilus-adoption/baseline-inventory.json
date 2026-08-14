@@ -31,9 +31,9 @@
       "component": "dashboard",
       "runtime": "Node/npm (version is governed by apps/dashboard/package.json)",
       "manifest": "apps/dashboard/package.json",
-      "manifest_sha256": "3d5e94fcbac205e5ec3281d62ee57939416ae3ef6293f05a0812a4b9a23da2dc",
+      "manifest_sha256": "4e9a878b6bdee8404c4f218f230071d0758b270e13f2932ee9a3ffadc525abe9",
       "lockfile": "apps/dashboard/package-lock.json",
-      "lockfile_sha256": "168b94840ea030956c74880172747b7d14eda68d0dc0261fb18a93a2c98ccfb9"
+      "lockfile_sha256": "cc3ea6862ccf0c3acbd72c668ea3952554389b3a1214719a27d52efe7a5938b8"
     },
     {
       "component": "sealed-paper-release",
