@@ -105,15 +105,26 @@ check-test-skips:
 				--report-dir "$(TEST_EVIDENCE_DIR)/test-governance"
 
 check-test-governance-topology:
-	@set -eu; \
-		test -n "$${GITHUB_RUN_ID:?}"; \
-		test -n "$${FOUNDATION_CONTEXT_PATH:?}"; \
+	@set +e; \
+		test -n "$${GITHUB_RUN_ID:?}" && \
+		test -n "$${FOUNDATION_CONTEXT_PATH:?}" && \
 		uv run python -m scripts.check_test_governance \
 			--topology-audit \
 			--report-dir "$(TEST_EVIDENCE_DIR)/test-governance-topology" \
 			--topology-evidence-root "$(TEST_EVIDENCE_DIR)" \
 			--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
-			--foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
+			--foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		governance_status=$$?; \
+		set -e; \
+		if test "$$governance_status" -ne 0; then \
+			uv run python -m scripts.check_artifact_firewall publish-error \
+				--raw-root "$(TEST_EVIDENCE_DIR)" \
+				--destination "$(CURDIR)/runtime/state/ci-portable" \
+				--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
+				--foundation-context-path "$$FOUNDATION_CONTEXT_PATH" \
+				--repository-root "$(CURDIR)" || true; \
+			exit "$$governance_status"; \
+		fi
 
 check-critical-coverage:
 	uv run python scripts/check_critical_coverage.py \

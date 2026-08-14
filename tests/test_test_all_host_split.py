@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import re
 from collections import Counter
+import os
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,7 +29,11 @@ def _reachable(targets: dict[str, tuple[tuple[str, ...], str]], start: str) -> s
         prerequisites, recipe = targets[current]
         pending.extend(prerequisites)
         for command in re.findall(r"\$\(MAKE\)\s+([^\\\n]+)", recipe):
-            pending.extend(token for token in command.split() if token in targets)
+            pending.extend(
+                normalized
+                for token in command.split()
+                if (normalized := token.strip(";")) in targets
+            )
     return seen
 
 
@@ -43,7 +49,11 @@ def _route_multiplicity(
         prerequisites, recipe = targets[current]
         children = list(prerequisites)
         for command in re.findall(r"\$\(MAKE\)\s+([^\\\n]+)", recipe):
-            children.extend(token for token in command.split() if token in targets)
+            children.extend(
+                normalized
+                for token in command.split()
+                if (normalized := token.strip(";")) in targets
+            )
         pending.extend(children)
     return counts
 
@@ -87,6 +97,7 @@ def test_portable_route_uses_private_raw_evidence_then_one_final_publisher() -> 
     targets = _make_targets()
     outer = targets["ci-portable"][1]
     firewall = targets["artifact-firewall-check"][1]
+    governance = targets["check-test-governance-topology"][1]
 
     assert "raw_evidence_root=" in outer
     assert 'chmod 0700 "$$raw_evidence_root"' in outer
@@ -95,6 +106,52 @@ def test_portable_route_uses_private_raw_evidence_then_one_final_publisher() -> 
     assert '--raw-root "$(TEST_EVIDENCE_DIR)"' in firewall
     assert '--destination "$(CURDIR)/runtime/state/ci-portable"' in firewall
     assert "check-portable-defect-closure" not in firewall
+    assert "scripts.check_artifact_firewall publish-error" in governance
+
+
+def test_governance_failure_runs_only_error_publisher_and_preserves_status(
+    tmp_path: Path,
+) -> None:
+    fake_uv = tmp_path / "uv"
+    log = tmp_path / "uv.log"
+    error_marker = tmp_path / "error-published"
+    pass_marker = tmp_path / "pass-published"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$MAKE_LOG\"\n"
+        "case \" $* \" in\n"
+        "  *' scripts.check_test_governance '*) exit 7 ;;\n"
+        "  *' scripts.check_artifact_firewall publish-error '*) : > \"$ERROR_MARKER\" ;;\n"
+        "  *' scripts.check_artifact_firewall publish '*) : > \"$PASS_MARKER\" ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o700)
+    result = subprocess.run(
+        [
+            "make", "--no-print-directory", "check-test-governance-topology",
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GITHUB_RUN_ID": "99999999999",
+            "FOUNDATION_CONTEXT_PATH": str(tmp_path / "foundation-context.json"),
+            "TEST_EVIDENCE_DIR": str(tmp_path / "evidence"),
+            "MAKE_LOG": str(log),
+            "ERROR_MARKER": str(error_marker),
+            "PASS_MARKER": str(pass_marker),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert result.returncode == 2
+    assert "Error 7" in result.stderr
+    assert error_marker.is_file()
+    assert not pass_marker.exists()
+    assert "scripts.check_artifact_firewall publish-error" in log.read_text(encoding="utf-8")
 
 
 def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authority() -> None:
@@ -109,6 +166,7 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert "run: make ci-portable NONINTERACTIVE=1" in foundation
     assert "if: always()" in foundation
     assert "path: runtime/state/ci-portable/**" in foundation
+    assert "include-hidden-files: true" in foundation
     assert "retention-days: 14" in foundation
     assert "/tmp/trading-agent-test-evidence" not in foundation
     assert re.search(r"^  push:$", foundation, re.MULTILINE)

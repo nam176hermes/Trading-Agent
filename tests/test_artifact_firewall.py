@@ -5,10 +5,14 @@ import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
+
+from scripts import t_g03_capability_topology as topology
 
 try:
     firewall = importlib.import_module("scripts.check_artifact_firewall")
@@ -33,21 +37,38 @@ def _canonical(value: object) -> bytes:
 
 
 def _semantic(**updates: object) -> dict[str, object]:
+    rows = topology.load_inventory(
+        Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+    )
+    policy = {
+        **topology.PORTABLE_ROOT_POLICY,
+        "native_custody_extension_identity": f"1:2:{os.geteuid()}:600:1",
+        "native_custody_extension_sha256": "e" * 64,
+    }
     value: dict[str, object] = {
         "foundation": {"head_sha": HEAD, "validation_date": "2026-08-13"},
-        "inventory_sha256": "b" * 64,
-        "closure_sha256": "c" * 64,
-        "policy_sha256": "d" * 64,
-        "selected_tests": [
-            {"node_id": "tests/test_safe.py::test_one", "outcome": "passed"},
-        ],
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
+        "policy_sha256": topology._sha256(policy),
+        "selected_tests": [],
         "statuses": {
-            "portable_source": "PASS",
-            "native_capabilities": "DEFERRED",
-            "external_authorities": "DEFERRED",
+            "portable_source_status": "PASS",
+            "native_capabilities_status": "DEFERRED",
+            "external_authorities_status": "DEFERRED",
+            "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
+            "portable_root_remainder_status": "PASS",
+            "baseline_candidate_count": "62",
         },
         "receipt_results": [
-            {"code": "NATIVE-BWRAP-OS-SANDBOX", "outcome": "DEFERRED", "selected": 0, "passed": 0, "failed": 0, "unavailable": 8},
+            {
+                "code": code,
+                "outcome": "DEFERRED",
+                "selected": 0,
+                "passed": 0,
+                "failed": 0,
+                "unavailable": len(topology._expected_rows(rows, code)[1]),
+            }
+            for code in sorted(topology.CODE_CLASSIFICATION)
         ],
     }
     value.update(updates)
@@ -72,7 +93,7 @@ def _write_leaf(root: Path, relative: str, value: object) -> None:
     path.chmod(0o600)
 
 
-def _staging(tmp_path: Path) -> Path:
+def _fixture_staging(tmp_path: Path) -> Path:
     root = tmp_path / "raw-final-projection"
     root.mkdir(parents=True, mode=0o700)
     _write_leaf(
@@ -101,6 +122,234 @@ def _staging(tmp_path: Path) -> Path:
         "test-governance/summary.json",
         {"schema_version": "fixture-summary/v1", "status": "pass", "tests": []},
     )
+    return root
+
+
+def _staging(tmp_path: Path) -> Path:
+    root = tmp_path / "raw-final-projection"
+    root.mkdir(parents=True, mode=0o700)
+    run_id = "1001"
+    context: dict[str, object] = {
+        "schema_version": topology.FOUNDATION_CONTEXT_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": HEAD,
+        "foundation_validation_date": "2026-08-13",
+        "foundation_context_sha256": "",
+    }
+    context["foundation_context_sha256"] = topology._sha256({
+        key: value for key, value in context.items()
+        if key != "foundation_context_sha256"
+    })
+    context_hash = str(context["foundation_context_sha256"])
+    policy = {
+        **topology.PORTABLE_ROOT_POLICY,
+        "native_custody_extension_identity": f"1:2:{os.geteuid()}:600:1",
+        "native_custody_extension_sha256": "e" * 64,
+    }
+    inventory_path = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
+    inventory_raw = inventory_path.read_bytes()
+    closure_path = Path("docs/implementation/foundation-portable-defect-closure.tsv")
+    closure_raw = closure_path.read_bytes()
+    inventory_rows = topology.load_inventory(inventory_path)
+    closure_lines = closure_raw.decode("utf-8").splitlines()
+    closure_header = closure_lines[0].split("\t")
+    closure_records = [dict(zip(closure_header, line.split("\t"), strict=True)) for line in closure_lines[1:]]
+    governed_nodes = tuple(sorted(
+        {row.node_id for row in inventory_rows}
+        | {record["test_node_id"] for record in closure_records}
+    ))
+    candidate_raw = ("\n".join(governed_nodes) + "\n").encode()
+    collection = {
+        "schema_version": 1,
+        "component": "root",
+        "collection_only": True,
+        "pytest_exit_status": 0,
+        "tests": [
+            {
+                "test_node_id": node,
+                "component": "root",
+                "outcome": "collected",
+                "reason": "",
+                "phase": "collection",
+            }
+            for node in governed_nodes
+        ],
+    }
+    collection_raw = _canonical(collection)
+    baseline: dict[str, object] = {
+        "schema_version": topology.BASELINE_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": HEAD,
+        "foundation_validation_date": "2026-08-13",
+        "foundation_context_sha256": context_hash,
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
+        "collector_policy": policy,
+        "candidate_node_ids": list(governed_nodes),
+        "candidate_file_sha256": hashlib.sha256(candidate_raw).hexdigest(),
+        "collection_report_sha256": hashlib.sha256(collection_raw).hexdigest(),
+        "baseline_sha256": "",
+    }
+    baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
+    empty_governance = {
+        "schema_version": 1,
+        "component": "root",
+        "pytest_exit_status": 0,
+        "custody_policy": policy,
+        "tests": [],
+    }
+    empty_governance_raw = _canonical(empty_governance)
+    remainder: dict[str, object] = {
+        "schema_version": topology.REMAINDER_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": HEAD,
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
+        "baseline_sha256": baseline["baseline_sha256"],
+        "remainder_node_ids": [],
+        "remainder_file_sha256": hashlib.sha256(b"").hexdigest(),
+        "remainder_sha256": "",
+    }
+    remainder["remainder_sha256"] = topology._remainder_payload_sha256(remainder)
+    closure_governance = {
+        "schema_version": 1,
+        "component": "root",
+        "pytest_exit_status": 0,
+        "custody_policy": policy,
+        "tests": [
+            {
+                "test_node_id": record["test_node_id"],
+                "component": "root",
+                "outcome": "passed",
+                "reason": "",
+                "phase": "call",
+            }
+            for record in sorted(closure_records, key=lambda item: item["test_node_id"])
+        ],
+    }
+    closure_governance_raw = _canonical(closure_governance)
+    closure_nodes = [record["test_node_id"] for record in sorted(closure_records, key=lambda item: item["test_node_id"])]
+    closure_proof: dict[str, object] = {
+        "schema_version": topology.PORTABLE_CLOSURE_PROOF_SCHEMA,
+        "foundation_run_id": run_id,
+        "foundation_head_sha": HEAD,
+        "foundation_validation_date": "2026-08-13",
+        "foundation_context_sha256": context_hash,
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
+        "closure_node_ids": closure_nodes,
+        "closure_node_ids_sha256": topology._ids_sha256(tuple(closure_nodes)),
+        "proof_command": topology.CLOSURE_PROOF_COMMAND,
+        "proof_result_digests": [
+            record["proof_result_digest"]
+            for record in sorted(closure_records, key=lambda item: item["test_node_id"])
+        ],
+        "custody_policy": policy,
+        "custody_policy_sha256": topology._sha256(policy),
+        "governance_report_sha256": hashlib.sha256(closure_governance_raw).hexdigest(),
+        "outcome": "PASS",
+        "closure_proof_sha256": "",
+    }
+    closure_proof["closure_proof_sha256"] = topology._closure_proof_payload_sha256(closure_proof)
+    reservation = {
+        "schema_version": topology.RESERVATION_SCHEMA,
+        "foundation_head_sha": HEAD,
+        "foundation_run_id": run_id,
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
+        "foundation_context_sha256": context_hash,
+    }
+    aggregate = {
+        "portable_source_status": "PASS",
+        "native_capabilities_status": "DEFERRED",
+        "external_authorities_status": "DEFERRED",
+        "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
+        "portable_root_remainder_status": "PASS",
+        "baseline_candidate_count": str(len(governed_nodes)),
+    }
+    fixed: dict[str, object] = {
+        ".reservation": reservation,
+        "aggregate.json": aggregate,
+        "foundation-context.json": context,
+        "foundation-portable-defect-closure.tsv": closure_raw,
+        "portable-defect-closure-proof.json": closure_proof,
+        "portable-defect-closure.governance.json": closure_governance_raw,
+        "portable-root-baseline.json": baseline,
+        "portable-root-candidates.txt": candidate_raw,
+        "portable-root-collection.governance.json": collection_raw,
+        "portable-root-remainder.governance.json": empty_governance_raw,
+        "portable-root-remainder.json": remainder,
+        "portable-root-remainder.txt": b"",
+        "t-g03a-hosted-failure-inventory.tsv": inventory_raw,
+    }
+    for name, value in fixed.items():
+        _write_leaf(root, f"capability-topology/{name}", value)
+    receipt_results: list[dict[str, object]] = []
+    for code in sorted(topology.CODE_CLASSIFICATION):
+        expected = topology._expected_rows(inventory_rows, code)[1]
+        if code.startswith("NATIVE-"):
+            session = SimpleNamespace(
+                state="UNAVAILABLE",
+                fact="NATIVE_COMPONENT_ABSENT",
+                probe=topology._native_probe_record(
+                    code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                ),
+            )
+            receipt = topology.make_native_receipt(
+                context=context, code=code, expected=expected, collected=(),
+                session=session, outcome="DEFERRED", selected_test_count=0,
+                passed=0, failed=0, unavailable=len(expected),
+            )
+            manifest = topology._native_artifact_manifest(
+                receipt, topology.canonical_json_bytes(receipt), None,
+            )
+        else:
+            authority = (
+                topology._phase3b_absent_authority()
+                if code == "EXT-PHASE3B-CORPUS"
+                else topology._legacy_absent_authority()
+            )
+            session = SimpleNamespace(
+                state="ABSENT",
+                fact=(
+                    "AUTHORITY_ROOT_ABSENT"
+                    if code == "EXT-PHASE3B-CORPUS"
+                    else "AUTHORITY_EXECUTABLE_ABSENT"
+                ),
+                authority=authority,
+            )
+            receipt = topology.make_external_receipt(
+                context=context, code=code, expected=expected, collected=(),
+                session=session, outcome="DEFERRED", selected_test_count=0,
+                passed=0, failed=0, unavailable=len(expected),
+            )
+            manifest = topology._external_artifact_manifest(
+                receipt, topology.canonical_json_bytes(receipt), None,
+            )
+        receipt_raw = topology.canonical_json_bytes(receipt)
+        _write_leaf(root, f"capability-topology/{code}.json", receipt_raw)
+        _write_leaf(root, f"capability-topology/{code}.artifacts/receipt.json", receipt_raw)
+        _write_leaf(root, f"capability-topology/{code}.artifacts/manifest.json", manifest)
+        receipt_results.append({
+            "code": code,
+            "outcome": "DEFERRED",
+            "selected": 0,
+            "passed": 0,
+            "failed": 0,
+            "unavailable": len(expected),
+        })
+    summary = {
+        "schema_version": "test-governance-final-summary/v1",
+        "status": "pass",
+        "summary": {"passed": 1},
+        "postgres_disclosure": {"status": "not_applicable"},
+        "capability_topology": aggregate,
+        "tests": [],
+        "suite_exit_codes": {"root": 0},
+        "allowlist": "tests/skip-allowlist.yaml",
+        "generated_at_utc": "2026-08-13T12:00:00+00:00",
+    }
+    _write_leaf(root, "test-governance/summary.json", summary)
     return root
 
 
@@ -176,6 +425,31 @@ def test_semantic_digest_excludes_run_metadata_and_changes_for_each_semantic_mut
         assert firewall.semantic_result_sha256(changed) != first
 
 
+def test_publisher_binds_source_tree_digest_into_canonical_semantic_projection(
+    tmp_path: Path,
+) -> None:
+    first = firewall.publish_evidence_set(
+        staging_root=_staging(tmp_path / "first"),
+        destination=tmp_path / "first-final",
+        head_sha=HEAD,
+        source_tree_sha256=TREE,
+        semantic_projection=_semantic(),
+        run_metadata=_run_metadata(),
+    )
+    changed_tree = "f" * 64
+    second = firewall.publish_evidence_set(
+        staging_root=_staging(tmp_path / "second"),
+        destination=tmp_path / "second-final",
+        head_sha=HEAD,
+        source_tree_sha256=changed_tree,
+        semantic_projection=_semantic(),
+        run_metadata=_run_metadata(),
+    )
+    assert first["semantic_projection"]["source_tree_sha256"] == TREE
+    assert second["semantic_projection"]["source_tree_sha256"] == changed_tree
+    assert first["semantic_result_sha256"] != second["semantic_result_sha256"]
+
+
 @pytest.mark.parametrize(
     ("document", "category"),
     [
@@ -208,6 +482,63 @@ def test_firewall_rejects_structured_and_known_secret_formats_without_disclosure
 
 
 @pytest.mark.parametrize(
+    ("field", "line", "category"),
+    [
+        ("stdout", "TRADING_MASTER_KEY=synthetic-value", "TRADING_MASTER_KEY"),
+        ("stderr", "password: synthetic-value", "PASSWORD"),
+        ("stdout", "secret = synthetic-value", "SECRET"),
+        ("stderr", "api_key=synthetic-value", "API_KEY"),
+        ("stdout", "Authorization: Bearer synthetic-value", "AUTHORIZATION"),
+    ],
+)
+def test_firewall_rejects_contextual_stdout_stderr_assignments_without_value_disclosure(
+    field: str, line: str, category: str,
+) -> None:
+    raw = _canonical({field: line})
+    with pytest.raises(firewall.FirewallError) as caught:
+        firewall.scan_json_bytes("test-governance/summary.json", raw)
+    assert caught.value.category == category
+    assert "synthetic-value" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("line", "category"),
+    [
+        ("TRADING_MASTER_KEY=synthetic-value\n", "TRADING_MASTER_KEY"),
+        ("password: synthetic-value\n", "PASSWORD"),
+        ("secret = synthetic-value\n", "SECRET"),
+        ("api_key=synthetic-value\n", "API_KEY"),
+        ("Authorization: Bearer synthetic-value\n", "AUTHORIZATION"),
+    ],
+)
+def test_firewall_rejects_anchored_assignments_in_non_json_text_leaves(
+    line: str, category: str,
+) -> None:
+    raw = line.encode()
+    with pytest.raises(firewall.FirewallError) as caught:
+        firewall.scan_artifact_bytes("test-governance/root.log", raw)
+    assert caught.value.category == category
+    assert "synthetic-value" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "documentation: password and secret are prohibited\n",
+        "tests/test_api_key_rotation.py::test_authorization_is_redacted\n",
+        "password: [REDACTED]\n",
+        "secret=<redacted>\n",
+        "api_key=NOT_CONFIGURED\n",
+        "Authorization: <redacted>\n",
+    ],
+)
+def test_firewall_allows_documentation_and_redacted_assignment_near_misses(
+    line: str,
+) -> None:
+    firewall.scan_artifact_bytes("test-governance/root.log", line.encode())
+
+
+@pytest.mark.parametrize(
     "document",
     [
         {"documentation": "password and secret are prohibited in evidence"},
@@ -225,10 +556,24 @@ def test_firewall_allows_redacted_and_safe_near_misses(document: object) -> None
 
 def test_publisher_scans_known_secret_formats_in_every_manifested_leaf(tmp_path: Path) -> None:
     staging = _staging(tmp_path)
+    secret_raw = b"-----BEGIN PRIVATE KEY-----\nmaterial"
     _write_leaf(
         staging,
-        "capability-topology/portable-root-candidates.txt",
-        b"-----BEGIN PRIVATE KEY-----\nmaterial",
+        "phase-evidence/result.txt",
+        secret_raw,
+    )
+    _write_leaf(
+        staging,
+        "phase-evidence/manifest.json",
+        {
+            "schema_version": "phase-evidence-manifest/v1",
+            "files": [{
+                "path": "result.txt",
+                "sha256": hashlib.sha256(secret_raw).hexdigest(),
+                "size": len(secret_raw),
+                "mode": "0400",
+            }],
+        },
     )
     with pytest.raises(firewall.FirewallError) as caught:
         _publish(staging, tmp_path / "runtime/state/ci-portable")
@@ -240,7 +585,9 @@ def test_publisher_creates_canonical_manifest_and_exact_checksums(tmp_path: Path
     destination = tmp_path / "runtime/state/ci-portable"
     manifest = _publish(staging, destination)
 
-    assert manifest["semantic_result_sha256"] == firewall.semantic_result_sha256(_semantic())
+    assert manifest["semantic_result_sha256"] == firewall.semantic_result_sha256({
+        **_semantic(), "source_tree_sha256": TREE,
+    })
     assert manifest["run_metadata"] == _run_metadata()
     assert manifest["manifest_payload_sha256"] == firewall.manifest_payload_sha256(manifest)
     assert stat_mode(destination) == 0o500
@@ -256,8 +603,91 @@ def test_publisher_creates_canonical_manifest_and_exact_checksums(tmp_path: Path
     firewall.validate_published_evidence(destination)
 
 
+def test_hidden_reservation_survives_artifact_round_trip_with_checksum_binding(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "runtime/state/ci-portable"
+    _publish(_staging(tmp_path), destination)
+    checksums = (destination / "SHA256SUMS").read_text(encoding="ascii")
+    assert "capability-topology/.reservation" in checksums
+    downloaded = tmp_path / "downloaded/ci-portable"
+    shutil.copytree(destination, downloaded, copy_function=shutil.copy2)
+    manifest = firewall.validate_published_evidence(downloaded)
+    assert any(
+        item["path"] == "capability-topology/.reservation"
+        for item in manifest["files"]
+    )
+
+
+def test_error_projection_contains_only_closed_error_and_never_pass_summary(
+    tmp_path: Path,
+) -> None:
+    staging = _staging(tmp_path)
+    summary = staging / "test-governance/summary.json"
+    summary.unlink()
+    error_semantic = {
+        "error_code": "SUITE_FAILURE",
+        "suite_exit_codes": {"root": 1},
+    }
+    _write_leaf(
+        staging,
+        "test-governance/error.json",
+        {
+            "schema_version": "test-governance-final-error/v1",
+            "status": "error",
+            "generated_at_utc": "2026-08-13T12:00:00+00:00",
+            **error_semantic,
+        },
+    )
+    semantic = _semantic()
+    semantic.pop("selected_tests")
+    semantic["governance_error"] = error_semantic
+    destination = tmp_path / "runtime/state/ci-portable"
+    manifest = firewall.publish_evidence_set(
+        staging_root=staging,
+        destination=destination,
+        head_sha=HEAD,
+        source_tree_sha256=TREE,
+        semantic_projection=semantic,
+        run_metadata=_run_metadata(),
+    )
+    assert (destination / "test-governance/error.json").is_file()
+    assert not (destination / "test-governance/summary.json").exists()
+    assert "selected_tests" not in manifest["semantic_projection"]
+
+
 def stat_mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
+
+
+def _rehash_published_tree(destination: Path) -> None:
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload_paths = sorted(
+        path for path in destination.rglob("*")
+        if path.is_file() and path.name not in {"manifest.json", "SHA256SUMS"}
+    )
+    manifest["files"] = [
+        {
+            "path": path.relative_to(destination).as_posix(),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "size": len(path.read_bytes()),
+            "mode": "0400",
+        }
+        for path in payload_paths
+    ]
+    manifest["manifest_payload_sha256"] = firewall.manifest_payload_sha256(manifest)
+    manifest_path.chmod(0o600)
+    manifest_path.write_bytes(_canonical(manifest))
+    manifest_path.chmod(0o400)
+    checksums = destination / "SHA256SUMS"
+    checksums.chmod(0o600)
+    checksum_paths = sorted([manifest_path, *payload_paths])
+    checksums.write_bytes(b"".join(
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(destination).as_posix()}\n".encode()
+        for path in checksum_paths
+    ))
+    checksums.chmod(0o400)
 
 
 def test_existing_destination_is_conflict_and_is_never_overwritten(tmp_path: Path) -> None:
@@ -327,6 +757,62 @@ def test_publisher_rejects_extra_missing_and_architecture_a_fallback(tmp_path: P
             _publish(staging, case / "runtime/state/ci-portable")
 
 
+def test_publisher_rejects_fixture_schemas_and_incomplete_topology(tmp_path: Path) -> None:
+    staging = _fixture_staging(tmp_path)
+    destination = tmp_path / "runtime/state/ci-portable"
+    with pytest.raises(firewall.FirewallError, match="schema|inventory|topology"):
+        _publish(staging, destination)
+    assert not destination.exists()
+
+
+def test_publisher_rejects_receipt_filename_code_and_bundle_manifest_drift(
+    tmp_path: Path,
+) -> None:
+    for mutation in ("wrong-code", "wrong-outcome", "fake-manifest"):
+        case = tmp_path / mutation
+        case.mkdir()
+        staging = _staging(case)
+        marker = staging / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"
+        receipt = marker.parent / "NATIVE-BWRAP-OS-SANDBOX.artifacts/receipt.json"
+        manifest = marker.parent / "NATIVE-BWRAP-OS-SANDBOX.artifacts/manifest.json"
+        if mutation == "wrong-code":
+            raw = _canonical({
+                "capability_or_authority_code": "NATIVE-USERNS-ROOT-PROVISION",
+                "outcome": "DEFERRED",
+            })
+            marker.write_bytes(raw)
+            receipt.write_bytes(raw)
+            marker.chmod(0o600)
+            receipt.chmod(0o600)
+        elif mutation == "wrong-outcome":
+            manifest.write_bytes(_canonical({
+                "schema_version": "fixture-manifest/v1", "outcome": "PASS",
+            }))
+            manifest.chmod(0o600)
+        else:
+            manifest.write_bytes(_canonical({
+                "schema_version": "fake-native-artifact-manifest/v99",
+                "outcome": "DEFERRED",
+            }))
+            manifest.chmod(0o600)
+        with pytest.raises(firewall.FirewallError, match="schema|code|outcome|manifest|topology"):
+            _publish(staging, case / "runtime/state/ci-portable")
+
+
+def test_publisher_rejects_phase_manifest_that_does_not_bind_its_entries(
+    tmp_path: Path,
+) -> None:
+    staging = _staging(tmp_path)
+    _write_leaf(
+        staging,
+        "phase-evidence/manifest.json",
+        {"schema_version": "phase-evidence-manifest/v1", "files": []},
+    )
+    _write_leaf(staging, "phase-evidence/result.txt", b"PASS\n")
+    with pytest.raises(firewall.FirewallError, match="phase|manifest"):
+        _publish(staging, tmp_path / "runtime/state/ci-portable")
+
+
 def test_publisher_rejects_marker_bundle_mismatch_without_mutating_either(tmp_path: Path) -> None:
     staging = _staging(tmp_path)
     marker = staging / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"
@@ -355,6 +841,123 @@ def test_publisher_rejects_mutation_after_snapshot_and_never_publishes_partial_s
     with pytest.raises(firewall.FirewallError, match="changed"):
         _publish(staging, destination, boundary_hook=mutate)
     assert not destination.exists()
+
+
+def test_publisher_rejects_staging_ancestor_replacement_after_lineage_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legitimate_parent = tmp_path / "legitimate"
+    staging = _staging(legitimate_parent)
+    attacker_parent = tmp_path / "attacker"
+    _staging(attacker_parent)
+    displaced_parent = tmp_path / "displaced"
+    original = firewall._validate_lineage
+    staging_checks = 0
+
+    def replace_after_validation(path: Path, *, create: bool) -> object:
+        nonlocal staging_checks
+        retained = original(path, create=create)
+        if path.absolute() == staging.absolute():
+            staging_checks += 1
+            if staging_checks == 2:
+                os.rename(legitimate_parent, displaced_parent)
+                os.rename(attacker_parent, legitimate_parent)
+        return retained
+
+    monkeypatch.setattr(firewall, "_validate_lineage", replace_after_validation)
+    destination = tmp_path / "runtime/state/ci-portable"
+    with pytest.raises(firewall.FirewallError, match="identity|changed|lineage"):
+        _publish(staging, destination)
+    assert not destination.exists()
+
+
+def test_publisher_rejects_named_child_directory_replacement_after_snapshot(
+    tmp_path: Path,
+) -> None:
+    staging = _staging(tmp_path)
+    displaced = tmp_path / "displaced-test-governance"
+
+    def replace_child(boundary: str) -> None:
+        if boundary == "after-manifest":
+            original = staging / "test-governance"
+            os.rename(original, displaced)
+            replacement = staging / "test-governance"
+            replacement.mkdir(mode=0o700)
+            _write_leaf(
+                staging,
+                "test-governance/summary.json",
+                {"schema_version": "fixture-summary/v1", "status": "pass", "tests": []},
+            )
+
+    destination = tmp_path / "runtime/state/ci-portable"
+    with pytest.raises(firewall.FirewallError, match="identity|changed"):
+        _publish(staging, destination, boundary_hook=replace_child)
+    assert not destination.exists()
+
+
+def test_publisher_rejects_named_child_directory_replacement_after_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = _staging(tmp_path / "source")
+    foreign_staging = _staging(tmp_path / "foreign-source")
+    foreign = tmp_path / "foreign/state/ci-portable"
+    _publish(foreign_staging, foreign)
+    foreign.chmod(0o700)
+    (foreign / "test-governance").chmod(0o700)
+    replacement = tmp_path / "replacement-test-governance"
+    os.rename(foreign / "test-governance", replacement)
+    original = firewall._renameat2_noreplace
+    destination = tmp_path / "runtime/state/ci-portable"
+    replaced = False
+
+    def rename_then_replace_child(*args: object) -> None:
+        nonlocal replaced
+        original(*args)
+        destination.chmod(0o700)
+        current = destination / "test-governance"
+        current.chmod(0o700)
+        displaced = tmp_path / "displaced-final-child"
+        os.rename(current, displaced)
+        displaced.chmod(0o500)
+        os.rename(replacement, destination / "test-governance")
+        (destination / "test-governance").chmod(0o500)
+        destination.chmod(0o500)
+        replaced = True
+
+    monkeypatch.setattr(firewall, "_renameat2_noreplace", rename_then_replace_child)
+    with pytest.raises(firewall.FirewallError, match="identity|changed"):
+        _publish(staging, destination)
+    assert replaced
+
+
+def test_publisher_rejects_final_root_identity_swap_before_reopened_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = _staging(tmp_path / "source")
+    foreign_staging = _staging(tmp_path / "foreign-source")
+    foreign = tmp_path / "foreign/state/ci-portable"
+    _publish(foreign_staging, foreign)
+    destination = tmp_path / "runtime/state/ci-portable"
+    original = firewall.validate_published_evidence
+    swapped = False
+
+    def swap_then_validate(path: Path, **kwargs: object) -> dict[str, object]:
+        nonlocal swapped
+        if path == destination and not swapped:
+            swapped = True
+            destination.chmod(0o700)
+            foreign.chmod(0o700)
+            displaced = tmp_path / "displaced-final-root"
+            os.rename(destination, displaced)
+            displaced.chmod(0o500)
+            os.rename(foreign, destination)
+            destination.chmod(0o500)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(firewall, "validate_published_evidence", swap_then_validate)
+    with pytest.raises(firewall.FirewallError, match="identity|changed"):
+        _publish(staging, destination)
+    assert swapped
 
 
 def test_ambiguous_success_accepts_only_exact_identity_and_never_unlinks_foreign_set(
@@ -444,31 +1047,63 @@ def test_validator_rejects_self_consistent_but_nonallowlisted_published_layout(t
     extra = destination / "unexpected.json"
     extra.write_bytes(_canonical({"status": "PASS"}))
     extra.chmod(0o400)
-    manifest_path = destination / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["files"].append({
-        "path": "unexpected.json",
-        "sha256": hashlib.sha256(extra.read_bytes()).hexdigest(),
-        "size": len(extra.read_bytes()),
-        "mode": "0400",
-    })
-    manifest["files"].sort(key=lambda item: item["path"])
-    manifest["manifest_payload_sha256"] = firewall.manifest_payload_sha256(manifest)
-    manifest_path.chmod(0o600)
-    manifest_path.write_bytes(_canonical(manifest))
-    manifest_path.chmod(0o400)
-    checksums = destination / "SHA256SUMS"
-    checksums.chmod(0o600)
-    leaves = sorted(
-        path for path in destination.rglob("*")
-        if path.is_file() and path.name != "SHA256SUMS"
-    )
-    checksums.write_bytes(b"".join(
-        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(destination).as_posix()}\n".encode()
-        for path in leaves
-    ))
-    checksums.chmod(0o400)
+    _rehash_published_tree(destination)
     destination.chmod(0o500)
 
     with pytest.raises(firewall.FirewallError, match="projection root"):
+        firewall.validate_published_evidence(destination)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing-fixed", "fake-context", "wrong-code", "bundle-outcome"],
+)
+def test_validator_rejects_rehashed_topology_schema_and_inventory_forgery(
+    tmp_path: Path, mutation: str,
+) -> None:
+    case = tmp_path / mutation
+    destination = case / "runtime/state/ci-portable"
+    _publish(_staging(case), destination)
+    topology_root = destination / "capability-topology"
+    if mutation == "missing-fixed":
+        topology_root.chmod(0o700)
+        (topology_root / ".reservation").unlink()
+        topology_root.chmod(0o500)
+    elif mutation == "fake-context":
+        path = topology_root / "foundation-context.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["schema_version"] = "fake-foundation-context/v99"
+        document["foundation_context_sha256"] = topology._sha256({
+            key: value for key, value in document.items()
+            if key != "foundation_context_sha256"
+        })
+        path.chmod(0o600)
+        path.write_bytes(_canonical(document))
+        path.chmod(0o400)
+    elif mutation == "wrong-code":
+        marker = topology_root / "NATIVE-BWRAP-OS-SANDBOX.json"
+        receipt = json.loads(marker.read_text(encoding="utf-8"))
+        receipt["capability_or_authority_code"] = "NATIVE-USERNS-ROOT-PROVISION"
+        receipt["completeness_sha256"] = topology.native_completeness_sha256(receipt)
+        receipt["receipt_sha256"] = topology.payload_sha256(receipt)
+        for path in (
+            marker,
+            topology_root / "NATIVE-BWRAP-OS-SANDBOX.artifacts/receipt.json",
+        ):
+            path.chmod(0o600)
+            path.write_bytes(_canonical(receipt))
+            path.chmod(0o400)
+    else:
+        path = topology_root / "NATIVE-BWRAP-OS-SANDBOX.artifacts/manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["outcome"] = "PASS"
+        manifest["manifest_sha256"] = topology._sha256({
+            key: value for key, value in manifest.items()
+            if key != "manifest_sha256"
+        })
+        path.chmod(0o600)
+        path.write_bytes(_canonical(manifest))
+        path.chmod(0o400)
+    _rehash_published_tree(destination)
+    with pytest.raises(firewall.FirewallError):
         firewall.validate_published_evidence(destination)

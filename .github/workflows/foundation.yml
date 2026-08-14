@@ -56,5 +56,6 @@ jobs:
         with:
           name: ci-portable-${{ github.run_id }}-${{ github.run_attempt }}
           path: runtime/state/ci-portable/**
+          include-hidden-files: true
           if-no-files-found: warn
           retention-days: 14
