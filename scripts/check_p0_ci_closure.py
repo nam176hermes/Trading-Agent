@@ -62,7 +62,14 @@ _CI_PORTABLE_WRAPPER_RECIPE = " ".join((
     'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700";',
     'cleanup_ci_tmpdir() { find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$ci_tmpdir"; };',
     "trap 'cleanup_ci_tmpdir' EXIT;",
-    'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private',
+    'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private || {',
+    'original_status=$$?;',
+    'failure_diagnostic="$$raw_evidence_root/capability-topology/portable-root-remainder.failure-diagnostic.json";',
+    'if test -e "$$failure_diagnostic" || test -L "$$failure_diagnostic"; then',
+    'uv run python -m scripts.check_artifact_firewall publish-failure --raw-root "$$raw_evidence_root" --destination "$(CURDIR)/runtime/state/ci-portable" --inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH" --repository-root "$(CURDIR)" || :;',
+    'fi;',
+    'exit "$$original_status";',
+    '}',
 ))
 _APPROVED_PARSE_TIME_SHELL = (
     "RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)"

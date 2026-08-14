@@ -332,7 +332,19 @@ ci-portable:
 		}; \
 		trap 'cleanup_ci_tmpdir' EXIT; \
 		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
-			TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private
+			TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private || { \
+			original_status=$$?; \
+			failure_diagnostic="$$raw_evidence_root/capability-topology/portable-root-remainder.failure-diagnostic.json"; \
+			if test -e "$$failure_diagnostic" || test -L "$$failure_diagnostic"; then \
+				uv run python -m scripts.check_artifact_firewall publish-failure \
+						--raw-root "$$raw_evidence_root" \
+						--destination "$(CURDIR)/runtime/state/ci-portable" \
+						--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
+						--foundation-context-path "$$FOUNDATION_CONTEXT_PATH" \
+						--repository-root "$(CURDIR)" || :; \
+			fi; \
+			exit "$$original_status"; \
+		}
 
 ci-portable-private:
 	$(MAKE) ci-common-private ci-portable-topology check-portable-defect-closure check-p0-baseline check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract

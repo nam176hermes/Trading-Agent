@@ -6,6 +6,7 @@ import argparse
 from contextlib import contextmanager
 import ctypes
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import errno
 import hashlib
 import json
@@ -20,6 +21,9 @@ from typing import Callable, Iterator, Mapping, Sequence
 
 
 MANIFEST_SCHEMA = "portable-ci-evidence-manifest/v1"
+FAILURE_MANIFEST_SCHEMA = "portable-ci-failure-evidence-manifest/v1"
+FAILURE_PROJECTION_SCHEMA = "portable-ci-root-remainder-failure/v1"
+FAILURE_SEMANTIC_SCHEMA = "portable-ci-root-remainder-failure-semantic/v1"
 _RENAME_NOREPLACE = 1
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
@@ -82,6 +86,20 @@ _MANIFEST_KEYS = frozenset({
 })
 _RUN_METADATA_KEYS = frozenset({"run_id", "attempt", "generated_at_utc"})
 _FILE_KEYS = frozenset({"path", "sha256", "size", "mode"})
+_FAILURE_PROJECTION_KEYS = frozenset({
+    "schema_version", "diagnostic_only", "failure_class",
+    "foundation_run_id", "foundation_head_sha", "foundation_validation_date",
+    "foundation_context_sha256", "inventory_sha256", "baseline_sha256",
+    "remainder_sha256", "custody_policy_sha256", "policy_snapshot_sha256",
+    "source_failure_diagnostic_sha256", "remainder_node_count", "passed_count",
+    "skipped_count", "skipped_node_ids_sha256", "skipped_observations",
+    "failure_projection_sha256",
+})
+_FAILURE_OBSERVATION_KEYS = frozenset({
+    "test_node_id", "phase", "reason_class", "reason_provenance",
+    "normalized_reason_commitment_sha256", "policy_match_result",
+    "existing_policy_entry_sha256",
+})
 
 
 class FirewallError(RuntimeError):
@@ -1079,6 +1097,114 @@ def _validate_projection_layout(snapshot: _Snapshot) -> dict[str, object]:
     return semantic
 
 
+def _failure_projection_sha256(document: Mapping[str, object]) -> str:
+    return hashlib.sha256(_canonical_json_bytes({
+        key: value for key, value in document.items()
+        if key != "failure_projection_sha256"
+    })).hexdigest()
+
+
+def _failure_semantic_projection(document: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": FAILURE_SEMANTIC_SCHEMA,
+        "diagnostic_only": True,
+        "failure_class": "EXACT_EXECUTION_NONPASS",
+        "foundation": {
+            "run_id": document["foundation_run_id"],
+            "head_sha": document["foundation_head_sha"],
+            "validation_date": document["foundation_validation_date"],
+            "context_sha256": document["foundation_context_sha256"],
+        },
+        "inventory_sha256": document["inventory_sha256"],
+        "baseline_sha256": document["baseline_sha256"],
+        "remainder_sha256": document["remainder_sha256"],
+        "custody_policy_sha256": document["custody_policy_sha256"],
+        "policy_snapshot_sha256": document["policy_snapshot_sha256"],
+        "source_failure_diagnostic_sha256": document["source_failure_diagnostic_sha256"],
+        "remainder_node_count": document["remainder_node_count"],
+        "passed_count": document["passed_count"],
+        "skipped_count": document["skipped_count"],
+        "skipped_node_ids_sha256": document["skipped_node_ids_sha256"],
+    }
+
+
+def _validate_failure_projection_layout(snapshot: _Snapshot) -> dict[str, object]:
+    from scripts import t_g03_capability_topology as topology
+
+    root_entries = set(snapshot.directories[""].entries) - {"manifest.json", "SHA256SUMS"}
+    if root_entries != {"root-remainder-failure.json"} or set(snapshot.directories) != {""}:
+        raise _reject("failure projection inventory is not exact")
+    raw = snapshot.leaves["root-remainder-failure.json"].raw
+    document = _strict_json(raw, relative="root-remainder-failure.json")
+    if not isinstance(document, dict) or set(document) != _FAILURE_PROJECTION_KEYS:
+        raise _reject("failure projection schema is incomplete")
+    try:
+        topology.parse_foundation_validation_date(document["foundation_validation_date"])
+    except topology.TopologyError as exc:
+        raise _reject("failure projection Foundation date is invalid") from exc
+    hashes = (
+        "foundation_context_sha256", "inventory_sha256", "baseline_sha256",
+        "remainder_sha256", "custody_policy_sha256", "policy_snapshot_sha256",
+        "source_failure_diagnostic_sha256", "skipped_node_ids_sha256",
+        "failure_projection_sha256",
+    )
+    counts = ("remainder_node_count", "passed_count", "skipped_count")
+    if (
+        document["schema_version"] != FAILURE_PROJECTION_SCHEMA
+        or document["diagnostic_only"] is not True
+        or document["failure_class"] != "EXACT_EXECUTION_NONPASS"
+        or not isinstance(document["foundation_run_id"], str)
+        or not topology.RUN_ID.fullmatch(document["foundation_run_id"])
+        or document["foundation_run_id"] == "0"
+        or not isinstance(document["foundation_head_sha"], str)
+        or not _HEAD.fullmatch(document["foundation_head_sha"])
+        or any(not isinstance(document[field], str) or not _HEX64.fullmatch(document[field]) for field in hashes)
+        or any(not isinstance(document[field], int) or isinstance(document[field], bool) or document[field] < 0 for field in counts)
+        or document["skipped_count"] < 1
+        or document["passed_count"] + document["skipped_count"] != document["remainder_node_count"]
+        or document["failure_projection_sha256"] != _failure_projection_sha256(document)
+    ):
+        raise _reject("failure projection binding is invalid")
+    observations = document["skipped_observations"]
+    if not isinstance(observations, list) or len(observations) != document["skipped_count"]:
+        raise _reject("failure projection skipped observations are incomplete")
+    nodes: list[str] = []
+    previous: bytes | None = None
+    for item in observations:
+        if not isinstance(item, dict) or set(item) != _FAILURE_OBSERVATION_KEYS:
+            raise _reject("failure projection skipped observation is malformed")
+        node = item["test_node_id"]
+        if (
+            not isinstance(node, str) or not topology._is_portable_root_pytest_node_id(node)
+            or (previous is not None and node.encode() <= previous)
+            or item["phase"] not in {"setup", "call", "teardown"}
+            or item["reason_class"] != "PYTEST_SKIP_REASON"
+            or item["reason_provenance"] != "PYTEST_REPORT"
+            or not isinstance(item["normalized_reason_commitment_sha256"], str)
+            or not _HEX64.fullmatch(item["normalized_reason_commitment_sha256"])
+            or item["policy_match_result"] not in {
+                "NO_POLICY_ENTRY", "OUTCOME_MISMATCH", "REASON_MISMATCH",
+                "CI_DISALLOWED", "EXACT_POLICY_MATCH",
+            }
+            or not isinstance(item["existing_policy_entry_sha256"], str)
+            or (
+                item["policy_match_result"] == "NO_POLICY_ENTRY"
+                and item["existing_policy_entry_sha256"] != ""
+            )
+            or (
+                item["policy_match_result"] != "NO_POLICY_ENTRY"
+                and not _HEX64.fullmatch(item["existing_policy_entry_sha256"])
+            )
+        ):
+            raise _reject("failure projection skipped observation binding is invalid")
+        previous = node.encode()
+        nodes.append(node)
+    if document["skipped_node_ids_sha256"] != topology._ids_sha256(tuple(nodes)):
+        raise _reject("failure projection skipped-node digest mismatch")
+    scan_artifact_bytes("root-remainder-failure.json", raw)
+    return _failure_semantic_projection(document)
+
+
 def _validate_identity_inputs(
     head_sha: str, source_tree_sha256: str,
     semantic_projection: Mapping[str, object], run_metadata: Mapping[str, object],
@@ -1276,6 +1402,7 @@ def _renameat2_noreplace(
 def _make_manifest(
     *, payloads: Mapping[str, bytes], head_sha: str, source_tree_sha256: str,
     semantic_projection: Mapping[str, object], run_metadata: Mapping[str, object],
+    schema_version: str = MANIFEST_SCHEMA,
 ) -> dict[str, object]:
     bound_semantic_projection = dict(semantic_projection)
     existing_tree = bound_semantic_projection.get("source_tree_sha256")
@@ -1292,7 +1419,7 @@ def _make_manifest(
         for relative in sorted(payloads)
     ]
     manifest: dict[str, object] = {
-        "schema_version": MANIFEST_SCHEMA,
+        "schema_version": schema_version,
         "head_sha": head_sha,
         "source_tree_sha256": source_tree_sha256,
         "semantic_projection": bound_semantic_projection,
@@ -1313,10 +1440,13 @@ def _checksum_bytes(payloads: Mapping[str, bytes]) -> bytes:
     )
 
 
-def publish_evidence_set(
+def _publish_evidence_set(
     *, staging_root: Path, destination: Path, head_sha: str,
     source_tree_sha256: str, semantic_projection: Mapping[str, object],
-    run_metadata: Mapping[str, object],
+    run_metadata: Mapping[str, object], manifest_schema: str,
+    projection_validator: Callable[[_Snapshot], dict[str, object]],
+    complete_validator: Callable[[_Snapshot], dict[str, object]],
+    published_validator: Callable[..., dict[str, object]],
     boundary_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Seal retained staging bytes and atomically publish without replacement."""
@@ -1344,12 +1474,13 @@ def publish_evidence_set(
             with _snapshot_tree(
                 staging_root, directory_mode=0o700, file_mode=0o600,
             ) as source:
-                _validate_projection_layout(source)
+                projection_validator(source)
                 payloads = {relative: leaf.raw for relative, leaf in source.leaves.items()}
                 manifest = _make_manifest(
                     payloads=payloads, head_sha=head_sha,
                     source_tree_sha256=source_tree_sha256,
                     semantic_projection=semantic_projection, run_metadata=run_metadata,
+                    schema_version=manifest_schema,
                 )
                 manifest_raw = _canonical_json_bytes(manifest)
                 complete_payloads = {**payloads, "manifest.json": manifest_raw}
@@ -1371,7 +1502,7 @@ def publish_evidence_set(
                 retained_name=candidate_name,
             ) as sealed:
                 _require_tree_identity(sealed, sealed_identity)
-                _validate_complete_snapshot(sealed)
+                complete_validator(sealed)
                 candidate_identity = _stable_identity(os.fstat(sealed.root_descriptor))
                 try:
                     _renameat2_noreplace(
@@ -1407,7 +1538,7 @@ def publish_evidence_set(
                     named_root_name=destination.name,
                     refresh_root_identity=True,
                 )
-                validate_published_evidence(
+                published_validator(
                     destination, expected_head_sha=head_sha,
                     expected_source_tree_sha256=source_tree_sha256,
                     expected_semantic_projection=semantic_projection,
@@ -1423,6 +1554,25 @@ def publish_evidence_set(
         raise
     except OSError as exc:
         raise _reject("artifact publication failed closed") from exc
+
+
+def publish_evidence_set(
+    *, staging_root: Path, destination: Path, head_sha: str,
+    source_tree_sha256: str, semantic_projection: Mapping[str, object],
+    run_metadata: Mapping[str, object],
+    boundary_hook: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    """Seal retained acceptance projection bytes and publish without replacement."""
+    return _publish_evidence_set(
+        staging_root=staging_root, destination=destination, head_sha=head_sha,
+        source_tree_sha256=source_tree_sha256,
+        semantic_projection=semantic_projection, run_metadata=run_metadata,
+        manifest_schema=MANIFEST_SCHEMA,
+        projection_validator=_validate_projection_layout,
+        complete_validator=_validate_complete_snapshot,
+        published_validator=validate_published_evidence,
+        boundary_hook=boundary_hook,
+    )
 
 
 def _source_tree_identity(root: Path, head_sha: str) -> str:
@@ -1609,6 +1759,161 @@ def publish_final_evidence(
     )
 
 
+def _failure_payloads_from_raw(
+    raw: _Snapshot, *, raw_root: Path, inventory: Path,
+    foundation_context_path: Path, run_id: str, head_sha: str,
+    boundary_hook: Callable[[str], None] | None = None,
+) -> tuple[dict[str, bytes], dict[str, object], dict[str, object]]:
+    from scripts import t_g03_capability_topology as topology
+
+    expected_root = {
+        "capability-topology", "t-g03a-hosted-failure-inventory.tsv",
+        topology.CLOSURE_RELATIVE_PATH.name,
+    }
+    expected_topology = {
+        ".reservation", "foundation-context.json", "portable-root-baseline.json",
+        "portable-root-candidates.txt", "portable-root-collection.governance.json",
+        "portable-root-remainder.json", "portable-root-remainder.txt",
+        "portable-root-remainder.failure-diagnostic.json",
+    }
+    topology_directory = raw.directories.get("capability-topology")
+    if (
+        set(raw.directories[""].entries) != expected_root
+        or topology_directory is None
+        or set(topology_directory.entries) != expected_topology
+    ):
+        raise _reject("raw failure evidence inventory is not exact")
+    canonical_context = raw_root / "capability-topology/foundation-context.json"
+    if foundation_context_path.absolute() != canonical_context:
+        raise _reject("failure Foundation context path is foreign")
+    if raw.leaves["t-g03a-hosted-failure-inventory.tsv"].raw != inventory.read_bytes():
+        raise _reject("raw failure inventory binding drift")
+    if (
+        raw.leaves[topology.CLOSURE_RELATIVE_PATH.name].raw
+        != topology.CLOSURE_RELATIVE_PATH.read_bytes()
+    ):
+        raise _reject("raw failure closure binding drift")
+    try:
+        context = topology.load_foundation_context(
+            canonical_context, run_id=run_id, head_sha=head_sha,
+        )
+        baseline = topology.load_portable_root_baseline(
+            inventory=inventory, evidence_root=raw_root, run_id=run_id,
+            head_sha=head_sha, foundation_context_path=canonical_context,
+        )
+        remainder, nodes = topology._load_portable_root_remainder(
+            inventory=inventory, evidence_root=raw_root, run_id=run_id,
+            head_sha=head_sha, foundation_context_path=canonical_context,
+        )
+        diagnostic_relative = (
+            "capability-topology/portable-root-remainder.failure-diagnostic.json"
+        )
+        diagnostic = topology.read_failure_diagnostic(
+            raw_root / diagnostic_relative, inventory=inventory,
+            evidence_root=raw_root, run_id=run_id, head_sha=head_sha,
+            foundation_context_path=canonical_context,
+        )
+    except (OSError, topology.TopologyError) as exc:
+        raise _reject("raw failure evidence binding is invalid") from exc
+    retained_bindings = {
+        "capability-topology/foundation-context.json": context,
+        "capability-topology/portable-root-baseline.json": baseline,
+        "capability-topology/portable-root-remainder.json": remainder,
+        diagnostic_relative: diagnostic,
+    }
+    if any(
+        raw.leaves[relative].raw != _canonical_json_bytes(document)
+        for relative, document in retained_bindings.items()
+    ):
+        raise _reject("raw failure retained bytes drift from validated bindings")
+    observations = diagnostic["observations"]
+    if (
+        not isinstance(observations, list)
+        or len(observations) != len(nodes)
+        or any(item.get("outcome") not in {"passed", "skipped"} for item in observations)
+    ):
+        raise _reject("failure diagnostic is not an exact passed/skipped remainder")
+    passed_count = sum(item["outcome"] == "passed" for item in observations)
+    skipped = [item for item in observations if item["outcome"] == "skipped"]
+    if not skipped:
+        raise _reject("failure diagnostic has no skipped root node")
+    skipped_observations = [{key: item[key] for key in _FAILURE_OBSERVATION_KEYS} for item in skipped]
+    projection: dict[str, object] = {
+        "schema_version": FAILURE_PROJECTION_SCHEMA,
+        "diagnostic_only": True,
+        "failure_class": "EXACT_EXECUTION_NONPASS",
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
+        "inventory_sha256": diagnostic["inventory_sha256"],
+        "baseline_sha256": baseline["baseline_sha256"],
+        "remainder_sha256": remainder["remainder_sha256"],
+        "custody_policy_sha256": diagnostic["custody_policy_sha256"],
+        "policy_snapshot_sha256": diagnostic["policy_snapshot_sha256"],
+        "source_failure_diagnostic_sha256": hashlib.sha256(
+            raw.leaves[diagnostic_relative].raw,
+        ).hexdigest(),
+        "remainder_node_count": len(nodes),
+        "passed_count": passed_count,
+        "skipped_count": len(skipped),
+        "skipped_node_ids_sha256": topology._ids_sha256(tuple(
+            item["test_node_id"] for item in skipped
+        )),
+        "skipped_observations": skipped_observations,
+        "failure_projection_sha256": "",
+    }
+    projection["failure_projection_sha256"] = _failure_projection_sha256(projection)
+    payloads = {"root-remainder-failure.json": _canonical_json_bytes(projection)}
+    semantic = _failure_semantic_projection(projection)
+    run_metadata = {
+        "run_id": run_id,
+        "attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    if boundary_hook is not None:
+        boundary_hook("after-source-validation")
+    raw.postcheck()
+    return payloads, semantic, run_metadata
+
+
+def publish_root_remainder_failure(
+    *, raw_root: Path, destination: Path, inventory: Path,
+    foundation_context_path: Path, repository_root: Path,
+    source_boundary_hook: Callable[[str], None] | None = None,
+    publication_boundary_hook: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    """Publish a failure-only root-remainder projection with no acceptance meaning."""
+    from scripts import t_g03_capability_topology as topology
+
+    try:
+        run_id, head_sha = topology._active_foundation_identity()
+    except topology.TopologyError as exc:
+        raise _reject("authoritative failure identity is unavailable") from exc
+    raw_root = raw_root.absolute()
+    with _snapshot_tree(raw_root, directory_mode=0o700, file_mode=0o600) as raw:
+        payloads, semantic, run_metadata = _failure_payloads_from_raw(
+            raw, raw_root=raw_root, inventory=inventory,
+            foundation_context_path=foundation_context_path,
+            run_id=run_id, head_sha=head_sha, boundary_hook=source_boundary_hook,
+        )
+    projection_name = f".failure-projection-{secrets.token_hex(16)}"
+    with _validate_lineage(raw_root, create=False) as raw_lineage:
+        _build_candidate(raw_lineage.descriptor, projection_name, payloads)
+        raw_lineage.postcheck()
+    source_tree_sha256 = _source_tree_identity(repository_root, head_sha)
+    return _publish_evidence_set(
+        staging_root=raw_root / projection_name, destination=destination,
+        head_sha=head_sha, source_tree_sha256=source_tree_sha256,
+        semantic_projection=semantic, run_metadata=run_metadata,
+        manifest_schema=FAILURE_MANIFEST_SCHEMA,
+        projection_validator=_validate_failure_projection_layout,
+        complete_validator=_validate_failure_complete_snapshot,
+        published_validator=validate_published_failure_evidence,
+        boundary_hook=publication_boundary_hook,
+    )
+
+
 def _strict_json(raw: bytes, *, relative: str) -> object:
     try:
         value = json.loads(raw.decode("utf-8"))
@@ -1619,16 +1924,20 @@ def _strict_json(raw: bytes, *, relative: str) -> object:
     return value
 
 
-def _validate_complete_snapshot(snapshot: _Snapshot) -> dict[str, object]:
+def _validate_complete_snapshot(
+    snapshot: _Snapshot, *,
+    projection_validator: Callable[[_Snapshot], dict[str, object]] = _validate_projection_layout,
+    manifest_schema: str = MANIFEST_SCHEMA,
+) -> dict[str, object]:
     if "manifest.json" not in snapshot.leaves or "SHA256SUMS" not in snapshot.leaves:
         raise _reject("published evidence is missing manifest or checksum index")
-    expected_semantic_projection = _validate_projection_layout(snapshot)
+    expected_semantic_projection = projection_validator(snapshot)
     manifest_value = _strict_json(snapshot.leaves["manifest.json"].raw, relative="manifest")
     if not isinstance(manifest_value, dict) or set(manifest_value) != _MANIFEST_KEYS:
         raise _reject("published manifest schema is incomplete")
     manifest = dict(manifest_value)
     if (
-        manifest["schema_version"] != MANIFEST_SCHEMA
+        manifest["schema_version"] != manifest_schema
         or manifest["directory_mode"] != "0500"
         or not isinstance(manifest["head_sha"], str)
         or not _HEAD.fullmatch(manifest["head_sha"])
@@ -1701,11 +2010,19 @@ def _validate_complete_snapshot(snapshot: _Snapshot) -> dict[str, object]:
     return manifest
 
 
-def validate_published_evidence(
+def _validate_failure_complete_snapshot(snapshot: _Snapshot) -> dict[str, object]:
+    return _validate_complete_snapshot(
+        snapshot, projection_validator=_validate_failure_projection_layout,
+        manifest_schema=FAILURE_MANIFEST_SCHEMA,
+    )
+
+
+def _validate_published_evidence(
     destination: Path, *, expected_head_sha: str | None = None,
     expected_source_tree_sha256: str | None = None,
     expected_semantic_projection: Mapping[str, object] | None = None,
     expected_root_identity: tuple[int, int, int, int, int] | None = None,
+    complete_validator: Callable[[_Snapshot], dict[str, object]],
 ) -> dict[str, object]:
     with _snapshot_tree(
         destination.absolute(), directory_mode=0o500, file_mode=0o400,
@@ -1716,7 +2033,7 @@ def validate_published_evidence(
             != expected_root_identity
         ):
             raise _reject("published root identity changed before validation")
-        manifest = _validate_complete_snapshot(snapshot)
+        manifest = complete_validator(snapshot)
         if expected_head_sha is not None and manifest["head_sha"] != expected_head_sha:
             raise _reject("published head binding mismatch")
         if (
@@ -1740,6 +2057,36 @@ def validate_published_evidence(
         return manifest
 
 
+def validate_published_evidence(
+    destination: Path, *, expected_head_sha: str | None = None,
+    expected_source_tree_sha256: str | None = None,
+    expected_semantic_projection: Mapping[str, object] | None = None,
+    expected_root_identity: tuple[int, int, int, int, int] | None = None,
+) -> dict[str, object]:
+    return _validate_published_evidence(
+        destination, expected_head_sha=expected_head_sha,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_semantic_projection=expected_semantic_projection,
+        expected_root_identity=expected_root_identity,
+        complete_validator=_validate_complete_snapshot,
+    )
+
+
+def validate_published_failure_evidence(
+    destination: Path, *, expected_head_sha: str | None = None,
+    expected_source_tree_sha256: str | None = None,
+    expected_semantic_projection: Mapping[str, object] | None = None,
+    expected_root_identity: tuple[int, int, int, int, int] | None = None,
+) -> dict[str, object]:
+    return _validate_published_evidence(
+        destination, expected_head_sha=expected_head_sha,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_semantic_projection=expected_semantic_projection,
+        expected_root_identity=expected_root_identity,
+        complete_validator=_validate_failure_complete_snapshot,
+    )
+
+
 def _read_object(path: Path) -> dict[str, object]:
     try:
         raw = path.read_bytes()
@@ -1755,7 +2102,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "action",
-        choices=("publish", "publish-error", "publish-projection", "validate"),
+        choices=(
+            "publish", "publish-error", "publish-failure", "publish-projection",
+            "validate",
+        ),
     )
     parser.add_argument("--raw-root", type=Path)
     parser.add_argument("--staging-root", type=Path)
@@ -1791,13 +2141,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.repository_root,
             ):
                 raise _reject("final publication inputs are incomplete")
-            publish_final_evidence(
-                raw_root=args.raw_root, destination=args.destination,
-                inventory=args.inventory,
-                foundation_context_path=args.foundation_context_path,
-                repository_root=args.repository_root,
-                governance_error=args.action == "publish-error",
-            )
+            if args.action == "publish-failure":
+                publish_root_remainder_failure(
+                    raw_root=args.raw_root, destination=args.destination,
+                    inventory=args.inventory,
+                    foundation_context_path=args.foundation_context_path,
+                    repository_root=args.repository_root,
+                )
+            else:
+                publish_final_evidence(
+                    raw_root=args.raw_root, destination=args.destination,
+                    inventory=args.inventory,
+                    foundation_context_path=args.foundation_context_path,
+                    repository_root=args.repository_root,
+                    governance_error=args.action == "publish-error",
+                )
     except (FirewallError, OSError, ValueError) as exc:
         if isinstance(exc, FirewallError):
             fields = [exc.code, exc.category, exc.relative_path, exc.sha256]
