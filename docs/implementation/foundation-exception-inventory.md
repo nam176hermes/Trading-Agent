@@ -513,8 +513,8 @@ scripts/audit_canonical_repo.py|589|BaseException|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
-scripts/check_artifact_firewall.py|476|Exception|TOOLING_MIGRATION|RAISE
-scripts/check_artifact_firewall.py|517|BaseException|TOOLING_MIGRATION|RAISE
+scripts/check_artifact_firewall.py|500|Exception|TOOLING_MIGRATION|RAISE
+scripts/check_artifact_firewall.py|541|BaseException|TOOLING_MIGRATION|RAISE
 scripts/diagnose_nautilus_v12_runtime_failure.py|628|BaseException|TOOLING_MIGRATION|RAISE
 scripts/generate_phase4_command_manifest.py|63|Exception|TOOLING_MIGRATION|RETURN
 scripts/generate_phase4_runtime_authority.py|109|Exception|TOOLING_MIGRATION|RETURN

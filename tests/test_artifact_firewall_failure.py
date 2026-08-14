@@ -454,9 +454,71 @@ def test_failure_publisher_never_clobbers_an_existing_destination(
     destination.mkdir(parents=True, mode=0o700)
     sentinel = destination / "existing"
     sentinel.write_text("preserve", encoding="utf-8")
-    with pytest.raises(firewall.FirewallError, match="destination already exists"):
+    with pytest.raises(firewall.FailurePublicationError) as raised:
         _publish_failure(raw_root, destination, monkeypatch)
+    assert raised.value.stage == "PUBLICATION"
     assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+@pytest.mark.parametrize(
+    ("stage", "target", "code", "category"),
+    [
+        ("RAW_BINDING", "raw-binding", "ARTIFACT_FIREWALL_REJECTED", "LAYOUT"),
+        ("PROJECTION", "projection", "ARTIFACT_FIREWALL_REJECTED", "LAYOUT"),
+        ("SOURCE_TREE", "source-tree", "ARTIFACT_FIREWALL_REJECTED", "LAYOUT"),
+        ("PUBLICATION", "publication", "ARTIFACT_SECRET_REJECTED", "PASSWORD"),
+    ],
+)
+def test_failure_publisher_cli_reports_only_the_closed_failure_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    stage: str, target: str, code: str, category: str,
+) -> None:
+    raw_root, _run_id, _head_sha, _skipped = _failure_source(tmp_path, monkeypatch)
+    destination = tmp_path / "publication/artifact"
+    destination.parent.mkdir(mode=0o700)
+    hostile = "password: private-value /private/raw/reason"
+
+    def reject(*_args: object, **_kwargs: object) -> object:
+        raise firewall.FirewallError(
+            hostile, code=code, category=category, relative_path="private/raw/reason",
+            sha256="f" * 64,
+        )
+
+    if target == "raw-binding":
+        def reject_identity() -> tuple[str, str]:
+            raise topology.TopologyError(hostile)
+
+        monkeypatch.setattr(topology, "_active_foundation_identity", reject_identity)
+    elif target == "projection":
+        monkeypatch.setattr(firewall, "_build_candidate", reject)
+    elif target == "source-tree":
+        monkeypatch.setattr(firewall, "_source_tree_identity", reject)
+    else:
+        monkeypatch.setattr(
+            firewall, "_source_tree_identity", lambda _root, _head: TREE,
+        )
+        monkeypatch.setattr(firewall, "_publish_evidence_set", reject)
+
+    status = firewall.main([
+        "publish-failure",
+        "--raw-root", str(raw_root),
+        "--destination", str(destination),
+        "--inventory", str(INVENTORY),
+        "--foundation-context-path",
+        str(raw_root / "capability-topology/foundation-context.json"),
+        "--repository-root", str(Path.cwd()),
+    ])
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert captured.out == ""
+    assert captured.err == (
+        f"artifact firewall: {code} {category} {stage}\n"
+    )
+    assert hostile not in captured.err
+    assert "private/raw/reason" not in captured.err
+    assert "f" * 64 not in captured.err
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize(

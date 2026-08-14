@@ -100,6 +100,9 @@ _FAILURE_OBSERVATION_KEYS = frozenset({
     "normalized_reason_commitment_sha256", "policy_match_result",
     "existing_policy_entry_sha256",
 })
+_FAILURE_PUBLICATION_STAGES = frozenset({
+    "RAW_BINDING", "PROJECTION", "SOURCE_TREE", "PUBLICATION",
+})
 
 
 class FirewallError(RuntimeError):
@@ -114,6 +117,27 @@ class FirewallError(RuntimeError):
         self.category = category
         self.relative_path = relative_path
         self.sha256 = sha256
+
+
+class FailurePublicationError(FirewallError):
+    """Closed failure-publisher stage with no underlying diagnostic values."""
+
+    def __init__(self, stage: str, *, code: str, category: str) -> None:
+        if stage not in _FAILURE_PUBLICATION_STAGES:
+            raise ValueError("failure publication stage is not closed")
+        super().__init__(
+            "failure publication rejected at a closed stage",
+            code=code, category=category,
+        )
+        self.stage = stage
+
+
+def _classify_failure_publication(
+    stage: str, exc: FirewallError | OSError | ValueError | subprocess.SubprocessError,
+) -> FailurePublicationError:
+    code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
+    category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
+    return FailurePublicationError(stage, code=code, category=category)
 
 
 def _reject(
@@ -1887,31 +1911,43 @@ def publish_root_remainder_failure(
     from scripts import t_g03_capability_topology as topology
 
     try:
-        run_id, head_sha = topology._active_foundation_identity()
-    except topology.TopologyError as exc:
-        raise _reject("authoritative failure identity is unavailable") from exc
-    raw_root = raw_root.absolute()
-    with _snapshot_tree(raw_root, directory_mode=0o700, file_mode=0o600) as raw:
-        payloads, semantic, run_metadata = _failure_payloads_from_raw(
-            raw, raw_root=raw_root, inventory=inventory,
-            foundation_context_path=foundation_context_path,
-            run_id=run_id, head_sha=head_sha, boundary_hook=source_boundary_hook,
+        try:
+            run_id, head_sha = topology._active_foundation_identity()
+        except topology.TopologyError as exc:
+            raise _reject("authoritative failure identity is unavailable") from exc
+        raw_root = raw_root.absolute()
+        with _snapshot_tree(raw_root, directory_mode=0o700, file_mode=0o600) as raw:
+            payloads, semantic, run_metadata = _failure_payloads_from_raw(
+                raw, raw_root=raw_root, inventory=inventory,
+                foundation_context_path=foundation_context_path,
+                run_id=run_id, head_sha=head_sha, boundary_hook=source_boundary_hook,
+            )
+    except (FirewallError, OSError, ValueError) as exc:
+        raise _classify_failure_publication("RAW_BINDING", exc) from None
+    try:
+        projection_name = f".failure-projection-{secrets.token_hex(16)}"
+        with _validate_lineage(raw_root, create=False) as raw_lineage:
+            _build_candidate(raw_lineage.descriptor, projection_name, payloads)
+            raw_lineage.postcheck()
+    except (FirewallError, OSError, ValueError) as exc:
+        raise _classify_failure_publication("PROJECTION", exc) from None
+    try:
+        source_tree_sha256 = _source_tree_identity(repository_root, head_sha)
+    except (FirewallError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise _classify_failure_publication("SOURCE_TREE", exc) from None
+    try:
+        return _publish_evidence_set(
+            staging_root=raw_root / projection_name, destination=destination,
+            head_sha=head_sha, source_tree_sha256=source_tree_sha256,
+            semantic_projection=semantic, run_metadata=run_metadata,
+            manifest_schema=FAILURE_MANIFEST_SCHEMA,
+            projection_validator=_validate_failure_projection_layout,
+            complete_validator=_validate_failure_complete_snapshot,
+            published_validator=validate_published_failure_evidence,
+            boundary_hook=publication_boundary_hook,
         )
-    projection_name = f".failure-projection-{secrets.token_hex(16)}"
-    with _validate_lineage(raw_root, create=False) as raw_lineage:
-        _build_candidate(raw_lineage.descriptor, projection_name, payloads)
-        raw_lineage.postcheck()
-    source_tree_sha256 = _source_tree_identity(repository_root, head_sha)
-    return _publish_evidence_set(
-        staging_root=raw_root / projection_name, destination=destination,
-        head_sha=head_sha, source_tree_sha256=source_tree_sha256,
-        semantic_projection=semantic, run_metadata=run_metadata,
-        manifest_schema=FAILURE_MANIFEST_SCHEMA,
-        projection_validator=_validate_failure_projection_layout,
-        complete_validator=_validate_failure_complete_snapshot,
-        published_validator=validate_published_failure_evidence,
-        boundary_hook=publication_boundary_hook,
-    )
+    except (FirewallError, OSError, ValueError) as exc:
+        raise _classify_failure_publication("PUBLICATION", exc) from None
 
 
 def _strict_json(raw: bytes, *, relative: str) -> object:
@@ -2157,7 +2193,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     governance_error=args.action == "publish-error",
                 )
     except (FirewallError, OSError, ValueError) as exc:
-        if isinstance(exc, FirewallError):
+        if isinstance(exc, FailurePublicationError):
+            fields = [exc.code, exc.category, exc.stage]
+            print("artifact firewall: " + " ".join(fields), file=sys.stderr)
+        elif isinstance(exc, FirewallError):
             fields = [exc.code, exc.category, exc.relative_path, exc.sha256]
             print("artifact firewall: " + " ".join(field for field in fields if field), file=sys.stderr)
         else:
