@@ -1896,3 +1896,26 @@ supports `--require-pass` for future host qualification and rejects DEFERRED;
 it is deliberately not wired into portable CI by P0-07. The standalone native
 target builds the existing custody extension, reserves fresh evidence,
 collects the portable baseline once, and runs each available native group once.
+
+### P0-07 review correction: canonical routing and PASS transaction
+
+Aggregation accepts exactly the complete canonical receipt filename set
+derived from `CODE_CLASSIFICATION`; caller order is immaterial, while a
+renamed, extra, missing, or duplicate path is rejected before any receipt can
+contribute acceptance. Each canonical filename supplies a trusted expected
+code. Content schema and code must match that identity. Native v2 content is
+therefore routed only to the paired receipt/governance artifact validator, and
+external v1 remains on the v1 validation path. A raw-byte native status API is
+not an acceptance boundary: native PASS/DEFERRED reduction occurs only after
+the two canonical native artifacts have passed descriptor-retained validation,
+including PASS governance and sealed custody.
+
+For AVAILABLE native authority, the final retained-executable postcheck,
+no-clobber PASS receipt publication, and post-publication executable identity
+postcheck form one guarded transaction with the already sealed exact
+governance publication. Identity drift at either outer boundary or during PASS
+publication removes only the exact task-owned PASS/governance bytes through
+retained, no-follow private parent and leaf descriptors, then publishes strict
+v2 FAIL with `NATIVE_IDENTITY_REPLACED` and fails the lane. Rollback refuses
+changed bytes or identities and never overwrites existing evidence; a drifted
+transaction cannot leave an accepted PASS or orphan task-owned governance.

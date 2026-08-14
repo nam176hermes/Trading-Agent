@@ -331,20 +331,30 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
     assert invalid.descriptor == -1
 
 
-def test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass() -> None:
+def test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass(
+    tmp_path: Path,
+) -> None:
     """Break caught: a host qualification converts an unavailable native resource into success."""
+    assert not hasattr(topology, "validate_native_receipt_set")
     rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     context = _native_context()
-    receipts = [
-        topology.canonical_json_bytes(_native_receipt(capability_or_authority_code=code))
-        for code in ("NATIVE-BWRAP-OS-SANDBOX", "NATIVE-USERNS-ROOT-PROVISION")
-    ]
-    assert topology.validate_native_receipt_set(
-        receipts, rows=rows, foundation_context=context, require_pass=False,
+    topology_root = tmp_path / "capability-topology"
+    topology_root.mkdir(mode=0o700)
+    for code in ("NATIVE-BWRAP-OS-SANDBOX", "NATIVE-USERNS-ROOT-PROVISION"):
+        path = topology_root / f"{code}.json"
+        path.write_bytes(topology.canonical_json_bytes(
+            _native_receipt(capability_or_authority_code=code)
+        ))
+        path.chmod(0o600)
+
+    assert topology.validate_native_artifacts(
+        topology_root, rows=rows, foundation_context=context,
+        sealed_custody={}, require_pass=False,
     ) == "DEFERRED"
     with pytest.raises(topology.TopologyError, match="requires PASS"):
-        topology.validate_native_receipt_set(
-            receipts, rows=rows, foundation_context=context, require_pass=True,
+        topology.validate_native_artifacts(
+            topology_root, rows=rows, foundation_context=context,
+            sealed_custody={}, require_pass=True,
         )
 
 
@@ -613,6 +623,152 @@ def test_retained_native_executable_replacement_fails_at_each_boundary(
             os.close(descriptor)
 
 
+@pytest.mark.parametrize(
+    "boundary", [
+        "outer-postcheck", "during-pass-publication", "after-pass-publication",
+        "pass-no-clobber-race",
+    ],
+)
+def test_native_pass_transaction_rolls_back_and_publishes_exact_fail(
+    monkeypatch: pytest.MonkeyPatch, boundary: str,
+) -> None:
+    """Break caught: identity drift leaves orphan PASS receipt or governance bytes."""
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        active: topology.NativeProbeSession | None = None
+
+        @topology.contextmanager
+        def available_probe(code: str):
+            nonlocal active
+            executable = root / f"{code}.authority"
+            executable.write_bytes(b"retained native authority")
+            descriptor = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
+            named = executable.lstat()
+            session = topology.NativeProbeSession(
+                code, "AVAILABLE", "NATIVE_CAPABILITY_VALIDATED",
+                topology._native_probe_record(
+                    code, exit_code=0,
+                    executable_sha256=hashlib.sha256(
+                        b"retained native authority"
+                    ).hexdigest(),
+                ),
+                descriptor, executable, topology._artifact_identity(named),
+                topology._artifact_identity(os.fstat(descriptor)), None,
+            )
+            active = session
+            try:
+                yield session
+            finally:
+                os.close(descriptor)
+
+        def identity_postcheck(session: topology.NativeProbeSession) -> None:
+            assert session.executable_path is not None
+            if (
+                topology._artifact_identity(session.executable_path.lstat())
+                != session.named_identity
+                or topology._artifact_identity(os.fstat(session.descriptor))
+                != session.descriptor_identity
+            ):
+                raise topology.TopologyError(
+                    "native executable identity changed during execution"
+                )
+
+        monkeypatch.setattr(topology, "_postcheck_native_probe", identity_postcheck)
+
+        def replace_active() -> None:
+            assert active is not None and active.executable_path is not None
+            replacement = active.executable_path.with_name(
+                f"{active.executable_path.name}.replacement"
+            )
+            replacement.write_bytes(b"replacement native authority")
+            replacement.replace(active.executable_path)
+
+        if boundary == "outer-postcheck":
+            original_exact = topology._execute_native_exact_with_retained_authority
+
+            def execute_then_replace(**kwargs: object) -> tuple[str, ...]:
+                selected = original_exact(**kwargs)
+                replace_active()
+                return selected
+
+            monkeypatch.setattr(
+                topology, "_execute_native_exact_with_retained_authority",
+                execute_then_replace,
+            )
+        else:
+            original_publish = topology.publish_receipt
+            replaced = False
+
+            def publish_with_replacement(
+                receipt: dict[str, object], evidence_root: Path,
+            ) -> Path:
+                nonlocal replaced
+                is_pass = receipt.get("outcome") == "PASS"
+                if is_pass and boundary == "pass-no-clobber-race":
+                    foreign = (
+                        evidence_root / "capability-topology"
+                        / "NATIVE-BWRAP-OS-SANDBOX.json"
+                    )
+                    foreign.write_bytes(b"foreign no-clobber evidence")
+                    foreign.chmod(0o600)
+                    raise FileExistsError(foreign)
+                if is_pass and not replaced and boundary == "during-pass-publication":
+                    replace_active()
+                    replaced = True
+                path = original_publish(receipt, evidence_root)
+                if is_pass and not replaced and boundary == "after-pass-publication":
+                    replace_active()
+                    replaced = True
+                return path
+
+            monkeypatch.setattr(topology, "publish_receipt", publish_with_replacement)
+
+        expected_error = (
+            FileExistsError
+            if boundary == "pass-no-clobber-race"
+            else topology.TopologyError
+        )
+        with pytest.raises(expected_error):
+            topology.run_lane(
+                lane="native-capabilities",
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                evidence_root=evidence, run_id=run_id, head_sha=head,
+                foundation_context_path=context_path, exact_runner=_passing_exact,
+                native_probe_factory=available_probe,
+            )
+
+        topology_root = evidence / "capability-topology"
+        fail_path = topology_root / "NATIVE-BWRAP-OS-SANDBOX.json"
+        if boundary == "pass-no-clobber-race":
+            assert fail_path.read_bytes() == b"foreign no-clobber evidence"
+            assert not (
+                topology_root / "NATIVE-BWRAP-OS-SANDBOX.governance.json"
+            ).exists()
+            return
+        receipt = topology.parse_receipt(fail_path.read_bytes())
+        assert receipt["outcome"] == "FAIL"
+        assert receipt["redacted_fact_class"] == "NATIVE_IDENTITY_REPLACED"
+        assert receipt["collected_node_ids"] == []
+        assert not (topology_root / "NATIVE-BWRAP-OS-SANDBOX.governance.json").exists()
+
+
 def test_native_artifact_reader_requires_private_receipt_and_complete_pass_governance(
     tmp_path: Path,
 ) -> None:
@@ -803,6 +959,78 @@ def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(
     forged = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="external-authorities", capability_or_authority_code="EXT-PHASE3B-CORPUS", expected_node_ids=list(topology._expected_rows(rows, "EXT-PHASE3B-CORPUS")[1]), collected_node_ids=["tests/control_api/test_phase3b_backfill.py::test_real_backfill_plan_has_only_approved_evidence"], preflight_state="ABSENT", outcome="DEFERRED")
     with pytest.raises(topology.TopologyError, match="DEFERRED receipt selected"):
         topology.validate_receipt(topology.canonical_json_bytes(forged), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+
+
+def test_aggregate_rejects_renamed_native_pass_without_governance_and_keeps_external_v1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: renaming native v2 bypasses its paired governance reader."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    context = _native_context()
+    run = str(context["foundation_run_id"])
+    head = str(context["foundation_head_sha"])
+    paths: list[Path] = []
+    for code in sorted(topology.CODE_CLASSIFICATION):
+        lane, expected = topology._expected_rows(rows, code)
+        if code == "NATIVE-BWRAP-OS-SANDBOX":
+            receipt = _native_receipt(
+                capability_or_authority_code=code,
+                collected_node_ids=list(expected), preflight_state="AVAILABLE",
+                redacted_fact_class="NATIVE_CAPABILITY_VALIDATED",
+                probe={
+                    "command_id": "BWRAP_USER_PID_NET_ISOLATION_V1", "exit_code": 0,
+                    "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+                    "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+                    "executable_sha256": "9" * 64,
+                },
+                selected_test_count=16, passed=16, failed=0, unavailable=0,
+                outcome="PASS",
+            )
+            path = tmp_path / "renamed-native-pass.json"
+        elif lane == "native-capabilities":
+            receipt = _native_receipt(capability_or_authority_code=code)
+            path = tmp_path / f"{code}.json"
+        else:
+            receipt = _receipt(
+                foundation_run_id=run, foundation_head_sha=head, lane=lane,
+                capability_or_authority_code=code, expected_node_ids=list(expected),
+                collected_node_ids=[], preflight_state="ABSENT",
+                redacted_fact_class="AUTHORITY_ROOT_ABSENT", outcome="DEFERRED",
+            )
+            path = tmp_path / f"{code}.json"
+        path.write_bytes(topology.canonical_json_bytes(receipt))
+        path.chmod(0o600)
+        paths.append(path)
+    monkeypatch.setattr(topology, "validate_portable_closure_proof", lambda *_a, **_k: {})
+
+    with pytest.raises(topology.TopologyError, match="canonical receipt filename set"):
+        topology.aggregate_receipts(
+            paths, rows=rows, foundation_run_id=run, foundation_head_sha=head,
+            foundation_context=context, closure_proof_path=tmp_path / "closure-proof.json",
+            sealed_custody={},
+        )
+
+    renamed = tmp_path / "renamed-native-pass.json"
+    canonical = tmp_path / "NATIVE-BWRAP-OS-SANDBOX.json"
+    canonical.write_bytes(topology.canonical_json_bytes(
+        _native_receipt(capability_or_authority_code="NATIVE-BWRAP-OS-SANDBOX")
+    ))
+    canonical.chmod(0o600)
+    canonical_paths = [canonical if path == renamed else path for path in paths]
+    assert topology.aggregate_receipts(
+        list(reversed(canonical_paths)), rows=rows,
+        foundation_run_id=run, foundation_head_sha=head,
+        foundation_context=context, closure_proof_path=tmp_path / "closure-proof.json",
+        sealed_custody={},
+    )["runtime_proof"] == "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS"
+    with pytest.raises(topology.TopologyError, match="canonical receipt filename set"):
+        topology.aggregate_receipts(
+            [*canonical_paths, renamed], rows=rows,
+            foundation_run_id=run, foundation_head_sha=head,
+            foundation_context=context,
+            closure_proof_path=tmp_path / "closure-proof.json",
+            sealed_custody={},
+        )
 
 
 def test_receipt_rejects_a_json_number_even_when_its_text_is_a_valid_run_id() -> None:

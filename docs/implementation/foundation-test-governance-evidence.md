@@ -154,3 +154,16 @@ forged PASS; and no-clobber retry behavior. Exact final-head runtime evidence
 and independent review remain candidate-bound and belong in the external task
 report; this tracked document does not convert a pre-commit run into final
 acceptance and does not claim full CI.
+
+The P0-07 review correction closes two additional acceptance gaps. Aggregate
+and governance consumers now require the complete canonical filename set from
+`CODE_CLASSIFICATION` independent of caller order, reject renamed/extra/
+missing/duplicate paths, and route trusted native identities through paired v2
+receipt/governance validation. The former public raw native status reducer is
+gone; portable and future host-require-pass callers consume validated artifact
+sets, while external v1 remains supported. AVAILABLE publication now treats
+the outer retained-authority postcheck, PASS receipt write, and
+post-publication identity postcheck as one guarded transaction. Replacement at
+any of those boundaries removes only byte-identical task-owned PASS/governance
+leaves with descriptor-relative no-follow rollback, publishes exact
+`NATIVE_IDENTITY_REPLACED` FAIL, and cannot leave acceptance evidence.

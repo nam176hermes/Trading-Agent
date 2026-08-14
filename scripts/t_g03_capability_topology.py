@@ -3074,19 +3074,15 @@ def _validate_native_outcome(receipt: dict[str, object], expected: tuple[str, ..
         raise TopologyError("native FAIL receipt has invalid state or counts")
 
 
-def validate_native_receipt_set(
-    raws: list[bytes], *, rows: tuple[InventoryRow, ...],
-    foundation_context: dict[str, object], require_pass: bool,
+def _reduce_native_artifact_status(
+    receipts: list[dict[str, object]], *, require_pass: bool,
 ) -> str:
-    run_id = str(foundation_context.get("foundation_run_id", ""))
-    head_sha = str(foundation_context.get("foundation_head_sha", ""))
-    receipts = [
-        validate_receipt(
-            raw, rows=rows, foundation_run_id=run_id,
-            foundation_head_sha=head_sha, foundation_context=foundation_context,
-        )
-        for raw in raws
-    ]
+    if any(
+        receipt.get("schema_version") != NATIVE_RECEIPT_SCHEMA
+        or receipt.get("capability_or_authority_code") not in NATIVE_COMMAND_IDS
+        for receipt in receipts
+    ):
+        raise TopologyError("native artifact set contains a non-native receipt")
     codes = [str(receipt["capability_or_authority_code"]) for receipt in receipts]
     if len(codes) != len(set(codes)) or set(codes) != set(NATIVE_COMMAND_IDS):
         raise TopologyError("native receipt set is missing, duplicate, or unknown")
@@ -3102,7 +3098,7 @@ def validate_native_artifact_set(
     receipt_path: Path, *, rows: tuple[InventoryRow, ...],
     foundation_context: dict[str, object], sealed_custody: dict[str, str],
 ) -> tuple[dict[str, object], tuple[str, ...]]:
-    if receipt_path.suffix != ".json" or not receipt_path.name.startswith("NATIVE-"):
+    if receipt_path.suffix != ".json":
         raise TopologyError("native receipt path is malformed")
     with _retained_private_native_artifacts(receipt_path) as artifacts:
         receipt = validate_receipt(
@@ -3112,7 +3108,11 @@ def validate_native_artifact_set(
             foundation_context=foundation_context,
         )
         code = str(receipt["capability_or_authority_code"])
-        if receipt_path.name != f"{code}.json":
+        if (
+            receipt.get("schema_version") != NATIVE_RECEIPT_SCHEMA
+            or code not in NATIVE_COMMAND_IDS
+            or receipt_path.name != f"{code}.json"
+        ):
             raise TopologyError("native receipt filename/code binding drift")
         expected = tuple(receipt["expected_node_ids"])
         if receipt["outcome"] == "PASS":
@@ -3132,15 +3132,67 @@ def validate_native_artifact_set(
         return receipt, executed
 
 
+def validate_native_artifacts(
+    topology_root: Path, *, rows: tuple[InventoryRow, ...],
+    foundation_context: dict[str, object], sealed_custody: dict[str, str],
+    require_pass: bool,
+) -> str:
+    receipts = [
+        validate_native_artifact_set(
+            topology_root / f"{code}.json", rows=rows,
+            foundation_context=foundation_context, sealed_custody=sealed_custody,
+        )[0]
+        for code in sorted(NATIVE_COMMAND_IDS)
+    ]
+    return _reduce_native_artifact_status(receipts, require_pass=require_pass)
+
+
+def _canonical_receipt_artifacts(paths: list[Path]) -> list[tuple[Path, str]]:
+    if not paths or any(path.parent != paths[0].parent for path in paths):
+        raise TopologyError("receipt aggregation has an invalid topology root")
+    topology_root = paths[0].parent
+    expected_names = {f"{code}.json" for code in CODE_CLASSIFICATION}
+    received_names = [path.name for path in paths]
+    if len(received_names) != len(expected_names) or set(received_names) != expected_names:
+        raise TopologyError("receipt set is not the canonical receipt filename set")
+    return [
+        (topology_root / f"{code}.json", code)
+        for code in sorted(CODE_CLASSIFICATION)
+    ]
+
+
+def _validate_bound_receipt_artifact(
+    path: Path, expected_code: str, *, rows: tuple[InventoryRow, ...],
+    foundation_run_id: str, foundation_head_sha: str,
+    foundation_context: dict[str, object], sealed_custody: dict[str, str],
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    classification = CODE_CLASSIFICATION[expected_code]
+    if classification == "NATIVE_CAPABILITY_REQUIRED":
+        receipt, executed = validate_native_artifact_set(
+            path, rows=rows, foundation_context=foundation_context,
+            sealed_custody=sealed_custody,
+        )
+    else:
+        receipt = validate_receipt(
+            path.read_bytes(), rows=rows, foundation_run_id=foundation_run_id,
+            foundation_head_sha=foundation_head_sha,
+            foundation_context=foundation_context,
+        )
+        executed = ()
+    if receipt.get("capability_or_authority_code") != expected_code:
+        raise TopologyError("receipt filename/code binding drift")
+    return receipt, executed
+
+
 def aggregate_receipts(
     paths: list[Path], *, rows: tuple[InventoryRow, ...], foundation_run_id: str,
     foundation_head_sha: str, foundation_context: dict[str, object] | None = None,
     closure_proof_path: Path | None = None, sealed_custody: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    if not paths or any(path.parent != paths[0].parent for path in paths):
-        raise TopologyError("receipt aggregation has an invalid topology root")
-    _reject_unsafe_raw_reason_nonacceptance_presence(paths[0].parent)
-    _reject_closed_source_artifacts(paths[0].parent)
+    artifacts = _canonical_receipt_artifacts(paths)
+    topology_root = artifacts[0][0].parent
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
+    _reject_closed_source_artifacts(topology_root)
     if foundation_context is None or closure_proof_path is None or sealed_custody is None:
         raise TopologyError("portable closure proof is required for aggregation")
     validate_portable_closure_proof(
@@ -3151,18 +3203,13 @@ def aggregate_receipts(
     expected_codes = set(CODE_CLASSIFICATION)
     receipts: list[dict[str, object]] = []
     try:
-        for path in paths:
-            if path.name.startswith("NATIVE-"):
-                receipt, _ = validate_native_artifact_set(
-                    path, rows=rows, foundation_context=foundation_context,
-                    sealed_custody=sealed_custody,
-                )
-            else:
-                receipt = validate_receipt(
-                    path.read_bytes(), rows=rows, foundation_run_id=foundation_run_id,
-                    foundation_head_sha=foundation_head_sha,
-                    foundation_context=foundation_context,
-                )
+        for path, expected_code in artifacts:
+            receipt, _ = _validate_bound_receipt_artifact(
+                path, expected_code, rows=rows,
+                foundation_run_id=foundation_run_id,
+                foundation_head_sha=foundation_head_sha,
+                foundation_context=foundation_context, sealed_custody=sealed_custody,
+            )
             receipts.append(receipt)
     except OSError as exc:
         raise TopologyError("receipt set is missing or unreadable") from exc
@@ -3230,24 +3277,19 @@ def reconcile_portable_root_accounting(
         foundation_context=context, sealed_custody=sealed_custody,
     )
     accounted: list[str] = [*executed_remainder, *proof["closure_node_ids"]]
-    for path in receipt_paths:
-        if path.name.startswith("NATIVE-"):
-            receipt, native_executed = validate_native_artifact_set(
-                path, rows=rows, foundation_context=context, sealed_custody=sealed_custody,
-            )
-        else:
-            receipt = validate_receipt(
-                path.read_bytes(), rows=rows, foundation_run_id=run_id,
-                foundation_head_sha=head_sha, foundation_context=context,
-            )
-            native_executed = ()
+    for path, expected_code in _canonical_receipt_artifacts(receipt_paths):
+        receipt, native_executed = _validate_bound_receipt_artifact(
+            path, expected_code, rows=rows, foundation_run_id=run_id,
+            foundation_head_sha=head_sha, foundation_context=context,
+            sealed_custody=sealed_custody,
+        )
         expected = tuple(receipt["expected_node_ids"])
         code = str(receipt["capability_or_authority_code"])
         governance = topology_root / f"{code}.governance.json"
         if receipt["outcome"] == "PASS":
             accounted.extend(
                 native_executed
-                if path.name.startswith("NATIVE-")
+                if CODE_CLASSIFICATION[expected_code] == "NATIVE_CAPABILITY_REQUIRED"
                 else _validate_exact_governance_record(governance, expected, sealed_custody)
             )
         else:
@@ -3876,10 +3918,7 @@ def _execute_native_exact_with_retained_authority(
     except BaseException:
         if published_raw is not None:
             try:
-                if _read_private_regular_file(
-                    governance, label="native PASS governance rollback record",
-                ) == published_raw:
-                    governance.unlink()
+                _rollback_task_owned_private_artifact(governance, published_raw)
             except (OSError, TopologyError):
                 pass
         raise
@@ -3888,6 +3927,149 @@ def _execute_native_exact_with_retained_authority(
             holding.unlink()
         except FileNotFoundError:
             pass
+
+
+def _rollback_task_owned_private_artifact(path: Path, expected_raw: bytes) -> None:
+    """Remove only one exact private no-clobber artifact retained by descriptor."""
+    directory_descriptor = -1
+    artifact_descriptor = -1
+    try:
+        try:
+            before_directory = path.parent.lstat()
+            if (
+                not stat.S_ISDIR(before_directory.st_mode)
+                or stat.S_ISLNK(before_directory.st_mode)
+                or before_directory.st_uid != os.geteuid()
+                or before_directory.st_gid != os.getegid()
+                or stat.S_IMODE(before_directory.st_mode) != 0o700
+            ):
+                raise TopologyError("native rollback directory is unsafe")
+            directory_descriptor = os.open(
+                path.parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            opened_directory = os.fstat(directory_descriptor)
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("native rollback directory is unsafe") from exc
+        directory_identity = _artifact_identity(opened_directory)
+        if directory_identity != _artifact_identity(before_directory):
+            raise TopologyError("native rollback directory identity changed")
+        artifact_descriptor, artifact_identity = _open_private_artifact_leaf(
+            directory_descriptor, path.name, label="native rollback artifact",
+        )
+        if _read_descriptor_bytes(artifact_descriptor) != expected_raw:
+            raise TopologyError("native rollback artifact bytes are not task-owned")
+        named_artifact = os.stat(
+            path.name, dir_fd=directory_descriptor, follow_symlinks=False,
+        )
+        held_artifact = os.fstat(artifact_descriptor)
+        named_directory = path.parent.lstat()
+        held_directory = os.fstat(directory_descriptor)
+        if (
+            _artifact_identity(named_artifact) != artifact_identity
+            or _artifact_identity(held_artifact) != artifact_identity
+            or _artifact_identity(named_directory) != directory_identity
+            or _artifact_identity(held_directory) != directory_identity
+        ):
+            raise TopologyError("native rollback artifact identity changed")
+        os.unlink(path.name, dir_fd=directory_descriptor)
+        os.fsync(directory_descriptor)
+        if os.fstat(artifact_descriptor).st_nlink != 0:
+            raise TopologyError("native rollback did not remove the retained artifact")
+        try:
+            os.stat(path.name, dir_fd=directory_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise TopologyError("native rollback artifact reappeared")
+        final_named_directory = path.parent.lstat()
+        final_held_directory = os.fstat(directory_descriptor)
+        final_named_identity = (
+            final_named_directory.st_dev, final_named_directory.st_ino,
+            final_named_directory.st_mode, final_named_directory.st_uid,
+            final_named_directory.st_gid,
+        )
+        final_held_identity = (
+            final_held_directory.st_dev, final_held_directory.st_ino,
+            final_held_directory.st_mode, final_held_directory.st_uid,
+            final_held_directory.st_gid,
+        )
+        if final_named_identity != final_held_identity:
+            raise TopologyError("native rollback directory identity changed")
+    except TopologyError:
+        raise
+    except OSError as exc:
+        raise TopologyError("native rollback artifact identity changed") from exc
+    finally:
+        for descriptor in (artifact_descriptor, directory_descriptor):
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _execute_native_pass_transaction(
+    *, baseline: dict[str, object], expected: tuple[str, ...],
+    evidence_root: Path, context: dict[str, object], code: str,
+    session: NativeProbeSession,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+) -> Path:
+    """Publish governance and PASS only inside one retained-authority transaction."""
+    topology_root = evidence_root / "capability-topology"
+    governance = topology_root / f"{code}.governance.json"
+    pass_path = topology_root / f"{code}.json"
+    governance_raw: bytes | None = None
+    pass_raw: bytes | None = None
+    pass_published = False
+    selected_count = len(expected)
+    try:
+        selected = _execute_native_exact_with_retained_authority(
+            baseline=baseline, expected=expected, governance=governance,
+            session=session, exact_runner=exact_runner,
+        )
+        governance_raw = _read_private_regular_file(
+            governance, label="native PASS governance transaction record",
+        )
+        _postcheck_native_probe(session)
+        passed_receipt = make_native_receipt(
+            context=context, code=code, expected=expected, collected=selected,
+            session=session, outcome="PASS", selected_test_count=selected_count,
+            passed=selected_count, failed=0, unavailable=0,
+        )
+        pass_raw = canonical_json_bytes(passed_receipt)
+        publish_receipt(passed_receipt, evidence_root)
+        pass_published = True
+        _postcheck_native_probe(session)
+        return pass_path
+    except BaseException as exc:
+        rollback_error: TopologyError | None = None
+        if pass_published and pass_raw is not None and os.path.lexists(pass_path):
+            try:
+                _rollback_task_owned_private_artifact(pass_path, pass_raw)
+            except TopologyError as rollback_exc:
+                rollback_error = rollback_exc
+        if governance_raw is not None and os.path.lexists(governance):
+            try:
+                _rollback_task_owned_private_artifact(governance, governance_raw)
+            except TopologyError as rollback_exc:
+                rollback_error = rollback_error or rollback_exc
+        if rollback_error is not None:
+            raise rollback_error from exc
+        if not isinstance(exc, TopologyError):
+            raise
+        identity_drift = "native executable identity changed" in str(exc)
+        failure = make_native_receipt(
+            context=context, code=code, expected=expected, collected=(),
+            session=session, outcome="FAIL", selected_test_count=selected_count,
+            passed=0, failed=selected_count, unavailable=0,
+            fact=(
+                "NATIVE_IDENTITY_REPLACED"
+                if identity_drift else "NATIVE_EXACT_TEST_FAILURE"
+            ),
+        )
+        publish_receipt(failure, evidence_root)
+        raise
 
 
 def run_lane(
@@ -3959,32 +4141,11 @@ def run_lane(
                     inventory=inventory, evidence_root=evidence_root, run_id=run_id,
                     head_sha=head_sha, foundation_context_path=foundation_context_path,
                 )
-                governance = evidence_root / "capability-topology" / f"{code}.governance.json"
-                try:
-                    selected = _execute_native_exact_with_retained_authority(
-                        baseline=baseline, expected=expected, governance=governance,
-                        session=session, exact_runner=exact_runner,
-                    )
-                except TopologyError as exc:
-                    fact = (
-                        "NATIVE_IDENTITY_REPLACED"
-                        if "native executable identity changed" in str(exc)
-                        else "NATIVE_EXACT_TEST_FAILURE"
-                    )
-                    failure = make_native_receipt(
-                        context=context, code=code, expected=expected, collected=(),
-                        session=session, outcome="FAIL", selected_test_count=len(expected),
-                        passed=0, failed=len(expected), unavailable=0, fact=fact,
-                    )
-                    publications.append(publish_receipt(failure, evidence_root))
-                    raise
-                _postcheck_native_probe(session)
-                passed_receipt = make_native_receipt(
-                    context=context, code=code, expected=expected, collected=selected,
-                    session=session, outcome="PASS", selected_test_count=len(expected),
-                    passed=len(expected), failed=0, unavailable=0,
-                )
-                publications.append(publish_receipt(passed_receipt, evidence_root))
+                publications.append(_execute_native_pass_transaction(
+                    baseline=baseline, expected=expected, evidence_root=evidence_root,
+                    context=context, code=code, session=session,
+                    exact_runner=exact_runner,
+                ))
                 continue
         state, fact = external_preflight(code)
         if state in {"BROKEN", "PARTIAL", "INVALID"}:
@@ -4074,16 +4235,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             sealed_custody = _validate_custody_policy(baseline["collector_policy"])
             topology_root = args.evidence_root / "capability-topology"
-            native_receipts = []
-            for code in sorted(NATIVE_COMMAND_IDS):
-                receipt, _ = validate_native_artifact_set(
-                    topology_root / f"{code}.json", rows=rows,
-                    foundation_context=context, sealed_custody=sealed_custody,
-                )
-                native_receipts.append(canonical_json_bytes(receipt))
-            print(validate_native_receipt_set(
-                native_receipts, rows=rows, foundation_context=context,
-                require_pass=args.require_pass,
+            print(validate_native_artifacts(
+                topology_root, rows=rows, foundation_context=context,
+                sealed_custody=sealed_custody, require_pass=args.require_pass,
             ))
         else:
             print(canonical_json_bytes(reconcile_portable_root_accounting(

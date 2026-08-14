@@ -868,21 +868,15 @@ def audit_topology_root_records(
             "phase": "call",
         } for node in closure_nodes)
         accounted = [*remainder_records, *closure_nodes]
-        for receipt_path in receipts:
-            native_executed: tuple[str, ...] = ()
-            if receipt_path.name.startswith("NATIVE-"):
-                receipt, native_executed = capability_topology.validate_native_artifact_set(
-                    receipt_path, rows=rows, foundation_context=context,
-                    sealed_custody=sealed_custody,
-                )
-            else:
-                receipt = capability_topology.validate_receipt(
-                    receipt_path.read_bytes(),
-                    rows=rows,
-                    foundation_run_id=foundation_run_id,
-                    foundation_head_sha=foundation_head_sha,
-                    foundation_context=context,
-                )
+        for receipt_path, expected_code in capability_topology._canonical_receipt_artifacts(
+            receipts,
+        ):
+            receipt, native_executed = capability_topology._validate_bound_receipt_artifact(
+                receipt_path, expected_code, rows=rows,
+                foundation_run_id=foundation_run_id,
+                foundation_head_sha=foundation_head_sha,
+                foundation_context=context, sealed_custody=sealed_custody,
+            )
             code = str(receipt["capability_or_authority_code"])
             expected = tuple(receipt["expected_node_ids"])
             governance_path = topology_root / f"{code}.governance.json"
@@ -893,7 +887,10 @@ def audit_topology_root_records(
                     )
                 accounted.extend(expected)
                 continue
-            if receipt_path.name.startswith("NATIVE-"):
+            if (
+                capability_topology.CODE_CLASSIFICATION[expected_code]
+                == "NATIVE_CAPABILITY_REQUIRED"
+            ):
                 root_records.extend({
                     "test_node_id": node,
                     "component": "root",
