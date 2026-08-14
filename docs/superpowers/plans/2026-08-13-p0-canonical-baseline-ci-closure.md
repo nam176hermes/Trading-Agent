@@ -2509,6 +2509,43 @@ or live trading is authorized.
 
 ---
 
+## P0-12R11 correction — Private publication parent below runner temp
+
+Hosted Foundation run `31839312983` passed the common gate, collected 6,417
+remainder candidates after 29 deselections from 6,446 root nodes, reserved 62
+governed nodes, and executed the exact 6,355-node remainder as 6,074 passed
+plus 281 skipped. The failure-only publisher was invoked, then failed closed as
+`ARTIFACT_FIREWALL_REJECTED LAYOUT`; the exact runner-temp upload path remained
+empty. The known failing SHA must not be rerun.
+
+The R10 final destination is a direct child of `RUNNER_TEMP`. The artifact
+firewall correctly requires `destination.parent` itself to be current-user
+owned, so a trusted root-owned runner-temp directory cannot be the terminal
+publication parent even though a private `mktemp` child under it validates.
+P0-12R11 may correct only that destination boundary: atomically create one
+deterministic, run/attempt-bound, current-user-owned mode-0700 publication
+parent below `RUNNER_TEMP`, fail on any preoccupancy, and publish to one absent
+fixed child beneath it. The workflow must upload only that exact child path.
+
+Strict TDD must first reproduce the root-owned sticky runner-temp case and
+prove directory, symlink, file, unsafe-mode, foreign-owner, and replacement
+attempts fail closed before unsafe publication. GREEN must retain exact
+run/attempt binding, R10 command-variable confinement, fully strict lineage,
+single destinations across success, governed-error, and early-failure routes,
+original caught status, no raw upload, no clobber, and sealed final artifact
+semantics. Update only the Make wrapper, its exact closure authority, the
+Foundation upload scalar, and affected exact tests; do not alter publisher
+schemas, skip/native policy, PASS semantics, dependencies, or locks.
+
+Require focused and full affected tests, a fresh standalone affected packet,
+P0 baseline/closure/contracts/source/security/inventory/actionlint/diff gates,
+an ignored report, and a clean committed worktree before independent review.
+No push, hosted rerun or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler mutation, broker/provider access,
+or live trading is authorized.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
