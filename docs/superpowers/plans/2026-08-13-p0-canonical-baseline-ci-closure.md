@@ -2218,6 +2218,36 @@ production/live/runtime/DB/service/scheduler action, or broker/exchange access.
 
 ---
 
+## P0-12R4 correction — Generated broad-handler inventory drift
+
+Push-triggered Foundation run `31818664353`, attempt 1, at exact reviewed SHA
+`c8d25398bcda8cc284cfd4701bf6a1ebf416a73b` passed D0 and secret hygiene, then
+failed after the legacy backend reported 506 passed and two skipped. The exact
+failing node was
+`tests/test_live_execution_policy.py::test_machine_readable_broad_handler_inventory_has_exact_tracked_coverage`.
+The canonical broad-handler generator observes 478 rows while the marked
+inventory block documents 470: 18 observed rows are missing and 10 documented
+rows are stale. Every difference is `TOOLING_MIGRATION` in
+`scripts/audit_canonical_repo.py`, `scripts/check_artifact_firewall.py`, or
+`scripts/t_g03_capability_topology.py`; no legacy production-handler source
+change is required.
+
+P0-12R4 may refresh only that marked machine-readable block by running
+`uv run python scripts/check_broad_handler_inventory.py --write`. It must first
+capture the exact node RED and exact 18-add/10-remove set, then independently
+inspect every row and reject any non-tooling or unexpected path. Generator
+logic, legacy source/tests, Makefile, workflows, dependencies, locks,
+inventories outside the marked block, matrix state, and qualification artifacts
+remain unchanged. The focused node, canonical `--check`, full legacy policy
+module, secret/D0/P0/contract gates, workflow lint, diff checks, and clean state
+must pass before independent review.
+
+This packet does not authorize push, remote update, hosted rerun or dispatch,
+P0-12 continuation, P0-13, promotion, production/live/runtime/DB/service/
+scheduler action, or broker/exchange access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
