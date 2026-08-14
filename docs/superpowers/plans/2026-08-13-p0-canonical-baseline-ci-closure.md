@@ -2397,6 +2397,40 @@ production/live/runtime/DB/service/scheduler action, or broker/exchange access.
 
 ---
 
+## P0-12R9 correction — Generated broad-handler line-drift refresh
+
+Push-triggered Foundation run `31832512245`, attempt 1, at exact reviewed SHA
+`88f0dc0cb6819e9972778d23ba831755f9766cf2` failed before topology after the
+legacy backend reported 506 passed, two skipped, and one failed. The sole
+failure was
+`tests/test_live_execution_policy.py::test_machine_readable_broad_handler_inventory_has_exact_tracked_coverage`;
+the common gate therefore produced no artifact, as expected, and the known
+failing SHA must not be rerun.
+
+The canonical generator observes the same 478 broad handlers documented by
+the inventory, but P0-12R8 shifted two existing
+`scripts/check_artifact_firewall.py` handler line numbers. The exact delta is
+two added and two stale rows, all `TOOLING_MIGRATION` with `RAISE` disposition:
+`Exception` moves from line 458 to 476 and `BaseException` moves from line 499
+to 517. No broad-handler form, classification, disposition, or production
+path changed.
+
+P0-12R9 may refresh only the marked machine-readable inventory block by
+running `uv run python scripts/check_broad_handler_inventory.py --write`.
+Capture the exact node RED first, inspect every added and removed row, then
+prove the generator changed only that marked block. Generator logic,
+production and test source, Makefile, workflows, dependencies, locks, source
+inventories, matrix state, and qualification artifacts remain unchanged.
+Require the exact node, canonical inventory check, full legacy policy module,
+P0-12R8 focused packet, baseline, closure, contracts, source/security audits,
+workflow lint, and exact diff/clean-state gates before independent review.
+
+This packet does not authorize push, remote update, hosted rerun or dispatch,
+P0-12 continuation, P0-13, promotion, production/live/runtime/DB/service/
+scheduler action, or broker/exchange access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
