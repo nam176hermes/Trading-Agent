@@ -2319,6 +2319,45 @@ scheduler action, or broker/exchange access.
 
 ---
 
+## P0-12R7 correction — Hosted remainder fixture and derived-inventory drift
+
+Push-triggered Foundation run `31824638303`, attempt 1, at exact reviewed SHA
+`db4bc66829cb12d8c6f17bf9820848a2bf8514c4` passed D0, secret hygiene, the
+legacy backend with 507 passed and two skipped, all 171 dashboard tests,
+typecheck, lint, build, and dependency audit. The bounded portable root
+remainder then reported 16 failed, 6025 passed, and 281 skipped before the
+aggregate stopped fail-closed at `EXACT_EXECUTION_NONPASS`. No qualification
+artifact was uploaded and the known failing SHA must not be rerun.
+
+The 16 failures reduce to seven stale or environment-coupled test authorities.
+P0-12R7 may update only the canonical dashboard manifest and lock digests in
+the derived Nautilus baseline-inventory JSON plus the four affected governance
+test modules. Make both native `AVAILABLE` tests use deterministic retained
+probe fixtures rather than real Bubblewrap/unshare discovery; construct the
+legacy `0775` exception against an exact temporary component root while
+retaining the arbitrary-root negative; pass an explicit unavailable
+`native_probe_factory` into the closure proof instead of monkeypatching the
+obsolete `_native_preflight`; and construct an existing nonancestor commit in
+a temporary Git authority instead of assuming `git rev-list --all --not HEAD`
+is nonempty. Production native `BROKEN` and external path checks remain
+fail-closed and unchanged.
+
+Update the hosted-route literal and the test observer's approved recursive-Make
+tuple to the exact current `ci-portable-private` route, including
+`check-portable-defect-closure`, `check-p0-baseline`, and
+`check-p0-ci-closure`. This is test authority only: do not broaden the observer
+parser or approved grammar. Capture the exact 16-node RED before these test or
+derived-data edits, then require the exact 16 GREEN, the complete affected
+files, a fresh standalone-clone affected/root-remainder packet, baseline,
+closure, contract, workflow-lint, and diff/clean-state checks.
+
+No script, Makefile, workflow, dependency, lockfile, source inventory, matrix,
+or qualification artifact may change. This packet does not authorize push,
+remote update, hosted rerun or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler action, or broker/exchange access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
