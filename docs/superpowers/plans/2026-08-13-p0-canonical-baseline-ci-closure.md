@@ -2268,6 +2268,13 @@ the protected host environment. Dashboard source, package manifests,
 dependencies, lockfiles, Makefile, matrix state, and qualification artifacts
 remain unchanged.
 
+Repository verification showed that `scripts/check_p0_ci_closure.py` is the
+exact structural authority for both workflows and separately retains the old
+approved Node scalar. After capturing a focused checker RED against the
+otherwise-valid Node 22 workflows, P0-12R5 must also change only that one
+approved checker scalar from `20` to `22`. Do not broaden its parser,
+allowlist, accepted step shape, workflow semantics, or error behavior.
+
 Run the focused and affected repository-shape, D0, and P0-closure tests; all
 four dashboard gates under `TMPDIR=/tmp TMP=/tmp TEMP=/tmp`; secret, D0,
 baseline, closure, contract, and workflow-lint gates; and an independent
