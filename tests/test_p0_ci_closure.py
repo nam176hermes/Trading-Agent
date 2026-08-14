@@ -1,95 +1,392 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
+import pytest
+
+from scripts import check_p0_ci_closure as closure
+
 
 ROOT = Path(__file__).resolve().parents[1]
-MATRIX = ROOT / "docs/implementation/p0-ci-closure-matrix.json"
+MATRIX_RELATIVE = "docs/implementation/p0-ci-closure-matrix.json"
+HEAD = "9" * 40
+TREE = "a" * 64
 
 
-def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
+def _canonical(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "scripts.check_p0_ci_closure", *arguments],
-        cwd=ROOT, text=True, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ["git", *arguments], cwd=root, check=True, text=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
 
-def _matrix(tmp_path: Path, mutate) -> Path:
-    document = json.loads(MATRIX.read_text(encoding="utf-8"))
-    mutate(document)
-    path = tmp_path / "matrix.json"
-    path.write_bytes((json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode())
-    return path
+def _write(root: Path, relative: str, raw: bytes) -> None:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
 
 
-def test_pending_source_matrix_is_an_executable_closed_contract() -> None:
-    """Break caught: checker accepts no real matrix or fabricates qualification."""
-    result = _run("--matrix", str(MATRIX))
+@pytest.fixture(scope="module")
+def source_context() -> closure._ValidationContext:
+    return closure._production_context()
+
+
+@pytest.fixture
+def context(tmp_path: Path, source_context: closure._ValidationContext) -> closure._ValidationContext:
+    """Small real Git repository with injectable immutable authority facts."""
+    matrix = json.loads((ROOT / MATRIX_RELATIVE).read_text(encoding="utf-8"))
+    bound = {
+        MATRIX_RELATIVE,
+        "Makefile",
+        ".github/workflows/foundation.yml",
+        ".github/workflows/host-authority.yml",
+        "ops/consolidation/p0-canonical-baseline.json",
+        "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+        "docs/implementation/foundation-portable-defect-closure.tsv",
+    }
+    for entry in matrix["requirements"]:
+        bound.update(entry["implementation_paths"])
+        bound.update(entry["evidence_paths"])
+        bound.add(entry["workflow"])
+        bound.update(node.split("::", 1)[0] for node in entry["test_node_ids"])
+    for relative in sorted(bound):
+        _write(tmp_path, relative, (ROOT / relative).read_bytes())
+    _write(tmp_path, "tracked-donor.txt", b"donor\n")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "--", ".")
+    _git(
+        tmp_path, "-c", "user.name=P0 test", "-c",
+        "user.email=p0@example.invalid", "commit", "-qm", "fixture",
+    )
+    return replace(
+        source_context,
+        root=tmp_path,
+        head_sha=HEAD,
+        source_tree_sha256=TREE,
+        collected_node_ids=frozenset(
+            node for entry in matrix["requirements"] for node in entry["test_node_ids"]
+        ),
+        receipt_relative=None,
+    )
+
+
+def _document(context: closure._ValidationContext) -> dict[str, object]:
+    return json.loads((context.root / MATRIX_RELATIVE).read_text(encoding="utf-8"))
+
+
+def _set_document(context: closure._ValidationContext, document: dict[str, object], *, canonical: bool = True) -> None:
+    raw = _canonical(document) if canonical else b" " + _canonical(document)
+    (context.root / MATRIX_RELATIVE).write_bytes(raw)
+
+
+def _validate(context: closure._ValidationContext) -> str:
+    return closure._validate(context, require_complete=False)
+
+
+def _error(context: closure._ValidationContext, code: str, *, complete: bool = False) -> None:
+    with pytest.raises(closure.ClosureError, match=f"^{code}$"):
+        closure._validate(context, require_complete=complete)
+
+
+def test_cli_accepts_only_canonical_repository_matrix() -> None:
+    """Break caught: public CLI becomes an arbitrary-root validation bypass."""
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.check_p0_ci_closure", "--matrix", MATRIX_RELATIVE],
+        cwd=ROOT, text=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
     assert result.returncode == 0, result.stderr
-    assert "QUALIFICATION_PENDING" in result.stdout
+    assert result.stdout.strip() == "QUALIFICATION_PENDING"
+    bypass = subprocess.run(
+        [sys.executable, "-m", "scripts.check_p0_ci_closure", "--matrix", "/tmp/matrix.json"],
+        cwd=ROOT, text=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert bypass.returncode == 2
+    assert bypass.stderr.strip() == "P0_CLOSURE_MATRIX_PATH_INVALID"
 
 
-def test_checker_rejects_unknown_fields_and_duplicate_requirement_ids(tmp_path: Path) -> None:
-    """Break caught: schema/identity drift silently widens the closure."""
-    unknown = _matrix(tmp_path, lambda value: value.__setitem__("unknown", True))
-    unknown_result = _run("--matrix", str(unknown))
-    assert unknown_result.returncode != 0
-    assert unknown_result.stderr.strip() == "P0_CLOSURE_SCHEMA_INVALID"
-    duplicate = _matrix(tmp_path, lambda value: value["requirements"].append(value["requirements"][0]))
-    duplicate_result = _run("--matrix", str(duplicate))
-    assert duplicate_result.returncode != 0
-    assert duplicate_result.stderr.strip() == "P0_CLOSURE_REQUIREMENT_SET_DRIFT"
+def test_pending_source_matrix_is_an_executable_closed_contract(context: closure._ValidationContext) -> None:
+    """Break caught: the checked-in source matrix fabricates qualification."""
+    assert _validate(context) == "QUALIFICATION_PENDING"
 
 
-def test_checker_rejects_noncanonical_and_unsafe_bindings(tmp_path: Path) -> None:
-    """Break caught: reordered JSON or symlinked source is accepted as authority."""
-    noncanonical = tmp_path / "noncanonical.json"
-    noncanonical.write_text(" " + MATRIX.read_text(encoding="utf-8"), encoding="utf-8")
-    assert _run("--matrix", str(noncanonical)).returncode != 0
-    unsafe = _matrix(tmp_path, lambda value: value["requirements"][0]["implementation_paths"].__setitem__(0, "../README.md"))
-    unsafe_result = _run("--matrix", str(unsafe))
-    assert unsafe_result.returncode != 0
-    assert unsafe_result.stderr.strip() == "P0_CLOSURE_IMPLEMENTATION_PATH_UNSAFE"
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    [
+        (lambda value: value.__setitem__("unknown", True), "P0_CLOSURE_SCHEMA_INVALID"),
+        (lambda value: value.pop("state"), "P0_CLOSURE_SCHEMA_INVALID"),
+        (lambda value: value["requirements"].append(value["requirements"][0]), "P0_CLOSURE_REQUIREMENT_SET_DRIFT"),
+        (lambda value: value["requirements"][1].__setitem__("requirement_id", "P0-I01"), "P0_CLOSURE_REQUIREMENT_SET_DRIFT"),
+        (lambda value: value["requirements"][0].__setitem__("unknown", True), "P0_CLOSURE_ENTRY_SCHEMA_INVALID"),
+        (lambda value: value["requirements"][0]["implementation_paths"].append(value["requirements"][0]["implementation_paths"][0]), "P0_CLOSURE_IMPLEMENTATION_PATHS_NONCANONICAL"),
+        (lambda value: value["requirements"][0].__setitem__("required_status", "PENDING"), "P0_CLOSURE_REQUIRED_STATUS_INVALID"),
+        (lambda value: value["requirements"][0].__setitem__("required_status", "DEFERRED"), "P0_CLOSURE_REQUIRED_STATUS_INVALID"),
+        (lambda value: value["requirements"][0].__setitem__("required_status", "UNAVAILABLE"), "P0_CLOSURE_REQUIRED_STATUS_INVALID"),
+        (lambda value: value["requirements"][16].__setitem__("required_status", "PASS"), "P0_CLOSURE_REQUIRED_STATUS_INVALID"),
+    ],
+    ids=["unknown-top", "missing-top", "extra-entry", "duplicate-id", "unknown-entry", "duplicate-array", "source-pending", "deferred-pass", "unavailable-pass", "future-pass"],
+)
+def test_matrix_schema_and_exact_status_attacks_fail_closed(context: closure._ValidationContext, mutation, code: str) -> None:
+    """Break caught: schema or state semantics can drift without a rejection."""
+    document = _document(context)
+    mutation(document)
+    _set_document(context, document)
+    _error(context, code)
 
 
-def test_checker_rejects_uncollected_node_unknown_target_and_host_only_mapping(tmp_path: Path) -> None:
-    """Break caught: a binding that CI cannot execute is accepted."""
-    node = _matrix(tmp_path, lambda value: value["requirements"][0]["test_node_ids"].__setitem__(0, "tests/test_p0_ci_closure.py::missing"))
-    node_result = _run("--matrix", str(node))
-    assert node_result.returncode != 0
-    assert node_result.stderr.strip() == "P0_CLOSURE_TEST_NODE_UNCOLLECTED"
-    target = _matrix(tmp_path, lambda value: value["requirements"][0].__setitem__("make_target", "unknown-target"))
-    target_result = _run("--matrix", str(target))
-    assert target_result.returncode != 0
-    assert target_result.stderr.strip() == "P0_CLOSURE_MAKE_TARGET_UNKNOWN"
-    host = _matrix(tmp_path, lambda value: value["requirements"][0].__setitem__("workflow", ".github/workflows/host-authority.yml"))
-    host_result = _run("--matrix", str(host))
-    assert host_result.returncode != 0
-    assert host_result.stderr.strip() == "P0_CLOSURE_PORTABLE_WORKFLOW_INVALID"
+def test_noncanonical_matrix_bytes_fail_closed(context: closure._ValidationContext) -> None:
+    """Break caught: byte-equivalent but noncanonical source gains authority."""
+    _set_document(context, _document(context), canonical=False)
+    _error(context, "P0_CLOSURE_JSON_NONCANONICAL")
 
 
-def test_checker_rejects_live_baseline_and_unearned_completion(tmp_path: Path) -> None:
-    """Break caught: source declaration becomes a final qualification verdict."""
-    baseline = ROOT / "ops/consolidation/p0-canonical-baseline.json"
-    original = baseline.read_bytes()
-    document = json.loads(original)
-    document["qualified_sha"] = "0" * 40
-    baseline.write_bytes(json.dumps(document, sort_keys=True, separators=(",", ":")).encode())
-    try:
-        assert _run("--matrix", str(MATRIX)).returncode != 0
-    finally:
-        baseline.write_bytes(original)
-    complete = _matrix(tmp_path, lambda value: value.__setitem__("state", "P0_SOURCE_COMPLETE"))
-    assert _run("--matrix", str(complete)).returncode != 0
+def test_end_state_ids_cannot_exchange_truthful_but_wrong_proofs(context: closure._ValidationContext) -> None:
+    """Break caught: E01 ancestry silently points at E02 date-authority proof."""
+    document = _document(context)
+    document["requirements"][6]["implementation_paths"] = document["requirements"][7]["implementation_paths"]
+    document["requirements"][6]["test_node_ids"] = document["requirements"][7]["test_node_ids"]
+    document["requirements"][6]["make_target"] = document["requirements"][7]["make_target"]
+    document["requirements"][6]["evidence_paths"] = document["requirements"][7]["evidence_paths"]
+    _set_document(context, document)
+    _error(context, "P0_CLOSURE_END_STATE_BINDING_INVALID")
 
 
-def test_checker_rejects_pending_source_invariant(tmp_path: Path) -> None:
-    """Break caught: an implemented P0 invariant is downgraded to pending."""
-    changed = _matrix(tmp_path, lambda value: value["requirements"][0].__setitem__("required_status", "PENDING"))
-    result = _run("--matrix", str(changed))
-    assert result.returncode != 0
-    assert result.stderr.strip() == "P0_CLOSURE_REQUIRED_STATUS_INVALID"
+@pytest.mark.parametrize(
+    ("relative", "raw", "code"),
+    [
+        ("Makefile", (ROOT / "Makefile").read_bytes().replace(b"$(MAKE) ci-portable-private", b"@true", 1), "P0_CLOSURE_MAKE_TARGET_UNREACHABLE"),
+        ("Makefile", (ROOT / "Makefile").read_bytes().replace(b"$(MAKE) ci-portable-private", b"# $(MAKE) ci-portable-private", 1), "P0_CLOSURE_MAKE_TARGET_UNREACHABLE"),
+        (".github/workflows/foundation.yml", b"name: Foundation\n# run: make ci-portable NONINTERACTIVE=1\non:\n  push:\n  pull_request:\n  workflow_dispatch:\npermissions:\n  contents: read\njobs:\n  verify:\n    runs-on: ubuntu-24.04\n    env:\n      CI: \"true\"\n      LIVE_EXECUTION_ENABLED: \"false\"\n      LIVE_TRADING_APPROVED: \"false\"\n    steps:\n      - run: true\n# include-hidden-files: true\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        (".github/workflows/foundation.yml", (ROOT / ".github/workflows/foundation.yml").read_bytes() + b"spoof:\n  run: make ci-portable NONINTERACTIVE=1\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+    ],
+    ids=["recursive-disconnect", "comment-make-spoof", "workflow-comment-spoof", "workflow-token-outside-jobs"],
+)
+def test_route_spoofs_fail_closed(context: closure._ValidationContext, relative: str, raw: bytes, code: str) -> None:
+    """Break caught: comments or disconnected Make nodes masquerade as execution."""
+    (context.root / relative).write_bytes(raw)
+    _error(context, code)
+
+
+@pytest.mark.parametrize(
+    ("workflow", "old", "new", "code"),
+    [
+        ("foundation.yml", b'LIVE_TRADING_APPROVED: "false"', b'LIVE_TRADING_APPROVED: "true"', "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"runs-on: ubuntu-24.04", b"runs-on: self-hosted", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"contents: read", b"contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"  pull_request:\n", b"  schedule:\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"include-hidden-files: true", b"include-hidden-files: false", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("foundation.yml", b"path: runtime/state/ci-portable/**", b"path: runtime/state/**", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"  workflow_dispatch:\n", b"  push:\n", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"runs-on: [self-hosted, linux, x64, trading-authority]", b"runs-on: ubuntu-24.04", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+        ("host-authority.yml", b"make ci-host-authority NONINTERACTIVE=1", b"make ci-portable NONINTERACTIVE=1", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
+    ],
+    ids=["live-true", "portable-runner", "permission", "trigger", "hidden", "upload-path", "host-trigger", "host-runner", "host-route"],
+)
+def test_structural_workflow_contract_attacks_fail_closed(context: closure._ValidationContext, workflow: str, old: bytes, new: bytes, code: str) -> None:
+    """Break caught: workflow authority, route, runner or artifact custody drifts."""
+    path = context.root / ".github/workflows" / workflow
+    raw = path.read_bytes()
+    assert old in raw
+    path.write_bytes(raw.replace(old, new, 1))
+    _error(context, code)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "code"),
+    [
+        (lambda ctx: replace(ctx, active_rows=ctx.active_rows[:-1]), "P0_CLOSURE_TOPOLOGY_COUNT_INVALID"),
+        (lambda ctx: replace(ctx, closed_rows=ctx.closed_rows[:-1]), "P0_CLOSURE_TOPOLOGY_COUNT_INVALID"),
+        (lambda ctx: replace(ctx, active_rows=(replace(ctx.active_rows[0], classification="PORTABLE_SOURCE_DEFECT"), *ctx.active_rows[1:])), "P0_CLOSURE_TOPOLOGY_ACTIVE_SOURCE_DEFECT"),
+        (lambda ctx: replace(ctx, active_rows=(replace(ctx.active_rows[0], code="SRC-OPEN"), *ctx.active_rows[1:])), "P0_CLOSURE_TOPOLOGY_ACTIVE_SOURCE_DEFECT"),
+        (lambda ctx: replace(ctx, active_rows=(replace(ctx.active_rows[0], classification="NATIVE_CAPABILITY_REQUIRED"), *ctx.active_rows[1:])), "P0_CLOSURE_TOPOLOGY_CLASSIFICATION_INVALID"),
+        (lambda ctx: replace(ctx, closed_rows=(replace(ctx.closed_rows[0], proof_command="PYTEST_BROAD_SKIP_V1"), *ctx.closed_rows[1:])), "P0_CLOSURE_TOPOLOGY_BROAD_SKIP"),
+        (lambda ctx: replace(ctx, active_rows=(replace(ctx.active_rows[0], node_id=ctx.closed_rows[0].node_id), *ctx.active_rows[1:])), "P0_CLOSURE_TOPOLOGY_OVERLAP"),
+    ],
+    ids=["active-count", "closed-count", "source-defect", "src-code", "classification", "broad-skip", "overlap"],
+)
+def test_topology_attack_matrix_fails_closed(context: closure._ValidationContext, mutation, code: str) -> None:
+    """Break caught: active/closed topology facts are recategorized as PASS."""
+    _error(mutation(context), code)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("qualified_sha", "0" * 40),
+        ("paper_only", False),
+        ("live_execution_authorized", True),
+        ("promotion_mode", "merge"),
+        ("candidate_start_sha", "not-a-sha"),
+    ],
+)
+def test_baseline_lineage_and_authority_tampering_fails_closed(context: closure._ValidationContext, field: str, value: object) -> None:
+    """Break caught: mutable lineage or live authority enters source baseline."""
+    path = context.root / "ops/consolidation/p0-canonical-baseline.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document[field] = value
+    path.write_text(json.dumps(document), encoding="utf-8")
+    _error(context, "P0_CLOSURE_BASELINE_AUTHORITY_INVALID" if field in {"qualified_sha", "paper_only", "live_execution_authorized"} else "P0_CLOSURE_BASELINE_SCHEMA_INVALID")
+
+
+@pytest.mark.parametrize(
+    ("attack", "code"),
+    [
+        ("hardlink", "P0_CLOSURE_IMPLEMENTATION_PATH_UNSAFE"),
+        ("symlink", "P0_CLOSURE_IMPLEMENTATION_PATH_UNSAFE"),
+        ("fifo", "P0_CLOSURE_IMPLEMENTATION_PATH_UNSAFE"),
+        ("untracked", "P0_CLOSURE_IMPLEMENTATION_PATH_UNTRACKED"),
+    ],
+)
+def test_bound_path_custody_attack_matrix_fails_closed(context: closure._ValidationContext, attack: str, code: str) -> None:
+    """Break caught: untracked, hardlinked, symlinked or special evidence is trusted."""
+    path = context.root / "scripts/audit_canonical_repo.py"
+    if attack == "untracked":
+        untracked = context.root / "untracked.txt"
+        untracked.write_text("x", encoding="utf-8")
+        document = _document(context)
+        document["requirements"][0]["implementation_paths"] = ["untracked.txt"]
+        _set_document(context, document)
+    else:
+        path.unlink()
+        if attack == "hardlink":
+            path.hardlink_to(context.root / "tracked-donor.txt")
+        elif attack == "symlink":
+            path.symlink_to(context.root / "tracked-donor.txt")
+        else:
+            os.mkfifo(path)
+    _error(context, code)
+
+
+def test_matrix_and_parent_path_attacks_fail_closed(context: closure._ValidationContext) -> None:
+    """Break caught: the matrix or a parent component is replaced after context creation."""
+    matrix = context.root / MATRIX_RELATIVE
+    saved = matrix.read_bytes()
+    matrix.unlink()
+    matrix.symlink_to(context.root / "Makefile")
+    _error(context, "P0_CLOSURE_MATRIX_UNSAFE")
+    matrix.unlink()
+    matrix.write_bytes(saved)
+
+    document = _document(context)
+    document["requirements"][0]["implementation_paths"] = ["alias/README.md"]
+    _set_document(context, document)
+    (context.root / "real").mkdir()
+    shutil.copy2(ROOT / "README.md", context.root / "real/README.md")
+    (context.root / "alias").symlink_to(context.root / "real", target_is_directory=True)
+    _error(context, "P0_CLOSURE_IMPLEMENTATION_PATH_UNSAFE")
+
+
+def test_missing_file_node_unknown_target_and_host_mapping_fail_closed(context: closure._ValidationContext) -> None:
+    """Break caught: an unexecutable matrix binding is accepted."""
+    document = _document(context)
+    document["requirements"][0]["implementation_paths"] = ["missing.py"]
+    _set_document(context, document)
+    _error(context, "P0_CLOSURE_IMPLEMENTATION_PATH_MISSING")
+
+    context = replace(context, collected_node_ids=frozenset())
+    _set_document(context, json.loads((ROOT / MATRIX_RELATIVE).read_text(encoding="utf-8")))
+    _error(context, "P0_CLOSURE_TEST_NODE_UNCOLLECTED")
+
+    context = replace(context, collected_node_ids=source_context_nodes())
+    document = _document(context)
+    document["requirements"][0]["make_target"] = "missing-target"
+    _set_document(context, document)
+    _error(context, "P0_CLOSURE_MAKE_TARGET_UNKNOWN")
+
+    document = json.loads((ROOT / MATRIX_RELATIVE).read_text(encoding="utf-8"))
+    document["requirements"][0]["workflow"] = ".github/workflows/host-authority.yml"
+    _set_document(context, document)
+    _error(context, "P0_CLOSURE_PORTABLE_WORKFLOW_INVALID")
+
+
+def source_context_nodes() -> frozenset[str]:
+    matrix = json.loads((ROOT / MATRIX_RELATIVE).read_text(encoding="utf-8"))
+    return frozenset(node for entry in matrix["requirements"] for node in entry["test_node_ids"])
+
+
+def test_completion_rejects_wrong_path_stale_tree_and_partial_receipt(context: closure._ValidationContext, tmp_path: Path) -> None:
+    """Break caught: path-adjacent, stale or partial evidence earns completion."""
+    document = _document(context)
+    document["state"] = "P0_SOURCE_COMPLETE"
+    document["requirements"][16]["required_status"] = "PASS"
+    _set_document(context, document)
+    _error(context, "P0_CLOSURE_RECEIPT_REQUIRED", complete=True)
+
+    wrong = replace(context, receipt_relative="runtime/state/other/manifest.json")
+    _error(wrong, "P0_CLOSURE_RECEIPT_PATH_INVALID", complete=True)
+
+    receipt = context.root / "runtime/state/ci-portable/manifest.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_bytes(_canonical({"head_sha": HEAD, "source_tree_sha256": TREE}))
+    partial = replace(context, receipt_relative="runtime/state/ci-portable/manifest.json")
+    _error(partial, "P0_CLOSURE_RECEIPT_INVALID", complete=True)
+
+
+def test_valid_strict_p0_10_fixture_exercises_completion_mode(context: closure._ValidationContext, tmp_path: Path) -> None:
+    """Break caught: completion never invokes the real strict P0-10 validator."""
+    from tests.test_artifact_firewall import _publish, _staging
+
+    staging = _staging(tmp_path)
+    destination = context.root / "runtime/state/ci-portable"
+    _publish(staging, destination)
+    document = _document(context)
+    document["state"] = "P0_SOURCE_COMPLETE"
+    document["requirements"][16]["required_status"] = "PASS"
+    _set_document(context, document)
+    complete = replace(
+        context,
+        receipt_relative="runtime/state/ci-portable/manifest.json",
+        head_sha=HEAD,
+        source_tree_sha256=TREE,
+    )
+    assert closure._validate(complete, require_complete=True) == "P0_SOURCE_COMPLETE"
+
+    _error(replace(complete, source_tree_sha256="b" * 64), "P0_CLOSURE_RECEIPT_INVALID", complete=True)
+    _error(replace(complete, head_sha="8" * 40), "P0_CLOSURE_RECEIPT_INVALID", complete=True)
+
+
+def test_strict_error_projection_cannot_earn_source_completion(context: closure._ValidationContext, tmp_path: Path) -> None:
+    """Break caught: a structurally valid governed error is mistaken for PASS."""
+    from scripts import check_artifact_firewall as firewall
+    from tests.test_artifact_firewall import (
+        _run_metadata, _semantic, _staging, _write_leaf,
+    )
+
+    staging = _staging(tmp_path)
+    (staging / "test-governance/summary.json").unlink()
+    error_semantic = {"error_code": "SUITE_FAILURE", "suite_exit_codes": {"root": 1}}
+    _write_leaf(staging, "test-governance/error.json", {
+        "schema_version": "test-governance-final-error/v1",
+        "status": "error",
+        "generated_at_utc": "2026-08-13T12:00:00+00:00",
+        **error_semantic,
+    })
+    semantic = _semantic()
+    semantic.pop("selected_tests")
+    semantic["governance_error"] = error_semantic
+    destination = context.root / "runtime/state/ci-portable"
+    firewall.publish_evidence_set(
+        staging_root=staging, destination=destination, head_sha=HEAD,
+        source_tree_sha256=TREE, semantic_projection=semantic,
+        run_metadata=_run_metadata(),
+    )
+    document = _document(context)
+    document["state"] = "P0_SOURCE_COMPLETE"
+    document["requirements"][16]["required_status"] = "PASS"
+    _set_document(context, document)
+    complete = replace(
+        context, receipt_relative="runtime/state/ci-portable/manifest.json",
+        head_sha=HEAD, source_tree_sha256=TREE,
+    )
+    _error(complete, "P0_CLOSURE_RECEIPT_INVALID", complete=True)
