@@ -2358,6 +2358,45 @@ production/live/runtime/DB/service/scheduler action, or broker/exchange access.
 
 ---
 
+## P0-12R8 correction — Diagnostic-only publication on root-remainder non-pass
+
+Push-triggered Foundation run `31827924223`, attempt 1, at exact reviewed SHA
+`5b98ced41aa6bcdc7946a158a4f392f55d519847` collected 6,384 root tests after
+29 governed deselections, reserved 62 governed nodes, and executed the exact
+6,322-node remainder as 6,041 passed and 281 skipped. The topology correctly
+stopped fail-closed at `EXACT_EXECUTION_NONPASS`; because the final artifact
+firewall is later in the successful route, the strict raw failure diagnostic
+was stranded and no artifact was uploaded. The known failing SHA must not be
+rerun.
+
+P0-12R8 may add one early, diagnostic-only artifact-firewall action for this
+exact root-remainder failure state. It must validate the sealed Foundation
+context and reservation, locked inventory, baseline, exact remainder, custody
+binding, and the existing strict failure diagnostic before projecting only
+canonical provenance, counts, exact skipped node IDs, closed reason classes,
+and commitment/policy digests. It must use a distinct non-acceptance schema,
+contain no raw reason, secret, PASS aggregate, receipt, native, governance
+acceptance, or policy relaxation, and reuse retained-descriptor, no-follow,
+single-link, sealed-mode, atomic no-clobber, checksum, and final-validation
+semantics from the existing firewall.
+
+The outer `ci-portable` catch may invoke this action exactly once only when the
+canonical failure diagnostic exists, and must always return the original
+nonzero status. Successful publication and later governance-error routes must
+remain unchanged. Capture a focused RED before implementation, then cover
+valid publication plus malformed, stale, foreign, symlink, hardlink, mode,
+owner, replacement, coexistence, and destination no-clobber attacks; prove raw
+reasons are absent, the original exit is preserved, and no acceptance or PASS
+artifact is emitted. Require focused and full affected tests, a standalone
+affected/root-remainder packet, static closure/contract/workflow gates, exact
+diff review, ignored report, and a clean worktree for independent review.
+
+This packet does not authorize skip or native-policy changes, push, remote
+update, hosted rerun or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler action, or broker/exchange access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
