@@ -2121,6 +2121,47 @@ Do not proceed to promotion if:
 
 ---
 
+## P0-12R correction — Qualification fixture drift and report-directory custody
+
+P0-12 stopped at exact clean candidate
+`a764877e69fb5873c5c570cb4eb6e3e3ea3cafa3` after the corrected six-file
+focused command reported 302 passed and three failed. The source matrix remains
+`QUALIFICATION_PENDING`, `qualified_sha` remains null, and qualification may
+restart only from the resulting independently reviewed remediation SHA.
+
+Two `tests/governance/test_t_g03f_validation_date.py` fixtures must model the
+reviewed P0-10 `ci-portable` order and binding without changing the Makefile:
+create and privacy-check the private raw evidence root, capture Foundation
+context using that exact root, allocate the disposable CI wrapper, and pass the
+same raw root to recursive Make. The fresh root, not the caller/default
+`$(TEST_EVIDENCE_DIR)`, is authoritative for the capture argument, capture
+environment, and recursive Make environment. Preserve the existing observable
+portable-route publisher and canonical-wrapper edge tests.
+
+In both `scripts/check_critical_coverage.py` and
+`scripts/check_test_governance.py`, only the exact requested report directory
+may be tightened from a current-user-owned group/world-writable mode to `0700`.
+A writable intermediate must fail closed without mode or identity mutation,
+child creation, or artifact publication. Root-owned sticky `/tmp` remains a
+trusted ancestor, a missing exact leaf below safe parents may be created as
+`0700`, and exact-root tightening, symlink/special/foreign-owner rejection,
+descriptor/no-follow publication, error types, and error messages remain
+unchanged. Keep the two helpers behaviorally identical and use the smallest
+condition change.
+
+Prove the defect test-first: reproduce the three P0-12 failures, add a direct
+test-governance writable-intermediate mutation test, then add paired coverage
+for exact-root tightening, writable-intermediate rejection without mutation,
+safe missing-leaf creation, and safely synthesizable symlink, special, and
+foreign-owner parents. Run the affected tests and all P0 baseline, closure,
+contract, workflow-lint, compile, and clean-tree gates in the remediation
+brief, then repeat the affected set in a fresh standalone local clone at the
+final commit. This packet does not authorize P0-12 qualification continuation,
+push, hosted identity or dispatch, P0-13, dependency or lock changes,
+production/live action, or runtime mutation.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
