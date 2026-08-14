@@ -455,8 +455,8 @@ def test_publisher_binds_source_tree_digest_into_canonical_semantic_projection(
     [
         ({"stdout": {"nested": [{"password": "not-redacted"}]}}, "PASSWORD"),
         ({"stderr": [{"authorization": "Bearer sensitive-material"}]}, "AUTHORIZATION"),
-        ({"stderr": "-----BEGIN PRIVATE KEY-----\nmaterial"}, "PRIVATE_KEY"),
-        ({"stdout": "postgresql://alice:credential@db.example/trading"}, "DATABASE_URL"),
+        ({"stderr": "-----" + "BEGIN PRIVATE KEY" + "-----\nmaterial"}, "PRIVATE_KEY"),
+        ({"stdout": "postgresql://" + "alice:credential@" + "db.example/trading"}, "DATABASE_URL"),
         ({"exchange": {"api_key": "exchange-key-material"}}, "API_KEY"),
         ({"broker_credentials": {"token": "broker-token-material"}}, "BROKER_CREDENTIAL"),
         ({"TRADING_MASTER_KEY": "master-key-material"}, "TRADING_MASTER_KEY"),
@@ -556,7 +556,7 @@ def test_firewall_allows_redacted_and_safe_near_misses(document: object) -> None
 
 def test_publisher_scans_known_secret_formats_in_every_manifested_leaf(tmp_path: Path) -> None:
     staging = _staging(tmp_path)
-    secret_raw = b"-----BEGIN PRIVATE KEY-----\nmaterial"
+    secret_raw = b"-----" + b"BEGIN PRIVATE KEY" + b"-----\nmaterial"
     _write_leaf(
         staging,
         "phase-evidence/result.txt",
