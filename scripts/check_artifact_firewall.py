@@ -1910,6 +1910,7 @@ def publish_root_remainder_failure(
     """Publish a failure-only root-remainder projection with no acceptance meaning."""
     from scripts import t_g03_capability_topology as topology
 
+    failure: FailurePublicationError | None = None
     try:
         try:
             run_id, head_sha = topology._active_foundation_identity()
@@ -1923,20 +1924,29 @@ def publish_root_remainder_failure(
                 run_id=run_id, head_sha=head_sha, boundary_hook=source_boundary_hook,
             )
     except (FirewallError, OSError, ValueError) as exc:
-        raise _classify_failure_publication("RAW_BINDING", exc) from None
+        failure = _classify_failure_publication("RAW_BINDING", exc)
+    if failure is not None:
+        raise failure
+    failure = None
     try:
         projection_name = f".failure-projection-{secrets.token_hex(16)}"
         with _validate_lineage(raw_root, create=False) as raw_lineage:
             _build_candidate(raw_lineage.descriptor, projection_name, payloads)
             raw_lineage.postcheck()
     except (FirewallError, OSError, ValueError) as exc:
-        raise _classify_failure_publication("PROJECTION", exc) from None
+        failure = _classify_failure_publication("PROJECTION", exc)
+    if failure is not None:
+        raise failure
+    failure = None
     try:
         source_tree_sha256 = _source_tree_identity(repository_root, head_sha)
     except (FirewallError, OSError, ValueError, subprocess.SubprocessError) as exc:
-        raise _classify_failure_publication("SOURCE_TREE", exc) from None
+        failure = _classify_failure_publication("SOURCE_TREE", exc)
+    if failure is not None:
+        raise failure
+    failure = None
     try:
-        return _publish_evidence_set(
+        manifest = _publish_evidence_set(
             staging_root=raw_root / projection_name, destination=destination,
             head_sha=head_sha, source_tree_sha256=source_tree_sha256,
             semantic_projection=semantic, run_metadata=run_metadata,
@@ -1947,7 +1957,10 @@ def publish_root_remainder_failure(
             boundary_hook=publication_boundary_hook,
         )
     except (FirewallError, OSError, ValueError) as exc:
-        raise _classify_failure_publication("PUBLICATION", exc) from None
+        failure = _classify_failure_publication("PUBLICATION", exc)
+    if failure is not None:
+        raise failure
+    return manifest
 
 
 def _strict_json(raw: bytes, *, relative: str) -> object:

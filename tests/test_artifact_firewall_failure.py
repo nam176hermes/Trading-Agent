@@ -461,6 +461,90 @@ def test_failure_publisher_never_clobbers_an_existing_destination(
 
 
 @pytest.mark.parametrize(
+    ("stage", "target", "error_type"),
+    [
+        ("RAW_BINDING", "raw-binding", "firewall"),
+        ("RAW_BINDING", "raw-binding", "os"),
+        ("RAW_BINDING", "raw-binding", "value"),
+        ("PROJECTION", "projection", "firewall"),
+        ("PROJECTION", "projection", "os"),
+        ("PROJECTION", "projection", "value"),
+        ("SOURCE_TREE", "source-tree", "firewall"),
+        ("SOURCE_TREE", "source-tree", "os"),
+        ("SOURCE_TREE", "source-tree", "value"),
+        ("SOURCE_TREE", "source-tree", "subprocess"),
+        ("PUBLICATION", "publication", "firewall"),
+        ("PUBLICATION", "publication", "os"),
+        ("PUBLICATION", "publication", "value"),
+    ],
+)
+def test_failure_publisher_drops_every_underlying_exception_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    stage: str, target: str, error_type: str,
+) -> None:
+    raw_root, _run_id, _head_sha, _skipped = _failure_source(tmp_path, monkeypatch)
+    destination = tmp_path / "publication/artifact"
+    destination.parent.mkdir(mode=0o700)
+    hostile = "password: private-value /private/raw/reason"
+    hostile_path = "private/raw/reason"
+    hostile_digest = "f" * 64
+
+    def reject(*_args: object, **_kwargs: object) -> object:
+        if error_type == "firewall":
+            raise firewall.FirewallError(
+                hostile, code="ARTIFACT_SECRET_REJECTED", category="PASSWORD",
+                relative_path=hostile_path, sha256=hostile_digest,
+            )
+        if error_type == "os":
+            raise OSError(hostile)
+        if error_type == "value":
+            raise ValueError(hostile)
+        raise subprocess.SubprocessError(hostile)
+
+    if target == "raw-binding":
+        monkeypatch.setattr(firewall, "_failure_payloads_from_raw", reject)
+    elif target == "projection":
+        monkeypatch.setattr(firewall, "_build_candidate", reject)
+    elif target == "source-tree":
+        monkeypatch.setattr(firewall, "_source_tree_identity", reject)
+    else:
+        monkeypatch.setattr(
+            firewall, "_source_tree_identity", lambda _root, _head: TREE,
+        )
+        monkeypatch.setattr(firewall, "_publish_evidence_set", reject)
+
+    with pytest.raises(firewall.FailurePublicationError) as raised:
+        firewall.publish_root_remainder_failure(
+            raw_root=raw_root,
+            destination=destination,
+            inventory=INVENTORY,
+            foundation_context_path=(
+                raw_root / "capability-topology/foundation-context.json"
+            ),
+            repository_root=Path.cwd(),
+        )
+
+    error = raised.value
+    expected_code = (
+        "ARTIFACT_SECRET_REJECTED"
+        if error_type == "firewall" else "ARTIFACT_FIREWALL_REJECTED"
+    )
+    expected_category = "PASSWORD" if error_type == "firewall" else "LAYOUT"
+    assert error.stage == stage
+    assert error.code == expected_code
+    assert error.category == expected_category
+    assert error.relative_path == ""
+    assert error.sha256 == ""
+    assert error.args == ("failure publication rejected at a closed stage",)
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert hostile not in repr(error.__dict__)
+    assert hostile_path not in repr(error.__dict__)
+    assert hostile_digest not in repr(error.__dict__)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
     ("stage", "target", "code", "category"),
     [
         ("RAW_BINDING", "raw-binding", "ARTIFACT_FIREWALL_REJECTED", "LAYOUT"),
