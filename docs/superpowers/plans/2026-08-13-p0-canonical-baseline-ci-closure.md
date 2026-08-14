@@ -2192,6 +2192,32 @@ production/live/runtime/DB/service/scheduler action, or broker/exchange access.
 
 ---
 
+## P0-12R3 correction — Scanner-clean adversarial firewall fixtures
+
+Push-triggered Foundation run `31817143919`, attempt 1, at exact reviewed SHA
+`04f366f315a838c4c8c095b85b56ba7cc93f0358` passed D0 11/11 and then
+failed deterministically in `make check-secrets` before artifact publication.
+The only findings were the private-key canaries at
+`tests/test_artifact_firewall.py:458` and `:559` and the credential-URI
+canary at `:459`.
+
+P0-12R3 may change only those three credential-shaped test fixture literals.
+Construct byte-identical runtime canaries from scanner-clean source fragments,
+preserving their firewall categories, payload bytes, digest assertions,
+redaction assertions, and manifested-leaf scan behavior. Do not weaken or
+change the secret-hygiene scanner, Makefile, workflows, artifact-firewall
+production code, dependencies, locks, inventories, matrix state, or
+qualification artifacts.
+
+Capture the exact three-finding `make check-secrets` RED at the required base,
+then require scanner GREEN, the full artifact-firewall suite, the combined
+secret-hygiene/firewall suite, D0/baseline/closure/contract source gates,
+workflow lint, and clean diff/status evidence. This packet does not authorize
+push, remote update, hosted rerun or dispatch, P0-12 continuation, P0-13,
+production/live/runtime/DB/service/scheduler action, or broker/exchange access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
