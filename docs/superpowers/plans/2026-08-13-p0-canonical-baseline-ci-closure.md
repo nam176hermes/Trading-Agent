@@ -2579,6 +2579,44 @@ broker/provider access, or live trading is authorized.
 
 ---
 
+## P0-12R12 correction — Closed failure-publication stage diagnostic
+
+Hosted Foundation run `31842890035` passed the common gate, collected 6,427
+remainder candidates after 29 deselections from 6,456 root nodes, reserved 62
+governed nodes, and executed the exact 6,365-node remainder as 6,084 passed
+plus 281 skipped. The failure-only publisher was invoked and failed closed as
+`ARTIFACT_FIREWALL_REJECTED LAYOUT`; the exact private-child upload path
+remained empty. The known failing SHA must not be rerun.
+
+Local diagnosis must use the real source-tree identity and separately exercise
+raw binding, projection construction, source-tree binding, and final
+publication through a trusted root-owned sticky `/tmp`, a newly created
+current-user-owned mode-0700 parent, and an absent artifact child. It must also
+exercise a hosted-shaped diagnostic projection with exactly 6,365 remainder
+nodes, 6,084 passed nodes, and 281 skipped observations. If those locally
+knowable stages all pass and the hosted-only failure cannot be reproduced,
+P0-12R12 may add one closed, nonsecret failure-stage classification to the
+failure-only publisher.
+
+The only public stage values are `RAW_BINDING`, `PROJECTION`, `SOURCE_TREE`,
+and `PUBLICATION`. Classification must preserve the existing rejection code
+and category while disclosing no exception message, raw path, raw reason,
+secret-shaped value, digest, policy content, or acceptance/PASS meaning. Add
+strict tests that force each boundary, prove exact closed output and original
+CLI status, and prove hostile underlying messages cannot cross the boundary.
+Do not change raw validation, projection schema, skip acceptance, native
+policy, PASS semantics, Make routing, workflows, dependencies, or locks.
+
+Require focused and full artifact-firewall tests, broad-handler inventory,
+P0 baseline/closure/contracts/source/security/actionlint/diff gates, an ignored
+report, and a clean committed worktree before independent review and one new
+hosted attempt on the reviewed SHA. This packet does not itself authorize a
+push, hosted run or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler mutation, broker/provider access,
+or live trading.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
