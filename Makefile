@@ -12,7 +12,7 @@
 	test-all-portable-topology-private test-all ci ci-private ci-portable ci-portable-private ci-common-private \
 	ci-host-authority ci-host-authority-private artifact-firewall-check audit-delivery-contract \
 	ci-portable-topology test-portable-root-remainder test-portable-source test-native-capabilities test-external-authorities \
-	check-test-governance-topology check-portable-defect-closure
+	check-test-governance-topology check-portable-defect-closure check-p0-ci-closure
 
 RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)
 PYTHON ?= uv run python
@@ -35,6 +35,10 @@ audit-portable:
 
 check-p0-baseline:
 	$(PYTHON) scripts/audit_canonical_repo.py --portable --check-p0-baseline
+
+check-p0-ci-closure:
+	$(PYTHON) scripts/check_p0_ci_closure.py \
+	  --matrix docs/implementation/p0-ci-closure-matrix.json
 
 audit-release:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)" --release
@@ -331,7 +335,7 @@ ci-portable:
 			TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private
 
 ci-portable-private:
-	$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology artifact-firewall-check audit-delivery-contract
+	$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install

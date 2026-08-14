@@ -9,6 +9,12 @@ The active safety posture is paper-only. Live execution and live-trading
 approval must both remain false. Local validation must not contact an exchange,
 broker, account, order endpoint, or active production mutation route.
 
+`make ci` is source-safe and aliases portable CI. `make ci-host-authority` is
+an explicit operator-managed authority lane: DEFERRED or UNAVAILABLE host
+evidence is never PASS. P0-11 supplies an executable source closure matrix,
+not final qualification; real Nautilus integration is P1. Production authority
+and live-trading authority remain false or unavailable.
+
 ## Project map
 
 ```text

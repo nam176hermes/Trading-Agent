@@ -496,7 +496,7 @@ def test_portable_ci_targets_are_explicit_and_retain_all_non_runtime_gates() -> 
     assert portable_private_recipe is not None
     assert portable_private_recipe.group(1).strip() == (
         "$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology "
-        "artifact-firewall-check audit-delivery-contract"
+        "check-p0-ci-closure artifact-firewall-check audit-delivery-contract"
     )
     common_private_recipe = re.search(
         r"^ci-common-private:\n((?:\t.*\n)+)", makefile, re.MULTILINE
