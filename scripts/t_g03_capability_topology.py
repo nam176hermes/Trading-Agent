@@ -714,6 +714,7 @@ LEGACY_UV = Path("/home/thenam176/.local/bin/uv")
 LEGACY_UV_SHA256 = "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
 LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 ROOT = Path(__file__).resolve().parents[1]
+REAL_LEGACY_ROOT = ROOT / "legacy/research-backend"
 TRUSTED_BWRAP_POLICY = ROOT / "engines/nautilus/sealed-uv-exec-policy.json"
 CLOSURE_PATH = ROOT / CLOSURE_RELATIVE_PATH
 PHASE3B_REQUIRED_ENTRIES = (
@@ -4758,11 +4759,14 @@ class _ExternalStateError(TopologyError):
         super().__init__("external authority state is not valid")
 
 
-def _external_parent_chain_safe(
-    path: Path, *, allow_current_identity_group_write: bool = False,
-) -> bool:
+def _external_parent_chain_snapshot(
+    path: Path, *, legacy_component_policy: bool = False,
+) -> tuple[tuple[int, ...], ...] | None:
     if not path.is_absolute():
-        return False
+        return None
+    if legacy_component_policy and path != REAL_LEGACY_ROOT:
+        return None
+    snapshot: list[tuple[int, ...]] = []
     current = Path(path.anchor)
     for part in (None, *path.parts[1:-1]):
         if part is not None:
@@ -4770,7 +4774,13 @@ def _external_parent_chain_safe(
         try:
             info = current.lstat()
         except OSError:
-            return False
+            return None
+        current_identity_group_write = (
+            legacy_component_policy
+            and stat.S_IMODE(info.st_mode) == 0o775
+            and info.st_uid == os.geteuid()
+            and info.st_gid == os.getegid()
+        )
         if (
             stat.S_ISLNK(info.st_mode)
             or not stat.S_ISDIR(info.st_mode)
@@ -4779,24 +4789,30 @@ def _external_parent_chain_safe(
             or info.st_mode & stat.S_IWOTH
             or (
                 info.st_mode & stat.S_IWGRP
-                and not (
-                    allow_current_identity_group_write
-                    and info.st_uid == os.geteuid()
-                    and info.st_gid == os.getegid()
-                )
+                and not current_identity_group_write
             )
         ):
-            return False
-    return True
+            return None
+        snapshot.append((
+            info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+        ))
+    return tuple(snapshot)
+
+
+def _external_parent_chain_safe(
+    path: Path, *, legacy_component_policy: bool = False,
+) -> bool:
+    return _external_parent_chain_snapshot(
+        path, legacy_component_policy=legacy_component_policy,
+    ) is not None
 
 
 def _open_external_directory(
     path: Path, *, exact_mode: int | None,
-    allow_current_identity_group_write: bool = False,
+    legacy_component_policy: bool = False,
 ) -> tuple[str, int, tuple[int, ...] | None]:
     if not _external_parent_chain_safe(
-        path,
-        allow_current_identity_group_write=allow_current_identity_group_write,
+        path, legacy_component_policy=legacy_component_policy,
     ):
         return "INVALID", -1, None
     try:
@@ -5030,15 +5046,20 @@ def _phase3b_authority_from_analysis(
 def _open_phase3b_external_session(
     *, corpus_root: Path, corpus_validator: Callable[[Path], object],
 ) -> ExternalAuthoritySession:
+    ancestor_snapshot = _external_parent_chain_snapshot(corpus_root)
     state, descriptor, identity = _open_external_directory(corpus_root, exact_mode=0o700)
     if state == "ABSENT":
         def absent_postcheck() -> None:
+            current_ancestors = _external_parent_chain_snapshot(corpus_root)
             current_state, current_descriptor, _ = _open_external_directory(
                 corpus_root, exact_mode=0o700,
             )
             if current_descriptor >= 0:
                 os.close(current_descriptor)
-            if current_state != "ABSENT":
+            if (
+                current_state != "ABSENT"
+                or current_ancestors != ancestor_snapshot
+            ):
                 raise TopologyError("external authority changed during qualification")
 
         return ExternalAuthoritySession(
@@ -5046,6 +5067,15 @@ def _open_phase3b_external_session(
             _phase3b_absent_authority(), (), absent_postcheck,
         )
     if state != "PRESENT" or identity is None:
+        return ExternalAuthoritySession(
+            "EXT-PHASE3B-CORPUS", "INVALID", "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-PHASE3B-CORPUS"), (), lambda: None,
+        )
+    if (
+        ancestor_snapshot is None
+        or _external_parent_chain_snapshot(corpus_root) != ancestor_snapshot
+    ):
+        os.close(descriptor)
         return ExternalAuthoritySession(
             "EXT-PHASE3B-CORPUS", "INVALID", "AUTHORITY_INVALID",
             _invalid_external_authority("EXT-PHASE3B-CORPUS"), (), lambda: None,
@@ -5079,6 +5109,7 @@ def _open_phase3b_external_session(
 
     def postcheck() -> None:
         try:
+            current_ancestors = _external_parent_chain_snapshot(corpus_root)
             named = corpus_root.lstat()
             held = os.fstat(descriptor)
             current_manifest = _required_entry_manifest(
@@ -5091,7 +5122,8 @@ def _open_phase3b_external_session(
         except Exception as exc:
             raise TopologyError("external authority changed during qualification") from exc
         if (
-            _artifact_identity(named) != identity
+            current_ancestors != ancestor_snapshot
+            or _artifact_identity(named) != identity
             or _artifact_identity(held) != identity
             or current_authority != authority
         ):
@@ -5108,22 +5140,36 @@ def _open_legacy_external_session(
     expected_uv_version: str,
     runner: Callable[..., subprocess.CompletedProcess[bytes]],
 ) -> ExternalAuthoritySession:
+    legacy_component_policy = legacy_root == REAL_LEGACY_ROOT
+    uv_ancestor_snapshot = _external_parent_chain_snapshot(uv_path)
+    root_ancestor_snapshot = _external_parent_chain_snapshot(
+        legacy_root, legacy_component_policy=legacy_component_policy,
+    )
     uv_state, uv_descriptor, uv_identity = _open_external_regular_executable(uv_path)
     root_state, root_descriptor, root_identity = _open_external_directory(
         legacy_root, exact_mode=None,
-        allow_current_identity_group_write=True,
+        legacy_component_policy=legacy_component_policy,
     )
     if uv_state == root_state == "ABSENT":
         def absent_postcheck() -> None:
+            current_uv_ancestors = _external_parent_chain_snapshot(uv_path)
+            current_root_ancestors = _external_parent_chain_snapshot(
+                legacy_root, legacy_component_policy=legacy_component_policy,
+            )
             current_uv, current_uv_descriptor, _ = _open_external_regular_executable(uv_path)
             current_root, current_root_descriptor, _ = _open_external_directory(
                 legacy_root, exact_mode=None,
-                allow_current_identity_group_write=True,
+                legacy_component_policy=legacy_component_policy,
             )
             for retained in (current_uv_descriptor, current_root_descriptor):
                 if retained >= 0:
                     os.close(retained)
-            if current_uv != "ABSENT" or current_root != "ABSENT":
+            if (
+                current_uv != "ABSENT"
+                or current_root != "ABSENT"
+                or current_uv_ancestors != uv_ancestor_snapshot
+                or current_root_ancestors != root_ancestor_snapshot
+            ):
                 raise TopologyError("external authority changed during qualification")
 
         return ExternalAuthoritySession(
@@ -5145,6 +5191,20 @@ def _open_legacy_external_session(
         for retained in (uv_descriptor, root_descriptor):
             if retained >= 0:
                 os.close(retained)
+        return ExternalAuthoritySession(
+            "EXT-LEGACY-UV-AUTHORITY", "INVALID", "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-LEGACY-UV-AUTHORITY"), (), lambda: None,
+        )
+    if (
+        uv_ancestor_snapshot is None
+        or root_ancestor_snapshot is None
+        or _external_parent_chain_snapshot(uv_path) != uv_ancestor_snapshot
+        or _external_parent_chain_snapshot(
+            legacy_root, legacy_component_policy=legacy_component_policy,
+        ) != root_ancestor_snapshot
+    ):
+        os.close(uv_descriptor)
+        os.close(root_descriptor)
         return ExternalAuthoritySession(
             "EXT-LEGACY-UV-AUTHORITY", "INVALID", "AUTHORITY_INVALID",
             _invalid_external_authority("EXT-LEGACY-UV-AUTHORITY"), (), lambda: None,
@@ -5227,6 +5287,10 @@ def _open_legacy_external_session(
 
     def postcheck() -> None:
         try:
+            current_uv_ancestors = _external_parent_chain_snapshot(uv_path)
+            current_root_ancestors = _external_parent_chain_snapshot(
+                legacy_root, legacy_component_policy=legacy_component_policy,
+            )
             named_uv = uv_path.lstat()
             held_uv = os.fstat(uv_descriptor)
             named_root = legacy_root.lstat()
@@ -5238,7 +5302,9 @@ def _open_legacy_external_session(
         except Exception as exc:
             raise TopologyError("external authority changed during qualification") from exc
         if (
-            _artifact_identity(named_uv) != uv_identity
+            current_uv_ancestors != uv_ancestor_snapshot
+            or current_root_ancestors != root_ancestor_snapshot
+            or _artifact_identity(named_uv) != uv_identity
             or _artifact_identity(held_uv) != uv_identity
             or _digest_fd(uv_descriptor) != authority["observed_uv_sha256"]
             or _artifact_identity(named_root) != root_identity
@@ -5256,7 +5322,7 @@ def _open_legacy_external_session(
 @contextmanager
 def _retained_external_authority(
     code: str, *, corpus_root: Path = PHASE3B_ROOT, uv_path: Path = LEGACY_UV,
-    legacy_root: Path = ROOT / "legacy/research-backend",
+    legacy_root: Path = REAL_LEGACY_ROOT,
     corpus_validator: Callable[[Path], object] = _default_phase3b_validator,
     expected_uv_sha256: str = LEGACY_UV_SHA256,
     expected_uv_version: str = LEGACY_UV_VERSION,
@@ -5283,7 +5349,7 @@ def _retained_external_authority(
 
 def _external_preflight(
     code: str, *, corpus_root: Path = PHASE3B_ROOT, uv_path: Path = LEGACY_UV,
-    legacy_root: Path = ROOT / "legacy/research-backend",
+    legacy_root: Path = REAL_LEGACY_ROOT,
     corpus_validator: Callable[[Path], object] = _default_phase3b_validator,
     expected_uv_sha256: str = LEGACY_UV_SHA256,
     expected_uv_version: str = LEGACY_UV_VERSION,

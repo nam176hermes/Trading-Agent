@@ -297,8 +297,12 @@ def test_external_parent_chain_includes_the_filesystem_anchor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Break caught: checking descendants but trusting an unsafe anchor is incomplete."""
-    safe = SimpleNamespace(st_mode=0o040755, st_uid=0, st_gid=0)
-    unsafe_anchor = SimpleNamespace(st_mode=0o040777, st_uid=0, st_gid=0)
+    safe = SimpleNamespace(
+        st_mode=0o040755, st_uid=0, st_gid=0, st_dev=1, st_ino=1,
+    )
+    unsafe_anchor = SimpleNamespace(
+        st_mode=0o040777, st_uid=0, st_gid=0, st_dev=1, st_ino=2,
+    )
 
     def fake_lstat(path: Path) -> SimpleNamespace:
         return unsafe_anchor if path == Path("/") else safe
@@ -368,8 +372,8 @@ def test_legacy_session_executes_only_retained_uv_and_detects_closure_drift() ->
                 topology._postcheck_external_authority(session)
 
 
-def test_legacy_component_allows_current_identity_group_writable_ancestor() -> None:
-    """Break caught: the exact repo component is rejected by its real projects mode."""
+def test_legacy_group_writable_exception_is_scoped_to_exact_real_component() -> None:
+    """Break caught: the real 0775 exception is broadened to an arbitrary root."""
 
     def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         stdout = b"fixture-uv 1.0\n" if command[1:] == ["--version"] else b""
@@ -380,8 +384,8 @@ def test_legacy_component_allows_current_identity_group_writable_ancestor() -> N
         uv = root / "uv"
         _write_regular(uv, b"fixture uv authority\n", mode=0o755)
         projects = root / "projects"
-        projects.mkdir(mode=0o770)
-        projects.chmod(0o770)
+        projects.mkdir(mode=0o775)
+        projects.chmod(0o775)
         legacy = projects / "legacy"
         _complete_legacy(legacy)
         with topology._retained_external_authority(
@@ -389,8 +393,185 @@ def test_legacy_component_allows_current_identity_group_writable_ancestor() -> N
             expected_uv_sha256=hashlib.sha256(uv.read_bytes()).hexdigest(),
             expected_uv_version="fixture-uv 1.0", runner=runner,
         ) as session:
+            assert session.state == "INVALID"
+
+    real_legacy = topology.ROOT / "legacy/research-backend"
+    assert topology._external_parent_chain_safe(real_legacy) is False
+    assert topology._external_parent_chain_safe(
+        real_legacy, legacy_component_policy=True,
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("unsafe_mode", "unsafe_uid", "unsafe_gid"),
+    (
+        (0o040777, os.geteuid(), os.getegid()),
+        (0o040755, os.geteuid() + 10000, os.getegid()),
+        (0o040755, os.geteuid(), os.getegid() + 10000),
+        (0o120777, os.geteuid(), os.getegid()),
+        (0o100600, os.geteuid(), os.getegid()),
+    ),
+)
+def test_real_legacy_ancestor_exception_rejects_world_foreign_symlink_and_special(
+    monkeypatch: pytest.MonkeyPatch,
+    unsafe_mode: int,
+    unsafe_uid: int,
+    unsafe_gid: int,
+) -> None:
+    """Break caught: the exact real-path exception weakens non-group-write policy."""
+    real_legacy = topology.ROOT / "legacy/research-backend"
+    unsafe_at = topology.ROOT.parent
+
+    def fake_lstat(path: Path) -> SimpleNamespace:
+        if path == unsafe_at:
+            return SimpleNamespace(
+                st_mode=unsafe_mode, st_uid=unsafe_uid, st_gid=unsafe_gid,
+                st_dev=1, st_ino=2, st_size=0, st_mtime_ns=0, st_ctime_ns=0,
+            )
+        return SimpleNamespace(
+            st_mode=0o040755, st_uid=0, st_gid=0,
+            st_dev=1, st_ino=1, st_size=0, st_mtime_ns=0, st_ctime_ns=0,
+        )
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+    assert topology._external_parent_chain_safe(
+        real_legacy, legacy_component_policy=True,
+    ) is False
+
+
+def test_phase_and_uv_never_inherit_real_legacy_group_write_exception() -> None:
+    """Break caught: the scoped legacy policy leaks into strict Phase or UV paths."""
+    with _safe_fixture_root() as raw:
+        root = Path(raw)
+        ancestor = root / "group-writable"
+        ancestor.mkdir(mode=0o775)
+        ancestor.chmod(0o775)
+        corpus = ancestor / "corpus"
+        _complete_phase3b(corpus)
+        uv = ancestor / "uv"
+        _write_regular(uv, b"uv fixture\n", mode=0o755)
+
+        phase_state, phase_descriptor, _ = topology._open_external_directory(
+            corpus, exact_mode=0o700,
+        )
+        uv_state, uv_descriptor, _ = topology._open_external_regular_executable(uv)
+        for descriptor in (phase_descriptor, uv_descriptor):
+            if descriptor >= 0:
+                os.close(descriptor)
+        assert phase_state == "INVALID"
+        assert uv_state == "INVALID"
+
+
+@topology.contextmanager
+def _valid_session_with_mutable_ancestor(kind: str, root: Path):
+    if kind == "phase":
+        ancestor = root / "phase-parent"
+        ancestor.mkdir(mode=0o700)
+        authority_root = ancestor / "corpus"
+        _complete_phase3b(authority_root)
+        with topology._retained_external_authority(
+            "EXT-PHASE3B-CORPUS", corpus_root=authority_root,
+            corpus_validator=lambda _root: _phase3b_analysis(),
+        ) as session:
             assert session.state == "VALID"
-            topology._postcheck_external_authority(session)
+            yield session, ancestor, authority_root
+        return
+
+    uv_parent = root / "uv-parent"
+    uv_parent.mkdir(mode=0o700)
+    uv = uv_parent / "uv"
+    _write_regular(uv, b"fixture uv authority\n", mode=0o755)
+    ancestor = root / "legacy-parent"
+    ancestor.mkdir(mode=0o700)
+    authority_root = ancestor / "legacy"
+    _complete_legacy(authority_root)
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        stdout = b"fixture-uv 1.0\n" if command[1:] == ["--version"] else b""
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+    with topology._retained_external_authority(
+        "EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=authority_root,
+        expected_uv_sha256=hashlib.sha256(uv.read_bytes()).hexdigest(),
+        expected_uv_version="fixture-uv 1.0", runner=runner,
+    ) as session:
+        assert session.state == "VALID"
+        yield session, ancestor, authority_root
+
+
+def _drift_ancestor(ancestor: Path, authority_root: Path, drift: str) -> None:
+    if drift == "mode":
+        ancestor.chmod(0o777)
+        return
+    moved = ancestor.with_name(ancestor.name + "-moved")
+    ancestor.rename(moved)
+    if drift == "symlink":
+        ancestor.symlink_to(moved, target_is_directory=True)
+        return
+    ancestor.mkdir(mode=0o700)
+    (moved / authority_root.name).rename(ancestor / authority_root.name)
+
+
+@pytest.mark.parametrize("kind", ("phase", "legacy"))
+@pytest.mark.parametrize("drift", ("mode", "identity", "symlink"))
+def test_valid_external_session_rejects_ancestor_drift(
+    kind: str, drift: str,
+) -> None:
+    """Break caught: retained leaf identity hides ancestor policy drift."""
+    with _safe_fixture_root() as raw:
+        with _valid_session_with_mutable_ancestor(kind, Path(raw)) as (
+            session, ancestor, authority_root,
+        ):
+            _drift_ancestor(ancestor, authority_root, drift)
+            with pytest.raises(topology.TopologyError, match="authority changed"):
+                topology._postcheck_external_authority(session)
+
+
+@pytest.mark.parametrize("kind", ("phase", "legacy"))
+@pytest.mark.parametrize("drift", ("mode", "identity", "symlink"))
+@pytest.mark.parametrize("boundary", ("before-bundle", "after-bundle"))
+def test_external_transaction_rechecks_ancestor_policy_at_both_boundaries(
+    monkeypatch: pytest.MonkeyPatch, kind: str, drift: str, boundary: str,
+) -> None:
+    """Break caught: one Architecture-A pre-marker boundary trusts stale ancestry."""
+    rows = topology.load_inventory(INVENTORY)
+    with _safe_fixture_root() as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        with _valid_session_with_mutable_ancestor(kind, root) as (
+            session, ancestor, authority_root,
+        ):
+            expected = topology._expected_rows(rows, session.code)[1]
+            receipt = topology.make_external_receipt(
+                context=_context(), code=session.code, expected=expected,
+                collected=expected, session=session, outcome="PASS",
+                selected_test_count=3, passed=3, failed=0, unavailable=0,
+            )
+            governance = _governance_raw(expected)
+            if boundary == "before-bundle":
+                _drift_ancestor(ancestor, authority_root, drift)
+            else:
+                real_publish = topology._publish_external_candidate_bundle
+
+                def publish_then_drift(candidate: Path, destination: Path) -> None:
+                    real_publish(candidate, destination)
+                    _drift_ancestor(ancestor, authority_root, drift)
+
+                monkeypatch.setattr(
+                    topology, "_publish_external_candidate_bundle",
+                    publish_then_drift,
+                )
+
+            with pytest.raises(topology.TopologyError, match="authority changed"):
+                topology._publish_external_receipt_transaction(
+                    receipt=receipt, evidence_root=evidence, session=session,
+                    governance_raw=governance,
+                )
+            topology_root = evidence / "capability-topology"
+            marker = topology_root / f"{session.code}.json"
+            bundle = topology_root / f"{session.code}.artifacts"
+            assert not marker.exists()
+            assert bundle.exists() is (boundary == "after-bundle")
 
 
 def test_external_architecture_a_accepts_only_exact_bundle_then_marker() -> None:
