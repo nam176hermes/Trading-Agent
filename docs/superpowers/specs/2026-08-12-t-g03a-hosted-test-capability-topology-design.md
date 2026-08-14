@@ -1837,3 +1837,62 @@ native proof needs emulation, exact collection cannot be bound, an authority is
 partial/invalid, strict Make behavior would change, a live flag changes, or a
 proposal requires engine build, download, corpus copy, service/database/
 scheduler mutation, broker, exchange, or protected runtime mutation.
+
+## Native receipt v2 implementation amendment (P0-07)
+
+This amendment supersedes the shared-v1 native receipt text above. It does not
+change the external-authority lane: external evidence remains strict
+`t-g03a-capability-receipt/v1` until its separately reviewed migration.
+
+The two native codes use
+`t-g03a-native-capability-receipt/v2`. In addition to exact run, head,
+inventory, lane, code, and node lists, native v2 binds the sealed Foundation
+validation date and context hash, a closed probe record, integer execution
+counts, completeness hash, outcome, and receipt self-hash. The nested probe
+record has only command ID, exit code, SHA-256 of stdout, SHA-256 of stderr,
+and retained executable SHA-256. Raw probe output and authority paths are not
+receipt fields. Canonical parsing rejects booleans as integers, unknown fields,
+native v1, noncanonical bytes, foreign context, mixed mapping, and any digest
+or count drift.
+
+The closed probe commands are:
+
+- `BWRAP_USER_PID_NET_ISOLATION_V1`: execute the policy-validated retained
+  `/usr/bin/bwrap` FD with user, PID, and network namespaces, a closed read-only
+  `/usr` view, private `/proc`, `/dev`, and `/tmp`, and fixed `/usr/bin/true`;
+- `UNSHARE_MAP_ROOT_USER_V1`: execute the retained `/usr/bin/unshare` FD with
+  `--user --map-root-user /usr/bin/true`.
+
+Both use a locale-fixed, closed environment and empty expected output. A clean
+exit 0 is AVAILABLE. Only exact reviewed exit-1 namespace-policy diagnostics
+with empty stdout are UNAVAILABLE. Exact-leaf absence before execution is also
+UNAVAILABLE and uses exit `-1` plus empty-output and empty-executable hashes.
+Unsafe identity, nonregular or linked authority, unexpected output/diagnostic,
+timeout (exit sentinel `-2`), execution error, partial setup, or retained-name
+replacement is BROKEN. No executable supplied through `PATH`, test fixture, or
+synthetic program can establish native availability.
+
+The retained executable FD remains open from identity validation through the
+probe and exact governed execution. Named-versus-held identity and digest are
+postchecked before native PASS publication; Bubblewrap additionally reuses the
+sealed-UV policy-bound sandbox reader. BROKEN, exact-test failure, or identity
+replacement publishes a strict v2 FAIL receipt before the lane fails. FAIL is
+never accepted by aggregation. A genuine absence or exact host-policy denial
+publishes DEFERRED with zero selected nodes and no governance artifact.
+
+Native PASS requires exactly 16 Bubblewrap or eight unshare nodes, each
+selected and passed once, plus a complete exact governance record sealed to the
+portable baseline custody. Receipt and optional governance leaves are
+no-clobber mode-0600 files below the mode-0700 topology directory. The native
+reader retains the directory and every present leaf by descriptor, rejects
+symlink/nonregular/hardlinked/wrong-owner/wrong-mode artifacts, and postchecks
+both named and held identities after cross-artifact validation. PASS without
+governance, DEFERRED with governance, and any artifact appearance or
+replacement during validation fail closed.
+
+Portable callers surface valid native DEFERRED as
+`COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS`. The explicit `validate-native` caller
+supports `--require-pass` for future host qualification and rejects DEFERRED;
+it is deliberately not wired into portable CI by P0-07. The standalone native
+target builds the existing custody extension, reserves fresh evidence,
+collects the portable baseline once, and runs each available native group once.

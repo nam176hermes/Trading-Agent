@@ -120,3 +120,37 @@ Use `GO -- TEST EVIDENCE IS MANAGED` only when:
 - no unrelated safety or security assertion is weakened.
 
 The final GO or NO-GO decision belongs in the external exact-candidate acceptance record, not this source document.
+
+## P0-07 native-capability evidence boundary
+
+Native capability evidence is now distinct from external-authority evidence.
+The two native codes use strict receipt schema
+`t-g03a-native-capability-receipt/v2`; external codes continue to use v1.
+Native v2 binds Foundation run/head/date/context, the locked active-inventory
+digest, exact 16/8 node lists, one closed retained-FD probe, exact execution
+counts, outcome, completeness, and receipt hashes.
+
+The implementation executes real inert namespace operations through retained
+root-owned `/usr/bin/bwrap` and `/usr/bin/unshare` descriptors. Bubblewrap uses
+the committed sealed-UV policy validator. Absence and only exact reviewed host
+namespace-policy denial can defer. Invalid identity, misleading or partial
+output, timeout, execution error, test failure, and executable replacement
+publish FAIL and fail the lane. No synthetic executable establishes native
+availability.
+
+Native receipt/governance evidence is private, no-clobber, descriptor-retained,
+and replacement-postchecked. PASS requires exact governance bytes matching the
+baseline's sealed custody and all expected nodes. DEFERRED requires no
+governance. Portable aggregation accepts and surfaces explicit DEFERRED, while
+the future-facing `validate-native --require-pass` caller rejects it. That host
+qualification mode is not wired into portable CI in P0-07.
+
+TDD covers native-v1 rejection with external-v1 preservation; strict context,
+probe, count, code and node binding; real retained-FD argv; narrow denial and
+timeout classification; absent versus present-invalid authority; strict FAIL
+publication; exact 16-plus-eight execution; retained executable replacement at
+multiple boundaries; symlink, mode, owner, parent and leaf artifact mutation;
+forged PASS; and no-clobber retry behavior. Exact final-head runtime evidence
+and independent review remain candidate-bound and belong in the external task
+report; this tracked document does not convert a pre-commit run into final
+acceptance and does not claim full CI.

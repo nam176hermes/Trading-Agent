@@ -479,8 +479,9 @@ _APPROVED_RECURSIVE_MAKE_OCCURRENCES = (
     ("ci-portable-private", (330, 330), ("prepare-root-test-install",), (0, 7)),
     ("ci-portable-private", (331, 331), ("test-all-portable-topology-private", "check-test-governance-topology", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
     ("test-portable-source", (335, 352), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (287, 294)),
-    ("ci-portable-topology", (378, 401), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (289, 296)),
-    ("ci-portable-topology", (378, 401), ("test-portable-root-remainder",), (949, 956)),
+    ("test-native-capabilities", (361, 379), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (332, 339)),
+    ("ci-portable-topology", (394, 417), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (289, 296)),
+    ("ci-portable-topology", (394, 417), ("test-portable-root-remainder",), (949, 956)),
 )
 
 
@@ -858,7 +859,7 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
         expected = [
             ("check-test-skips", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--report-dir", evidence + "/test-governance")), ("check-test-governance-topology", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--topology-audit", "--report-dir", evidence + "/test-governance-topology", "--topology-evidence-root", evidence, "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv", "--foundation-context-path", context)),
             ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)),
-            ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)),
+            ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)),
             ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)),
             ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "prepare-remainder", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-remainder", *topology)),
             ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "aggregate", *topology)),
@@ -1528,20 +1529,33 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
             "native-capabilities": ("UNAVAILABLE", "DEFERRED"),
             "external-authorities": ("ABSENT", "DEFERRED"),
         }[lane]
-        receipt = topology.make_receipt(
-            run_id=run_id,
-            head_sha=head_sha,
-            lane=lane,
-            code=code,
-            expected=expected,
-            collected=expected if outcome == "PASS" else (),
-            state=state,
-            fact="SOURCE_TEST_EXECUTED" if lane == "portable-source" else (
-                "NATIVE_COMPONENT_ABSENT" if lane == "native-capabilities" else "AUTHORITY_ROOT_ABSENT"
-            ),
-            outcome=outcome,
-        )
-        (topology_root / f"{code}.json").write_bytes(topology.canonical_json_bytes(receipt))
+        if lane == "native-capabilities":
+            session = topology.NativeProbeSession(
+                code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                topology._native_probe_record(
+                    code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                ), -1, None, None, None, None,
+            )
+            receipt = topology.make_native_receipt(
+                context=context, code=code, expected=expected, collected=(),
+                session=session, outcome="DEFERRED", selected_test_count=0,
+                passed=0, failed=0, unavailable=len(expected),
+            )
+        else:
+            receipt = topology.make_receipt(
+                run_id=run_id,
+                head_sha=head_sha,
+                lane=lane,
+                code=code,
+                expected=expected,
+                collected=expected if outcome == "PASS" else (),
+                state=state,
+                fact="SOURCE_TEST_EXECUTED" if lane == "portable-source" else "AUTHORITY_ROOT_ABSENT",
+                outcome=outcome,
+            )
+        receipt_path = topology_root / f"{code}.json"
+        receipt_path.write_bytes(topology.canonical_json_bytes(receipt))
+        receipt_path.chmod(0o600)
         if outcome == "PASS":
             observed = list(expected)
             (topology_root / f"{code}.governance.json").write_text(

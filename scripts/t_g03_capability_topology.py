@@ -25,6 +25,7 @@ LOCKED_INVENTORY_SHA256 = "86c157c8394f16e381d1e53a6884b6c3d93af5520ea9bdd6b3abd
 LOCKED_CLOSURE_SHA256 = "4feaed5b9e73f60ab192938a8b8b51b873f61e139a66b4926e7429c80144154a"
 LOCKED_GOVERNED_NODE_IDS_SHA256 = "aedeffcf5b9ad3d7704b3f6a15822f9862d9b84b279cc8a66b193b331262f7f0"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
+NATIVE_RECEIPT_SCHEMA = "t-g03a-native-capability-receipt/v2"
 PORTABLE_CLOSURE_PROOF_SCHEMA = "t-g03a-portable-closure-proof/v2"
 CLOSED_NODE_PROOF_SCHEMA = "t-g03a-closed-node-proof/v2"
 FOUNDATION_CONTEXT_SCHEMA = "t-g03a-foundation-context/v1"
@@ -42,6 +43,18 @@ RECEIPT_KEYS = frozenset({
     "lane", "capability_or_authority_code", "expected_node_ids", "collected_node_ids",
     "completeness_sha256", "preflight_state", "redacted_fact_class", "outcome",
     "receipt_sha256",
+})
+NATIVE_RECEIPT_KEYS = frozenset({
+    "schema_version", "foundation_run_id", "foundation_head_sha",
+    "foundation_validation_date", "foundation_context_sha256", "inventory_sha256",
+    "lane", "capability_or_authority_code", "expected_node_ids", "collected_node_ids",
+    "preflight_state", "redacted_fact_class", "probe", "selected_test_count",
+    "passed", "failed", "unavailable", "completeness_sha256", "outcome",
+    "receipt_sha256",
+})
+NATIVE_PROBE_KEYS = frozenset({
+    "command_id", "exit_code", "stdout_sha256", "stderr_sha256",
+    "executable_sha256",
 })
 FAILURE_DIAGNOSTIC_KEYS = frozenset({
     "schema_version", "diagnostic_only", "foundation_run_id", "foundation_head_sha",
@@ -167,6 +180,8 @@ def _read_private_regular_file(path: Path, *, label: str) -> bytes:
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_uid != os.geteuid()
+            or before.st_gid != os.getegid()
+            or before.st_nlink != 1
             or stat.S_IMODE(before.st_mode) != 0o600
         ):
             raise TopologyError(f"{label} is not a private regular file")
@@ -221,6 +236,8 @@ def _open_private_artifact_leaf(
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_uid != os.geteuid()
+            or before.st_gid != os.getegid()
+            or before.st_nlink != 1
             or stat.S_IMODE(before.st_mode) != 0o600
         ):
             raise TopologyError(f"{label} is not a private regular file")
@@ -332,6 +349,127 @@ def _postcheck_private_closure_artifacts(artifacts: _RetainedClosureArtifacts) -
         raise TopologyError("portable closure artifact identity changed during validation")
 
 
+@dataclass(frozen=True)
+class _RetainedNativeArtifacts:
+    directory_path: Path
+    directory_descriptor: int
+    directory_identity: tuple[int, ...]
+    receipt_name: str
+    receipt_descriptor: int
+    receipt_identity: tuple[int, ...]
+    receipt_raw: bytes
+    governance_name: str
+    governance_descriptor: int
+    governance_identity: tuple[int, ...] | None
+    governance_raw: bytes | None
+
+
+@contextmanager
+def _retained_private_native_artifacts(receipt_path: Path):
+    directory_path = receipt_path.parent
+    receipt_descriptor = -1
+    governance_descriptor = -1
+    directory_descriptor = -1
+    try:
+        try:
+            before = directory_path.lstat()
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or before.st_gid != os.getegid()
+                or stat.S_IMODE(before.st_mode) != 0o700
+            ):
+                raise TopologyError("native artifact directory is unsafe")
+            directory_descriptor = os.open(
+                directory_path,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            opened = os.fstat(directory_descriptor)
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("native artifact directory is unsafe") from exc
+        directory_identity = _artifact_identity(opened)
+        if directory_identity != _artifact_identity(before):
+            raise TopologyError("native artifact directory identity changed")
+        receipt_descriptor, receipt_identity = _open_private_artifact_leaf(
+            directory_descriptor, receipt_path.name, label="native receipt",
+        )
+        receipt_raw = _read_descriptor_bytes(receipt_descriptor)
+        governance_name = receipt_path.with_suffix(".governance.json").name
+        governance_identity: tuple[int, ...] | None = None
+        governance_raw: bytes | None = None
+        try:
+            os.stat(governance_name, dir_fd=directory_descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise TopologyError("native governance artifact is unsafe") from exc
+        else:
+            governance_descriptor, governance_identity = _open_private_artifact_leaf(
+                directory_descriptor, governance_name, label="native governance artifact",
+            )
+            governance_raw = _read_descriptor_bytes(governance_descriptor)
+        artifacts = _RetainedNativeArtifacts(
+            directory_path, directory_descriptor, directory_identity,
+            receipt_path.name, receipt_descriptor, receipt_identity, receipt_raw,
+            governance_name, governance_descriptor, governance_identity, governance_raw,
+        )
+        yield artifacts
+    finally:
+        for descriptor in (governance_descriptor, receipt_descriptor, directory_descriptor):
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _postcheck_private_native_artifacts(artifacts: _RetainedNativeArtifacts) -> None:
+    try:
+        named_directory = artifacts.directory_path.lstat()
+        held_directory = os.fstat(artifacts.directory_descriptor)
+        named_receipt = os.stat(
+            artifacts.receipt_name, dir_fd=artifacts.directory_descriptor,
+            follow_symlinks=False,
+        )
+        held_receipt = os.fstat(artifacts.receipt_descriptor)
+        if artifacts.governance_descriptor >= 0:
+            named_governance = os.stat(
+                artifacts.governance_name, dir_fd=artifacts.directory_descriptor,
+                follow_symlinks=False,
+            )
+            held_governance = os.fstat(artifacts.governance_descriptor)
+        else:
+            try:
+                os.stat(
+                    artifacts.governance_name, dir_fd=artifacts.directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                named_governance = held_governance = None
+            else:
+                raise TopologyError("native governance artifact appeared during validation")
+    except TopologyError:
+        raise
+    except OSError as exc:
+        raise TopologyError("native artifact identity changed during validation") from exc
+    if (
+        _artifact_identity(named_directory) != artifacts.directory_identity
+        or _artifact_identity(held_directory) != artifacts.directory_identity
+        or _artifact_identity(named_receipt) != artifacts.receipt_identity
+        or _artifact_identity(held_receipt) != artifacts.receipt_identity
+        or (
+            artifacts.governance_descriptor >= 0
+            and (
+                artifacts.governance_identity is None
+                or _artifact_identity(named_governance) != artifacts.governance_identity
+                or _artifact_identity(held_governance) != artifacts.governance_identity
+            )
+        )
+    ):
+        raise TopologyError("native artifact identity changed during validation")
+
+
 INVENTORY_COLUMNS = (
     "test_node_id", "source_file", "primary_invariant", "failure_before_primary_assertion",
     "classification", "capability_or_authority_code", "source_fix_required",
@@ -388,12 +526,37 @@ REDACTED_FACT_CLASSES = frozenset({
     "AUTHORITY_ROOT_ABSENT", "AUTHORITY_EXECUTABLE_ABSENT", "AUTHORITY_COMPLETE_VALIDATED",
     "AUTHORITY_PARTIAL", "AUTHORITY_INVALID",
 })
+NATIVE_FACT_CLASSES = frozenset({
+    "NATIVE_COMPONENT_ABSENT", "NATIVE_IDENTITY_INVALID",
+    "NATIVE_CAPABILITY_VALIDATED", "RUNNER_POLICY_DISALLOWS_USERNS",
+    "NATIVE_PROBE_INVALID", "NATIVE_EXACT_TEST_FAILURE",
+    "NATIVE_IDENTITY_REPLACED",
+})
 TRUSTED_UNSHARE = Path("/usr/bin/unshare")
+EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+NATIVE_PROBE_NOT_EXECUTED = -1
+NATIVE_PROBE_TIMEOUT = -2
+NATIVE_COMMAND_IDS = {
+    "NATIVE-BWRAP-OS-SANDBOX": "BWRAP_USER_PID_NET_ISOLATION_V1",
+    "NATIVE-USERNS-ROOT-PROVISION": "UNSHARE_MAP_ROOT_USER_V1",
+}
+NATIVE_DENIAL_STDERR = {
+    "NATIVE-BWRAP-OS-SANDBOX": frozenset({
+        b"bwrap: Creating new namespace failed: Operation not permitted\n",
+        b"bwrap: No permissions to create new namespace, likely because the kernel does not allow non-privileged user namespaces. See <https://deb.li/bubblewrap> or <file:///usr/share/doc/bubblewrap/README.Debian.gz>.\n",
+    }),
+    "NATIVE-USERNS-ROOT-PROVISION": frozenset({
+        b"unshare: unshare failed: Operation not permitted\n",
+        b"unshare: write failed /proc/self/uid_map: Operation not permitted\n",
+        b"unshare: write failed /proc/self/uid_map: Permission denied\n",
+    }),
+}
 PHASE3B_ROOT = Path("/home/thenam176/.hermes/crypto-research")
 LEGACY_UV = Path("/home/thenam176/.local/bin/uv")
 LEGACY_UV_SHA256 = "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
 LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 ROOT = Path(__file__).resolve().parents[1]
+TRUSTED_BWRAP_POLICY = ROOT / "engines/nautilus/sealed-uv-exec-policy.json"
 CLOSURE_PATH = ROOT / CLOSURE_RELATIVE_PATH
 PHASE3B_REQUIRED_ENTRIES = (
     ("asset_registry.py", False),
@@ -2664,16 +2827,16 @@ def payload_sha256(receipt: dict[str, object]) -> str:
     return _sha256({key: value for key, value in receipt.items() if key != "receipt_sha256"})
 
 
-def parse_receipt(raw: bytes) -> dict[str, object]:
-    try:
-        decoded = raw.decode("utf-8")
-        value: Any = json.loads(decoded)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise TopologyError("receipt is not strict UTF-8 JSON") from exc
+def native_completeness_sha256(receipt: dict[str, object]) -> str:
+    return _sha256({
+        key: value for key, value in receipt.items()
+        if key not in {"completeness_sha256", "receipt_sha256"}
+    })
+
+
+def _parse_v1_receipt(value: dict[str, object], raw: bytes) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != RECEIPT_KEYS:
         raise TopologyError("receipt has invalid schema keys")
-    if canonical_json_bytes(value) != raw:
-        raise TopologyError("receipt is not canonical")
     if value.get("schema_version") != RECEIPT_SCHEMA:
         raise TopologyError("receipt has invalid schema version")
     _validate_receipt_shape(value)
@@ -2682,6 +2845,83 @@ def parse_receipt(raw: bytes) -> dict[str, object]:
     if value.get("receipt_sha256") != payload_sha256(value):
         raise TopologyError("receipt self-hash mismatch")
     return value
+
+
+def _parse_native_receipt(value: dict[str, object], raw: bytes) -> dict[str, object]:
+    if set(value) != NATIVE_RECEIPT_KEYS:
+        raise TopologyError("native receipt has invalid schema keys")
+    if value.get("schema_version") != NATIVE_RECEIPT_SCHEMA:
+        raise TopologyError("native receipt has invalid schema version")
+    for field, pattern, label in (
+        ("foundation_run_id", RUN_ID, "foundation run"),
+        ("foundation_head_sha", HEAD_SHA, "head"),
+        ("foundation_validation_date", FOUNDATION_DATE, "Foundation date"),
+        ("foundation_context_sha256", HEX64, "Foundation context hash"),
+        ("inventory_sha256", HEX64, "inventory hash"),
+        ("completeness_sha256", HEX64, "completeness hash"),
+        ("receipt_sha256", HEX64, "self-hash"),
+    ):
+        item = value[field]
+        if not isinstance(item, str) or not pattern.fullmatch(item):
+            raise TopologyError(f"native receipt has invalid {label}")
+    parse_foundation_validation_date(value["foundation_validation_date"])
+    for field in (
+        "lane", "capability_or_authority_code", "preflight_state",
+        "redacted_fact_class", "outcome",
+    ):
+        item = value[field]
+        if not isinstance(item, str) or not ASCII.fullmatch(item):
+            raise TopologyError(f"native receipt has invalid {field}")
+    if value["lane"] != "native-capabilities":
+        raise TopologyError("native receipt has invalid lane")
+    if value["capability_or_authority_code"] not in NATIVE_COMMAND_IDS:
+        raise TopologyError("native receipt has invalid capability code")
+    if value["redacted_fact_class"] not in NATIVE_FACT_CLASSES:
+        raise TopologyError("native receipt has unredacted fact class")
+    if value["outcome"] not in {"PASS", "DEFERRED", "FAIL"}:
+        raise TopologyError("native receipt has invalid outcome")
+    for field in ("expected_node_ids", "collected_node_ids"):
+        items = value[field]
+        if (
+            not isinstance(items, list)
+            or any(not isinstance(item, str) or not ASCII.fullmatch(item) for item in items)
+            or items != sorted(set(items))
+        ):
+            raise TopologyError(f"native receipt has invalid {field}")
+    for field in ("selected_test_count", "passed", "failed", "unavailable"):
+        item = value[field]
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+            raise TopologyError(f"native receipt has invalid {field}")
+    probe = value["probe"]
+    if not isinstance(probe, dict) or set(probe) != NATIVE_PROBE_KEYS:
+        raise TopologyError("native receipt has invalid probe")
+    if (
+        not isinstance(probe["command_id"], str)
+        or not ASCII.fullmatch(probe["command_id"])
+        or not isinstance(probe["exit_code"], int)
+        or isinstance(probe["exit_code"], bool)
+    ):
+        raise TopologyError("native receipt has invalid probe command result")
+    for field in ("stdout_sha256", "stderr_sha256", "executable_sha256"):
+        item = probe[field]
+        if not isinstance(item, str) or not HEX64.fullmatch(item):
+            raise TopologyError(f"native receipt has invalid probe {field}")
+    if value["completeness_sha256"] != native_completeness_sha256(value):
+        raise TopologyError("native receipt completeness hash mismatch")
+    if value["receipt_sha256"] != payload_sha256(value):
+        raise TopologyError("native receipt self-hash mismatch")
+    return value
+
+
+def parse_receipt(raw: bytes) -> dict[str, object]:
+    value = _strict_json(raw, label="receipt")
+    if not isinstance(value, dict):
+        raise TopologyError("receipt has invalid schema keys")
+    if canonical_json_bytes(value) != raw:
+        raise TopologyError("receipt is not canonical")
+    if value.get("schema_version") == NATIVE_RECEIPT_SCHEMA:
+        return _parse_native_receipt(value, raw)
+    return _parse_v1_receipt(value, raw)
 
 
 def _validate_receipt_shape(receipt: dict[str, object]) -> None:
@@ -2719,6 +2959,7 @@ def _expected_rows(rows: tuple[InventoryRow, ...], code: str) -> tuple[str, tupl
 
 def validate_receipt(
     raw: bytes, *, rows: tuple[InventoryRow, ...], foundation_run_id: str, foundation_head_sha: str,
+    foundation_context: dict[str, object] | None = None,
 ) -> dict[str, object]:
     receipt = parse_receipt(raw)
     if receipt["foundation_run_id"] != foundation_run_id or receipt["foundation_head_sha"] != foundation_head_sha:
@@ -2728,6 +2969,22 @@ def validate_receipt(
     lane, expected = _expected_rows(rows, str(receipt["capability_or_authority_code"]))
     if receipt["lane"] != lane or tuple(receipt["expected_node_ids"]) != expected:
         raise TopologyError("receipt lane/code/node mapping drift")
+    if lane == "native-capabilities":
+        if receipt["schema_version"] != NATIVE_RECEIPT_SCHEMA:
+            raise TopologyError("native v1 receipt is stale")
+        if foundation_context is None:
+            raise TopologyError("native receipt requires sealed Foundation context")
+        if (
+            receipt["foundation_validation_date"] != foundation_context.get("foundation_validation_date")
+            or receipt["foundation_context_sha256"] != foundation_context.get("foundation_context_sha256")
+            or foundation_context.get("foundation_run_id") != foundation_run_id
+            or foundation_context.get("foundation_head_sha") != foundation_head_sha
+        ):
+            raise TopologyError("native receipt Foundation context binding drift")
+        _validate_native_outcome(receipt, expected)
+        return receipt
+    if receipt["schema_version"] != RECEIPT_SCHEMA:
+        raise TopologyError("external receipt has invalid schema version")
     state = str(receipt["preflight_state"])
     outcome = str(receipt["outcome"])
     allowed = {
@@ -2743,6 +3000,136 @@ def validate_receipt(
     if outcome == "DEFERRED" and collected:
         raise TopologyError("DEFERRED receipt selected a node")
     return receipt
+
+
+def _validate_native_outcome(receipt: dict[str, object], expected: tuple[str, ...]) -> None:
+    code = str(receipt["capability_or_authority_code"])
+    state = str(receipt["preflight_state"])
+    fact = str(receipt["redacted_fact_class"])
+    outcome = str(receipt["outcome"])
+    probe = receipt["probe"]
+    assert isinstance(probe, dict)
+    if probe["command_id"] != NATIVE_COMMAND_IDS[code]:
+        raise TopologyError("native receipt probe command binding drift")
+    selected = int(receipt["selected_test_count"])
+    passed = int(receipt["passed"])
+    failed = int(receipt["failed"])
+    unavailable = int(receipt["unavailable"])
+    collected = tuple(receipt["collected_node_ids"])
+    expected_count = len(expected)
+    if outcome == "PASS":
+        if (
+            (state, fact) != ("AVAILABLE", "NATIVE_CAPABILITY_VALIDATED")
+            or probe["exit_code"] != 0
+            or probe["stdout_sha256"] != EMPTY_SHA256
+            or probe["stderr_sha256"] != EMPTY_SHA256
+            or probe["executable_sha256"] == EMPTY_SHA256
+            or collected != expected
+            or (selected, passed, failed, unavailable)
+            != (expected_count, expected_count, 0, 0)
+        ):
+            raise TopologyError("native PASS receipt lacks exact probe or execution proof")
+        return
+    if outcome == "DEFERRED":
+        if (
+            state != "UNAVAILABLE"
+            or fact not in {"NATIVE_COMPONENT_ABSENT", "RUNNER_POLICY_DISALLOWS_USERNS"}
+            or collected
+            or (selected, passed, failed, unavailable) != (0, 0, 0, expected_count)
+        ):
+            raise TopologyError("native DEFERRED receipt has invalid counts or state")
+        if fact == "NATIVE_COMPONENT_ABSENT":
+            if (
+                probe["exit_code"] != NATIVE_PROBE_NOT_EXECUTED
+                or probe["stdout_sha256"] != EMPTY_SHA256
+                or probe["stderr_sha256"] != EMPTY_SHA256
+                or probe["executable_sha256"] != EMPTY_SHA256
+            ):
+                raise TopologyError("native absent receipt falsely claims probe execution")
+            return
+        allowed_stderr = {
+            hashlib.sha256(value).hexdigest() for value in NATIVE_DENIAL_STDERR[code]
+        }
+        if (
+            probe["exit_code"] != 1
+            or probe["stdout_sha256"] != EMPTY_SHA256
+            or probe["stderr_sha256"] not in allowed_stderr
+            or probe["executable_sha256"] == EMPTY_SHA256
+        ):
+            raise TopologyError("native namespace-policy deferral is not exact")
+        return
+    if (
+        outcome != "FAIL"
+        or state != "BROKEN"
+        or fact not in NATIVE_FACT_CLASSES - {
+            "NATIVE_COMPONENT_ABSENT", "NATIVE_CAPABILITY_VALIDATED",
+            "RUNNER_POLICY_DISALLOWS_USERNS",
+        }
+        or unavailable != 0
+        or passed != 0
+        or failed not in {0, expected_count}
+        or selected not in {0, expected_count}
+        or collected
+    ):
+        raise TopologyError("native FAIL receipt has invalid state or counts")
+
+
+def validate_native_receipt_set(
+    raws: list[bytes], *, rows: tuple[InventoryRow, ...],
+    foundation_context: dict[str, object], require_pass: bool,
+) -> str:
+    run_id = str(foundation_context.get("foundation_run_id", ""))
+    head_sha = str(foundation_context.get("foundation_head_sha", ""))
+    receipts = [
+        validate_receipt(
+            raw, rows=rows, foundation_run_id=run_id,
+            foundation_head_sha=head_sha, foundation_context=foundation_context,
+        )
+        for raw in raws
+    ]
+    codes = [str(receipt["capability_or_authority_code"]) for receipt in receipts]
+    if len(codes) != len(set(codes)) or set(codes) != set(NATIVE_COMMAND_IDS):
+        raise TopologyError("native receipt set is missing, duplicate, or unknown")
+    if any(receipt["outcome"] == "FAIL" for receipt in receipts):
+        raise TopologyError("native receipt set contains FAIL")
+    status = "DEFERRED" if any(receipt["outcome"] == "DEFERRED" for receipt in receipts) else "PASS"
+    if require_pass and status != "PASS":
+        raise TopologyError("native host qualification requires PASS")
+    return status
+
+
+def validate_native_artifact_set(
+    receipt_path: Path, *, rows: tuple[InventoryRow, ...],
+    foundation_context: dict[str, object], sealed_custody: dict[str, str],
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    if receipt_path.suffix != ".json" or not receipt_path.name.startswith("NATIVE-"):
+        raise TopologyError("native receipt path is malformed")
+    with _retained_private_native_artifacts(receipt_path) as artifacts:
+        receipt = validate_receipt(
+            artifacts.receipt_raw, rows=rows,
+            foundation_run_id=str(foundation_context.get("foundation_run_id", "")),
+            foundation_head_sha=str(foundation_context.get("foundation_head_sha", "")),
+            foundation_context=foundation_context,
+        )
+        code = str(receipt["capability_or_authority_code"])
+        if receipt_path.name != f"{code}.json":
+            raise TopologyError("native receipt filename/code binding drift")
+        expected = tuple(receipt["expected_node_ids"])
+        if receipt["outcome"] == "PASS":
+            if artifacts.governance_raw is None:
+                raise TopologyError("native PASS receipt lacks governance artifact")
+            records = _validate_exact_governance_bytes(
+                artifacts.governance_raw, expected, _validate_custody_policy(sealed_custody),
+            )
+            executed = tuple(str(record["test_node_id"]) for record in records)
+        elif receipt["outcome"] == "DEFERRED":
+            if artifacts.governance_raw is not None:
+                raise TopologyError("native DEFERRED receipt has governance artifact")
+            executed = ()
+        else:
+            raise TopologyError("native FAIL receipt is never acceptable")
+        _postcheck_private_native_artifacts(artifacts)
+        return receipt, executed
 
 
 def aggregate_receipts(
@@ -2762,14 +3149,21 @@ def aggregate_receipts(
         sealed_custody=sealed_custody,
     )
     expected_codes = set(CODE_CLASSIFICATION)
+    receipts: list[dict[str, object]] = []
     try:
-        receipts = [
-            validate_receipt(
-                path.read_bytes(), rows=rows, foundation_run_id=foundation_run_id,
-                foundation_head_sha=foundation_head_sha,
-            )
-            for path in paths
-        ]
+        for path in paths:
+            if path.name.startswith("NATIVE-"):
+                receipt, _ = validate_native_artifact_set(
+                    path, rows=rows, foundation_context=foundation_context,
+                    sealed_custody=sealed_custody,
+                )
+            else:
+                receipt = validate_receipt(
+                    path.read_bytes(), rows=rows, foundation_run_id=foundation_run_id,
+                    foundation_head_sha=foundation_head_sha,
+                    foundation_context=foundation_context,
+                )
+            receipts.append(receipt)
     except OSError as exc:
         raise TopologyError("receipt set is missing or unreadable") from exc
     codes = [str(receipt["capability_or_authority_code"]) for receipt in receipts]
@@ -2778,6 +3172,8 @@ def aggregate_receipts(
     statuses = {"portable-source": "PASS", "native-capabilities": "PASS", "external-authorities": "PASS"}
     for receipt in receipts:
         lane = str(receipt["lane"])
+        if receipt["outcome"] == "FAIL":
+            raise TopologyError("receipt set contains FAIL")
         if receipt["outcome"] == "DEFERRED":
             statuses[lane] = "DEFERRED"
     if statuses["portable-source"] != "PASS":
@@ -2835,14 +3231,25 @@ def reconcile_portable_root_accounting(
     )
     accounted: list[str] = [*executed_remainder, *proof["closure_node_ids"]]
     for path in receipt_paths:
-        receipt = validate_receipt(
-            path.read_bytes(), rows=rows, foundation_run_id=run_id, foundation_head_sha=head_sha,
-        )
+        if path.name.startswith("NATIVE-"):
+            receipt, native_executed = validate_native_artifact_set(
+                path, rows=rows, foundation_context=context, sealed_custody=sealed_custody,
+            )
+        else:
+            receipt = validate_receipt(
+                path.read_bytes(), rows=rows, foundation_run_id=run_id,
+                foundation_head_sha=head_sha, foundation_context=context,
+            )
+            native_executed = ()
         expected = tuple(receipt["expected_node_ids"])
         code = str(receipt["capability_or_authority_code"])
         governance = topology_root / f"{code}.governance.json"
         if receipt["outcome"] == "PASS":
-            accounted.extend(_validate_exact_governance_record(governance, expected, sealed_custody))
+            accounted.extend(
+                native_executed
+                if path.name.startswith("NATIVE-")
+                else _validate_exact_governance_record(governance, expected, sealed_custody)
+            )
         else:
             if os.path.lexists(governance):
                 raise TopologyError("deferred receipt has an execution record")
@@ -2869,6 +3276,39 @@ def make_receipt(*, run_id: str, head_sha: str, lane: str, code: str, expected: 
     return receipt
 
 
+def make_native_receipt(
+    *, context: dict[str, object], code: str, expected: tuple[str, ...],
+    collected: tuple[str, ...], session: NativeProbeSession, outcome: str,
+    selected_test_count: int, passed: int, failed: int, unavailable: int,
+    fact: str | None = None,
+) -> dict[str, object]:
+    receipt: dict[str, object] = {
+        "schema_version": NATIVE_RECEIPT_SCHEMA,
+        "foundation_run_id": context["foundation_run_id"],
+        "foundation_head_sha": context["foundation_head_sha"],
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "lane": "native-capabilities",
+        "capability_or_authority_code": code,
+        "expected_node_ids": list(expected),
+        "collected_node_ids": list(collected),
+        "preflight_state": "BROKEN" if outcome == "FAIL" else session.state,
+        "redacted_fact_class": session.fact if fact is None else fact,
+        "probe": dict(session.probe),
+        "selected_test_count": selected_test_count,
+        "passed": passed,
+        "failed": failed,
+        "unavailable": unavailable,
+        "completeness_sha256": "",
+        "outcome": outcome,
+        "receipt_sha256": "",
+    }
+    receipt["completeness_sha256"] = native_completeness_sha256(receipt)
+    receipt["receipt_sha256"] = payload_sha256(receipt)
+    return receipt
+
+
 def publish_receipt(receipt: dict[str, object], evidence_root: Path) -> Path:
     """Publish a receipt once. Existing evidence is a hard failure, never clobbered."""
     code = str(receipt["capability_or_authority_code"])
@@ -2877,11 +3317,7 @@ def publish_receipt(receipt: dict[str, object], evidence_root: Path) -> Path:
     _prepare_private_evidence_directory(destination.parent)
     _reject_policy_nonacceptance_presence(destination.parent)
     _reject_unsafe_raw_reason_nonacceptance_presence(destination.parent)
-    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(canonical_json_bytes(receipt))
-        stream.flush()
-        os.fsync(stream.fileno())
+    _publish_no_clobber(destination, canonical_json_bytes(receipt))
     return destination
 
 
@@ -2903,51 +3339,288 @@ def require_foundation_context(run_id: str, head_sha: str) -> None:
         raise TopologyError("Foundation head does not match checked-out HEAD")
 
 
-def _native_preflight(code: str) -> tuple[str, str]:
-    if code == "NATIVE-BWRAP-OS-SANDBOX":
-        policy = Path("engines/nautilus/sealed-uv-exec-policy.json")
-        sandbox = Path("/usr/bin/bwrap")
-        if not sandbox.exists():
-            return "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT"
-        if not sandbox.is_file() or sandbox.is_symlink() or not policy.is_file():
-            return "BROKEN", "NATIVE_IDENTITY_INVALID"
+@dataclass(frozen=True)
+class NativeProbeSession:
+    code: str
+    state: str
+    fact: str
+    probe: dict[str, object]
+    descriptor: int
+    executable_path: Path | None
+    named_identity: tuple[int, ...] | None
+    descriptor_identity: tuple[int, ...] | None
+    policy: dict[str, object] | None
+
+
+def _native_probe_record(
+    code: str, *, exit_code: int, stdout: bytes = b"", stderr: bytes = b"",
+    executable_sha256: str = EMPTY_SHA256,
+) -> dict[str, object]:
+    return {
+        "command_id": NATIVE_COMMAND_IDS[code],
+        "exit_code": exit_code,
+        "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+        "executable_sha256": executable_sha256,
+    }
+
+
+def _native_path_leaf(path: Path) -> tuple[str, os.stat_result | None]:
+    """Classify one fixed root-owned executable without following any component link."""
+    if not path.is_absolute():
+        return "BROKEN", None
+    current = Path(path.anchor)
+    try:
+        root_info = current.lstat()
+    except OSError:
+        return "BROKEN", None
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != 0
+        or root_info.st_gid != 0
+        or root_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        return "BROKEN", None
+    for part in path.parts[1:-1]:
+        current = current / part
         try:
-            binding = json.loads(policy.read_text(encoding="utf-8"))
-            observed = sandbox.stat()
-            version = subprocess.run([str(sandbox), "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
-            help_output = subprocess.run([str(sandbox), "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
-        except (OSError, json.JSONDecodeError, subprocess.SubprocessError):
-            return "BROKEN", "NATIVE_IDENTITY_INVALID"
-        required = binding.get("sandbox_capabilities")
-        valid = (version.returncode == 0 and help_output.returncode == 0 and isinstance(required, list)
-                 and hashlib.sha256(sandbox.read_bytes()).hexdigest() == binding.get("sandbox_sha256")
-                 and observed.st_uid == binding.get("sandbox_uid") and observed.st_gid == binding.get("sandbox_gid")
-                 and f"{observed.st_mode & 0o7777:04o}" == binding.get("sandbox_mode")
-                 and version.stdout.strip() == binding.get("sandbox_version")
-                 and all(isinstance(option, str) and option in help_output.stdout for option in required))
-        return ("AVAILABLE", "NATIVE_CAPABILITY_VALIDATED") if valid else ("BROKEN", "NATIVE_IDENTITY_INVALID")
-    if code == "NATIVE-USERNS-ROOT-PROVISION":
-        unshare = TRUSTED_UNSHARE
-        if not os.path.lexists(unshare):
-            return "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT"
-        try:
-            identity = unshare.lstat()
+            info = current.lstat()
         except OSError:
-            return "BROKEN", "NATIVE_IDENTITY_INVALID"
-        if (unshare.is_symlink() or not stat.S_ISREG(identity.st_mode)
-                or identity.st_uid != 0 or identity.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-                or not os.access(unshare, os.X_OK)):
-            return "BROKEN", "NATIVE_IDENTITY_INVALID"
-        try:
-            result = subprocess.run([str(unshare), "--user", "--map-root-user", "true"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False)
-        except (OSError, subprocess.SubprocessError):
-            return "BROKEN", "NATIVE_PROBE_INVALID"
-        if result.returncode == 0:
-            return "AVAILABLE", "NATIVE_CAPABILITY_VALIDATED"
-        if "Operation not permitted" in result.stderr:
-            return "UNAVAILABLE", "RUNNER_POLICY_DISALLOWS_USERNS"
-        return "BROKEN", "NATIVE_PROBE_INVALID"
-    raise TopologyError("unknown native capability")
+            return "BROKEN", None
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != 0
+            or info.st_gid != 0
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            return "BROKEN", None
+    try:
+        leaf = path.lstat()
+    except FileNotFoundError:
+        return "ABSENT", None
+    except OSError:
+        return "BROKEN", None
+    if (
+        stat.S_ISLNK(leaf.st_mode)
+        or not stat.S_ISREG(leaf.st_mode)
+        or leaf.st_nlink != 1
+        or leaf.st_uid != 0
+        or leaf.st_gid != 0
+        or stat.S_IMODE(leaf.st_mode) != 0o755
+        or not leaf.st_mode & stat.S_IXUSR
+    ):
+        return "BROKEN", None
+    return "PRESENT", leaf
+
+
+def _open_unshare_session(path: Path) -> NativeProbeSession:
+    state, named = _native_path_leaf(path)
+    if state == "ABSENT":
+        return NativeProbeSession(
+            "NATIVE-USERNS-ROOT-PROVISION", "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+            _native_probe_record(
+                "NATIVE-USERNS-ROOT-PROVISION", exit_code=NATIVE_PROBE_NOT_EXECUTED,
+            ), -1, None, None, None, None,
+        )
+    if state != "PRESENT" or named is None:
+        return NativeProbeSession(
+            "NATIVE-USERNS-ROOT-PROVISION", "BROKEN", "NATIVE_IDENTITY_INVALID",
+            _native_probe_record(
+                "NATIVE-USERNS-ROOT-PROVISION", exit_code=NATIVE_PROBE_NOT_EXECUTED,
+            ), -1, path, None, None, None,
+        )
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        if _artifact_identity(opened) != _artifact_identity(named):
+            raise TopologyError("native executable identity changed before probe")
+        digest = _digest_fd(descriptor)
+    except (OSError, TopologyError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        return NativeProbeSession(
+            "NATIVE-USERNS-ROOT-PROVISION", "BROKEN", "NATIVE_IDENTITY_INVALID",
+            _native_probe_record(
+                "NATIVE-USERNS-ROOT-PROVISION", exit_code=NATIVE_PROBE_NOT_EXECUTED,
+            ), -1, path, None, None, None,
+        )
+    return NativeProbeSession(
+        "NATIVE-USERNS-ROOT-PROVISION", "PROBE_PENDING", "NATIVE_PROBE_INVALID",
+        _native_probe_record(
+            "NATIVE-USERNS-ROOT-PROVISION", exit_code=NATIVE_PROBE_NOT_EXECUTED,
+            executable_sha256=digest,
+        ), descriptor, path, _artifact_identity(named), _artifact_identity(opened), None,
+    )
+
+
+def _open_bwrap_session(policy_path: Path) -> NativeProbeSession:
+    code = "NATIVE-BWRAP-OS-SANDBOX"
+    try:
+        from scripts import materialize_sealed_uv_exec as sealed_uv
+        policy = sealed_uv.load_policy(policy_path)
+        path = Path(str(policy["sandbox_path"]))
+    except (ImportError, OSError, ValueError, AttributeError, RuntimeError):
+        return NativeProbeSession(
+            code, "BROKEN", "NATIVE_IDENTITY_INVALID",
+            _native_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
+            -1, None, None, None, None,
+        )
+    path_state, named = _native_path_leaf(path)
+    if path_state == "ABSENT":
+        return NativeProbeSession(
+            code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+            _native_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
+            -1, None, None, None, policy,
+        )
+    if path_state != "PRESENT" or named is None:
+        return NativeProbeSession(
+            code, "BROKEN", "NATIVE_IDENTITY_INVALID",
+            _native_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
+            -1, path, None, None, policy,
+        )
+    descriptor = -1
+    try:
+        descriptor = sealed_uv._verify_sandbox(policy)
+        named_after = path.lstat()
+        if _artifact_identity(named_after) != _artifact_identity(named):
+            raise TopologyError("native executable identity changed before probe")
+        opened = os.fstat(descriptor)
+        digest = _digest_fd(descriptor)
+        if digest != policy["sandbox_sha256"]:
+            raise TopologyError("native executable policy digest drift")
+    except (OSError, ValueError, AttributeError, TopologyError, RuntimeError):
+        if descriptor >= 0:
+            os.close(descriptor)
+        return NativeProbeSession(
+            code, "BROKEN", "NATIVE_IDENTITY_INVALID",
+            _native_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
+            -1, path, None, None, policy,
+        )
+    return NativeProbeSession(
+        code, "PROBE_PENDING", "NATIVE_PROBE_INVALID",
+        _native_probe_record(
+            code, exit_code=NATIVE_PROBE_NOT_EXECUTED, executable_sha256=digest,
+        ), descriptor, path, _artifact_identity(named), _artifact_identity(opened), policy,
+    )
+
+
+def _native_probe_argv(session: NativeProbeSession) -> list[str]:
+    executable = f"/proc/self/fd/{session.descriptor}"
+    if session.code == "NATIVE-BWRAP-OS-SANDBOX":
+        return [
+            executable, "--die-with-parent", "--unshare-user", "--unshare-pid",
+            "--unshare-net", "--new-session", "--clearenv", "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+            "--tmpfs", "/tmp", "--", "/usr/bin/true",
+        ]
+    return [executable, "--user", "--map-root-user", "/usr/bin/true"]
+
+
+def _execute_native_probe(
+    session: NativeProbeSession, *, runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> NativeProbeSession:
+    if session.state != "PROBE_PENDING":
+        return session
+    command = _native_probe_argv(session)
+    try:
+        result = runner(
+            command, cwd=Path("/"), env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=10, check=False, pass_fds=(session.descriptor,),
+        )
+    except subprocess.TimeoutExpired:
+        return NativeProbeSession(
+            **{**session.__dict__, "state": "BROKEN", "fact": "NATIVE_PROBE_INVALID",
+               "probe": _native_probe_record(
+                   session.code, exit_code=NATIVE_PROBE_TIMEOUT,
+                   executable_sha256=str(session.probe["executable_sha256"]),
+               )},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return NativeProbeSession(
+            **{**session.__dict__, "state": "BROKEN", "fact": "NATIVE_PROBE_INVALID"},
+        )
+    stdout = result.stdout if isinstance(result.stdout, bytes) else b""
+    stderr = result.stderr if isinstance(result.stderr, bytes) else b""
+    probe = _native_probe_record(
+        session.code, exit_code=result.returncode, stdout=stdout, stderr=stderr,
+        executable_sha256=str(session.probe["executable_sha256"]),
+    )
+    if result.returncode == 0 and stdout == b"" and stderr == b"":
+        return NativeProbeSession(
+            **{**session.__dict__, "state": "AVAILABLE",
+               "fact": "NATIVE_CAPABILITY_VALIDATED", "probe": probe},
+        )
+    if result.returncode == 1 and stdout == b"" and stderr in NATIVE_DENIAL_STDERR[session.code]:
+        return NativeProbeSession(
+            **{**session.__dict__, "state": "UNAVAILABLE",
+               "fact": "RUNNER_POLICY_DISALLOWS_USERNS", "probe": probe},
+        )
+    return NativeProbeSession(
+        **{**session.__dict__, "state": "BROKEN", "fact": "NATIVE_PROBE_INVALID",
+           "probe": probe},
+    )
+
+
+def _postcheck_native_probe(session: NativeProbeSession) -> None:
+    if session.descriptor < 0:
+        return
+    if (
+        session.executable_path is None
+        or session.named_identity is None
+        or session.descriptor_identity is None
+    ):
+        raise TopologyError("native retained executable state is incomplete")
+    try:
+        held = os.fstat(session.descriptor)
+        named = session.executable_path.lstat()
+        if (
+            _artifact_identity(held) != session.descriptor_identity
+            or _artifact_identity(named) != session.named_identity
+            or _digest_fd(session.descriptor) != session.probe["executable_sha256"]
+        ):
+            raise TopologyError("native executable identity changed during execution")
+        if session.code == "NATIVE-BWRAP-OS-SANDBOX":
+            from scripts import materialize_sealed_uv_exec as sealed_uv
+            if session.policy is None or hashlib.sha256(
+                sealed_uv._read_bound_sandbox(session.policy),
+            ).hexdigest() != session.probe["executable_sha256"]:
+                raise TopologyError("native executable identity changed during execution")
+    except (OSError, ValueError, AttributeError, ImportError, RuntimeError) as exc:
+        raise TopologyError("native executable identity changed during execution") from exc
+
+
+@contextmanager
+def _retained_native_probe(
+    code: str, *, runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    bwrap_policy_path: Path | None = None,
+    unshare_path: Path | None = None,
+):
+    bwrap_policy_path = TRUSTED_BWRAP_POLICY if bwrap_policy_path is None else bwrap_policy_path
+    unshare_path = TRUSTED_UNSHARE if unshare_path is None else unshare_path
+    if code == "NATIVE-BWRAP-OS-SANDBOX":
+        session = _open_bwrap_session(bwrap_policy_path)
+    elif code == "NATIVE-USERNS-ROOT-PROVISION":
+        session = _open_unshare_session(unshare_path)
+    else:
+        raise TopologyError("unknown native capability")
+    session = _execute_native_probe(session, runner=runner)
+    try:
+        yield session
+    finally:
+        if session.descriptor >= 0:
+            os.close(session.descriptor)
+
+
+def _native_preflight(code: str) -> tuple[str, str]:
+    """Compatibility wrapper; production lanes retain the full probe session."""
+    with _retained_native_probe(code) as session:
+        _postcheck_native_probe(session)
+        return session.state, session.fact
 
 
 def _safe_authority_entry(path: Path, *, directory: bool) -> str | None:
@@ -3178,11 +3851,51 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     return passed
 
 
+def _execute_native_exact_with_retained_authority(
+    *, baseline: dict[str, object], expected: tuple[str, ...], governance: Path,
+    session: NativeProbeSession,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Keep native PASS private until custody and executable identity both postcheck."""
+    holding = governance.with_name(f".{governance.name}.native-holding")
+    if os.path.lexists(holding) or os.path.lexists(governance):
+        raise TopologyError("native PASS governance destination is already populated")
+    published_raw: bytes | None = None
+    try:
+        selected = _execute_exact_with_retained_custody(
+            baseline=baseline, nodes=expected, report=holding, runner=exact_runner,
+        )
+        _postcheck_native_probe(session)
+        custody = _validate_custody_policy(baseline["collector_policy"])
+        raw = _read_private_regular_file(holding, label="native PASS governance holding record")
+        _validate_exact_governance_bytes(raw, expected, custody)
+        _publish_no_clobber(governance, raw)
+        published_raw = raw
+        _postcheck_native_probe(session)
+        return _validate_exact_governance_record(governance, expected, custody)
+    except BaseException:
+        if published_raw is not None:
+            try:
+                if _read_private_regular_file(
+                    governance, label="native PASS governance rollback record",
+                ) == published_raw:
+                    governance.unlink()
+            except (OSError, TopologyError):
+                pass
+        raise
+    finally:
+        try:
+            holding.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def run_lane(
     *, lane: str, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
     external_preflight: Callable[[str], tuple[str, str]] = _external_preflight,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] = _run_exact,
     foundation_context_path: Path | None = None,
+    native_probe_factory: Callable[..., Any] = _retained_native_probe,
 ) -> list[Path]:
     require_foundation_context(run_id, head_sha)
     context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
@@ -3201,12 +3914,79 @@ def run_lane(
             exact_runner=exact_runner,
         )
         return []
+    if lane == "native-capabilities" and context is None:
+        raise TopologyError("native capability receipts require sealed Foundation context")
     publications: list[Path] = []
     for code in sorted(CODE_CLASSIFICATION):
         expected_lane, expected = _expected_rows(rows, code)
         if expected_lane != lane:
             continue
-        state, fact = ("AVAILABLE", "SOURCE_TEST_EXECUTED") if lane == "portable-source" else (_native_preflight(code) if lane == "native-capabilities" else external_preflight(code))
+        if lane == "native-capabilities":
+            assert context is not None
+            with native_probe_factory(code) as session:
+                if not isinstance(session, NativeProbeSession) or session.code != code:
+                    raise TopologyError("native probe returned an invalid capability session")
+                if session.state == "BROKEN":
+                    failure = make_native_receipt(
+                        context=context, code=code, expected=expected, collected=(),
+                        session=session, outcome="FAIL", selected_test_count=0,
+                        passed=0, failed=0, unavailable=0,
+                    )
+                    publications.append(publish_receipt(failure, evidence_root))
+                    raise TopologyError(f"{code} preflight is BROKEN")
+                if session.state == "UNAVAILABLE":
+                    try:
+                        _postcheck_native_probe(session)
+                    except TopologyError:
+                        failure = make_native_receipt(
+                            context=context, code=code, expected=expected, collected=(),
+                            session=session, outcome="FAIL", selected_test_count=0,
+                            passed=0, failed=0, unavailable=0,
+                            fact="NATIVE_IDENTITY_REPLACED",
+                        )
+                        publications.append(publish_receipt(failure, evidence_root))
+                        raise
+                    deferred = make_native_receipt(
+                        context=context, code=code, expected=expected, collected=(),
+                        session=session, outcome="DEFERRED", selected_test_count=0,
+                        passed=0, failed=0, unavailable=len(expected),
+                    )
+                    publications.append(publish_receipt(deferred, evidence_root))
+                    continue
+                if session.state != "AVAILABLE":
+                    raise TopologyError("native probe returned an unknown state")
+                baseline = load_portable_root_baseline(
+                    inventory=inventory, evidence_root=evidence_root, run_id=run_id,
+                    head_sha=head_sha, foundation_context_path=foundation_context_path,
+                )
+                governance = evidence_root / "capability-topology" / f"{code}.governance.json"
+                try:
+                    selected = _execute_native_exact_with_retained_authority(
+                        baseline=baseline, expected=expected, governance=governance,
+                        session=session, exact_runner=exact_runner,
+                    )
+                except TopologyError as exc:
+                    fact = (
+                        "NATIVE_IDENTITY_REPLACED"
+                        if "native executable identity changed" in str(exc)
+                        else "NATIVE_EXACT_TEST_FAILURE"
+                    )
+                    failure = make_native_receipt(
+                        context=context, code=code, expected=expected, collected=(),
+                        session=session, outcome="FAIL", selected_test_count=len(expected),
+                        passed=0, failed=len(expected), unavailable=0, fact=fact,
+                    )
+                    publications.append(publish_receipt(failure, evidence_root))
+                    raise
+                _postcheck_native_probe(session)
+                passed_receipt = make_native_receipt(
+                    context=context, code=code, expected=expected, collected=selected,
+                    session=session, outcome="PASS", selected_test_count=len(expected),
+                    passed=len(expected), failed=0, unavailable=0,
+                )
+                publications.append(publish_receipt(passed_receipt, evidence_root))
+                continue
+        state, fact = external_preflight(code)
         if state in {"BROKEN", "PARTIAL", "INVALID"}:
             raise TopologyError(f"{code} preflight is {state}")
         if state in {"UNAVAILABLE", "ABSENT"}:
@@ -3238,20 +4018,23 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=(
         "reserve", "collect-baseline", "prepare-remainder", "run-remainder", "run-lane",
-        "check-closure", "aggregate",
+        "check-closure", "validate-native", "aggregate",
     ))
     parser.add_argument("--lane", choices=tuple(CLASSIFICATION_LANE.values()))
     parser.add_argument("--inventory", type=Path, default=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--foundation-context-path", type=Path, required=True)
+    parser.add_argument("--require-pass", action="store_true")
     args = parser.parse_args(argv)
     try:
         run_id, head_sha = _active_foundation_identity()
-        load_foundation_context(
+        context = load_foundation_context(
             args.foundation_context_path,
             run_id=run_id,
             head_sha=head_sha,
         )
+        if args.require_pass and args.action != "validate-native":
+            raise TopologyError("--require-pass is valid only for validate-native")
         if args.action == "reserve":
             reserve_topology_evidence(args.evidence_root, run_id=run_id, head_sha=head_sha, foundation_context_path=args.foundation_context_path)
         elif args.action == "collect-baseline":
@@ -3282,6 +4065,26 @@ def main(argv: list[str] | None = None) -> int:
             if args.lane is None:
                 raise TopologyError("run-lane requires --lane")
             run_lane(lane=args.lane, inventory=args.inventory, evidence_root=args.evidence_root, run_id=run_id, head_sha=head_sha, foundation_context_path=args.foundation_context_path)
+        elif args.action == "validate-native":
+            rows = _installed_inventory_rows(args.inventory, args.evidence_root)
+            baseline = load_portable_root_baseline(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
+            )
+            sealed_custody = _validate_custody_policy(baseline["collector_policy"])
+            topology_root = args.evidence_root / "capability-topology"
+            native_receipts = []
+            for code in sorted(NATIVE_COMMAND_IDS):
+                receipt, _ = validate_native_artifact_set(
+                    topology_root / f"{code}.json", rows=rows,
+                    foundation_context=context, sealed_custody=sealed_custody,
+                )
+                native_receipts.append(canonical_json_bytes(receipt))
+            print(validate_native_receipt_set(
+                native_receipts, rows=rows, foundation_context=context,
+                require_pass=args.require_pass,
+            ))
         else:
             print(canonical_json_bytes(reconcile_portable_root_accounting(
                 inventory=args.inventory, evidence_root=args.evidence_root,

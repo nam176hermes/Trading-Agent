@@ -869,12 +869,20 @@ def audit_topology_root_records(
         } for node in closure_nodes)
         accounted = [*remainder_records, *closure_nodes]
         for receipt_path in receipts:
-            receipt = capability_topology.validate_receipt(
-                receipt_path.read_bytes(),
-                rows=rows,
-                foundation_run_id=foundation_run_id,
-                foundation_head_sha=foundation_head_sha,
-            )
+            native_executed: tuple[str, ...] = ()
+            if receipt_path.name.startswith("NATIVE-"):
+                receipt, native_executed = capability_topology.validate_native_artifact_set(
+                    receipt_path, rows=rows, foundation_context=context,
+                    sealed_custody=sealed_custody,
+                )
+            else:
+                receipt = capability_topology.validate_receipt(
+                    receipt_path.read_bytes(),
+                    rows=rows,
+                    foundation_run_id=foundation_run_id,
+                    foundation_head_sha=foundation_head_sha,
+                    foundation_context=context,
+                )
             code = str(receipt["capability_or_authority_code"])
             expected = tuple(receipt["expected_node_ids"])
             governance_path = topology_root / f"{code}.governance.json"
@@ -884,6 +892,16 @@ def audit_topology_root_records(
                         f"deferred receipt {code} has a root governance record"
                     )
                 accounted.extend(expected)
+                continue
+            if receipt_path.name.startswith("NATIVE-"):
+                root_records.extend({
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "passed",
+                    "reason": "",
+                    "phase": "call",
+                } for node in native_executed)
+                accounted.extend(native_executed)
                 continue
             metadata = governance_path.lstat()
             if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):

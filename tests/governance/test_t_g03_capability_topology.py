@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 import os
 import pytest
 from pathlib import Path
@@ -89,6 +91,658 @@ def _receipt(**overrides: object) -> dict[str, object]:
     return document
 
 
+def _native_context() -> dict[str, object]:
+    return {
+        "schema_version": "t-g03a-foundation-context/v1",
+        "foundation_run_id": "31641536482",
+        "foundation_head_sha": "18f22198c65c7bc735aeb848d8fda55209d01e78",
+        "foundation_validation_date": "2026-08-13",
+        "foundation_context_sha256": "4" * 64,
+    }
+
+
+def _native_receipt(**overrides: object) -> dict[str, object]:
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    code = str(overrides.get("capability_or_authority_code", "NATIVE-USERNS-ROOT-PROVISION"))
+    expected = list(topology._expected_rows(rows, code)[1])
+    context = _native_context()
+    document: dict[str, object] = {
+        "schema_version": "t-g03a-native-capability-receipt/v2",
+        "foundation_run_id": context["foundation_run_id"],
+        "foundation_head_sha": context["foundation_head_sha"],
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
+        "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
+        "lane": "native-capabilities",
+        "capability_or_authority_code": code,
+        "expected_node_ids": expected,
+        "collected_node_ids": [],
+        "preflight_state": "UNAVAILABLE",
+        "redacted_fact_class": "NATIVE_COMPONENT_ABSENT",
+        "probe": {
+            "command_id": (
+                "BWRAP_USER_PID_NET_ISOLATION_V1"
+                if code == "NATIVE-BWRAP-OS-SANDBOX"
+                else "UNSHARE_MAP_ROOT_USER_V1"
+            ),
+            "exit_code": -1,
+            "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+            "executable_sha256": hashlib.sha256(b"").hexdigest(),
+        },
+        "selected_test_count": 0,
+        "passed": 0,
+        "failed": 0,
+        "unavailable": len(expected),
+        "completeness_sha256": "",
+        "outcome": "DEFERRED",
+        "receipt_sha256": "",
+    }
+    document.update(overrides)
+    completeness_payload = {
+        key: value
+        for key, value in document.items()
+        if key not in {"completeness_sha256", "receipt_sha256"}
+    }
+    document["completeness_sha256"] = hashlib.sha256(
+        json.dumps(
+            completeness_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    receipt_payload = {key: value for key, value in document.items() if key != "receipt_sha256"}
+    document["receipt_sha256"] = hashlib.sha256(
+        json.dumps(
+            receipt_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return document
+
+
+def test_native_v2_receipt_binds_context_probe_and_exact_unavailable_count() -> None:
+    """Break caught: native deferral can omit its sealed context, probe, or exact count."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    context = _native_context()
+    receipt = _native_receipt()
+
+    assert topology.validate_receipt(
+        topology.canonical_json_bytes(receipt), rows=rows,
+        foundation_run_id=str(context["foundation_run_id"]),
+        foundation_head_sha=str(context["foundation_head_sha"]),
+        foundation_context=context,
+    ) == receipt
+
+    for mutation in (
+        {"foundation_context_sha256": "5" * 64},
+        {"foundation_validation_date": "2026-08-14"},
+        {"unavailable": 7},
+        {"selected_test_count": False},
+    ):
+        forged = _native_receipt(**mutation)
+        with pytest.raises(topology.TopologyError):
+            topology.validate_receipt(
+                topology.canonical_json_bytes(forged), rows=rows,
+                foundation_run_id=str(context["foundation_run_id"]),
+                foundation_head_sha=str(context["foundation_head_sha"]),
+                foundation_context=context,
+            )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"foundation_run_id": "31641536483"},
+        {"foundation_head_sha": "2" * 40},
+        {"inventory_sha256": "3" * 64},
+        {"expected_node_ids": []},
+    ],
+)
+def test_native_v2_receipt_rejects_every_foreign_binding(
+    mutation: dict[str, object],
+) -> None:
+    """Break caught: a self-consistent v2 receipt can be replayed across authority bindings."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    context = _native_context()
+    forged = _native_receipt(**mutation)
+
+    with pytest.raises(topology.TopologyError):
+        topology.validate_receipt(
+            topology.canonical_json_bytes(forged), rows=rows,
+            foundation_run_id=str(context["foundation_run_id"]),
+            foundation_head_sha=str(context["foundation_head_sha"]),
+            foundation_context=context,
+        )
+
+    mixed = _native_receipt()
+    mixed["capability_or_authority_code"] = "NATIVE-BWRAP-OS-SANDBOX"
+    mixed["completeness_sha256"] = topology.native_completeness_sha256(mixed)
+    mixed["receipt_sha256"] = topology.payload_sha256(mixed)
+    with pytest.raises(topology.TopologyError, match="mapping"):
+        topology.validate_receipt(
+            topology.canonical_json_bytes(mixed), rows=rows,
+            foundation_run_id=str(context["foundation_run_id"]),
+            foundation_head_sha=str(context["foundation_head_sha"]),
+            foundation_context=context,
+        )
+
+
+def test_native_v1_is_stale_while_external_v1_remains_valid() -> None:
+    """Break caught: the shared v1 parser keeps accepting native evidence after migration."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
+    native_code = "NATIVE-USERNS-ROOT-PROVISION"
+    _, native_nodes = topology._expected_rows(rows, native_code)
+    stale = _receipt(
+        foundation_run_id=run, foundation_head_sha=head, lane="native-capabilities",
+        capability_or_authority_code=native_code, expected_node_ids=list(native_nodes),
+        collected_node_ids=[], preflight_state="UNAVAILABLE",
+        redacted_fact_class="NATIVE_COMPONENT_ABSENT", outcome="DEFERRED",
+    )
+    with pytest.raises(topology.TopologyError, match="native v1"):
+        topology.validate_receipt(
+            topology.canonical_json_bytes(stale), rows=rows,
+            foundation_run_id=run, foundation_head_sha=head,
+            foundation_context=_native_context(),
+        )
+
+    external_code = "EXT-PHASE3B-CORPUS"
+    _, external_nodes = topology._expected_rows(rows, external_code)
+    external = _receipt(
+        foundation_run_id=run, foundation_head_sha=head, lane="external-authorities",
+        capability_or_authority_code=external_code, expected_node_ids=list(external_nodes),
+        collected_node_ids=[], preflight_state="ABSENT",
+        redacted_fact_class="AUTHORITY_ROOT_ABSENT", outcome="DEFERRED",
+    )
+    assert topology.validate_receipt(
+        topology.canonical_json_bytes(external), rows=rows,
+        foundation_run_id=run, foundation_head_sha=head,
+    ) == external
+
+
+def test_real_native_probe_argv_uses_retained_fd_and_exact_namespace_operations() -> None:
+    """Break caught: version/help or a named executable is substituted for the namespace probe."""
+    observed: list[tuple[list[str], dict[str, object]]] = []
+
+    def successful_runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        observed.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    for code, suffix in (
+        (
+            "NATIVE-BWRAP-OS-SANDBOX",
+            [
+                "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-net",
+                "--new-session", "--clearenv", "--ro-bind", "/usr", "/usr",
+                "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+                "--tmpfs", "/tmp", "--", "/usr/bin/true",
+            ],
+        ),
+        ("NATIVE-USERNS-ROOT-PROVISION", ["--user", "--map-root-user", "/usr/bin/true"]),
+    ):
+        with topology._retained_native_probe(code, runner=successful_runner) as probe:
+            assert probe.state == "AVAILABLE"
+            assert probe.probe["exit_code"] == 0
+            command, kwargs = observed[-1]
+            assert command[0].startswith("/proc/self/fd/")
+            assert command[1:] == suffix
+            assert kwargs["pass_fds"] == (probe.descriptor,)
+            assert kwargs["env"] == {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"}
+
+
+def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
+    tmp_path: Path,
+) -> None:
+    """Break caught: misleading output, timeout, or a nonregular leaf becomes DEFERRED."""
+    opened = topology._open_unshare_session(Path("/usr/bin/unshare"))
+    assert opened.state == "PROBE_PENDING"
+    try:
+        exact_denial = next(iter(topology.NATIVE_DENIAL_STDERR[opened.code]))
+        deferred = topology._execute_native_probe(
+            opened,
+            runner=lambda command, **_kwargs: subprocess.CompletedProcess(
+                command, 1, stdout=b"", stderr=exact_denial,
+            ),
+        )
+        assert (deferred.state, deferred.fact) == (
+            "UNAVAILABLE", "RUNNER_POLICY_DISALLOWS_USERNS",
+        )
+
+        for runner in (
+            lambda command, **_kwargs: subprocess.CompletedProcess(
+                command, 1, stdout=b"partial", stderr=exact_denial,
+            ),
+            lambda command, **_kwargs: subprocess.CompletedProcess(
+                command, 1, stdout=b"", stderr=exact_denial + b" misleading",
+            ),
+            lambda _command, **_kwargs: (_ for _ in ()).throw(
+                subprocess.TimeoutExpired("unshare", 10),
+            ),
+        ):
+            broken = topology._execute_native_probe(opened, runner=runner)
+            assert (broken.state, broken.fact) == ("BROKEN", "NATIVE_PROBE_INVALID")
+    finally:
+        os.close(opened.descriptor)
+
+    missing = topology._open_unshare_session(Path("/usr/bin/p0-07-missing-unshare"))
+    assert (missing.state, missing.fact) == ("UNAVAILABLE", "NATIVE_COMPONENT_ABSENT")
+    directory = tmp_path / "unshare"
+    directory.mkdir()
+    invalid = topology._open_unshare_session(directory)
+    assert (invalid.state, invalid.fact) == ("BROKEN", "NATIVE_IDENTITY_INVALID")
+    assert invalid.descriptor == -1
+
+
+def test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass() -> None:
+    """Break caught: a host qualification converts an unavailable native resource into success."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    context = _native_context()
+    receipts = [
+        topology.canonical_json_bytes(_native_receipt(capability_or_authority_code=code))
+        for code in ("NATIVE-BWRAP-OS-SANDBOX", "NATIVE-USERNS-ROOT-PROVISION")
+    ]
+    assert topology.validate_native_receipt_set(
+        receipts, rows=rows, foundation_context=context, require_pass=False,
+    ) == "DEFERRED"
+    with pytest.raises(topology.TopologyError, match="requires PASS"):
+        topology.validate_native_receipt_set(
+            receipts, rows=rows, foundation_context=context, require_pass=True,
+        )
+
+
+def test_native_available_path_runs_exact_16_and_8_once_and_failure_publishes_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: an available native group is partial, duplicated, or fails without a FAIL receipt."""
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+
+    def successful_probe_runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    @topology.contextmanager
+    def real_authority_success(code: str):
+        with topology._retained_native_probe(code, runner=successful_probe_runner) as session:
+            yield session
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        context = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head, foundation_context_path=context,
+        )
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id=run_id, head_sha=head,
+            foundation_context_path=context,
+        )
+        selected: list[tuple[str, ...]] = []
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            selected.append(nodes)
+            return _passing_exact(nodes, report)
+
+        receipts = topology.run_lane(
+            lane="native-capabilities",
+            inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+            evidence_root=evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context, exact_runner=exact,
+            native_probe_factory=real_authority_success,
+        )
+        assert sorted(len(nodes) for nodes in selected) == [8, 16]
+        assert len({node for group in selected for node in group}) == 24
+        assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "PASS" for path in receipts)
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        context = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head, foundation_context_path=context,
+        )
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id=run_id, head_sha=head,
+            foundation_context_path=context,
+        )
+
+        def broken_exact(_nodes: tuple[str, ...], _report: Path) -> tuple[str, ...]:
+            raise topology.TopologyError("bounded exact execution failed")
+
+        with pytest.raises(topology.TopologyError, match="bounded exact execution failed"):
+            topology.run_lane(
+                lane="native-capabilities",
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                evidence_root=evidence, run_id=run_id, head_sha=head,
+                foundation_context_path=context, exact_runner=broken_exact,
+                native_probe_factory=real_authority_success,
+            )
+        fail_path = evidence / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"
+        assert topology.parse_receipt(fail_path.read_bytes())["outcome"] == "FAIL"
+        assert not (evidence / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.governance.json").exists()
+
+
+def test_broken_native_probe_publishes_fail_before_lane_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: present-invalid native authority raises without durable FAIL evidence."""
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+
+    @topology.contextmanager
+    def broken_probe(code: str):
+        yield topology.NativeProbeSession(
+            code, "BROKEN", "NATIVE_IDENTITY_INVALID",
+            topology._native_probe_record(
+                code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+            ),
+            -1, None, None, None, None,
+        )
+
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        evidence = Path(raw) / "evidence"
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        with pytest.raises(topology.TopologyError, match="preflight is BROKEN"):
+            topology.run_lane(
+                lane="native-capabilities",
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                evidence_root=evidence, run_id=run_id, head_sha=head,
+                foundation_context_path=context_path,
+                native_probe_factory=broken_probe,
+            )
+        fail_path = evidence / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"
+        receipt = topology.parse_receipt(fail_path.read_bytes())
+        assert receipt["outcome"] == "FAIL"
+        assert receipt["redacted_fact_class"] == "NATIVE_IDENTITY_INVALID"
+        assert not list((evidence / "capability-topology").glob("*.governance.json"))
+
+
+def test_unavailable_probe_replacement_publishes_fail_before_lane_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a retained denial authority is replaced and leaves no FAIL receipt."""
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        executable = root / "bwrap"
+        executable.write_bytes(b"held authority")
+        descriptor = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
+        named = executable.lstat()
+        replacement = root / "replacement"
+        replacement.write_bytes(b"replacement authority")
+        replacement.replace(executable)
+        exact_denial = next(iter(topology.NATIVE_DENIAL_STDERR["NATIVE-BWRAP-OS-SANDBOX"]))
+        session = topology.NativeProbeSession(
+            "NATIVE-BWRAP-OS-SANDBOX", "UNAVAILABLE",
+            "RUNNER_POLICY_DISALLOWS_USERNS",
+            topology._native_probe_record(
+                "NATIVE-BWRAP-OS-SANDBOX", exit_code=1, stderr=exact_denial,
+                executable_sha256=hashlib.sha256(b"held authority").hexdigest(),
+            ),
+            descriptor, executable, topology._artifact_identity(named),
+            topology._artifact_identity(os.fstat(descriptor)), None,
+        )
+
+        @topology.contextmanager
+        def replaced_probe(code: str):
+            assert code == session.code
+            try:
+                yield session
+            finally:
+                os.close(descriptor)
+
+        evidence = root / "evidence"
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        with pytest.raises(topology.TopologyError, match="identity changed"):
+            topology.run_lane(
+                lane="native-capabilities",
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                evidence_root=evidence, run_id=run_id, head_sha=head,
+                foundation_context_path=context_path,
+                native_probe_factory=replaced_probe,
+            )
+        fail_path = evidence / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"
+        receipt = topology.parse_receipt(fail_path.read_bytes())
+        assert receipt["outcome"] == "FAIL"
+        assert receipt["redacted_fact_class"] == "NATIVE_IDENTITY_REPLACED"
+        assert not list((evidence / "capability-topology").glob("*.governance.json"))
+
+
+@pytest.mark.parametrize("boundary", ["before", "during", "before-publication"])
+def test_retained_native_executable_replacement_fails_at_each_boundary(
+    monkeypatch: pytest.MonkeyPatch, boundary: str,
+) -> None:
+    """Break caught: a named executable replacement can survive exact execution."""
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        baseline = topology.load_portable_root_baseline(
+            inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+            evidence_root=evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        executable = root / "retained-unshare"
+        executable.write_bytes(b"authority one")
+        descriptor = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
+        named = executable.lstat()
+        session = topology.NativeProbeSession(
+            "NATIVE-USERNS-ROOT-PROVISION", "AVAILABLE",
+            "NATIVE_CAPABILITY_VALIDATED",
+            topology._native_probe_record(
+                "NATIVE-USERNS-ROOT-PROVISION", exit_code=0,
+                executable_sha256=hashlib.sha256(b"authority one").hexdigest(),
+            ),
+            descriptor, executable, topology._artifact_identity(named),
+            topology._artifact_identity(os.fstat(descriptor)), None,
+        )
+        expected = topology._expected_rows(
+            topology.load_inventory(
+                Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
+            ),
+            "NATIVE-USERNS-ROOT-PROVISION",
+        )[1]
+
+        def replace() -> None:
+            replacement = executable.with_name("replacement")
+            replacement.write_bytes(b"authority two")
+            replacement.replace(executable)
+
+        if boundary == "before":
+            replace()
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            result = _passing_exact(nodes, report)
+            if boundary == "during":
+                replace()
+            return result
+
+        original_publish = topology._publish_no_clobber
+
+        def publish(path: Path, content: bytes) -> None:
+            if boundary == "before-publication" and path.name.endswith(".governance.json"):
+                replace()
+            original_publish(path, content)
+
+        monkeypatch.setattr(topology, "_publish_no_clobber", publish)
+        try:
+            with pytest.raises(topology.TopologyError, match="native executable identity changed"):
+                topology._execute_native_exact_with_retained_authority(
+                    baseline=baseline, expected=expected,
+                    governance=evidence / "capability-topology/native.governance.json",
+                    session=session, exact_runner=exact,
+                )
+            assert not (evidence / "capability-topology/native.governance.json").exists()
+        finally:
+            os.close(descriptor)
+
+
+def test_native_artifact_reader_requires_private_receipt_and_complete_pass_governance(
+    tmp_path: Path,
+) -> None:
+    """Break caught: symlinked receipt or a forged PASS without exact governance is aggregated."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    context = _native_context()
+    topology_root = tmp_path / "capability-topology"
+    topology_root.mkdir(mode=0o700)
+    deferred = topology_root / "NATIVE-USERNS-ROOT-PROVISION.json"
+    deferred.write_bytes(topology.canonical_json_bytes(_native_receipt()))
+    deferred.chmod(0o600)
+
+    receipt, executed = topology.validate_native_artifact_set(
+        deferred, rows=rows, foundation_context=context, sealed_custody={},
+    )
+    assert receipt["outcome"] == "DEFERRED"
+    assert executed == ()
+
+    alias = topology_root / "NATIVE-BWRAP-OS-SANDBOX.json"
+    alias.symlink_to(deferred)
+    with pytest.raises(topology.TopologyError, match="private regular"):
+        topology.validate_native_artifact_set(
+            alias, rows=rows, foundation_context=context, sealed_custody={},
+        )
+
+    expected = topology._expected_rows(rows, "NATIVE-BWRAP-OS-SANDBOX")[1]
+    forged_pass = _native_receipt(
+        capability_or_authority_code="NATIVE-BWRAP-OS-SANDBOX",
+        collected_node_ids=list(expected), preflight_state="AVAILABLE",
+        redacted_fact_class="NATIVE_CAPABILITY_VALIDATED",
+        probe={
+            "command_id": "BWRAP_USER_PID_NET_ISOLATION_V1", "exit_code": 0,
+            "stdout_sha256": hashlib.sha256(b"").hexdigest(),
+            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+            "executable_sha256": "9" * 64,
+        },
+        selected_test_count=16, passed=16, failed=0, unavailable=0, outcome="PASS",
+    )
+    nonzero_probe = dict(forged_pass["probe"])
+    nonzero_probe["exit_code"] = 1
+    forged_nonzero = _native_receipt(
+        capability_or_authority_code="NATIVE-BWRAP-OS-SANDBOX",
+        collected_node_ids=list(expected), preflight_state="AVAILABLE",
+        redacted_fact_class="NATIVE_CAPABILITY_VALIDATED", probe=nonzero_probe,
+        selected_test_count=16, passed=16, failed=0, unavailable=0, outcome="PASS",
+    )
+    with pytest.raises(topology.TopologyError, match="exact probe"):
+        topology.validate_receipt(
+            topology.canonical_json_bytes(forged_nonzero), rows=rows,
+            foundation_run_id=str(context["foundation_run_id"]),
+            foundation_head_sha=str(context["foundation_head_sha"]),
+            foundation_context=context,
+        )
+    alias.unlink()
+    alias.write_bytes(topology.canonical_json_bytes(forged_pass))
+    alias.chmod(0o600)
+    with pytest.raises(topology.TopologyError, match="governance"):
+        topology.validate_native_artifact_set(
+            alias, rows=rows, foundation_context=context, sealed_custody={},
+        )
+
+
+def test_native_artifact_reader_rejects_modes_governance_links_and_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Break caught: private paired artifacts can change parent or leaf during validation."""
+    rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
+    context = _native_context()
+    topology_root = tmp_path / "capability-topology"
+    topology_root.mkdir(mode=0o700)
+    receipt_path = topology_root / "NATIVE-USERNS-ROOT-PROVISION.json"
+    receipt_path.write_bytes(topology.canonical_json_bytes(_native_receipt()))
+    receipt_path.chmod(0o644)
+    with pytest.raises(topology.TopologyError, match="private regular"):
+        topology.validate_native_artifact_set(
+            receipt_path, rows=rows, foundation_context=context, sealed_custody={},
+        )
+    receipt_path.chmod(0o600)
+
+    governance = receipt_path.with_suffix(".governance.json")
+    target = tmp_path / "governance-target"
+    target.write_bytes(b"{}")
+    governance.symlink_to(target)
+    with pytest.raises(topology.TopologyError, match="private regular"):
+        topology.validate_native_artifact_set(
+            receipt_path, rows=rows, foundation_context=context, sealed_custody={},
+        )
+    governance.unlink()
+
+    with topology._retained_private_native_artifacts(receipt_path) as artifacts:
+        replacement = topology_root.with_name("replacement-topology")
+        topology_root.replace(replacement)
+        topology_root.mkdir(mode=0o700)
+        with pytest.raises(topology.TopologyError, match="identity changed"):
+            topology._postcheck_private_native_artifacts(artifacts)
+    replacement.replace(topology_root)
+
+    with topology._retained_private_native_artifacts(receipt_path) as artifacts:
+        replacement_receipt = tmp_path / "replacement-receipt"
+        replacement_receipt.write_bytes(receipt_path.read_bytes())
+        replacement_receipt.chmod(0o600)
+        replacement_receipt.replace(receipt_path)
+        with pytest.raises(topology.TopologyError, match="identity changed"):
+            topology._postcheck_private_native_artifacts(artifacts)
+
+    receipt_path.chmod(0o600)
+    current_gid = os.getegid()
+    monkeypatch.setattr(topology.os, "getegid", lambda: current_gid + 1)
+    with pytest.raises(topology.TopologyError, match="unsafe"):
+        topology.validate_native_artifact_set(
+            receipt_path, rows=rows, foundation_context=context, sealed_custody={},
+        )
+
+
+def test_native_publication_is_no_clobber_for_receipt_and_governance(tmp_path: Path) -> None:
+    """Break caught: retry overwrites accepted native receipt or governance evidence."""
+    receipt = _native_receipt()
+    first = topology.publish_receipt(receipt, tmp_path)
+    original = first.read_bytes()
+    with pytest.raises(FileExistsError):
+        topology.publish_receipt(receipt, tmp_path)
+    assert first.read_bytes() == original
+
+    governance = first.with_suffix(".governance.json")
+    topology._publish_no_clobber(governance, b"first")
+    with pytest.raises(FileExistsError):
+        topology._publish_no_clobber(governance, b"second")
+    assert governance.read_bytes() == b"first"
+
+
 def test_receipt_parser_accepts_only_canonical_bytes_and_a_matching_self_hash() -> None:
     """Break caught: whitespace, reordered keys, or a forged payload digest becomes accepted."""
     receipt = _receipt()
@@ -130,14 +784,19 @@ def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(
     for code in topology.CODE_CLASSIFICATION:
         lane, node_ids = topology._expected_rows(rows, code)
         state, outcome = {"portable-source": ("AVAILABLE", "PASS"), "native-capabilities": ("UNAVAILABLE", "DEFERRED"), "external-authorities": ("ABSENT", "DEFERRED")}[lane]
-        receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(node_ids), collected_node_ids=list(node_ids) if outcome == "PASS" else [], preflight_state=state, outcome=outcome)
+        receipt = (
+            _native_receipt(capability_or_authority_code=code)
+            if lane == "native-capabilities"
+            else _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(node_ids), collected_node_ids=list(node_ids) if outcome == "PASS" else [], preflight_state=state, outcome=outcome)
+        )
         path = tmp_path / f"{code}.json"
         path.write_bytes(topology.canonical_json_bytes(receipt))
+        path.chmod(0o600)
         paths.append(path)
     monkeypatch.setattr(topology, "validate_portable_closure_proof", lambda *_args, **_kwargs: {})
     summary = topology.aggregate_receipts(
         paths, rows=rows, foundation_run_id=run, foundation_head_sha=head,
-        foundation_context={}, closure_proof_path=tmp_path / "closure-proof.json",
+        foundation_context=_native_context(), closure_proof_path=tmp_path / "closure-proof.json",
         sealed_custody={},
     )
     assert summary["runtime_proof"] == "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS"
@@ -282,15 +941,20 @@ def test_aggregate_rejects_duplicate_missing_and_unlisted_receipts(
     for code in topology.CODE_CLASSIFICATION:
         lane, expected = topology._expected_rows(rows, code)
         state, outcome = {"portable-source": ("AVAILABLE", "PASS"), "native-capabilities": ("UNAVAILABLE", "DEFERRED"), "external-authorities": ("ABSENT", "DEFERRED")}[lane]
-        receipt = _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected) if outcome == "PASS" else [], preflight_state=state, outcome=outcome)
+        receipt = (
+            _native_receipt(capability_or_authority_code=code)
+            if lane == "native-capabilities"
+            else _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=list(expected) if outcome == "PASS" else [], preflight_state=state, outcome=outcome)
+        )
         path = tmp_path / f"{code}.json"
         path.write_bytes(topology.canonical_json_bytes(receipt))
+        path.chmod(0o600)
         paths.append(path)
     monkeypatch.setattr(topology, "validate_portable_closure_proof", lambda *_args, **_kwargs: {})
     with pytest.raises(topology.TopologyError, match="receipt set"):
         topology.aggregate_receipts(
             paths[:-1] + [paths[0]], rows=rows, foundation_run_id=run,
-            foundation_head_sha=head, foundation_context={},
+            foundation_head_sha=head, foundation_context=_native_context(),
             closure_proof_path=tmp_path / "closure-proof.json", sealed_custody={},
         )
     altered = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="native-capabilities", capability_or_authority_code="NATIVE-USERNS-ROOT-PROVISION", expected_node_ids=["tests/not-inventory.py::test_hidden"], collected_node_ids=[], preflight_state="UNAVAILABLE", outcome="DEFERRED")
@@ -316,9 +980,9 @@ def test_receipt_rejects_stale_head_and_forbidden_native_state() -> None:
     stale = _receipt(foundation_run_id=run, foundation_head_sha="0" * 40, lane=lane, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=[] ,preflight_state="UNAVAILABLE", outcome="DEFERRED")
     with pytest.raises(topology.TopologyError, match="stale"):
         topology.validate_receipt(topology.canonical_json_bytes(stale), rows=rows, foundation_run_id=run, foundation_head_sha=head)
-    forbidden = _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(expected), collected_node_ids=[], preflight_state="BROKEN", outcome="DEFERRED", redacted_fact_class="NATIVE_PROBE_INVALID")
-    with pytest.raises(topology.TopologyError, match="state-to-lane"):
-        topology.validate_receipt(topology.canonical_json_bytes(forbidden), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+    forbidden = _native_receipt(preflight_state="BROKEN", outcome="DEFERRED", redacted_fact_class="NATIVE_PROBE_INVALID")
+    with pytest.raises(topology.TopologyError, match="DEFERRED"):
+        topology.validate_receipt(topology.canonical_json_bytes(forbidden), rows=rows, foundation_run_id=run, foundation_head_sha=head, foundation_context=_native_context())
 
 
 @pytest.mark.parametrize("outcome", ("skipped", "deselected", "xfailed", "xpassed"))
@@ -561,18 +1225,29 @@ def test_standalone_native_deferred_lane_does_not_require_portable_baseline(
     run_id = "31641536482"
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     monkeypatch.setenv("GITHUB_RUN_ID", run_id)
-    monkeypatch.setattr(
-        topology, "_native_preflight", lambda _code: ("UNAVAILABLE", "NATIVE_COMPONENT_ABSENT"),
-    )
+    @topology.contextmanager
+    def absent_probe(code: str):
+        yield topology.NativeProbeSession(
+            code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+            topology._native_probe_record(code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED),
+            -1, None, None, None, None,
+        )
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
-        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head)
+        context = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head, foundation_context_path=context,
+        )
         receipts = topology.run_lane(
             lane="native-capabilities",
             inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
             evidence_root=evidence,
             run_id=run_id,
             head_sha=head,
+            foundation_context_path=context,
+            native_probe_factory=absent_probe,
         )
 
         assert not (evidence / "capability-topology/portable-root-baseline.json").exists()
