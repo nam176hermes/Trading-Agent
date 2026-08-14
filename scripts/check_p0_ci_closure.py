@@ -50,6 +50,21 @@ COMPLETE_STATUS = {**PENDING_STATUS, "P0-E11": "PASS"}
 HEAD_SHA = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
+_CI_PORTABLE_WRAPPER_RECIPE = " ".join((
+    "@set -eu;",
+    'raw_evidence_root=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable-evidence.XXXXXXXXXX");',
+    'chmod 0700 "$$raw_evidence_root";',
+    'test "$$(stat -c \'%u:%a\' -- "$$raw_evidence_root")" = "$$(id -u):700";',
+    "foundation_context_path=$$(TEST_EVIDENCE_DIR=\"$$raw_evidence_root\" uv run python -c 'import sys; from pathlib import Path; from scripts.t_g03_capability_topology import _capture_foundation_context; print(_capture_foundation_context(Path(sys.argv[1])))' \"$$raw_evidence_root\");",
+    'export FOUNDATION_CONTEXT_PATH="$$foundation_context_path";',
+    'ci_tmpdir=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable.XXXXXXXXXX");',
+    'chmod 0700 "$$ci_tmpdir";',
+    'test "$$(stat -c \'%u:%a\' -- "$$ci_tmpdir")" = "$$(id -u):700";',
+    'cleanup_ci_tmpdir() { find -P "$$ci_tmpdir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$ci_tmpdir"; };',
+    "trap 'cleanup_ci_tmpdir' EXIT;",
+    'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private',
+))
+
 
 class ClosureError(RuntimeError):
     """A source-closure authority contract failed."""
@@ -319,25 +334,20 @@ def _strip_shell_comment(line: str) -> str:
 
 
 def _recursive_make_targets(recipe: str) -> set[str]:
-    """Accept only one unconditional top-level simple command segment."""
-    targets: set[str] = set()
-    for segment in recipe.split(";"):
-        command = segment.strip().lstrip("@+-").strip()
-        match = re.fullmatch(
-            r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s]+)\s+)*"
-            r"\$\(\s*MAKE\s*\)\s+(.+)",
-            command,
-        )
-        if match is None:
-            continue
-        words = match.group(1).split()
-        if any(
-            not re.fullmatch(r"[A-Za-z0-9_.-]+|[A-Za-z_][A-Za-z0-9_]*=.*", word)
-            for word in words
-        ):
-            continue
-        targets.update(word for word in words if "=" not in word)
-    return targets
+    """Accept only a whole approved wrapper or one unconditional Make command."""
+    if recipe.strip() == _CI_PORTABLE_WRAPPER_RECIPE:
+        return {"ci-portable-private"}
+    command = recipe.strip().lstrip("@+-").strip()
+    match = re.fullmatch(r"\$\(\s*MAKE\s*\)\s+(.+)", command)
+    if match is None:
+        return set()
+    words = match.group(1).split()
+    if any(
+        not re.fullmatch(r"[A-Za-z0-9_.-]+|[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_.-]+", word)
+        for word in words
+    ):
+        return set()
+    return {word for word in words if "=" not in word}
 
 
 def _make_graph(raw: bytes) -> dict[str, set[str]]:

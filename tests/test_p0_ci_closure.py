@@ -171,10 +171,12 @@ def test_end_state_ids_cannot_exchange_truthful_but_wrong_proofs(context: closur
         ("Makefile", (ROOT / "Makefile").read_bytes().replace(b"$(MAKE) ci-portable-private", b"# $(MAKE) ci-portable-private", 1), "P0_CLOSURE_MAKE_TARGET_UNREACHABLE"),
         ("Makefile", (ROOT / "Makefile").read_bytes().replace(b"$(MAKE) ci-portable-private", b"if false; then $(MAKE) ci-portable-private; fi", 1), "P0_CLOSURE_MAKE_TARGET_UNREACHABLE"),
         ("Makefile", (ROOT / "Makefile").read_bytes().replace(b"$(MAKE) ci-portable-private", b"run_private() { $(MAKE) ci-portable-private; }; run_private", 1), "P0_CLOSURE_MAKE_TARGET_UNREACHABLE"),
+        ("Makefile", (ROOT / "Makefile").read_bytes().replace(b'TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private', b'exit 0; TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private', 1), "P0_CLOSURE_MAKE_TARGET_UNREACHABLE"),
+        ("Makefile", (ROOT / "Makefile").read_bytes().replace(b'TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private', b'trap "exit 0" DEBUG; TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private', 1), "P0_CLOSURE_MAKE_TARGET_UNREACHABLE"),
         (".github/workflows/foundation.yml", b"name: Foundation\n# run: make ci-portable NONINTERACTIVE=1\non:\n  push:\n  pull_request:\n  workflow_dispatch:\npermissions:\n  contents: read\njobs:\n  verify:\n    runs-on: ubuntu-24.04\n    env:\n      CI: \"true\"\n      LIVE_EXECUTION_ENABLED: \"false\"\n      LIVE_TRADING_APPROVED: \"false\"\n    steps:\n      - run: true\n# include-hidden-files: true\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         (".github/workflows/foundation.yml", (ROOT / ".github/workflows/foundation.yml").read_bytes() + b"spoof:\n  run: make ci-portable NONINTERACTIVE=1\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
     ],
-    ids=["recursive-disconnect", "comment-make-spoof", "conditional-make-spoof", "function-make-spoof", "workflow-comment-spoof", "workflow-token-outside-jobs"],
+    ids=["recursive-disconnect", "comment-make-spoof", "conditional-make-spoof", "function-make-spoof", "exit-prefix-make-spoof", "debug-trap-make-spoof", "workflow-comment-spoof", "workflow-token-outside-jobs"],
 )
 def test_route_spoofs_fail_closed(context: closure._ValidationContext, relative: str, raw: bytes, code: str) -> None:
     """Break caught: comments or disconnected Make nodes masquerade as execution."""
