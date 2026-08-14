@@ -18,6 +18,7 @@ TOP_KEYS = {"schema_version", "state", "requirement_order", "requirements"}
 ENTRY_KEYS = {"requirement_id", "implementation_paths", "test_node_ids", "make_target", "workflow", "evidence_paths", "required_status"}
 REQUIREMENTS = tuple([f"P0-I0{number}" for number in range(1, 7)] + [f"P0-E{number:02d}" for number in range(1, 14)])
 SAFE_STATES = {"SOURCE_IMPLEMENTED", "QUALIFICATION_PENDING", "P0_SOURCE_COMPLETE"}
+REQUIRED_STATUS = {**{identifier: "PASS" for identifier in REQUIREMENTS}, "P0-E11": "PENDING", "P0-E12": "PENDING"}
 
 
 class ClosureError(RuntimeError):
@@ -181,8 +182,8 @@ def validate(root: Path, matrix: Path, *, require_complete: bool, receipt: Path 
         workflow_path = _safe_file(root, workflow, label="WORKFLOW")
         if workflow != ".github/workflows/foundation.yml" or not _workflow_reaches_portable(workflow_path) or not _reachable(graph, "ci-portable", target):
             _fail("P0_CLOSURE_PORTABLE_WORKFLOW_INVALID")
-        if entry.get("required_status") not in {"PASS", "PENDING"}:
-            _fail("P0_CLOSURE_STATUS_INVALID")
+        if entry.get("required_status") != REQUIRED_STATUS[identifier]:
+            _fail("P0_CLOSURE_REQUIRED_STATUS_INVALID")
     if identifiers != list(REQUIREMENTS) or len(set(identifiers)) != len(identifiers):
         _fail("P0_CLOSURE_REQUIREMENT_SET_DRIFT")
     if state == "P0_SOURCE_COMPLETE":

@@ -85,3 +85,11 @@ def test_checker_rejects_live_baseline_and_unearned_completion(tmp_path: Path) -
         baseline.write_bytes(original)
     complete = _matrix(tmp_path, lambda value: value.__setitem__("state", "P0_SOURCE_COMPLETE"))
     assert _run("--matrix", str(complete)).returncode != 0
+
+
+def test_checker_rejects_pending_source_invariant(tmp_path: Path) -> None:
+    """Break caught: an implemented P0 invariant is downgraded to pending."""
+    changed = _matrix(tmp_path, lambda value: value["requirements"][0].__setitem__("required_status", "PENDING"))
+    result = _run("--matrix", str(changed))
+    assert result.returncode != 0
+    assert result.stderr.strip() == "P0_CLOSURE_REQUIRED_STATUS_INVALID"
