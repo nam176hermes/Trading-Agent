@@ -335,7 +335,7 @@ ci-portable:
 			TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private
 
 ci-portable-private:
-	$(MAKE) ci-common-private ci-portable-topology check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
+	$(MAKE) ci-common-private ci-portable-topology check-p0-baseline check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install

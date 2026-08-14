@@ -73,7 +73,8 @@ def _make_targets(makefile: Path) -> set[str]:
 
 
 def _workflow_reaches_portable(workflow: Path) -> bool:
-    return "make ci-portable" in workflow.read_text(encoding="utf-8")
+    text = workflow.read_text(encoding="utf-8")
+    return "make ci-portable" in text and "permissions:\n  contents: read" in text and "workflow_dispatch:" in text
 
 
 def _collected(root: Path, node: str) -> bool:
@@ -88,6 +89,13 @@ def _baseline(root: Path) -> None:
         raise ClosureError("P0_CLOSURE_BASELINE_INVALID") from exc
     if not isinstance(value, dict):
         _fail("P0_CLOSURE_BASELINE_INVALID")
+    required = {
+        "schema_version", "base_branch", "base_sha", "candidate_source_branch",
+        "candidate_start_sha", "qualified_sha", "promotion_mode", "paper_only",
+        "live_execution_authorized",
+    }
+    if set(value) != required or value.get("schema_version") != "p0-canonical-baseline/v1" or value.get("base_branch") != "main" or value.get("promotion_mode") != "fast-forward-only":
+        _fail("P0_CLOSURE_BASELINE_SCHEMA_INVALID")
     if value.get("qualified_sha") is not None or value.get("paper_only") is not True or value.get("live_execution_authorized") is not False:
         _fail("P0_CLOSURE_BASELINE_AUTHORITY_INVALID")
 
@@ -134,7 +142,7 @@ def validate(root: Path, matrix: Path, *, require_complete: bool, receipt: Path 
         workflow_path = _safe_file(root, workflow, label="WORKFLOW")
         if workflow != ".github/workflows/foundation.yml" or not _workflow_reaches_portable(workflow_path):
             _fail("P0_CLOSURE_PORTABLE_WORKFLOW_INVALID")
-        if entry.get("required_status") != "PASS":
+        if entry.get("required_status") not in {"PASS", "PENDING"}:
             _fail("P0_CLOSURE_STATUS_INVALID")
     if identifiers != list(REQUIREMENTS) or len(set(identifiers)) != len(identifiers):
         _fail("P0_CLOSURE_REQUIREMENT_SET_DRIFT")
@@ -142,9 +150,13 @@ def validate(root: Path, matrix: Path, *, require_complete: bool, receipt: Path 
         if not require_complete or receipt is None:
             _fail("P0_CLOSURE_RECEIPT_REQUIRED")
         from scripts.check_artifact_firewall import FirewallError, validate_published_evidence
+        expected_receipt = root / "runtime/state/ci-portable/manifest.json"
+        if receipt.absolute() != expected_receipt:
+            _fail("P0_CLOSURE_RECEIPT_PATH_INVALID")
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True).stdout.strip()
+        from scripts.check_artifact_firewall import _source_tree_identity
         try:
-            validate_published_evidence(receipt.parent, expected_head_sha=head)
+            validate_published_evidence(receipt.parent, expected_head_sha=head, expected_source_tree_sha256=_source_tree_identity(root, head))
         except (FirewallError, OSError) as exc:
             raise ClosureError("P0_CLOSURE_RECEIPT_INVALID") from exc
     elif require_complete or receipt is not None:

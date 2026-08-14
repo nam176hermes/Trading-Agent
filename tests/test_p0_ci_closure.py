@@ -22,7 +22,7 @@ def _matrix(tmp_path: Path, mutate) -> Path:
     document = json.loads(MATRIX.read_text(encoding="utf-8"))
     mutate(document)
     path = tmp_path / "matrix.json"
-    path.write_bytes(json.dumps(document, sort_keys=True, separators=(",", ":")).encode())
+    path.write_bytes((json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode())
     return path
 
 
@@ -36,9 +36,13 @@ def test_pending_source_matrix_is_an_executable_closed_contract() -> None:
 def test_checker_rejects_unknown_fields_and_duplicate_requirement_ids(tmp_path: Path) -> None:
     """Break caught: schema/identity drift silently widens the closure."""
     unknown = _matrix(tmp_path, lambda value: value.__setitem__("unknown", True))
-    assert _run("--matrix", str(unknown)).returncode != 0
+    unknown_result = _run("--matrix", str(unknown))
+    assert unknown_result.returncode != 0
+    assert unknown_result.stderr.strip() == "P0_CLOSURE_SCHEMA_INVALID"
     duplicate = _matrix(tmp_path, lambda value: value["requirements"].append(value["requirements"][0]))
-    assert _run("--matrix", str(duplicate)).returncode != 0
+    duplicate_result = _run("--matrix", str(duplicate))
+    assert duplicate_result.returncode != 0
+    assert duplicate_result.stderr.strip() == "P0_CLOSURE_REQUIREMENT_SET_DRIFT"
 
 
 def test_checker_rejects_noncanonical_and_unsafe_bindings(tmp_path: Path) -> None:
@@ -47,17 +51,25 @@ def test_checker_rejects_noncanonical_and_unsafe_bindings(tmp_path: Path) -> Non
     noncanonical.write_text(" " + MATRIX.read_text(encoding="utf-8"), encoding="utf-8")
     assert _run("--matrix", str(noncanonical)).returncode != 0
     unsafe = _matrix(tmp_path, lambda value: value["requirements"][0]["implementation_paths"].__setitem__(0, "../README.md"))
-    assert _run("--matrix", str(unsafe)).returncode != 0
+    unsafe_result = _run("--matrix", str(unsafe))
+    assert unsafe_result.returncode != 0
+    assert unsafe_result.stderr.strip() == "P0_CLOSURE_IMPLEMENTATION_PATH_UNSAFE"
 
 
 def test_checker_rejects_uncollected_node_unknown_target_and_host_only_mapping(tmp_path: Path) -> None:
     """Break caught: a binding that CI cannot execute is accepted."""
     node = _matrix(tmp_path, lambda value: value["requirements"][0]["test_node_ids"].__setitem__(0, "tests/test_p0_ci_closure.py::missing"))
-    assert _run("--matrix", str(node)).returncode != 0
+    node_result = _run("--matrix", str(node))
+    assert node_result.returncode != 0
+    assert node_result.stderr.strip() == "P0_CLOSURE_TEST_NODE_UNCOLLECTED"
     target = _matrix(tmp_path, lambda value: value["requirements"][0].__setitem__("make_target", "unknown-target"))
-    assert _run("--matrix", str(target)).returncode != 0
+    target_result = _run("--matrix", str(target))
+    assert target_result.returncode != 0
+    assert target_result.stderr.strip() == "P0_CLOSURE_MAKE_TARGET_UNKNOWN"
     host = _matrix(tmp_path, lambda value: value["requirements"][0].__setitem__("workflow", ".github/workflows/host-authority.yml"))
-    assert _run("--matrix", str(host)).returncode != 0
+    host_result = _run("--matrix", str(host))
+    assert host_result.returncode != 0
+    assert host_result.stderr.strip() == "P0_CLOSURE_PORTABLE_WORKFLOW_INVALID"
 
 
 def test_checker_rejects_live_baseline_and_unearned_completion(tmp_path: Path) -> None:
