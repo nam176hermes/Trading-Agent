@@ -692,6 +692,13 @@ def _recursive_make_projection_spans(source: str) -> list[tuple[int, int]]:
         (target, argv)
         for target, _span, argv, _command_span in _APPROVED_RECURSIVE_MAKE_OCCURRENCES
     } | {
+        (
+            "ci-portable",
+            (
+                "ci-portable-private",
+                "PORTABLE_CI_ARTIFACT_ROOT=$$artifact_root",
+            ),
+        ),
         ("ci-portable-private", ("ci-common-private", "ci-portable-topology", "check-portable-defect-closure", "check-p0-baseline", "check-test-governance-topology", "check-p0-ci-closure", "artifact-firewall-check", "audit-delivery-contract")),
         ("ci-common-private", ("prepare-root-test-install",)),
         ("ci-common-private", ("audit-portable", "check-d0-closure", "check-contracts", "check-secrets", "test-backend", "test-dashboard", "typecheck-dashboard", "lint-dashboard", "build-dashboard", "audit-python-source", "audit-dependencies")),

@@ -351,6 +351,75 @@ def test_ci_portable_catch_is_single_shot_and_preserves_the_original_status(
         assert "injected-destination" not in published[0]
 
 
+@pytest.mark.parametrize("attack", ["command-line", "makeflags", "makeoverrides"])
+def test_real_recursive_gnu_make_cannot_override_private_artifact_root(
+    tmp_path: Path, attack: str,
+) -> None:
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    original_private = (
+        "ci-portable-private:\n"
+        "\t$(MAKE) ci-common-private ci-portable-topology "
+        "check-portable-defect-closure check-p0-baseline "
+        "check-test-governance-topology check-p0-ci-closure "
+        "artifact-firewall-check audit-delivery-contract\n"
+    )
+    probe_private = (
+        "ci-portable-private:\n"
+        "\t@printf '%s\\n' \"$(PORTABLE_CI_ARTIFACT_ROOT)\" "
+        "\"$$PORTABLE_CI_ARTIFACT_ROOT\" > \"$$GNU_MAKE_ARTIFACT_LOG\"\n"
+        "\t@$(MAKE) --no-print-directory portable-artifact-probe\n"
+        "\n"
+        "portable-artifact-probe:\n"
+        "\t@printf '%s\\n' \"$(PORTABLE_CI_ARTIFACT_ROOT)\" "
+        "\"$$PORTABLE_CI_ARTIFACT_ROOT\" >> \"$$GNU_MAKE_ARTIFACT_LOG\"\n"
+    )
+    assert makefile.count(original_private) == 1
+    probe_makefile = tmp_path / "Makefile"
+    probe_makefile.write_text(
+        makefile.replace(original_private, probe_private), encoding="utf-8",
+    )
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    fake_uv = binary / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "for root do :; done\n"
+        "mkdir -p \"$root/capability-topology\"\n"
+        "context=\"$root/capability-topology/foundation-context.json\"\n"
+        ": > \"$context\"\n"
+        "printf '%s\\n' \"$context\"\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o700)
+    artifact_log = tmp_path / "artifact.log"
+    attacker = "/attacker/redirected"
+    command = ["make", "--no-print-directory", "ci-portable"]
+    environment = {
+        **os.environ,
+        "PATH": f"{binary}:{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_RUN_ID": RUN_ID,
+        "GITHUB_RUN_ATTEMPT": RUN_ATTEMPT,
+        "GNU_MAKE_ARTIFACT_LOG": str(artifact_log),
+    }
+    if attack == "command-line":
+        command.append(f"PORTABLE_CI_ARTIFACT_ROOT={attacker}")
+    elif attack == "makeflags":
+        environment["MAKEFLAGS"] = f"PORTABLE_CI_ARTIFACT_ROOT={attacker}"
+    else:
+        environment["PORTABLE_CI_ARTIFACT_ROOT"] = attacker
+        command.append(f"MAKEOVERRIDES=PORTABLE_CI_ARTIFACT_ROOT={attacker}")
+
+    result = subprocess.run(
+        command, cwd=tmp_path, env=environment,
+        capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected = str(tmp_path / ARTIFACT_DIRECTORY)
+    assert artifact_log.read_text(encoding="utf-8").splitlines() == [expected] * 4
+
+
 @pytest.mark.parametrize(
     ("run_id", "attempt"),
     [

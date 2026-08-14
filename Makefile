@@ -343,7 +343,8 @@ ci-portable:
 		}; \
 		trap 'cleanup_ci_tmpdir' EXIT; \
 		TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" \
-			TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private || { \
+			TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private \
+				PORTABLE_CI_ARTIFACT_ROOT="$$artifact_root" || { \
 			original_status=$$?; \
 			failure_diagnostic="$$raw_evidence_root/capability-topology/portable-root-remainder.failure-diagnostic.json"; \
 			if test -e "$$failure_diagnostic" || test -L "$$failure_diagnostic"; then \
