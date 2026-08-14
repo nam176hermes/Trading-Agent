@@ -2617,6 +2617,39 @@ or live trading.
 
 ---
 
+## P0-12R12 fix round 1 — Drop retained hostile exception context
+
+Independent review of `cfb108a41eeb80800fd4be8fa42e7ac42e10b3a8`
+found that each sanitized `FailurePublicationError` is constructed and raised
+inside the active underlying exception handler. Python therefore retains the
+hostile exception in `__context__`; `raise ... from None` suppresses normal
+rendering but does not remove that reachable message, raw path, digest, or raw
+reason authority.
+
+Capture strict RED at the real raw-binding, projection, source-tree, and
+publication boundaries. Exercise each boundary's exact supported
+`FirewallError`, `OSError`, and `ValueError` paths, plus the source-tree
+`subprocess.SubprocessError` path. The public wrapper must have both
+`__context__` and `__cause__` equal to `None`, contain no hostile underlying
+value in its fields, preserve the exact safe code/category/stage projection,
+and retain CLI exit 2 and exact closed output.
+
+P0-12R12 fix round 1 may change only the control flow needed to leave the
+active handler before raising the already-sanitized wrapper, its focused tests,
+and generator-owned broad-handler inventory line rows if they shift. Do not
+broaden any catch, add a raw exception field, weaken redaction, or change raw
+validation, schemas, skip/native/PASS policy, Make, workflows, dependencies,
+or locks.
+
+Require focused/full affected tests, a fresh standalone affected packet, P0
+baseline/closure/contracts/source/security/inventory/actionlint/diff gates, an
+ignored report update, a clean commit, and independent re-review. No push,
+hosted rerun or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler mutation, broker/provider access,
+or live trading is authorized.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
