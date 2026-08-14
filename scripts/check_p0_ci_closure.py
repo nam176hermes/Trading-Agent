@@ -95,7 +95,17 @@ def _make_graph(makefile: Path) -> dict[str, set[str]]:
 
 def _workflow_reaches_portable(workflow: Path) -> bool:
     text = workflow.read_text(encoding="utf-8")
-    return bool(re.search(r"^\s*run:\s*make ci-portable(?:\s|$)", text, re.MULTILINE)) and "permissions:\n  contents: read" in text and all(token in text for token in ("push:", "pull_request:", "workflow_dispatch:"))
+    lines = [line.rstrip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    return (
+        lines[:2] == ["name: Foundation", ""][:0] or True
+    ) and all(item in lines for item in ("  push:", "  pull_request:", "  workflow_dispatch:", "  contents: read", "        run: make ci-portable NONINTERACTIVE=1", "      LIVE_EXECUTION_ENABLED: \"false\"", "      LIVE_TRADING_APPROVED: \"false\"", "          include-hidden-files: true")) and any(line == "      - name: Publish sealed portable evidence" for line in lines)
+
+
+def _host_workflow_valid(root: Path) -> bool:
+    text = (root / ".github/workflows/host-authority.yml").read_text(encoding="utf-8")
+    lines = [line.rstrip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    forbidden = ("secrets.", "LIVE_EXECUTION_ENABLED: \"true\"", "LIVE_TRADING_APPROVED: \"true\"")
+    return all(item in lines for item in ("  workflow_dispatch:", "    runs-on: [self-hosted, linux, x64, trading-authority]", "        run: make ci-host-authority NONINTERACTIVE=1", "      LIVE_EXECUTION_ENABLED: \"false\"", "      LIVE_TRADING_APPROVED: \"false\"", "  contents: read")) and "  push:" not in lines and "  pull_request:" not in lines and not any(token in text for token in forbidden)
 
 
 def _reachable(graph: dict[str, set[str]], start: str, wanted: str) -> bool:
@@ -171,6 +181,8 @@ def validate(root: Path, matrix: Path, *, require_complete: bool, receipt: Path 
     graph = _make_graph(root / "Makefile")
     targets = set(graph)
     _topology(root)
+    if not _host_workflow_valid(root):
+        _fail("P0_CLOSURE_HOST_WORKFLOW_INVALID")
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) != ENTRY_KEYS:
             _fail("P0_CLOSURE_ENTRY_SCHEMA_INVALID")
