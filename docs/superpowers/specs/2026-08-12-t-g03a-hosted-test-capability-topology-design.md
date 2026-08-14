@@ -1919,3 +1919,46 @@ retained, no-follow private parent and leaf descriptors, then publishes strict
 v2 FAIL with `NATIVE_IDENTITY_REPLACED` and fails the lane. Rollback refuses
 changed bytes or identities and never overwrites existing evidence; a drifted
 transaction cannot leave an accepted PASS or orphan task-owned governance.
+
+### P0-07 architecture-A correction: append-only native acceptance
+
+This correction supersedes the destructive rollback paragraph immediately
+above. External-authority v1 artifacts remain flat and unchanged. Native v2
+acceptance is append-only and has two deterministic names per code: the private
+mode-0700 `<CODE>.artifacts` bundle and the mode-0600 canonical `<CODE>.json`
+marker. The marker is the sole acceptance point.
+
+The native publisher first creates a random private candidate directory. It
+contains exact canonical `receipt.json`, optional PASS-only `governance.json`,
+and canonical `manifest.json`. The manifest binds its schema, code, Foundation
+run/head/date/context, inventory, exact node list/hash/count, probe, selected
+count, outcome, receipt filename/byte hash/self-hash, governance presence/hash,
+and its own payload hash. Every leaf and the candidate directory are fsynced.
+The retained native authority is postchecked while the candidate is inert. A
+Linux `renameat2(RENAME_NOREPLACE)` then publishes that same directory at the
+deterministic bundle name, followed by another authority postcheck while no
+marker exists. Only then is an exact copy of the bundled receipt atomically
+published no-clobber as the canonical marker.
+
+No native transaction rolls back or unlinks a candidate, bundle, marker,
+governance leaf, foreign file, or ambiguously published evidence. A failure or
+crash before the marker leaves only inert staging or an unaccepted bundle.
+Identity drift before marker publication installs strict v2 FAIL at the
+canonical marker if that name is free and then fails the lane; an already
+published PASS bundle is still inert because its receipt does not equal the
+FAIL marker. Foreign occupancy is never replaced. If a marker publisher raises
+after a possible successful write, retained-parent reread accepts only the
+exact expected marker bytes paired with the exact fully valid deterministic
+bundle; every other state is a conflict. Authority checks after marker
+publication are diagnostic only and cannot revoke acceptance.
+
+Native readers retain the topology parent, marker, bundle, receipt, manifest,
+and optional governance by descriptor. They require exact modes, ownership,
+single-link regular leaves, exact bundle inventory, marker/receipt byte
+identity, every manifest binding, exact PASS governance and sealed custody, and
+stable named-versus-held identities. DEFERRED forbids governance and FAIL is
+never accepted. Legacy flat native governance, missing or stale bundles,
+symlinked/replaced parents or leaves, manifest tampering, and extra bundle
+entries fail closed. Random candidate/execution directories are inert and are
+never glob-selected. Canonical filename routing, portable DEFERRED behavior,
+future `--require-pass`, and external-v1 compatibility remain unchanged.

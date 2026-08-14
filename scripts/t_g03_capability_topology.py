@@ -7,12 +7,14 @@ import hashlib
 import json
 import csv
 import argparse
+import ctypes
 from collections.abc import Callable
 from contextlib import contextmanager
 import os
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -26,6 +28,7 @@ LOCKED_CLOSURE_SHA256 = "4feaed5b9e73f60ab192938a8b8b51b873f61e139a66b4926e7429c
 LOCKED_GOVERNED_NODE_IDS_SHA256 = "aedeffcf5b9ad3d7704b3f6a15822f9862d9b84b279cc8a66b193b331262f7f0"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
 NATIVE_RECEIPT_SCHEMA = "t-g03a-native-capability-receipt/v2"
+NATIVE_ARTIFACT_MANIFEST_SCHEMA = "t-g03a-native-artifact-manifest/v1"
 PORTABLE_CLOSURE_PROOF_SCHEMA = "t-g03a-portable-closure-proof/v2"
 CLOSED_NODE_PROOF_SCHEMA = "t-g03a-closed-node-proof/v2"
 FOUNDATION_CONTEXT_SCHEMA = "t-g03a-foundation-context/v1"
@@ -56,6 +59,19 @@ NATIVE_PROBE_KEYS = frozenset({
     "command_id", "exit_code", "stdout_sha256", "stderr_sha256",
     "executable_sha256",
 })
+NATIVE_ARTIFACT_MANIFEST_KEYS = frozenset({
+    "schema_version", "capability_or_authority_code", "foundation_run_id",
+    "foundation_head_sha", "foundation_validation_date",
+    "foundation_context_sha256", "inventory_sha256", "receipt_filename",
+    "receipt_bytes_sha256", "receipt_self_sha256", "governance_filename",
+    "governance_present", "governance_sha256", "expected_node_ids",
+    "expected_node_ids_sha256", "expected_node_count", "selected_test_count",
+    "probe", "outcome", "manifest_sha256",
+})
+NATIVE_BUNDLE_RECEIPT = "receipt.json"
+NATIVE_BUNDLE_GOVERNANCE = "governance.json"
+NATIVE_BUNDLE_MANIFEST = "manifest.json"
+_RENAME_NOREPLACE = 1
 FAILURE_DIAGNOSTIC_KEYS = frozenset({
     "schema_version", "diagnostic_only", "foundation_run_id", "foundation_head_sha",
     "foundation_validation_date", "foundation_context_sha256", "inventory_sha256", "baseline_candidate_ids_sha256", "baseline_node_list_sha256",
@@ -354,11 +370,19 @@ class _RetainedNativeArtifacts:
     directory_path: Path
     directory_descriptor: int
     directory_identity: tuple[int, ...]
-    receipt_name: str
-    receipt_descriptor: int
-    receipt_identity: tuple[int, ...]
-    receipt_raw: bytes
-    governance_name: str
+    marker_name: str
+    marker_descriptor: int
+    marker_identity: tuple[int, ...]
+    marker_raw: bytes
+    bundle_name: str
+    bundle_descriptor: int
+    bundle_identity: tuple[int, ...]
+    bundle_receipt_descriptor: int
+    bundle_receipt_identity: tuple[int, ...]
+    bundle_receipt_raw: bytes
+    manifest_descriptor: int
+    manifest_identity: tuple[int, ...]
+    manifest_raw: bytes
     governance_descriptor: int
     governance_identity: tuple[int, ...] | None
     governance_raw: bytes | None
@@ -367,7 +391,10 @@ class _RetainedNativeArtifacts:
 @contextmanager
 def _retained_private_native_artifacts(receipt_path: Path):
     directory_path = receipt_path.parent
-    receipt_descriptor = -1
+    marker_descriptor = -1
+    bundle_descriptor = -1
+    bundle_receipt_descriptor = -1
+    manifest_descriptor = -1
     governance_descriptor = -1
     directory_descriptor = -1
     try:
@@ -394,32 +421,97 @@ def _retained_private_native_artifacts(receipt_path: Path):
         directory_identity = _artifact_identity(opened)
         if directory_identity != _artifact_identity(before):
             raise TopologyError("native artifact directory identity changed")
-        receipt_descriptor, receipt_identity = _open_private_artifact_leaf(
+        marker_descriptor, marker_identity = _open_private_artifact_leaf(
             directory_descriptor, receipt_path.name, label="native receipt",
         )
-        receipt_raw = _read_descriptor_bytes(receipt_descriptor)
-        governance_name = receipt_path.with_suffix(".governance.json").name
+        marker_raw = _read_descriptor_bytes(marker_descriptor)
+        legacy_governance_name = receipt_path.with_suffix(".governance.json").name
+        try:
+            os.stat(
+                legacy_governance_name, dir_fd=directory_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise TopologyError("legacy flat native governance artifact is unsafe") from exc
+        else:
+            raise TopologyError("legacy flat native governance artifact is rejected")
+        bundle_name = receipt_path.with_suffix(".artifacts").name
+        try:
+            before_bundle = os.stat(
+                bundle_name, dir_fd=directory_descriptor, follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(before_bundle.st_mode)
+                or before_bundle.st_uid != os.geteuid()
+                or before_bundle.st_gid != os.getegid()
+                or stat.S_IMODE(before_bundle.st_mode) != 0o700
+            ):
+                raise TopologyError("native artifact bundle is unsafe")
+            bundle_descriptor = os.open(
+                bundle_name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=directory_descriptor,
+            )
+            opened_bundle = os.fstat(bundle_descriptor)
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("native artifact bundle is unsafe") from exc
+        bundle_identity = _artifact_identity(opened_bundle)
+        if bundle_identity != _artifact_identity(before_bundle):
+            raise TopologyError("native artifact bundle identity changed")
+        bundle_receipt_descriptor, bundle_receipt_identity = _open_private_artifact_leaf(
+            bundle_descriptor, NATIVE_BUNDLE_RECEIPT, label="native bundled receipt",
+        )
+        manifest_descriptor, manifest_identity = _open_private_artifact_leaf(
+            bundle_descriptor, NATIVE_BUNDLE_MANIFEST, label="native artifact manifest",
+        )
+        bundle_receipt_raw = _read_descriptor_bytes(bundle_receipt_descriptor)
+        manifest_raw = _read_descriptor_bytes(manifest_descriptor)
         governance_identity: tuple[int, ...] | None = None
         governance_raw: bytes | None = None
         try:
-            os.stat(governance_name, dir_fd=directory_descriptor, follow_symlinks=False)
+            os.stat(
+                NATIVE_BUNDLE_GOVERNANCE, dir_fd=bundle_descriptor,
+                follow_symlinks=False,
+            )
         except FileNotFoundError:
             pass
         except OSError as exc:
             raise TopologyError("native governance artifact is unsafe") from exc
         else:
             governance_descriptor, governance_identity = _open_private_artifact_leaf(
-                directory_descriptor, governance_name, label="native governance artifact",
+                bundle_descriptor, NATIVE_BUNDLE_GOVERNANCE,
+                label="native governance artifact",
             )
             governance_raw = _read_descriptor_bytes(governance_descriptor)
+        expected_entries = {
+            NATIVE_BUNDLE_RECEIPT, NATIVE_BUNDLE_MANIFEST,
+            *({NATIVE_BUNDLE_GOVERNANCE} if governance_raw is not None else set()),
+        }
+        try:
+            entries = set(os.listdir(bundle_descriptor))
+        except OSError as exc:
+            raise TopologyError("native artifact bundle inventory is unreadable") from exc
+        if entries != expected_entries:
+            raise TopologyError("native artifact bundle inventory is not exact")
         artifacts = _RetainedNativeArtifacts(
             directory_path, directory_descriptor, directory_identity,
-            receipt_path.name, receipt_descriptor, receipt_identity, receipt_raw,
-            governance_name, governance_descriptor, governance_identity, governance_raw,
+            receipt_path.name, marker_descriptor, marker_identity, marker_raw,
+            bundle_name, bundle_descriptor, bundle_identity,
+            bundle_receipt_descriptor, bundle_receipt_identity, bundle_receipt_raw,
+            manifest_descriptor, manifest_identity, manifest_raw,
+            governance_descriptor, governance_identity, governance_raw,
         )
         yield artifacts
     finally:
-        for descriptor in (governance_descriptor, receipt_descriptor, directory_descriptor):
+        for descriptor in (
+            governance_descriptor, manifest_descriptor, bundle_receipt_descriptor,
+            bundle_descriptor, marker_descriptor, directory_descriptor,
+        ):
             if descriptor >= 0:
                 os.close(descriptor)
 
@@ -428,21 +520,36 @@ def _postcheck_private_native_artifacts(artifacts: _RetainedNativeArtifacts) -> 
     try:
         named_directory = artifacts.directory_path.lstat()
         held_directory = os.fstat(artifacts.directory_descriptor)
-        named_receipt = os.stat(
-            artifacts.receipt_name, dir_fd=artifacts.directory_descriptor,
+        named_marker = os.stat(
+            artifacts.marker_name, dir_fd=artifacts.directory_descriptor,
             follow_symlinks=False,
         )
-        held_receipt = os.fstat(artifacts.receipt_descriptor)
+        held_marker = os.fstat(artifacts.marker_descriptor)
+        named_bundle = os.stat(
+            artifacts.bundle_name, dir_fd=artifacts.directory_descriptor,
+            follow_symlinks=False,
+        )
+        held_bundle = os.fstat(artifacts.bundle_descriptor)
+        named_receipt = os.stat(
+            NATIVE_BUNDLE_RECEIPT, dir_fd=artifacts.bundle_descriptor,
+            follow_symlinks=False,
+        )
+        held_receipt = os.fstat(artifacts.bundle_receipt_descriptor)
+        named_manifest = os.stat(
+            NATIVE_BUNDLE_MANIFEST, dir_fd=artifacts.bundle_descriptor,
+            follow_symlinks=False,
+        )
+        held_manifest = os.fstat(artifacts.manifest_descriptor)
         if artifacts.governance_descriptor >= 0:
             named_governance = os.stat(
-                artifacts.governance_name, dir_fd=artifacts.directory_descriptor,
+                NATIVE_BUNDLE_GOVERNANCE, dir_fd=artifacts.bundle_descriptor,
                 follow_symlinks=False,
             )
             held_governance = os.fstat(artifacts.governance_descriptor)
         else:
             try:
                 os.stat(
-                    artifacts.governance_name, dir_fd=artifacts.directory_descriptor,
+                    NATIVE_BUNDLE_GOVERNANCE, dir_fd=artifacts.bundle_descriptor,
                     follow_symlinks=False,
                 )
             except FileNotFoundError:
@@ -456,8 +563,14 @@ def _postcheck_private_native_artifacts(artifacts: _RetainedNativeArtifacts) -> 
     if (
         _artifact_identity(named_directory) != artifacts.directory_identity
         or _artifact_identity(held_directory) != artifacts.directory_identity
-        or _artifact_identity(named_receipt) != artifacts.receipt_identity
-        or _artifact_identity(held_receipt) != artifacts.receipt_identity
+        or _artifact_identity(named_marker) != artifacts.marker_identity
+        or _artifact_identity(held_marker) != artifacts.marker_identity
+        or _artifact_identity(named_bundle) != artifacts.bundle_identity
+        or _artifact_identity(held_bundle) != artifacts.bundle_identity
+        or _artifact_identity(named_receipt) != artifacts.bundle_receipt_identity
+        or _artifact_identity(held_receipt) != artifacts.bundle_receipt_identity
+        or _artifact_identity(named_manifest) != artifacts.manifest_identity
+        or _artifact_identity(held_manifest) != artifacts.manifest_identity
         or (
             artifacts.governance_descriptor >= 0
             and (
@@ -875,7 +988,11 @@ def reserve_topology_evidence(
         topology_root / "portable-defect-closure-proof.json",
     ]
     for code in CODE_CLASSIFICATION:
-        targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+        targets.extend((
+            topology_root / f"{code}.json",
+            topology_root / f"{code}.governance.json",
+            topology_root / f"{code}.artifacts",
+        ))
     for code in CLOSED_CODE_CLASSIFICATION:
         targets.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
     if any(os.path.lexists(path) for path in targets):
@@ -1001,7 +1118,7 @@ def _capture_foundation_context(
         topology_root / "portable-defect-closure.governance.json",
         topology_root / "portable-defect-closure-proof.json",
     ]
-    acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CODE_CLASSIFICATION for suffix in (".json", ".governance.json"))
+    acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CODE_CLASSIFICATION for suffix in (".json", ".governance.json", ".artifacts"))
     acceptance_paths.extend(topology_root / f"{code}{suffix}" for code in CLOSED_CODE_CLASSIFICATION for suffix in (".json", ".governance.json"))
     if os.path.lexists(context_path) or any(os.path.lexists(path) for path in acceptance_paths):
         raise TopologyError("Foundation context reuse is rejected")
@@ -1082,6 +1199,277 @@ def _publish_no_clobber(path: Path, content: bytes) -> None:
         os.fsync(stream.fileno())
 
 
+def _stable_object_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid
+
+
+@contextmanager
+def _retained_private_directory(path: Path, *, label: str):
+    descriptor = -1
+    try:
+        try:
+            before = path.lstat()
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or before.st_gid != os.getegid()
+                or stat.S_IMODE(before.st_mode) != 0o700
+            ):
+                raise TopologyError(f"{label} is unsafe")
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            opened = os.fstat(descriptor)
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError(f"{label} is unsafe") from exc
+        identity = _artifact_identity(opened)
+        if identity != _artifact_identity(before):
+            raise TopologyError(f"{label} identity changed")
+        yield descriptor, identity
+        try:
+            named = path.lstat()
+            held = os.fstat(descriptor)
+        except OSError as exc:
+            raise TopologyError(f"{label} identity changed") from exc
+        stable_identity = _stable_object_identity(opened)
+        if (
+            _stable_object_identity(named) != stable_identity
+            or _stable_object_identity(held) != stable_identity
+        ):
+            raise TopologyError(f"{label} identity changed")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _write_private_leaf(directory_descriptor: int, name: str, content: bytes) -> None:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short write")
+            view = view[written:]
+        os.fsync(descriptor)
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_gid != os.getegid()
+            or info.st_nlink != 1
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_size != len(content)
+        ):
+            raise TopologyError("native staged artifact is not private and complete")
+    except TopologyError:
+        raise
+    except OSError as exc:
+        raise TopologyError("native staged artifact publication failed") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _renameat2_noreplace(
+    old_directory_descriptor: int, old_name: str,
+    new_directory_descriptor: int, new_name: str,
+) -> None:
+    """Linux atomic no-replace rename; no link/unlink fallback is permitted."""
+    if (
+        not old_name or not new_name
+        or "/" in old_name or "/" in new_name
+        or old_name in {".", ".."} or new_name in {".", ".."}
+    ):
+        raise TopologyError("native artifact rename name is malformed")
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except (AttributeError, OSError) as exc:
+        raise TopologyError("renameat2 RENAME_NOREPLACE is unavailable") from exc
+    renameat2.argtypes = (
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        old_directory_descriptor, os.fsencode(old_name),
+        new_directory_descriptor, os.fsencode(new_name), _RENAME_NOREPLACE,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), new_name)
+
+
+def _native_artifact_manifest(
+    receipt: dict[str, object], receipt_raw: bytes,
+    governance_raw: bytes | None,
+) -> dict[str, object]:
+    expected = tuple(str(item) for item in receipt["expected_node_ids"])
+    manifest: dict[str, object] = {
+        "schema_version": NATIVE_ARTIFACT_MANIFEST_SCHEMA,
+        "capability_or_authority_code": receipt["capability_or_authority_code"],
+        "foundation_run_id": receipt["foundation_run_id"],
+        "foundation_head_sha": receipt["foundation_head_sha"],
+        "foundation_validation_date": receipt["foundation_validation_date"],
+        "foundation_context_sha256": receipt["foundation_context_sha256"],
+        "inventory_sha256": receipt["inventory_sha256"],
+        "receipt_filename": NATIVE_BUNDLE_RECEIPT,
+        "receipt_bytes_sha256": hashlib.sha256(receipt_raw).hexdigest(),
+        "receipt_self_sha256": receipt["receipt_sha256"],
+        "governance_filename": NATIVE_BUNDLE_GOVERNANCE if governance_raw is not None else "",
+        "governance_present": governance_raw is not None,
+        "governance_sha256": (
+            hashlib.sha256(governance_raw).hexdigest()
+            if governance_raw is not None else EMPTY_SHA256
+        ),
+        "expected_node_ids": list(expected),
+        "expected_node_ids_sha256": _ids_sha256(expected),
+        "expected_node_count": len(expected),
+        "selected_test_count": receipt["selected_test_count"],
+        "probe": receipt["probe"],
+        "outcome": receipt["outcome"],
+        "manifest_sha256": "",
+    }
+    manifest["manifest_sha256"] = _sha256({
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    })
+    return manifest
+
+
+def _stage_native_candidate(
+    topology_root: Path, receipt: dict[str, object], governance_raw: bytes | None,
+) -> Path:
+    """Fsync one private inert candidate. Failure deliberately leaves it inert."""
+    _prepare_private_evidence_directory(topology_root)
+    code = str(receipt["capability_or_authority_code"])
+    name = f".native-candidate-{code}-{secrets.token_hex(16)}"
+    receipt_raw = canonical_json_bytes(receipt)
+    manifest_raw = canonical_json_bytes(
+        _native_artifact_manifest(receipt, receipt_raw, governance_raw),
+    )
+    with _retained_private_directory(
+        topology_root, label="native topology directory",
+    ) as (parent_descriptor, _):
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+            candidate_descriptor = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            raise TopologyError("native candidate staging failed") from exc
+        try:
+            candidate = os.fstat(candidate_descriptor)
+            if (
+                not stat.S_ISDIR(candidate.st_mode)
+                or candidate.st_uid != os.geteuid()
+                or candidate.st_gid != os.getegid()
+                or stat.S_IMODE(candidate.st_mode) != 0o700
+            ):
+                raise TopologyError("native candidate directory is unsafe")
+            _write_private_leaf(candidate_descriptor, NATIVE_BUNDLE_RECEIPT, receipt_raw)
+            if governance_raw is not None:
+                _write_private_leaf(
+                    candidate_descriptor, NATIVE_BUNDLE_GOVERNANCE, governance_raw,
+                )
+            _write_private_leaf(candidate_descriptor, NATIVE_BUNDLE_MANIFEST, manifest_raw)
+            os.fsync(candidate_descriptor)
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(candidate_descriptor)
+    return topology_root / name
+
+
+def _publish_native_candidate_bundle(candidate: Path, destination: Path) -> None:
+    if candidate.parent != destination.parent:
+        raise TopologyError("native candidate and bundle roots differ")
+    with _retained_private_directory(
+        candidate.parent, label="native topology directory",
+    ) as (parent_descriptor, _):
+        candidate_descriptor = -1
+        try:
+            candidate_descriptor = os.open(
+                candidate.name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+            candidate_identity = _stable_object_identity(os.fstat(candidate_descriptor))
+            try:
+                _renameat2_noreplace(
+                    parent_descriptor, candidate.name,
+                    parent_descriptor, destination.name,
+                )
+            except OSError as exc:
+                try:
+                    destination_info = os.stat(
+                        destination.name, dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    destination_info = None
+                try:
+                    os.stat(
+                        candidate.name, dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    source_exists = False
+                else:
+                    source_exists = True
+                if (
+                    destination_info is not None
+                    and not source_exists
+                    and _stable_object_identity(destination_info) == candidate_identity
+                ):
+                        pass
+                else:
+                    raise TopologyError(
+                        "native bundle publication failed without an exact resolved rename",
+                    ) from exc
+            os.fsync(parent_descriptor)
+            destination_info = os.stat(
+                destination.name, dir_fd=parent_descriptor, follow_symlinks=False,
+            )
+            if _stable_object_identity(destination_info) != candidate_identity:
+                raise TopologyError("native bundle destination identity drifted")
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("native bundle publication failed") from exc
+        finally:
+            if candidate_descriptor >= 0:
+                os.close(candidate_descriptor)
+
+
+def _publish_native_acceptance_marker(path: Path, content: bytes) -> None:
+    """Publish the sole acceptance point atomically and without replacement."""
+    _prepare_private_evidence_directory(path.parent)
+    staging_name = f".native-marker-{path.stem}-{secrets.token_hex(16)}"
+    with _retained_private_directory(
+        path.parent, label="native topology directory",
+    ) as (parent_descriptor, _):
+        _write_private_leaf(parent_descriptor, staging_name, content)
+        _renameat2_noreplace(
+            parent_descriptor, staging_name, parent_descriptor, path.name,
+        )
+        os.fsync(parent_descriptor)
+
+
 def _publish_failure_diagnostic(path: Path, content: bytes) -> None:
     """Atomically install complete diagnostic bytes without replacing prior evidence."""
     _prepare_private_evidence_directory(path.parent)
@@ -1109,7 +1497,11 @@ def _reject_failure_diagnostic_coexistence(topology_root: Path) -> None:
     """A failure-only record cannot be installed beside any accepting topology evidence."""
     accepted = [topology_root / "portable-root-remainder.governance.json"]
     for code in CODE_CLASSIFICATION:
-        accepted.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+        accepted.extend((
+            topology_root / f"{code}.json",
+            topology_root / f"{code}.governance.json",
+            topology_root / f"{code}.artifacts",
+        ))
     accepted.extend((
         topology_root / "portable-defect-closure.governance.json",
         topology_root / "portable-defect-closure-proof.json",
@@ -1866,6 +2258,7 @@ def _execute_exact_with_retained_custody(
     runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
     portable_root_remainder: bool = False, remainder_document: dict[str, object] | None = None,
     foundation_context_verified: bool = False,
+    retain_provisional: bool = False,
 ) -> tuple[str, ...]:
     """Publish PASS evidence only for all-pass raw execution; retain complete non-pass diagnostics."""
     provisional = report.with_name(f".{report.name}.executing")
@@ -1988,10 +2381,11 @@ def _execute_exact_with_retained_custody(
         _publish_no_clobber(report, provisional.read_bytes())
         return _validate_exact_governance_record(report, nodes, sealed_custody)
     finally:
-        try:
-            provisional.unlink()
-        except FileNotFoundError:
-            pass
+        if not retain_provisional:
+            try:
+                provisional.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def _write_empty_exact_governance_report(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
@@ -2467,7 +2861,11 @@ def read_unsafe_raw_reason_nonacceptance(
         topology_root / "portable-root-remainder.governance.json",
     ]
     for code in CODE_CLASSIFICATION:
-        conflicts.extend((topology_root / f"{code}.json", topology_root / f"{code}.governance.json"))
+        conflicts.extend((
+            topology_root / f"{code}.json",
+            topology_root / f"{code}.governance.json",
+            topology_root / f"{code}.artifacts",
+        ))
     if any(os.path.lexists(candidate) for candidate in conflicts):
         raise TopologyError("unsafe raw reason nonacceptance conflicts with topology terminal evidence")
     try:
@@ -3094,6 +3492,21 @@ def _reduce_native_artifact_status(
     return status
 
 
+def _validate_native_manifest_bytes(
+    raw: bytes, receipt: dict[str, object], receipt_raw: bytes,
+    governance_raw: bytes | None,
+) -> dict[str, object]:
+    manifest = _strict_json(raw, label="native artifact manifest")
+    if not isinstance(manifest, dict) or set(manifest) != NATIVE_ARTIFACT_MANIFEST_KEYS:
+        raise TopologyError("native artifact manifest has invalid schema keys")
+    if canonical_json_bytes(manifest) != raw:
+        raise TopologyError("native artifact manifest is not canonical")
+    expected = _native_artifact_manifest(receipt, receipt_raw, governance_raw)
+    if manifest != expected:
+        raise TopologyError("native artifact manifest binding drift")
+    return manifest
+
+
 def validate_native_artifact_set(
     receipt_path: Path, *, rows: tuple[InventoryRow, ...],
     foundation_context: dict[str, object], sealed_custody: dict[str, str],
@@ -3101,8 +3514,10 @@ def validate_native_artifact_set(
     if receipt_path.suffix != ".json":
         raise TopologyError("native receipt path is malformed")
     with _retained_private_native_artifacts(receipt_path) as artifacts:
+        if artifacts.marker_raw != artifacts.bundle_receipt_raw:
+            raise TopologyError("native marker does not equal bundled receipt bytes")
         receipt = validate_receipt(
-            artifacts.receipt_raw, rows=rows,
+            artifacts.bundle_receipt_raw, rows=rows,
             foundation_run_id=str(foundation_context.get("foundation_run_id", "")),
             foundation_head_sha=str(foundation_context.get("foundation_head_sha", "")),
             foundation_context=foundation_context,
@@ -3128,6 +3543,10 @@ def validate_native_artifact_set(
             executed = ()
         else:
             raise TopologyError("native FAIL receipt is never acceptable")
+        _validate_native_manifest_bytes(
+            artifacts.manifest_raw, receipt, artifacts.bundle_receipt_raw,
+            artifacts.governance_raw,
+        )
         _postcheck_private_native_artifacts(artifacts)
         return receipt, executed
 
@@ -3893,120 +4312,86 @@ def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
     return passed
 
 
-def _execute_native_exact_with_retained_authority(
-    *, baseline: dict[str, object], expected: tuple[str, ...], governance: Path,
-    session: NativeProbeSession,
-    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
-) -> tuple[str, ...]:
-    """Keep native PASS private until custody and executable identity both postcheck."""
-    holding = governance.with_name(f".{governance.name}.native-holding")
-    if os.path.lexists(holding) or os.path.lexists(governance):
-        raise TopologyError("native PASS governance destination is already populated")
-    published_raw: bytes | None = None
-    try:
-        selected = _execute_exact_with_retained_custody(
-            baseline=baseline, nodes=expected, report=holding, runner=exact_runner,
-        )
-        _postcheck_native_probe(session)
-        custody = _validate_custody_policy(baseline["collector_policy"])
-        raw = _read_private_regular_file(holding, label="native PASS governance holding record")
-        _validate_exact_governance_bytes(raw, expected, custody)
-        _publish_no_clobber(governance, raw)
-        published_raw = raw
-        _postcheck_native_probe(session)
-        return _validate_exact_governance_record(governance, expected, custody)
-    except BaseException:
-        if published_raw is not None:
-            try:
-                _rollback_task_owned_private_artifact(governance, published_raw)
-            except (OSError, TopologyError):
-                pass
-        raise
-    finally:
-        try:
-            holding.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _rollback_task_owned_private_artifact(path: Path, expected_raw: bytes) -> None:
-    """Remove only one exact private no-clobber artifact retained by descriptor."""
-    directory_descriptor = -1
-    artifact_descriptor = -1
-    try:
-        try:
-            before_directory = path.parent.lstat()
-            if (
-                not stat.S_ISDIR(before_directory.st_mode)
-                or stat.S_ISLNK(before_directory.st_mode)
-                or before_directory.st_uid != os.geteuid()
-                or before_directory.st_gid != os.getegid()
-                or stat.S_IMODE(before_directory.st_mode) != 0o700
-            ):
-                raise TopologyError("native rollback directory is unsafe")
-            directory_descriptor = os.open(
-                path.parent,
-                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-            )
-            opened_directory = os.fstat(directory_descriptor)
-        except TopologyError:
-            raise
-        except OSError as exc:
-            raise TopologyError("native rollback directory is unsafe") from exc
-        directory_identity = _artifact_identity(opened_directory)
-        if directory_identity != _artifact_identity(before_directory):
-            raise TopologyError("native rollback directory identity changed")
-        artifact_descriptor, artifact_identity = _open_private_artifact_leaf(
-            directory_descriptor, path.name, label="native rollback artifact",
-        )
-        if _read_descriptor_bytes(artifact_descriptor) != expected_raw:
-            raise TopologyError("native rollback artifact bytes are not task-owned")
-        named_artifact = os.stat(
-            path.name, dir_fd=directory_descriptor, follow_symlinks=False,
-        )
-        held_artifact = os.fstat(artifact_descriptor)
-        named_directory = path.parent.lstat()
-        held_directory = os.fstat(directory_descriptor)
+def _resolve_exact_native_artifact_set(
+    marker: Path, expected_receipt_raw: bytes, expected_governance_raw: bytes | None,
+) -> None:
+    """Resolve ambiguous success from retained bytes, never pathname mutation."""
+    with _retained_private_native_artifacts(marker) as artifacts:
         if (
-            _artifact_identity(named_artifact) != artifact_identity
-            or _artifact_identity(held_artifact) != artifact_identity
-            or _artifact_identity(named_directory) != directory_identity
-            or _artifact_identity(held_directory) != directory_identity
+            artifacts.marker_raw != expected_receipt_raw
+            or artifacts.bundle_receipt_raw != expected_receipt_raw
+            or artifacts.governance_raw != expected_governance_raw
         ):
-            raise TopologyError("native rollback artifact identity changed")
-        os.unlink(path.name, dir_fd=directory_descriptor)
-        os.fsync(directory_descriptor)
-        if os.fstat(artifact_descriptor).st_nlink != 0:
-            raise TopologyError("native rollback did not remove the retained artifact")
+            raise TopologyError("native acceptance marker is foreign or ambiguous")
+        receipt = parse_receipt(expected_receipt_raw)
+        _validate_native_manifest_bytes(
+            artifacts.manifest_raw, receipt, expected_receipt_raw,
+            expected_governance_raw,
+        )
+        _postcheck_private_native_artifacts(artifacts)
+
+
+def _publish_native_marker_or_resolve(
+    marker: Path, receipt_raw: bytes, governance_raw: bytes | None,
+) -> None:
+    try:
+        _publish_native_acceptance_marker(marker, receipt_raw)
+    except (OSError, TopologyError) as exc:
         try:
-            os.stat(path.name, dir_fd=directory_descriptor, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        else:
-            raise TopologyError("native rollback artifact reappeared")
-        final_named_directory = path.parent.lstat()
-        final_held_directory = os.fstat(directory_descriptor)
-        final_named_identity = (
-            final_named_directory.st_dev, final_named_directory.st_ino,
-            final_named_directory.st_mode, final_named_directory.st_uid,
-            final_named_directory.st_gid,
-        )
-        final_held_identity = (
-            final_held_directory.st_dev, final_held_directory.st_ino,
-            final_held_directory.st_mode, final_held_directory.st_uid,
-            final_held_directory.st_gid,
-        )
-        if final_named_identity != final_held_identity:
-            raise TopologyError("native rollback directory identity changed")
-    except TopologyError:
-        raise
-    except OSError as exc:
-        raise TopologyError("native rollback artifact identity changed") from exc
-    finally:
-        for descriptor in (artifact_descriptor, directory_descriptor):
-            if descriptor >= 0:
-                os.close(descriptor)
+            _resolve_exact_native_artifact_set(marker, receipt_raw, governance_raw)
+        except TopologyError as resolution_error:
+            raise TopologyError(
+                "native acceptance marker publication is unresolved",
+            ) from resolution_error
+        return
+    _resolve_exact_native_artifact_set(marker, receipt_raw, governance_raw)
+
+
+def _publish_native_receipt_transaction(
+    *, receipt: dict[str, object], evidence_root: Path,
+    session: NativeProbeSession, governance_raw: bytes | None,
+) -> Path:
+    topology_root = evidence_root / "capability-topology"
+    code = str(receipt["capability_or_authority_code"])
+    marker = topology_root / f"{code}.json"
+    candidate = _stage_native_candidate(topology_root, receipt, governance_raw)
+    _postcheck_native_probe(session)
+    _publish_native_candidate_bundle(
+        candidate, topology_root / f"{code}.artifacts",
+    )
+    _postcheck_native_probe(session)
+    _publish_native_marker_or_resolve(
+        marker, canonical_json_bytes(receipt), governance_raw,
+    )
+    # Any authority check after this sole acceptance point is diagnostic only and
+    # cannot revoke or mutate accepted evidence.
+    return marker
+
+
+def _publish_native_failure_marker(
+    *, receipt: dict[str, object], evidence_root: Path,
+) -> Path:
+    topology_root = evidence_root / "capability-topology"
+    code = str(receipt["capability_or_authority_code"])
+    marker = topology_root / f"{code}.json"
+    bundle = topology_root / f"{code}.artifacts"
+    receipt_raw = canonical_json_bytes(receipt)
+    if not os.path.lexists(bundle):
+        candidate = _stage_native_candidate(topology_root, receipt, None)
+        _publish_native_candidate_bundle(candidate, bundle)
+        _publish_native_marker_or_resolve(marker, receipt_raw, None)
+        return marker
+    try:
+        _publish_native_acceptance_marker(marker, receipt_raw)
+    except (OSError, TopologyError) as exc:
+        try:
+            if _read_private_regular_file(
+                marker, label="native FAIL marker",
+            ) != receipt_raw:
+                raise TopologyError("native FAIL marker is foreign")
+        except TopologyError as resolution_error:
+            raise TopologyError("native FAIL marker publication is unresolved") from resolution_error
+    return marker
 
 
 def _execute_native_pass_transaction(
@@ -4015,50 +4400,39 @@ def _execute_native_pass_transaction(
     session: NativeProbeSession,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
 ) -> Path:
-    """Publish governance and PASS only inside one retained-authority transaction."""
+    """Publish an append-only bundle, then its sole canonical acceptance marker."""
     topology_root = evidence_root / "capability-topology"
-    governance = topology_root / f"{code}.governance.json"
-    pass_path = topology_root / f"{code}.json"
-    governance_raw: bytes | None = None
-    pass_raw: bytes | None = None
-    pass_published = False
+    execution_root = topology_root / (
+        f".native-execution-{code}-{secrets.token_hex(16)}"
+    )
+    _prepare_private_evidence_directory(execution_root)
+    governance = execution_root / NATIVE_BUNDLE_GOVERNANCE
     selected_count = len(expected)
     try:
-        selected = _execute_native_exact_with_retained_authority(
-            baseline=baseline, expected=expected, governance=governance,
-            session=session, exact_runner=exact_runner,
+        selected = _execute_exact_with_retained_custody(
+            baseline=baseline, nodes=expected, report=governance,
+            runner=exact_runner, retain_provisional=True,
         )
+        custody = _validate_custody_policy(baseline["collector_policy"])
         governance_raw = _read_private_regular_file(
-            governance, label="native PASS governance transaction record",
+            governance, label="native PASS governance staging record",
         )
-        _postcheck_native_probe(session)
+        _validate_exact_governance_bytes(governance_raw, expected, custody)
         passed_receipt = make_native_receipt(
             context=context, code=code, expected=expected, collected=selected,
             session=session, outcome="PASS", selected_test_count=selected_count,
             passed=selected_count, failed=0, unavailable=0,
         )
-        pass_raw = canonical_json_bytes(passed_receipt)
-        publish_receipt(passed_receipt, evidence_root)
-        pass_published = True
-        _postcheck_native_probe(session)
-        return pass_path
-    except BaseException as exc:
-        rollback_error: TopologyError | None = None
-        if pass_published and pass_raw is not None and os.path.lexists(pass_path):
-            try:
-                _rollback_task_owned_private_artifact(pass_path, pass_raw)
-            except TopologyError as rollback_exc:
-                rollback_error = rollback_exc
-        if governance_raw is not None and os.path.lexists(governance):
-            try:
-                _rollback_task_owned_private_artifact(governance, governance_raw)
-            except TopologyError as rollback_exc:
-                rollback_error = rollback_error or rollback_exc
-        if rollback_error is not None:
-            raise rollback_error from exc
-        if not isinstance(exc, TopologyError):
+        return _publish_native_receipt_transaction(
+            receipt=passed_receipt, evidence_root=evidence_root,
+            session=session, governance_raw=governance_raw,
+        )
+    except Exception as exc:
+        if os.path.lexists(topology_root / f"{code}.json"):
             raise
-        identity_drift = "native executable identity changed" in str(exc)
+        identity_drift = isinstance(exc, TopologyError) and (
+            "native executable identity changed" in str(exc)
+        )
         failure = make_native_receipt(
             context=context, code=code, expected=expected, collected=(),
             session=session, outcome="FAIL", selected_test_count=selected_count,
@@ -4068,8 +4442,10 @@ def _execute_native_pass_transaction(
                 if identity_drift else "NATIVE_EXACT_TEST_FAILURE"
             ),
         )
-        publish_receipt(failure, evidence_root)
-        raise
+        _publish_native_failure_marker(receipt=failure, evidence_root=evidence_root)
+        if isinstance(exc, TopologyError):
+            raise
+        raise TopologyError("native exact transaction failed") from exc
 
 
 def run_lane(
@@ -4114,11 +4490,21 @@ def run_lane(
                         session=session, outcome="FAIL", selected_test_count=0,
                         passed=0, failed=0, unavailable=0,
                     )
-                    publications.append(publish_receipt(failure, evidence_root))
+                    publications.append(_publish_native_failure_marker(
+                        receipt=failure, evidence_root=evidence_root,
+                    ))
                     raise TopologyError(f"{code} preflight is BROKEN")
                 if session.state == "UNAVAILABLE":
                     try:
-                        _postcheck_native_probe(session)
+                        deferred = make_native_receipt(
+                            context=context, code=code, expected=expected, collected=(),
+                            session=session, outcome="DEFERRED", selected_test_count=0,
+                            passed=0, failed=0, unavailable=len(expected),
+                        )
+                        publications.append(_publish_native_receipt_transaction(
+                            receipt=deferred, evidence_root=evidence_root,
+                            session=session, governance_raw=None,
+                        ))
                     except TopologyError:
                         failure = make_native_receipt(
                             context=context, code=code, expected=expected, collected=(),
@@ -4126,14 +4512,10 @@ def run_lane(
                             passed=0, failed=0, unavailable=0,
                             fact="NATIVE_IDENTITY_REPLACED",
                         )
-                        publications.append(publish_receipt(failure, evidence_root))
+                        publications.append(_publish_native_failure_marker(
+                            receipt=failure, evidence_root=evidence_root,
+                        ))
                         raise
-                    deferred = make_native_receipt(
-                        context=context, code=code, expected=expected, collected=(),
-                        session=session, outcome="DEFERRED", selected_test_count=0,
-                        passed=0, failed=0, unavailable=len(expected),
-                    )
-                    publications.append(publish_receipt(deferred, evidence_root))
                     continue
                 if session.state != "AVAILABLE":
                     raise TopologyError("native probe returned an unknown state")

@@ -167,3 +167,38 @@ post-publication identity postcheck as one guarded transaction. Replacement at
 any of those boundaries removes only byte-identical task-owned PASS/governance
 leaves with descriptor-relative no-follow rollback, publishes exact
 `NATIVE_IDENTITY_REPLACED` FAIL, and cannot leave acceptance evidence.
+
+## P0-07 architecture-A evidence correction
+
+The preceding rollback description is historical and is not the implemented
+acceptance model. Native v2 publication is now append-only. Each code has a
+deterministic private `<CODE>.artifacts` directory containing canonical
+`receipt.json`, optional PASS `governance.json`, and a self-hashed
+`manifest.json`; the final canonical `<CODE>.json` marker contains exactly the
+bundled receipt bytes and is the sole acceptance point. External v1 remains
+flat.
+
+Candidate leaves and directories are fsynced, the retained executable is
+postchecked before and after atomic Linux `renameat2(RENAME_NOREPLACE)` bundle
+publication, and the marker is installed no-clobber last. The native path has
+no rollback/unlink API. Crash, rename failure, identity drift, foreign
+occupancy, or ambiguous publisher response never authorizes deletion or
+overwrite. Exact marker bytes plus a fully valid exact bundle resolve an
+after-write exception as success; any foreign/invalid state fails closed.
+Identity drift before a free marker publishes strict FAIL and leaves earlier
+candidate/bundle bytes inert. A post-marker authority check cannot revoke the
+already accepted transaction.
+
+The retained reader validates the canonical marker and deterministic bundle as
+one set: private parent/bundle/leaves, exact inventory, marker/receipt byte
+identity, strict manifest bindings and self-hash, exact PASS governance with
+sealed custody, no governance for DEFERRED, and no accepted FAIL. It rejects
+legacy flat native governance, stale bundle layouts, symlink or identity
+replacement at parent/bundle/leaf boundaries, manifest tampering, and extra
+entries. Random candidate and execution directories remain inert. Focused TDD
+also covers unresolved versus exact rename response, deterministic foreign
+preoccupancy without deletion, inert crash-stage candidates, ambiguous marker
+publication, canonical filename routing, portable DEFERRED versus future
+host-require-pass, and external-v1 preservation. Final-head real-host counts and
+artifact hashes remain task-report evidence rather than a claim in this tracked
+document.
