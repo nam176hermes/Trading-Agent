@@ -184,6 +184,84 @@ def test_route_spoofs_fail_closed(context: closure._ValidationContext, relative:
     _error(context, code)
 
 
+def _run_make_route(root: Path, raw: bytes) -> subprocess.CompletedProcess[str]:
+    (root / "Makefile").write_bytes(raw)
+    environment = {**os.environ, "MAKEFLAGS": "", "GNUMAKEFLAGS": ""}
+    return subprocess.run(
+        ["make", "--no-print-directory", "route"], cwd=root, env=environment,
+        text=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+    )
+
+
+def test_accepted_make_route_executes_real_private_sentinel(tmp_path: Path) -> None:
+    """Break caught: the accepted graph edge is not executable by real Make."""
+    raw = b".PHONY: route private\nroute:\n\t$(MAKE) private\nprivate:\n\t@touch sentinel\n"
+    assert closure._reachable(closure._make_graph(raw), "route", "private")
+    result = _run_make_route(tmp_path, raw)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "sentinel").is_file()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b".ONESHELL:\n.PHONY: route private\nroute:\n\texit 0\n\t$(MAKE) private\nprivate:\n\t@touch sentinel\n",
+        b"SHELL := /bin/true\n.PHONY: route private\nroute:\n\t$(MAKE) private\nprivate:\n\t@touch sentinel\n",
+    ],
+    ids=["oneshell-exit", "shell-noop"],
+)
+def test_make_execution_override_without_sentinel_is_rejected_before_graph(
+    tmp_path: Path, raw: bytes,
+) -> None:
+    """Break caught: textual reachability survives while real Make skips private."""
+    result = _run_make_route(tmp_path, raw)
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "sentinel").exists()
+    with pytest.raises(closure.ClosureError, match="^P0_CLOSURE_MAKEFILE_INVALID$"):
+        closure._make_graph(raw)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        b".ONESHELL:\n",
+        b".POSIX:\n",
+        b".SECONDEXPANSION:\n",
+        b".NOTPARALLEL:\n",
+        b"SHELL := /bin/true\n",
+        b".SHELLFLAGS := -c\n",
+        b".RECIPEPREFIX := >\n",
+        b"MAKE := /bin/true\n",
+        b"MAKEFLAGS := --silent\n",
+        b"PATH := /nonexistent\n",
+        b"override SHELL := /bin/true\n",
+        b"export SHELL := /bin/true\n",
+        b"unexport SHELL\n",
+        b"ci-portable: SHELL := /bin/true\n",
+        b"include attacker.mk\n",
+        b"-include attacker.mk\n",
+        b"sinclude attacker.mk\n",
+        b"define SHELL\n/bin/true\nendef\n",
+        b"$(eval SHELL := /bin/true)\n",
+        b"ifeq (1,1)\nendif\n",
+    ],
+    ids=[
+        "oneshell", "posix", "secondary-expansion", "notparallel", "shell",
+        "shellflags", "recipeprefix", "make", "makeflags", "path",
+        "override", "export", "unexport", "target-specific", "include",
+        "optional-include", "sinclude", "define", "eval", "conditional",
+    ],
+)
+def test_make_execution_semantic_mutations_fail_closed(
+    context: closure._ValidationContext, prefix: bytes,
+) -> None:
+    """Break caught: Make directives alter execution behind a valid text graph."""
+    makefile = context.root / "Makefile"
+    makefile.write_bytes(prefix + makefile.read_bytes())
+    _error(context, "P0_CLOSURE_MAKEFILE_INVALID")
+
+
 @pytest.mark.parametrize(
     ("workflow", "old", "new", "code"),
     [

@@ -64,6 +64,22 @@ _CI_PORTABLE_WRAPPER_RECIPE = " ".join((
     "trap 'cleanup_ci_tmpdir' EXIT;",
     'TMPDIR="$$ci_tmpdir" TEMP="$$ci_tmpdir" TMP="$$ci_tmpdir" TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private',
 ))
+_APPROVED_PARSE_TIME_SHELL = (
+    "RUNTIME_RELEASE_LOCK_SHA256 := $(shell sha256sum uv.lock | cut -d' ' -f1)"
+)
+_APPROVED_TARGET_ASSIGNMENT = (
+    "test-portable-embedded-proof: ROOT_PYTEST_ARGS := --portable-embedded-proof"
+)
+_FORBIDDEN_MAKE_DIRECTIVES = frozenset({
+    "define", "else", "endef", "endif", "export", "ifdef", "ifeq",
+    "ifndef", "ifneq", "include", "load", "override", "sinclude",
+    "undefine", "unexport", "vpath", "-include",
+})
+_EXECUTION_MAKE_VARIABLES = frozenset({
+    ".RECIPEPREFIX", ".SHELLFLAGS", "BASH_ENV", "ENV", "GNUMAKEFLAGS",
+    "GPATH", "MAKE", "MAKEFILES", "MAKEFLAGS", "MAKEOVERRIDES", "MFLAGS",
+    "PATH", "RUNNER_TEMP", "SHELL", "SHELLOPTS", "VPATH",
+})
 
 
 class ClosureError(RuntimeError):
@@ -350,6 +366,76 @@ def _recursive_make_targets(recipe: str) -> set[str]:
     return {word for word in words if "=" not in word}
 
 
+def _make_logical_lines(lines: list[str]) -> list[tuple[bool, str]]:
+    result: list[tuple[bool, str]] = []
+    pending: str | None = None
+    recipe = False
+    for source_line in lines:
+        stripped = _strip_shell_comment(source_line).rstrip()
+        if pending is None:
+            if not stripped:
+                continue
+            pending = stripped
+            recipe = source_line.startswith("\t")
+        else:
+            pending = f"{pending} {stripped.lstrip()}"
+        if pending.endswith("\\"):
+            pending = pending[:-1].rstrip()
+            continue
+        result.append((recipe, pending))
+        pending = None
+    if pending is not None:
+        raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+    return result
+
+
+def _make_statement(
+    line: str, seen_targets: set[str],
+) -> tuple[tuple[str, ...], set[str]] | None:
+    source = line.strip()
+    if source == _APPROVED_TARGET_ASSIGNMENT:
+        return None
+    first = source.split(None, 1)[0]
+    if first in _FORBIDDEN_MAKE_DIRECTIVES:
+        raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+    if any(token in source for token in ("$(eval", "$(file", "$(guile")):
+        raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+    if "$(shell" in source and source != _APPROVED_PARSE_TIME_SHELL:
+        raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+
+    assignment = re.match(
+        r"(?P<name>[A-Za-z_.][A-Za-z0-9_.-]*)\s*(?P<operator>::=|:=|\?=|\+=|!=|=)",
+        source,
+    )
+    if assignment is not None:
+        if (
+            assignment.group("name") in _EXECUTION_MAKE_VARIABLES
+            or assignment.group("name").startswith(".")
+            or assignment.group("operator") == "!="
+        ):
+            raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+        return None
+
+    if (
+        source.count(":") != 1
+        or any(token in source for token in (";", "&", "%", "$", "|", "*", "[", "]"))
+    ):
+        raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+    names_raw, dependencies_raw = source.split(":", 1)
+    names = tuple(names_raw.split())
+    dependencies = set(dependencies_raw.split())
+    if (
+        not names
+        or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", name) for name in names)
+        or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", item) for item in dependencies)
+        or any(name.startswith(".") for name in names if name != ".PHONY")
+        or any(name in seen_targets for name in names)
+    ):
+        raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+    seen_targets.update(names)
+    return names, dependencies
+
+
 def _make_graph(raw: bytes) -> dict[str, set[str]]:
     try:
         lines = raw.decode("utf-8").splitlines()
@@ -357,38 +443,22 @@ def _make_graph(raw: bytes) -> dict[str, set[str]]:
         raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID") from exc
     graph: dict[str, set[str]] = {}
     current_targets: tuple[str, ...] = ()
-    recipe_parts: list[str] = []
-
-    def flush_recipe() -> None:
-        if not recipe_parts:
-            return
-        called = _recursive_make_targets(" ".join(recipe_parts))
+    seen_targets: set[str] = set()
+    for is_recipe, line in _make_logical_lines(lines):
+        if is_recipe:
+            if not current_targets:
+                raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
+            called = _recursive_make_targets(line.lstrip())
+            for target in current_targets:
+                graph[target].update(called)
+            continue
+        statement = _make_statement(line, seen_targets)
+        if statement is None:
+            current_targets = ()
+            continue
+        current_targets, dependencies = statement
         for target in current_targets:
-            graph[target].update(called)
-        recipe_parts.clear()
-
-    for source_line in lines:
-        line = _strip_shell_comment(source_line).rstrip()
-        if not line:
-            continue
-        if not line[0].isspace() and ":" in line and "=" not in line.split(":", 1)[0]:
-            flush_recipe()
-            names_raw, dependencies_raw = line.split(":", 1)
-            names = tuple(name for name in names_raw.split() if re.fullmatch(r"[A-Za-z0-9_.-]+", name))
-            dependencies = {
-                item for item in dependencies_raw.split()
-                if re.fullmatch(r"[A-Za-z0-9_.-]+", item)
-            }
-            for name in names:
-                graph.setdefault(name, set()).update(dependencies)
-            current_targets = names
-            continue
-        if not current_targets or not source_line.startswith("\t"):
-            continue
-        recipe_parts.append(line.lstrip().removesuffix("\\").rstrip())
-        if not line.endswith("\\"):
-            flush_recipe()
-    flush_recipe()
+            graph.setdefault(target, set()).update(dependencies)
     return graph
 
 
