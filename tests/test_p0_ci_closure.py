@@ -287,6 +287,67 @@ def test_accepted_multi_target_make_route_executes_both_real_sentinels(
 
 
 @pytest.mark.parametrize(
+    "invocation",
+    [
+        "-$( MAKE ) private",
+        "-$(\tMAKE) private",
+        "-$(MAKE\t) private",
+        "-$(\N{NO-BREAK SPACE}MAKE) private",
+        "-$(MAKE)\N{NO-BREAK SPACE}private",
+        "-$(MAKE)\N{EM SPACE}private",
+        "-\N{NO-BREAK SPACE}$(MAKE) private",
+        "-$(MAKE) private\N{NO-BREAK SPACE}",
+        "-$(MAKE) private\N{NARROW NO-BREAK SPACE}governed",
+        "-$(MAKE) private\N{NO-BREAK SPACE}\\\n\t",
+    ],
+    ids=[
+        "internal-ascii-spaces", "internal-tab-before", "internal-tab-after",
+        "internal-nbsp", "nbsp-separator", "em-space-separator",
+        "leading-nbsp", "trailing-nbsp", "between-targets-narrow-nbsp",
+        "nbsp-before-continuation",
+    ],
+)
+def test_noncanonical_make_whitespace_is_not_graph_authority_when_real_make_skips_sentinel(
+    tmp_path: Path, invocation: str,
+) -> None:
+    """Break caught: Python whitespace parsing invents a non-executed edge."""
+    raw = _recursive_make_route(invocation)
+    result = _run_make_route(tmp_path, raw)
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "sentinel").exists()
+    assert not closure._reachable(closure._make_graph(raw), "route", "governed")
+
+
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        "$(MAKE)\tprivate",
+        "$(MAKE)   private",
+        "   $(MAKE) private   ",
+        "-$(MAKE) private",
+        "@-$(MAKE)\tprivate",
+    ],
+    ids=["tab-separator", "space-separator", "ascii-trim", "ignore-prefix", "silent-ignore-prefix"],
+)
+def test_canonical_make_ascii_whitespace_executes_real_sentinel_and_remains_authority(
+    tmp_path: Path, invocation: str,
+) -> None:
+    """Break caught: closing broad whitespace also rejects executable routes."""
+    raw = _recursive_make_route(invocation)
+    result = _run_make_route(tmp_path, raw)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "sentinel").is_file()
+    assert closure._reachable(closure._make_graph(raw), "route", "governed")
+
+
+def test_canonical_ci_portable_wrapper_remains_the_exact_approved_edge() -> None:
+    """Break caught: ASCII grammar hardening drops the custody wrapper edge."""
+    assert closure._recursive_make_targets(closure._CI_PORTABLE_WRAPPER_RECIPE) == {
+        "ci-portable-private",
+    }
+
+
+@pytest.mark.parametrize(
     ("invocation", "returncode"),
     [
         ("$(MAKE) -n private", 0),

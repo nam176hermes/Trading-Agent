@@ -351,13 +351,14 @@ def _strip_shell_comment(line: str) -> str:
 
 def _recursive_make_targets(recipe: str) -> set[str]:
     """Accept only a whole approved wrapper or one unconditional Make command."""
-    if recipe.strip() == _CI_PORTABLE_WRAPPER_RECIPE:
+    normalized = recipe.strip(" \t")
+    if normalized == _CI_PORTABLE_WRAPPER_RECIPE:
         return {"ci-portable-private"}
-    command = recipe.strip().lstrip("@+-").strip()
-    match = re.fullmatch(r"\$\(\s*MAKE\s*\)\s+(.+)", command)
+    command = normalized.lstrip("@+-").strip(" \t")
+    match = re.fullmatch(r"\$\(MAKE\)[ \t]+(.+)", command)
     if match is None:
         return set()
-    words = match.group(1).split()
+    words = re.split(r"[ \t]+", match.group(1))
     if any(
         not re.fullmatch(r"[A-Za-z0-9_.-]+", word)
         or word.startswith("-")
@@ -373,16 +374,16 @@ def _make_logical_lines(lines: list[str]) -> list[tuple[bool, str]]:
     pending: str | None = None
     recipe = False
     for source_line in lines:
-        stripped = _strip_shell_comment(source_line).rstrip()
+        stripped = _strip_shell_comment(source_line).rstrip(" \t")
         if pending is None:
             if not stripped:
                 continue
             pending = stripped
             recipe = source_line.startswith("\t")
         else:
-            pending = f"{pending} {stripped.lstrip()}"
+            pending = f"{pending} " + stripped.lstrip(" \t")
         if pending.endswith("\\"):
-            pending = pending[:-1].rstrip()
+            pending = pending[:-1].rstrip(" \t")
             continue
         result.append((recipe, pending))
         pending = None
@@ -450,7 +451,7 @@ def _make_graph(raw: bytes) -> dict[str, set[str]]:
         if is_recipe:
             if not current_targets:
                 raise ClosureError("P0_CLOSURE_MAKEFILE_INVALID")
-            called = _recursive_make_targets(line.lstrip())
+            called = _recursive_make_targets(line.lstrip(" \t"))
             for target in current_targets:
                 graph[target].update(called)
             continue
