@@ -323,7 +323,13 @@ ci-portable:
 		case "$$GITHUB_RUN_ID" in *[!0-9]*|'') printf '%s\n' "portable CI run ID is invalid" >&2; exit 2;; esac; \
 		case "$$GITHUB_RUN_ATTEMPT" in *[!0-9]*|'') printf '%s\n' "portable CI run attempt is invalid" >&2; exit 2;; esac; \
 		case "$$GITHUB_RUN_ID:$$GITHUB_RUN_ATTEMPT" in 0*:*|*:0*) printf '%s\n' "portable CI artifact identity is noncanonical" >&2; exit 2;; esac; \
-		artifact_root="$${RUNNER_TEMP:?}/trading-agent-ci-portable-artifact.$${GITHUB_RUN_ID:?}.$${GITHUB_RUN_ATTEMPT:?}"; \
+		publication_parent="$${RUNNER_TEMP:?}/trading-agent-ci-portable-publication.$${GITHUB_RUN_ID:?}.$${GITHUB_RUN_ATTEMPT:?}"; \
+		if ! mkdir -m 0700 -- "$$publication_parent"; then \
+			printf '%s\n' "portable CI publication parent is preoccupied" >&2; \
+			exit 2; \
+		fi; \
+		test "$$(stat -c '%u:%a' -- "$$publication_parent")" = "$$(id -u):700"; \
+		artifact_root="$$publication_parent/artifact"; \
 		export PORTABLE_CI_ARTIFACT_ROOT="$$artifact_root"; \
 		if test -e "$$artifact_root" || test -L "$$artifact_root"; then \
 			printf '%s\n' "portable CI artifact destination already exists" >&2; \

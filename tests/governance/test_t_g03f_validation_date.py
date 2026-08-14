@@ -726,7 +726,7 @@ def test_ci_portable_passes_its_resolved_evidence_root_to_capture(
     assert values["recursive_evidence_mode"] == "700"
     assert values["recursive_context"] == f"{raw_evidence_root}/foundation-context.json"
     assert values["recursive_artifact"] == str(
-        tmp_path / "trading-agent-ci-portable-artifact.31833372257.1"
+        tmp_path / "trading-agent-ci-portable-publication.31833372257.1/artifact"
     )
     assert values["recursive_arg"] == "ci-portable-private"
     assert values["recursive_tmpdir"] == values["recursive_temp"]

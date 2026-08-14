@@ -452,8 +452,8 @@ def test_make_execution_semantic_mutations_fail_closed(
         ("foundation.yml", b"include-hidden-files: true", b"include-hidden-files: false", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         (
             "foundation.yml",
-            b"path: ${{ runner.temp }}/trading-agent-ci-portable-artifact.${{ github.run_id }}.${{ github.run_attempt }}/**",
-            b"path: ${{ runner.temp }}/trading-agent-ci-portable-artifact/**",
+            b"path: ${{ runner.temp }}/trading-agent-ci-portable-publication.${{ github.run_id }}.${{ github.run_attempt }}/artifact/**",
+            b"path: ${{ runner.temp }}/trading-agent-ci-portable-publication/artifact/**",
             "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID",
         ),
         ("host-authority.yml", b"  workflow_dispatch:\n", b"  push:\n", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),

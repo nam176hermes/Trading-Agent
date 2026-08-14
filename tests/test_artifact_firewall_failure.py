@@ -19,7 +19,15 @@ RAW_REASON = "fixture reason"
 TREE = "a" * 64
 RUN_ID = "31833372257"
 RUN_ATTEMPT = "1"
-ARTIFACT_DIRECTORY = f"trading-agent-ci-portable-artifact.{RUN_ID}.{RUN_ATTEMPT}"
+ARTIFACT_DIRECTORY = (
+    f"trading-agent-ci-portable-publication.{RUN_ID}.{RUN_ATTEMPT}/artifact"
+)
+R11_RUN_ID = "31839312983"
+R11_RUN_ATTEMPT = str(os.getpid())
+R11_PUBLICATION_DIRECTORY = (
+    f"trading-agent-ci-portable-publication.{R11_RUN_ID}.{R11_RUN_ATTEMPT}"
+)
+R11_ARTIFACT_RELATIVE = Path(R11_PUBLICATION_DIRECTORY) / "artifact"
 
 
 def _failure_source(
@@ -106,6 +114,152 @@ def _publish_failure(
         repository_root=Path.cwd(),
         **kwargs,
     )
+
+
+def _run_ci_portable_failure_probe(
+    tmp_path: Path, runner_temp: Path, *, parent_attack: str | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    invocation_log = tmp_path / "publish.log"
+    inner_log = tmp_path / "inner.log"
+    fake_make = tmp_path / "fake-make"
+    fake_make.write_text(
+        "#!/bin/sh\n"
+        ": > \"$INNER_LOG\"\n"
+        "mkdir -p \"$TEST_EVIDENCE_DIR/capability-topology\"\n"
+        "touch \"$TEST_EVIDENCE_DIR/capability-topology/portable-root-remainder.failure-diagnostic.json\"\n"
+        "exit 37\n",
+        encoding="utf-8",
+    )
+    fake_make.chmod(0o700)
+    fake_uv = binary / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "case \" $* \" in\n"
+        "  *\" python -c \"*)\n"
+        "    for root do :; done\n"
+        "    mkdir -p \"$root/capability-topology\"\n"
+        "    context=\"$root/capability-topology/foundation-context.json\"\n"
+        "    : > \"$context\"\n"
+        "    printf '%s\\n' \"$context\"\n"
+        "    exit 0;;\n"
+        "esac\n"
+        "printf '%s\\n' \"$*\" >> \"$INVOCATION_LOG\"\n"
+        "exit 91\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o700)
+    publication_parent = runner_temp / R11_PUBLICATION_DIRECTORY
+    if parent_attack == "unsafe-create-mode":
+        fake_mkdir = binary / "mkdir"
+        fake_mkdir.write_text(
+            "#!/bin/sh\n"
+            "for value do last=$value; done\n"
+            "if test \"$last\" = \"$PUBLICATION_PARENT\"; then\n"
+            "  /usr/bin/mkdir -m 0755 -- \"$last\"\n"
+            "  exit $?\n"
+            "fi\n"
+            "exec /usr/bin/mkdir \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_mkdir.chmod(0o700)
+    elif parent_attack == "foreign-owner":
+        fake_stat = binary / "stat"
+        fake_stat.write_text(
+            "#!/bin/sh\n"
+            "for value do last=$value; done\n"
+            "if test \"$last\" = \"$PUBLICATION_PARENT\"; then\n"
+            f"  printf '%s\\n' '{os.geteuid() + 1}:700'\n"
+            "  exit 0\n"
+            "fi\n"
+            "exec /usr/bin/stat \"$@\"\n",
+            encoding="utf-8",
+        )
+        fake_stat.chmod(0o700)
+    result = subprocess.run(
+        ["make", "--no-print-directory", "ci-portable", f"MAKE={fake_make}"],
+        cwd=Path.cwd(), capture_output=True, text=True, check=False,
+        env={
+            **os.environ,
+            "PATH": f"{binary}:{os.environ['PATH']}",
+            "RUNNER_TEMP": str(runner_temp),
+            "GITHUB_RUN_ID": R11_RUN_ID,
+            "GITHUB_RUN_ATTEMPT": R11_RUN_ATTEMPT,
+            "INVOCATION_LOG": str(invocation_log),
+            "INNER_LOG": str(inner_log),
+            "PUBLICATION_PARENT": str(publication_parent),
+        },
+    )
+    return result, invocation_log, inner_log
+
+
+def test_ci_portable_uses_a_private_publication_parent_under_root_owned_runner_temp(
+    tmp_path: Path,
+) -> None:
+    runner_temp = Path("/tmp")
+    info = runner_temp.stat()
+    assert info.st_uid == 0
+    assert info.st_mode & 0o1000
+    publication_parent = runner_temp / R11_PUBLICATION_DIRECTORY
+    assert not publication_parent.exists() and not publication_parent.is_symlink()
+    try:
+        result, invocation_log, inner_log = _run_ci_portable_failure_probe(
+            tmp_path, runner_temp,
+        )
+
+        assert result.returncode != 0
+        assert "Error 37" in result.stderr
+        assert inner_log.is_file()
+        assert publication_parent.is_dir() and not publication_parent.is_symlink()
+        parent_info = publication_parent.stat()
+        assert parent_info.st_uid == os.geteuid()
+        assert parent_info.st_mode & 0o777 == 0o700
+        expected = runner_temp / R11_ARTIFACT_RELATIVE
+        assert f"--destination {expected}" in invocation_log.read_text(encoding="utf-8")
+        assert not expected.exists() and not expected.is_symlink()
+    finally:
+        if publication_parent.is_dir() and not publication_parent.is_symlink():
+            publication_parent.rmdir()
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink", "file", "unsafe-mode"])
+def test_ci_portable_rejects_preoccupied_publication_parent_before_inner_make(
+    tmp_path: Path, kind: str,
+) -> None:
+    publication_parent = tmp_path / R11_PUBLICATION_DIRECTORY
+    if kind == "directory":
+        publication_parent.mkdir(mode=0o700)
+    elif kind == "symlink":
+        target = tmp_path / "foreign"
+        target.mkdir()
+        publication_parent.symlink_to(target, target_is_directory=True)
+    elif kind == "file":
+        publication_parent.write_bytes(b"foreign")
+    else:
+        publication_parent.mkdir(mode=0o755)
+
+    result, _invocation_log, inner_log = _run_ci_portable_failure_probe(
+        tmp_path / "probe", tmp_path,
+    )
+
+    assert result.returncode != 0
+    assert not inner_log.exists()
+
+
+@pytest.mark.parametrize("attack", ["unsafe-create-mode", "foreign-owner"])
+def test_ci_portable_rejects_noncanonical_new_publication_parent(
+    tmp_path: Path, attack: str,
+) -> None:
+    publication_parent = tmp_path / R11_PUBLICATION_DIRECTORY
+    result, _invocation_log, inner_log = _run_ci_portable_failure_probe(
+        tmp_path / "probe", tmp_path, parent_attack=attack,
+    )
+
+    assert result.returncode != 0
+    assert not inner_log.exists()
+    assert publication_parent.exists()
 
 
 def test_failure_publisher_emits_only_a_sealed_diagnostic_projection(
@@ -242,6 +396,29 @@ def test_failure_publisher_rejects_source_replacement_after_validation(
             raw_root, destination, monkeypatch, source_boundary_hook=replace,
         )
     assert not destination.exists()
+
+
+def test_failure_publisher_rejects_publication_parent_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_root, _run_id, _head_sha, _skipped = _failure_source(tmp_path, monkeypatch)
+    publication_parent = tmp_path / "publication-parent"
+    publication_parent.mkdir(mode=0o700)
+    destination = publication_parent / "artifact"
+    displaced = tmp_path / "displaced-publication-parent"
+    foreign = tmp_path / "foreign-publication-parent"
+    foreign.mkdir(mode=0o700)
+
+    def replace(_boundary: str) -> None:
+        publication_parent.rename(displaced)
+        publication_parent.symlink_to(foreign, target_is_directory=True)
+
+    with pytest.raises(firewall.FirewallError):
+        _publish_failure(
+            raw_root, destination, monkeypatch, publication_boundary_hook=replace,
+        )
+
+    assert not (foreign / destination.name).exists()
 
 
 @pytest.mark.parametrize(
@@ -457,7 +634,7 @@ def test_ci_portable_preserves_stale_artifact_occupancy_and_stops(
     tmp_path: Path,
 ) -> None:
     destination = tmp_path / ARTIFACT_DIRECTORY
-    destination.mkdir()
+    destination.mkdir(parents=True)
     sentinel = destination / "foreign"
     sentinel.write_bytes(b"preserve")
     tripwire = tmp_path / "inner-make-ran"
@@ -489,12 +666,13 @@ def test_all_portable_publishers_and_workflow_share_exact_private_final_path() -
     workflow = Path(".github/workflows/foundation.yml").read_text(encoding="utf-8")
     make_destination = '--destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}"'
     workflow_path = (
-        "${{ runner.temp }}/trading-agent-ci-portable-artifact."
-        "${{ github.run_id }}.${{ github.run_attempt }}/**"
+        "${{ runner.temp }}/trading-agent-ci-portable-publication."
+        "${{ github.run_id }}.${{ github.run_attempt }}/artifact/**"
     )
 
-    assert 'artifact_root="$${RUNNER_TEMP:?}/trading-agent-ci-portable-artifact.' in makefile
+    assert 'publication_parent="$${RUNNER_TEMP:?}/trading-agent-ci-portable-publication.' in makefile
     assert '$${GITHUB_RUN_ID:?}.$${GITHUB_RUN_ATTEMPT:?}"' in makefile
+    assert 'artifact_root="$$publication_parent/artifact"' in makefile
     assert 'export PORTABLE_CI_ARTIFACT_ROOT="$$artifact_root"' in makefile
     assert makefile.count(make_destination) == 3
     assert '$(CURDIR)/runtime/state/ci-portable' not in makefile
@@ -513,7 +691,7 @@ def test_workflow_upload_reread_is_independent_of_checkout_namespace_swap(
     runner_temp = tmp_path / "runner-temp"
     runner_temp.mkdir(mode=0o700)
     private_artifact = runner_temp / ARTIFACT_DIRECTORY
-    private_artifact.mkdir(mode=0o700)
+    private_artifact.mkdir(parents=True, mode=0o700)
     safe_payload = private_artifact / "root-remainder-failure.json"
     safe_payload.write_bytes(b"sealed-safe-bytes")
     safe_payload.chmod(0o400)

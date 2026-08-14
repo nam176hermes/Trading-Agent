@@ -167,8 +167,8 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert "run: make ci-portable NONINTERACTIVE=1" in foundation
     assert "if: always()" in foundation
     assert (
-        "path: ${{ runner.temp }}/trading-agent-ci-portable-artifact."
-        "${{ github.run_id }}.${{ github.run_attempt }}/**"
+        "path: ${{ runner.temp }}/trading-agent-ci-portable-publication."
+        "${{ github.run_id }}.${{ github.run_attempt }}/artifact/**"
     ) in foundation
     assert "include-hidden-files: true" in foundation
     assert "retention-days: 14" in foundation

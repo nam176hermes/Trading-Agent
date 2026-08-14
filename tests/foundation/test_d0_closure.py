@@ -136,8 +136,8 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
     assert "run: make ci-portable" in workflow
     assert "uses: actions/upload-artifact@v4" in workflow
     assert (
-        "path: ${{ runner.temp }}/trading-agent-ci-portable-artifact."
-        "${{ github.run_id }}.${{ github.run_attempt }}/**"
+        "path: ${{ runner.temp }}/trading-agent-ci-portable-publication."
+        "${{ github.run_id }}.${{ github.run_attempt }}/artifact/**"
     ) in workflow
     assert "ci-private:\n\t$(MAKE) prepare-root-test-install" in makefile
     assert "\t$(MAKE) test-all-private check-test-skips check-critical-coverage " in makefile
