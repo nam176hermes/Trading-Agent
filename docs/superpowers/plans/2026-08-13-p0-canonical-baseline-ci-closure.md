@@ -2650,6 +2650,48 @@ or live trading is authorized.
 
 ---
 
+## P0-12R13 correction — Closed source-tree failure diagnostics
+
+Hosted Foundation run `31846573511` collected 6,444 root candidates after 29
+deselections from 6,473 nodes and executed the exact remainder as 6,101 passed
+plus 281 skipped. The expected `EXACT_EXECUTION_NONPASS` failure publisher then
+reported `ARTIFACT_FIREWALL_REJECTED LAYOUT SOURCE_TREE`; the exact upload path
+remained empty. Local standalone execution with the same collection, plus the
+common and dashboard subsets, leaves tracked Git clean. The hosted-only source
+tree cause is therefore not recoverable from the current closed stage.
+
+P0-12R13 may refine only `SOURCE_TREE` with one exact closed command substage
+and one closed reason. Public output is limited to
+`SOURCE_TREE <substage> <reason>`. The allowed substages are `DIFF_INDEX` for
+the existing index-versus-head command, `DIFF_FILES` for the existing
+worktree-versus-index command, `HEAD_BINDING` for the checked `rev-parse HEAD`
+binding, and `TREE_ENUMERATION` for the checked `ls-tree` identity input. The
+allowed reasons distinguish `DRIFT`, `MISMATCH`, `COMMAND_FAILURE`,
+`SPAWN_FAILURE`, and `OUTPUT_FAILURE` only where that reason can arise for the
+named command. No filename, path, argv, cwd, return code, output, hash, raw
+message, or underlying exception may be retained or printed.
+
+Strict TDD must pressure the real `_source_tree_identity` command boundaries:
+diff return-code drift versus command failure, checked head mismatch/command/
+output failure, tree-enumeration command failure, and `OSError` or
+`subprocess.SubprocessError` at every exact command. It must also prove the
+failure publisher preserves the safe code/category/stage, adds only the exact
+closed substage/reason, retains no cause or context, emits exact CLI exit 2,
+and creates no artifact.
+
+Keep the existing Git commands and clean-tree/head/tree invariants, R12
+exception-context closure, failure projection schemas, skip/native/PASS
+policy, Make routing, workflows, dependencies, and locks unchanged. Refresh
+only generator-owned broad-handler inventory rows if exact line movement
+requires it. Require focused/full affected tests, a fresh standalone affected
+packet, P0 baseline/closure/contracts/source/security/inventory/actionlint/diff
+gates, an ignored report, a clean commit, and independent review. No push,
+hosted rerun or dispatch, P0-12 continuation, P0-13, promotion,
+production/live/runtime/DB/service/scheduler mutation, broker/provider access,
+or live trading is authorized.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
