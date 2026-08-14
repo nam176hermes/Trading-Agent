@@ -116,6 +116,58 @@ def _publish_failure(
     )
 
 
+def _source_tree_run_stub(
+    *, head_sha: str, mode: str, calls: list[list[str]],
+) -> object:
+    real_run = subprocess.run
+    hostile = "password: private-value /private/source/path"
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[object]:
+        command_name = ""
+        if command[:2] == ["git", "diff-index"]:
+            command_name = "diff-index"
+        elif command[:2] == ["git", "diff-files"]:
+            command_name = "diff-files"
+        elif command[:2] == ["git", "rev-parse"]:
+            command_name = "head"
+        elif command[:2] == ["git", "ls-tree"]:
+            command_name = "tree"
+        if not command_name:
+            return real_run(command, **kwargs)
+        calls.append(command)
+        if mode == f"{command_name}-os":
+            raise OSError(hostile)
+        if mode == f"{command_name}-subprocess":
+            raise subprocess.SubprocessError(hostile)
+        if mode == "head-output" and command_name == "head":
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, hostile)
+        if mode == "head-empty" and command_name == "head":
+            return subprocess.CompletedProcess(command, 0, stdout="\n")
+        if mode == "head-invalid" and command_name == "head":
+            return subprocess.CompletedProcess(command, 0, stdout=hostile + "\n")
+        if mode == f"{command_name}-command":
+            if kwargs.get("check"):
+                raise subprocess.CalledProcessError(
+                    2, command, output=hostile, stderr=hostile,
+                )
+            output: object = hostile.encode() if command_name == "tree" else hostile
+            return subprocess.CompletedProcess(
+                command, 2, stdout=output, stderr=hostile,
+            )
+        if mode == f"{command_name}-drift":
+            return subprocess.CompletedProcess(command, 1)
+        if mode == "head-mismatch" and command_name == "head":
+            return subprocess.CompletedProcess(command, 0, stdout="f" * 40 + "\n")
+        stdout: object = ""
+        if command_name == "head":
+            stdout = head_sha + "\n"
+        elif command_name == "tree":
+            stdout = b"tracked-tree"
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    return run
+
+
 def _run_ci_portable_failure_probe(
     tmp_path: Path, runner_temp: Path, *, parent_attack: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
@@ -458,6 +510,122 @@ def test_failure_publisher_never_clobbers_an_existing_destination(
         _publish_failure(raw_root, destination, monkeypatch)
     assert raised.value.stage == "PUBLICATION"
     assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+@pytest.mark.parametrize(
+    ("mode", "substage", "reason", "expected_commands"),
+    [
+        ("diff-index-drift", "DIFF_INDEX", "DRIFT", 1),
+        ("diff-index-command", "DIFF_INDEX", "COMMAND_FAILURE", 1),
+        ("diff-index-os", "DIFF_INDEX", "SPAWN_FAILURE", 1),
+        ("diff-index-subprocess", "DIFF_INDEX", "COMMAND_FAILURE", 1),
+        ("diff-files-drift", "DIFF_FILES", "DRIFT", 2),
+        ("diff-files-command", "DIFF_FILES", "COMMAND_FAILURE", 2),
+        ("diff-files-os", "DIFF_FILES", "SPAWN_FAILURE", 2),
+        ("diff-files-subprocess", "DIFF_FILES", "COMMAND_FAILURE", 2),
+        ("head-mismatch", "HEAD_BINDING", "MISMATCH", 3),
+        ("head-command", "HEAD_BINDING", "COMMAND_FAILURE", 3),
+        ("head-os", "HEAD_BINDING", "SPAWN_FAILURE", 3),
+        ("head-subprocess", "HEAD_BINDING", "COMMAND_FAILURE", 3),
+        ("head-output", "HEAD_BINDING", "OUTPUT_FAILURE", 3),
+        ("head-empty", "HEAD_BINDING", "OUTPUT_FAILURE", 3),
+        ("head-invalid", "HEAD_BINDING", "OUTPUT_FAILURE", 3),
+        ("tree-command", "TREE_ENUMERATION", "COMMAND_FAILURE", 4),
+        ("tree-os", "TREE_ENUMERATION", "SPAWN_FAILURE", 4),
+        ("tree-subprocess", "TREE_ENUMERATION", "COMMAND_FAILURE", 4),
+    ],
+)
+def test_source_tree_identity_reports_only_the_exact_closed_command_failure(
+    monkeypatch: pytest.MonkeyPatch, mode: str, substage: str, reason: str,
+    expected_commands: int,
+) -> None:
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        firewall.subprocess, "run",
+        _source_tree_run_stub(head_sha=head_sha, mode=mode, calls=calls),
+    )
+
+    with pytest.raises(BaseException) as raised:
+        firewall._source_tree_identity(Path.cwd(), head_sha)
+
+    error = raised.value
+    assert type(error).__name__ == "SourceTreeError"
+    assert isinstance(error, firewall.FirewallError)
+    assert error.code == "ARTIFACT_FIREWALL_REJECTED"
+    assert error.category == "LAYOUT"
+    assert error.relative_path == ""
+    assert error.sha256 == ""
+    assert error.args == ("source-tree check failed at a closed boundary",)
+    assert error.source_tree_substage == substage
+    assert error.source_tree_reason == reason
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert "private-value" not in repr(error.__dict__)
+    assert "private/source/path" not in repr(error.__dict__)
+    assert "f" * 40 not in repr(error.__dict__)
+    assert calls == [
+        ["git", "diff-index", "--quiet", head_sha, "--"],
+        ["git", "diff-files", "--quiet", "--"],
+        ["git", "rev-parse", "HEAD"],
+        ["git", "ls-tree", "-rz", "--full-tree", head_sha],
+    ][:expected_commands]
+
+
+@pytest.mark.parametrize(
+    ("mode", "substage", "reason"),
+    [
+        ("diff-index-drift", "DIFF_INDEX", "DRIFT"),
+        ("diff-files-drift", "DIFF_FILES", "DRIFT"),
+        ("head-mismatch", "HEAD_BINDING", "MISMATCH"),
+        ("tree-command", "TREE_ENUMERATION", "COMMAND_FAILURE"),
+    ],
+)
+def test_failure_publisher_cli_reports_exact_closed_source_tree_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    mode: str, substage: str, reason: str,
+) -> None:
+    raw_root, _run_id, head_sha, _skipped = _failure_source(tmp_path, monkeypatch)
+    destination = tmp_path / "publication/artifact"
+    destination.parent.mkdir(mode=0o700)
+    calls: list[list[str]] = []
+    source_tree_identity = firewall._source_tree_identity
+
+    def classified_source_tree(root: Path, expected_head: str) -> str:
+        with monkeypatch.context() as command_patch:
+            command_patch.setattr(
+                firewall.subprocess, "run",
+                _source_tree_run_stub(
+                    head_sha=head_sha, mode=mode, calls=calls,
+                ),
+            )
+            return source_tree_identity(root, expected_head)
+
+    monkeypatch.setattr(firewall, "_source_tree_identity", classified_source_tree)
+
+    status = firewall.main([
+        "publish-failure",
+        "--raw-root", str(raw_root),
+        "--destination", str(destination),
+        "--inventory", str(INVENTORY),
+        "--foundation-context-path",
+        str(raw_root / "capability-topology/foundation-context.json"),
+        "--repository-root", str(Path.cwd()),
+    ])
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT SOURCE_TREE "
+        f"{substage} {reason}\n"
+    )
+    assert "private-value" not in captured.err
+    assert "private/source/path" not in captured.err
+    assert "f" * 40 not in captured.err
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize(

@@ -103,6 +103,20 @@ _FAILURE_OBSERVATION_KEYS = frozenset({
 _FAILURE_PUBLICATION_STAGES = frozenset({
     "RAW_BINDING", "PROJECTION", "SOURCE_TREE", "PUBLICATION",
 })
+_SOURCE_TREE_FAILURES = frozenset({
+    ("DIFF_INDEX", "DRIFT"),
+    ("DIFF_INDEX", "COMMAND_FAILURE"),
+    ("DIFF_INDEX", "SPAWN_FAILURE"),
+    ("DIFF_FILES", "DRIFT"),
+    ("DIFF_FILES", "COMMAND_FAILURE"),
+    ("DIFF_FILES", "SPAWN_FAILURE"),
+    ("HEAD_BINDING", "MISMATCH"),
+    ("HEAD_BINDING", "COMMAND_FAILURE"),
+    ("HEAD_BINDING", "SPAWN_FAILURE"),
+    ("HEAD_BINDING", "OUTPUT_FAILURE"),
+    ("TREE_ENUMERATION", "COMMAND_FAILURE"),
+    ("TREE_ENUMERATION", "SPAWN_FAILURE"),
+})
 
 
 class FirewallError(RuntimeError):
@@ -119,17 +133,40 @@ class FirewallError(RuntimeError):
         self.sha256 = sha256
 
 
+class SourceTreeError(FirewallError):
+    """Closed source-tree command boundary with no underlying diagnostic values."""
+
+    def __init__(self, substage: str, reason: str) -> None:
+        if (substage, reason) not in _SOURCE_TREE_FAILURES:
+            raise ValueError("source-tree failure detail is not closed")
+        super().__init__("source-tree check failed at a closed boundary")
+        self.source_tree_substage = substage
+        self.source_tree_reason = reason
+
+
 class FailurePublicationError(FirewallError):
     """Closed failure-publisher stage with no underlying diagnostic values."""
 
-    def __init__(self, stage: str, *, code: str, category: str) -> None:
+    def __init__(
+        self, stage: str, *, code: str, category: str,
+        source_tree_substage: str = "", source_tree_reason: str = "",
+    ) -> None:
         if stage not in _FAILURE_PUBLICATION_STAGES:
             raise ValueError("failure publication stage is not closed")
+        if source_tree_substage or source_tree_reason:
+            if (
+                stage != "SOURCE_TREE"
+                or (source_tree_substage, source_tree_reason)
+                not in _SOURCE_TREE_FAILURES
+            ):
+                raise ValueError("failure publication detail is not closed")
         super().__init__(
             "failure publication rejected at a closed stage",
             code=code, category=category,
         )
         self.stage = stage
+        self.source_tree_substage = source_tree_substage
+        self.source_tree_reason = source_tree_reason
 
 
 def _classify_failure_publication(
@@ -137,7 +174,16 @@ def _classify_failure_publication(
 ) -> FailurePublicationError:
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
-    return FailurePublicationError(stage, code=code, category=category)
+    source_tree_substage = ""
+    source_tree_reason = ""
+    if stage == "SOURCE_TREE" and isinstance(exc, SourceTreeError):
+        source_tree_substage = exc.source_tree_substage
+        source_tree_reason = exc.source_tree_reason
+    return FailurePublicationError(
+        stage, code=code, category=category,
+        source_tree_substage=source_tree_substage,
+        source_tree_reason=source_tree_reason,
+    )
 
 
 def _reject(
@@ -1601,23 +1647,57 @@ def publish_evidence_set(
 
 def _source_tree_identity(root: Path, head_sha: str) -> str:
     commands = (
-        ["git", "diff-index", "--quiet", head_sha, "--"],
-        ["git", "diff-files", "--quiet", "--"],
+        ("DIFF_INDEX", ["git", "diff-index", "--quiet", head_sha, "--"]),
+        ("DIFF_FILES", ["git", "diff-files", "--quiet", "--"]),
     )
-    for command in commands:
-        result = subprocess.run(command, cwd=root, check=False)
+    for substage, command in commands:
+        failure: SourceTreeError | None = None
+        try:
+            result = subprocess.run(
+                command, cwd=root, check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            failure = SourceTreeError(substage, "SPAWN_FAILURE")
+        except subprocess.SubprocessError:
+            failure = SourceTreeError(substage, "COMMAND_FAILURE")
+        if failure is not None:
+            raise failure
+        if result.returncode == 1:
+            raise SourceTreeError(substage, "DRIFT")
         if result.returncode != 0:
-            raise _reject("source-tree binding requires a clean tracked worktree")
-    actual = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, check=True,
-        capture_output=True, text=True,
-    ).stdout.strip()
+            raise SourceTreeError(substage, "COMMAND_FAILURE")
+    failure = None
+    try:
+        actual = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        ).stdout.strip()
+    except OSError:
+        failure = SourceTreeError("HEAD_BINDING", "SPAWN_FAILURE")
+    except subprocess.SubprocessError:
+        failure = SourceTreeError("HEAD_BINDING", "COMMAND_FAILURE")
+    except UnicodeError:
+        failure = SourceTreeError("HEAD_BINDING", "OUTPUT_FAILURE")
+    if failure is not None:
+        raise failure
+    if not _HEAD.fullmatch(actual):
+        raise SourceTreeError("HEAD_BINDING", "OUTPUT_FAILURE")
     if actual != head_sha:
-        raise _reject("source head binding changed")
-    tree = subprocess.run(
-        ["git", "ls-tree", "-rz", "--full-tree", head_sha],
-        cwd=root, check=True, capture_output=True,
-    ).stdout
+        raise SourceTreeError("HEAD_BINDING", "MISMATCH")
+    failure = None
+    try:
+        tree = subprocess.run(
+            ["git", "ls-tree", "-rz", "--full-tree", head_sha],
+            cwd=root, check=True, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        ).stdout
+    except OSError:
+        failure = SourceTreeError("TREE_ENUMERATION", "SPAWN_FAILURE")
+    except subprocess.SubprocessError:
+        failure = SourceTreeError("TREE_ENUMERATION", "COMMAND_FAILURE")
+    if failure is not None:
+        raise failure
     return hashlib.sha256(tree).hexdigest()
 
 
@@ -2208,6 +2288,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (FirewallError, OSError, ValueError) as exc:
         if isinstance(exc, FailurePublicationError):
             fields = [exc.code, exc.category, exc.stage]
+            if exc.source_tree_substage:
+                fields.extend([
+                    exc.source_tree_substage, exc.source_tree_reason,
+                ])
             print("artifact firewall: " + " ".join(fields), file=sys.stderr)
         elif isinstance(exc, FirewallError):
             fields = [exc.code, exc.category, exc.relative_path, exc.sha256]
