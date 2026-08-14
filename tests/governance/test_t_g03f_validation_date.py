@@ -607,87 +607,124 @@ def test_foundation_context_seals_the_capture_date_and_rejects_date_environment(
             topology.load_foundation_context(context_path, run_id=run_id, head_sha=head_sha)
 
 
-def test_ci_portable_captures_context_before_its_private_wrapper() -> None:
-    """Break caught: the source route reads a clock after allocating its private wrapper."""
-    makefile = Path("Makefile").read_text(encoding="utf-8")
-    recipe = makefile.split("ci-portable:\n", 1)[1].split("\nci-portable-private:", 1)[0]
+def _run_ci_portable_wrapper_probe(tmp_path: Path) -> tuple[list[str], dict[str, str]]:
+    trace = tmp_path / "wrapper-trace"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        "#!/bin/sh\n"
+        "last=\n"
+        "for argument do last=$argument; done\n"
+        "{\n"
+        "  printf '%s\\n' capture\n"
+        "  printf 'capture_argv=%s\\n' \"$*\"\n"
+        "  printf 'capture_arg=%s\\n' \"$last\"\n"
+        "  printf 'capture_env=%s\\n' \"$TEST_EVIDENCE_DIR\"\n"
+        "  printf 'capture_tmpdir=%s\\n' \"$TMPDIR\"\n"
+        "  printf 'capture_mode=%s\\n' \"$(stat -c %a -- \"$TEST_EVIDENCE_DIR\")\"\n"
+        "  printf 'capture_wrapper_count=%s\\n' "
+        "\"$(find \"$RUNNER_TEMP\" -maxdepth 1 -type d "
+        "-name 'trading-agent-ci-portable.*' | wc -l)\"\n"
+        "} >> \"$WRAPPER_TRACE\"\n"
+        "printf '%s/foundation-context.json\\n' \"$TEST_EVIDENCE_DIR\"\n",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+    fake_recursive_make = fake_bin / "recursive-make"
+    fake_recursive_make.write_text(
+        "#!/bin/sh\n"
+        "{\n"
+        "  printf '%s\\n' recursive\n"
+        "  printf 'recursive_arg=%s\\n' \"$1\"\n"
+        "  printf 'recursive_env=%s\\n' \"$TEST_EVIDENCE_DIR\"\n"
+        "  printf 'recursive_tmpdir=%s\\n' \"$TMPDIR\"\n"
+        "  printf 'recursive_temp=%s\\n' \"$TEMP\"\n"
+        "  printf 'recursive_tmp=%s\\n' \"$TMP\"\n"
+        "  printf 'recursive_context=%s\\n' \"$FOUNDATION_CONTEXT_PATH\"\n"
+        "  printf 'recursive_evidence_mode=%s\\n' "
+        "\"$(stat -c %a -- \"$TEST_EVIDENCE_DIR\")\"\n"
+        "  printf 'recursive_tmp_mode=%s\\n' \"$(stat -c %a -- \"$TMPDIR\")\"\n"
+        "} >> \"$WRAPPER_TRACE\"\n",
+        encoding="utf-8",
+    )
+    fake_recursive_make.chmod(0o755)
+    caller_tmp = tmp_path / "caller-tmp"
+    caller_tmp.mkdir(mode=0o700)
+    caller_evidence = tmp_path / "caller-evidence"
+    environment = os.environ.copy() | {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "TMPDIR": str(caller_tmp),
+        "TMP": str(caller_tmp),
+        "TEMP": str(caller_tmp),
+        "TEST_EVIDENCE_DIR": str(caller_evidence),
+        "WRAPPER_TRACE": str(trace),
+    }
 
-    assert "_capture_foundation_context" in recipe
-    assert recipe.index("_capture_foundation_context") < recipe.index("mktemp -d")
-    assert "FOUNDATION_VALIDATION_DATE" not in recipe
+    subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "ci-portable",
+            f"MAKE={fake_recursive_make}",
+        ],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    events: list[str] = []
+    values: dict[str, str] = {}
+    for line in trace.read_text(encoding="utf-8").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+        else:
+            events.append(line)
+    return events, values
 
 
-def test_ci_portable_passes_its_resolved_evidence_root_to_capture() -> None:
-    """Break caught: Make defaults are not necessarily exported to inline Python."""
-    environment = os.environ.copy()
-    environment.pop("TEST_EVIDENCE_DIR", None)
-    environment["GITHUB_RUN_ID"] = "31668147300"
-    makefile = Path("Makefile").read_text(encoding="utf-8")
-    recipe = makefile.split("ci-portable:\n", 1)[1].split("\nci-portable-private:", 1)[0]
-    capture_code = recipe.split("foundation_context_path=$$(uv run python -c '", 1)[1].split(
-        "' \"$(TEST_EVIDENCE_DIR)\"); \\",
-        1,
-    )[0]
+def test_ci_portable_captures_context_before_its_private_wrapper(
+    tmp_path: Path,
+) -> None:
+    """Break caught: context capture moves after disposable wrapper allocation."""
+    events, values = _run_ci_portable_wrapper_probe(tmp_path)
 
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
-        captured = subprocess.run(
-            ["uv", "run", "python", "-c", capture_code, str(Path(raw) / "evidence")],
-            capture_output=True,
-            text=True,
-            check=True,
-            env=environment,
-        )
+    assert events == ["capture", "recursive"]
+    assert values["capture_mode"] == "700"
+    assert values["capture_wrapper_count"].strip() == "0"
+    assert values["capture_tmpdir"] == str(tmp_path / "caller-tmp")
+    assert Path(values["recursive_tmpdir"]).name.startswith(
+        "trading-agent-ci-portable.",
+    )
+    assert values["recursive_tmp_mode"] == "700"
 
-        raw_path = Path(raw)
-        capture_arguments = raw_path / "capture-arguments"
-        fake_bin = raw_path / "bin"
-        fake_bin.mkdir()
-        fake_uv = fake_bin / "uv"
-        fake_uv.write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE_ARGUMENTS\"\n",
-            encoding="utf-8",
-        )
-        fake_uv.chmod(0o755)
-        seam_makefile = raw_path / "Makefile"
-        seam_makefile.write_text(
-            "TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence\n"
-            "capture:\n"
-            f"\t@uv run python -c '{capture_code}' \"$(TEST_EVIDENCE_DIR)\"\n",
-            encoding="utf-8",
-        )
-        seam_environment = environment | {
-            "CAPTURE_ARGUMENTS": str(capture_arguments),
-            "PATH": f"{fake_bin}:{environment['PATH']}",
-        }
-        subprocess.run(
-            ["make", "--no-print-directory", "-f", str(seam_makefile), "capture"],
-            check=True,
-            env=seam_environment,
-        )
-        assert capture_arguments.read_text(encoding="utf-8").splitlines()[-1] == (
-            "/tmp/trading-agent-test-evidence"
-        )
 
-        override = "/tmp/t-g03f evidence;not-a-command"
-        subprocess.run(
-            [
-                "make",
-                "--no-print-directory",
-                "-f",
-                str(seam_makefile),
-                "capture",
-                f"TEST_EVIDENCE_DIR={override}",
-            ],
-            check=True,
-            env=seam_environment,
-        )
-        assert capture_arguments.read_text(encoding="utf-8").splitlines()[-1] == override
+def test_ci_portable_passes_its_resolved_evidence_root_to_capture(
+    tmp_path: Path,
+) -> None:
+    """Break caught: caller evidence authority reaches capture or recursive Make."""
+    _, values = _run_ci_portable_wrapper_probe(tmp_path)
 
-    assert 'Path(sys.argv[1])' in capture_code
-    assert 'Path(os.environ["TEST_EVIDENCE_DIR"])' not in capture_code
-    assert 'TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence' in makefile
-    assert '"$(TEST_EVIDENCE_DIR)"' in recipe
-    assert Path(captured.stdout.strip()).name == "foundation-context.json"
+    raw_evidence_root = values["capture_arg"]
+    assert Path(raw_evidence_root).name.startswith(
+        "trading-agent-ci-portable-evidence.",
+    )
+    assert raw_evidence_root != str(tmp_path / "caller-evidence")
+    assert values["capture_argv"].startswith("run python -c ")
+    assert "_capture_foundation_context" in values["capture_argv"]
+    assert "Path(sys.argv[1])" in values["capture_argv"]
+    assert values["capture_env"] == raw_evidence_root
+    assert values["recursive_env"] == raw_evidence_root
+    assert values["recursive_evidence_mode"] == "700"
+    assert values["recursive_context"] == f"{raw_evidence_root}/foundation-context.json"
+    assert values["recursive_arg"] == "ci-portable-private"
+    assert values["recursive_tmpdir"] == values["recursive_temp"]
+    assert values["recursive_tmpdir"] == values["recursive_tmp"]
+    assert values["recursive_tmpdir"] != raw_evidence_root
 
 
 def test_sealed_date_controls_policy_validation_and_binds_the_v3_baseline(

@@ -50,6 +50,25 @@ REQUIRED_FIELDS = {
     "outcome",
 }
 
+REPORT_WRITERS = [
+    pytest.param(write_coverage_json, id="critical-coverage"),
+    pytest.param(write_governance_json, id="test-governance"),
+]
+REPORT_WRITER_FAILURES = [
+    pytest.param(
+        write_coverage_json,
+        CoverageGateError,
+        "coverage report directory is not a private owned directory",
+        id="critical-coverage",
+    ),
+    pytest.param(
+        write_governance_json,
+        GovernanceError,
+        "report directory is not a private owned directory",
+        id="test-governance",
+    ),
+]
+
 
 def test_final_governed_summary_contract_is_canonical_and_timestamp_independent() -> None:
     builder = getattr(test_governance, "build_final_governed_summary", None)
@@ -1040,3 +1059,140 @@ def test_critical_coverage_rejects_current_user_owned_writable_intermediate(
     assert unsafe_intermediate.stat().st_mode & 0o777 == 0o777
     assert not report_dir.exists()
     assert list(unsafe_intermediate.iterdir()) == []
+
+
+def test_test_governance_rejects_writable_intermediate_without_mutation(
+    tmp_path: Path,
+) -> None:
+    """Break caught: governance silently tightens an unsafe parent and creates its child."""
+    private_root = tmp_path / "private-evidence-root"
+    private_root.mkdir(mode=0o700)
+    unsafe_intermediate = private_root / "legacy-evidence-intermediate"
+    unsafe_intermediate.mkdir(mode=0o777)
+    unsafe_intermediate.chmod(0o777)
+    report_dir = unsafe_intermediate / "reports"
+    rejected = False
+
+    try:
+        test_governance._prepare_private_directory(report_dir)
+    except GovernanceError as exc:
+        rejected = True
+        assert str(exc) == "report directory is not a private owned directory"
+
+    assert unsafe_intermediate.stat().st_mode & 0o777 == 0o777
+    assert not report_dir.exists()
+    assert list(unsafe_intermediate.iterdir()) == []
+    assert rejected
+
+
+@pytest.mark.parametrize("writer", REPORT_WRITERS)
+def test_report_writer_tightens_only_the_exact_writable_report_root(
+    tmp_path: Path, writer,
+) -> None:
+    """Break caught: exact legacy report roots become unusable instead of tightening."""
+    report_dir = tmp_path / "legacy-report-root"
+    report_dir.mkdir(mode=0o777)
+    report_dir.chmod(0o777)
+    artifact = report_dir / "result.json"
+
+    writer(artifact, {"status": "ok"})
+
+    assert report_dir.stat().st_mode & 0o777 == 0o700
+    assert json.loads(artifact.read_text(encoding="utf-8")) == {"status": "ok"}
+
+
+@pytest.mark.parametrize(
+    ("writer", "error_type", "error_message"),
+    REPORT_WRITER_FAILURES,
+)
+def test_report_writer_rejects_writable_intermediate_without_mutation_or_child(
+    tmp_path: Path, writer, error_type, error_message: str,
+) -> None:
+    """Break caught: a writer chmods a writable intermediate and publishes below it."""
+    private_root = tmp_path / "private-root"
+    private_root.mkdir(mode=0o700)
+    unsafe_intermediate = private_root / "writable-intermediate"
+    unsafe_intermediate.mkdir(mode=0o777)
+    unsafe_intermediate.chmod(0o777)
+    report_dir = unsafe_intermediate / "reports"
+    rejected = False
+
+    try:
+        writer(report_dir / "result.json", {"status": "unsafe"})
+    except error_type as exc:
+        rejected = True
+        assert str(exc) == error_message
+
+    assert unsafe_intermediate.stat().st_mode & 0o777 == 0o777
+    assert not report_dir.exists()
+    assert list(unsafe_intermediate.iterdir()) == []
+    assert rejected
+
+
+@pytest.mark.parametrize("writer", REPORT_WRITERS)
+def test_report_writer_creates_missing_exact_leaf_private_and_usable(
+    tmp_path: Path, writer,
+) -> None:
+    """Break caught: safe missing report leaves are rejected or created writable."""
+    private_root = tmp_path / "private-root"
+    private_root.mkdir(mode=0o700)
+    report_dir = private_root / "reports"
+    artifact = report_dir / "result.json"
+
+    writer(artifact, {"status": "ok"})
+
+    assert report_dir.stat().st_mode & 0o777 == 0o700
+    assert json.loads(artifact.read_text(encoding="utf-8")) == {"status": "ok"}
+
+
+@pytest.mark.parametrize(
+    ("writer", "error_type", "error_message"),
+    REPORT_WRITER_FAILURES,
+)
+@pytest.mark.parametrize("parent_kind", ["symlink", "fifo"])
+def test_report_writer_rejects_symlink_and_special_parents(
+    tmp_path: Path, writer, error_type, error_message: str, parent_kind: str,
+) -> None:
+    """Break caught: publication traverses a symlink or non-directory parent."""
+    private_root = tmp_path / "private-root"
+    private_root.mkdir(mode=0o700)
+    unsafe_parent = private_root / "unsafe-parent"
+    actual = private_root / "actual"
+    if parent_kind == "symlink":
+        actual.mkdir(mode=0o700)
+        unsafe_parent.symlink_to(actual, target_is_directory=True)
+    else:
+        os.mkfifo(unsafe_parent, mode=0o600)
+
+    with pytest.raises(error_type) as caught:
+        writer(unsafe_parent / "reports" / "result.json", {"status": "unsafe"})
+
+    assert str(caught.value) == error_message
+    if parent_kind == "symlink":
+        assert list(actual.iterdir()) == []
+    assert not (unsafe_parent / "reports").exists()
+
+
+@pytest.mark.parametrize(
+    ("writer", "error_type", "error_message"),
+    REPORT_WRITER_FAILURES,
+)
+def test_report_writer_rejects_foreign_owned_parent_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer,
+    error_type,
+    error_message: str,
+) -> None:
+    """Break caught: publication accepts ancestry not owned by root or the caller."""
+    foreign_parent = tmp_path / "foreign-parent"
+    foreign_parent.mkdir(mode=0o700)
+    original_mode = foreign_parent.stat().st_mode & 0o777
+    monkeypatch.setattr(os, "getuid", lambda: foreign_parent.stat().st_uid + 1)
+
+    with pytest.raises(error_type) as caught:
+        writer(foreign_parent / "reports" / "result.json", {"status": "unsafe"})
+
+    assert str(caught.value) == error_message
+    assert foreign_parent.stat().st_mode & 0o777 == original_mode
+    assert list(foreign_parent.iterdir()) == []

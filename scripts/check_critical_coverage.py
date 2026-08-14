@@ -199,7 +199,6 @@ def _prepare_private_directory(path: Path) -> None:
     try:
         absolute = path.absolute()
         lineage = [absolute, *absolute.parents]
-        below_trusted_sticky_root = False
         for ancestor in reversed(lineage):
             try:
                 metadata = ancestor.lstat()
@@ -217,14 +216,13 @@ def _prepare_private_directory(path: Path) -> None:
             if (
                 writable
                 and metadata.st_uid == os.getuid()
-                and (below_trusted_sticky_root or ancestor == absolute)
+                and ancestor == absolute
             ):
                 os.chmod(ancestor, 0o700)
                 metadata = ancestor.lstat()
             writable = metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
             if writable and not trusted_sticky:
                 raise OSError
-            below_trusted_sticky_root = below_trusted_sticky_root or trusted_sticky
         os.chmod(path, 0o700)
     except OSError as exc:
         raise CoverageGateError("coverage report directory is not a private owned directory") from exc
