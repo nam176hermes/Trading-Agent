@@ -619,6 +619,33 @@ def test_hidden_reservation_survives_artifact_round_trip_with_checksum_binding(
     )
 
 
+@pytest.mark.parametrize("replacement", ["foreign", "malformed"])
+def test_downloaded_artifact_rejects_foreign_or_malformed_replacement(
+    tmp_path: Path, replacement: str,
+) -> None:
+    destination = tmp_path / "runtime/state/ci-portable"
+    _publish(_staging(tmp_path), destination)
+    downloaded = tmp_path / "downloaded/ci-portable"
+    shutil.copytree(destination, downloaded, copy_function=shutil.copy2)
+    if replacement == "foreign":
+        target = downloaded / "test-governance/summary.json"
+        replacement_bytes = _canonical({"schema_version": "foreign/v1"})
+    else:
+        target = downloaded / "manifest.json"
+        replacement_bytes = b"{"
+    target.chmod(0o600)
+    target.write_bytes(replacement_bytes)
+    target.chmod(0o400)
+
+    with pytest.raises(firewall.FirewallError):
+        firewall.validate_published_evidence(
+            downloaded,
+            expected_head_sha=HEAD,
+            expected_source_tree_sha256=TREE,
+            expected_semantic_projection=_semantic(),
+        )
+
+
 def test_error_projection_contains_only_closed_error_and_never_pass_summary(
     tmp_path: Path,
 ) -> None:

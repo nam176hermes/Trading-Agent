@@ -2546,6 +2546,39 @@ or live trading is authorized.
 
 ---
 
+## P0-12R11 review clarification — Architecture-A workflow handoff
+
+Review of `0f0a467b9b013210dae3d53743d1b55d6e8a9ac5` observed that an arbitrary
+same-runner-UID process could rename the sealed publication parent after the
+publisher returns and place foreign bytes at the workflow upload path. This is
+a real property of pathname re-resolution, but that persistent same-UID forger
+is explicitly outside the approved Architecture-A threat boundary rather than
+a defect to suppress with another same-UID pathname check.
+
+The accepted P0 boundary trusts root-owned sticky `RUNNER_TEMP` against
+ordinary cross-user and workspace mutations, and the current-user-owned
+mode-0700 child against other users. Retained descriptors, identity postchecks,
+and atomic no-clobber publication protect the transaction through its
+linearization point. After publication returns, the exclusive workflow handoff
+assumes no arbitrary same-job-UID forger. A stronger same-UID keyed-provenance
+claim requires privilege separation or remote attestation and is outside P0.
+
+Artifacts recovered from the workflow are untrusted inputs. A consumer must
+run the exact published-evidence validator with expected head, source-tree,
+and semantic bindings before acceptance; upload success alone is never
+authority. Add a narrow characterization only because existing tests separately
+covered clean download round-trip and malformed published trees but did not
+mutate a downloaded copy. No publisher, Make, workflow, path, schema, policy,
+dependency, or lock change is authorized by this clarification.
+
+Require the focused downloaded-artifact characterization, P0 closure,
+contracts, source/security, inventory, actionlint, and diff checks before
+independent re-review. No push, hosted rerun or dispatch, P0-12 continuation,
+P0-13, promotion, production/live/runtime/DB/service/scheduler mutation,
+broker/provider access, or live trading is authorized.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  

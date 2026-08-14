@@ -114,6 +114,28 @@ Portable source-authority integration separates strict and portable verification
 
 The canonical `make ci` result and independent-review verdict are candidate-bound evidence. They must be generated after the final repository bytes are sealed and retained outside the repository. Earlier green CI or review output never accepts a modified candidate.
 
+## P0-12 Architecture-A artifact handoff boundary
+
+The Foundation artifact path uses a deterministic current-user-owned private
+mode-0700 publication parent below root-owned sticky `RUNNER_TEMP`. That parent
+blocks ordinary cross-user and workspace-namespace mutation. The artifact
+firewall retains and postchecks the complete lineage through the atomic
+no-clobber publication linearization point.
+
+After the publisher returns, the workflow handoff trusts the exclusive hosted
+job boundary and assumes no arbitrary or persistent same-runner-UID forger.
+That actor can rename any same-UID-owned path before upload and is explicitly
+outside the approved Architecture-A threat model. Defending against it would
+require a privilege-separated or remotely attested upload authority and is not
+part of P0.
+
+An uploaded or downloaded artifact is never source authority merely because
+the workflow transported it. Every consumer must treat downloaded bytes as
+untrusted and run the exact published-evidence validator with expected head,
+source-tree, and semantic bindings before using them. Characterization tests
+copy the sealed artifact through the download boundary, replace it with both
+well-formed foreign bytes and malformed bytes, and require rejection.
+
 ## Decision rule
 
 Use `GO -- TEST EVIDENCE IS MANAGED` only when:
