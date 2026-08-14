@@ -2533,3 +2533,23 @@ alone owns wiring that mode into a separate workflow. The standalone native
 target must create the authoritative context, custody, reservation, and
 portable-root baseline required to run the exact native groups once on either
 an available or unavailable host.
+
+### Evidence-corrected P0-07R
+
+The first real standalone P0-07 native execution proved the Bubblewrap probe
+available, selected the locked 16-node group exactly once, and then exposed a
+test-fixture path defect in four CLI namespace nodes. All four failed before
+their CLI assertions because the console script shebang names
+`.venv/bin/python`, while the fixture created and mounted only the sibling
+`.venv/bin/python3` target inside its otherwise closed Bubblewrap filesystem.
+Bubblewrap therefore reported `execvp .../.venv/bin/trading-agent-nautilus: No
+such file or directory`; this is fixture-path RED evidence, not evidence that
+the native capability is unavailable.
+
+P0-07R is a prerequisite fixture-only packet. It may add exactly the missing
+`.venv/bin/python` mount-parent declaration and a read-only bind at that path,
+using the same already validated `RESOLVED_INTERPRETER` bytes that the fixture
+mounts at `.venv/bin/python3`. It must not change node selection, production
+code, CLI arguments, assertions, namespace flags, network isolation, or the
+four governed tests' intended behavior. The exact four nodes and the complete
+CLI test module must pass before P0-07 resumes.
