@@ -5,6 +5,7 @@ from datetime import date
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -68,6 +69,16 @@ REPORT_WRITER_FAILURES = [
         id="test-governance",
     ),
 ]
+
+
+def _lstat_identity(path: Path) -> tuple[int, int, int, int]:
+    metadata = path.lstat()
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_uid,
+        stat.S_IMODE(metadata.st_mode),
+    )
 
 
 def test_final_governed_summary_contract_is_canonical_and_timestamp_independent() -> None:
@@ -1049,6 +1060,7 @@ def test_critical_coverage_rejects_current_user_owned_writable_intermediate(
     unsafe_intermediate = private_root / "legacy-evidence-intermediate"
     unsafe_intermediate.mkdir(mode=0o777)
     unsafe_intermediate.chmod(0o777)
+    intermediate_identity = _lstat_identity(unsafe_intermediate)
     malformed = tmp_path / "policy.json"
     malformed.write_text('{"schema_version":0}', encoding="utf-8")
     report_dir = unsafe_intermediate / "reports"
@@ -1059,6 +1071,7 @@ def test_critical_coverage_rejects_current_user_owned_writable_intermediate(
     assert unsafe_intermediate.stat().st_mode & 0o777 == 0o777
     assert not report_dir.exists()
     assert list(unsafe_intermediate.iterdir()) == []
+    assert _lstat_identity(unsafe_intermediate) == intermediate_identity
 
 
 def test_test_governance_rejects_writable_intermediate_without_mutation(
@@ -1070,6 +1083,7 @@ def test_test_governance_rejects_writable_intermediate_without_mutation(
     unsafe_intermediate = private_root / "legacy-evidence-intermediate"
     unsafe_intermediate.mkdir(mode=0o777)
     unsafe_intermediate.chmod(0o777)
+    intermediate_identity = _lstat_identity(unsafe_intermediate)
     report_dir = unsafe_intermediate / "reports"
     rejected = False
 
@@ -1083,6 +1097,7 @@ def test_test_governance_rejects_writable_intermediate_without_mutation(
     assert not report_dir.exists()
     assert list(unsafe_intermediate.iterdir()) == []
     assert rejected
+    assert _lstat_identity(unsafe_intermediate) == intermediate_identity
 
 
 @pytest.mark.parametrize("writer", REPORT_WRITERS)
@@ -1114,6 +1129,7 @@ def test_report_writer_rejects_writable_intermediate_without_mutation_or_child(
     unsafe_intermediate = private_root / "writable-intermediate"
     unsafe_intermediate.mkdir(mode=0o777)
     unsafe_intermediate.chmod(0o777)
+    intermediate_identity = _lstat_identity(unsafe_intermediate)
     report_dir = unsafe_intermediate / "reports"
     rejected = False
 
@@ -1127,6 +1143,7 @@ def test_report_writer_rejects_writable_intermediate_without_mutation_or_child(
     assert not report_dir.exists()
     assert list(unsafe_intermediate.iterdir()) == []
     assert rejected
+    assert _lstat_identity(unsafe_intermediate) == intermediate_identity
 
 
 @pytest.mark.parametrize("writer", REPORT_WRITERS)
