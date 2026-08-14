@@ -2287,6 +2287,38 @@ access.
 
 ---
 
+## P0-12R6 correction — Nanoid production-audit remediation
+
+Push-triggered Foundation run `31822937716`, attempt 1, at exact reviewed SHA
+`b3784f3e408e033cd8b3b6e15b45ea7845575a88` passed the legacy backend with
+507 passed and two skipped, then passed all 171 dashboard tests, typecheck,
+lint, and the production build. It failed only at
+`make audit-dependencies-production`: the dashboard's reviewed `nanoid`
+override and resolved lock entry remain at `3.3.17`, while
+`GHSA-2v37-7h3g-55p8` requires `3.3.18` or newer. No artifact was uploaded and
+the known failing SHA must not be rerun.
+
+P0-12R6 may change only the exact dashboard `nanoid` override from `3.3.17`
+to the smallest fixed version `3.3.18`, regenerate the dashboard lock with npm,
+and add one exact regression binding the override and the single resolved lock
+entry. Capture both the focused regression RED and the unchanged production
+dependency-audit RED before the package-manager change. Do not hand-edit the
+lock, run a broad `npm audit fix`, change the audit threshold, add a skip, or
+update any unrelated direct, development, transitive, or overridden package.
+
+Require npm-owned package and lock regeneration, `npm ci`, production and full
+npm audit, all dashboard tests, typecheck, lint, and build, plus the affected
+repository-shape, D0, P0 closure, secret, baseline, contract, and workflow-lint
+gates. Prove the package and lock diff contains only the authorized nanoid
+resolution and integrity metadata. Write the local report and leave the
+committed worktree clean for independent review.
+
+This packet does not authorize push, remote update, hosted rerun or dispatch,
+P0-12 continuation, P0-13, promotion, production/live/runtime/DB/service/
+scheduler action, or broker/exchange access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
