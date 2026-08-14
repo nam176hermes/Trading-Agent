@@ -2692,6 +2692,56 @@ or live trading is authorized.
 
 ---
 
+## P0-12R14 correction — Content-authoritative source-tree checks
+
+Hosted Foundation run `31849930552` collected 6,466 root candidates after the
+exact 29 deselections from 6,495 nodes and executed the exact remainder as
+6,123 passed plus 281 skipped. The expected `EXACT_EXECUTION_NONPASS` failure
+publisher then reported `SOURCE_TREE DIFF_INDEX DRIFT`; the exact upload path
+remained empty.
+
+Safe-lineage standalone evidence isolates this as a Git stat-cache false
+positive rather than tracked source mutation. Common execution left
+`diff-index` at status 0. After the root remainder, both legacy stat-sensitive
+checks returned status 1 while status porcelain plus cached and worktree diffs
+were empty; a status refresh returned both legacy checks to status 0. A clean
+clone reproduces the boundary with only an mtime touch: legacy `diff-index` and
+`diff-files` return 1 while both content-authoritative comparisons return 0.
+
+P0-12R14 may replace only the two existing stat-sensitive command argv with
+these exact read-only content checks:
+
+```text
+git diff-index --cached --quiet HEAD --
+git diff --quiet --no-ext-diff --no-textconv --
+```
+
+The first remains the `DIFF_INDEX` index-versus-HEAD invariant. The second
+remains the `DIFF_FILES` worktree-versus-index invariant. The later checked
+`rev-parse HEAD` binding and `ls-tree` identity remain unchanged. Do not invoke
+`update-index`, refresh the index, mutate the worktree, or accept a status-only
+cleanliness claim.
+
+Strict TDD must exercise real temporary Git repositories and prove an
+mtime-only touch is accepted without changing the returned tree identity,
+while staged content, unstaged content, staged or unstaged executable-mode
+changes, and other actual tracked drift still fail at the exact applicable
+closed substage. Existing hostile command/spawn/output cases must bind the new
+exact argv and continue to retain no raw value or exception context.
+
+Change only the two command argv and focused tests. Refresh generator-owned
+broad-handler inventory rows only if canonical generation proves exact line
+movement. Do not weaken source cleanliness, change classification schemas,
+skip/native/PASS policy, Make routing, workflows, dependencies, or locks.
+Require focused/full affected tests, a fresh standalone affected packet, P0
+baseline/closure/contracts/source/security/inventory/actionlint/diff gates, an
+ignored report, a clean commit, and independent review. No push, hosted rerun
+or dispatch, P0-12 continuation, P0-13, promotion, production/live/runtime/DB/
+service/scheduler mutation, broker/provider access, or live trading is
+authorized.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
