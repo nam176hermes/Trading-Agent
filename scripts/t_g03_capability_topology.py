@@ -4758,7 +4758,9 @@ class _ExternalStateError(TopologyError):
         super().__init__("external authority state is not valid")
 
 
-def _external_parent_chain_safe(path: Path) -> bool:
+def _external_parent_chain_safe(
+    path: Path, *, allow_current_identity_group_write: bool = False,
+) -> bool:
     if not path.is_absolute():
         return False
     current = Path(path.anchor)
@@ -4774,7 +4776,15 @@ def _external_parent_chain_safe(path: Path) -> bool:
             or not stat.S_ISDIR(info.st_mode)
             or info.st_uid not in {0, os.geteuid()}
             or info.st_gid not in {0, os.getegid()}
-            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or info.st_mode & stat.S_IWOTH
+            or (
+                info.st_mode & stat.S_IWGRP
+                and not (
+                    allow_current_identity_group_write
+                    and info.st_uid == os.geteuid()
+                    and info.st_gid == os.getegid()
+                )
+            )
         ):
             return False
     return True
@@ -4782,8 +4792,12 @@ def _external_parent_chain_safe(path: Path) -> bool:
 
 def _open_external_directory(
     path: Path, *, exact_mode: int | None,
+    allow_current_identity_group_write: bool = False,
 ) -> tuple[str, int, tuple[int, ...] | None]:
-    if not _external_parent_chain_safe(path):
+    if not _external_parent_chain_safe(
+        path,
+        allow_current_identity_group_write=allow_current_identity_group_write,
+    ):
         return "INVALID", -1, None
     try:
         named = path.lstat()
@@ -5097,12 +5111,14 @@ def _open_legacy_external_session(
     uv_state, uv_descriptor, uv_identity = _open_external_regular_executable(uv_path)
     root_state, root_descriptor, root_identity = _open_external_directory(
         legacy_root, exact_mode=None,
+        allow_current_identity_group_write=True,
     )
     if uv_state == root_state == "ABSENT":
         def absent_postcheck() -> None:
             current_uv, current_uv_descriptor, _ = _open_external_regular_executable(uv_path)
             current_root, current_root_descriptor, _ = _open_external_directory(
                 legacy_root, exact_mode=None,
+                allow_current_identity_group_write=True,
             )
             for retained in (current_uv_descriptor, current_root_descriptor):
                 if retained >= 0:

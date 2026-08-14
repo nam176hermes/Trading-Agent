@@ -368,6 +368,31 @@ def test_legacy_session_executes_only_retained_uv_and_detects_closure_drift() ->
                 topology._postcheck_external_authority(session)
 
 
+def test_legacy_component_allows_current_identity_group_writable_ancestor() -> None:
+    """Break caught: the exact repo component is rejected by its real projects mode."""
+
+    def runner(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        stdout = b"fixture-uv 1.0\n" if command[1:] == ["--version"] else b""
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+    with _safe_fixture_root() as raw:
+        root = Path(raw)
+        uv = root / "uv"
+        _write_regular(uv, b"fixture uv authority\n", mode=0o755)
+        projects = root / "projects"
+        projects.mkdir(mode=0o770)
+        projects.chmod(0o770)
+        legacy = projects / "legacy"
+        _complete_legacy(legacy)
+        with topology._retained_external_authority(
+            "EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy,
+            expected_uv_sha256=hashlib.sha256(uv.read_bytes()).hexdigest(),
+            expected_uv_version="fixture-uv 1.0", runner=runner,
+        ) as session:
+            assert session.state == "VALID"
+            topology._postcheck_external_authority(session)
+
+
 def test_external_architecture_a_accepts_only_exact_bundle_then_marker() -> None:
     """Break caught: an external PASS can still use flat receipt/governance leaves."""
     rows = topology.load_inventory(INVENTORY)
