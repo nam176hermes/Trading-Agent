@@ -2569,3 +2569,45 @@ pytest. The read-only bind source remains the already validated
 `RESOLVED_INTERPRETER`; no shebang bytes are parsed or executed to construct
 authority. Both launcher shapes and the real exact 16-plus-eight native lane
 must pass before P0-07 resumes.
+
+### Evidence-corrected P0-07 architecture A
+
+Repeated review of the flat native PASS receipt/governance publication found
+an architectural conflict: a retained descriptor proves the inode that was
+opened, but POSIX `unlinkat` and `renameat2` act on the current directory entry.
+A concurrent same-user replacement can therefore turn any post-publication
+rollback into deletion or displacement of foreign evidence. A successful
+no-clobber write followed by an exception is also ambiguous. P0-07 must no
+longer revoke or delete published native evidence.
+
+Native publication becomes an append-only candidate-bundle transaction. Each
+native code stages a random private mode-0700 directory containing canonical
+native-v2 receipt bytes, optional exact PASS governance, and a strict canonical
+manifest binding code, run, head, Foundation date/context, inventory, receipt
+identity/hash, governance presence/hash, exact nodes/counts, probe, outcome,
+and its own self-hash. Every leaf and the directory are fsynced. After a
+retained-authority postcheck, Linux `renameat2(RENAME_NOREPLACE)` atomically
+publishes the directory at deterministic `<CODE>.artifacts`. The bundle remains
+unaccepted until a second retained-authority postcheck succeeds.
+
+The existing canonical `<CODE>.json` filename is the sole acceptance marker
+and is installed atomically/no-clobber only after that second check. Its bytes
+must exactly equal the bundle receipt. PASS requires exact sealed-custody
+governance inside the bundle; DEFERRED forbids governance. On identity drift
+before the marker, publish a canonical strict-v2 FAIL marker if the name is
+still absent and leave the candidate bundle inert. A publisher exception after
+a possibly successful marker write is resolved only by safe retained-parent
+reread of the exact expected marker plus the fully validated bundle. Foreign,
+invalid, stale, symlinked, replaced, or legacy-flat occupancy is a conflict;
+it is never deleted or overwritten. Random staging leftovers are inert and
+never glob-accepted.
+
+No receipt, governance, bundle, marker, staging entry, or foreign artifact is
+rolled back or unlinked by the native transaction. A post-marker authority
+check cannot safely revoke acceptance and is diagnostic only; all security
+postchecks occur before the marker linearization point. Native validators,
+aggregate, governance audit, and Make artifact assertions must require the
+canonical marker plus deterministic secure bundle/manifest. Flat external v1
+evidence is unchanged until P0-08. Legacy flat native governance and stale
+bundle layouts are rejected, so final native evidence must be regenerated on
+the exact post-migration head.
