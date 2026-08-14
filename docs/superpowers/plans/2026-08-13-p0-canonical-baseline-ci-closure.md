@@ -1887,6 +1887,38 @@ git commit -m "docs(ci): close executable P0 qualification matrix"
 
 ---
 
+## P0-11R correction — Recursive-Make argument authority
+
+P0-11 remains `QUALIFICATION_PENDING`, with `qualified_sha: null`. Before
+P0-12 qualification, close the recursive-Make argument seam without changing
+the reviewed `ci-portable` custody wrapper, Makefile behavior, workflows, or
+the existing control surface.
+
+For every recursive-Make graph edge other than the exact approved
+`ci-portable` custody wrapper, recognize only a whole, unconditional
+`$(MAKE)` recipe followed by one or more plain target names. Each target must
+match `[A-Za-z0-9_.-]+`, must not begin with `-`, and must not contain `=`.
+Multiple targets remain authoritative because canonical routes may execute
+several targets in one submake.
+
+Options and assignments contribute no graph edges in any position. This
+includes short, combined, and long options; the `--` marker; option arguments;
+and every `NAME=value` form, including overrides for `MAKE`, `MAKEFLAGS`,
+`GNUMAKEFLAGS`, `MFLAGS`, `MAKEOVERRIDES`, `SHELL`, `.SHELLFLAGS`, and `PATH`.
+Unsafe recursive invocations in unrelated recipes may remain executable, but
+must not invalidate the canonical Makefile and must contribute zero closure
+authority.
+
+Prove the correction test-first with real GNU Make in temporary repositories:
+the accepted single- and multi-target forms must execute their sentinels, and
+dry-run, touch, alternate-makefile, assignment, long-option, combined-option,
+and after-target mutations must demonstrate skipped execution before being
+rejected as route-unreachable graph evidence. Preserve every other P0-11
+closure check and keep P0-12, promotion, production, and live authority out of
+scope.
+
+---
+
 # Task P0-12 — Clean-clone qualification and adversarial final review
 
 **Owner/model:** Hermes orchestrator.  
