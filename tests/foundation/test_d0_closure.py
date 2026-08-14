@@ -179,8 +179,9 @@ def test_portable_ci_uses_a_private_linux_temp_root() -> None:
     assert (
         "ci-portable-private:\n"
         "\t$(MAKE) ci-common-private ci-portable-topology "
-        "check-test-governance-topology artifact-firewall-check "
-        "audit-delivery-contract"
+        "check-portable-defect-closure check-p0-baseline "
+        "check-test-governance-topology check-p0-ci-closure "
+        "artifact-firewall-check audit-delivery-contract"
     ) in makefile
     assert "scripts.check_artifact_firewall publish-error" in makefile
     assert "ci-common-private:\n\t$(MAKE) prepare-root-test-install" in makefile
