@@ -4,6 +4,7 @@ from collections import Counter
 import re
 import json
 import shlex
+import shutil
 import tempfile
 import subprocess
 import os
@@ -1554,8 +1555,19 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
                 outcome=outcome,
             )
         receipt_path = topology_root / f"{code}.json"
-        receipt_path.write_bytes(topology.canonical_json_bytes(receipt))
-        receipt_path.chmod(0o600)
+        if lane == "native-capabilities":
+            candidate = topology._stage_native_candidate(
+                topology_root, receipt, None,
+            )
+            topology._publish_native_candidate_bundle(
+                candidate, receipt_path.with_suffix(".artifacts"),
+            )
+            topology._publish_native_acceptance_marker(
+                receipt_path, topology.canonical_json_bytes(receipt),
+            )
+        else:
+            receipt_path.write_bytes(topology.canonical_json_bytes(receipt))
+            receipt_path.chmod(0o600)
         if outcome == "PASS":
             observed = list(expected)
             (topology_root / f"{code}.governance.json").write_text(
@@ -1792,8 +1804,10 @@ def test_remainder_executor_uses_only_the_verified_generated_node_list(
         topology_root = evidence / "capability-topology"
         (topology_root / "portable-defect-closure-proof.json").unlink()
         (topology_root / "portable-defect-closure.governance.json").unlink()
-        for code in topology.CODE_CLASSIFICATION:
+        for code, classification in topology.CODE_CLASSIFICATION.items():
             (topology_root / f"{code}.json").unlink()
+            if classification == "NATIVE_CAPABILITY_REQUIRED":
+                shutil.rmtree(topology_root / f"{code}.artifacts")
         baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
         baseline["collector_policy"] = topology._native_custody_policy()
         baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
@@ -1834,8 +1848,10 @@ def test_extension_drift_after_remainder_blocks_the_next_pass_lane_and_closed_ag
         topology_root = evidence / "capability-topology"
         (topology_root / "portable-defect-closure-proof.json").unlink()
         (topology_root / "portable-defect-closure.governance.json").unlink()
-        for code in topology.CODE_CLASSIFICATION:
+        for code, classification in topology.CODE_CLASSIFICATION.items():
             (topology_root / f"{code}.json").unlink()
+            if classification == "NATIVE_CAPABILITY_REQUIRED":
+                shutil.rmtree(topology_root / f"{code}.artifacts")
         baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
         baseline["collector_policy"] = topology._native_custody_policy()
         baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)

@@ -1068,6 +1068,117 @@ def test_native_random_candidate_is_inert_and_transaction_never_unlinks_it(
     assert candidate.is_dir()
 
 
+def test_native_exact_nonpass_uses_only_inert_append_only_diagnostic_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: native non-PASS enters generic staging cleanup and pathname unlink."""
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    _patch_native_identity_postcheck(monkeypatch)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        context_path = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+        _seal_portable_root_baseline(
+            monkeypatch, evidence, raw, run_id=run_id, head_sha=head,
+            foundation_context_path=context_path,
+        )
+
+        def nonpassing_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            topology._publish_no_clobber(report, json.dumps({
+                "schema_version": 1,
+                "component": "root",
+                "pytest_exit_status": 1,
+                "custody_policy": json.loads(
+                    os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"],
+                ),
+                "tests": [{
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "failed" if index == 0 else "passed",
+                    "reason": "assertion failed" if index == 0 else "",
+                    "phase": "call",
+                } for index, node in enumerate(nodes)],
+            }, sort_keys=True).encode("utf-8"))
+            return nodes
+
+        generic_diagnostic_calls: list[Path] = []
+        generic_publisher = topology._publish_failure_diagnostic
+
+        def track_generic_diagnostic(path: Path, content: bytes) -> None:
+            generic_diagnostic_calls.append(path)
+            generic_publisher(path, content)
+
+        monkeypatch.setattr(
+            topology, "_publish_failure_diagnostic", track_generic_diagnostic,
+        )
+        native_unlink_calls: list[Path] = []
+        real_unlink = Path.unlink
+        native_call_active = False
+
+        def forbid_native_unlink(path: Path, *args: object, **kwargs: object) -> None:
+            if native_call_active and ".native-execution-" in str(path):
+                native_unlink_calls.append(path)
+                raise AssertionError("native Architecture A forbids pathname unlink")
+            real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", forbid_native_unlink)
+        native_call_active = True
+        try:
+            with pytest.raises(topology.TopologyError) as caught:
+                topology.run_lane(
+                    lane="native-capabilities",
+                    inventory=Path(
+                        "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+                    ),
+                    evidence_root=evidence, run_id=run_id, head_sha=head,
+                    foundation_context_path=context_path,
+                    exact_runner=nonpassing_exact,
+                    native_probe_factory=_available_native_probe_factory(root),
+                )
+        finally:
+            native_call_active = False
+
+        assert str(caught.value) == "EXACT_EXECUTION_NONPASS"
+        assert generic_diagnostic_calls == []
+        assert native_unlink_calls == []
+        topology_root = evidence / "capability-topology"
+        marker = topology_root / "NATIVE-BWRAP-OS-SANDBOX.json"
+        receipt = topology.parse_receipt(marker.read_bytes())
+        assert receipt["outcome"] == "FAIL"
+        bundle = marker.with_suffix(".artifacts")
+        assert topology.parse_receipt(
+            (bundle / "receipt.json").read_bytes(),
+        )["outcome"] == "FAIL"
+        assert not (bundle / "governance.json").exists()
+
+        execution_roots = list(topology_root.glob(".native-execution-*"))
+        assert len(execution_roots) == 1
+        execution_root = execution_roots[0]
+        assert stat.S_IMODE(execution_root.stat().st_mode) == 0o700
+        provisional = execution_root / ".governance.json.executing"
+        diagnostic = execution_root / "portable-root-remainder.failure-diagnostic.json"
+        assert stat.S_IMODE(provisional.stat().st_mode) == 0o600
+        assert stat.S_IMODE(diagnostic.stat().st_mode) == 0o600
+        assert topology.parse_failure_diagnostic(
+            topology._read_private_regular_file(
+                diagnostic, label="inert native failure diagnostic",
+            ),
+        )["diagnostic_only"] is True
+        assert not (
+            topology_root / "portable-root-remainder.failure-diagnostic.json"
+        ).exists()
+
+
 def test_native_artifact_reader_requires_private_receipt_and_complete_pass_governance(
     tmp_path: Path,
 ) -> None:

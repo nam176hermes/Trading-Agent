@@ -1493,6 +1493,25 @@ def _publish_failure_diagnostic(path: Path, content: bytes) -> None:
             pass
 
 
+def _publish_append_only_native_failure_diagnostic(
+    path: Path, content: bytes,
+) -> dict[str, object]:
+    """Install one inert native diagnostic leaf without staging cleanup."""
+    _prepare_private_evidence_directory(path.parent)
+    with _retained_private_directory(
+        path.parent, label="native execution directory",
+    ) as (directory_descriptor, _):
+        _write_private_leaf(directory_descriptor, path.name, content)
+        os.fsync(directory_descriptor)
+    raw = _read_private_regular_file(
+        path, label="inert native failure diagnostic",
+    )
+    document = parse_failure_diagnostic(raw)
+    if raw != content:
+        raise TopologyError("native failure diagnostic post-write reread failed")
+    return document
+
+
 def _reject_failure_diagnostic_coexistence(topology_root: Path) -> None:
     """A failure-only record cannot be installed beside any accepting topology evidence."""
     accepted = [topology_root / "portable-root-remainder.governance.json"]
@@ -2259,6 +2278,7 @@ def _execute_exact_with_retained_custody(
     portable_root_remainder: bool = False, remainder_document: dict[str, object] | None = None,
     foundation_context_verified: bool = False,
     retain_provisional: bool = False,
+    append_only_native_diagnostic: bool = False,
 ) -> tuple[str, ...]:
     """Publish PASS evidence only for all-pass raw execution; retain complete non-pass diagnostics."""
     provisional = report.with_name(f".{report.name}.executing")
@@ -2373,9 +2393,18 @@ def _execute_exact_with_retained_custody(
             )
             payload["diagnostic_sha256"] = _sha256(payload)
             encoded = canonical_json_bytes(payload)
-            _publish_failure_diagnostic(diagnostic, encoded)
-            if diagnostic.read_bytes() != encoded or parse_failure_diagnostic(diagnostic.read_bytes()) != payload:
-                raise TopologyError("failure diagnostic post-write reread failed")
+            if append_only_native_diagnostic:
+                if _publish_append_only_native_failure_diagnostic(
+                    diagnostic, encoded,
+                ) != payload:
+                    raise TopologyError("failure diagnostic post-write reread failed")
+            else:
+                _publish_failure_diagnostic(diagnostic, encoded)
+                if (
+                    diagnostic.read_bytes() != encoded
+                    or parse_failure_diagnostic(diagnostic.read_bytes()) != payload
+                ):
+                    raise TopologyError("failure diagnostic post-write reread failed")
             raise TopologyError("EXACT_EXECUTION_NONPASS")
         _validate_exact_governance_record(provisional, nodes, sealed_custody)
         _publish_no_clobber(report, provisional.read_bytes())
@@ -4412,6 +4441,7 @@ def _execute_native_pass_transaction(
         selected = _execute_exact_with_retained_custody(
             baseline=baseline, nodes=expected, report=governance,
             runner=exact_runner, retain_provisional=True,
+            append_only_native_diagnostic=True,
         )
         custody = _validate_custody_policy(baseline["collector_policy"])
         governance_raw = _read_private_regular_file(
