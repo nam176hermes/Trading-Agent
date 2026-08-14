@@ -281,6 +281,12 @@ class _Directory:
     entries: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _TreeIdentity:
+    directories: Mapping[str, tuple[int, ...]]
+    leaves: Mapping[str, tuple[int, ...]]
+
+
 @dataclass
 class _LineageEntry:
     parent_descriptor: int | None
@@ -535,14 +541,13 @@ def _snapshot_tree(
                         name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW | _CLOEXEC,
                         dir_fd=descriptor,
                     )
-                    transferred = False
                     try:
                         if _identity(os.fstat(child)) != _identity(info):
                             raise _reject("artifact directory identity changed")
-                        transferred = True
                         visit(child, child_relative, descriptor, name)
                     finally:
-                        if not transferred:
+                        registered = directories.get(child_relative)
+                        if registered is None or registered.descriptor != child:
                             os.close(child)
                     continue
                 if (
@@ -642,6 +647,19 @@ def _validate_phase_manifest(snapshot: _Snapshot) -> None:
     }
     if set(listed) != set(actual):
         raise _reject("phase evidence manifest does not bind every entry")
+    expected_directories = {
+        parent.as_posix()
+        for relative in listed
+        for parent in PurePosixPath(relative).parents
+        if parent.as_posix() != "."
+    }
+    actual_directories = {
+        relative.removeprefix("phase-evidence/")
+        for relative in snapshot.directories
+        if relative.startswith("phase-evidence/")
+    }
+    if actual_directories != expected_directories:
+        raise _reject("phase evidence manifest does not bind every directory")
     for relative, item in listed.items():
         raw = actual[relative].raw
         if (
@@ -1142,9 +1160,76 @@ def _build_candidate(parent_descriptor: int, name: str, payloads: Mapping[str, b
         os.close(candidate_descriptor)
 
 
+def _mode_transition_matches(
+    before: tuple[int, ...], after: tuple[int, ...], *, expected_mode: int,
+) -> bool:
+    return (
+        before[:2] == after[:2]
+        and stat.S_IFMT(before[2]) == stat.S_IFMT(after[2])
+        and stat.S_IMODE(after[2]) == expected_mode
+        and before[3:8] == after[3:8]
+    )
+
+
+def _capture_sealed_identity(snapshot: _Snapshot) -> _TreeIdentity:
+    directories: dict[str, tuple[int, ...]] = {}
+    leaves: dict[str, tuple[int, ...]] = {}
+    try:
+        for relative, directory in snapshot.directories.items():
+            held = os.fstat(directory.descriptor)
+            named = os.stat(
+                directory.name, dir_fd=directory.parent_descriptor,
+                follow_symlinks=False,
+            )
+            held_identity = _identity(held)
+            if (
+                _identity(named) != held_identity
+                or not _mode_transition_matches(
+                    directory.exact_identity, held_identity, expected_mode=0o500,
+                )
+                or tuple(sorted(os.listdir(directory.descriptor)))
+                != directory.entries
+            ):
+                raise OSError
+            directories[relative] = held_identity
+        for relative, leaf in snapshot.leaves.items():
+            held = os.fstat(leaf.descriptor)
+            named = os.stat(
+                leaf.name, dir_fd=leaf.parent_descriptor, follow_symlinks=False,
+            )
+            held_identity = _identity(held)
+            if (
+                _identity(named) != held_identity
+                or not _mode_transition_matches(
+                    leaf.identity, held_identity, expected_mode=0o400,
+                )
+                or _read_fd(leaf.descriptor) != leaf.raw
+            ):
+                raise OSError
+            leaves[relative] = held_identity
+    except OSError as exc:
+        raise _reject("candidate identity changed during mode sealing") from exc
+    return _TreeIdentity(directories, leaves)
+
+
+def _require_tree_identity(snapshot: _Snapshot, expected: _TreeIdentity) -> None:
+    observed = _TreeIdentity(
+        {
+            relative: _identity(os.fstat(directory.descriptor))
+            for relative, directory in snapshot.directories.items()
+        },
+        {
+            relative: _identity(os.fstat(leaf.descriptor))
+            for relative, leaf in snapshot.leaves.items()
+        },
+    )
+    if observed != expected:
+        raise _reject("candidate child identity changed after mode sealing")
+
+
 def _seal_candidate_modes(
     *, parent_descriptor: int, candidate_name: str, candidate: Path,
-) -> None:
+) -> _TreeIdentity:
     with _snapshot_tree(
         candidate, directory_mode=0o700, file_mode=0o600,
         retained_parent_descriptor=parent_descriptor,
@@ -1159,6 +1244,7 @@ def _seal_candidate_modes(
             directory = snapshot.directories[relative]
             os.fsync(directory.descriptor)
             os.fchmod(directory.descriptor, 0o500)
+        return _capture_sealed_identity(snapshot)
 
 
 def _renameat2_noreplace(
@@ -1274,7 +1360,7 @@ def publish_evidence_set(
                 source.postcheck()
             destination_lineage.postcheck()
             candidate = destination.parent / candidate_name
-            _seal_candidate_modes(
+            sealed_identity = _seal_candidate_modes(
                 parent_descriptor=parent_descriptor,
                 candidate_name=candidate_name,
                 candidate=candidate,
@@ -1284,6 +1370,7 @@ def publish_evidence_set(
                 retained_parent_descriptor=parent_descriptor,
                 retained_name=candidate_name,
             ) as sealed:
+                _require_tree_identity(sealed, sealed_identity)
                 _validate_complete_snapshot(sealed)
                 candidate_identity = _stable_identity(os.fstat(sealed.root_descriptor))
                 try:

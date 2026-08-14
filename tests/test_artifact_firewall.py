@@ -813,6 +813,29 @@ def test_publisher_rejects_phase_manifest_that_does_not_bind_its_entries(
         _publish(staging, tmp_path / "runtime/state/ci-portable")
 
 
+def test_publisher_rejects_unmanifested_empty_phase_directory(tmp_path: Path) -> None:
+    staging = _staging(tmp_path)
+    result = b"PASS\n"
+    _write_leaf(staging, "phase-evidence/result.txt", result)
+    _write_leaf(
+        staging,
+        "phase-evidence/manifest.json",
+        {
+            "schema_version": "phase-evidence-manifest/v1",
+            "files": [{
+                "path": "result.txt",
+                "sha256": hashlib.sha256(result).hexdigest(),
+                "size": len(result),
+                "mode": "0400",
+            }],
+        },
+    )
+    (staging / "phase-evidence/unmanifested-empty").mkdir(mode=0o700)
+
+    with pytest.raises(firewall.FirewallError, match="phase|manifest|inventory"):
+        _publish(staging, tmp_path / "runtime/state/ci-portable")
+
+
 def test_publisher_rejects_marker_bundle_mismatch_without_mutating_either(tmp_path: Path) -> None:
     staging = _staging(tmp_path)
     marker = staging / "capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"
@@ -895,6 +918,37 @@ def test_publisher_rejects_named_child_directory_replacement_after_snapshot(
     assert not destination.exists()
 
 
+def test_publisher_rejects_byte_identical_child_inode_replacement_after_mode_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = _staging(tmp_path / "source")
+    destination = tmp_path / "runtime/state/ci-portable"
+    displaced = tmp_path / "displaced-summary.json"
+    original = firewall._seal_candidate_modes
+    replaced = False
+
+    def seal_then_replace(**kwargs: object) -> object:
+        nonlocal replaced
+        result = original(**kwargs)
+        candidate = kwargs["candidate"]
+        assert isinstance(candidate, Path)
+        parent = candidate / "test-governance"
+        leaf = parent / "summary.json"
+        raw = leaf.read_bytes()
+        parent.chmod(0o700)
+        os.rename(leaf, displaced)
+        leaf.write_bytes(raw)
+        leaf.chmod(0o400)
+        parent.chmod(0o500)
+        replaced = True
+        return result
+
+    monkeypatch.setattr(firewall, "_seal_candidate_modes", seal_then_replace)
+    with pytest.raises(firewall.FirewallError, match="identity|changed"):
+        _publish(staging, destination)
+    assert replaced
+
+
 def test_publisher_rejects_named_child_directory_replacement_after_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -958,6 +1012,49 @@ def test_publisher_rejects_final_root_identity_swap_before_reopened_validation(
     with pytest.raises(firewall.FirewallError, match="identity|changed"):
         _publish(staging, destination)
     assert swapped
+
+
+def test_snapshot_closes_child_descriptor_when_recursive_registration_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staging = _staging(tmp_path)
+    original_open = os.open
+    original_close = os.close
+    original_listdir = os.listdir
+    target_descriptor: int | None = None
+    closed: set[int] = set()
+
+    def observe_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        nonlocal target_descriptor
+        descriptor = original_open(path, flags, *args, **kwargs)
+        if path == "test-governance" and flags & firewall._DIRECTORY:
+            target_descriptor = descriptor
+            closed.discard(descriptor)
+        return descriptor
+
+    def fail_child_traversal(path: object) -> list[str]:
+        if path == target_descriptor:
+            raise OSError("forced traversal failure")
+        return original_listdir(path)
+
+    def observe_close(descriptor: int) -> None:
+        closed.add(descriptor)
+        original_close(descriptor)
+
+    monkeypatch.setattr(firewall.os, "open", observe_open)
+    monkeypatch.setattr(firewall.os, "listdir", fail_child_traversal)
+    monkeypatch.setattr(firewall.os, "close", observe_close)
+    try:
+        with pytest.raises(firewall.FirewallError):
+            with firewall._snapshot_tree(
+                staging, directory_mode=0o700, file_mode=0o600,
+            ):
+                pass
+        assert target_descriptor is not None
+        assert target_descriptor in closed
+    finally:
+        if target_descriptor is not None and target_descriptor not in closed:
+            original_close(target_descriptor)
 
 
 def test_ambiguous_success_accepts_only_exact_identity_and_never_unlinks_foreign_set(
