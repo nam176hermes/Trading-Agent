@@ -123,7 +123,7 @@ check-test-governance-topology:
 		if test "$$governance_status" -ne 0; then \
 			uv run python -m scripts.check_artifact_firewall publish-error \
 				--raw-root "$(TEST_EVIDENCE_DIR)" \
-				--destination "$(CURDIR)/runtime/state/ci-portable" \
+				--destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}" \
 				--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
 				--foundation-context-path "$$FOUNDATION_CONTEXT_PATH" \
 				--repository-root "$(CURDIR)" || true; \
@@ -318,6 +318,17 @@ ci-private:
 
 ci-portable:
 	@set -eu; \
+		test -n "$${GITHUB_RUN_ID:?}"; \
+		test -n "$${GITHUB_RUN_ATTEMPT:?}"; \
+		case "$$GITHUB_RUN_ID" in *[!0-9]*|'') printf '%s\n' "portable CI run ID is invalid" >&2; exit 2;; esac; \
+		case "$$GITHUB_RUN_ATTEMPT" in *[!0-9]*|'') printf '%s\n' "portable CI run attempt is invalid" >&2; exit 2;; esac; \
+		case "$$GITHUB_RUN_ID:$$GITHUB_RUN_ATTEMPT" in 0*:*|*:0*) printf '%s\n' "portable CI artifact identity is noncanonical" >&2; exit 2;; esac; \
+		artifact_root="$${RUNNER_TEMP:?}/trading-agent-ci-portable-artifact.$${GITHUB_RUN_ID:?}.$${GITHUB_RUN_ATTEMPT:?}"; \
+		export PORTABLE_CI_ARTIFACT_ROOT="$$artifact_root"; \
+		if test -e "$$artifact_root" || test -L "$$artifact_root"; then \
+			printf '%s\n' "portable CI artifact destination already exists" >&2; \
+			exit 2; \
+		fi; \
 		raw_evidence_root=$$(mktemp -d "$${RUNNER_TEMP:?}/trading-agent-ci-portable-evidence.XXXXXXXXXX"); \
 		chmod 0700 "$$raw_evidence_root"; \
 		test "$$(stat -c '%u:%a' -- "$$raw_evidence_root")" = "$$(id -u):700"; \
@@ -338,7 +349,7 @@ ci-portable:
 			if test -e "$$failure_diagnostic" || test -L "$$failure_diagnostic"; then \
 				uv run python -m scripts.check_artifact_firewall publish-failure \
 						--raw-root "$$raw_evidence_root" \
-						--destination "$(CURDIR)/runtime/state/ci-portable" \
+						--destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}" \
 						--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
 						--foundation-context-path "$$FOUNDATION_CONTEXT_PATH" \
 						--repository-root "$(CURDIR)" || :; \
@@ -356,7 +367,7 @@ ci-common-private:
 artifact-firewall-check:
 	uv run python -m scripts.check_artifact_firewall publish \
 		--raw-root "$(TEST_EVIDENCE_DIR)" \
-		--destination "$(CURDIR)/runtime/state/ci-portable" \
+		--destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}" \
 		--inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" \
 		--foundation-context-path "$$FOUNDATION_CONTEXT_PATH" \
 		--repository-root "$(CURDIR)"

@@ -642,6 +642,7 @@ def _run_ci_portable_wrapper_probe(tmp_path: Path) -> tuple[list[str], dict[str,
         "  printf 'recursive_temp=%s\\n' \"$TEMP\"\n"
         "  printf 'recursive_tmp=%s\\n' \"$TMP\"\n"
         "  printf 'recursive_context=%s\\n' \"$FOUNDATION_CONTEXT_PATH\"\n"
+        "  printf 'recursive_artifact=%s\\n' \"$PORTABLE_CI_ARTIFACT_ROOT\"\n"
         "  printf 'recursive_evidence_mode=%s\\n' "
         "\"$(stat -c %a -- \"$TEST_EVIDENCE_DIR\")\"\n"
         "  printf 'recursive_tmp_mode=%s\\n' \"$(stat -c %a -- \"$TMPDIR\")\"\n"
@@ -655,6 +656,9 @@ def _run_ci_portable_wrapper_probe(tmp_path: Path) -> tuple[list[str], dict[str,
     environment = os.environ.copy() | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_RUN_ID": "31833372257",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "PORTABLE_CI_ARTIFACT_ROOT": str(tmp_path / "injected-artifact"),
         "TMPDIR": str(caller_tmp),
         "TMP": str(caller_tmp),
         "TEMP": str(caller_tmp),
@@ -721,6 +725,9 @@ def test_ci_portable_passes_its_resolved_evidence_root_to_capture(
     assert values["recursive_env"] == raw_evidence_root
     assert values["recursive_evidence_mode"] == "700"
     assert values["recursive_context"] == f"{raw_evidence_root}/foundation-context.json"
+    assert values["recursive_artifact"] == str(
+        tmp_path / "trading-agent-ci-portable-artifact.31833372257.1"
+    )
     assert values["recursive_arg"] == "ci-portable-private"
     assert values["recursive_tmpdir"] == values["recursive_temp"]
     assert values["recursive_tmpdir"] == values["recursive_tmp"]

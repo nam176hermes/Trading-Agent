@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 import pytest
@@ -16,6 +17,9 @@ from scripts import t_g03_capability_topology as topology
 INVENTORY = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
 RAW_REASON = "fixture reason"
 TREE = "a" * 64
+RUN_ID = "31833372257"
+RUN_ATTEMPT = "1"
+ARTIFACT_DIRECTORY = f"trading-agent-ci-portable-artifact.{RUN_ID}.{RUN_ATTEMPT}"
 
 
 def _failure_source(
@@ -325,6 +329,9 @@ def test_ci_portable_catch_is_single_shot_and_preserves_the_original_status(
             **os.environ,
             "PATH": f"{binary}:{os.environ['PATH']}",
             "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_RUN_ID": RUN_ID,
+            "GITHUB_RUN_ATTEMPT": RUN_ATTEMPT,
+            "PORTABLE_CI_ARTIFACT_ROOT": str(tmp_path / "injected-destination"),
             "INVOCATION_LOG": str(invocation_log),
         },
     )
@@ -338,3 +345,125 @@ def test_ci_portable_catch_is_single_shot_and_preserves_the_original_status(
     makefile = Path("Makefile").read_text(encoding="utf-8")
     assert "original_status=$$?" in makefile
     assert 'exit "$$original_status"' in makefile
+    if published:
+        expected = tmp_path / ARTIFACT_DIRECTORY
+        assert f"--destination {expected}" in published[0]
+        assert "injected-destination" not in published[0]
+
+
+@pytest.mark.parametrize(
+    ("run_id", "attempt"),
+    [
+        ("../foreign", RUN_ATTEMPT), (RUN_ID, "1/foreign"),
+        ("run-7", RUN_ATTEMPT), ("0", RUN_ATTEMPT), (RUN_ID, "01"),
+    ],
+)
+def test_ci_portable_rejects_malformed_artifact_identity_before_inner_make(
+    tmp_path: Path, run_id: str, attempt: str,
+) -> None:
+    tripwire = tmp_path / "inner-make-ran"
+    fake_make = tmp_path / "fake-make"
+    fake_make.write_text(
+        "#!/bin/sh\n: > \"$TRIPWIRE\"\nexit 0\n", encoding="utf-8",
+    )
+    fake_make.chmod(0o700)
+
+    result = subprocess.run(
+        ["make", "--no-print-directory", "ci-portable", f"MAKE={fake_make}"],
+        cwd=Path.cwd(), capture_output=True, text=True, check=False,
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_RUN_ID": run_id,
+            "GITHUB_RUN_ATTEMPT": attempt,
+            "TRIPWIRE": str(tripwire),
+        },
+    )
+
+    assert result.returncode != 0
+    assert not tripwire.exists()
+
+
+def test_ci_portable_preserves_stale_artifact_occupancy_and_stops(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / ARTIFACT_DIRECTORY
+    destination.mkdir()
+    sentinel = destination / "foreign"
+    sentinel.write_bytes(b"preserve")
+    tripwire = tmp_path / "inner-make-ran"
+    fake_make = tmp_path / "fake-make"
+    fake_make.write_text(
+        "#!/bin/sh\n: > \"$TRIPWIRE\"\nexit 0\n", encoding="utf-8",
+    )
+    fake_make.chmod(0o700)
+
+    result = subprocess.run(
+        ["make", "--no-print-directory", "ci-portable", f"MAKE={fake_make}"],
+        cwd=Path.cwd(), capture_output=True, text=True, check=False,
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_RUN_ID": RUN_ID,
+            "GITHUB_RUN_ATTEMPT": RUN_ATTEMPT,
+            "TRIPWIRE": str(tripwire),
+        },
+    )
+
+    assert result.returncode != 0
+    assert sentinel.read_bytes() == b"preserve"
+    assert not tripwire.exists()
+
+
+def test_all_portable_publishers_and_workflow_share_exact_private_final_path() -> None:
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/foundation.yml").read_text(encoding="utf-8")
+    make_destination = '--destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}"'
+    workflow_path = (
+        "${{ runner.temp }}/trading-agent-ci-portable-artifact."
+        "${{ github.run_id }}.${{ github.run_attempt }}/**"
+    )
+
+    assert 'artifact_root="$${RUNNER_TEMP:?}/trading-agent-ci-portable-artifact.' in makefile
+    assert '$${GITHUB_RUN_ID:?}.$${GITHUB_RUN_ATTEMPT:?}"' in makefile
+    assert 'export PORTABLE_CI_ARTIFACT_ROOT="$$artifact_root"' in makefile
+    assert makefile.count(make_destination) == 3
+    assert '$(CURDIR)/runtime/state/ci-portable' not in makefile
+    assert f"path: {workflow_path}" in workflow
+    assert "path: runtime/state/ci-portable/**" not in workflow
+    assert "trading-agent-ci-portable-evidence" not in workflow
+
+
+def test_workflow_upload_reread_is_independent_of_checkout_namespace_swap(
+    tmp_path: Path,
+) -> None:
+    workflow = Path(".github/workflows/foundation.yml").read_text(encoding="utf-8")
+    matched = re.search(r"^\s+path:\s+([^\n]+)$", workflow, re.MULTILINE)
+    assert matched is not None
+    configured = matched.group(1).strip()
+    runner_temp = tmp_path / "runner-temp"
+    runner_temp.mkdir(mode=0o700)
+    private_artifact = runner_temp / ARTIFACT_DIRECTORY
+    private_artifact.mkdir(mode=0o700)
+    safe_payload = private_artifact / "root-remainder-failure.json"
+    safe_payload.write_bytes(b"sealed-safe-bytes")
+    safe_payload.chmod(0o400)
+    private_artifact.chmod(0o500)
+    checkout = tmp_path / "workspace/trading-agent"
+    old_artifact = checkout / "runtime/state/ci-portable"
+    old_artifact.mkdir(parents=True)
+    (old_artifact / safe_payload.name).write_bytes(b"sealed-safe-bytes")
+    displaced = tmp_path / "displaced-checkout"
+    checkout.rename(displaced)
+    foreign = checkout / "runtime/state/ci-portable"
+    foreign.mkdir(parents=True)
+    (foreign / safe_payload.name).write_bytes(b"foreign-bytes")
+
+    expanded = configured.replace("${{ runner.temp }}", str(runner_temp))
+    expanded = expanded.replace("${{ github.run_id }}", RUN_ID)
+    expanded = expanded.replace("${{ github.run_attempt }}", RUN_ATTEMPT)
+    artifact_path = Path(expanded.removesuffix("/**"))
+    if not artifact_path.is_absolute():
+        artifact_path = checkout / artifact_path
+
+    assert (artifact_path / safe_payload.name).read_bytes() == b"sealed-safe-bytes"

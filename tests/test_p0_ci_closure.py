@@ -450,7 +450,12 @@ def test_make_execution_semantic_mutations_fail_closed(
         ("foundation.yml", b"    timeout-minutes: 45", b"    timeout-minutes: 45\n    permissions:\n      contents: write", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"  pull_request:\n", b"  schedule:\n", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
         ("foundation.yml", b"include-hidden-files: true", b"include-hidden-files: false", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
-        ("foundation.yml", b"path: runtime/state/ci-portable/**", b"path: runtime/state/**", "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID"),
+        (
+            "foundation.yml",
+            b"path: ${{ runner.temp }}/trading-agent-ci-portable-artifact.${{ github.run_id }}.${{ github.run_attempt }}/**",
+            b"path: ${{ runner.temp }}/trading-agent-ci-portable-artifact/**",
+            "P0_CLOSURE_FOUNDATION_WORKFLOW_INVALID",
+        ),
         ("host-authority.yml", b"  workflow_dispatch:\n", b"  push:\n", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         ("host-authority.yml", b"runs-on: [self-hosted, linux, x64, trading-authority]", b"runs-on: ubuntu-24.04", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
         ("host-authority.yml", b"make ci-host-authority NONINTERACTIVE=1", b"make ci-portable NONINTERACTIVE=1", "P0_CLOSURE_HOST_WORKFLOW_INVALID"),
@@ -808,7 +813,7 @@ def test_public_completion_cli_uses_canonical_temp_repository(
     subprocess.run(["git", "clone", "-q", "--shared", str(ROOT), str(clone)], check=True)
     for relative in (
         MATRIX_RELATIVE, "scripts/check_p0_ci_closure.py", "tests/test_p0_ci_closure.py",
-        "docs/implementation/p0-ci-closure.md",
+        "docs/implementation/p0-ci-closure.md", "Makefile", ".github/workflows/foundation.yml",
     ):
         shutil.copy2(ROOT / relative, clone / relative)
     _git(clone, "add", "--", ".")

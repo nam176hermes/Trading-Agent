@@ -104,7 +104,7 @@ def test_portable_route_uses_private_raw_evidence_then_one_final_publisher() -> 
     assert 'TEST_EVIDENCE_DIR="$$raw_evidence_root" $(MAKE) ci-portable-private' in outer
     assert "scripts.check_artifact_firewall publish" in firewall
     assert '--raw-root "$(TEST_EVIDENCE_DIR)"' in firewall
-    assert '--destination "$(CURDIR)/runtime/state/ci-portable"' in firewall
+    assert '--destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}"' in firewall
     assert "check-portable-defect-closure" not in firewall
     assert "scripts.check_artifact_firewall publish-error" in governance
 
@@ -136,6 +136,7 @@ def test_governance_failure_runs_only_error_publisher_and_preserves_status(
             **os.environ,
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "GITHUB_RUN_ID": "99999999999",
+            "PORTABLE_CI_ARTIFACT_ROOT": str(tmp_path / "private-final"),
             "FOUNDATION_CONTEXT_PATH": str(tmp_path / "foundation-context.json"),
             "TEST_EVIDENCE_DIR": str(tmp_path / "evidence"),
             "MAKE_LOG": str(log),
@@ -165,7 +166,10 @@ def test_workflows_are_partitioned_into_portable_and_dispatch_only_host_authorit
     assert re.search(r"^    runs-on: ubuntu-(latest|24\.04)$", foundation, re.MULTILINE)
     assert "run: make ci-portable NONINTERACTIVE=1" in foundation
     assert "if: always()" in foundation
-    assert "path: runtime/state/ci-portable/**" in foundation
+    assert (
+        "path: ${{ runner.temp }}/trading-agent-ci-portable-artifact."
+        "${{ github.run_id }}.${{ github.run_attempt }}/**"
+    ) in foundation
     assert "include-hidden-files: true" in foundation
     assert "retention-days: 14" in foundation
     assert "/tmp/trading-agent-test-evidence" not in foundation
