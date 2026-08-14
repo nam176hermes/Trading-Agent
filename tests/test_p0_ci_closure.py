@@ -184,6 +184,62 @@ def test_route_spoofs_fail_closed(context: closure._ValidationContext, relative:
     _error(context, code)
 
 
+_CANONICAL_PRIVATE_ROUTE = (
+    "ci-common-private ci-portable-topology check-portable-defect-closure "
+    "check-p0-baseline check-test-governance-topology check-p0-ci-closure "
+    "artifact-firewall-check audit-delivery-contract"
+)
+
+
+@pytest.mark.parametrize(
+    "invocation",
+    [
+        f"$(MAKE) -n {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) -t {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) -q {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) -f attacker.mk {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) -C alternate {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) -sn {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) --dry-run {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) --touch {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) --question {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) --file attacker.mk {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) --makefile attacker.mk {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) --directory alternate {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) --eval harmless=value {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) -- {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) MAKEFLAGS=-n {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) GNUMAKEFLAGS=-n {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) MFLAGS=-n {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) MAKEOVERRIDES= {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) SHELL=true {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) .SHELLFLAGS=-c {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) PATH=/nonexistent {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) MAKE=true {_CANONICAL_PRIVATE_ROUTE}",
+        f"$(MAKE) {_CANONICAL_PRIVATE_ROUTE} -n",
+        f"$(MAKE) {_CANONICAL_PRIVATE_ROUTE} MAKEFLAGS=-n",
+    ],
+    ids=[
+        "dry-run-short", "touch-short", "question-short", "file-short",
+        "directory-short", "combined-short", "dry-run-long", "touch-long",
+        "question-long", "file-long", "makefile-long", "directory-long",
+        "eval-long", "option-terminator", "makeflags", "gnumakeflags",
+        "mflags", "makeoverrides", "shell", "shellflags", "path", "make",
+        "option-after-target", "assignment-after-target",
+    ],
+)
+def test_recursive_make_execution_arguments_create_no_authority_edge(
+    context: closure._ValidationContext, invocation: str,
+) -> None:
+    """Break caught: an execution override is mistaken for route authority."""
+    makefile = context.root / "Makefile"
+    raw = makefile.read_bytes()
+    original = f"\t$(MAKE) {_CANONICAL_PRIVATE_ROUTE}\n".encode()
+    assert raw.count(original) == 1
+    makefile.write_bytes(raw.replace(original, f"\t{invocation}\n".encode(), 1))
+    _error(context, "P0_CLOSURE_MAKE_TARGET_UNREACHABLE")
+
+
 def _run_make_route(root: Path, raw: bytes) -> subprocess.CompletedProcess[str]:
     (root / "Makefile").write_bytes(raw)
     environment = {**os.environ, "MAKEFLAGS": "", "GNUMAKEFLAGS": ""}
@@ -194,6 +250,18 @@ def _run_make_route(root: Path, raw: bytes) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _recursive_make_route(invocation: str) -> bytes:
+    return (
+        ".PHONY: route private governed\n"
+        "route:\n"
+        f"\t{invocation}\n"
+        "private:\n"
+        "\t$(MAKE) governed\n"
+        "governed:\n"
+        "\t@touch sentinel\n"
+    ).encode()
+
+
 def test_accepted_make_route_executes_real_private_sentinel(tmp_path: Path) -> None:
     """Break caught: the accepted graph edge is not executable by real Make."""
     raw = b".PHONY: route private\nroute:\n\t$(MAKE) private\nprivate:\n\t@touch sentinel\n"
@@ -201,6 +269,56 @@ def test_accepted_make_route_executes_real_private_sentinel(tmp_path: Path) -> N
     result = _run_make_route(tmp_path, raw)
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "sentinel").is_file()
+
+
+def test_accepted_multi_target_make_route_executes_both_real_sentinels(
+    tmp_path: Path,
+) -> None:
+    """Break caught: closed argument parsing drops a canonical plain target."""
+    raw = (
+        b".PHONY: route alpha beta\nroute:\n\t$(MAKE) alpha beta\n"
+        b"alpha:\n\t@touch alpha-sentinel\nbeta:\n\t@touch beta-sentinel\n"
+    )
+    assert closure._recursive_make_targets("$(MAKE) alpha beta") == {"alpha", "beta"}
+    result = _run_make_route(tmp_path, raw)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "alpha-sentinel").is_file()
+    assert (tmp_path / "beta-sentinel").is_file()
+
+
+@pytest.mark.parametrize(
+    ("invocation", "returncode"),
+    [
+        ("$(MAKE) -n private", 0),
+        ("$(MAKE) -t private", 0),
+        ("$(MAKE) -f attacker.mk private", 0),
+        ("$(MAKE) MAKEFLAGS=-n private", 0),
+        ("$(MAKE) SHELL=true private", 0),
+        ("$(MAKE) MAKE=true private", 0),
+        ("$(MAKE) --dry-run private", 0),
+        ("$(MAKE) --touch private", 0),
+        ("$(MAKE) -sn private", 0),
+        ("$(MAKE) private --dry-run", 0),
+        ("$(MAKE) private MAKEFLAGS=-n", 0),
+    ],
+    ids=[
+        "dry-run-short", "touch-short", "alternate-makefile", "makeflags",
+        "shell", "make", "dry-run-long", "touch-long", "combined-short",
+        "option-after-target", "assignment-after-target",
+    ],
+)
+def test_recursive_make_execution_override_skips_real_sentinel_and_is_not_reachable(
+    tmp_path: Path, invocation: str, returncode: int,
+) -> None:
+    """Break caught: textual reachability disagrees with real GNU Make."""
+    raw = _recursive_make_route(invocation)
+    (tmp_path / "attacker.mk").write_text(
+        ".PHONY: private\nprivate:\n\t@:\n", encoding="utf-8",
+    )
+    result = _run_make_route(tmp_path, raw)
+    assert result.returncode == returncode, result.stderr
+    assert not (tmp_path / "sentinel").exists()
+    assert not closure._reachable(closure._make_graph(raw), "route", "governed")
 
 
 @pytest.mark.parametrize(

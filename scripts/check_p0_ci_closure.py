@@ -359,11 +359,13 @@ def _recursive_make_targets(recipe: str) -> set[str]:
         return set()
     words = match.group(1).split()
     if any(
-        not re.fullmatch(r"[A-Za-z0-9_.-]+|[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_.-]+", word)
+        not re.fullmatch(r"[A-Za-z0-9_.-]+", word)
+        or word.startswith("-")
+        or "=" in word
         for word in words
     ):
         return set()
-    return {word for word in words if "=" not in word}
+    return set(words)
 
 
 def _make_logical_lines(lines: list[str]) -> list[tuple[bool, str]]:
