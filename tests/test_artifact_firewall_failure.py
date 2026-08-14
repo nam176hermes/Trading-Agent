@@ -124,9 +124,13 @@ def _source_tree_run_stub(
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[object]:
         command_name = ""
-        if command[:2] == ["git", "diff-index"]:
+        if command == [
+            "git", "diff-index", "--cached", "--quiet", "HEAD", "--",
+        ]:
             command_name = "diff-index"
-        elif command[:2] == ["git", "diff-files"]:
+        elif command == [
+            "git", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--",
+        ]:
             command_name = "diff-files"
         elif command[:2] == ["git", "rev-parse"]:
             command_name = "head"
@@ -166,6 +170,35 @@ def _source_tree_run_stub(
         return subprocess.CompletedProcess(command, 0, stdout=stdout)
 
     return run
+
+
+def _source_tree_repo(tmp_path: Path) -> tuple[Path, Path, str, str]:
+    root = tmp_path / "source"
+    root.mkdir()
+    subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "config", "core.filemode", "true"], cwd=root, check=True,
+    )
+    tracked = root / "tracked.txt"
+    tracked.write_text("baseline\n", encoding="utf-8")
+    tracked.chmod(0o644)
+    subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git", "-c", "user.name=P0 Test", "-c", "user.email=p0@example.invalid",
+            "commit", "--quiet", "-m", "baseline",
+        ],
+        cwd=root, check=True,
+    )
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "ls-tree", "-rz", "--full-tree", head_sha],
+        cwd=root, check=True, capture_output=True,
+    ).stdout
+    return root, tracked, head_sha, hashlib.sha256(tree).hexdigest()
 
 
 def _run_ci_portable_failure_probe(
@@ -567,11 +600,63 @@ def test_source_tree_identity_reports_only_the_exact_closed_command_failure(
     assert "private/source/path" not in repr(error.__dict__)
     assert "f" * 40 not in repr(error.__dict__)
     assert calls == [
-        ["git", "diff-index", "--quiet", head_sha, "--"],
-        ["git", "diff-files", "--quiet", "--"],
+        ["git", "diff-index", "--cached", "--quiet", "HEAD", "--"],
+        [
+            "git", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--",
+        ],
         ["git", "rev-parse", "HEAD"],
         ["git", "ls-tree", "-rz", "--full-tree", head_sha],
     ][:expected_commands]
+
+
+def test_source_tree_identity_ignores_mtime_only_stat_cache_drift(
+    tmp_path: Path,
+) -> None:
+    root, tracked, head_sha, expected_identity = _source_tree_repo(tmp_path)
+    tracked_info = tracked.stat()
+    os.utime(
+        tracked,
+        ns=(tracked_info.st_atime_ns, tracked_info.st_mtime_ns + 2_000_000_000),
+    )
+
+    assert subprocess.run(
+        ["git", "diff-index", "--quiet", "HEAD", "--"],
+        cwd=root, check=False,
+    ).returncode == 1
+    assert subprocess.run(
+        ["git", "diff-files", "--quiet", "--"], cwd=root, check=False,
+    ).returncode == 1
+
+    assert firewall._source_tree_identity(root, head_sha) == expected_identity
+
+
+@pytest.mark.parametrize(
+    ("drift", "staged", "substage"),
+    [
+        ("content", True, "DIFF_INDEX"),
+        ("content", False, "DIFF_FILES"),
+        ("mode", True, "DIFF_INDEX"),
+        ("mode", False, "DIFF_FILES"),
+    ],
+)
+def test_source_tree_identity_rejects_real_staged_and_unstaged_drift(
+    tmp_path: Path, drift: str, staged: bool, substage: str,
+) -> None:
+    root, tracked, head_sha, _expected_identity = _source_tree_repo(tmp_path)
+    if drift == "content":
+        tracked.write_text("changed\n", encoding="utf-8")
+    else:
+        tracked.chmod(0o755)
+    if staged:
+        subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+
+    with pytest.raises(firewall.SourceTreeError) as raised:
+        firewall._source_tree_identity(root, head_sha)
+
+    assert raised.value.source_tree_substage == substage
+    assert raised.value.source_tree_reason == "DRIFT"
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
 
 
 @pytest.mark.parametrize(

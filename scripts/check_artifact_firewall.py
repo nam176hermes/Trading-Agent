@@ -1647,8 +1647,8 @@ def publish_evidence_set(
 
 def _source_tree_identity(root: Path, head_sha: str) -> str:
     commands = (
-        ("DIFF_INDEX", ["git", "diff-index", "--quiet", head_sha, "--"]),
-        ("DIFF_FILES", ["git", "diff-files", "--quiet", "--"]),
+        ("DIFF_INDEX", ["git", "diff-index", "--cached", "--quiet", "HEAD", "--"]),
+        ("DIFF_FILES", ["git", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--"]),
     )
     for substage, command in commands:
         failure: SourceTreeError | None = None
