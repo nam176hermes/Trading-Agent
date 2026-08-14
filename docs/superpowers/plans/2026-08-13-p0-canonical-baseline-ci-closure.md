@@ -2431,6 +2431,45 @@ scheduler action, or broker/exchange access.
 
 ---
 
+## P0-12R10 correction — Hosted failure-publication workspace lineage
+
+Hosted Foundation run `31833372257` reached the intended root-remainder
+non-pass with exactly 6,063 passed and 281 skipped nodes. The P0-12R8 catch
+invoked the failure-only publisher exactly once, but publication failed closed
+with `ARTIFACT_FIREWALL_REJECTED LAYOUT`. Reconstructing the exact partial
+evidence shape and counts proves those retained raw bytes publish successfully
+under a private temporary lineage. The same validated bytes fail at the real
+Make destination when an ancestor above the canonical repository is mode 0775:
+the absolute-lineage validator reports `artifact path ancestor is writable`
+before creating `runtime/state/ci-portable`.
+
+P0-12R10 may correct only the failure-only publisher's destination-lineage
+contract. The publisher must require the exact
+`<repository-root>/runtime/state/ci-portable` destination, retain and postcheck
+the complete absolute lineage, and keep the canonical repository root itself
+current-user-owned, non-writable by group/other, and identity-stable. Only
+ancestor writability above that sealed repository boundary may be ignored;
+foreign ownership, links, replacement, an unsafe repository root, an unsafe
+destination suffix, coexistence, and no-clobber violations still fail closed.
+Raw Foundation context, reservation, baseline, remainder, custody, inventory,
+closure, and strict diagnostic validation are unchanged, as are source-tree
+binding, secret-safe projection, original-exit preservation, final artifact
+sealing, and all success or later-governance publication routes.
+
+Strict TDD must first reproduce the hosted-shaped mode-0775 outer workspace
+with a safe mode-0755 repository boundary and prove the current failure. The
+focused failure-firewall packet must then prove that exact canonical layout
+publishes, while a writable repository root and a destination outside the
+repository remain rejected. Full P0-12R8 adversarial, topology, Make-route,
+baseline, closure, contracts, source/security audit, actionlint, and diff gates
+must pass before independent review. Workflow, Make, skip/native acceptance,
+PASS semantics, dependencies, locks, remote update, hosted rerun or dispatch,
+P0-12 continuation, P0-13, promotion, production/live/runtime/DB/service/
+scheduler mutation, broker/provider access, and live trading remain out of
+scope.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
