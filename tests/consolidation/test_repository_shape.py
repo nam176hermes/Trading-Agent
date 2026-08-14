@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -317,6 +318,31 @@ def test_component_boundaries_have_local_locks_and_instructions() -> None:
     for relative in REQUIRED_COMPONENT_FILES:
         metadata = (ROOT / relative).lstat()
         assert stat.S_ISREG(metadata.st_mode), relative
+
+
+def test_dashboard_nanoid_3_3_18_override_and_lock_resolution() -> None:
+    """Break caught: the production tree resolves a vulnerable nanoid release."""
+    manifest = json.loads(
+        _read_current_regular(ROOT, "apps/dashboard/package.json").decode("utf-8")
+    )
+    lock = json.loads(
+        _read_current_regular(ROOT, "apps/dashboard/package-lock.json").decode(
+            "utf-8"
+        )
+    )
+    resolved = {
+        path: metadata
+        for path, metadata in lock["packages"].items()
+        if path == "node_modules/nanoid" or path.endswith("/node_modules/nanoid")
+    }
+
+    assert manifest["overrides"]["nanoid"] == "3.3.18"
+    assert set(resolved) == {"node_modules/nanoid"}
+    assert resolved["node_modules/nanoid"]["version"] == "3.3.18"
+    assert resolved["node_modules/nanoid"]["resolved"] == (
+        "https://registry.npmjs.org/nanoid/-/nanoid-3.3.18.tgz"
+    )
+    assert resolved["node_modules/nanoid"]["integrity"].startswith("sha512-")
 
 
 def test_postgres_template_uses_a_non_forbidden_secret_free_path() -> None:
