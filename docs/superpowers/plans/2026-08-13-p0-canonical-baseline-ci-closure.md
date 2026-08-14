@@ -2611,3 +2611,48 @@ canonical marker plus deterministic secure bundle/manifest. Flat external v1
 evidence is unchanged until P0-08. Legacy flat native governance and stale
 bundle layouts are rejected, so final native evidence must be regenerated on
 the exact post-migration head.
+
+### Evidence-corrected P0-08 architecture A
+
+P0-08 migrates only the two external-authority codes from the flat
+`t-g03a-capability-receipt/v1` shape to strict
+`t-g03a-external-authority-receipt/v2`; native v2 semantics remain unchanged.
+External v2 binds the exact three-node group, run, head, Foundation date and
+context, active-inventory digest, strict code-specific safe authority facts,
+execution counts, outcome, completeness hash, and self-hash. It never records
+absolute authority paths, corpus or database values, research contents,
+credentials, raw command output, or environment secrets.
+
+External authority qualification is one retained/snapshotted session rather
+than a tuple-only probe. Phase-3B validates the fixed root, every ancestor and
+required direct entry without following symlinks, the production analyzer's
+reviewed inventory digest/counts, and a canonical metadata commitment; its
+root identity is retained through exact execution and pre-acceptance
+postchecks. Legacy UV retains the exact fixed executable descriptor through
+version, frozen offline sync, exact execution, and named-versus-held
+postchecks, while independently snapshotting the exact legacy closure entries.
+Only an entirely absent declared authority may produce ABSENT/DEFERRED.
+Partial, invalid, drifted, timed-out, output-drifted, or nonpassing authority
+produces FAIL and may never fall back to DEFERRED.
+
+External v2 publishes only through the append-only Architecture-A primitive:
+a private random mode-0700 candidate bundle, fsynced strict manifest and
+optional exact PASS governance, authority postcheck, atomic
+`RENAME_NOREPLACE` to deterministic `<CODE>.artifacts`, retained reread plus a
+second authority postcheck, then exact canonical receipt bytes published last
+as `<CODE>.json` acceptance marker. No external or native transaction evidence
+is unlinked, rolled back, overwritten, quarantine-deleted, or glob-accepted.
+Foreign occupancy and staging leftovers are preserved and fail closed;
+ambiguous marker success resolves only by exact safe reread of marker and
+bundle.
+
+Portable aggregation accepts external PASS or genuine whole-authority
+ABSENT/DEFERRED and surfaces DEFERRED; `validate-external --require-pass`
+rejects DEFERRED for the later host workflow. The standalone
+`test-external-authorities` target must build custody and reservations, collect
+the portable-root baseline exactly once, and execute each VALID exact
+three-node group exactly once without repeating common suites. P0-08 updates
+the maintained topology design and implementation-evidence documents only; it
+does not start P0-09, change native semantics, fabricate/download authority,
+substitute UV, update dependencies or locks, access the network, mutate a
+database/service/runtime, or enable production/live authority.
