@@ -202,3 +202,41 @@ publication, canonical filename routing, portable DEFERRED versus future
 host-require-pass, and external-v1 preservation. Final-head real-host counts and
 artifact hashes remain task-report evidence rather than a claim in this tracked
 document.
+
+## P0-08 external-authority v2 evidence boundary
+
+The two external codes now use strict
+`t-g03a-external-authority-receipt/v2` and append-only Architecture-A bundles;
+flat external v1 is stale. Each receipt binds the exact three governed nodes,
+Foundation run/head/date/context, inventory, execution counts, strict
+code-specific safe authority facts, completeness, outcome and self-hash.
+External facts are counts, identities and SHA-256 commitments only: no absolute
+paths, corpus or database values, research contents, raw subprocess output,
+credentials or environment secrets are serialized.
+
+Phase-3B retains the fixed reviewed corpus-root descriptor and rechecks the
+production analyzer plus required-entry commitment on both sides of
+deterministic bundle publication. Legacy qualification retains and invokes the
+fixed UV descriptor through `/proc/self/fd`, performs frozen offline sync with
+fixed argv/environment, snapshots the exact legacy closure, and postchecks the
+named and held UV identity/digest plus closure commitment. Exact tests run only
+for VALID sessions. Entire-authority ABSENT emits DEFERRED with no governance;
+PARTIAL, INVALID, DRIFTED, timeout or exact-test nonpass emits FAIL and stops.
+
+External acceptance is marker-last and no-clobber: a private fsynced candidate
+with receipt, optional PASS governance and self-hashed manifest is published by
+`RENAME_NOREPLACE` at `<CODE>.artifacts`; only after the second authority check
+may identical receipt bytes be installed as `<CODE>.json`. The transaction has
+no unlink or rollback path. Readers retain and postcheck the parent, marker,
+bundle and leaves, reject foreign occupancy/tampering/replacement, require exact
+sealed-custody governance for PASS, forbid it for DEFERRED, and never accept
+FAIL. Portable validation allows explicit DEFERRED; the separate
+`validate-external --require-pass` mode requires both external groups PASS.
+
+Focused TDD covers strict v2 bindings and stale v1 rejection, retained Phase-3B
+and UV/closure drift, exact 3-plus-3 selection, whole absence versus invalid
+FAIL, artifact tampering and renamed markers, foreign bundle/marker occupancy,
+ambiguous marker completion, no-unlink behavior, portable DEFERRED versus host
+require-pass, and standalone custody/baseline orchestration. Candidate-bound
+real-host results, hashes and final commit identity belong in the controller
+report and do not become an evergreen readiness claim here.

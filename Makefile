@@ -380,7 +380,23 @@ test-native-capabilities:
 
 test-external-authorities:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \
+		test -n "$${FOUNDATION_CONTEXT_PATH:?}"; \
+		build_dir=$$(mktemp -d /tmp/package6-custodian-external-authorities.XXXXXXXXXX); \
+		chmod 0700 "$$build_dir"; \
+		cleanup_build_dir() { find -P "$$build_dir" -xdev -type d -exec chmod u+rwx -- {} +; rm -rf -- "$$build_dir"; }; \
+		trap 'cleanup_build_dir' EXIT; \
+		$(MAKE) -C native/package6_custodian "BUILD_DIR=$$build_dir" build; \
+		set -- "$$build_dir"/python/_package6_fd_custody*.so; \
+		if test "$$#" -ne 1 || test -L "$$1" || ! test -f "$$1"; then \
+			printf '%s\n' "external authorities require exactly one regular native custody extension" >&2; \
+			exit 2; \
+		fi; \
+		digest_line=$$(sha256sum -- "$$1"); \
+		export PACKAGE6_FD_CUSTODY_EXTENSION_PATH="$$1"; \
+		export PACKAGE6_FD_CUSTODY_EXTENSION_SHA256=$${digest_line%% *}; \
 		uv run python -m scripts.t_g03_capability_topology reserve --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		uv run python -m scripts.t_g03_capability_topology collect-baseline --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"; \
+		TMPDIR=/tmp TMP=/tmp TEMP=/tmp \
 		uv run python -m scripts.t_g03_capability_topology run-lane --lane external-authorities --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 test-portable-root-remainder:

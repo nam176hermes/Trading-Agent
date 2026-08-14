@@ -871,7 +871,7 @@ def audit_topology_root_records(
         for receipt_path, expected_code in capability_topology._canonical_receipt_artifacts(
             receipts,
         ):
-            receipt, native_executed = capability_topology._validate_bound_receipt_artifact(
+            receipt, artifact_executed = capability_topology._validate_bound_receipt_artifact(
                 receipt_path, expected_code, rows=rows,
                 foundation_run_id=foundation_run_id,
                 foundation_head_sha=foundation_head_sha,
@@ -887,44 +887,20 @@ def audit_topology_root_records(
                     )
                 accounted.extend(expected)
                 continue
-            if (
-                capability_topology.CODE_CLASSIFICATION[expected_code]
-                == "NATIVE_CAPABILITY_REQUIRED"
-            ):
-                root_records.extend({
-                    "test_node_id": node,
-                    "component": "root",
-                    "outcome": "passed",
-                    "reason": "",
-                    "phase": "call",
-                } for node in native_executed)
-                accounted.extend(native_executed)
-                continue
-            metadata = governance_path.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                raise GovernanceError(f"root governance record for {code} is unsafe")
-            document = _read_json(governance_path)
-            if not isinstance(document, dict) or document.get("component") != "root":
-                raise GovernanceError(f"root governance record for {code} is malformed")
-            if document.get("custody_policy") != sealed_custody:
-                raise GovernanceError(f"root governance record for {code} has custody policy drift")
-            if document.get("pytest_exit_status") != 0 or not isinstance(document.get("tests"), list):
-                raise GovernanceError(f"root governance record for {code} is not a passing pytest report")
-            observed: list[dict[str, object]] = []
-            for index, item in enumerate(document["tests"]):
-                record = _validate_observation(item, index)
-                if record["component"] != "root" or record["outcome"] != "passed":
-                    raise GovernanceError(
-                        f"root governance record for {code} contains a non-passing node"
-                    )
-                observed.append(record)
-            observed_nodes = tuple(sorted(str(record["test_node_id"]) for record in observed))
-            if observed_nodes != expected or len(observed) != len(expected):
+            if capability_topology.CODE_CLASSIFICATION[expected_code] not in {
+                "NATIVE_CAPABILITY_REQUIRED", "EXTERNAL_AUTHORITY_REQUIRED",
+            }:
                 raise GovernanceError(
-                    f"root topology governance record for {code} does not exactly match its receipt"
+                    f"root topology receipt {code} lacks an artifact execution boundary"
                 )
-            root_records.extend(observed)
-            accounted.extend(observed_nodes)
+            root_records.extend({
+                "test_node_id": node,
+                "component": "root",
+                "outcome": "passed",
+                "reason": "",
+                "phase": "call",
+            } for node in artifact_executed)
+            accounted.extend(artifact_executed)
         if len(accounted) != len(set(accounted)):
             raise GovernanceError("root topology governance records overlap")
         if tuple(sorted(accounted)) != tuple(baseline["candidate_node_ids"]):

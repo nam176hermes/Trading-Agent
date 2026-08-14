@@ -402,11 +402,33 @@ def test_receipt_first_complete_nonpass_does_not_publish_a_diagnostic(
     """Break caught: a pre-existing deferred receipt can coexist with new failure evidence."""
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
-        run_id, head_sha, _ = _seal_remainder(monkeypatch, evidence, raw)
+        run_id, head_sha, _ = _seal_remainder(
+            monkeypatch, evidence, raw, with_context=True,
+        )
+
+        @topology.contextmanager
+        def absent_external_session(code: str):
+            authority = (
+                topology._phase3b_absent_authority()
+                if code == "EXT-PHASE3B-CORPUS"
+                else topology._legacy_absent_authority()
+            )
+            fact = (
+                "AUTHORITY_ROOT_ABSENT"
+                if code == "EXT-PHASE3B-CORPUS"
+                else "AUTHORITY_EXECUTABLE_ABSENT"
+            )
+            yield topology.ExternalAuthoritySession(
+                code, "ABSENT", fact, authority, (), lambda: None,
+            )
+
         receipts = topology.run_lane(
             lane="external-authorities", inventory=INVENTORY, evidence_root=evidence,
             run_id=run_id, head_sha=head_sha,
-            external_preflight=lambda _code: ("ABSENT", "AUTHORITY_ROOT_ABSENT"),
+            foundation_context_path=(
+                evidence / "capability-topology/foundation-context.json"
+            ),
+            external_session_factory=absent_external_session,
         )
         before = {path: path.read_bytes() for path in receipts}
 
@@ -421,6 +443,9 @@ def test_receipt_first_complete_nonpass_does_not_publish_a_diagnostic(
         with pytest.raises(topology.TopologyError, match="acceptance artifact"):
             topology.execute_portable_root_remainder(
                 inventory=INVENTORY, evidence_root=evidence, run_id=run_id, head_sha=head_sha,
+                foundation_context_path=(
+                    evidence / "capability-topology/foundation-context.json"
+                ),
                 exact_runner=failed,
             )
         assert not (evidence / "capability-topology/portable-root-remainder.failure-diagnostic.json").exists()

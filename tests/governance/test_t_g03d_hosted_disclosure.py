@@ -481,8 +481,9 @@ _APPROVED_RECURSIVE_MAKE_OCCURRENCES = (
     ("ci-portable-private", (331, 331), ("test-all-portable-topology-private", "check-test-governance-topology", "check-critical-coverage", "build-dashboard", "audit-python-source", "audit-dependencies"), (0, 7)),
     ("test-portable-source", (335, 352), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (287, 294)),
     ("test-native-capabilities", (361, 379), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (332, 339)),
-    ("ci-portable-topology", (394, 417), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (289, 296)),
-    ("ci-portable-topology", (394, 417), ("test-portable-root-remainder",), (949, 956)),
+    ("test-external-authorities", (382, 400), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (333, 340)),
+    ("ci-portable-topology", (410, 433), ("-C", "native/package6_custodian", "BUILD_DIR=$$build_dir", "build"), (289, 296)),
+    ("ci-portable-topology", (410, 433), ("test-portable-root-remainder",), (949, 956)),
 )
 
 
@@ -861,7 +862,7 @@ def _assert_t_g03_make_launch_contract(makefile: str) -> None:
             ("check-test-skips", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--report-dir", evidence + "/test-governance")), ("check-test-governance-topology", ("uv", "run", "python", "-m", "scripts.check_test_governance", "--topology-audit", "--report-dir", evidence + "/test-governance-topology", "--topology-evidence-root", evidence, "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv", "--foundation-context-path", context)),
             ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-source", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)),
             ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-native-capabilities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)),
-            ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)),
+            ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-external-authorities", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)),
             ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "collect-baseline", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "prepare-remainder", *topology)), ("test-portable-root-remainder", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-remainder", *topology)),
             ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "reserve", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "native-capabilities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "run-lane", "--lane", "external-authorities", *topology)), ("ci-portable-topology", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "aggregate", *topology)),
             ("check-portable-defect-closure", ("uv", "run", "python", "-m", "scripts.t_g03_capability_topology", "check-closure", *topology)),
@@ -1543,16 +1544,23 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
                 passed=0, failed=0, unavailable=len(expected),
             )
         else:
-            receipt = topology.make_receipt(
-                run_id=run_id,
-                head_sha=head_sha,
-                lane=lane,
-                code=code,
-                expected=expected,
-                collected=expected if outcome == "PASS" else (),
-                state=state,
-                fact="SOURCE_TEST_EXECUTED" if lane == "portable-source" else "AUTHORITY_ROOT_ABSENT",
-                outcome=outcome,
+            fact = (
+                "AUTHORITY_ROOT_ABSENT"
+                if code == "EXT-PHASE3B-CORPUS"
+                else "AUTHORITY_EXECUTABLE_ABSENT"
+            )
+            authority = (
+                topology._phase3b_absent_authority()
+                if code == "EXT-PHASE3B-CORPUS"
+                else topology._legacy_absent_authority()
+            )
+            session = topology.ExternalAuthoritySession(
+                code, "ABSENT", fact, authority, (), lambda: None,
+            )
+            receipt = topology.make_external_receipt(
+                context=context, code=code, expected=expected, collected=(),
+                session=session, outcome="DEFERRED", selected_test_count=0,
+                passed=0, failed=0, unavailable=len(expected),
             )
         receipt_path = topology_root / f"{code}.json"
         if lane == "native-capabilities":
@@ -1566,8 +1574,15 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
                 receipt_path, topology.canonical_json_bytes(receipt),
             )
         else:
-            receipt_path.write_bytes(topology.canonical_json_bytes(receipt))
-            receipt_path.chmod(0o600)
+            candidate = topology._stage_external_candidate(
+                topology_root, receipt, None,
+            )
+            topology._publish_external_candidate_bundle(
+                candidate, receipt_path.with_suffix(".artifacts"),
+            )
+            topology._publish_external_acceptance_marker(
+                receipt_path, topology.canonical_json_bytes(receipt),
+            )
         if outcome == "PASS":
             observed = list(expected)
             (topology_root / f"{code}.governance.json").write_text(
@@ -1804,10 +1819,9 @@ def test_remainder_executor_uses_only_the_verified_generated_node_list(
         topology_root = evidence / "capability-topology"
         (topology_root / "portable-defect-closure-proof.json").unlink()
         (topology_root / "portable-defect-closure.governance.json").unlink()
-        for code, classification in topology.CODE_CLASSIFICATION.items():
+        for code in topology.CODE_CLASSIFICATION:
             (topology_root / f"{code}.json").unlink()
-            if classification == "NATIVE_CAPABILITY_REQUIRED":
-                shutil.rmtree(topology_root / f"{code}.artifacts")
+            shutil.rmtree(topology_root / f"{code}.artifacts")
         baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
         baseline["collector_policy"] = topology._native_custody_policy()
         baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)
@@ -1848,10 +1862,9 @@ def test_extension_drift_after_remainder_blocks_the_next_pass_lane_and_closed_ag
         topology_root = evidence / "capability-topology"
         (topology_root / "portable-defect-closure-proof.json").unlink()
         (topology_root / "portable-defect-closure.governance.json").unlink()
-        for code, classification in topology.CODE_CLASSIFICATION.items():
+        for code in topology.CODE_CLASSIFICATION:
             (topology_root / f"{code}.json").unlink()
-            if classification == "NATIVE_CAPABILITY_REQUIRED":
-                shutil.rmtree(topology_root / f"{code}.artifacts")
+            shutil.rmtree(topology_root / f"{code}.artifacts")
         baseline = json.loads((topology_root / "portable-root-baseline.json").read_text(encoding="utf-8"))
         baseline["collector_policy"] = topology._native_custody_policy()
         baseline["baseline_sha256"] = topology._baseline_payload_sha256(baseline)

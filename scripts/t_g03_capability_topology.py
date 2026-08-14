@@ -29,6 +29,8 @@ LOCKED_GOVERNED_NODE_IDS_SHA256 = "aedeffcf5b9ad3d7704b3f6a15822f9862d9b84b279cc
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
 NATIVE_RECEIPT_SCHEMA = "t-g03a-native-capability-receipt/v2"
 NATIVE_ARTIFACT_MANIFEST_SCHEMA = "t-g03a-native-artifact-manifest/v1"
+EXTERNAL_RECEIPT_SCHEMA = "t-g03a-external-authority-receipt/v2"
+EXTERNAL_ARTIFACT_MANIFEST_SCHEMA = "t-g03a-external-artifact-manifest/v1"
 PORTABLE_CLOSURE_PROOF_SCHEMA = "t-g03a-portable-closure-proof/v2"
 CLOSED_NODE_PROOF_SCHEMA = "t-g03a-closed-node-proof/v2"
 FOUNDATION_CONTEXT_SCHEMA = "t-g03a-foundation-context/v1"
@@ -59,6 +61,30 @@ NATIVE_PROBE_KEYS = frozenset({
     "command_id", "exit_code", "stdout_sha256", "stderr_sha256",
     "executable_sha256",
 })
+EXTERNAL_RECEIPT_KEYS = frozenset({
+    "schema_version", "foundation_run_id", "foundation_head_sha",
+    "foundation_validation_date", "foundation_context_sha256", "inventory_sha256",
+    "lane", "capability_or_authority_code", "expected_node_ids", "collected_node_ids",
+    "preflight_state", "redacted_fact_class", "authority", "selected_test_count",
+    "passed", "failed", "unavailable", "completeness_sha256", "outcome",
+    "receipt_sha256",
+})
+PHASE3B_AUTHORITY_KEYS = frozenset({
+    "authority_kind", "regular_directory_status", "expected_inventory_sha256",
+    "observed_inventory_sha256", "required_entry_manifest_sha256",
+    "required_entry_count", "expected_decision_total", "observed_decision_total",
+    "expected_cost_sessions", "observed_cost_sessions", "expected_asset_count",
+    "observed_asset_count", "expected_asset_source_files",
+    "observed_asset_source_files",
+})
+LEGACY_UV_AUTHORITY_KEYS = frozenset({
+    "authority_kind", "regular_file_status", "expected_uv_sha256",
+    "observed_uv_sha256", "expected_uv_version", "observed_uv_version",
+    "expected_uid", "observed_uid", "expected_gid", "observed_gid",
+    "expected_mode", "observed_mode", "legacy_closure_manifest_sha256",
+    "legacy_closure_entry_count", "sync_command_id", "sync_exit_code",
+    "sync_stdout_sha256", "sync_stderr_sha256",
+})
 NATIVE_ARTIFACT_MANIFEST_KEYS = frozenset({
     "schema_version", "capability_or_authority_code", "foundation_run_id",
     "foundation_head_sha", "foundation_validation_date",
@@ -67,6 +93,15 @@ NATIVE_ARTIFACT_MANIFEST_KEYS = frozenset({
     "governance_present", "governance_sha256", "expected_node_ids",
     "expected_node_ids_sha256", "expected_node_count", "selected_test_count",
     "probe", "outcome", "manifest_sha256",
+})
+EXTERNAL_ARTIFACT_MANIFEST_KEYS = frozenset({
+    "schema_version", "capability_or_authority_code", "foundation_run_id",
+    "foundation_head_sha", "foundation_validation_date",
+    "foundation_context_sha256", "inventory_sha256", "receipt_filename",
+    "receipt_bytes_sha256", "receipt_self_sha256", "governance_filename",
+    "governance_present", "governance_sha256", "expected_node_ids",
+    "expected_node_ids_sha256", "expected_node_count", "selected_test_count",
+    "preflight_state", "authority", "outcome", "manifest_sha256",
 })
 NATIVE_BUNDLE_RECEIPT = "receipt.json"
 NATIVE_BUNDLE_GOVERNANCE = "governance.json"
@@ -645,6 +680,11 @@ NATIVE_FACT_CLASSES = frozenset({
     "NATIVE_PROBE_INVALID", "NATIVE_EXACT_TEST_FAILURE",
     "NATIVE_IDENTITY_REPLACED",
 })
+EXTERNAL_FACT_CLASSES = frozenset({
+    "AUTHORITY_ROOT_ABSENT", "AUTHORITY_EXECUTABLE_ABSENT",
+    "AUTHORITY_COMPLETE_VALIDATED", "AUTHORITY_PARTIAL", "AUTHORITY_INVALID",
+    "AUTHORITY_DRIFTED", "EXTERNAL_EXACT_TEST_FAILURE",
+})
 TRUSTED_UNSHARE = Path("/usr/bin/unshare")
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 NATIVE_PROBE_NOT_EXECUTED = -1
@@ -665,6 +705,11 @@ NATIVE_DENIAL_STDERR = {
     }),
 }
 PHASE3B_ROOT = Path("/home/thenam176/.hermes/crypto-research")
+PHASE3B_EXPECTED_INVENTORY_SHA256 = "dbc94142b6773bb5a79c7bc889e7323ca92c03e5375d0a596b679c3f01c7b4ce"
+PHASE3B_EXPECTED_DECISION_TOTAL = 16517
+PHASE3B_EXPECTED_COST_SESSIONS = 20
+PHASE3B_EXPECTED_ASSET_COUNT = 17
+PHASE3B_EXPECTED_ASSET_SOURCE_FILES = 2209
 LEGACY_UV = Path("/home/thenam176/.local/bin/uv")
 LEGACY_UV_SHA256 = "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
 LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
@@ -1392,6 +1437,97 @@ def _stage_native_candidate(
         finally:
             os.close(candidate_descriptor)
     return topology_root / name
+
+
+def _external_artifact_manifest(
+    receipt: dict[str, object], receipt_raw: bytes,
+    governance_raw: bytes | None,
+) -> dict[str, object]:
+    expected = tuple(str(item) for item in receipt["expected_node_ids"])
+    manifest: dict[str, object] = {
+        "schema_version": EXTERNAL_ARTIFACT_MANIFEST_SCHEMA,
+        "capability_or_authority_code": receipt["capability_or_authority_code"],
+        "foundation_run_id": receipt["foundation_run_id"],
+        "foundation_head_sha": receipt["foundation_head_sha"],
+        "foundation_validation_date": receipt["foundation_validation_date"],
+        "foundation_context_sha256": receipt["foundation_context_sha256"],
+        "inventory_sha256": receipt["inventory_sha256"],
+        "receipt_filename": NATIVE_BUNDLE_RECEIPT,
+        "receipt_bytes_sha256": hashlib.sha256(receipt_raw).hexdigest(),
+        "receipt_self_sha256": receipt["receipt_sha256"],
+        "governance_filename": NATIVE_BUNDLE_GOVERNANCE if governance_raw is not None else "",
+        "governance_present": governance_raw is not None,
+        "governance_sha256": (
+            hashlib.sha256(governance_raw).hexdigest()
+            if governance_raw is not None else EMPTY_SHA256
+        ),
+        "expected_node_ids": list(expected),
+        "expected_node_ids_sha256": _ids_sha256(expected),
+        "expected_node_count": len(expected),
+        "selected_test_count": receipt["selected_test_count"],
+        "preflight_state": receipt["preflight_state"],
+        "authority": receipt["authority"],
+        "outcome": receipt["outcome"],
+        "manifest_sha256": "",
+    }
+    manifest["manifest_sha256"] = _sha256({
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    })
+    return manifest
+
+
+def _stage_external_candidate(
+    topology_root: Path, receipt: dict[str, object], governance_raw: bytes | None,
+) -> Path:
+    """Fsync one private inert external candidate without a cleanup path."""
+    _prepare_private_evidence_directory(topology_root)
+    code = str(receipt["capability_or_authority_code"])
+    name = f".external-candidate-{code}-{secrets.token_hex(16)}"
+    receipt_raw = canonical_json_bytes(receipt)
+    manifest_raw = canonical_json_bytes(
+        _external_artifact_manifest(receipt, receipt_raw, governance_raw),
+    )
+    with _retained_private_directory(
+        topology_root, label="external topology directory",
+    ) as (parent_descriptor, _):
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+            candidate_descriptor = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            raise TopologyError("external candidate staging failed") from exc
+        try:
+            candidate = os.fstat(candidate_descriptor)
+            if (
+                not stat.S_ISDIR(candidate.st_mode)
+                or candidate.st_uid != os.geteuid()
+                or candidate.st_gid != os.getegid()
+                or stat.S_IMODE(candidate.st_mode) != 0o700
+            ):
+                raise TopologyError("external candidate directory is unsafe")
+            _write_private_leaf(candidate_descriptor, NATIVE_BUNDLE_RECEIPT, receipt_raw)
+            if governance_raw is not None:
+                _write_private_leaf(
+                    candidate_descriptor, NATIVE_BUNDLE_GOVERNANCE, governance_raw,
+                )
+            _write_private_leaf(candidate_descriptor, NATIVE_BUNDLE_MANIFEST, manifest_raw)
+            os.fsync(candidate_descriptor)
+            os.fsync(parent_descriptor)
+        finally:
+            os.close(candidate_descriptor)
+    return topology_root / name
+
+
+def _publish_external_candidate_bundle(candidate: Path, destination: Path) -> None:
+    _publish_native_candidate_bundle(candidate, destination)
+
+
+def _publish_external_acceptance_marker(path: Path, content: bytes) -> None:
+    _publish_native_acceptance_marker(path, content)
 
 
 def _publish_native_candidate_bundle(candidate: Path, destination: Path) -> None:
@@ -3261,6 +3397,13 @@ def native_completeness_sha256(receipt: dict[str, object]) -> str:
     })
 
 
+def external_completeness_sha256(receipt: dict[str, object]) -> str:
+    return _sha256({
+        key: value for key, value in receipt.items()
+        if key not in {"completeness_sha256", "receipt_sha256"}
+    })
+
+
 def _parse_v1_receipt(value: dict[str, object], raw: bytes) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != RECEIPT_KEYS:
         raise TopologyError("receipt has invalid schema keys")
@@ -3340,6 +3483,88 @@ def _parse_native_receipt(value: dict[str, object], raw: bytes) -> dict[str, obj
     return value
 
 
+def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, object]:
+    del raw
+    if set(value) != EXTERNAL_RECEIPT_KEYS:
+        raise TopologyError("external receipt has invalid schema keys")
+    if value.get("schema_version") != EXTERNAL_RECEIPT_SCHEMA:
+        raise TopologyError("external receipt has invalid schema version")
+    for field, pattern, label in (
+        ("foundation_run_id", RUN_ID, "foundation run"),
+        ("foundation_head_sha", HEAD_SHA, "head"),
+        ("foundation_validation_date", FOUNDATION_DATE, "Foundation date"),
+        ("foundation_context_sha256", HEX64, "Foundation context hash"),
+        ("inventory_sha256", HEX64, "inventory hash"),
+        ("completeness_sha256", HEX64, "completeness hash"),
+        ("receipt_sha256", HEX64, "self-hash"),
+    ):
+        item = value[field]
+        if not isinstance(item, str) or not pattern.fullmatch(item):
+            raise TopologyError(f"external receipt has invalid {label}")
+    parse_foundation_validation_date(value["foundation_validation_date"])
+    for field in (
+        "lane", "capability_or_authority_code", "preflight_state",
+        "redacted_fact_class", "outcome",
+    ):
+        item = value[field]
+        if not isinstance(item, str) or not ASCII.fullmatch(item):
+            raise TopologyError(f"external receipt has invalid {field}")
+    if value["lane"] != "external-authorities":
+        raise TopologyError("external receipt has invalid lane")
+    if value["capability_or_authority_code"] not in {
+        "EXT-PHASE3B-CORPUS", "EXT-LEGACY-UV-AUTHORITY",
+    }:
+        raise TopologyError("external receipt has invalid authority code")
+    if value["redacted_fact_class"] not in EXTERNAL_FACT_CLASSES:
+        raise TopologyError("external receipt has unredacted fact class")
+    if value["outcome"] not in {"PASS", "DEFERRED", "FAIL"}:
+        raise TopologyError("external receipt has invalid outcome")
+    for field in ("expected_node_ids", "collected_node_ids"):
+        items = value[field]
+        if (
+            not isinstance(items, list)
+            or any(not isinstance(item, str) or not ASCII.fullmatch(item) for item in items)
+            or items != sorted(set(items))
+        ):
+            raise TopologyError(f"external receipt has invalid {field}")
+    for field in ("selected_test_count", "passed", "failed", "unavailable"):
+        item = value[field]
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0:
+            raise TopologyError(f"external receipt has invalid {field}")
+    authority = value["authority"]
+    code = str(value["capability_or_authority_code"])
+    expected_keys = (
+        PHASE3B_AUTHORITY_KEYS
+        if code == "EXT-PHASE3B-CORPUS" else LEGACY_UV_AUTHORITY_KEYS
+    )
+    if not isinstance(authority, dict) or set(authority) != expected_keys:
+        raise TopologyError("external receipt has invalid authority facts")
+    for key, item in authority.items():
+        if isinstance(item, bool) or not isinstance(item, (str, int)):
+            raise TopologyError(f"external receipt has invalid authority field {key}")
+        if isinstance(item, str) and item and any(ord(character) < 0x20 for character in item):
+            raise TopologyError(f"external receipt has invalid authority field {key}")
+        if isinstance(item, str) and item.startswith("/"):
+            raise TopologyError("external receipt authority facts expose an absolute path")
+    digest_fields = (
+        ("expected_inventory_sha256", "observed_inventory_sha256", "required_entry_manifest_sha256")
+        if code == "EXT-PHASE3B-CORPUS"
+        else (
+            "expected_uv_sha256", "observed_uv_sha256",
+            "legacy_closure_manifest_sha256", "sync_stdout_sha256",
+            "sync_stderr_sha256",
+        )
+    )
+    for field in digest_fields:
+        if not isinstance(authority[field], str) or not HEX64.fullmatch(authority[field]):
+            raise TopologyError(f"external receipt has invalid authority digest {field}")
+    if value["completeness_sha256"] != external_completeness_sha256(value):
+        raise TopologyError("external receipt completeness hash mismatch")
+    if value["receipt_sha256"] != payload_sha256(value):
+        raise TopologyError("external receipt self-hash mismatch")
+    return value
+
+
 def parse_receipt(raw: bytes) -> dict[str, object]:
     value = _strict_json(raw, label="receipt")
     if not isinstance(value, dict):
@@ -3348,6 +3573,8 @@ def parse_receipt(raw: bytes) -> dict[str, object]:
         raise TopologyError("receipt is not canonical")
     if value.get("schema_version") == NATIVE_RECEIPT_SCHEMA:
         return _parse_native_receipt(value, raw)
+    if value.get("schema_version") == EXTERNAL_RECEIPT_SCHEMA:
+        return _parse_external_receipt(value, raw)
     return _parse_v1_receipt(value, raw)
 
 
@@ -3410,8 +3637,26 @@ def validate_receipt(
             raise TopologyError("native receipt Foundation context binding drift")
         _validate_native_outcome(receipt, expected)
         return receipt
+    if lane == "external-authorities":
+        if receipt["schema_version"] == RECEIPT_SCHEMA:
+            raise TopologyError("external v1 receipt is stale")
+        if receipt["schema_version"] != EXTERNAL_RECEIPT_SCHEMA:
+            raise TopologyError("external receipt has invalid schema version")
+        if foundation_context is None:
+            raise TopologyError("external receipt requires sealed Foundation context")
+        if (
+            receipt["foundation_validation_date"]
+            != foundation_context.get("foundation_validation_date")
+            or receipt["foundation_context_sha256"]
+            != foundation_context.get("foundation_context_sha256")
+            or foundation_context.get("foundation_run_id") != foundation_run_id
+            or foundation_context.get("foundation_head_sha") != foundation_head_sha
+        ):
+            raise TopologyError("external receipt Foundation context binding drift")
+        _validate_external_outcome(receipt, expected)
+        return receipt
     if receipt["schema_version"] != RECEIPT_SCHEMA:
-        raise TopologyError("external receipt has invalid schema version")
+        raise TopologyError("receipt has invalid schema version")
     state = str(receipt["preflight_state"])
     outcome = str(receipt["outcome"])
     allowed = {
@@ -3427,6 +3672,115 @@ def validate_receipt(
     if outcome == "DEFERRED" and collected:
         raise TopologyError("DEFERRED receipt selected a node")
     return receipt
+
+
+def _validate_external_outcome(
+    receipt: dict[str, object], expected: tuple[str, ...],
+) -> None:
+    code = str(receipt["capability_or_authority_code"])
+    state = str(receipt["preflight_state"])
+    fact = str(receipt["redacted_fact_class"])
+    outcome = str(receipt["outcome"])
+    authority = receipt["authority"]
+    assert isinstance(authority, dict)
+    selected = int(receipt["selected_test_count"])
+    passed = int(receipt["passed"])
+    failed = int(receipt["failed"])
+    unavailable = int(receipt["unavailable"])
+    collected = tuple(receipt["collected_node_ids"])
+    expected_count = len(expected)
+    if outcome == "DEFERRED":
+        expected_fact = (
+            "AUTHORITY_ROOT_ABSENT"
+            if code == "EXT-PHASE3B-CORPUS"
+            else "AUTHORITY_EXECUTABLE_ABSENT"
+        )
+        expected_authority = (
+            _phase3b_absent_authority()
+            if code == "EXT-PHASE3B-CORPUS"
+            else _legacy_absent_authority()
+        )
+        if (
+            (state, fact) != ("ABSENT", expected_fact)
+            or authority != expected_authority
+            or collected
+            or (selected, passed, failed, unavailable) != (0, 0, 0, expected_count)
+        ):
+            raise TopologyError("external DEFERRED receipt is not exact absence")
+        return
+    if outcome == "PASS":
+        if (
+            (state, fact) != ("VALID", "AUTHORITY_COMPLETE_VALIDATED")
+            or collected != expected
+            or (selected, passed, failed, unavailable)
+            != (expected_count, expected_count, 0, 0)
+        ):
+            raise TopologyError("external PASS receipt lacks exact execution proof")
+        if code == "EXT-PHASE3B-CORPUS":
+            if (
+                authority["authority_kind"] != "PHASE3B_REVIEWED_CORPUS_V1"
+                or authority["regular_directory_status"]
+                != "PRIVATE_CURRENT_USER_DIRECTORY"
+                or authority["expected_inventory_sha256"]
+                != PHASE3B_EXPECTED_INVENTORY_SHA256
+                or authority["observed_inventory_sha256"]
+                != PHASE3B_EXPECTED_INVENTORY_SHA256
+                or authority["required_entry_manifest_sha256"] == EMPTY_SHA256
+                or authority["required_entry_count"] != len(PHASE3B_REQUIRED_ENTRIES)
+                or authority["expected_decision_total"]
+                != PHASE3B_EXPECTED_DECISION_TOTAL
+                or authority["observed_decision_total"]
+                != PHASE3B_EXPECTED_DECISION_TOTAL
+                or authority["expected_cost_sessions"]
+                != PHASE3B_EXPECTED_COST_SESSIONS
+                or authority["observed_cost_sessions"]
+                != PHASE3B_EXPECTED_COST_SESSIONS
+                or authority["expected_asset_count"]
+                != PHASE3B_EXPECTED_ASSET_COUNT
+                or authority["observed_asset_count"]
+                != PHASE3B_EXPECTED_ASSET_COUNT
+                or authority["expected_asset_source_files"]
+                != PHASE3B_EXPECTED_ASSET_SOURCE_FILES
+                or authority["observed_asset_source_files"]
+                != PHASE3B_EXPECTED_ASSET_SOURCE_FILES
+            ):
+                raise TopologyError("external Phase-3B PASS authority facts drift")
+            return
+        if (
+            authority["authority_kind"] != "LEGACY_UV_AND_CLOSURE_V1"
+            or authority["regular_file_status"]
+            != "PRIVATE_CURRENT_USER_EXECUTABLE"
+            or authority["expected_uv_sha256"] != LEGACY_UV_SHA256
+            or authority["observed_uv_sha256"] != LEGACY_UV_SHA256
+            or authority["expected_uv_version"] != LEGACY_UV_VERSION
+            or authority["observed_uv_version"] != LEGACY_UV_VERSION
+            or authority["expected_uid"] != os.geteuid()
+            or authority["observed_uid"] != os.geteuid()
+            or authority["expected_gid"] != os.getegid()
+            or authority["observed_gid"] != os.getegid()
+            or authority["expected_mode"] != 0o755
+            or authority["observed_mode"] != 0o755
+            or authority["legacy_closure_manifest_sha256"] == EMPTY_SHA256
+            or authority["legacy_closure_entry_count"] != len(LEGACY_CLOSURE_ENTRIES)
+            or authority["sync_command_id"] != "LEGACY_UV_SYNC_FROZEN_OFFLINE_V1"
+            or authority["sync_exit_code"] != 0
+        ):
+            raise TopologyError("external legacy UV PASS authority facts drift")
+        return
+    if (
+        outcome != "FAIL"
+        or state not in {"PARTIAL", "INVALID", "DRIFTED"}
+        or fact not in EXTERNAL_FACT_CLASSES - {
+            "AUTHORITY_ROOT_ABSENT", "AUTHORITY_EXECUTABLE_ABSENT",
+            "AUTHORITY_COMPLETE_VALIDATED",
+        }
+        or unavailable != 0
+        or passed != 0
+        or selected not in {0, expected_count}
+        or failed not in {0, expected_count}
+        or collected
+    ):
+        raise TopologyError("external FAIL receipt has invalid state or counts")
 
 
 def _validate_native_outcome(receipt: dict[str, object], expected: tuple[str, ...]) -> None:
@@ -3595,6 +3949,94 @@ def validate_native_artifacts(
     return _reduce_native_artifact_status(receipts, require_pass=require_pass)
 
 
+def _validate_external_manifest_bytes(
+    raw: bytes, receipt: dict[str, object], receipt_raw: bytes,
+    governance_raw: bytes | None,
+) -> dict[str, object]:
+    manifest = _strict_json(raw, label="external artifact manifest")
+    if not isinstance(manifest, dict) or set(manifest) != EXTERNAL_ARTIFACT_MANIFEST_KEYS:
+        raise TopologyError("external artifact manifest has invalid schema keys")
+    if canonical_json_bytes(manifest) != raw:
+        raise TopologyError("external artifact manifest is not canonical")
+    expected = _external_artifact_manifest(receipt, receipt_raw, governance_raw)
+    if manifest != expected:
+        raise TopologyError("external artifact manifest binding drift")
+    return manifest
+
+
+def validate_external_artifact_set(
+    receipt_path: Path, *, rows: tuple[InventoryRow, ...],
+    foundation_context: dict[str, object], sealed_custody: dict[str, str],
+) -> tuple[dict[str, object], tuple[str, ...]]:
+    if receipt_path.suffix != ".json":
+        raise TopologyError("external receipt path is malformed")
+    with _retained_private_native_artifacts(receipt_path) as artifacts:
+        if artifacts.marker_raw != artifacts.bundle_receipt_raw:
+            raise TopologyError("external marker does not equal bundled receipt bytes")
+        receipt = validate_receipt(
+            artifacts.bundle_receipt_raw, rows=rows,
+            foundation_run_id=str(foundation_context.get("foundation_run_id", "")),
+            foundation_head_sha=str(foundation_context.get("foundation_head_sha", "")),
+            foundation_context=foundation_context,
+        )
+        code = str(receipt["capability_or_authority_code"])
+        if (
+            receipt.get("schema_version") != EXTERNAL_RECEIPT_SCHEMA
+            or CODE_CLASSIFICATION.get(code) != "EXTERNAL_AUTHORITY_REQUIRED"
+            or receipt_path.name != f"{code}.json"
+        ):
+            raise TopologyError("external receipt filename/code binding drift")
+        expected = tuple(receipt["expected_node_ids"])
+        if receipt["outcome"] == "PASS":
+            if artifacts.governance_raw is None:
+                raise TopologyError("external PASS receipt lacks governance artifact")
+            records = _validate_exact_governance_bytes(
+                artifacts.governance_raw, expected,
+                _validate_custody_policy(sealed_custody),
+            )
+            executed = tuple(str(record["test_node_id"]) for record in records)
+        elif receipt["outcome"] == "DEFERRED":
+            if artifacts.governance_raw is not None:
+                raise TopologyError("external DEFERRED receipt has governance artifact")
+            executed = ()
+        else:
+            raise TopologyError("external FAIL receipt is never acceptable")
+        _validate_external_manifest_bytes(
+            artifacts.manifest_raw, receipt, artifacts.bundle_receipt_raw,
+            artifacts.governance_raw,
+        )
+        _postcheck_private_native_artifacts(artifacts)
+        return receipt, executed
+
+
+def validate_external_artifacts(
+    topology_root: Path, *, rows: tuple[InventoryRow, ...],
+    foundation_context: dict[str, object], sealed_custody: dict[str, str],
+    require_pass: bool,
+) -> str:
+    external_codes = sorted(
+        code for code, classification in CODE_CLASSIFICATION.items()
+        if classification == "EXTERNAL_AUTHORITY_REQUIRED"
+    )
+    receipts = [
+        validate_external_artifact_set(
+            topology_root / f"{code}.json", rows=rows,
+            foundation_context=foundation_context, sealed_custody=sealed_custody,
+        )[0]
+        for code in external_codes
+    ]
+    if any(receipt["outcome"] == "FAIL" for receipt in receipts):
+        raise TopologyError("external receipt set contains FAIL")
+    status = (
+        "DEFERRED"
+        if any(receipt["outcome"] == "DEFERRED" for receipt in receipts)
+        else "PASS"
+    )
+    if require_pass and status != "PASS":
+        raise TopologyError("external host qualification requires PASS")
+    return status
+
+
 def _canonical_receipt_artifacts(paths: list[Path]) -> list[tuple[Path, str]]:
     if not paths or any(path.parent != paths[0].parent for path in paths):
         raise TopologyError("receipt aggregation has an invalid topology root")
@@ -3617,6 +4059,11 @@ def _validate_bound_receipt_artifact(
     classification = CODE_CLASSIFICATION[expected_code]
     if classification == "NATIVE_CAPABILITY_REQUIRED":
         receipt, executed = validate_native_artifact_set(
+            path, rows=rows, foundation_context=foundation_context,
+            sealed_custody=sealed_custody,
+        )
+    elif classification == "EXTERNAL_AUTHORITY_REQUIRED":
+        receipt, executed = validate_external_artifact_set(
             path, rows=rows, foundation_context=foundation_context,
             sealed_custody=sealed_custody,
         )
@@ -3726,7 +4173,7 @@ def reconcile_portable_root_accounting(
     )
     accounted: list[str] = [*executed_remainder, *proof["closure_node_ids"]]
     for path, expected_code in _canonical_receipt_artifacts(receipt_paths):
-        receipt, native_executed = _validate_bound_receipt_artifact(
+        receipt, artifact_executed = _validate_bound_receipt_artifact(
             path, expected_code, rows=rows, foundation_run_id=run_id,
             foundation_head_sha=head_sha, foundation_context=context,
             sealed_custody=sealed_custody,
@@ -3735,11 +4182,11 @@ def reconcile_portable_root_accounting(
         code = str(receipt["capability_or_authority_code"])
         governance = topology_root / f"{code}.governance.json"
         if receipt["outcome"] == "PASS":
-            accounted.extend(
-                native_executed
-                if CODE_CLASSIFICATION[expected_code] == "NATIVE_CAPABILITY_REQUIRED"
-                else _validate_exact_governance_record(governance, expected, sealed_custody)
-            )
+            if CODE_CLASSIFICATION[expected_code] not in {
+                "NATIVE_CAPABILITY_REQUIRED", "EXTERNAL_AUTHORITY_REQUIRED",
+            }:
+                raise TopologyError("receipt classification lacks an artifact execution boundary")
+            accounted.extend(artifact_executed)
         else:
             if os.path.lexists(governance):
                 raise TopologyError("deferred receipt has an execution record")
@@ -3795,6 +4242,39 @@ def make_native_receipt(
         "receipt_sha256": "",
     }
     receipt["completeness_sha256"] = native_completeness_sha256(receipt)
+    receipt["receipt_sha256"] = payload_sha256(receipt)
+    return receipt
+
+
+def make_external_receipt(
+    *, context: dict[str, object], code: str, expected: tuple[str, ...],
+    collected: tuple[str, ...], session: ExternalAuthoritySession, outcome: str,
+    selected_test_count: int, passed: int, failed: int, unavailable: int,
+    fact: str | None = None, state: str | None = None,
+) -> dict[str, object]:
+    receipt: dict[str, object] = {
+        "schema_version": EXTERNAL_RECEIPT_SCHEMA,
+        "foundation_run_id": context["foundation_run_id"],
+        "foundation_head_sha": context["foundation_head_sha"],
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
+        "inventory_sha256": LOCKED_INVENTORY_SHA256,
+        "lane": "external-authorities",
+        "capability_or_authority_code": code,
+        "expected_node_ids": list(expected),
+        "collected_node_ids": list(collected),
+        "preflight_state": session.state if state is None else state,
+        "redacted_fact_class": session.fact if fact is None else fact,
+        "authority": dict(session.authority),
+        "selected_test_count": selected_test_count,
+        "passed": passed,
+        "failed": failed,
+        "unavailable": unavailable,
+        "completeness_sha256": "",
+        "outcome": outcome,
+        "receipt_sha256": "",
+    }
+    receipt["completeness_sha256"] = external_completeness_sha256(receipt)
     receipt["receipt_sha256"] = payload_sha256(receipt)
     return receipt
 
@@ -4208,12 +4688,581 @@ def _default_phase3b_validator(root: Path) -> object:
 
 def _phase3b_valid(analysis: object) -> bool:
     return (
-        getattr(analysis, "inventory_hash", None) == "dbc94142b6773bb5a79c7bc889e7323ca92c03e5375d0a596b679c3f01c7b4ce"
-        and getattr(analysis, "decision_total", None) == 16517
-        and getattr(analysis, "cost_sessions", None) == 20
-        and getattr(analysis, "asset_count", None) == 17
-        and getattr(analysis, "asset_source_files", None) == 2209
+        getattr(analysis, "inventory_hash", None) == PHASE3B_EXPECTED_INVENTORY_SHA256
+        and getattr(analysis, "decision_total", None) == PHASE3B_EXPECTED_DECISION_TOTAL
+        and getattr(analysis, "cost_sessions", None) == PHASE3B_EXPECTED_COST_SESSIONS
+        and getattr(analysis, "asset_count", None) == PHASE3B_EXPECTED_ASSET_COUNT
+        and getattr(analysis, "asset_source_files", None)
+        == PHASE3B_EXPECTED_ASSET_SOURCE_FILES
     )
+
+
+def _phase3b_absent_authority() -> dict[str, object]:
+    return {
+        "authority_kind": "PHASE3B_REVIEWED_CORPUS_V1",
+        "regular_directory_status": "ABSENT",
+        "expected_inventory_sha256": PHASE3B_EXPECTED_INVENTORY_SHA256,
+        "observed_inventory_sha256": EMPTY_SHA256,
+        "required_entry_manifest_sha256": EMPTY_SHA256,
+        "required_entry_count": 0,
+        "expected_decision_total": PHASE3B_EXPECTED_DECISION_TOTAL,
+        "observed_decision_total": 0,
+        "expected_cost_sessions": PHASE3B_EXPECTED_COST_SESSIONS,
+        "observed_cost_sessions": 0,
+        "expected_asset_count": PHASE3B_EXPECTED_ASSET_COUNT,
+        "observed_asset_count": 0,
+        "expected_asset_source_files": PHASE3B_EXPECTED_ASSET_SOURCE_FILES,
+        "observed_asset_source_files": 0,
+    }
+
+
+def _legacy_absent_authority() -> dict[str, object]:
+    return {
+        "authority_kind": "LEGACY_UV_AND_CLOSURE_V1",
+        "regular_file_status": "ABSENT",
+        "expected_uv_sha256": LEGACY_UV_SHA256,
+        "observed_uv_sha256": EMPTY_SHA256,
+        "expected_uv_version": LEGACY_UV_VERSION,
+        "observed_uv_version": "",
+        "expected_uid": os.geteuid(),
+        "observed_uid": -1,
+        "expected_gid": os.getegid(),
+        "observed_gid": -1,
+        "expected_mode": 0o755,
+        "observed_mode": -1,
+        "legacy_closure_manifest_sha256": EMPTY_SHA256,
+        "legacy_closure_entry_count": 0,
+        "sync_command_id": "LEGACY_UV_SYNC_FROZEN_OFFLINE_V1",
+        "sync_exit_code": -1,
+        "sync_stdout_sha256": EMPTY_SHA256,
+        "sync_stderr_sha256": EMPTY_SHA256,
+    }
+
+
+def _invalid_external_authority(code: str) -> dict[str, object]:
+    authority = (
+        _phase3b_absent_authority()
+        if code == "EXT-PHASE3B-CORPUS" else _legacy_absent_authority()
+    )
+    status_key = (
+        "regular_directory_status"
+        if code == "EXT-PHASE3B-CORPUS" else "regular_file_status"
+    )
+    authority[status_key] = "INVALID"
+    return authority
+
+
+class _ExternalStateError(TopologyError):
+    def __init__(self, state: str) -> None:
+        self.state = state
+        super().__init__("external authority state is not valid")
+
+
+def _external_parent_chain_safe(path: Path) -> bool:
+    if not path.is_absolute():
+        return False
+    current = Path(path.anchor)
+    for part in (None, *path.parts[1:-1]):
+        if part is not None:
+            current /= part
+        try:
+            info = current.lstat()
+        except OSError:
+            return False
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid not in {0, os.geteuid()}
+            or info.st_gid not in {0, os.getegid()}
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            return False
+    return True
+
+
+def _open_external_directory(
+    path: Path, *, exact_mode: int | None,
+) -> tuple[str, int, tuple[int, ...] | None]:
+    if not _external_parent_chain_safe(path):
+        return "INVALID", -1, None
+    try:
+        named = path.lstat()
+    except FileNotFoundError:
+        return "ABSENT", -1, None
+    except OSError:
+        return "INVALID", -1, None
+    mode = stat.S_IMODE(named.st_mode)
+    if (
+        stat.S_ISLNK(named.st_mode)
+        or not stat.S_ISDIR(named.st_mode)
+        or named.st_uid != os.geteuid()
+        or named.st_gid != os.getegid()
+        or named.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        or (exact_mode is not None and mode != exact_mode)
+    ):
+        return "INVALID", -1, None
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        identity = _artifact_identity(opened)
+        if identity != _artifact_identity(named):
+            raise OSError("directory identity changed")
+    except OSError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        return "INVALID", -1, None
+    return "PRESENT", descriptor, identity
+
+
+def _open_external_regular_executable(
+    path: Path,
+) -> tuple[str, int, tuple[int, ...] | None]:
+    if not _external_parent_chain_safe(path):
+        return "INVALID", -1, None
+    try:
+        named = path.lstat()
+    except FileNotFoundError:
+        return "ABSENT", -1, None
+    except OSError:
+        return "INVALID", -1, None
+    if (
+        stat.S_ISLNK(named.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1
+        or named.st_uid != os.geteuid()
+        or named.st_gid != os.getegid()
+        or stat.S_IMODE(named.st_mode) != 0o755
+    ):
+        return "INVALID", -1, None
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        identity = _artifact_identity(opened)
+        if identity != _artifact_identity(named):
+            raise OSError("executable identity changed")
+    except OSError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        return "INVALID", -1, None
+    return "PRESENT", descriptor, identity
+
+
+def _required_entry_record(
+    root_descriptor: int, relative: str, *, directory: bool,
+    allow_final_symlink: bool,
+) -> dict[str, object]:
+    parts = Path(relative).parts
+    if not parts or Path(relative).is_absolute() or any(part in {"", ".", ".."} for part in parts):
+        raise _ExternalStateError("INVALID")
+    current_descriptor = os.dup(root_descriptor)
+    try:
+        for part in parts[:-1]:
+            try:
+                info = os.stat(part, dir_fd=current_descriptor, follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise _ExternalStateError("PARTIAL") from exc
+            except OSError as exc:
+                raise _ExternalStateError("INVALID") from exc
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_uid != os.geteuid()
+                or info.st_gid != os.getegid()
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            ):
+                raise _ExternalStateError("INVALID")
+            try:
+                child = os.open(
+                    part,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=current_descriptor,
+                )
+            except OSError as exc:
+                raise _ExternalStateError("INVALID") from exc
+            os.close(current_descriptor)
+            current_descriptor = child
+        name = parts[-1]
+        try:
+            info = os.stat(name, dir_fd=current_descriptor, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise _ExternalStateError("PARTIAL") from exc
+        except OSError as exc:
+            raise _ExternalStateError("INVALID") from exc
+        if info.st_uid != os.geteuid() or info.st_gid != os.getegid():
+            raise _ExternalStateError("INVALID")
+        identity = list(_artifact_identity(info))
+        if directory:
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or not stat.S_ISDIR(info.st_mode)
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            ):
+                raise _ExternalStateError("INVALID")
+            kind = "directory"
+            digest = EMPTY_SHA256
+        elif stat.S_ISLNK(info.st_mode):
+            if not allow_final_symlink:
+                raise _ExternalStateError("INVALID")
+            try:
+                target = os.readlink(name, dir_fd=current_descriptor)
+            except OSError as exc:
+                raise _ExternalStateError("INVALID") from exc
+            kind = "symlink"
+            digest = hashlib.sha256(os.fsencode(target)).hexdigest()
+        else:
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            ):
+                raise _ExternalStateError("INVALID")
+            descriptor = -1
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=current_descriptor,
+                )
+                opened = os.fstat(descriptor)
+                if _artifact_identity(opened) != _artifact_identity(info):
+                    raise OSError("required entry identity changed")
+                digest = _digest_fd(descriptor)
+                if _artifact_identity(os.fstat(descriptor)) != _artifact_identity(info):
+                    raise OSError("required entry identity changed")
+            except OSError as exc:
+                raise _ExternalStateError("INVALID") from exc
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            kind = "regular"
+        return {
+            "relative_name_sha256": hashlib.sha256(relative.encode("utf-8")).hexdigest(),
+            "kind": kind,
+            "identity": identity,
+            "content_or_link_sha256": digest,
+        }
+    finally:
+        os.close(current_descriptor)
+
+
+def _required_entry_manifest(
+    root_descriptor: int, entries: tuple[tuple[str, bool], ...], *,
+    allow_symlink_names: frozenset[str] = frozenset(),
+) -> str:
+    records = [
+        _required_entry_record(
+            root_descriptor, relative, directory=directory,
+            allow_final_symlink=relative in allow_symlink_names,
+        )
+        for relative, directory in entries
+    ]
+    return _sha256(records)
+
+
+@dataclass(frozen=True)
+class ExternalAuthoritySession:
+    code: str
+    state: str
+    fact: str
+    authority: dict[str, object]
+    descriptors: tuple[int, ...]
+    postcheck: Callable[[], None]
+
+
+def _postcheck_external_authority(session: ExternalAuthoritySession) -> None:
+    try:
+        session.postcheck()
+    except TopologyError:
+        raise
+    except Exception as exc:
+        raise TopologyError("external authority changed during qualification") from exc
+
+
+def _phase3b_authority_from_analysis(
+    analysis: object, manifest_sha256: str,
+) -> dict[str, object]:
+    if not _phase3b_valid(analysis):
+        raise _ExternalStateError("INVALID")
+    return {
+        "authority_kind": "PHASE3B_REVIEWED_CORPUS_V1",
+        "regular_directory_status": "PRIVATE_CURRENT_USER_DIRECTORY",
+        "expected_inventory_sha256": PHASE3B_EXPECTED_INVENTORY_SHA256,
+        "observed_inventory_sha256": str(getattr(analysis, "inventory_hash")),
+        "required_entry_manifest_sha256": manifest_sha256,
+        "required_entry_count": len(PHASE3B_REQUIRED_ENTRIES),
+        "expected_decision_total": PHASE3B_EXPECTED_DECISION_TOTAL,
+        "observed_decision_total": int(getattr(analysis, "decision_total")),
+        "expected_cost_sessions": PHASE3B_EXPECTED_COST_SESSIONS,
+        "observed_cost_sessions": int(getattr(analysis, "cost_sessions")),
+        "expected_asset_count": PHASE3B_EXPECTED_ASSET_COUNT,
+        "observed_asset_count": int(getattr(analysis, "asset_count")),
+        "expected_asset_source_files": PHASE3B_EXPECTED_ASSET_SOURCE_FILES,
+        "observed_asset_source_files": int(getattr(analysis, "asset_source_files")),
+    }
+
+
+def _open_phase3b_external_session(
+    *, corpus_root: Path, corpus_validator: Callable[[Path], object],
+) -> ExternalAuthoritySession:
+    state, descriptor, identity = _open_external_directory(corpus_root, exact_mode=0o700)
+    if state == "ABSENT":
+        def absent_postcheck() -> None:
+            current_state, current_descriptor, _ = _open_external_directory(
+                corpus_root, exact_mode=0o700,
+            )
+            if current_descriptor >= 0:
+                os.close(current_descriptor)
+            if current_state != "ABSENT":
+                raise TopologyError("external authority changed during qualification")
+
+        return ExternalAuthoritySession(
+            "EXT-PHASE3B-CORPUS", "ABSENT", "AUTHORITY_ROOT_ABSENT",
+            _phase3b_absent_authority(), (), absent_postcheck,
+        )
+    if state != "PRESENT" or identity is None:
+        return ExternalAuthoritySession(
+            "EXT-PHASE3B-CORPUS", "INVALID", "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-PHASE3B-CORPUS"), (), lambda: None,
+        )
+    try:
+        first_manifest = _required_entry_manifest(descriptor, PHASE3B_REQUIRED_ENTRIES)
+        analysis = corpus_validator(corpus_root)
+        second_manifest = _required_entry_manifest(descriptor, PHASE3B_REQUIRED_ENTRIES)
+        if first_manifest != second_manifest:
+            raise _ExternalStateError("INVALID")
+        authority = _phase3b_authority_from_analysis(analysis, second_manifest)
+    except FileNotFoundError:
+        os.close(descriptor)
+        return ExternalAuthoritySession(
+            "EXT-PHASE3B-CORPUS", "PARTIAL", "AUTHORITY_PARTIAL",
+            _invalid_external_authority("EXT-PHASE3B-CORPUS"), (), lambda: None,
+        )
+    except _ExternalStateError as exc:
+        os.close(descriptor)
+        fact = "AUTHORITY_PARTIAL" if exc.state == "PARTIAL" else "AUTHORITY_INVALID"
+        return ExternalAuthoritySession(
+            "EXT-PHASE3B-CORPUS", exc.state, fact,
+            _invalid_external_authority("EXT-PHASE3B-CORPUS"), (), lambda: None,
+        )
+    except Exception:
+        os.close(descriptor)
+        return ExternalAuthoritySession(
+            "EXT-PHASE3B-CORPUS", "INVALID", "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-PHASE3B-CORPUS"), (), lambda: None,
+        )
+
+    def postcheck() -> None:
+        try:
+            named = corpus_root.lstat()
+            held = os.fstat(descriptor)
+            current_manifest = _required_entry_manifest(
+                descriptor, PHASE3B_REQUIRED_ENTRIES,
+            )
+            current_analysis = corpus_validator(corpus_root)
+            current_authority = _phase3b_authority_from_analysis(
+                current_analysis, current_manifest,
+            )
+        except Exception as exc:
+            raise TopologyError("external authority changed during qualification") from exc
+        if (
+            _artifact_identity(named) != identity
+            or _artifact_identity(held) != identity
+            or current_authority != authority
+        ):
+            raise TopologyError("external authority changed during qualification")
+
+    return ExternalAuthoritySession(
+        "EXT-PHASE3B-CORPUS", "VALID", "AUTHORITY_COMPLETE_VALIDATED",
+        authority, (descriptor,), postcheck,
+    )
+
+
+def _open_legacy_external_session(
+    *, uv_path: Path, legacy_root: Path, expected_uv_sha256: str,
+    expected_uv_version: str,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+) -> ExternalAuthoritySession:
+    uv_state, uv_descriptor, uv_identity = _open_external_regular_executable(uv_path)
+    root_state, root_descriptor, root_identity = _open_external_directory(
+        legacy_root, exact_mode=None,
+    )
+    if uv_state == root_state == "ABSENT":
+        def absent_postcheck() -> None:
+            current_uv, current_uv_descriptor, _ = _open_external_regular_executable(uv_path)
+            current_root, current_root_descriptor, _ = _open_external_directory(
+                legacy_root, exact_mode=None,
+            )
+            for retained in (current_uv_descriptor, current_root_descriptor):
+                if retained >= 0:
+                    os.close(retained)
+            if current_uv != "ABSENT" or current_root != "ABSENT":
+                raise TopologyError("external authority changed during qualification")
+
+        return ExternalAuthoritySession(
+            "EXT-LEGACY-UV-AUTHORITY", "ABSENT", "AUTHORITY_EXECUTABLE_ABSENT",
+            _legacy_absent_authority(), (), absent_postcheck,
+        )
+    if uv_state == "ABSENT" or root_state == "ABSENT":
+        for retained in (uv_descriptor, root_descriptor):
+            if retained >= 0:
+                os.close(retained)
+        return ExternalAuthoritySession(
+            "EXT-LEGACY-UV-AUTHORITY", "PARTIAL", "AUTHORITY_PARTIAL",
+            _invalid_external_authority("EXT-LEGACY-UV-AUTHORITY"), (), lambda: None,
+        )
+    if (
+        uv_state != "PRESENT" or root_state != "PRESENT"
+        or uv_identity is None or root_identity is None
+    ):
+        for retained in (uv_descriptor, root_descriptor):
+            if retained >= 0:
+                os.close(retained)
+        return ExternalAuthoritySession(
+            "EXT-LEGACY-UV-AUTHORITY", "INVALID", "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-LEGACY-UV-AUTHORITY"), (), lambda: None,
+        )
+    try:
+        digest = _digest_fd(uv_descriptor)
+        first_closure = _required_entry_manifest(
+            root_descriptor, LEGACY_CLOSURE_ENTRIES,
+            allow_symlink_names=frozenset({".venv/bin/python"}),
+        )
+        executable = f"/proc/self/fd/{uv_descriptor}"
+        common = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "check": False,
+            "pass_fds": (uv_descriptor,),
+        }
+        version = runner(
+            [executable, "--version"], timeout=10,
+            env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+            **common,
+        )
+        sync = runner(
+            [executable, "sync", "--frozen", "--extra", "test"],
+            cwd=legacy_root, timeout=120,
+            env={
+                "LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin",
+                "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0",
+                "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1",
+                "UV_NO_PROGRESS": "1",
+            },
+            **common,
+        )
+        second_closure = _required_entry_manifest(
+            root_descriptor, LEGACY_CLOSURE_ENTRIES,
+            allow_symlink_names=frozenset({".venv/bin/python"}),
+        )
+        stdout = version.stdout if isinstance(version.stdout, bytes) else b""
+        stderr = version.stderr if isinstance(version.stderr, bytes) else b""
+        sync_stdout = sync.stdout if isinstance(sync.stdout, bytes) else b""
+        sync_stderr = sync.stderr if isinstance(sync.stderr, bytes) else b""
+        if (
+            digest != expected_uv_sha256
+            or version.returncode != 0
+            or stdout != expected_uv_version.encode("utf-8") + b"\n"
+            or stderr != b""
+            or sync.returncode != 0
+            or first_closure != second_closure
+        ):
+            raise _ExternalStateError("INVALID")
+        uv_info = os.fstat(uv_descriptor)
+        authority = {
+            "authority_kind": "LEGACY_UV_AND_CLOSURE_V1",
+            "regular_file_status": "PRIVATE_CURRENT_USER_EXECUTABLE",
+            "expected_uv_sha256": expected_uv_sha256,
+            "observed_uv_sha256": digest,
+            "expected_uv_version": expected_uv_version,
+            "observed_uv_version": stdout[:-1].decode("utf-8"),
+            "expected_uid": os.geteuid(),
+            "observed_uid": uv_info.st_uid,
+            "expected_gid": os.getegid(),
+            "observed_gid": uv_info.st_gid,
+            "expected_mode": 0o755,
+            "observed_mode": stat.S_IMODE(uv_info.st_mode),
+            "legacy_closure_manifest_sha256": second_closure,
+            "legacy_closure_entry_count": len(LEGACY_CLOSURE_ENTRIES),
+            "sync_command_id": "LEGACY_UV_SYNC_FROZEN_OFFLINE_V1",
+            "sync_exit_code": sync.returncode,
+            "sync_stdout_sha256": hashlib.sha256(sync_stdout).hexdigest(),
+            "sync_stderr_sha256": hashlib.sha256(sync_stderr).hexdigest(),
+        }
+    except (OSError, subprocess.SubprocessError, UnicodeError, _ExternalStateError):
+        os.close(uv_descriptor)
+        os.close(root_descriptor)
+        return ExternalAuthoritySession(
+            "EXT-LEGACY-UV-AUTHORITY", "INVALID", "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-LEGACY-UV-AUTHORITY"), (), lambda: None,
+        )
+
+    def postcheck() -> None:
+        try:
+            named_uv = uv_path.lstat()
+            held_uv = os.fstat(uv_descriptor)
+            named_root = legacy_root.lstat()
+            held_root = os.fstat(root_descriptor)
+            closure = _required_entry_manifest(
+                root_descriptor, LEGACY_CLOSURE_ENTRIES,
+                allow_symlink_names=frozenset({".venv/bin/python"}),
+            )
+        except Exception as exc:
+            raise TopologyError("external authority changed during qualification") from exc
+        if (
+            _artifact_identity(named_uv) != uv_identity
+            or _artifact_identity(held_uv) != uv_identity
+            or _digest_fd(uv_descriptor) != authority["observed_uv_sha256"]
+            or _artifact_identity(named_root) != root_identity
+            or _artifact_identity(held_root) != root_identity
+            or closure != authority["legacy_closure_manifest_sha256"]
+        ):
+            raise TopologyError("external authority changed during qualification")
+
+    return ExternalAuthoritySession(
+        "EXT-LEGACY-UV-AUTHORITY", "VALID", "AUTHORITY_COMPLETE_VALIDATED",
+        authority, (uv_descriptor, root_descriptor), postcheck,
+    )
+
+
+@contextmanager
+def _retained_external_authority(
+    code: str, *, corpus_root: Path = PHASE3B_ROOT, uv_path: Path = LEGACY_UV,
+    legacy_root: Path = ROOT / "legacy/research-backend",
+    corpus_validator: Callable[[Path], object] = _default_phase3b_validator,
+    expected_uv_sha256: str = LEGACY_UV_SHA256,
+    expected_uv_version: str = LEGACY_UV_VERSION,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+):
+    if code == "EXT-PHASE3B-CORPUS":
+        session = _open_phase3b_external_session(
+            corpus_root=corpus_root, corpus_validator=corpus_validator,
+        )
+    elif code == "EXT-LEGACY-UV-AUTHORITY":
+        session = _open_legacy_external_session(
+            uv_path=uv_path, legacy_root=legacy_root,
+            expected_uv_sha256=expected_uv_sha256,
+            expected_uv_version=expected_uv_version, runner=runner,
+        )
+    else:
+        raise TopologyError("unknown external authority")
+    try:
+        yield session
+    finally:
+        for descriptor in session.descriptors:
+            os.close(descriptor)
 
 
 def _external_preflight(
@@ -4222,65 +5271,16 @@ def _external_preflight(
     corpus_validator: Callable[[Path], object] = _default_phase3b_validator,
     expected_uv_sha256: str = LEGACY_UV_SHA256,
     expected_uv_version: str = LEGACY_UV_VERSION,
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> tuple[str, str]:
-    if code == "EXT-PHASE3B-CORPUS":
-        root_state = _safe_authority_entry(corpus_root, directory=True)
-        if root_state == "ABSENT":
-            return "ABSENT", "AUTHORITY_ROOT_ABSENT"
-        if root_state is not None:
-            return "INVALID", "AUTHORITY_INVALID"
-        direct = _validate_direct_entries(corpus_root, PHASE3B_REQUIRED_ENTRIES)
-        if direct is not None:
-            return direct, "AUTHORITY_PARTIAL" if direct == "PARTIAL" else "AUTHORITY_INVALID"
-        try:
-            analysis = corpus_validator(corpus_root)
-        except FileNotFoundError:
-            return "PARTIAL", "AUTHORITY_PARTIAL"
-        except Exception:
-            return "INVALID", "AUTHORITY_INVALID"
-        return ("VALID", "AUTHORITY_COMPLETE_VALIDATED") if _phase3b_valid(analysis) else ("INVALID", "AUTHORITY_INVALID")
-    if code == "EXT-LEGACY-UV-AUTHORITY":
-        uv_state = _safe_authority_entry(uv_path, directory=False)
-        legacy_state = _safe_authority_entry(legacy_root, directory=True)
-        if uv_state == legacy_state == "ABSENT":
-            return "ABSENT", "AUTHORITY_EXECUTABLE_ABSENT"
-        if uv_state == "INVALID" or legacy_state == "INVALID":
-            return "INVALID", "AUTHORITY_INVALID"
-        if uv_state == "ABSENT" or legacy_state == "ABSENT":
-            return "PARTIAL", "AUTHORITY_PARTIAL"
-        if uv_state is not None or legacy_state is not None:
-            return "INVALID", "AUTHORITY_INVALID"
-        direct = _validate_direct_entries(legacy_root, LEGACY_CLOSURE_ENTRIES)
-        if direct is not None:
-            return direct, "AUTHORITY_PARTIAL" if direct == "PARTIAL" else "AUTHORITY_INVALID"
-        descriptor = -1
-        try:
-            named_before = uv_path.lstat()
-            descriptor = os.open(uv_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
-            opened = os.fstat(descriptor)
-            digest = _digest_fd(descriptor)
-            executable = f"/proc/self/fd/{descriptor}"
-            version = runner([executable, "--version"], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False, pass_fds=(descriptor,))
-            sync = runner(
-                [executable, "sync", "--frozen", "--extra", "test"],
-                cwd=legacy_root, stdin=subprocess.DEVNULL, capture_output=True,
-                text=True, timeout=120, check=False,
-                env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "0", "PYTHONNOUSERSITE": "1", "UV_OFFLINE": "1"}, pass_fds=(descriptor,),
-            )
-            named_after = uv_path.lstat()
-            stable = _identity(named_before) == _identity(opened) == _identity(named_after) and _digest_fd(descriptor) == digest
-        except (OSError, subprocess.SubprocessError):
-            return "INVALID", "AUTHORITY_INVALID"
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        if (stat.S_IMODE(opened.st_mode) != 0o755 or not stable or digest != expected_uv_sha256
-                or version.returncode != 0 or version.stdout.strip() != expected_uv_version
-                or sync.returncode != 0):
-            return "INVALID", "AUTHORITY_INVALID"
-        return "VALID", "AUTHORITY_COMPLETE_VALIDATED"
-    raise TopologyError("unknown external authority")
+    with _retained_external_authority(
+        code, corpus_root=corpus_root, uv_path=uv_path, legacy_root=legacy_root,
+        corpus_validator=corpus_validator, expected_uv_sha256=expected_uv_sha256,
+        expected_uv_version=expected_uv_version, runner=runner,
+    ) as session:
+        if session.state in {"VALID", "ABSENT"}:
+            _postcheck_external_authority(session)
+        return session.state, session.fact
 
 
 def _run_exact_observations(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
@@ -4423,6 +5423,92 @@ def _publish_native_failure_marker(
     return marker
 
 
+def _resolve_exact_external_artifact_set(
+    marker: Path, expected_receipt_raw: bytes,
+    expected_governance_raw: bytes | None,
+) -> None:
+    with _retained_private_native_artifacts(marker) as artifacts:
+        if (
+            artifacts.marker_raw != expected_receipt_raw
+            or artifacts.bundle_receipt_raw != expected_receipt_raw
+            or artifacts.governance_raw != expected_governance_raw
+        ):
+            raise TopologyError("external acceptance marker is foreign or ambiguous")
+        receipt = parse_receipt(expected_receipt_raw)
+        if receipt.get("schema_version") != EXTERNAL_RECEIPT_SCHEMA:
+            raise TopologyError("external acceptance marker has mixed receipt semantics")
+        _validate_external_manifest_bytes(
+            artifacts.manifest_raw, receipt, expected_receipt_raw,
+            expected_governance_raw,
+        )
+        _postcheck_private_native_artifacts(artifacts)
+
+
+def _publish_external_marker_or_resolve(
+    marker: Path, receipt_raw: bytes, governance_raw: bytes | None,
+) -> None:
+    try:
+        _publish_external_acceptance_marker(marker, receipt_raw)
+    except (OSError, TopologyError):
+        try:
+            _resolve_exact_external_artifact_set(
+                marker, receipt_raw, governance_raw,
+            )
+        except TopologyError as resolution_error:
+            raise TopologyError(
+                "external acceptance marker publication is unresolved",
+            ) from resolution_error
+        return
+    _resolve_exact_external_artifact_set(marker, receipt_raw, governance_raw)
+
+
+def _publish_external_receipt_transaction(
+    *, receipt: dict[str, object], evidence_root: Path,
+    session: ExternalAuthoritySession, governance_raw: bytes | None,
+) -> Path:
+    topology_root = evidence_root / "capability-topology"
+    code = str(receipt["capability_or_authority_code"])
+    marker = topology_root / f"{code}.json"
+    candidate = _stage_external_candidate(topology_root, receipt, governance_raw)
+    _postcheck_external_authority(session)
+    _publish_external_candidate_bundle(
+        candidate, topology_root / f"{code}.artifacts",
+    )
+    _postcheck_external_authority(session)
+    _publish_external_marker_or_resolve(
+        marker, canonical_json_bytes(receipt), governance_raw,
+    )
+    return marker
+
+
+def _publish_external_failure_marker(
+    *, receipt: dict[str, object], evidence_root: Path,
+) -> Path:
+    topology_root = evidence_root / "capability-topology"
+    code = str(receipt["capability_or_authority_code"])
+    marker = topology_root / f"{code}.json"
+    bundle = topology_root / f"{code}.artifacts"
+    receipt_raw = canonical_json_bytes(receipt)
+    if not os.path.lexists(bundle):
+        candidate = _stage_external_candidate(topology_root, receipt, None)
+        _publish_external_candidate_bundle(candidate, bundle)
+        _publish_external_marker_or_resolve(marker, receipt_raw, None)
+        return marker
+    try:
+        _publish_external_acceptance_marker(marker, receipt_raw)
+    except (OSError, TopologyError):
+        try:
+            if _read_private_regular_file(
+                marker, label="external FAIL marker",
+            ) != receipt_raw:
+                raise TopologyError("external FAIL marker is foreign")
+        except TopologyError as resolution_error:
+            raise TopologyError(
+                "external FAIL marker publication is unresolved",
+            ) from resolution_error
+    return marker
+
+
 def _execute_native_pass_transaction(
     *, baseline: dict[str, object], expected: tuple[str, ...],
     evidence_root: Path, context: dict[str, object], code: str,
@@ -4478,12 +5564,66 @@ def _execute_native_pass_transaction(
         raise TopologyError("native exact transaction failed") from exc
 
 
+def _execute_external_pass_transaction(
+    *, baseline: dict[str, object], expected: tuple[str, ...],
+    evidence_root: Path, context: dict[str, object], code: str,
+    session: ExternalAuthoritySession,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+) -> Path:
+    topology_root = evidence_root / "capability-topology"
+    execution_root = topology_root / (
+        f".external-execution-{code}-{secrets.token_hex(16)}"
+    )
+    _prepare_private_evidence_directory(execution_root)
+    governance = execution_root / NATIVE_BUNDLE_GOVERNANCE
+    selected_count = len(expected)
+    try:
+        selected = _execute_exact_with_retained_custody(
+            baseline=baseline, nodes=expected, report=governance,
+            runner=exact_runner, retain_provisional=True,
+            append_only_native_diagnostic=True,
+        )
+        custody = _validate_custody_policy(baseline["collector_policy"])
+        governance_raw = _read_private_regular_file(
+            governance, label="external PASS governance staging record",
+        )
+        _validate_exact_governance_bytes(governance_raw, expected, custody)
+        passed_receipt = make_external_receipt(
+            context=context, code=code, expected=expected, collected=selected,
+            session=session, outcome="PASS", selected_test_count=selected_count,
+            passed=selected_count, failed=0, unavailable=0,
+        )
+        return _publish_external_receipt_transaction(
+            receipt=passed_receipt, evidence_root=evidence_root,
+            session=session, governance_raw=governance_raw,
+        )
+    except Exception as exc:
+        if os.path.lexists(topology_root / f"{code}.json"):
+            raise
+        authority_drift = isinstance(exc, TopologyError) and (
+            "external authority changed" in str(exc)
+        )
+        failure = make_external_receipt(
+            context=context, code=code, expected=expected, collected=(),
+            session=session, outcome="FAIL", selected_test_count=selected_count,
+            passed=0, failed=selected_count, unavailable=0,
+            fact=("AUTHORITY_DRIFTED" if authority_drift else "EXTERNAL_EXACT_TEST_FAILURE"),
+            state=("DRIFTED" if authority_drift else "INVALID"),
+        )
+        _publish_external_failure_marker(
+            receipt=failure, evidence_root=evidence_root,
+        )
+        if isinstance(exc, TopologyError):
+            raise
+        raise TopologyError("external exact transaction failed") from exc
+
+
 def run_lane(
     *, lane: str, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
-    external_preflight: Callable[[str], tuple[str, str]] = _external_preflight,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] = _run_exact,
     foundation_context_path: Path | None = None,
     native_probe_factory: Callable[..., Any] = _retained_native_probe,
+    external_session_factory: Callable[..., Any] = _retained_external_authority,
 ) -> list[Path]:
     require_foundation_context(run_id, head_sha)
     context = _optional_foundation_context(foundation_context_path, run_id=run_id, head_sha=head_sha)
@@ -4504,6 +5644,8 @@ def run_lane(
         return []
     if lane == "native-capabilities" and context is None:
         raise TopologyError("native capability receipts require sealed Foundation context")
+    if lane == "external-authorities" and context is None:
+        raise TopologyError("external authority receipts require sealed Foundation context")
     publications: list[Path] = []
     for code in sorted(CODE_CLASSIFICATION):
         expected_lane, expected = _expected_rows(rows, code)
@@ -4559,22 +5701,57 @@ def run_lane(
                     exact_runner=exact_runner,
                 ))
                 continue
-        state, fact = external_preflight(code)
-        if state in {"BROKEN", "PARTIAL", "INVALID"}:
-            raise TopologyError(f"{code} preflight is {state}")
-        if state in {"UNAVAILABLE", "ABSENT"}:
-            receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=(), state=state, fact=fact, outcome="DEFERRED")
-        else:
+        assert context is not None
+        with external_session_factory(code) as session:
+            if not isinstance(session, ExternalAuthoritySession) or session.code != code:
+                raise TopologyError("external preflight returned an invalid authority session")
+            if session.state in {"PARTIAL", "INVALID", "DRIFTED"}:
+                failure = make_external_receipt(
+                    context=context, code=code, expected=expected, collected=(),
+                    session=session, outcome="FAIL", selected_test_count=0,
+                    passed=0, failed=0, unavailable=0,
+                )
+                publications.append(_publish_external_failure_marker(
+                    receipt=failure, evidence_root=evidence_root,
+                ))
+                raise TopologyError(f"{code} preflight is {session.state}")
+            if session.state == "ABSENT":
+                deferred = make_external_receipt(
+                    context=context, code=code, expected=expected, collected=(),
+                    session=session, outcome="DEFERRED", selected_test_count=0,
+                    passed=0, failed=0, unavailable=len(expected),
+                )
+                try:
+                    publications.append(_publish_external_receipt_transaction(
+                        receipt=deferred, evidence_root=evidence_root,
+                        session=session, governance_raw=None,
+                    ))
+                except TopologyError as exc:
+                    if "external authority changed" in str(exc):
+                        failure = make_external_receipt(
+                            context=context, code=code, expected=expected,
+                            collected=(), session=session, outcome="FAIL",
+                            selected_test_count=0, passed=0, failed=0,
+                            unavailable=0, fact="AUTHORITY_DRIFTED",
+                            state="DRIFTED",
+                        )
+                        publications.append(_publish_external_failure_marker(
+                            receipt=failure, evidence_root=evidence_root,
+                        ))
+                    raise
+                continue
+            if session.state != "VALID":
+                raise TopologyError("external preflight returned an unknown state")
             baseline = load_portable_root_baseline(
-                inventory=inventory, evidence_root=evidence_root, run_id=run_id, head_sha=head_sha,
+                inventory=inventory, evidence_root=evidence_root,
+                run_id=run_id, head_sha=head_sha,
                 foundation_context_path=foundation_context_path,
             )
-            governance = evidence_root / "capability-topology" / f"{code}.governance.json"
-            selected = _execute_exact_with_retained_custody(
-                baseline=baseline, nodes=expected, report=governance, runner=exact_runner,
-            )
-            receipt = make_receipt(run_id=run_id, head_sha=head_sha, lane=lane, code=code, expected=expected, collected=selected, state=state, fact=fact, outcome="PASS")
-        publications.append(publish_receipt(receipt, evidence_root))
+            publications.append(_execute_external_pass_transaction(
+                baseline=baseline, expected=expected, evidence_root=evidence_root,
+                context=context, code=code, session=session,
+                exact_runner=exact_runner,
+            ))
     return publications
 
 
@@ -4591,7 +5768,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=(
         "reserve", "collect-baseline", "prepare-remainder", "run-remainder", "run-lane",
-        "check-closure", "validate-native", "aggregate",
+        "check-closure", "validate-native", "validate-external", "aggregate",
     ))
     parser.add_argument("--lane", choices=tuple(CLASSIFICATION_LANE.values()))
     parser.add_argument("--inventory", type=Path, default=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
@@ -4606,8 +5783,10 @@ def main(argv: list[str] | None = None) -> int:
             run_id=run_id,
             head_sha=head_sha,
         )
-        if args.require_pass and args.action != "validate-native":
-            raise TopologyError("--require-pass is valid only for validate-native")
+        if args.require_pass and args.action not in {"validate-native", "validate-external"}:
+            raise TopologyError(
+                "--require-pass is valid only for native or external validation",
+            )
         if args.action == "reserve":
             reserve_topology_evidence(args.evidence_root, run_id=run_id, head_sha=head_sha, foundation_context_path=args.foundation_context_path)
         elif args.action == "collect-baseline":
@@ -4648,6 +5827,19 @@ def main(argv: list[str] | None = None) -> int:
             sealed_custody = _validate_custody_policy(baseline["collector_policy"])
             topology_root = args.evidence_root / "capability-topology"
             print(validate_native_artifacts(
+                topology_root, rows=rows, foundation_context=context,
+                sealed_custody=sealed_custody, require_pass=args.require_pass,
+            ))
+        elif args.action == "validate-external":
+            rows = _installed_inventory_rows(args.inventory, args.evidence_root)
+            baseline = load_portable_root_baseline(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
+            )
+            sealed_custody = _validate_custody_policy(baseline["collector_policy"])
+            topology_root = args.evidence_root / "capability-topology"
+            print(validate_external_artifacts(
                 topology_root, rows=rows, foundation_context=context,
                 sealed_custody=sealed_custody, require_pass=args.require_pass,
             ))

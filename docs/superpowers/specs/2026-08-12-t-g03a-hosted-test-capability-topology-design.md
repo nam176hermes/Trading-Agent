@@ -409,16 +409,15 @@ binding exactly:
 | --- | --- | --- |
 | `check-test-skips` | `scripts.check_test_governance` | one strict governance invocation |
 | `check-test-governance-topology` | `scripts.check_test_governance` | one topology-audit invocation |
-| `test-portable-source` | `scripts.t_g03_capability_topology` | `reserve`, `collect-baseline`, `run-lane --lane portable-source` |
-| `test-native-capabilities` | `scripts.t_g03_capability_topology` | `reserve`, `run-lane --lane native-capabilities` |
-| `test-external-authorities` | `scripts.t_g03_capability_topology` | `reserve`, `run-lane --lane external-authorities` |
+| `test-portable-source` | `scripts.t_g03_capability_topology` | `reserve`, `collect-baseline`, `check-closure` |
+| `test-native-capabilities` | `scripts.t_g03_capability_topology` | `reserve`, `collect-baseline`, `run-lane --lane native-capabilities` |
+| `test-external-authorities` | `scripts.t_g03_capability_topology` | `reserve`, `collect-baseline`, `run-lane --lane external-authorities` |
 | `test-portable-root-remainder` | `scripts.t_g03_capability_topology` | `collect-baseline`, `prepare-remainder`, `run-remainder` |
-| `ci-portable-topology` | `scripts.t_g03_capability_topology` | `reserve`, three exact `run-lane` calls, `aggregate` |
+| `ci-portable-topology` | `scripts.t_g03_capability_topology` | `reserve`, `check-closure`, two exact runtime `run-lane` calls, `aggregate` |
 
 At the reviewed current source this is exactly two governance invocations and
-fifteen topology invocations.  The earlier fourteen-topology count was stale:
-the current `ci-portable-topology` target also launches `aggregate`, and this
-amendment deliberately includes it.  Every direct Make spelling
+seventeen topology invocations. The former fifteen-topology count predates the
+native and external standalone custody/baseline repairs. Every direct Make spelling
 `uv run python scripts/t_g03_capability_topology.py` or
 `uv run python scripts/check_test_governance.py` is prohibited after this
 repair.  This prohibition is confined to these two tools; no unrelated
@@ -516,11 +515,11 @@ position is noncanonical and fails closed.
 | --- | --- |
 | `check-test-skips` | `scripts.check_test_governance --report-dir <controlled-governance-root>` |
 | `check-test-governance-topology` | `scripts.check_test_governance --topology-audit --report-dir <controlled-topology-report-root> --topology-evidence-root <controlled-evidence-root> --inventory tests/fixtures/t-g03a-hosted-failure-inventory.tsv --foundation-context-path <controlled-context-path>` |
-| `test-portable-source` | `scripts.t_g03_capability_topology reserve ...`; `collect-baseline ...`; `run-lane --lane portable-source ...` |
-| `test-native-capabilities` | `scripts.t_g03_capability_topology reserve ...`; `run-lane --lane native-capabilities ...` |
-| `test-external-authorities` | `scripts.t_g03_capability_topology reserve ...`; `run-lane --lane external-authorities ...` |
+| `test-portable-source` | `scripts.t_g03_capability_topology reserve ...`; `collect-baseline ...`; `check-closure ...` |
+| `test-native-capabilities` | `scripts.t_g03_capability_topology reserve ...`; `collect-baseline ...`; `run-lane --lane native-capabilities ...` |
+| `test-external-authorities` | `scripts.t_g03_capability_topology reserve ...`; `collect-baseline ...`; `run-lane --lane external-authorities ...` |
 | `test-portable-root-remainder` | `scripts.t_g03_capability_topology collect-baseline ...`; `prepare-remainder ...`; `run-remainder ...` |
-| `ci-portable-topology` | `scripts.t_g03_capability_topology reserve ...`; `run-lane --lane portable-source ...`; `run-lane --lane native-capabilities ...`; `run-lane --lane external-authorities ...`; `aggregate ...` |
+| `ci-portable-topology` | `scripts.t_g03_capability_topology reserve ...`; `check-closure ...`; `run-lane --lane native-capabilities ...`; `run-lane --lane external-authorities ...`; `aggregate ...` |
 
 Here every topology suffix after its action retains exactly the current
 `--evidence-root <controlled-evidence-root>` then
@@ -1962,3 +1961,52 @@ symlinked/replaced parents or leaves, manifest tampering, and extra bundle
 entries fail closed. Random candidate/execution directories are inert and are
 never glob-selected. Canonical filename routing, portable DEFERRED behavior,
 future `--require-pass`, and external-v1 compatibility remain unchanged.
+
+## External-authority v2 Architecture-A amendment (P0-08)
+
+This amendment supersedes every earlier statement that external-authority
+receipts remain on flat v1. Only `EXT-PHASE3B-CORPUS` and
+`EXT-LEGACY-UV-AUTHORITY` migrate to
+`t-g03a-external-authority-receipt/v2`; native v2 and portable-source v1
+semantics are unchanged.
+
+External v2 binds the sealed Foundation run, head, date and context, the locked
+inventory, the exact sorted three-node group, strict integer execution counts,
+outcome, completeness and receipt hashes, and an exact code-specific safe-fact
+object. Phase-3B facts include the reviewed inventory digest and counts plus a
+hash-only required-entry metadata commitment. Legacy facts include the fixed
+UV digest/version/uid/gid/mode, hash-only frozen-offline-sync results, and a
+hash-only legacy-closure commitment. Receipts contain no absolute authority
+path, corpus/DB value, raw research content, raw command output, credential, or
+environment secret.
+
+The Phase-3B session verifies the fixed private root, safe ancestors and direct
+required entries without following symlinks, runs the production analyzer, and
+retains the root descriptor and identity. The legacy session retains the exact
+fixed regular UV descriptor, invokes version and `sync --frozen --extra test`
+only through `/proc/self/fd/<fd>` with the closed offline environment, and
+snapshots the fixed legacy closure. Both revalidate their commitments before
+and after deterministic bundle publication. The UV FD remains retained across
+exact governed execution. Whole declared-authority absence is DEFERRED;
+partial, invalid, drifted or nonpassing authority is strict FAIL.
+
+Each external code uses the same independently reviewed append-only acceptance
+primitive under an external schema: random private candidate, exact
+`receipt.json`, optional PASS-only `governance.json`, strict self-hashed
+`manifest.json`, fsync, authority postcheck, Linux
+`renameat2(RENAME_NOREPLACE)` to `<CODE>.artifacts`, retained reread and second
+authority postcheck, then marker-last `<CODE>.json`. The marker must equal the
+bundled receipt. No external transaction rolls back, unlinks, overwrites or
+deletes transaction or foreign evidence. Staging leftovers and unmarked
+bundles are inert; occupancy and unresolved publication fail closed.
+
+PASS validation requires exact marker/bundle/manifest bindings and exact
+three-node governance sealed to portable-root custody. DEFERRED forbids
+governance; FAIL never aggregates. Portable aggregation accepts genuine
+DEFERRED and surfaces incomplete runtime proof, while
+`validate-external --require-pass` rejects it for later host qualification.
+The standalone external target now builds the existing custody extension,
+reserves evidence, collects the baseline exactly once, and runs the external
+lane. This raises the guarded Make contract to seventeen topology-module
+invocations: three portable-source, three native, three external, three
+remainder, and five aggregate-orchestration invocations.

@@ -267,10 +267,27 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
             lane="native-capabilities", inventory=INVENTORY, evidence_root=evidence,
             run_id=run_id, head_sha=head, foundation_context_path=context,
         )
+
+        @topology.contextmanager
+        def absent_external_session(code: str):
+            authority = (
+                topology._phase3b_absent_authority()
+                if code == "EXT-PHASE3B-CORPUS"
+                else topology._legacy_absent_authority()
+            )
+            fact = (
+                "AUTHORITY_ROOT_ABSENT"
+                if code == "EXT-PHASE3B-CORPUS"
+                else "AUTHORITY_EXECUTABLE_ABSENT"
+            )
+            yield topology.ExternalAuthoritySession(
+                code, "ABSENT", fact, authority, (), lambda: None,
+            )
+
         topology.run_lane(
             lane="external-authorities", inventory=INVENTORY, evidence_root=evidence,
             run_id=run_id, head_sha=head, foundation_context_path=context,
-            external_preflight=lambda _code: ("ABSENT", "AUTHORITY_ROOT_ABSENT"),
+            external_session_factory=absent_external_session,
         )
         result = topology.reconcile_portable_root_accounting(
             inventory=INVENTORY, evidence_root=evidence, run_id=run_id,

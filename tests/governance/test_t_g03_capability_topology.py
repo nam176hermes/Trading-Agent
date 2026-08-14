@@ -225,6 +225,48 @@ def _write_native_artifact_fixture(
     return marker
 
 
+def _external_receipt(code: str) -> dict[str, object]:
+    rows = topology.load_inventory(
+        Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+    )
+    expected = topology._expected_rows(rows, code)[1]
+    context = _native_context()
+    if code == "EXT-PHASE3B-CORPUS":
+        authority = topology._phase3b_absent_authority()
+        fact = "AUTHORITY_ROOT_ABSENT"
+    else:
+        authority = topology._legacy_absent_authority()
+        fact = "AUTHORITY_EXECUTABLE_ABSENT"
+    session = topology.ExternalAuthoritySession(
+        code, "ABSENT", fact, authority, (), lambda: None,
+    )
+    return topology.make_external_receipt(
+        context=context, code=code, expected=expected, collected=(),
+        session=session, outcome="DEFERRED", selected_test_count=0,
+        passed=0, failed=0, unavailable=len(expected),
+    )
+
+
+def _write_external_artifact_fixture(
+    topology_root: Path, receipt: dict[str, object],
+    governance_raw: bytes | None = None,
+) -> Path:
+    topology_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    topology_root.chmod(0o700)
+    candidate = topology._stage_external_candidate(
+        topology_root, receipt, governance_raw,
+    )
+    code = str(receipt["capability_or_authority_code"])
+    marker = topology_root / f"{code}.json"
+    topology._publish_external_candidate_bundle(
+        candidate, topology_root / f"{code}.artifacts",
+    )
+    topology._publish_external_acceptance_marker(
+        marker, topology.canonical_json_bytes(receipt),
+    )
+    return marker
+
+
 def test_native_v2_receipt_binds_context_probe_and_exact_unavailable_count() -> None:
     """Break caught: native deferral can omit its sealed context, probe, or exact count."""
     rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
@@ -292,8 +334,8 @@ def test_native_v2_receipt_rejects_every_foreign_binding(
         )
 
 
-def test_native_v1_is_stale_while_external_v1_remains_valid() -> None:
-    """Break caught: the shared v1 parser keeps accepting native evidence after migration."""
+def test_native_and_external_v1_are_stale_after_their_separate_migrations() -> None:
+    """Break caught: either migrated lane can fall back to the shared flat v1 schema."""
     rows = topology.load_inventory(Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
     run, head = "31641536482", "18f22198c65c7bc735aeb848d8fda55209d01e78"
     native_code = "NATIVE-USERNS-ROOT-PROVISION"
@@ -319,10 +361,12 @@ def test_native_v1_is_stale_while_external_v1_remains_valid() -> None:
         collected_node_ids=[], preflight_state="ABSENT",
         redacted_fact_class="AUTHORITY_ROOT_ABSENT", outcome="DEFERRED",
     )
-    assert topology.validate_receipt(
-        topology.canonical_json_bytes(external), rows=rows,
-        foundation_run_id=run, foundation_head_sha=head,
-    ) == external
+    with pytest.raises(topology.TopologyError, match="external v1"):
+        topology.validate_receipt(
+            topology.canonical_json_bytes(external), rows=rows,
+            foundation_run_id=run, foundation_head_sha=head,
+            foundation_context=_native_context(),
+        )
 
 
 def test_real_native_probe_argv_uses_retained_fd_and_exact_namespace_operations() -> None:
@@ -1349,11 +1393,13 @@ def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(
         receipt = (
             _native_receipt(capability_or_authority_code=code)
             if lane == "native-capabilities"
-            else _receipt(foundation_run_id=run, foundation_head_sha=head, lane=lane, capability_or_authority_code=code, expected_node_ids=list(node_ids), collected_node_ids=list(node_ids) if outcome == "PASS" else [], preflight_state=state, outcome=outcome)
+            else _external_receipt(code)
         )
         path = tmp_path / f"{code}.json"
         if lane == "native-capabilities":
             path = _write_native_artifact_fixture(tmp_path, receipt)
+        elif lane == "external-authorities":
+            path = _write_external_artifact_fixture(tmp_path, receipt)
         else:
             path.write_bytes(topology.canonical_json_bytes(receipt))
             path.chmod(0o600)
@@ -1365,12 +1411,21 @@ def test_aggregate_rejects_partial_and_execution_bearing_deferred_receipts(
         sealed_custody={},
     )
     assert summary["runtime_proof"] == "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS"
-    forged = _receipt(foundation_run_id=run, foundation_head_sha=head, lane="external-authorities", capability_or_authority_code="EXT-PHASE3B-CORPUS", expected_node_ids=list(topology._expected_rows(rows, "EXT-PHASE3B-CORPUS")[1]), collected_node_ids=["tests/control_api/test_phase3b_backfill.py::test_real_backfill_plan_has_only_approved_evidence"], preflight_state="ABSENT", outcome="DEFERRED")
-    with pytest.raises(topology.TopologyError, match="DEFERRED receipt selected"):
-        topology.validate_receipt(topology.canonical_json_bytes(forged), rows=rows, foundation_run_id=run, foundation_head_sha=head)
+    forged = _external_receipt("EXT-PHASE3B-CORPUS")
+    forged["collected_node_ids"] = [
+        "tests/control_api/test_phase3b_backfill.py::test_real_backfill_plan_has_only_approved_evidence",
+    ]
+    forged["completeness_sha256"] = topology.external_completeness_sha256(forged)
+    forged["receipt_sha256"] = topology.payload_sha256(forged)
+    with pytest.raises(topology.TopologyError, match="DEFERRED"):
+        topology.validate_receipt(
+            topology.canonical_json_bytes(forged), rows=rows,
+            foundation_run_id=run, foundation_head_sha=head,
+            foundation_context=_native_context(),
+        )
 
 
-def test_aggregate_rejects_renamed_native_pass_without_governance_and_keeps_external_v1(
+def test_aggregate_rejects_renamed_native_pass_and_requires_external_v2_bundles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Break caught: renaming native v2 bypasses its paired governance reader."""
@@ -1400,15 +1455,12 @@ def test_aggregate_rejects_renamed_native_pass_without_governance_and_keeps_exte
             receipt = _native_receipt(capability_or_authority_code=code)
             path = tmp_path / f"{code}.json"
         else:
-            receipt = _receipt(
-                foundation_run_id=run, foundation_head_sha=head, lane=lane,
-                capability_or_authority_code=code, expected_node_ids=list(expected),
-                collected_node_ids=[], preflight_state="ABSENT",
-                redacted_fact_class="AUTHORITY_ROOT_ABSENT", outcome="DEFERRED",
-            )
+            receipt = _external_receipt(code)
             path = tmp_path / f"{code}.json"
         if lane == "native-capabilities" and path.name != "renamed-native-pass.json":
             path = _write_native_artifact_fixture(tmp_path, receipt)
+        elif lane == "external-authorities":
+            path = _write_external_artifact_fixture(tmp_path, receipt)
         else:
             path.write_bytes(topology.canonical_json_bytes(receipt))
             path.chmod(0o600)
@@ -1492,14 +1544,16 @@ def test_publish_is_no_clobber_and_fake_path_cannot_supply_userns(tmp_path: Path
 
 def test_external_preflight_distinguishes_absent_partial_and_invalid(tmp_path: Path) -> None:
     """Break caught: a dangling or partial authority is deferred as absent."""
-    absent = tmp_path / "absent"
-    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=absent)[0] == "ABSENT"
-    dangling = tmp_path / "dangling"
-    dangling.symlink_to(absent)
-    assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=dangling)[0] == "INVALID"
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
-        partial = Path(raw)
-        partial.chmod(0o700)
+    del tmp_path
+    with _safe_authority_tempdir() as raw:
+        root = Path(raw)
+        absent = root / "absent"
+        assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=absent)[0] == "ABSENT"
+        dangling = root / "dangling"
+        dangling.symlink_to(absent)
+        assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=dangling)[0] == "INVALID"
+        partial = root / "partial"
+        partial.mkdir(mode=0o700)
         assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=partial)[0] == "PARTIAL"
 
 
@@ -1520,7 +1574,7 @@ def test_foundation_context_diagnostic_probe_requires_full_v1_validation(
     ).stdout.strip()
     monkeypatch.setenv("GITHUB_RUN_ID", run_id)
     monkeypatch.delenv("FOUNDATION_VALIDATION_DATE", raising=False)
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+    with _safe_authority_tempdir() as raw:
         root = Path(raw)
         valid_path = topology._capture_foundation_context(
             root / "valid",
@@ -1646,6 +1700,11 @@ def _write_direct(path: Path, content: str = "fixture\n", *, executable: bool = 
     path.chmod(0o755 if executable else 0o600)
 
 
+def _safe_authority_tempdir() -> tempfile.TemporaryDirectory[str]:
+    anchor = Path(f"/run/user/{os.geteuid()}")
+    return tempfile.TemporaryDirectory(dir=anchor)
+
+
 def _complete_corpus_fixture(root: Path) -> None:
     root.mkdir(mode=0o700)
     for relative, directory in topology.PHASE3B_REQUIRED_ENTRIES:
@@ -1667,7 +1726,7 @@ def _valid_phase3b_analysis() -> SimpleNamespace:
 def test_external_authority_inventory_classifies_missing_uv_with_closure_and_symlinked_corpus_child(tmp_path: Path) -> None:
     """Break caught: partial authority is deferred or a symlinked required child is trusted."""
     del tmp_path
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+    with _safe_authority_tempdir() as raw:
         root = Path(raw)
         root.chmod(0o700)
         legacy = root / "legacy"
@@ -1685,7 +1744,7 @@ def test_external_authority_inventory_classifies_missing_uv_with_closure_and_sym
 def test_fully_valid_external_fixtures_reach_valid_without_network(tmp_path: Path) -> None:
     """Break caught: even a fully bound authority cannot take the VALID pre-test path."""
     del tmp_path
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+    with _safe_authority_tempdir() as raw:
         root = Path(raw)
         root.chmod(0o700)
         corpus = root / "corpus"
@@ -1708,8 +1767,11 @@ def test_ci_portable_keeps_artifact_evidence_outside_deleted_tmp_root() -> None:
     assert "TEST_EVIDENCE_DIR ?= /tmp/trading-agent-test-evidence" in makefile
 
 
-def test_valid_external_preflight_is_the_only_path_that_selects_external_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Break caught: external tests execute before a full VALID preflight."""
+def test_valid_external_sessions_select_exact_nodes_but_synthetic_fixture_never_marks_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: external tests run without retained sessions or a fixture mints PASS."""
+    del tmp_path
     monkeypatch.setenv("GITHUB_RUN_ID", "31641536482")
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     selected: list[tuple[str, ...]] = []
@@ -1718,18 +1780,58 @@ def test_valid_external_preflight_is_the_only_path_that_selects_external_nodes(t
         selected.append(nodes)
         return _passing_exact(nodes, report)
 
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
-        evidence = Path(raw) / "artifact"
-        topology.reserve_topology_evidence(evidence, run_id="31641536482", head_sha=head)
+    with _safe_authority_tempdir() as raw:
+        root = Path(raw)
+        evidence = root / "artifact"
+        context = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id="31641536482", head_sha=head,
+            foundation_context_path=context,
+        )
         _seal_portable_root_baseline(
             monkeypatch, evidence, raw, run_id="31641536482", head_sha=head,
+            foundation_context_path=context,
+        )
+        corpus = root / "corpus"
+        _complete_corpus_fixture(corpus)
+        legacy = root / "legacy"
+        for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
+            _write_direct(legacy / relative, executable=relative.endswith("python"))
+        uv = root / "uv"
+        _write_direct(uv, "fixture uv authority\n", executable=True)
+        uv_sha256 = hashlib.sha256(uv.read_bytes()).hexdigest()
+
+        def runner(command, **_kwargs):
+            stdout = b"fixture-uv 1.0\n" if command[1:] == ["--version"] else b""
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr=b"")
+
+        @topology.contextmanager
+        def external_session(code: str):
+            with topology._retained_external_authority(
+                code, corpus_root=corpus, legacy_root=legacy, uv_path=uv,
+                corpus_validator=lambda _root: _valid_phase3b_analysis(),
+                expected_uv_sha256=uv_sha256,
+                expected_uv_version="fixture-uv 1.0", runner=runner,
+            ) as session:
+                assert session.state == "VALID"
+                yield session
+
+        staged_receipts: list[bytes] = []
+        monkeypatch.setattr(
+            topology, "_publish_external_marker_or_resolve",
+            lambda _marker, receipt_raw, _governance: staged_receipts.append(receipt_raw),
         )
         paths = topology.run_lane(
             lane="external-authorities", inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
             evidence_root=evidence, run_id="31641536482", head_sha=head,
-            external_preflight=lambda _code: ("VALID", "AUTHORITY_COMPLETE_VALIDATED"), exact_runner=exact,
+            foundation_context_path=context,
+            external_session_factory=external_session, exact_runner=exact,
         )
         assert len(paths) == 2
+        assert len(staged_receipts) == 2
+        assert not list((evidence / "capability-topology").glob("EXT-*.json"))
     assert sorted(len(nodes) for nodes in selected) == [3, 3]
 
 
@@ -1739,7 +1841,7 @@ def test_runner_boundary_byte_identical_custody_replacement_cannot_publish_pass(
     """Break caught: a same-byte replacement after precheck leaves a green root record."""
     run_id = "31641536482"
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+    with _safe_authority_tempdir() as raw:
         evidence = Path(raw) / "evidence"
         monkeypatch.setenv("GITHUB_RUN_ID", run_id)
         context = topology._capture_foundation_context(
@@ -1903,22 +2005,40 @@ def test_standalone_external_deferred_lane_does_not_require_portable_baseline(
     run_id = "31641536482"
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     monkeypatch.setenv("GITHUB_RUN_ID", run_id)
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
-        evidence = Path(raw) / "evidence"
-        topology.reserve_topology_evidence(evidence, run_id=run_id, head_sha=head)
+    with _safe_authority_tempdir() as raw:
+        root = Path(raw)
+        evidence = root / "evidence"
+        context = topology._capture_foundation_context(
+            evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+        )
+        topology.reserve_topology_evidence(
+            evidence, run_id=run_id, head_sha=head,
+            foundation_context_path=context,
+        )
+
+        @topology.contextmanager
+        def absent_session(code: str):
+            with topology._retained_external_authority(
+                code, corpus_root=root / "absent-corpus",
+                uv_path=root / "absent-uv", legacy_root=root / "absent-legacy",
+            ) as session:
+                yield session
+
         receipts = topology.run_lane(
             lane="external-authorities",
             inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
             evidence_root=evidence,
             run_id=run_id,
             head_sha=head,
-            external_preflight=lambda _code: ("ABSENT", "AUTHORITY_ROOT_ABSENT"),
+            foundation_context_path=context,
+            external_session_factory=absent_session,
         )
 
         assert not (evidence / "capability-topology/portable-root-baseline.json").exists()
         assert len(receipts) == 2
         assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "DEFERRED" for path in receipts)
         assert not list((evidence / "capability-topology").glob("*.governance.json"))
+        assert len(list((evidence / "capability-topology").glob("EXT-*.artifacts"))) == 2
 
 
 def test_topology_retry_fails_before_replacing_existing_governance_bytes(tmp_path: Path) -> None:
