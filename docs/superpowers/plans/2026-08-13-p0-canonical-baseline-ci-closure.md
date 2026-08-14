@@ -1591,9 +1591,9 @@ git commit -m "refactor(ci): isolate portable and host authority gates"
 
 - Modify: `scripts/t_g03_capability_topology.py`
 - Modify: `scripts/check_test_governance.py`
-- Modify: `scripts/check_artifact_firewall.py`
-- Modify: `tests/test_t_g03_capability_topology.py`
-- Modify/add artifact-firewall tests.
+- Create: `scripts/check_artifact_firewall.py`
+- Modify: `tests/governance/test_t_g03_capability_topology.py`
+- Create/modify: `tests/test_artifact_firewall.py`
 - Modify: `.github/workflows/foundation.yml`
 - Modify: `Makefile`
 
@@ -1604,11 +1604,14 @@ runtime/state/ci-portable/
 ├── manifest.json
 ├── SHA256SUMS
 ├── capability-topology/
-│   ├── foundation-context.json
-│   ├── portable-source-receipt.json
-│   ├── native-capability-receipt.json
-│   ├── external-authority-receipt.json
-│   └── aggregate.json
+│   ├── sealed Foundation context/reservation/baseline/closure/aggregate files
+│   ├── NATIVE-BWRAP-OS-SANDBOX.json
+│   ├── NATIVE-BWRAP-OS-SANDBOX.artifacts/{receipt.json,governance.json,manifest.json}
+│   ├── NATIVE-USERNS-ROOT-PROVISION.json
+│   ├── NATIVE-USERNS-ROOT-PROVISION.artifacts/{receipt.json,governance.json,manifest.json}
+│   ├── EXT-PHASE3B-CORPUS.json
+│   ├── EXT-PHASE3B-CORPUS.artifacts/{receipt.json,governance.json,manifest.json}
+│   └── EXT-LEGACY-UV-AUTHORITY.json plus its deterministic `.artifacts` bundle
 ├── test-governance/
 │   ├── summary.json
 │   └── error.json              # only on error
@@ -1616,11 +1619,18 @@ runtime/state/ci-portable/
     └── ...
 ```
 
+The exact auxiliary filenames come from the current strict schemas. Preserve
+P0-07/P0-08 Architecture-A append-only bundle-then-marker acceptance: flat
+native/external receipts, random staging leftovers, stale bundles, and glob-only
+discovery are not authority evidence. Topology and governance commands write to
+a private raw staging root; only the validated final publisher may create the
+final root, and it must not merge with or overwrite an existing destination.
+
 ### Step 2 — Separate semantic digest from run metadata
 
 The semantic result digest must exclude nondeterministic fields such as upload time.
 
-Bind semantic output to:
+Bind semantic output to a canonical projection of:
 
 ```text
 head SHA
@@ -1637,23 +1647,35 @@ Run metadata may separately contain:
 
 ```text
 run ID
-attempt
+attempt when available
 generated_at_utc
 ```
 
-Two runs on the same source/context must yield the same semantic digest.
+Two attempts on the same head/tree/date/policy/inventory/nodes/outcomes/statuses
+must yield the same semantic digest even when run ID, attempt, timestamps,
+Foundation self-hash, receipt self-hashes, and filesystem identity differ. The
+semantic projection still binds Foundation head/date meaning and receipt
+outcomes/counts. Complete bytes and run identity are bound independently by the
+manifest integrity binding and exact sorted `SHA256SUMS` entries.
 
 ### Step 3 — Enforce no-clobber publication
 
 Evidence writing must:
 
-1. create a private staging directory;
-2. write all files;
-3. fsync where the existing publication policy requires it;
-4. validate schema and digests;
-5. publish without overwriting an existing evidence set;
-6. retain/quarantine partial evidence safely on failure;
-7. never follow symlinks.
+1. require a private current-user staging root and validate every ancestor;
+2. open directories and leaves descriptor-relatively with no-follow semantics;
+3. accept only the closed manifest-listed layout and reject traversal,
+   duplicates, hardlinks, symlinks, special files, and extra files;
+4. validate topology/governance schemas and Architecture-A relationships;
+5. write canonical manifest/checksums, fsync, and validate retained bytes;
+6. publish with Linux `renameat2(RENAME_NOREPLACE)` at the exact destination;
+7. resolve ambiguous success from retained/named identity and bytes without
+   unlinking or rolling back a possibly foreign published set;
+8. leave failed staging private and inert; and
+9. reject mutation at every seal/publication boundary.
+
+Reuse the retained-FD, canonical JSON, hashing, and no-replace primitives. Do
+not duplicate or weaken the P0-07/P0-08 per-code transactions.
 
 ### Step 4 — Expand the artifact firewall
 
@@ -1663,16 +1685,20 @@ Reject evidence containing patterns for:
 TRADING_MASTER_KEY
 LIVE_EXECUTION_ENABLED=true
 LIVE_TRADING_ENABLED=true
-password=
-secret=
-api_key=
-authorization:
+password
+secret
+api_key
+authorization
 private key material
 database URL credentials
-exchange credentials
+exchange/broker credential fields
 ```
 
-Avoid broad false positives by testing structured keys and known secret formats.
+Inspect retained structured bytes, including nested/list stdout and stderr
+values. Avoid broad substring false positives for documentation, node IDs,
+redacted values, hashes, and safe status keys. Diagnostics must never print the
+secret value and may expose only a closed error code, relative identity/hash,
+and structured key category.
 
 ### Step 5 — Add adversarial tests
 
@@ -1685,26 +1711,30 @@ Test:
 - duplicate file;
 - extra unmanifested file;
 - stale head SHA;
-- stale run ID;
-- secret in stdout;
-- secret in stderr;
-- mutable evidence after manifest generation;
-- attempted receipt overwrite.
+- stale inventory/context/policy and run/head bindings;
+- nested structured stdout/stderr secret values and known credential formats;
+- redacted and safe near-misses;
+- mutable evidence after manifest generation and boundary replacement races;
+- hardlink/symlink/special/missing/extra leaves;
+- attempted marker/bundle overwrite or flat-receipt fallback; and
+- run-metadata variants with equal semantic digests plus a semantic mutation
+  that changes the digest.
 
 ### Step 6 — Run tests and inspect artifact
 
 ```bash
 uv run pytest -q \
-  tests/test_t_g03_capability_topology.py \
+  tests/governance/test_t_g03_capability_topology.py \
   tests/test_artifact_firewall.py
 
-make ci-portable NONINTERACTIVE=1
-
-find runtime/state/ci-portable -type f -maxdepth 4 -print
-sha256sum -c runtime/state/ci-portable/SHA256SUMS
+actionlint .github/workflows/foundation.yml .github/workflows/host-authority.yml
+git diff --check
 ```
 
-Use the repository’s actual artifact-firewall test path if named differently.
+Run a bounded real final-set construction at exact committed HEAD only when the
+existing schemas support a truthfully labeled local qualification namespace.
+Otherwise defer the authoritative `make ci-portable NONINTERACTIVE=1` gate to
+P0-12; never fabricate a GitHub run identity.
 
 ### Step 7 — Commit
 
