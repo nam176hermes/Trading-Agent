@@ -2162,6 +2162,36 @@ production/live action, or runtime mutation.
 
 ---
 
+## P0-12R2 correction — Stale D0 portable-private route fixture
+
+Push-triggered Foundation run `31814654385`, attempt 1, at exact reviewed SHA
+`f273090807764aef9d773e2f1efe2918d1b07137` stopped in D0 with 9 passed and
+one failed before portable evidence publication. The failing node is
+`tests/foundation/test_d0_closure.py::test_portable_ci_uses_a_private_linux_temp_root`.
+Its exact-route fixture still expects the pre-P0-11 `ci-portable-private`
+target list, while the reviewed current route additionally includes
+`check-portable-defect-closure`, `check-p0-baseline`, and
+`check-p0-ci-closure`.
+
+P0-12R2 may correct only that stale exact-route assertion. The test must retain
+all private Linux temporary-root, cleanup, capture-root, recursive-Make, and
+single-execution assertions and must bind the complete current portable-private
+route, including closure, baseline, governance, firewall, and delivery gates.
+The Makefile route and `scripts/check_p0_ci_closure.py` recursive reachability
+proof remain authoritative and unchanged; no duplicate route execution or host
+gate may be introduced.
+
+Capture the exact current node failure before changing the fixture, then run
+the corrected node, the D0/host-split/P0-closure affected packet, D0/baseline/
+closure/contract source gates, workflow lint, the corrected six-file P0-12
+focused set, and the affected packet in a fresh standalone local clone at the
+final commit. This packet does not authorize Makefile or workflow changes,
+dependency or lock changes, inventory or matrix changes, push or remote branch
+update, hosted rerun or dispatch, P0-12 qualification continuation, P0-13,
+production/live/runtime/DB/service/scheduler action, or broker/exchange access.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
