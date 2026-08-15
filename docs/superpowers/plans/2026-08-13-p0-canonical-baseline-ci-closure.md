@@ -4351,3 +4351,37 @@ tests. No firewall/topology, policy/schema, Make/workflow, authority,
 PostgreSQL/database, dependency/lock, production or live change. Stop for
 independent review without push, dispatch, hosted run or any rerun of
 `e95897647e800b84ef97e3df6ae830ef11685330`.
+
+### P0-12R38 fix — safe explicit parameter identities
+
+Independent review approved R37 and exact reviewed HEAD
+`09d239ee98ab4d3a2e4729ea1006a8a2b0b1dd5e` was pushed. Its one authorized
+hosted run `31907451455` failed closed with zero artifacts and the exact token
+`ARTIFACT_SECRET_REJECTED PRIVATE_KEY PUBLICATION PROJECTION_VALIDATION SECRET_SCAN`.
+The retained log `/tmp/p0-12-r37-run-31907451455.log` has SHA-256
+`d45c2f90692deee9cc23be51dd04a696fbd685e6ff4f4e98f7169904b93810b3`.
+That SHA is terminal and must not be rerun.
+
+The canonical collection report is now accepted through all structural
+projection checks but correctly scanned like every manifested leaf. Its only
+private-key hit is pytest-generated identity metadata for
+`tests/production/test_postgres_recovery_approval.py::test_secret_or_dsn_content_is_rejected[private-key marker]`.
+Do not weaken or special-case the scanner and do not treat identity metadata as
+an exempt channel.
+
+Assign four explicit safe pytest IDs to the existing secret/DSN rejection
+parameters. Preserve every parameter payload and every validator assertion;
+only the generated node-ID suffixes may change. Strict RED/GREEN must run the
+real collection-only governance producer for the production module, prove the
+current unsafe generated node ID and scanner rejection, then require the exact
+four safe IDs and a successful unchanged full-report scan. Collection must
+remain exactly 6,526 and the complete canonical collection report must pass the
+unchanged secret scan.
+
+Update exact inventory or derived bindings only if a canonical check proves a
+binding is affected. Run focused production/firewall tests, affected/static
+gates and fresh standalone verification. Scope is test identity metadata and
+its existing regression only: no scanner/policy, topology, Make/workflow,
+authority, PostgreSQL/database, dependency/lock, production runtime or live
+change. Stop for independent review without push, dispatch, hosted run or any
+rerun of `09d239ee98ab4d3a2e4729ea1006a8a2b0b1dd5e`.
