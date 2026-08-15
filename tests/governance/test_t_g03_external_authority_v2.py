@@ -1237,6 +1237,41 @@ def test_external_absence_uses_architecture_a_and_host_require_pass_rejects(
             with pytest.raises(OSError):
                 os.fstat(descriptor)
 
+        hosted_corpus = root / "phase-hosted-home/thenam176/.hermes/crypto-research"
+        with topology._retained_external_authority(
+            "EXT-PHASE3B-CORPUS",
+            corpus_root=hosted_corpus,
+        ) as session:
+            assert (session.state, session.fact) == (
+                "ABSENT", "AUTHORITY_ROOT_ABSENT",
+            )
+            assert len(session.descriptors) == 1
+            topology._postcheck_external_authority(session)
+            (root / "phase-hosted-home").mkdir(mode=0o700)
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_external_authority(session)
+            phase_absent_descriptor = session.descriptors[0]
+        with pytest.raises(OSError):
+            os.fstat(phase_absent_descriptor)
+
+        phase_blocked_target = root / "phase-blocked-target"
+        phase_blocked_target.mkdir(mode=0o700)
+        phase_blocked_symlink = root / "phase-blocked-symlink"
+        phase_blocked_symlink.symlink_to(
+            phase_blocked_target, target_is_directory=True,
+        )
+        phase_blocked_unsafe = root / "phase-blocked-unsafe"
+        phase_blocked_unsafe.mkdir(mode=0o777)
+        phase_blocked_unsafe.chmod(0o777)
+        for blocked_corpus in (phase_blocked_symlink, phase_blocked_unsafe):
+            with topology._retained_external_authority(
+                "EXT-PHASE3B-CORPUS",
+                corpus_root=blocked_corpus / "home/thenam176/.hermes/crypto-research",
+            ) as session:
+                assert (session.state, session.fact) == (
+                    "INVALID", "AUTHORITY_INVALID",
+                )
+
         legacy_root = root / "legacy-present"
         _complete_legacy(legacy_root)
         hosted_uv = root / "legacy-hosted-home/thenam176/.local/bin/uv"

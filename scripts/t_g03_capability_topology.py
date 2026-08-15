@@ -6717,6 +6717,20 @@ def _phase3b_authority_from_analysis(
 def _open_phase3b_external_session(
     *, corpus_root: Path, corpus_validator: Callable[[Path], object],
 ) -> ExternalAuthoritySession:
+    absent_lineage = _retain_external_absent_lineage(corpus_root)
+    if absent_lineage is not None:
+        def absent_lineage_postcheck() -> None:
+            _postcheck_external_absent_lineage(
+                absent_lineage,
+                message="external authority changed during qualification",
+            )
+
+        return ExternalAuthoritySession(
+            "EXT-PHASE3B-CORPUS", "ABSENT", "AUTHORITY_ROOT_ABSENT",
+            _phase3b_absent_authority(), (absent_lineage.descriptor,),
+            absent_lineage_postcheck,
+        )
+
     ancestor_snapshot = _external_parent_chain_snapshot(corpus_root)
     state, descriptor, identity = _open_external_directory(corpus_root, exact_mode=0o700)
     if state == "ABSENT":
