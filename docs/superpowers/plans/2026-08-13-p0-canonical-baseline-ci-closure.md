@@ -4385,3 +4385,37 @@ its existing regression only: no scanner/policy, topology, Make/workflow,
 authority, PostgreSQL/database, dependency/lock, production runtime or live
 change. Stop for independent review without push, dispatch, hosted run or any
 rerun of `09d239ee98ab4d3a2e4729ea1006a8a2b0b1dd5e`.
+
+### P0-12R39 fix — host-independent absent legacy-UV receipt
+
+Independent review approved R38 and exact reviewed HEAD
+`f2aab383f561fae5e3e027d08bafdd2692d9f813` was pushed. Its automatic
+Foundation run `31908588656` succeeded and published exactly one artifact, ID
+`9253178116`, name `ci-portable-31908588656-1`, with service digest
+`sha256:c59a9062e7150bf96039deea697609af7ab9810c57d92e148f8684b0cca9475b`.
+Do not trigger attempt 2 or rerun this SHA.
+
+Strict post-download validation at the same reviewed HEAD/tree rejects only
+the deferred `EXT-LEGACY-UV-AUTHORITY` receipt. Its absent authority embeds the
+origin runner UID/GID `1001`, while the independent validator reconstructs the
+expected absence with its own UID/GID `1000`; all other receipts validate.
+Validator-host identity is not evidence about a nonexistent executable.
+
+Make the absent legacy-UV authority host-independent by using neutral
+expected/observed UID and GID `-1` when the executable does not exist. Preserve
+the origin session's retained absent-lineage descriptor, current-user/ancestor
+qualification and postcheck. For PASS, require expected and observed UID/GID
+to be nonnegative and exactly equal to one another, alongside every existing
+digest, version, mode, closure-manifest, command and exit binding; do not
+compare a downloaded receipt to the validator process UID/GID.
+
+Strict RED/GREEN must validate a runner-minted DEFERRED receipt and a valid
+PASS receipt after simulated validator UID/GID drift. Reject mismatched,
+negative-PASS, wrong-outcome and authority-tamper cases while preserving every
+head/run/context/inventory/manifest binding. Run focused and affected external
+topology/firewall suites, exact collection/static gates and fresh standalone
+verification. Scope is the legacy-UV authority facts and exact tests only: no
+policy relaxation, Make/workflow, PostgreSQL/database, dependency/lock,
+production runtime or live change. Stop for independent review without push,
+dispatch, hosted run or rerun of
+`f2aab383f561fae5e3e027d08bafdd2692d9f813`.
