@@ -548,6 +548,59 @@ def test_cli_publishes_one_final_evidence_set(
 
     with monkeypatch.context() as patch:
         patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+        raw_snapshot = SimpleNamespace(
+            directories={
+                "": SimpleNamespace(entries=(
+                    "capability-topology",
+                    "test-governance-topology",
+                    "t-g03a-hosted-failure-inventory.tsv",
+                    topology.CLOSURE_RELATIVE_PATH.name,
+                )),
+            },
+        )
+        patch.setattr(
+            firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(raw_snapshot),
+        )
+        classified = firewall.FirewallError(
+            hostile,
+            code="ARTIFACT_SECRET_REJECTED",
+            category="PASSWORD",
+            relative_path="hostile-relative-path",
+            sha256="f" * 64,
+        )
+        patch.setattr(
+            topology,
+            "reconcile_portable_root_accounting",
+            lambda *args, **kwargs: (_ for _ in ()).throw(classified),
+        )
+        with pytest.raises(firewall.FinalPublicationError) as captured:
+            firewall.publish_final_evidence(
+                raw_root=raw_root,
+                destination=tmp_path / "final-classified-raw-accounting",
+                inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                foundation_context_path=raw_root / "foundation-context.json",
+                repository_root=tmp_path,
+            )
+        error = captured.value
+        assert (
+            error.code,
+            error.category,
+            error.stage,
+            error.raw_binding_substage,
+        ) == (
+            "ARTIFACT_SECRET_REJECTED",
+            "PASSWORD",
+            "RAW_BINDING",
+            "ACCOUNTING",
+        )
+        assert error.relative_path == ""
+        assert error.sha256 == ""
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        assert hostile not in repr(error)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
         patch.setattr(
             firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
         )

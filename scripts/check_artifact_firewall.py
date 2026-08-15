@@ -170,10 +170,16 @@ class SourceTreeError(FirewallError):
 class RawBindingError(FirewallError):
     """Closed final raw-binding substage with no underlying diagnostic values."""
 
-    def __init__(self, substage: str) -> None:
+    def __init__(
+        self, substage: str, *, code: str = "ARTIFACT_FIREWALL_REJECTED",
+        category: str = "LAYOUT",
+    ) -> None:
         if substage not in _RAW_BINDING_SUBSTAGES:
             raise ValueError("raw binding substage is not closed")
-        super().__init__("raw binding rejected at a closed substage")
+        super().__init__(
+            "raw binding rejected at a closed substage",
+            code=code, category=category,
+        )
         self.raw_binding_substage = substage
 
 
@@ -256,6 +262,12 @@ def _classify_final_publication(stage: str, exc: object) -> FinalPublicationErro
         source_tree_substage=source_tree_substage,
         source_tree_reason=source_tree_reason,
     )
+
+
+def _classify_raw_binding(substage: str, exc: object) -> RawBindingError:
+    code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
+    category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
+    return RawBindingError(substage, code=code, category=category)
 
 
 def _classify_failure_publication(
@@ -1963,8 +1975,8 @@ def _final_payloads_from_raw(
             run_id=run_id, head_sha=head_sha,
             foundation_context_path=foundation_context_path,
         )
-    except (FirewallError, OSError, ValueError, topology.TopologyError):
-        raise RawBindingError("ACCOUNTING") from None
+    except (FirewallError, OSError, ValueError, topology.TopologyError) as exc:
+        raise _classify_raw_binding("ACCOUNTING", exc) from None
     topology_directory = raw.directories.get("capability-topology")
     if topology_directory is None:
         raise RawBindingError("TOPOLOGY_INVENTORY")
@@ -1994,8 +2006,10 @@ def _final_payloads_from_raw(
                 raise RawBindingError("RECEIPTS")
     except RawBindingError:
         raise
-    except (FirewallError, OSError, ValueError, KeyError, TypeError, topology.TopologyError):
-        raise RawBindingError("RECEIPTS") from None
+    except (
+        FirewallError, OSError, ValueError, KeyError, TypeError, topology.TopologyError,
+    ) as exc:
+        raise _classify_raw_binding("RECEIPTS", exc) from None
     report_directory = raw.directories.get("test-governance-topology")
     success_report_entries = {
         "dashboard-raw.json", "dashboard.log", "legacy-raw.json", "legacy.log",
@@ -2065,12 +2079,12 @@ def _final_payloads_from_raw(
     except (
         FirewallError, OSError, ValueError, KeyError, TypeError,
         governance.GovernanceError, topology.TopologyError,
-    ):
-        raise RawBindingError("SEMANTIC_BINDING") from None
+    ) as exc:
+        raise _classify_raw_binding("SEMANTIC_BINDING", exc) from None
     try:
         raw.postcheck()
-    except (FirewallError, OSError, ValueError):
-        raise RawBindingError("RAW_POSTCHECK") from None
+    except (FirewallError, OSError, ValueError) as exc:
+        raise _classify_raw_binding("RAW_POSTCHECK", exc) from None
     return payloads, semantic, run_metadata
 
 
