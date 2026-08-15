@@ -741,7 +741,9 @@ def test_critical_dashboard_runner_fails_each_file_with_zero_observations(
 def _run_governed_fixture(
     tmp_path: Path,
     conftest: str,
-) -> tuple[subprocess.CompletedProcess, dict]:
+    *,
+    collection_only: bool = False,
+) -> tuple[subprocess.CompletedProcess, dict, bytes]:
     tests = tmp_path / "fixture-tests"
     tests.mkdir()
     (tests / "conftest.py").write_text(conftest, encoding="utf-8")
@@ -756,6 +758,8 @@ def _run_governed_fixture(
         "TEST_GOVERNANCE_REPORT": str(report),
         "TEST_GOVERNANCE_COMPONENT": "root",
     })
+    if collection_only:
+        env["TEST_GOVERNANCE_COLLECTION_ONLY"] = "1"
     result = subprocess.run(
         [
             sys.executable,
@@ -773,13 +777,15 @@ def _run_governed_fixture(
         stderr=subprocess.STDOUT,
         check=False,
     )
-    return result, json.loads(report.read_text(encoding="utf-8"))
+    raw = report.read_bytes()
+    return result, json.loads(raw), raw
 
 
 def test_collection_hook_cannot_remove_one_test_without_failure(tmp_path: Path) -> None:
-    result, report = _run_governed_fixture(
+    result, report, raw = _run_governed_fixture(
         tmp_path,
         "def pytest_collection_modifyitems(items):\n    items[:] = items[:1]\n",
+        collection_only=True,
     )
 
     assert result.returncode != 0
@@ -788,10 +794,13 @@ def test_collection_hook_cannot_remove_one_test_without_failure(tmp_path: Path) 
         and item["outcome"] == "failed"
         for item in report["tests"]
     )
+    assert raw == json.dumps(
+        report, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def test_collected_test_suppressed_by_runtest_hook_fails_session(tmp_path: Path) -> None:
-    result, report = _run_governed_fixture(
+    result, report, raw = _run_governed_fixture(
         tmp_path,
         "def pytest_runtest_protocol(item, nextitem):\n"
         "    if item.name == 'test_hidden':\n        return True\n",
@@ -803,6 +812,9 @@ def test_collected_test_suppressed_by_runtest_hook_fails_session(tmp_path: Path)
         and item["outcome"] == "not_run"
         for item in report["tests"]
     )
+    assert raw == (
+        json.dumps(report, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
 
 
 def test_dashboard_tap_identity_includes_file_and_parent_suite() -> None:

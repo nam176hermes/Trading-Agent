@@ -26,7 +26,10 @@ _NON_PYTEST_MODULES = {
 }
 
 
-def _atomic_json(path: Path, document: object, *, no_clobber: bool = False) -> None:
+def _atomic_json(
+    path: Path, document: object, *, no_clobber: bool = False,
+    canonical: bool = False,
+) -> None:
     parent = path.parent
     absolute = parent.absolute()
     below_trusted_sticky_root = False
@@ -77,7 +80,15 @@ def _atomic_json(path: Path, document: object, *, no_clobber: bool = False) -> N
         )
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = -1
-            stream.write((json.dumps(document, indent=2, sort_keys=True) + "\n").encode())
+            encoded = (
+                json.dumps(
+                    document, ensure_ascii=False, sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                if canonical
+                else (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
+            )
+            stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
         if no_clobber:
@@ -302,6 +313,7 @@ class _GovernanceReporter:
             self.destination,
             document,
             no_clobber=os.environ.get("TEST_GOVERNANCE_NO_CLOBBER") == "1",
+            canonical=collection_only,
         )
 
 
