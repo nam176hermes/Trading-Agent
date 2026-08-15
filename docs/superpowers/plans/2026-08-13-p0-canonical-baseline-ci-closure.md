@@ -4178,3 +4178,34 @@ attempt. Never rerun `e272e644097541f2aaec2a257c7213fabd47e676`. Do not
 accept the currently rejected projection, weaken validation or custody, mint
 PostgreSQL authority, run a database, or alter Make/workflow, skip/outcome,
 dependencies/locks, production or live boundaries.
+
+### P0-12R33 correction — canonical collection-report parity
+
+Hosted run `31898882340` at exact
+`0c789bbcdb3c63f4955bb1a27b72847c6fefd398` ended at
+`PUBLICATION PROJECTION_VALIDATION COLLECTION`, with no artifact. An exact
+local reconstruction proves the canonical governance plugin emits six keys,
+including `summary`, and 6,526 records: 6,497 `collected` candidates plus 29
+disjoint collection-phase `deselected` records (17 `runtime_postgres`, 12
+`host_coupled`). The topology baseline validator already validates this report
+and binds its exact digest; the firewall incorrectly requires five keys,
+exactly 6,497 rows and only `collected` records.
+
+Align the firewall's independent collection validator with the canonical
+collector contract: exact six-key schema; exact summary recomputed from rows;
+collected IDs equal the sealed sorted candidate list; deselected IDs are
+unique and disjoint; every row has exact fields/component/phase; collected
+reason is empty; deselected reason is exactly one of the two marker-selection
+reasons. Do not convert deselections into candidates, execution PASS or
+acceptance evidence, and do not remove the topology validator or digest
+binding.
+
+Strict RED must make the shared final-projection fixture include a canonical
+summary and both deselection forms, causing the current firewall to reject.
+GREEN must accept that exact valid shape and reject count, summary, duplicate,
+overlap, reason, phase and outcome mutations. Run affected firewall/topology
+consumers, collection/static gates, standalone verification and independent
+review before exactly one new push-triggered run. Never rerun
+`0c789bbcdb3c63f4955bb1a27b72847c6fefd398`; do not change marker selection,
+skip/outcome policy, Make/workflow, PostgreSQL authority, database execution,
+dependencies/locks, production or live boundaries.
