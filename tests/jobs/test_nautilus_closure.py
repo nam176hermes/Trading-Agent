@@ -102,6 +102,34 @@ def closure_config() -> NautilusClosureConfig:
         shutil.rmtree(base)
 
 
+@pytest.fixture
+def preflight_rejection_config() -> NautilusClosureConfig:
+    base = Path(tempfile.mkdtemp(prefix="nautilus-closure-rejection-test-"))
+    try:
+        yield _build_closure_config(
+            base,
+            base / "must-not-execute-bwrap",
+            profile="zero-order",
+        )
+    finally:
+        for directory, child_directories, files in os.walk(base, topdown=False):
+            current = Path(directory)
+            for name in files:
+                (current / name).chmod(0o600)
+            for name in child_directories:
+                (current / name).chmod(0o700)
+            current.chmod(0o700)
+        shutil.rmtree(base)
+
+
+@pytest.fixture
+def forbid_sandbox_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("sandbox probe ran before primary rejection")
+
+    monkeypatch.setattr(nautilus_closure_module, "_sandbox_proof", forbidden)
+
+
 def _build_closure_config(
     tmp_path: Path,
     sandbox: Path,
@@ -253,9 +281,10 @@ def _build_closure_config(
 
 
 def test_attestor_rejects_artifact_manifest_drift_before_spawn(
-    closure_config: NautilusClosureConfig,
+    preflight_rejection_config: NautilusClosureConfig,
+    forbid_sandbox_probe,
 ) -> None:
-    artifacts = closure_config.artifact_directory
+    artifacts = preflight_rejection_config.artifact_directory
     artifacts.chmod(0o700)
     manifest = artifacts / "artifact-manifest.json"
     manifest.chmod(0o600)
@@ -265,7 +294,7 @@ def test_attestor_rejects_artifact_manifest_drift_before_spawn(
 
     with pytest.raises(EngineSpawnError, match="artifact"):
         attest_nautilus_backtest_closure(
-            closure_config, expected_profile="zero-order"
+            preflight_rejection_config, expected_profile="zero-order"
         )
 
 
@@ -1216,8 +1245,11 @@ def test_schema_6_attestor_rejects_missing_unknown_or_boolean_import_policy(
         _remove_test_tree(base)
 
 
-def test_attestor_rejects_unlisted_runtime_file(closure_config: NautilusClosureConfig) -> None:
-    runtime = closure_config.runtime_root
+def test_attestor_rejects_unlisted_runtime_file(
+    preflight_rejection_config: NautilusClosureConfig,
+    forbid_sandbox_probe,
+) -> None:
+    runtime = preflight_rejection_config.runtime_root
     runtime.chmod(0o700)
     (runtime / "files").chmod(0o700)
     unexpected = runtime / "files/unexpected.py"
@@ -1228,15 +1260,17 @@ def test_attestor_rejects_unlisted_runtime_file(closure_config: NautilusClosureC
 
     with pytest.raises(EngineSpawnError, match="unlisted"):
         attest_nautilus_backtest_closure(
-            closure_config, expected_profile="zero-order"
+            preflight_rejection_config, expected_profile="zero-order"
         )
 
 
 @pytest.mark.parametrize("mutation", ["profile", "argv", "validator"])
 def test_attestor_rejects_every_profile_identity_mismatch(
-    closure_config: NautilusClosureConfig, mutation: str
+    preflight_rejection_config: NautilusClosureConfig,
+    forbid_sandbox_probe,
+    mutation: str,
 ) -> None:
-    runtime = closure_config.runtime_root
+    runtime = preflight_rejection_config.runtime_root
     manifest_path = runtime / "closure-manifest.json"
     runtime.chmod(0o700)
     manifest_path.chmod(0o600)
@@ -1262,7 +1296,7 @@ def test_attestor_rejects_every_profile_identity_mismatch(
 
     with pytest.raises(EngineSpawnError, match="profile|identity"):
         attest_nautilus_backtest_closure(
-            closure_config, expected_profile="zero-order"
+            preflight_rejection_config, expected_profile="zero-order"
         )
 
 
@@ -1310,16 +1344,13 @@ def test_attestor_accepts_only_an_explicit_execution_simulation_profile(
 
 def test_attestor_rejects_legacy_execution_transport_manifest_for_v2_authority(
     tmp_path: Path,
+    forbid_sandbox_probe,
 ) -> None:
-    if not Path("/usr/bin/bwrap").is_file():
-        pytest.skip("Bubblewrap is required for the Nautilus closure test")
     base = Path(
         tempfile.mkdtemp(prefix="nautilus-legacy-closure-test-")
     )
     try:
-        sandbox = base / "bwrap"
-        shutil.copyfile("/usr/bin/bwrap", sandbox)
-        sandbox.chmod(0o500)
+        sandbox = base / "must-not-execute-bwrap"
         config = _build_closure_config(
             base, sandbox, profile="execution-simulation"
         )
@@ -1341,17 +1372,13 @@ def test_attestor_rejects_legacy_execution_transport_manifest_for_v2_authority(
 
 @pytest.mark.parametrize("mutation", ["missing", "v1", "changed"])
 def test_attestor_rejects_semantic_profile_manifest_drift(
-    tmp_path: Path, mutation: str
+    tmp_path: Path, forbid_sandbox_probe, mutation: str
 ) -> None:
-    if not Path("/usr/bin/bwrap").is_file():
-        pytest.skip("Bubblewrap is required for the Nautilus closure test")
     base = Path(
         tempfile.mkdtemp(prefix="nautilus-semantic-closure-test-")
     )
     try:
-        sandbox = base / "bwrap"
-        shutil.copyfile("/usr/bin/bwrap", sandbox)
-        sandbox.chmod(0o500)
+        sandbox = base / "must-not-execute-bwrap"
         config = _build_closure_config(
             base,
             sandbox,

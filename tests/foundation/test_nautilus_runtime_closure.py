@@ -208,9 +208,8 @@ def _record(root: Path, relative: str, target: str, value: bytes, mode: int) -> 
     }
 
 
-@pytest.fixture
-def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
-    if not Path("/usr/bin/bwrap").is_file():
+def _closure_inputs(*, require_native_sandbox: bool):
+    if require_native_sandbox and not Path("/usr/bin/bwrap").is_file():
         pytest.skip("Bubblewrap is required for runtime closure tests")
     root = Path(
         tempfile.mkdtemp(
@@ -348,14 +347,41 @@ def closure_inputs() -> tuple[Path, Path, Path, Path, Path]:
         shutil.rmtree(root)
 
 
-def _materialize(inputs: tuple[Path, Path, Path, Path, Path]) -> Path:
+@pytest.fixture
+def closure_inputs():
+    yield from _closure_inputs(require_native_sandbox=True)
+
+
+@pytest.fixture
+def preflight_rejection_inputs():
+    yield from _closure_inputs(require_native_sandbox=False)
+
+
+@pytest.fixture
+def forbid_native_materialization(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("native materialization ran before primary rejection")
+
+    monkeypatch.setattr(materializer_module, "_build_native_entry_guard", forbidden)
+    monkeypatch.setattr(
+        materializer_module,
+        "attest_nautilus_backtest_closure",
+        forbidden,
+    )
+
+
+def _materialize(
+    inputs: tuple[Path, Path, Path, Path, Path],
+    *,
+    sandbox_executable: Path = Path("/usr/bin/bwrap"),
+) -> Path:
     _root, base, artifacts, policy, destination = inputs
     return materialize_runtime_closure(
         policy_path=policy,
         base_runtime=base,
         artifact_directory=artifacts,
         destination=destination,
-        sandbox_executable=Path("/usr/bin/bwrap"),
+        sandbox_executable=sandbox_executable,
         cargo=PRIVATE_CARGO,
         llvm_toolchain=PRIVATE_LLVM,
     )
@@ -889,9 +915,10 @@ def test_destination_identity_change_during_re_attestation_fails_closed(
 
 
 def test_materializer_rejects_a_preexisting_destination_without_changing_it(
-    closure_inputs,
+    preflight_rejection_inputs,
+    forbid_native_materialization,
 ) -> None:
-    root, base, artifacts, policy, destination = closure_inputs
+    root, base, artifacts, policy, destination = preflight_rejection_inputs
     destination.mkdir(mode=0o700)
     marker = destination / "operator-owned"
     marker.write_text("retain", encoding="ascii")
@@ -902,7 +929,7 @@ def test_materializer_rejects_a_preexisting_destination_without_changing_it(
             base_runtime=base,
             artifact_directory=artifacts,
             destination=destination,
-            sandbox_executable=Path("/usr/bin/bwrap"),
+            sandbox_executable=root / "must-not-execute-bwrap",
             cargo=PRIVATE_CARGO,
             llvm_toolchain=PRIVATE_LLVM,
         )
@@ -1032,9 +1059,9 @@ def test_unavailable_no_clobber_syscall_fails_without_publication(
     ],
 )
 def test_materializer_rejects_every_bound_input_digest_drift(
-    closure_inputs, field: str
+    preflight_rejection_inputs, forbid_native_materialization, field: str
 ) -> None:
-    _root, _base, _artifacts, policy_path, destination = closure_inputs
+    root, _base, _artifacts, policy_path, destination = preflight_rejection_inputs
     policy_path.chmod(0o600)
     policy = json.loads(policy_path.read_text())
     if field == "launcher_inventory":
@@ -1045,7 +1072,10 @@ def test_materializer_rejects_every_bound_input_digest_drift(
     policy_path.chmod(0o400)
 
     with pytest.raises(RuntimeClosureMaterializationError, match="digest"):
-        _materialize(closure_inputs)
+        _materialize(
+            preflight_rejection_inputs,
+            sandbox_executable=root / "must-not-execute-bwrap",
+        )
 
     assert not destination.exists()
 
@@ -1054,9 +1084,9 @@ def test_materializer_rejects_every_bound_input_digest_drift(
     "mutation", ["unlisted-file", "unsafe-mode", "profile", "semantic-profile"]
 )
 def test_materializer_fails_closed_on_inventory_mode_or_profile_drift(
-    closure_inputs, mutation: str
+    preflight_rejection_inputs, forbid_native_materialization, mutation: str
 ) -> None:
-    _root, base, _artifacts, policy_path, destination = closure_inputs
+    root, base, _artifacts, policy_path, destination = preflight_rejection_inputs
     if mutation == "unlisted-file":
         base.chmod(0o700)
         (base / "files").chmod(0o700)
@@ -1084,7 +1114,10 @@ def test_materializer_fails_closed_on_inventory_mode_or_profile_drift(
         policy_path.chmod(0o400)
 
     with pytest.raises(RuntimeClosureMaterializationError, match="inventory|mode|profile"):
-        _materialize(closure_inputs)
+        _materialize(
+            preflight_rejection_inputs,
+            sandbox_executable=root / "must-not-execute-bwrap",
+        )
 
     assert not destination.exists()
 
