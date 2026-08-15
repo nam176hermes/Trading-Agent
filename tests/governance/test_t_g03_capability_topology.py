@@ -2351,8 +2351,8 @@ def _valid_phase3b_analysis() -> SimpleNamespace:
     )
 
 
-def test_external_authority_inventory_classifies_missing_uv_with_closure_and_symlinked_corpus_child(tmp_path: Path) -> None:
-    """Break caught: partial authority is deferred or a symlinked required child is trusted."""
+def test_external_authority_inventory_classifies_uv_absence_partial_closure_and_symlinked_corpus_child(tmp_path: Path) -> None:
+    """Break caught: executable absence or partial authority is misclassified."""
     del tmp_path
     with _safe_authority_tempdir() as raw:
         root = Path(raw)
@@ -2360,7 +2360,18 @@ def test_external_authority_inventory_classifies_missing_uv_with_closure_and_sym
         legacy = root / "legacy"
         for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
             _write_direct(legacy / relative, executable=relative.endswith("python"))
-        assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=root / "missing-uv", legacy_root=legacy)[0] == "PARTIAL"
+        assert topology._external_preflight(
+            "EXT-LEGACY-UV-AUTHORITY",
+            uv_path=root / "missing-uv",
+            legacy_root=legacy,
+        )[0] == "ABSENT"
+        uv = root / "uv"
+        _write_direct(uv, "#!/bin/sh\n", executable=True)
+        assert topology._external_preflight(
+            "EXT-LEGACY-UV-AUTHORITY",
+            uv_path=uv,
+            legacy_root=root / "missing-legacy",
+        )[0] == "PARTIAL"
         corpus = root / "corpus"
         _complete_corpus_fixture(corpus)
         child = corpus / "memory/decisions.jsonl"

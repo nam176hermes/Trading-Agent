@@ -6811,6 +6811,20 @@ def _open_legacy_external_session(
     expected_uv_version: str,
     runner: Callable[..., subprocess.CompletedProcess[bytes]],
 ) -> ExternalAuthoritySession:
+    uv_absent_lineage = _retain_external_absent_lineage(uv_path)
+    if uv_absent_lineage is not None:
+        def absent_uv_postcheck() -> None:
+            _postcheck_external_absent_lineage(
+                uv_absent_lineage,
+                message="external authority changed during qualification",
+            )
+
+        return ExternalAuthoritySession(
+            "EXT-LEGACY-UV-AUTHORITY", "ABSENT",
+            "AUTHORITY_EXECUTABLE_ABSENT", _legacy_absent_authority(),
+            (uv_absent_lineage.descriptor,), absent_uv_postcheck,
+        )
+
     legacy_component_policy = legacy_root == REAL_LEGACY_ROOT
     uv_ancestor_snapshot = _external_parent_chain_snapshot(uv_path)
     root_ancestor_snapshot = _external_parent_chain_snapshot(

@@ -1237,6 +1237,43 @@ def test_external_absence_uses_architecture_a_and_host_require_pass_rejects(
             with pytest.raises(OSError):
                 os.fstat(descriptor)
 
+        legacy_root = root / "legacy-present"
+        _complete_legacy(legacy_root)
+        hosted_uv = root / "legacy-hosted-home/thenam176/.local/bin/uv"
+        with topology._retained_external_authority(
+            "EXT-LEGACY-UV-AUTHORITY",
+            uv_path=hosted_uv,
+            legacy_root=legacy_root,
+        ) as session:
+            assert (session.state, session.fact) == (
+                "ABSENT", "AUTHORITY_EXECUTABLE_ABSENT",
+            )
+            assert len(session.descriptors) == 1
+            topology._postcheck_external_authority(session)
+            (root / "legacy-hosted-home").mkdir(mode=0o700)
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_external_authority(session)
+            legacy_absent_descriptor = session.descriptors[0]
+        with pytest.raises(OSError):
+            os.fstat(legacy_absent_descriptor)
+
+        blocked_target = root / "legacy-uv-blocked-target"
+        blocked_target.mkdir(mode=0o700)
+        blocked_symlink = root / "legacy-uv-blocked-symlink"
+        blocked_symlink.symlink_to(blocked_target, target_is_directory=True)
+        blocked_unsafe = root / "legacy-uv-blocked-unsafe"
+        blocked_unsafe.mkdir(mode=0o777)
+        blocked_unsafe.chmod(0o777)
+        for blocked_uv in (blocked_symlink, blocked_unsafe):
+            with topology._retained_external_authority(
+                "EXT-LEGACY-UV-AUTHORITY",
+                uv_path=blocked_uv / "home/thenam176/.local/bin/uv",
+                legacy_root=legacy_root,
+            ) as session:
+                assert (session.state, session.fact) == (
+                    "INVALID", "AUTHORITY_INVALID",
+                )
+
         initial_symlink_target = root / "external-initial-symlink-target"
         initial_symlink_target.mkdir(mode=0o700)
         initial_symlink = root / "external-initial-symlink"

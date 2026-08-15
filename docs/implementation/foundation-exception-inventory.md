@@ -548,11 +548,11 @@ scripts/t_g03_capability_topology.py|6071|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|6682|Exception|TOOLING_MIGRATION|OTHER
 scripts/t_g03_capability_topology.py|6774|Exception|TOOLING_MIGRATION|RETURN
 scripts/t_g03_capability_topology.py|6793|Exception|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|6973|Exception|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|7097|Exception|TOOLING_MIGRATION|RETURN
-scripts/t_g03_capability_topology.py|7121|Exception|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|7486|Exception|TOOLING_MIGRATION|RAISE
-scripts/t_g03_capability_topology.py|7555|Exception|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|6987|Exception|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|7111|Exception|TOOLING_MIGRATION|RETURN
+scripts/t_g03_capability_topology.py|7135|Exception|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|7500|Exception|TOOLING_MIGRATION|RAISE
+scripts/t_g03_capability_topology.py|7569|Exception|TOOLING_MIGRATION|RAISE
 scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
