@@ -3409,3 +3409,48 @@ the maintained topology design and implementation-evidence documents only; it
 does not start P0-09, change native semantics, fabricate/download authority,
 substitute UV, update dependencies or locks, access the network, mutate a
 database/service/runtime, or enable production/live authority.
+
+---
+
+## P0-12R15 Packet A correction — Portable Nautilus preflight fixture closure
+
+Hosted Foundation run `31853608129` at exact clean pushed head
+`d404e6000b7fc682d7fd5437f0a3175caa7ee81f` published a validated diagnostic
+for the exact 6,412-node root remainder: 6,131 passed and 281 skipped. The
+reviewed classification at
+`/tmp/p0-12-run-31853608129-diagnosis.md` (SHA-256
+`6d583a02db40109087e616c5ba95cebecba899c250812ec58ae9e0064ff54059`)
+separates 17 portable fixture defects from the remaining genuine native and
+external authority obligations.
+
+Packet A owns only those 17 portable nodes. Eight runtime-closure rejection
+tests currently inherit a broad fixture that requires `/usr/bin/bwrap` even
+though their primary rejection occurs before native-guard construction and
+sandbox attestation. Nine job-closure rejection tests similarly require or
+copy Bubblewrap before manifest/profile/inventory rejection, even though the
+attestor rejects before `_sandbox_proof`. Strict RED must first demonstrate
+that the exact 17 nodes skip before their primary rejection assertions.
+
+The minimum fix deconflates synthetic rejection inputs from native capability.
+Rejection-only nodes use an inert or nonexistent sandbox binding and explicit
+forbidden-call sentinels for native build and sandbox execution. Every success,
+publication, or real attestation node retains its existing real Bubblewrap and
+sealed-toolchain requirements. Production materializers, attestors, policy,
+the skip allowlist, active native/external inventory, Make routing, workflows,
+dependencies, locks, and runtime/live authority remain unchanged.
+
+After the exact 17 nodes pass with zero skip, xfail, or xpass, add them to the
+portable-defect closure ledger under the new former code
+`SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING`, using the already-created fixture-fix
+commit as each historical proof authority. The closure becomes exactly 49
+rows, while the active inventory remains 30 and the governed set becomes 79.
+Because the same 17 nodes move directly from the ordinary remainder into the
+closure proof, the expected root remainder remains 6,131. Update only the
+derived locked closure/count/hash contracts required by that migration.
+
+Require exact-17 RED/GREEN evidence, the full two affected Nautilus test
+modules, portable-closure/topology/failure-diagnostic/artifact-firewall/P0
+closure checks, and a clean standalone affected packet. Stop for independent
+review after committed evidence. This packet does not authorize push, hosted
+rerun or dispatch, Packet B or C, P0-13, production/runtime/database/service
+mutation, broker/provider access, or live trading.
