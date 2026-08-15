@@ -5024,28 +5024,34 @@ def _open_nautilus_multi_session(
     runner: Callable[..., subprocess.CompletedProcess[bytes]],
     bwrap_policy_path: Path,
 ) -> NativeMultiAuthoritySession:
-    rust_ancestors = _external_parent_chain_snapshot(rust_toolchain)
-    llvm_ancestors = _external_parent_chain_snapshot(llvm_toolchain)
-    rust_absent = _path_absent(rust_toolchain)
-    llvm_absent = _path_absent(llvm_toolchain)
-    if (
-        rust_absent and llvm_absent
-        and rust_ancestors is not None and llvm_ancestors is not None
-    ):
+    rust_absent_lineage = _retain_external_absent_lineage(rust_toolchain)
+    llvm_absent_lineage = _retain_external_absent_lineage(llvm_toolchain)
+    if rust_absent_lineage is not None and llvm_absent_lineage is not None:
         def absent_postcheck() -> None:
-            if (
-                not _path_absent(rust_toolchain)
-                or not _path_absent(llvm_toolchain)
-                or _external_parent_chain_snapshot(rust_toolchain) != rust_ancestors
-                or _external_parent_chain_snapshot(llvm_toolchain) != llvm_ancestors
-            ):
-                raise TopologyError("native multi-authority changed during qualification")
+            _postcheck_external_absent_lineage(
+                rust_absent_lineage,
+                message="native multi-authority changed during qualification",
+            )
+            _postcheck_external_absent_lineage(
+                llvm_absent_lineage,
+                message="native multi-authority changed during qualification",
+            )
 
         return NativeMultiAuthoritySession(
             code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
             _native_multi_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
-            _nautilus_multi_authority(code), (), absent_postcheck,
+            _nautilus_multi_authority(code),
+            (rust_absent_lineage.descriptor, llvm_absent_lineage.descriptor),
+            absent_postcheck,
         )
+    for lineage in (rust_absent_lineage, llvm_absent_lineage):
+        if lineage is not None:
+            os.close(lineage.descriptor)
+
+    rust_ancestors = _external_parent_chain_snapshot(rust_toolchain)
+    llvm_ancestors = _external_parent_chain_snapshot(llvm_toolchain)
+    rust_absent = _path_absent(rust_toolchain)
+    llvm_absent = _path_absent(llvm_toolchain)
     if rust_absent or llvm_absent or rust_ancestors is None or llvm_ancestors is None:
         return NativeMultiAuthoritySession(
             code, "BROKEN", "NATIVE_IDENTITY_INVALID",
@@ -5673,6 +5679,134 @@ class _ExternalStateError(TopologyError):
     def __init__(self, state: str) -> None:
         self.state = state
         super().__init__("external authority state is not valid")
+
+
+@dataclass(frozen=True)
+class _ExternalAbsentLineage:
+    nearest_path: Path
+    prefix_identities: tuple[tuple[int, ...], ...]
+    missing_suffix: tuple[str, ...]
+    descriptor: int
+    descriptor_identity: tuple[int, ...]
+
+
+def _strict_external_directory_identity(
+    info: os.stat_result,
+) -> tuple[int, ...] | None:
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid not in {0, os.geteuid()}
+        or info.st_gid not in {0, os.getegid()}
+        or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        return None
+    return _artifact_identity(info)
+
+
+def _existing_external_prefix_snapshot(
+    path: Path,
+) -> tuple[tuple[int, ...], ...] | None:
+    if not path.is_absolute():
+        return None
+    current = Path(path.anchor)
+    snapshot: list[tuple[int, ...]] = []
+    for part in (None, *path.parts[1:]):
+        if part is not None:
+            current /= part
+        try:
+            info = current.lstat()
+        except OSError:
+            return None
+        identity = _strict_external_directory_identity(info)
+        if identity is None:
+            return None
+        snapshot.append(identity)
+    return tuple(snapshot)
+
+
+def _retain_external_absent_lineage(
+    path: Path,
+) -> _ExternalAbsentLineage | None:
+    """Retain the nearest safe ancestor and its exact first-missing suffix."""
+    if not path.is_absolute():
+        return None
+    components = path.parts[1:]
+    current = Path(path.anchor)
+    prefix: list[tuple[int, ...]] = []
+    missing_suffix: tuple[str, ...] | None = None
+    for index, part in enumerate((None, *components)):
+        if part is not None:
+            current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if part is None:
+                return None
+            missing_suffix = tuple(components[index - 1:])
+            break
+        except OSError:
+            return None
+        identity = _strict_external_directory_identity(info)
+        if identity is None:
+            return None
+        prefix.append(identity)
+    if missing_suffix is None or not missing_suffix:
+        return None
+    nearest_path = current.parent
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            nearest_path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        held = _artifact_identity(os.fstat(descriptor))
+        if (
+            held != _artifact_identity(nearest_path.lstat())
+            or _existing_external_prefix_snapshot(nearest_path) != tuple(prefix)
+        ):
+            raise OSError("absent authority prefix identity changed")
+        try:
+            os.stat(missing_suffix[0], dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise OSError("absent authority boundary appeared")
+        return _ExternalAbsentLineage(
+            nearest_path, tuple(prefix), missing_suffix, descriptor, held,
+        )
+    except OSError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        return None
+
+
+def _postcheck_external_absent_lineage(
+    lineage: _ExternalAbsentLineage, *, message: str,
+) -> None:
+    try:
+        if (
+            _artifact_identity(os.fstat(lineage.descriptor))
+            != lineage.descriptor_identity
+            or _existing_external_prefix_snapshot(lineage.nearest_path)
+            != lineage.prefix_identities
+            or _artifact_identity(lineage.nearest_path.lstat())
+            != lineage.descriptor_identity
+        ):
+            raise TopologyError(message)
+        try:
+            os.stat(
+                lineage.missing_suffix[0], dir_fd=lineage.descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return
+        raise TopologyError(message)
+    except TopologyError:
+        raise
+    except OSError as exc:
+        raise TopologyError(message) from exc
 
 
 def _external_parent_chain_snapshot(
@@ -6898,6 +7032,29 @@ def _open_nautilus_external_session(
     *, base_runtime: Path, artifact_root: Path,
     qualifier: Callable[[Path, Path], dict[str, object]],
 ) -> ExternalAuthoritySession:
+    base_absent_lineage = _retain_external_absent_lineage(base_runtime)
+    artifact_absent_lineage = _retain_external_absent_lineage(artifact_root)
+    if base_absent_lineage is not None and artifact_absent_lineage is not None:
+        def absent_postcheck() -> None:
+            _postcheck_external_absent_lineage(
+                base_absent_lineage,
+                message="external authority changed during qualification",
+            )
+            _postcheck_external_absent_lineage(
+                artifact_absent_lineage,
+                message="external authority changed during qualification",
+            )
+
+        return ExternalAuthoritySession(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS", "ABSENT",
+            "AUTHORITY_ROOT_ABSENT", _absent_nautilus_external_authority(),
+            (base_absent_lineage.descriptor, artifact_absent_lineage.descriptor),
+            absent_postcheck,
+        )
+    for lineage in (base_absent_lineage, artifact_absent_lineage):
+        if lineage is not None:
+            os.close(lineage.descriptor)
+
     base_ancestors = _external_parent_chain_snapshot(base_runtime)
     artifact_ancestors = _external_parent_chain_snapshot(artifact_root)
     base_state, base_descriptor, _ = _open_external_directory(
@@ -6906,30 +7063,6 @@ def _open_nautilus_external_session(
     artifact_state, artifact_descriptor, _ = _open_external_directory(
         artifact_root, exact_mode=0o500,
     )
-    if base_state == artifact_state == "ABSENT":
-        def absent_postcheck() -> None:
-            current_base, current_base_descriptor, _ = _open_external_directory(
-                base_runtime, exact_mode=0o500,
-            )
-            current_artifact, current_artifact_descriptor, _ = _open_external_directory(
-                artifact_root, exact_mode=0o500,
-            )
-            for retained in (current_base_descriptor, current_artifact_descriptor):
-                if retained >= 0:
-                    os.close(retained)
-            if (
-                current_base != "ABSENT"
-                or current_artifact != "ABSENT"
-                or _external_parent_chain_snapshot(base_runtime) != base_ancestors
-                or _external_parent_chain_snapshot(artifact_root) != artifact_ancestors
-            ):
-                raise TopologyError("external authority changed during qualification")
-
-        return ExternalAuthoritySession(
-            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS", "ABSENT",
-            "AUTHORITY_ROOT_ABSENT", _absent_nautilus_external_authority(), (),
-            absent_postcheck,
-        )
     if "ABSENT" in {base_state, artifact_state}:
         for descriptor in (base_descriptor, artifact_descriptor):
             if descriptor >= 0:

@@ -1214,6 +1214,103 @@ def test_external_absence_uses_architecture_a_and_host_require_pass_rejects(
             foundation_context_path=context_path,
         )
 
+        appearance = root / "external-appearance/home/thenam176/nautilus"
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=appearance / "base",
+            nautilus_artifact_root=appearance / "artifact",
+        ) as session:
+            assert (session.state, session.fact) == (
+                "ABSENT", "AUTHORITY_ROOT_ABSENT",
+            )
+            assert len(session.descriptors) == 2
+            assert all(
+                stat.S_ISDIR(os.fstat(descriptor).st_mode)
+                for descriptor in session.descriptors
+            )
+            topology._postcheck_external_authority(session)
+            (root / "external-appearance").mkdir(mode=0o700)
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_external_authority(session)
+            retained_descriptors = session.descriptors
+        for descriptor in retained_descriptors:
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+
+        initial_symlink_target = root / "external-initial-symlink-target"
+        initial_symlink_target.mkdir(mode=0o700)
+        initial_symlink = root / "external-initial-symlink"
+        initial_symlink.symlink_to(initial_symlink_target, target_is_directory=True)
+        initial_unsafe = root / "external-initial-unsafe"
+        initial_unsafe.mkdir(mode=0o777)
+        initial_unsafe.chmod(0o777)
+        for blocked in (initial_symlink, initial_unsafe):
+            with topology._retained_external_authority(
+                "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+                nautilus_base_root=blocked / "home/thenam176/base",
+                nautilus_artifact_root=blocked / "home/thenam176/artifact",
+            ) as session:
+                assert (session.state, session.fact) == (
+                    "INVALID", "AUTHORITY_INVALID",
+                )
+
+        replaceable = root / "external-replaceable"
+        replaceable.mkdir(mode=0o700)
+        replaceable_authority = replaceable / "home/thenam176/nautilus"
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=replaceable_authority / "base",
+            nautilus_artifact_root=replaceable_authority / "artifact",
+        ) as session:
+            moved = root / "external-replaceable-moved"
+            replaceable.rename(moved)
+            replaceable.mkdir(mode=0o700)
+            assert os.fstat(session.descriptors[0]).st_ino == moved.lstat().st_ino
+            assert os.fstat(session.descriptors[0]).st_ino != replaceable.lstat().st_ino
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_external_authority(session)
+
+        symlinked = root / "external-symlink/home/thenam176/nautilus"
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=symlinked / "base",
+            nautilus_artifact_root=symlinked / "artifact",
+        ) as session:
+            assert len(session.descriptors) == 2
+            symlink_target = root / "external-symlink-target"
+            symlink_target.mkdir(mode=0o700)
+            (root / "external-symlink").symlink_to(
+                symlink_target, target_is_directory=True,
+            )
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_external_authority(session)
+
+        unsafe_prefix = root / "external-unsafe"
+        unsafe_prefix.mkdir(mode=0o700)
+        unsafe = unsafe_prefix / "home/thenam176/nautilus"
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=unsafe / "base",
+            nautilus_artifact_root=unsafe / "artifact",
+        ) as session:
+            unsafe_prefix.chmod(0o777)
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_external_authority(session)
+            unsafe_prefix.chmod(0o700)
+
+        partial = root / "external-partial"
+        partial.mkdir(mode=0o700)
+        partial_base = partial / "base"
+        partial_base.mkdir(mode=0o500)
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=partial_base,
+            nautilus_artifact_root=partial / "artifact",
+        ) as session:
+            assert (session.state, session.fact) == (
+                "PARTIAL", "AUTHORITY_PARTIAL",
+            )
+
         @topology.contextmanager
         def absent_factory(code: str):
             with topology._retained_external_authority(
@@ -1221,8 +1318,12 @@ def test_external_absence_uses_architecture_a_and_host_require_pass_rejects(
                 corpus_root=root / "absent-corpus",
                 uv_path=root / "absent-uv",
                 legacy_root=root / "absent-legacy",
-                nautilus_base_root=root / "absent-nautilus-base",
-                nautilus_artifact_root=root / "absent-nautilus-artifact",
+                nautilus_base_root=(
+                    root / "hosted-home/thenam176/nautilus/base"
+                ),
+                nautilus_artifact_root=(
+                    root / "hosted-home/thenam176/nautilus/artifact"
+                ),
             ) as session:
                 yield session
 

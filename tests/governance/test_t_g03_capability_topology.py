@@ -689,6 +689,106 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
 
     with _safe_authority_tempdir() as raw:
         root = Path(raw)
+        hosted_toolchains = root / "hosted-home/thenam176/toolchains"
+        for code in sorted(topology.NATIVE_MULTI_CODES):
+            with topology._retained_native_probe(
+                code,
+                rust_toolchain=hosted_toolchains / "rust",
+                llvm_toolchain=hosted_toolchains / "llvm",
+            ) as session:
+                assert (session.state, session.fact) == (
+                    "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                )
+                assert len(session.descriptors) == 2
+                assert all(
+                    stat.S_ISDIR(os.fstat(descriptor).st_mode)
+                    for descriptor in session.descriptors
+                )
+                topology._postcheck_native_probe(session)
+                (root / "hosted-home").mkdir(mode=0o700)
+                with pytest.raises(topology.TopologyError, match="changed"):
+                    topology._postcheck_native_probe(session)
+                (root / "hosted-home").rmdir()
+                retained_descriptors = session.descriptors
+            for descriptor in retained_descriptors:
+                with pytest.raises(OSError):
+                    os.fstat(descriptor)
+
+        initial_symlink_target = root / "initial-symlink-target"
+        initial_symlink_target.mkdir(mode=0o700)
+        initial_symlink = root / "initial-symlink-home"
+        initial_symlink.symlink_to(initial_symlink_target, target_is_directory=True)
+        initial_unsafe = root / "initial-unsafe-home"
+        initial_unsafe.mkdir(mode=0o777)
+        initial_unsafe.chmod(0o777)
+        for code in sorted(topology.NATIVE_MULTI_CODES):
+            for blocked in (initial_symlink, initial_unsafe):
+                with topology._retained_native_probe(
+                    code,
+                    rust_toolchain=blocked / "thenam176/toolchains/rust",
+                    llvm_toolchain=blocked / "thenam176/toolchains/llvm",
+                ) as session:
+                    assert (session.state, session.fact) == (
+                        "BROKEN", "NATIVE_IDENTITY_INVALID",
+                    )
+
+        replaceable = root / "replaceable-home"
+        replaceable.mkdir(mode=0o700)
+        replaceable_toolchains = replaceable / "thenam176/toolchains"
+        with topology._retained_native_probe(
+            "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX",
+            rust_toolchain=replaceable_toolchains / "rust",
+            llvm_toolchain=replaceable_toolchains / "llvm",
+        ) as session:
+            moved = root / "replaceable-home-moved"
+            replaceable.rename(moved)
+            replaceable.mkdir(mode=0o700)
+            assert os.fstat(session.descriptors[0]).st_ino == moved.lstat().st_ino
+            assert os.fstat(session.descriptors[0]).st_ino != replaceable.lstat().st_ino
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_native_probe(session)
+
+        symlink_toolchains = root / "symlink-home/thenam176/toolchains"
+        with topology._retained_native_probe(
+            "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX",
+            rust_toolchain=symlink_toolchains / "rust",
+            llvm_toolchain=symlink_toolchains / "llvm",
+        ) as session:
+            assert len(session.descriptors) == 2
+            symlink_target = root / "symlink-target"
+            symlink_target.mkdir(mode=0o700)
+            (root / "symlink-home").symlink_to(
+                symlink_target, target_is_directory=True,
+            )
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_native_probe(session)
+
+        unsafe_prefix = root / "unsafe-home"
+        unsafe_prefix.mkdir(mode=0o700)
+        unsafe_toolchains = unsafe_prefix / "thenam176/toolchains"
+        with topology._retained_native_probe(
+            "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX",
+            rust_toolchain=unsafe_toolchains / "rust",
+            llvm_toolchain=unsafe_toolchains / "llvm",
+        ) as session:
+            unsafe_prefix.chmod(0o777)
+            with pytest.raises(topology.TopologyError, match="changed"):
+                topology._postcheck_native_probe(session)
+            unsafe_prefix.chmod(0o700)
+
+        partial_toolchains = root / "partial-toolchains"
+        partial_toolchains.mkdir(mode=0o700)
+        partial_rust = partial_toolchains / "rust"
+        partial_rust.mkdir(mode=0o500)
+        with topology._retained_native_probe(
+            "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX",
+            rust_toolchain=partial_rust,
+            llvm_toolchain=partial_toolchains / "llvm",
+        ) as session:
+            assert (session.state, session.fact) == (
+                "BROKEN", "NATIVE_IDENTITY_INVALID",
+            )
+
         for code in sorted(topology.NATIVE_MULTI_CODES):
             with topology._retained_native_probe(
                 code, rust_toolchain=root / "absent-rust",
@@ -697,7 +797,7 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
                 assert (session.state, session.fact) == (
                     "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
                 )
-                assert session.descriptors == ()
+                assert len(session.descriptors) == 2
 
         rust, llvm = _fixture_nautilus_toolchains(root)
         original_native_path_leaf = topology._native_path_leaf
