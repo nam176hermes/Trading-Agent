@@ -3839,3 +3839,30 @@ workflow upload rules, PostgreSQL authority, dependency/lock state, or live
 authority. The next hosted run remains non-qualifying until its sealed
 diagnostic is independently inspected and the underlying native preflight
 cause receives its own RED/GREEN/review packet.
+
+### P0-12R22 correction — stable retained-FD probe argv identity
+
+Hosted diagnostic run `31872615757` at exact
+`ae1b0c1afe9408dd9c94963b9b10381197f6110d` published the sealed R21 artifact.
+It binds the terminal native code `NATIVE-USERNS-ROOT-PROVISION` to
+`BROKEN` / `NATIVE_PROBE_INVALID` after the portable root and closure passed.
+Local reproduction shows the retained executable is invoked as
+`/proc/self/fd/<descriptor>`, so util-linux derives that variable pathname as
+its diagnostic program name. The closed denial contract expects the stable
+program name `unshare`; an otherwise valid policy denial therefore cannot
+match and is classified BROKEN.
+
+The bounded correction keeps execution bound to the same retained no-follow
+descriptor by passing `/proc/self/fd/<descriptor>` as the explicit subprocess
+`executable`, while passing the fixed code-specific `argv[0]` (`unshare` or
+`bwrap`) in the argument vector. Exact namespace operations, scrubbed
+environment, descriptor custody, digest/identity postchecks, timeout, and the
+closed denial byte sets remain unchanged. No denial string, outcome policy,
+skip policy, PostgreSQL authority, Make/workflow route, dependency, lock,
+production, database, broker/provider, or live boundary is broadened.
+
+Strict RED must prove both native codes still use the retained FD while
+requiring the fixed `argv[0]`; GREEN must cover the native classification
+matrix, full topology module, compile, broad-handler inventory, and diff
+checks. Independent review is required before any further remote update or
+hosted qualification attempt.
