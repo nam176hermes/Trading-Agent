@@ -3963,3 +3963,36 @@ consumers, compile/inventory/diff gates, and a fresh standalone packet before
 independent review. No native/external outcome or authority policy, skip
 policy, PostgreSQL/DB authority, workflow, dependency/lock, production,
 broker/provider, or live boundary may change.
+
+### P0-12R26 correction — retire migrated PostgreSQL skip authority
+
+Hosted run `31889276195` at exact
+`200ff5c4cc864a997c4d09d9f5f280f2c019b298` passed the complete source-safe
+suite, portable remainder, closure, native/external topology, and the R25
+validate-only closure target. It then failed in `check-test-governance-topology`
+because all 228 root PostgreSQL skip approvals were stale. Packet C moved those
+228 logical nodes into the explicit disposable-PostgreSQL external authority
+lane, including expansion of 23 dual-scope logical nodes into 46 exact
+authority executions, but left their prior ordinary-root skip entries in
+`tests/skip-allowlist.yaml`.
+
+The bounded correction removes exactly the 228 root entries whose outcome is
+`skipped`, category is `DISPOSABLE_POSTGRES_REQUIRED`, and approval type is
+`disposable-postgres-test-approval-v1`. This is an authority reduction: those
+tests can no longer be accepted as ordinary CI skips and remain governed only
+by the reviewed external authority receipts. Preserve exactly the 29 root
+`runtime_postgres` deselections and the two legacy provider-credential skips;
+do not alter their reasons, approvals, dates, or outcomes. Update the maintained
+governance evidence counts and every derived tracked digest using its canonical
+generator or audit mechanism.
+
+Strict RED must prove the tracked allowlist still contains exactly 228 migrated
+root skip authorities. GREEN must prove none remain, the allowlist is exactly
+31 entries (29 root deselections and two legacy skips), the 251 physical
+PostgreSQL inventory rows remain external authority, topology/accounting counts
+are unchanged, and the full governance comparison accepts the resulting hosted
+observation shape. Run focused allowlist/governance/topology consumers,
+baseline/contracts/P0/static gates, fresh standalone verification, and
+independent review before another push. Do not mint PostgreSQL approval, run a
+database, weaken skip/outcome policy, change Make/workflow routing, dependencies
+or locks, or touch production, broker/provider, or live authority.
