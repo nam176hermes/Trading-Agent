@@ -3444,9 +3444,12 @@ portable-defect closure ledger under the new former code
 `SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING`, using the already-created fixture-fix
 commit as each historical proof authority. The closure becomes exactly 49
 rows, while the active inventory remains 30 and the governed set becomes 79.
-Because the same 17 nodes move directly from the ordinary remainder into the
-closure proof, the expected root remainder remains 6,131. Update only the
-derived locked closure/count/hash contracts required by that migration.
+Against the current 6,474-node root baseline, moving the same 17 nodes from
+the ordinary remainder into the closure proof makes the staged Packet A root
+remainder exactly 6,395. The hosted 6,131-passed count is not the topology
+remainder; 6,131 becomes the final remainder only after the separately reviewed
+Packets B and C route the remaining 264 nodes. Update only the derived locked
+closure/count/hash contracts required by this migration.
 
 Require exact-17 RED/GREEN evidence, the full two affected Nautilus test
 modules, portable-closure/topology/failure-diagnostic/artifact-firewall/P0
