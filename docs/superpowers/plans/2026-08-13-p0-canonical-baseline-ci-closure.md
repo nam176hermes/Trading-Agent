@@ -3558,3 +3558,80 @@ may download, provision, synthesize, or self-approve a toolchain, cache, or
 sandbox, and Packet B does not authorize push, hosted rerun, Packet C, P0-13,
 production/runtime/database/service mutation, broker/provider access, or live
 trading.
+
+---
+
+## P0-12R17 Packet C correction — Disposable PostgreSQL external authority topology
+
+Packet C owns the 228 reviewed disposable-PostgreSQL logical nodes in the
+final map `/tmp/p0-12-run-31853608129-node-map.tsv` (SHA-256
+`b7e8fa87d51af2f3f9dd65759ae167766de2046eb252a108ede28b1a8950cb0f`).
+The map contains 183 GREEN-only nodes, 22 RED-only nodes, and 23 event-chain
+nodes whose existing fixture conditionally changes both operation authority
+and migration head. Those 23 logical nodes must be parameterized into distinct
+`DISPOSABLE_PG_RED` and `DISPOSABLE_PG_GREEN` physical node IDs. Each physical
+node then belongs to one ordinary external-authority code; Packet C does not
+introduce a composite or dual receipt.
+
+The final active inventory adds exactly 251 rows:
+`EXT-DISPOSABLE-PG-GREEN` owns 206 nodes (183 plus the 23 GREEN parameters),
+and `EXT-DISPOSABLE-PG-RED` owns 45 nodes (22 plus the 23 RED parameters).
+Root collection rises from 6,503 to 6,526 solely because of the 23 added
+parameters. After the unchanged 29 deselections, the portable baseline is
+6,497. Active inventory becomes 317 rows (58 native and 259 external); with
+the unchanged 49-row closure, the governed set is 366 and the exact portable
+remainder is 6,131.
+
+Both new codes extend the ordinary strict external-v2 receipt with separate,
+code-discriminated authority facts. Qualification accepts only externally
+issued, current-user-private, no-follow approval records that pass the existing
+strict canonical validators and bind the exact Foundation commit/tree, scope,
+approved operation set, source bindings, constraints, two distinct human
+review identities, and a validity window no longer than 24 hours. GREEN also
+requires its independently approved fixture plan because the four planned
+GREEN nodes are
+`tests/control_api/test_alembic_schema.py` at the reviewed operations. RED has
+no planned node and therefore forbids rather than fabricates a RED fixture
+plan. Missing complete code authority is `ABSENT/DEFERRED`; partial, stale,
+foreign-scope, unsafe, malformed, mismatched, replaced, or expired material is
+`INVALID|PARTIAL|DRIFTED/FAIL`. Host `--require-pass` continues to reject
+DEFERRED.
+
+Preflight is side-effect-free: it may validate retained files, source identity,
+exact operation and slot sets, checked PostgreSQL-16 executable identities,
+and safe environment policy, but it must not call `initdb`, `pg_ctl`, reserve
+a port, create a fixture root, connect to PostgreSQL, or enter the database
+harness context. Exact execution is the sole database-starting boundary. Each
+session retains original record/plan descriptors and snapshots, copies only
+validated canonical bytes into no-clobber mode-0600 files below a task-private
+mode-0700 execution root, and supplies a fresh code-specific pytest environment
+using the existing singular harness variables. Ambient disposable-PG and
+runtime-database controls are scrubbed before the exact RED or GREEN overlay.
+Original and copied authority identities are postchecked through both
+Architecture-A publication checks, then only the task-owned private copy root
+is removed.
+
+Operator inputs are fixed external paths, not source data or self-approval:
+`DISPOSABLE_PG_RED_APPROVAL_RECORD`,
+`DISPOSABLE_PG_GREEN_APPROVAL_RECORD`, and
+`DISPOSABLE_PG_GREEN_FIXTURE_PLAN`. The topology translates them internally to
+the harness's existing `TRADING_TEST_DISPOSABLE_*` environment for one code at
+a time; raw paths, record contents, reviewer identities, database values, and
+credentials never enter receipts. The ordinary portable Make/workflow route
+supplies none of these inputs and receives honest DEFERRED receipts, so no
+workflow change is authorized and Make changes require separate concrete
+evidence that internal environment injection cannot carry the fixed boundary.
+
+Strict RED must cover the 23 missing physical node parameters, missing exact
+251-row inventory and derived hashes/counts, absent code-specific external-v2
+schemas, and missing retained sessions. GREEN must cover exact map projection,
+scope-separated execution environments, whole-authority absence, partial and
+unsafe inputs, expiry/source/operation/slot mismatch, symlink/hardlink/mode/
+owner/replacement attacks, forbidden child-process and database-start behavior
+during preflight, exact PASS/DEFER/FAIL receipts, no-clobber publication,
+external-v2 non-regression, and final 6,526/29/6,497/317/49/366/6,131
+accounting. Real PASS remains blocked until independent humans issue exact
+final-commit RED and GREEN records plus the GREEN fixture plan. Packet C may
+not synthesize those records, start a database for preflight or local proof,
+weaken skip/outcome policy, access production/runtime data, push, dispatch a
+hosted run, start P0-13, or enable production/live authority.
