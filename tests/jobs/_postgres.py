@@ -1158,6 +1158,20 @@ def _current_source_identity() -> tuple[str, str]:
     return _source_identity(ROOT)
 
 
+def _require_current_source_matches_approval(
+    record: dict[str, object], source_commit: str, source_tree: str,
+) -> None:
+    source = record.get("source")
+    if not isinstance(source, dict) or source.get("commit") != source_commit:
+        raise DisposablePostgresApprovalRejected(
+            "source commit does not match",
+        )
+    if source.get("tree") != source_tree:
+        raise DisposablePostgresApprovalRejected(
+            "source tree does not match",
+        )
+
+
 def _read_reviewed_sql_snapshot(
     red_sql_file: Path | None,
 ) -> _ReviewedSqlSnapshot | None:
@@ -1243,6 +1257,7 @@ def _planned_fixture_slot(
     approval_record: dict[str, object],
     operation_id: str,
     expected_lifecycle_actions: tuple[str, ...],
+    *, source_commit: str, source_tree: str,
 ) -> DisposablePostgresFixtureSlot:
     plan_path = os.environ.get("TRADING_TEST_DISPOSABLE_FIXTURE_PLAN", "")
     if not plan_path:
@@ -1260,12 +1275,11 @@ def _planned_fixture_slot(
         )
     try:
         plan = load_protected_fixture_plan(path)
-        commit, tree = _current_source_identity()
         slots = validate_disposable_postgres_fixture_plan(
             plan,
             approval_record,
-            source_commit=commit,
-            source_tree=tree,
+            source_commit=source_commit,
+            source_tree=source_tree,
             now=_utc_now(),
         )
     except DisposablePostgresFixturePlanRejected as error:
@@ -1305,6 +1319,8 @@ def _fixture_root(
     approval_record: dict[str, object],
     operation_id: str,
     *,
+    source_commit: str,
+    source_tree: str,
     planned: bool,
     expected_lifecycle_actions: tuple[str, ...] | None,
 ):
@@ -1325,6 +1341,8 @@ def _fixture_root(
         approval_record,
         operation_id,
         expected_lifecycle_actions,
+        source_commit=source_commit,
+        source_tree=source_tree,
     )
     root = Path(slot.root)
     data = Path(slot.pgdata)
@@ -1372,11 +1390,12 @@ def _authorize_disposable_postgres(
     scope: str,
     operation_id: str,
     *,
+    source_commit: str,
+    source_tree: str,
     data: Path,
     port: int,
     red_sql_file: Path | None,
 ) -> _ValidatedDisposablePostgresAuthority:
-    source_commit, source_tree = _current_source_identity()
     reviewed_sql = _read_reviewed_sql_snapshot(red_sql_file)
     red_sql_path = reviewed_sql.path if reviewed_sql is not None else None
     red_sql_sha256 = reviewed_sql.sha256 if reviewed_sql is not None else None
@@ -1470,9 +1489,15 @@ def _disposable_postgres_session(
     """Yield a private capability for one validated disposable cluster."""
 
     record, scope, stable_operation_id = _approval_inputs(operation_id)
+    source_commit, source_tree = _current_source_identity()
+    _require_current_source_matches_approval(
+        record, source_commit, source_tree,
+    )
     with _fixture_root(
         record,
         stable_operation_id,
+        source_commit=source_commit,
+        source_tree=source_tree,
         planned=planned,
         expected_lifecycle_actions=expected_lifecycle_actions,
     ) as (root, data, port):
@@ -1487,6 +1512,8 @@ def _disposable_postgres_session(
                 record,
                 scope,
                 stable_operation_id,
+                source_commit=source_commit,
+                source_tree=source_tree,
                 data=data,
                 port=port,
                 red_sql_file=red_sql_file,

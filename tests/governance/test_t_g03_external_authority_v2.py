@@ -346,6 +346,24 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
     monkeypatch.setenv("TRADING_DB_FOREIGN", "hostile")
     monkeypatch.setenv("TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE", "FOREIGN")
     monkeypatch.setenv("DISPOSABLE_PG_RED_APPROVAL_RECORD", "/foreign/record")
+    hostile_git_environment = {
+        "GIT_DIR": "/foreign/git-dir",
+        "GIT_WORK_TREE": "/foreign/worktree",
+        "GIT_INDEX_FILE": "/foreign/index",
+        "GIT_OBJECT_DIRECTORY": "/foreign/objects",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": "/foreign/alternate-objects",
+        "GIT_CONFIG": "/foreign/config",
+        "GIT_CONFIG_GLOBAL": "/foreign/global-config",
+        "GIT_CONFIG_SYSTEM": "/foreign/system-config",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.fsmonitor",
+        "GIT_CONFIG_VALUE_0": "/foreign/monitor",
+        "GIT_EXTERNAL_DIFF": "/foreign/diff",
+    }
+    for name, value in hostile_git_environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/foreign/xdg")
+    monkeypatch.setenv("PATH", "/foreign/bin")
     isolated = topology._pg_exact_environment((("PG_SAFE_OVERLAY", "exact"),))
     assert isolated["PG_SAFE_OVERLAY"] == "exact"
     assert not {
@@ -353,6 +371,10 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
         "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE",
         "DISPOSABLE_PG_RED_APPROVAL_RECORD",
     } & isolated.keys()
+    assert not set(hostile_git_environment) & isolated.keys()
+    assert "HOME" not in isolated
+    assert "XDG_CONFIG_HOME" not in isolated
+    assert isolated["PATH"] == "/usr/bin:/bin"
     with pytest.raises(topology.TopologyError, match="runtime authority"):
         topology._pg_exact_environment((("PGPASSWORD", "hostile"),))
 
@@ -426,6 +448,34 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
                     "VALID", "AUTHORITY_COMPLETE_VALIDATED",
                 )
                 environment = dict(session.execution_environment)
+                git_home = Path(environment["HOME"])
+                assert git_home.parent == Path(
+                    environment["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"],
+                ).parent
+                assert stat.S_IMODE(git_home.stat().st_mode) == 0o700
+                assert environment["PATH"] == "/usr/bin:/bin"
+                assert {
+                    name: environment[name]
+                    for name in (
+                        "GIT_ATTR_NOSYSTEM", "GIT_CONFIG", "GIT_CONFIG_GLOBAL",
+                        "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT",
+                        "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0",
+                        "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1",
+                        "GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT",
+                    )
+                } == {
+                    "GIT_ATTR_NOSYSTEM": "1",
+                    "GIT_CONFIG": "/dev/null",
+                    "GIT_CONFIG_GLOBAL": "/dev/null",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_COUNT": "2",
+                    "GIT_CONFIG_KEY_0": "core.fsmonitor",
+                    "GIT_CONFIG_VALUE_0": "false",
+                    "GIT_CONFIG_KEY_1": "core.hooksPath",
+                    "GIT_CONFIG_VALUE_1": "/dev/null",
+                    "GIT_OPTIONAL_LOCKS": "0",
+                    "GIT_TERMINAL_PROMPT": "0",
+                }
                 assert environment["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] == (
                     "DISPOSABLE_PG_GREEN" if code.endswith("GREEN") else "DISPOSABLE_PG_RED"
                 )
@@ -510,7 +560,6 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
 
         head = "a" * 40
         tree = "b" * 40
-        monkeypatch.setattr(topology, "_pg_source_tree", lambda value: tree)
         monkeypatch.setattr(
             pg_approval, "validate_disposable_postgres_approval_record",
             lambda *_args, **_kwargs: None,
@@ -554,7 +603,7 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
             plan_document = {} if code.endswith("GREEN") else None
             facts = topology._qualify_disposable_pg_authority(
                 code, document, plan_document, "c" * 64,
-                foundation_head_sha=head,
+                foundation_head_sha=head, foundation_source_tree=tree,
             )
             assert facts["approved_operation_count"] == len(
                 topology._disposable_pg_operations(code),
@@ -564,7 +613,7 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
         with pytest.raises(topology.TopologyError, match="operation authority"):
             topology._qualify_disposable_pg_authority(
                 "EXT-DISPOSABLE-PG-RED", cross_code, None, "c" * 64,
-                foundation_head_sha=head,
+                foundation_head_sha=head, foundation_source_tree=tree,
             )
         wrong_binding = authority_document("EXT-DISPOSABLE-PG-RED")
         wrong_binding["red_sql_binding"] = {
@@ -577,7 +626,7 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
         with pytest.raises(topology.TopologyError, match="SQL binding"):
             topology._qualify_disposable_pg_authority(
                 "EXT-DISPOSABLE-PG-RED", wrong_binding, None, "c" * 64,
-                foundation_head_sha=head,
+                foundation_head_sha=head, foundation_source_tree=tree,
             )
 
         for code in sorted(topology.DISPOSABLE_PG_CODES):

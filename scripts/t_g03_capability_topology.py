@@ -5956,6 +5956,21 @@ def _disposable_pg_input_snapshot(code: str) -> tuple[str, str]:
 
 PG_EXECUTABLE_NAMES = ("initdb", "pg_ctl", "psql", "pg_dump", "pg_restore")
 PG_POSTGRES_BIN = Path("/usr/lib/postgresql/16/bin")
+PG_GIT_EXECUTABLE = Path("/usr/bin/git")
+PG_GIT_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_CONFIG": "/dev/null",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "core.fsmonitor",
+    "GIT_CONFIG_VALUE_0": "false",
+    "GIT_CONFIG_KEY_1": "core.hooksPath",
+    "GIT_CONFIG_VALUE_1": "/dev/null",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_TERMINAL_PROMPT": "0",
+}
 PG_PAPER_ENVIRONMENT = {
     "TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES": "YES",
     "TRADING_TEST_REQUESTED_MODE": "paper",
@@ -6049,6 +6064,8 @@ def _pg_exact_environment(
             and not name.startswith(PG_RUNTIME_SETTING_PREFIXES)
             and not name.startswith("TRADING_TEST_DISPOSABLE_")
             and name != "TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR"
+            and not name.startswith("GIT_")
+            and name not in {"HOME", "PATH", "XDG_CONFIG_HOME"}
             and name not in {
                 "DISPOSABLE_PG_GREEN_APPROVAL_RECORD",
                 "DISPOSABLE_PG_GREEN_FIXTURE_PLAN",
@@ -6059,36 +6076,15 @@ def _pg_exact_environment(
     }
     if len(dict(overlay)) != len(overlay):
         raise TopologyError("disposable PostgreSQL environment has duplicate keys")
+    environment["PATH"] = "/usr/bin:/bin"
     environment.update(overlay)
     return environment
-
-
-def _pg_source_tree(head_sha: str) -> str:
-    if not HEAD_SHA.fullmatch(head_sha):
-        raise TopologyError("disposable PostgreSQL source head is invalid")
-    git_environment = {
-        name: value for name, value in os.environ.items()
-        if not name.startswith("GIT_")
-    }
-    git_environment["GIT_OPTIONAL_LOCKS"] = "0"
-    completed = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{head_sha}^{{tree}}"],
-        cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, check=False,
-        env=git_environment,
-    )
-    try:
-        tree = completed.stdout.decode("ascii").strip()
-    except UnicodeDecodeError as exc:
-        raise TopologyError("disposable PostgreSQL source tree is unavailable") from exc
-    if completed.returncode != 0 or not HEAD_SHA.fullmatch(tree):
-        raise TopologyError("disposable PostgreSQL source tree is unavailable")
-    return tree
 
 
 def _qualify_disposable_pg_authority(
     code: str, approval_document: object, plan_document: object,
     executable_manifest_sha256: str, *, foundation_head_sha: str,
+    foundation_source_tree: str,
 ) -> dict[str, object]:
     from scripts.validate_disposable_postgres_approval import (
         APPROVAL_SOURCE_BINDING_PATHS,
@@ -6099,11 +6095,18 @@ def _qualify_disposable_pg_authority(
         validate_disposable_postgres_fixture_plan,
     )
 
-    if code not in DISPOSABLE_PG_CODES or not isinstance(approval_document, dict):
+    if (
+        code not in DISPOSABLE_PG_CODES
+        or not isinstance(approval_document, dict)
+        or not HEAD_SHA.fullmatch(foundation_head_sha)
+        or not HEAD_SHA.fullmatch(foundation_source_tree)
+    ):
         raise TopologyError("disposable PostgreSQL authority is invalid")
-    source_tree = _pg_source_tree(foundation_head_sha)
     source = approval_document.get("source")
-    if source != {"commit": foundation_head_sha, "tree": source_tree}:
+    if source != {
+        "commit": foundation_head_sha,
+        "tree": foundation_source_tree,
+    }:
         raise TopologyError("disposable PostgreSQL source authority drift")
     expected_operations = _disposable_pg_operations(code)
     raw_operations = approval_document.get("approved_operations")
@@ -6124,7 +6127,7 @@ def _qualify_disposable_pg_authority(
     validation_now = datetime.now(timezone.utc)
     validate_disposable_postgres_approval_record(
         approval_document, expected_scope=expected_scope,
-        expected_commit=foundation_head_sha, expected_tree=source_tree,
+        expected_commit=foundation_head_sha, expected_tree=foundation_source_tree,
         expected_sql_sha256=expected_sql_digest,
         runtime_setting_names=frozenset(), now=validation_now,
     )
@@ -6146,7 +6149,7 @@ def _qualify_disposable_pg_authority(
             raise TopologyError("disposable PostgreSQL GREEN fixture plan is missing")
         slots = validate_disposable_postgres_fixture_plan(
             plan_document, approval_document,
-            source_commit=foundation_head_sha, source_tree=source_tree,
+            source_commit=foundation_head_sha, source_tree=foundation_source_tree,
             now=validation_now,
         )
         observed_planned = frozenset(
@@ -6381,14 +6384,37 @@ def _open_disposable_pg_external_session(
             digest = hashlib.sha256(raw).hexdigest()
             retained.append((path, descriptor, identity, lineage, digest))
             executable_records.append({"name": name, "identity": identity, "sha256": digest})
+        state, descriptor, identity, lineage, git_raw = _open_pg_authority_file(
+            PG_GIT_EXECUTABLE, exact_mode=0o755,
+            owners=frozenset({0}), maximum_size=32 * 1024 * 1024,
+        )
+        if state != "PRESENT" or descriptor < 0 or identity is None or lineage is None:
+            raise _ExternalStateError("INVALID")
+        descriptors.append(descriptor)
+        retained.append((
+            PG_GIT_EXECUTABLE, descriptor, identity, lineage,
+            hashlib.sha256(git_raw).hexdigest(),
+        ))
         executable_manifest = _sha256(executable_records)
-        authority = (
-            qualifier(code, approval_document, plan_document, executable_manifest)
-            if qualifier is not None else _qualify_disposable_pg_authority(
+        if qualifier is not None:
+            authority = qualifier(
+                code, approval_document, plan_document, executable_manifest,
+            )
+        else:
+            source = approval_document.get("source")
+            if (
+                not isinstance(source, dict)
+                or set(source) != {"commit", "tree"}
+                or source.get("commit") != foundation_head_sha
+                or not isinstance(source.get("tree"), str)
+                or not HEAD_SHA.fullmatch(str(source["tree"]))
+            ):
+                raise TopologyError("disposable PostgreSQL source authority drift")
+            authority = _qualify_disposable_pg_authority(
                 code, approval_document, plan_document, executable_manifest,
                 foundation_head_sha=foundation_head_sha,
+                foundation_source_tree=str(source["tree"]),
             )
-        )
         if set(authority) != DISPOSABLE_PG_AUTHORITY_KEYS:
             raise TopologyError("disposable PostgreSQL authority schema drift")
 
@@ -6406,7 +6432,27 @@ def _open_disposable_pg_external_session(
         if copy_lineage is None:
             raise TopologyError("private authority copy is unsafe")
         retained.append((approval_copy, descriptor, identity, copy_lineage, hashlib.sha256(approval_copy_raw).hexdigest()))
-        execution_environment = dict(PG_PAPER_ENVIRONMENT)
+        git_home = private_root / "git-home"
+        git_home.mkdir(mode=0o700)
+        git_home_descriptor = os.open(
+            git_home,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        git_home_identity = _artifact_identity(os.fstat(git_home_descriptor))
+        git_home_lineage = _pg_lineage_snapshot(git_home)
+        if git_home_lineage is None:
+            os.close(git_home_descriptor)
+            raise TopologyError("private Git home is unsafe")
+        descriptors.append(git_home_descriptor)
+        retained_directories.append((
+            git_home, git_home_descriptor, git_home_identity, git_home_lineage,
+        ))
+        execution_environment = {
+            **PG_PAPER_ENVIRONMENT,
+            **PG_GIT_ENVIRONMENT,
+            "HOME": str(git_home),
+        }
         execution_environment.update({
             "TRADING_TEST_DISPOSABLE_APPROVAL_RECORD": str(approval_copy),
             "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE": str(authority["scope"]),
@@ -6447,6 +6493,10 @@ def _open_disposable_pg_external_session(
         retained = [
             (path, held, identity, _pg_lineage_snapshot(path) or (), digest)
             for path, held, identity, _lineage, digest in retained
+        ]
+        retained_directories = [
+            (path, held, identity, _pg_lineage_snapshot(path) or ())
+            for path, held, identity, _lineage in retained_directories
         ]
 
         def postcheck() -> None:

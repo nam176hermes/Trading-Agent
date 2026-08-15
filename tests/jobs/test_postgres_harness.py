@@ -896,11 +896,29 @@ def test_mocked_valid_record_binds_safe_cluster_and_always_stops(
     _require_operation_specific_command_api()
     record = write_record(protected_record_dir / "approval.json", build_record())
     _set_controls(monkeypatch, record)
+    preflight_events: list[str] = []
+
+    def source_identity() -> tuple[str, str]:
+        preflight_events.append("SOURCE_IDENTITY")
+        return COMMIT, TREE
+
     monkeypatch.setattr(
         _postgres,
         "_current_source_identity",
-        lambda: (COMMIT, TREE),
+        source_identity,
         raising=False,
+    )
+    original_temporary_directory = _postgres.tempfile.TemporaryDirectory
+
+    def guarded_temporary_directory(*args, **kwargs):
+        assert preflight_events == ["SOURCE_IDENTITY"]
+        preflight_events.append("FIXTURE_ROOT")
+        return original_temporary_directory(*args, **kwargs)
+
+    monkeypatch.setattr(
+        _postgres.tempfile,
+        "TemporaryDirectory",
+        guarded_temporary_directory,
     )
     monkeypatch.setattr(_postgres, "_utc_now", lambda: NOW)
     monkeypatch.setattr(
@@ -985,6 +1003,25 @@ def test_mocked_valid_record_binds_safe_cluster_and_always_stops(
         f"--dbname={DISPOSABLE_DATABASE}",
         str(session.dump),
     ]
+
+    monkeypatch.setattr(
+        _postgres,
+        "_current_source_identity",
+        lambda: (COMMIT, "9" * 40),
+    )
+    monkeypatch.setattr(
+        _postgres.tempfile,
+        "TemporaryDirectory",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("source mismatch reached fixture-root allocation"),
+        ),
+    )
+    with pytest.raises(
+        DisposablePostgresApprovalRejected,
+        match="source tree does not match",
+    ):
+        with disposable_postgres_cluster(operation_id=OPERATION_ID):
+            pytest.fail("source-mismatched authority reached a cluster")
 
 
 def test_restore_recreates_exact_target_without_transient_createdb() -> None:
