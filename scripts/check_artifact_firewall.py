@@ -126,6 +126,11 @@ _RAW_BINDING_SUBSTAGES = frozenset({
     "TOPOLOGY_INVENTORY", "RECEIPTS", "GOVERNANCE_REPORT",
     "SEMANTIC_BINDING", "RAW_POSTCHECK",
 })
+_SEMANTIC_BINDING_SUBSTAGES = frozenset({
+    "TOPOLOGY_PROJECTION", "PAYLOAD_BINDING", "GOVERNANCE_DOCUMENT",
+    "DISCLOSURE_BINDING", "GOVERNANCE_PROJECTION",
+    "TOPOLOGY_PAYLOAD_COPY", "RUN_METADATA",
+})
 _SOURCE_TREE_FAILURES = frozenset({
     ("DIFF_INDEX", "DRIFT"),
     ("DIFF_INDEX", "COMMAND_FAILURE"),
@@ -172,15 +177,22 @@ class RawBindingError(FirewallError):
 
     def __init__(
         self, substage: str, *, code: str = "ARTIFACT_FIREWALL_REJECTED",
-        category: str = "LAYOUT",
+        category: str = "LAYOUT", semantic_binding_substage: str = "",
     ) -> None:
         if substage not in _RAW_BINDING_SUBSTAGES:
             raise ValueError("raw binding substage is not closed")
+        if semantic_binding_substage:
+            if (
+                substage != "SEMANTIC_BINDING"
+                or semantic_binding_substage not in _SEMANTIC_BINDING_SUBSTAGES
+            ):
+                raise ValueError("semantic binding substage is not closed")
         super().__init__(
             "raw binding rejected at a closed substage",
             code=code, category=category,
         )
         self.raw_binding_substage = substage
+        self.semantic_binding_substage = semantic_binding_substage
 
 
 class FailurePublicationError(FirewallError):
@@ -214,6 +226,7 @@ class FinalPublicationError(FirewallError):
     def __init__(
         self, stage: str, *, code: str, category: str,
         raw_binding_substage: str = "",
+        semantic_binding_substage: str = "",
         source_tree_substage: str = "", source_tree_reason: str = "",
     ) -> None:
         if stage not in _FAILURE_PUBLICATION_STAGES:
@@ -224,6 +237,13 @@ class FinalPublicationError(FirewallError):
                 or raw_binding_substage not in _RAW_BINDING_SUBSTAGES
             ):
                 raise ValueError("final raw binding detail is not closed")
+        if semantic_binding_substage:
+            if (
+                stage != "RAW_BINDING"
+                or raw_binding_substage != "SEMANTIC_BINDING"
+                or semantic_binding_substage not in _SEMANTIC_BINDING_SUBSTAGES
+            ):
+                raise ValueError("final semantic binding detail is not closed")
         if source_tree_substage or source_tree_reason:
             if (
                 stage != "SOURCE_TREE"
@@ -237,6 +257,7 @@ class FinalPublicationError(FirewallError):
         )
         self.stage = stage
         self.raw_binding_substage = raw_binding_substage
+        self.semantic_binding_substage = semantic_binding_substage
         self.source_tree_substage = source_tree_substage
         self.source_tree_reason = source_tree_reason
 
@@ -245,6 +266,7 @@ def _classify_final_publication(stage: str, exc: object) -> FinalPublicationErro
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
     raw_binding_substage = ""
+    semantic_binding_substage = ""
     source_tree_substage = ""
     source_tree_reason = ""
     if stage == "RAW_BINDING":
@@ -253,12 +275,15 @@ def _classify_final_publication(stage: str, exc: object) -> FinalPublicationErro
             if isinstance(exc, RawBindingError)
             else "SOURCE_SNAPSHOT"
         )
+        if isinstance(exc, RawBindingError):
+            semantic_binding_substage = exc.semantic_binding_substage
     if stage == "SOURCE_TREE" and isinstance(exc, SourceTreeError):
         source_tree_substage = exc.source_tree_substage
         source_tree_reason = exc.source_tree_reason
     return FinalPublicationError(
         stage, code=code, category=category,
         raw_binding_substage=raw_binding_substage,
+        semantic_binding_substage=semantic_binding_substage,
         source_tree_substage=source_tree_substage,
         source_tree_reason=source_tree_reason,
     )
@@ -268,6 +293,15 @@ def _classify_raw_binding(substage: str, exc: object) -> RawBindingError:
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
     return RawBindingError(substage, code=code, category=category)
+
+
+def _classify_semantic_binding(substage: str, exc: object) -> RawBindingError:
+    code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
+    category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
+    return RawBindingError(
+        "SEMANTIC_BINDING", code=code, category=category,
+        semantic_binding_substage=substage,
+    )
 
 
 def _classify_failure_publication(
@@ -2031,10 +2065,17 @@ def _final_payloads_from_raw(
         or (not governance_error and received_report_entries != success_report_entries)
     ):
         raise RawBindingError("GOVERNANCE_REPORT")
+    semantic_errors = (
+        FirewallError, OSError, ValueError, KeyError, TypeError,
+        governance.GovernanceError, topology.TopologyError,
+    )
     try:
         semantic = topology.build_final_semantic_projection(
             context, baseline, disclosure, receipts,
         )
+    except semantic_errors as exc:
+        raise _classify_semantic_binding("TOPOLOGY_PROJECTION", exc) from None
+    try:
         payloads: dict[str, bytes] = {
             "capability-topology/t-g03a-hosted-failure-inventory.tsv":
                 raw.leaves["t-g03a-hosted-failure-inventory.tsv"].raw,
@@ -2042,45 +2083,60 @@ def _final_payloads_from_raw(
                 raw.leaves[topology.CLOSURE_RELATIVE_PATH.name].raw,
             "capability-topology/aggregate.json": _canonical_json_bytes(disclosure),
         }
+    except semantic_errors as exc:
+        raise _classify_semantic_binding("PAYLOAD_BINDING", exc) from None
+    try:
         if governance_error:
-            error_report = _parse_json_object(
+            report_document = _parse_json_object(
                 raw.leaves[
                     "test-governance-topology/test-governance-error.json"
                 ].raw,
                 label="governed error report",
             )
-            error_raw, error_semantic = governance.build_final_governed_error(
-                error_report,
-            )
-            payloads["test-governance/error.json"] = error_raw
-            semantic["governance_error"] = error_semantic
-            generated_at_utc = str(error_report["generated_at_utc"])
         else:
-            report = _parse_json_object(
+            report_document = _parse_json_object(
                 raw.leaves["test-governance-topology/test-governance.json"].raw,
                 label="governed report",
             )
-            if report.get("capability_topology") != disclosure:
-                raise RawBindingError("SEMANTIC_BINDING")
-            summary_raw, selected_tests = governance.build_final_governed_summary(report)
+    except semantic_errors as exc:
+        raise _classify_semantic_binding("GOVERNANCE_DOCUMENT", exc) from None
+    if (
+        not governance_error
+        and report_document.get("capability_topology") != disclosure
+    ):
+        raise RawBindingError(
+            "SEMANTIC_BINDING",
+            semantic_binding_substage="DISCLOSURE_BINDING",
+        )
+    try:
+        if governance_error:
+            error_raw, error_semantic = governance.build_final_governed_error(
+                report_document,
+            )
+            payloads["test-governance/error.json"] = error_raw
+            semantic["governance_error"] = error_semantic
+        else:
+            summary_raw, selected_tests = governance.build_final_governed_summary(
+                report_document,
+            )
             payloads["test-governance/summary.json"] = summary_raw
             semantic["selected_tests"] = selected_tests
-            generated_at_utc = str(report["generated_at_utc"])
+    except semantic_errors as exc:
+        raise _classify_semantic_binding("GOVERNANCE_PROJECTION", exc) from None
+    try:
         for relative, leaf in raw.leaves.items():
             if relative.startswith("capability-topology/"):
                 payloads[relative] = leaf.raw
+    except semantic_errors as exc:
+        raise _classify_semantic_binding("TOPOLOGY_PAYLOAD_COPY", exc) from None
+    try:
         run_metadata = {
             "run_id": run_id,
             "attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
-            "generated_at_utc": generated_at_utc,
+            "generated_at_utc": str(report_document["generated_at_utc"]),
         }
-    except RawBindingError:
-        raise
-    except (
-        FirewallError, OSError, ValueError, KeyError, TypeError,
-        governance.GovernanceError, topology.TopologyError,
-    ) as exc:
-        raise _classify_raw_binding("SEMANTIC_BINDING", exc) from None
+    except semantic_errors as exc:
+        raise _classify_semantic_binding("RUN_METADATA", exc) from None
     try:
         raw.postcheck()
     except (FirewallError, OSError, ValueError) as exc:
@@ -2836,6 +2892,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and exc.raw_binding_substage
             ):
                 fields.append(exc.raw_binding_substage)
+                if exc.semantic_binding_substage:
+                    fields.append(exc.semantic_binding_substage)
             if exc.source_tree_substage:
                 fields.extend([
                     exc.source_tree_substage, exc.source_tree_reason,

@@ -429,6 +429,11 @@ def test_cli_publishes_one_final_evidence_set(
         "TOPOLOGY_INVENTORY", "RECEIPTS", "GOVERNANCE_REPORT",
         "SEMANTIC_BINDING", "RAW_POSTCHECK",
     )
+    semantic_substages = (
+        "TOPOLOGY_PROJECTION", "PAYLOAD_BINDING", "GOVERNANCE_DOCUMENT",
+        "DISCLOSURE_BINDING", "GOVERNANCE_PROJECTION",
+        "TOPOLOGY_PAYLOAD_COPY", "RUN_METADATA",
+    )
 
     def raw_error(substage: str) -> firewall.FirewallError:
         error_type = getattr(firewall, "RawBindingError", None)
@@ -437,6 +442,21 @@ def test_cli_publishes_one_final_evidence_set(
                 hostile, relative_path="hostile-relative-path", sha256="f" * 64,
             )
         return error_type(substage)
+
+    def semantic_error(substage: str) -> firewall.FirewallError:
+        try:
+            return firewall.RawBindingError(
+                "SEMANTIC_BINDING",
+                code=(
+                    "ARTIFACT_SECRET_REJECTED"
+                    if substage == "TOPOLOGY_PROJECTION"
+                    else "ARTIFACT_FIREWALL_REJECTED"
+                ),
+                category=("PASSWORD" if substage == "TOPOLOGY_PROJECTION" else "LAYOUT"),
+                semantic_binding_substage=substage,
+            )
+        except TypeError:
+            return firewall.RawBindingError("SEMANTIC_BINDING")
 
     expected = (
         ("RAW_BINDING", "FirewallError"),
@@ -546,6 +566,51 @@ def test_cli_publishes_one_final_evidence_set(
         ("RAW_BINDING", substage, None, None) for substage in raw_substages
     ]
 
+    observed_semantic_substages: list[
+        tuple[str, str, str, str, str, object, object]
+    ] = []
+    for semantic_substage in semantic_substages:
+        with monkeypatch.context() as patch:
+            patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+            patch.setattr(
+                firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+            )
+            patch.setattr(
+                firewall,
+                "_final_payloads_from_raw",
+                lambda *args, _substage=semantic_substage, **kwargs: (
+                    _ for _ in ()
+                ).throw(semantic_error(_substage)),
+            )
+            with pytest.raises(firewall.FinalPublicationError) as captured:
+                firewall.publish_final_evidence(
+                    raw_root=raw_root,
+                    destination=tmp_path / f"final-semantic-{semantic_substage.lower()}",
+                    inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                    foundation_context_path=raw_root / "foundation-context.json",
+                    repository_root=tmp_path,
+                )
+            error = captured.value
+            observed_semantic_substages.append((
+                error.code,
+                error.category,
+                error.stage,
+                error.raw_binding_substage,
+                getattr(error, "semantic_binding_substage", ""),
+                error.__cause__,
+                error.__context__,
+            ))
+    assert observed_semantic_substages == [
+        (
+            "ARTIFACT_SECRET_REJECTED"
+            if substage == "TOPOLOGY_PROJECTION"
+            else "ARTIFACT_FIREWALL_REJECTED",
+            "PASSWORD" if substage == "TOPOLOGY_PROJECTION" else "LAYOUT",
+            "RAW_BINDING", "SEMANTIC_BINDING", substage, None, None,
+        )
+        for substage in semantic_substages
+    ]
+
     with monkeypatch.context() as patch:
         patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
         raw_snapshot = SimpleNamespace(
@@ -620,6 +685,30 @@ def test_cli_publishes_one_final_evidence_set(
     assert capsys.readouterr().err == (
         "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
         "RAW_BINDING ROOT_INVENTORY\n"
+    )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+        patch.setattr(
+            firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+        )
+        patch.setattr(
+            firewall,
+            "_final_payloads_from_raw",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                semantic_error("GOVERNANCE_PROJECTION")
+            ),
+        )
+        assert firewall.main([
+            "publish", "--raw-root", str(raw_root),
+            "--destination", str(tmp_path / "final-semantic-cli"),
+            "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            "--foundation-context-path", str(raw_root / "foundation-context.json"),
+            "--repository-root", str(tmp_path),
+        ]) == 2
+    assert capsys.readouterr().err == (
+        "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
+        "RAW_BINDING SEMANTIC_BINDING GOVERNANCE_PROJECTION\n"
     )
 
 
