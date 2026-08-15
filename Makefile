@@ -431,7 +431,7 @@ check-portable-defect-closure:
 	@set -eu; \
 		test -n "$${GITHUB_RUN_ID:?}"; \
 		TMPDIR=/tmp TMP=/tmp TEMP=/tmp \
-			uv run python -m scripts.t_g03_capability_topology check-closure --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
+			uv run python -m scripts.t_g03_capability_topology validate-closure --evidence-root "$(TEST_EVIDENCE_DIR)" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH"
 
 test-native-capabilities:
 	@set -eu; test -n "$${GITHUB_RUN_ID:?}"; \

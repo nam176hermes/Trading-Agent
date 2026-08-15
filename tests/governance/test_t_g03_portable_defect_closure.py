@@ -337,6 +337,13 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
         assert result["portable_source_status"] == "PASS"
         assert result["baseline_candidate_count"] == "366"
         assert not list((evidence / "capability-topology").glob("SRC-*.json"))
+        monkeypatch.delenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
+        monkeypatch.delenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256")
+        validated = topology.validate_portable_defect_closure(
+            inventory=INVENTORY, evidence_root=evidence, run_id=run_id,
+            head_sha=head, foundation_context_path=context,
+        )
+        assert validated["outcome"] == "PASS"
 
 
 def test_closure_proof_rejects_failure_stale_artifact_and_tampering(

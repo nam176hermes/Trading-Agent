@@ -2505,6 +2505,31 @@ def execute_portable_defect_closure(
     return destination
 
 
+def validate_portable_defect_closure(
+    *, inventory: Path, evidence_root: Path, run_id: str, head_sha: str,
+    foundation_context_path: Path,
+) -> dict[str, object]:
+    """Validate the published closure proof without executing closed nodes again."""
+    require_foundation_context(run_id, head_sha)
+    context = load_foundation_context(
+        foundation_context_path, run_id=run_id, head_sha=head_sha,
+    )
+    topology_root = evidence_root / "capability-topology"
+    _reject_policy_nonacceptance_presence(topology_root)
+    _reject_unsafe_raw_reason_nonacceptance_presence(topology_root)
+    baseline = load_portable_root_baseline(
+        inventory=inventory, evidence_root=evidence_root, run_id=run_id,
+        head_sha=head_sha, foundation_context_path=foundation_context_path,
+    )
+    return validate_portable_closure_proof(
+        topology_root / "portable-defect-closure-proof.json",
+        foundation_run_id=run_id,
+        foundation_head_sha=head_sha,
+        foundation_context=context,
+        sealed_custody=_validate_custody_policy(baseline["collector_policy"]),
+    )
+
+
 def _execute_exact_with_retained_custody(
     *, baseline: dict[str, object], nodes: tuple[str, ...], report: Path,
     runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
@@ -7761,7 +7786,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=(
         "reserve", "collect-baseline", "prepare-remainder", "run-remainder", "run-lane",
-        "check-closure", "validate-native", "validate-external", "aggregate",
+        "check-closure", "validate-closure", "validate-native", "validate-external", "aggregate",
     ))
     parser.add_argument("--lane", choices=tuple(CLASSIFICATION_LANE.values()))
     parser.add_argument("--inventory", type=Path, default=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"))
@@ -7802,6 +7827,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.action == "check-closure":
             execute_portable_defect_closure(
+                inventory=args.inventory, evidence_root=args.evidence_root,
+                run_id=run_id, head_sha=head_sha,
+                foundation_context_path=args.foundation_context_path,
+            )
+        elif args.action == "validate-closure":
+            validate_portable_defect_closure(
                 inventory=args.inventory, evidence_root=args.evidence_root,
                 run_id=run_id, head_sha=head_sha,
                 foundation_context_path=args.foundation_context_path,
