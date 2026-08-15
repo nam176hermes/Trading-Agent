@@ -645,6 +645,7 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
     with monkeypatch.context() as private_bwrap:
         private_bwrap.setattr(sealed_uv, "SANDBOX_PATH", str(bwrap_executable))
         policy = sealed_uv.load_policy(policy_path)
+        assert policy["sandbox_path"] == str(bwrap_executable)
         bwrap_descriptor = os.open(bwrap_executable, os.O_RDONLY | os.O_CLOEXEC)
         bwrap_named = bwrap_executable.lstat()
         bwrap = topology.NativeProbeSession(
@@ -678,6 +679,9 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
             assert (
                 private_sandbox["observed_sha256"]
                 == private_sandbox["expected_sha256"]
+            )
+            assert private_sandbox["policy_sha256"] == topology._sha256_path(
+                policy_path,
             )
             topology._postcheck_native_probe(bwrap)
         finally:
