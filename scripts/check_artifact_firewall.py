@@ -144,6 +144,10 @@ _PROJECTION_VALIDATION_SUBSTAGES = frozenset({
     "COLLECTION", "REMAINDER", "REMAINDER_GOVERNANCE", "CLOSURE",
     "RECEIPTS", "AGGREGATE", "FINAL_GOVERNANCE", "SECRET_SCAN",
 })
+_COLLECTION_SUBSTAGES = frozenset({
+    "DOCUMENT_SCHEMA", "RECORD_SCHEMA", "REASON_DOMAIN",
+    "SUMMARY_BINDING", "CANDIDATE_BINDING", "DESELECTION_BINDING",
+})
 _SOURCE_TREE_FAILURES = frozenset({
     ("DIFF_INDEX", "DRIFT"),
     ("DIFF_INDEX", "COMMAND_FAILURE"),
@@ -242,6 +246,7 @@ class FinalPublicationError(FirewallError):
         semantic_binding_substage: str = "",
         publication_substage: str = "",
         projection_validation_substage: str = "",
+        collection_substage: str = "",
         source_tree_substage: str = "", source_tree_reason: str = "",
     ) -> None:
         if stage not in _FAILURE_PUBLICATION_STAGES:
@@ -273,6 +278,14 @@ class FinalPublicationError(FirewallError):
                 not in _PROJECTION_VALIDATION_SUBSTAGES
             ):
                 raise ValueError("final projection validation substage is not closed")
+        if collection_substage:
+            if (
+                stage != "PUBLICATION"
+                or publication_substage != "PROJECTION_VALIDATION"
+                or projection_validation_substage != "COLLECTION"
+                or collection_substage not in _COLLECTION_SUBSTAGES
+            ):
+                raise ValueError("final collection substage is not closed")
         if source_tree_substage or source_tree_reason:
             if (
                 stage != "SOURCE_TREE"
@@ -289,6 +302,7 @@ class FinalPublicationError(FirewallError):
         self.semantic_binding_substage = semantic_binding_substage
         self.publication_substage = publication_substage
         self.projection_validation_substage = projection_validation_substage
+        self.collection_substage = collection_substage
         self.source_tree_substage = source_tree_substage
         self.source_tree_reason = source_tree_reason
 
@@ -296,6 +310,7 @@ class FinalPublicationError(FirewallError):
 def _classify_final_publication(
     stage: str, exc: object, *, publication_substage: str = "",
     projection_validation_substage: str = "",
+    collection_substage: str = "",
 ) -> FinalPublicationError:
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
@@ -320,6 +335,7 @@ def _classify_final_publication(
         semantic_binding_substage=semantic_binding_substage,
         publication_substage=publication_substage,
         projection_validation_substage=projection_validation_substage,
+        collection_substage=collection_substage,
         source_tree_substage=source_tree_substage,
         source_tree_reason=source_tree_reason,
     )
@@ -1018,12 +1034,19 @@ def _validate_final_governance(
 def _validate_projection_schemas(
     snapshot: _Snapshot, *,
     _projection_validation_substage_hook: Callable[[str], None] | None = None,
+    _collection_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     from scripts import t_g03_capability_topology as topology
 
     def enter(substage: str) -> None:
         if _projection_validation_substage_hook is not None:
             _projection_validation_substage_hook(substage)
+
+    def enter_collection(substage: str) -> None:
+        if substage not in _COLLECTION_SUBSTAGES:
+            raise ValueError("collection substage is not closed")
+        if _collection_substage_hook is not None:
+            _collection_substage_hook(substage)
 
     enter("FOUNDATION_CONTEXT")
     prefix = "capability-topology/"
@@ -1120,50 +1143,9 @@ def _validate_projection_schemas(
     except topology.TopologyError as exc:
         raise _reject("portable baseline custody policy is invalid") from exc
     enter("COLLECTION")
+    enter_collection("DOCUMENT_SCHEMA")
     collection = _object_leaf(snapshot, prefix + "portable-root-collection.governance.json")
     collection_tests = collection.get("tests")
-    collected: list[str] = []
-    deselected: list[str] = []
-    collection_counts: dict[str, int] = {}
-    collection_records_valid = isinstance(collection_tests, list)
-    if isinstance(collection_tests, list):
-        for item in collection_tests:
-            if (
-                not isinstance(item, dict)
-                or set(item) != {
-                    "test_node_id", "component", "outcome", "reason", "phase",
-                }
-                or item.get("component") != "root"
-                or item.get("phase") != "collection"
-                or not isinstance(item.get("test_node_id"), str)
-                or not topology._is_portable_root_pytest_node_id(
-                    str(item.get("test_node_id"))
-                )
-                or item.get("outcome") not in {"collected", "deselected"}
-            ):
-                collection_records_valid = False
-                continue
-            outcome = str(item["outcome"])
-            reason = item.get("reason")
-            if (
-                (outcome == "collected" and reason != "")
-                or (
-                    outcome == "deselected"
-                    and reason not in {
-                        "marker expression deselected: host_coupled",
-                        (
-                            "marker expression deselected: "
-                            "host_coupled, runtime_postgres"
-                        ),
-                        "marker expression deselected: runtime_postgres",
-                    }
-                )
-            ):
-                collection_records_valid = False
-                continue
-            node_id = str(item["test_node_id"])
-            (collected if outcome == "collected" else deselected).append(node_id)
-            collection_counts[outcome] = collection_counts.get(outcome, 0) + 1
     if (
         set(collection) != {
             "schema_version", "component", "collection_only",
@@ -1173,11 +1155,69 @@ def _validate_projection_schemas(
         or collection.get("component") != "root"
         or collection.get("collection_only") is not True
         or collection.get("pytest_exit_status") != 0
-        or not collection_records_valid
-        or collection.get("summary") != collection_counts
-        or sorted(collected) != candidates
-        or len(collected) != len(candidates)
-        or len(deselected) != len(set(deselected))
+        or not isinstance(collection_tests, list)
+    ):
+        raise _reject("portable collection governance is invalid")
+
+    enter_collection("RECORD_SCHEMA")
+    assert isinstance(collection_tests, list)
+    collection_records_valid = True
+    for item in collection_tests:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {
+                "test_node_id", "component", "outcome", "reason", "phase",
+            }
+            or item.get("component") != "root"
+            or item.get("phase") != "collection"
+            or not isinstance(item.get("test_node_id"), str)
+            or not topology._is_portable_root_pytest_node_id(
+                str(item.get("test_node_id"))
+            )
+            or item.get("outcome") not in {"collected", "deselected"}
+        ):
+            collection_records_valid = False
+    if not collection_records_valid:
+        raise _reject("portable collection governance is invalid")
+
+    enter_collection("REASON_DOMAIN")
+    collected: list[str] = []
+    deselected: list[str] = []
+    collection_counts: dict[str, int] = {}
+    for item in collection_tests:
+        assert isinstance(item, dict)
+        outcome = str(item["outcome"])
+        reason = item.get("reason")
+        if (
+            (outcome == "collected" and reason != "")
+            or (
+                outcome == "deselected"
+                and reason not in {
+                    "marker expression deselected: host_coupled",
+                    (
+                        "marker expression deselected: "
+                        "host_coupled, runtime_postgres"
+                    ),
+                    "marker expression deselected: runtime_postgres",
+                }
+            )
+        ):
+            raise _reject("portable collection governance is invalid")
+        node_id = str(item["test_node_id"])
+        (collected if outcome == "collected" else deselected).append(node_id)
+        collection_counts[outcome] = collection_counts.get(outcome, 0) + 1
+
+    enter_collection("SUMMARY_BINDING")
+    if collection.get("summary") != collection_counts:
+        raise _reject("portable collection governance is invalid")
+
+    enter_collection("CANDIDATE_BINDING")
+    if sorted(collected) != candidates or len(collected) != len(candidates):
+        raise _reject("portable collection governance is invalid")
+
+    enter_collection("DESELECTION_BINDING")
+    if (
+        len(deselected) != len(set(deselected))
         or set(deselected) & set(candidates)
         or len(collected) + len(deselected) != len(collection_tests)
     ):
@@ -1337,6 +1377,7 @@ def _validate_projection_schemas(
 def _validate_projection_layout(
     snapshot: _Snapshot, *,
     _projection_validation_substage_hook: Callable[[str], None] | None = None,
+    _collection_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     def enter(substage: str) -> None:
         if substage not in _PROJECTION_VALIDATION_SUBSTAGES:
@@ -1397,6 +1438,7 @@ def _validate_projection_layout(
     semantic = _validate_projection_schemas(
         snapshot,
         _projection_validation_substage_hook=_projection_validation_substage_hook,
+        _collection_substage_hook=_collection_substage_hook,
     )
     enter("SECRET_SCAN")
     for relative, leaf in snapshot.leaves.items():
@@ -1981,6 +2023,7 @@ def publish_evidence_set(
     boundary_hook: Callable[[str], None] | None = None,
     _publication_substage_hook: Callable[[str], None] | None = None,
     _projection_validation_substage_hook: Callable[[str], None] | None = None,
+    _collection_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Seal retained acceptance projection bytes and publish without replacement."""
     def validate_projection(snapshot: _Snapshot) -> dict[str, object]:
@@ -1989,6 +2032,7 @@ def publish_evidence_set(
             _projection_validation_substage_hook=(
                 _projection_validation_substage_hook
             ),
+            _collection_substage_hook=_collection_substage_hook,
         )
 
     return _publish_evidence_set(
@@ -2304,6 +2348,7 @@ def publish_final_evidence(
     failure = None
     publication_substage = "INPUT_BINDING"
     projection_validation_substage = "ROOT_LAYOUT"
+    collection_substage = ""
 
     def remember_publication_substage(substage: str) -> None:
         nonlocal publication_substage
@@ -2312,6 +2357,10 @@ def publish_final_evidence(
     def remember_projection_validation_substage(substage: str) -> None:
         nonlocal projection_validation_substage
         projection_validation_substage = substage
+
+    def remember_collection_substage(substage: str) -> None:
+        nonlocal collection_substage
+        collection_substage = substage
 
     try:
         projection_name = f".final-projection-{secrets.token_hex(16)}"
@@ -2342,6 +2391,7 @@ def publish_final_evidence(
             _projection_validation_substage_hook=(
                 remember_projection_validation_substage
             ),
+            _collection_substage_hook=remember_collection_substage,
         )
     except (FirewallError, OSError, ValueError) as exc:
         failure = _classify_final_publication(
@@ -2350,6 +2400,14 @@ def publish_final_evidence(
             projection_validation_substage=(
                 projection_validation_substage
                 if publication_substage == "PROJECTION_VALIDATION"
+                else ""
+            ),
+            collection_substage=(
+                collection_substage
+                if (
+                    publication_substage == "PROJECTION_VALIDATION"
+                    and projection_validation_substage == "COLLECTION"
+                )
                 else ""
             ),
         )
@@ -3058,6 +3116,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fields.append(exc.publication_substage)
                 if exc.projection_validation_substage:
                     fields.append(exc.projection_validation_substage)
+                    if exc.collection_substage:
+                        fields.append(exc.collection_substage)
             if exc.source_tree_substage:
                 fields.extend([
                     exc.source_tree_substage, exc.source_tree_reason,

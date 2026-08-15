@@ -473,16 +473,32 @@ def test_cli_publishes_one_final_evidence_set(
         "COLLECTION", "REMAINDER", "REMAINDER_GOVERNANCE", "CLOSURE",
         "RECEIPTS", "AGGREGATE", "FINAL_GOVERNANCE", "SECRET_SCAN",
     )
+    collection_substages = (
+        "DOCUMENT_SCHEMA", "RECORD_SCHEMA", "REASON_DOMAIN",
+        "SUMMARY_BINDING", "CANDIDATE_BINDING", "DESELECTION_BINDING",
+    )
+    assert firewall._COLLECTION_SUBSTAGES == frozenset(collection_substages)
+    collection_error = firewall.FinalPublicationError(
+        "PUBLICATION", code="ARTIFACT_FIREWALL_REJECTED", category="LAYOUT",
+        publication_substage="PROJECTION_VALIDATION",
+        projection_validation_substage="COLLECTION",
+        collection_substage="DOCUMENT_SCHEMA",
+    )
+    assert collection_error.collection_substage == "DOCUMENT_SCHEMA"
+    assert collection_error.__cause__ is collection_error.__context__ is None
     observed_publication_path: list[str] = []
     observed_projection_validation_path: list[str] = []
+    observed_collection_path: list[str] = []
     _publish(
         staging,
         tmp_path / "runtime/state/ci-portable-hooked",
         _publication_substage_hook=observed_publication_path.append,
         _projection_validation_substage_hook=observed_projection_validation_path.append,
+        _collection_substage_hook=observed_collection_path.append,
     )
     assert observed_publication_path == list(publication_substages)
     assert observed_projection_validation_path == list(projection_validation_substages)
+    assert observed_collection_path == list(collection_substages)
     with pytest.raises(ValueError, match="projection validation substage is not closed"):
         firewall.FinalPublicationError(
             "PUBLICATION", code="ARTIFACT_FIREWALL_REJECTED", category="LAYOUT",
@@ -495,10 +511,32 @@ def test_cli_publishes_one_final_evidence_set(
             publication_substage="PROJECTION_VALIDATION",
             projection_validation_substage="UNKNOWN",
         )
-    for collection_mutation in (
-        "summary-count", "summary-key", "duplicate", "overlap",
-        "reason", "phase", "outcome",
-    ):
+    with pytest.raises(ValueError, match="collection substage is not closed"):
+        firewall.FinalPublicationError(
+            "PUBLICATION", code="ARTIFACT_FIREWALL_REJECTED", category="LAYOUT",
+            publication_substage="PROJECTION_VALIDATION",
+            projection_validation_substage="COLLECTION",
+            collection_substage="UNKNOWN",
+        )
+    with pytest.raises(ValueError, match="collection substage is not closed"):
+        firewall.FinalPublicationError(
+            "PUBLICATION", code="ARTIFACT_FIREWALL_REJECTED", category="LAYOUT",
+            publication_substage="PROJECTION_VALIDATION",
+            projection_validation_substage="RECEIPTS",
+            collection_substage="DOCUMENT_SCHEMA",
+        )
+    collection_mutations = {
+        "document-schema": "DOCUMENT_SCHEMA",
+        "phase": "RECORD_SCHEMA",
+        "outcome": "RECORD_SCHEMA",
+        "reason": "REASON_DOMAIN",
+        "summary-count": "SUMMARY_BINDING",
+        "summary-key": "SUMMARY_BINDING",
+        "candidate": "CANDIDATE_BINDING",
+        "duplicate": "DESELECTION_BINDING",
+        "overlap": "DESELECTION_BINDING",
+    }
+    for collection_mutation, expected_substage in collection_mutations.items():
         case = tmp_path / f"collection-{collection_mutation}"
         case.mkdir()
         mutated_staging = _staging(case)
@@ -515,7 +553,9 @@ def test_cli_publishes_one_final_evidence_set(
             item for item in collection_document["tests"]
             if item["outcome"] == "collected"
         )
-        if collection_mutation == "summary-count":
+        if collection_mutation == "document-schema":
+            collection_document["unexpected"] = False
+        elif collection_mutation == "summary-count":
             collection_document["summary"]["deselected"] += 1
         elif collection_mutation == "summary-key":
             collection_document["summary"]["skipped"] = 0
@@ -524,6 +564,8 @@ def test_cli_publishes_one_final_evidence_set(
             collection_document["summary"]["deselected"] += 1
         elif collection_mutation == "overlap":
             deselected[0]["test_node_id"] = collected["test_node_id"]
+        elif collection_mutation == "candidate":
+            collected["test_node_id"] = deselected[0]["test_node_id"]
         elif collection_mutation == "reason":
             deselected[0]["reason"] = "unreviewed deselection"
         elif collection_mutation == "phase":
@@ -543,11 +585,14 @@ def test_cli_publishes_one_final_evidence_set(
             baseline_document
         )
         baseline_path.write_bytes(_canonical(baseline_document))
+        observed_collection_failure_path: list[str] = []
         with pytest.raises(firewall.FirewallError, match="collection governance"):
             _publish(
                 mutated_staging,
                 case / "runtime/state/ci-portable-invalid-collection",
+                _collection_substage_hook=observed_collection_failure_path.append,
             )
+        assert observed_collection_failure_path[-1] == expected_substage
 
     def raw_error(substage: str) -> firewall.FirewallError:
         error_type = getattr(firewall, "RawBindingError", None)
@@ -830,6 +875,77 @@ def test_cli_publishes_one_final_evidence_set(
         for substage in projection_validation_substages
     ]
 
+    observed_collection_substages: list[
+        tuple[str, str, str, str, str, str, object, object]
+    ] = []
+    for collection_substage in collection_substages:
+        with monkeypatch.context() as patch:
+            patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+            patch.setattr(
+                firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+            )
+            patch.setattr(
+                firewall,
+                "_final_payloads_from_raw",
+                lambda *args, **kwargs: ({"safe.json": b"{}\n"}, {}, _run_metadata()),
+            )
+            lineage = SimpleNamespace(descriptor=3, postcheck=lambda: None)
+            patch.setattr(
+                firewall, "_validate_lineage", lambda *args, **kwargs: nullcontext(lineage),
+            )
+            patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: None)
+            patch.setattr(firewall, "_source_tree_identity", lambda *args, **kwargs: TREE)
+
+            def reject_collection(*args: object, **kwargs: object) -> None:
+                publication_hook = kwargs.get("_publication_substage_hook")
+                projection_hook = kwargs.get("_projection_validation_substage_hook")
+                collection_hook = kwargs.get("_collection_substage_hook")
+                assert callable(publication_hook)
+                assert callable(projection_hook)
+                assert callable(collection_hook)
+                publication_hook("PROJECTION_VALIDATION")
+                projection_hook("COLLECTION")
+                collection_hook(collection_substage)
+                raise firewall.FirewallError(
+                    hostile, relative_path="hostile-relative-path", sha256="f" * 64,
+                )
+
+            patch.setattr(firewall, "publish_evidence_set", reject_collection)
+            with pytest.raises(firewall.FinalPublicationError) as captured:
+                firewall.publish_final_evidence(
+                    raw_root=raw_root,
+                    destination=tmp_path / f"final-collection-{collection_substage.lower()}",
+                    inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                    foundation_context_path=raw_root / "foundation-context.json",
+                    repository_root=tmp_path,
+                )
+            error = captured.value
+            observed_collection_substages.append((
+                error.code,
+                error.category,
+                error.stage,
+                getattr(error, "publication_substage", ""),
+                getattr(error, "projection_validation_substage", ""),
+                getattr(error, "collection_substage", ""),
+                error.__cause__,
+                error.__context__,
+            ))
+            assert hostile not in str(error)
+            assert hostile not in repr(error)
+    assert observed_collection_substages == [
+        (
+            "ARTIFACT_FIREWALL_REJECTED",
+            "LAYOUT",
+            "PUBLICATION",
+            "PROJECTION_VALIDATION",
+            "COLLECTION",
+            substage,
+            None,
+            None,
+        )
+        for substage in collection_substages
+    ]
+
     with monkeypatch.context() as patch:
         patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
         patch.setattr(
@@ -904,6 +1020,52 @@ def test_cli_publishes_one_final_evidence_set(
         "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
         "PUBLICATION PROJECTION_VALIDATION RECEIPTS\n"
     )
+
+    for collection_substage in collection_substages:
+        with monkeypatch.context() as patch:
+            patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+            patch.setattr(
+                firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+            )
+            patch.setattr(
+                firewall,
+                "_final_payloads_from_raw",
+                lambda *args, **kwargs: ({"safe.json": b"{}\n"}, {}, _run_metadata()),
+            )
+            lineage = SimpleNamespace(descriptor=3, postcheck=lambda: None)
+            patch.setattr(
+                firewall, "_validate_lineage", lambda *args, **kwargs: nullcontext(lineage),
+            )
+            patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: None)
+            patch.setattr(firewall, "_source_tree_identity", lambda *args, **kwargs: TREE)
+
+            def reject_collection_cli(*args: object, **kwargs: object) -> None:
+                publication_hook = kwargs.get("_publication_substage_hook")
+                projection_hook = kwargs.get("_projection_validation_substage_hook")
+                collection_hook = kwargs.get("_collection_substage_hook")
+                assert callable(publication_hook)
+                assert callable(projection_hook)
+                assert callable(collection_hook)
+                publication_hook("PROJECTION_VALIDATION")
+                projection_hook("COLLECTION")
+                collection_hook(collection_substage)
+                raise firewall.FirewallError(
+                    hostile, relative_path="hostile-relative-path", sha256="f" * 64,
+                )
+
+            patch.setattr(firewall, "publish_evidence_set", reject_collection_cli)
+            assert firewall.main([
+                "publish", "--raw-root", str(raw_root),
+                "--destination", str(tmp_path / f"final-collection-cli-{collection_substage}"),
+                "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+                "--foundation-context-path", str(raw_root / "foundation-context.json"),
+                "--repository-root", str(tmp_path),
+            ]) == 2
+        assert capsys.readouterr().err == (
+            "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
+            "PUBLICATION PROJECTION_VALIDATION COLLECTION "
+            f"{collection_substage}\n"
+        )
 
     with monkeypatch.context() as patch:
         patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
