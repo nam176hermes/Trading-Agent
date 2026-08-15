@@ -3866,3 +3866,36 @@ requiring the fixed `argv[0]`; GREEN must cover the native classification
 matrix, full topology module, compile, broad-handler inventory, and diff
 checks. Independent review is required before any further remote update or
 hosted qualification attempt.
+
+### P0-12R23 correction — retained legacy-UV absence boundary
+
+Hosted run `31886123542` at exact
+`05c40ac728d50c84b8dabd5ac50f1932cabab60e` proves R22 advanced through the
+native lane, then published a sealed terminal failure for
+`EXT-LEGACY-UV-AUTHORITY` with `INVALID` / `AUTHORITY_INVALID`. The fixed
+external executable `/home/thenam176/.local/bin/uv` is genuinely absent on the
+hosted runner because an intermediate `/home/thenam176` component is absent.
+The generic present-executable opener requires a complete ancestor chain and
+therefore labels this safe missing boundary INVALID before it can classify the
+executable as absent. The checked-out legacy source root remains present, so
+the old two-components-absent branch is unreachable in portable hosted CI.
+
+The bounded correction reuses the existing retained nearest-safe-ancestor
+absence contract before the present legacy authority path. When the UV path
+has an exact safe missing suffix, qualification returns only the existing
+`ABSENT` / `AUTHORITY_EXECUTABLE_ABSENT` projection, retains the safe ancestor
+descriptor, and postchecks the held/named prefix plus first missing component.
+The legacy source root is not read or qualified when its required external UV
+executable is absent. Appearance, unsafe or foreign ancestry, symlink/special
+replacement, descriptor/name divergence, and present-UV plus missing/invalid
+legacy closure remain fail-closed. Present legacy qualification and its
+scoped real-root ancestry exception remain unchanged.
+
+Strict RED must reproduce a hosted-shaped missing intermediate for UV while a
+complete legacy root is present, require one retained absence descriptor, and
+prove appearance rejects at postcheck. GREEN must retain existing partial and
+unsafe classifications and pass the external-v2/topology/failure consumers,
+collection, compile, inventory, and diff checks. No authority record,
+PostgreSQL/DB operation, policy/skip change, Make/workflow route, dependency,
+lock, production, broker/provider, or live change is authorized. Independent
+review is required before another remote update.
