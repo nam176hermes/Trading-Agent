@@ -1646,9 +1646,16 @@ def publish_evidence_set(
 
 
 def _source_tree_identity(root: Path, head_sha: str) -> str:
+    import tempfile
+
+    repository_environment = os.environ.copy()
+    repository_environment.pop("GIT_INDEX_FILE", None)
+    repository_environment["GIT_OPTIONAL_LOCKS"] = "0"
     commands = (
-        ("DIFF_INDEX", ["git", "diff-index", "--cached", "--quiet", "HEAD", "--"]),
-        ("DIFF_FILES", ["git", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--"]),
+        (
+            "DIFF_INDEX",
+            ["git", "diff-index", "--cached", "--quiet", head_sha, "--"],
+        ),
     )
     for substage, command in commands:
         failure: SourceTreeError | None = None
@@ -1656,6 +1663,7 @@ def _source_tree_identity(root: Path, head_sha: str) -> str:
             result = subprocess.run(
                 command, cwd=root, check=False,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=repository_environment,
             )
         except OSError:
             failure = SourceTreeError(substage, "SPAWN_FAILURE")
@@ -1667,6 +1675,41 @@ def _source_tree_identity(root: Path, head_sha: str) -> str:
             raise SourceTreeError(substage, "DRIFT")
         if result.returncode != 0:
             raise SourceTreeError(substage, "COMMAND_FAILURE")
+    failure = None
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="trading-agent-source-index.", dir="/tmp",
+        ) as alternate_root:
+            alternate_environment = repository_environment.copy()
+            alternate_environment["GIT_INDEX_FILE"] = str(
+                Path(alternate_root) / "index"
+            )
+            prepared = subprocess.run(
+                ["git", "read-tree", head_sha], cwd=root, check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=alternate_environment,
+            )
+            if prepared.returncode != 0:
+                failure = SourceTreeError("DIFF_FILES", "COMMAND_FAILURE")
+            else:
+                worktree_result = subprocess.run(
+                    [
+                        "git", "diff", "--quiet", "--no-ext-diff",
+                        "--no-textconv", "--",
+                    ],
+                    cwd=root, check=False, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, env=alternate_environment,
+                )
+    except OSError:
+        failure = SourceTreeError("DIFF_FILES", "SPAWN_FAILURE")
+    except subprocess.SubprocessError:
+        failure = SourceTreeError("DIFF_FILES", "COMMAND_FAILURE")
+    if failure is not None:
+        raise failure
+    if worktree_result.returncode == 1:
+        raise SourceTreeError("DIFF_FILES", "DRIFT")
+    if worktree_result.returncode != 0:
+        raise SourceTreeError("DIFF_FILES", "COMMAND_FAILURE")
     failure = None
     try:
         actual = subprocess.run(

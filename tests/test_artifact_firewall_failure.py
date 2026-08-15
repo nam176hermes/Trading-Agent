@@ -117,7 +117,8 @@ def _publish_failure(
 
 
 def _source_tree_run_stub(
-    *, head_sha: str, mode: str, calls: list[list[str]],
+    *, head_sha: str, mode: str,
+    calls: list[tuple[list[str], str, str]],
 ) -> object:
     real_run = subprocess.run
     hostile = "password: private-value /private/source/path"
@@ -125,9 +126,11 @@ def _source_tree_run_stub(
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[object]:
         command_name = ""
         if command == [
-            "git", "diff-index", "--cached", "--quiet", "HEAD", "--",
+            "git", "diff-index", "--cached", "--quiet", head_sha, "--",
         ]:
             command_name = "diff-index"
+        elif command == ["git", "read-tree", head_sha]:
+            command_name = "prepare-index"
         elif command == [
             "git", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--",
         ]:
@@ -138,7 +141,20 @@ def _source_tree_run_stub(
             command_name = "tree"
         if not command_name:
             return real_run(command, **kwargs)
-        calls.append(command)
+        environment = kwargs.get("env")
+        optional_locks = ""
+        index_file = ""
+        if isinstance(environment, dict):
+            optional_locks = str(environment.get("GIT_OPTIONAL_LOCKS", ""))
+            index_file = str(environment.get("GIT_INDEX_FILE", ""))
+        calls.append((command, optional_locks, index_file))
+        if index_file:
+            alternate_parent = Path(index_file).parent
+            assert alternate_parent.parent == Path("/tmp")
+            assert alternate_parent.name.startswith("trading-agent-source-index.")
+            alternate_info = alternate_parent.stat()
+            assert alternate_info.st_uid == os.geteuid()
+            assert alternate_info.st_mode & 0o777 == 0o700
         if mode == f"{command_name}-os":
             raise OSError(hostile)
         if mode == f"{command_name}-subprocess":
@@ -199,6 +215,25 @@ def _source_tree_repo(tmp_path: Path) -> tuple[Path, Path, str, str]:
         cwd=root, check=True, capture_output=True,
     ).stdout
     return root, tracked, head_sha, hashlib.sha256(tree).hexdigest()
+
+
+def _git_index_state(root: Path) -> tuple[bytes, tuple[int, ...], bytes]:
+    git_directory = Path(subprocess.run(
+        ["git", "rev-parse", "--absolute-git-dir"], cwd=root, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip())
+    index = git_directory / "index"
+    content = index.read_bytes()
+    info = index.stat()
+    stat_identity = (
+        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+        info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+    )
+    stat_cache = subprocess.run(
+        ["git", "ls-files", "--debug"], cwd=root, check=True,
+        capture_output=True,
+    ).stdout
+    return content, stat_identity, stat_cache
 
 
 def _run_ci_portable_failure_probe(
@@ -552,20 +587,23 @@ def test_failure_publisher_never_clobbers_an_existing_destination(
         ("diff-index-command", "DIFF_INDEX", "COMMAND_FAILURE", 1),
         ("diff-index-os", "DIFF_INDEX", "SPAWN_FAILURE", 1),
         ("diff-index-subprocess", "DIFF_INDEX", "COMMAND_FAILURE", 1),
-        ("diff-files-drift", "DIFF_FILES", "DRIFT", 2),
-        ("diff-files-command", "DIFF_FILES", "COMMAND_FAILURE", 2),
-        ("diff-files-os", "DIFF_FILES", "SPAWN_FAILURE", 2),
-        ("diff-files-subprocess", "DIFF_FILES", "COMMAND_FAILURE", 2),
-        ("head-mismatch", "HEAD_BINDING", "MISMATCH", 3),
-        ("head-command", "HEAD_BINDING", "COMMAND_FAILURE", 3),
-        ("head-os", "HEAD_BINDING", "SPAWN_FAILURE", 3),
-        ("head-subprocess", "HEAD_BINDING", "COMMAND_FAILURE", 3),
-        ("head-output", "HEAD_BINDING", "OUTPUT_FAILURE", 3),
-        ("head-empty", "HEAD_BINDING", "OUTPUT_FAILURE", 3),
-        ("head-invalid", "HEAD_BINDING", "OUTPUT_FAILURE", 3),
-        ("tree-command", "TREE_ENUMERATION", "COMMAND_FAILURE", 4),
-        ("tree-os", "TREE_ENUMERATION", "SPAWN_FAILURE", 4),
-        ("tree-subprocess", "TREE_ENUMERATION", "COMMAND_FAILURE", 4),
+        ("prepare-index-command", "DIFF_FILES", "COMMAND_FAILURE", 2),
+        ("prepare-index-os", "DIFF_FILES", "SPAWN_FAILURE", 2),
+        ("prepare-index-subprocess", "DIFF_FILES", "COMMAND_FAILURE", 2),
+        ("diff-files-drift", "DIFF_FILES", "DRIFT", 3),
+        ("diff-files-command", "DIFF_FILES", "COMMAND_FAILURE", 3),
+        ("diff-files-os", "DIFF_FILES", "SPAWN_FAILURE", 3),
+        ("diff-files-subprocess", "DIFF_FILES", "COMMAND_FAILURE", 3),
+        ("head-mismatch", "HEAD_BINDING", "MISMATCH", 4),
+        ("head-command", "HEAD_BINDING", "COMMAND_FAILURE", 4),
+        ("head-os", "HEAD_BINDING", "SPAWN_FAILURE", 4),
+        ("head-subprocess", "HEAD_BINDING", "COMMAND_FAILURE", 4),
+        ("head-output", "HEAD_BINDING", "OUTPUT_FAILURE", 4),
+        ("head-empty", "HEAD_BINDING", "OUTPUT_FAILURE", 4),
+        ("head-invalid", "HEAD_BINDING", "OUTPUT_FAILURE", 4),
+        ("tree-command", "TREE_ENUMERATION", "COMMAND_FAILURE", 5),
+        ("tree-os", "TREE_ENUMERATION", "SPAWN_FAILURE", 5),
+        ("tree-subprocess", "TREE_ENUMERATION", "COMMAND_FAILURE", 5),
     ],
 )
 def test_source_tree_identity_reports_only_the_exact_closed_command_failure(
@@ -575,7 +613,9 @@ def test_source_tree_identity_reports_only_the_exact_closed_command_failure(
     head_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
     ).stdout.strip()
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], str, str]] = []
+    monkeypatch.setenv("GIT_INDEX_FILE", "/private/source/path")
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "hostile")
     monkeypatch.setattr(
         firewall.subprocess, "run",
         _source_tree_run_stub(head_sha=head_sha, mode=mode, calls=calls),
@@ -599,14 +639,27 @@ def test_source_tree_identity_reports_only_the_exact_closed_command_failure(
     assert "private-value" not in repr(error.__dict__)
     assert "private/source/path" not in repr(error.__dict__)
     assert "f" * 40 not in repr(error.__dict__)
-    assert calls == [
-        ["git", "diff-index", "--cached", "--quiet", "HEAD", "--"],
+    expected = [
+        ["git", "diff-index", "--cached", "--quiet", head_sha, "--"],
+        ["git", "read-tree", head_sha],
         [
             "git", "diff", "--quiet", "--no-ext-diff", "--no-textconv", "--",
         ],
         ["git", "rev-parse", "HEAD"],
         ["git", "ls-tree", "-rz", "--full-tree", head_sha],
     ][:expected_commands]
+    assert [command for command, _locks, _index in calls] == expected
+    assert calls[0][1:] == ("0", "")
+    alternate_indexes = [index for _command, _locks, index in calls if index]
+    if expected_commands >= 2:
+        assert len(set(alternate_indexes)) == 1
+        assert all(locks == "0" for _command, locks, index in calls if index)
+        alternate_index = Path(alternate_indexes[0])
+        assert not alternate_index.parent.exists()
+    else:
+        assert alternate_indexes == []
+    assert os.environ["GIT_INDEX_FILE"] == "/private/source/path"
+    assert os.environ["GIT_OPTIONAL_LOCKS"] == "hostile"
 
 
 def test_source_tree_identity_ignores_mtime_only_stat_cache_drift(
@@ -616,7 +669,7 @@ def test_source_tree_identity_ignores_mtime_only_stat_cache_drift(
     tracked_info = tracked.stat()
     os.utime(
         tracked,
-        ns=(tracked_info.st_atime_ns, tracked_info.st_mtime_ns + 2_000_000_000),
+        ns=(tracked_info.st_atime_ns, 1_893_456_000_000_000_000),
     )
 
     assert subprocess.run(
@@ -626,8 +679,18 @@ def test_source_tree_identity_ignores_mtime_only_stat_cache_drift(
     assert subprocess.run(
         ["git", "diff-files", "--quiet", "--"], cwd=root, check=False,
     ).returncode == 1
+    index_before = _git_index_state(root)
 
     assert firewall._source_tree_identity(root, head_sha) == expected_identity
+    assert _git_index_state(root) == index_before
+    assert subprocess.run(
+        ["git", "diff-index", "--quiet", "HEAD", "--"],
+        cwd=root, check=False,
+    ).returncode == 1
+    assert subprocess.run(
+        ["git", "diff-files", "--quiet", "--"], cwd=root, check=False,
+    ).returncode == 1
+    assert _git_index_state(root) == index_before
 
 
 @pytest.mark.parametrize(
@@ -649,6 +712,7 @@ def test_source_tree_identity_rejects_real_staged_and_unstaged_drift(
         tracked.chmod(0o755)
     if staged:
         subprocess.run(["git", "add", "tracked.txt"], cwd=root, check=True)
+    index_before = _git_index_state(root)
 
     with pytest.raises(firewall.SourceTreeError) as raised:
         firewall._source_tree_identity(root, head_sha)
@@ -657,6 +721,7 @@ def test_source_tree_identity_rejects_real_staged_and_unstaged_drift(
     assert raised.value.source_tree_reason == "DRIFT"
     assert raised.value.__context__ is None
     assert raised.value.__cause__ is None
+    assert _git_index_state(root) == index_before
 
 
 @pytest.mark.parametrize(
@@ -675,7 +740,7 @@ def test_failure_publisher_cli_reports_exact_closed_source_tree_detail(
     raw_root, _run_id, head_sha, _skipped = _failure_source(tmp_path, monkeypatch)
     destination = tmp_path / "publication/artifact"
     destination.parent.mkdir(mode=0o700)
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], str, str]] = []
     source_tree_identity = firewall._source_tree_identity
 
     def classified_source_tree(root: Path, expected_head: str) -> str:
