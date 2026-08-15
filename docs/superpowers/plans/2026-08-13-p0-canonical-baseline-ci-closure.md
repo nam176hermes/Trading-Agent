@@ -3761,3 +3761,39 @@ static inventory/contracts/P0 checks, and a fresh standalone affected run.
 Stop at a clean committed SHA for independent review; no production
 classification, Make, workflow, dependency, lock, PostgreSQL/database, P0-13,
 hosted rerun/dispatch, service, broker/provider, or live change is authorized.
+
+### P0-12R20 correction — safe absent authority lineage
+
+Hosted run `31867825954` at exact
+`f563bb0752e9401dfd50ab11c61c02b4f8b75a68` passed the 6,131-node root
+remainder and 49-node portable closure, then failed because
+`NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX` preflight was `BROKEN`. The fixed
+authority roots are below `/home/thenam176`; on the hosted runner that
+intermediate directory is absent. The existing parent-chain snapshot requires
+every parent to exist, so two genuinely absent roots are misclassified as an
+unsafe identity. The same latent condition affects the Nautilus external
+runtime-closure roots.
+
+This packet adds a separate strict absent-lineage snapshot used only by native
+Nautilus multi-authority and external Nautilus runtime-closure absence. It
+walks from the filesystem anchor to the first missing component, validates
+every existing prefix directory under the existing ownership/type/mode policy,
+and records both exact prefix identities and the exact missing suffix. It
+returns absence only when both required roots have valid missing boundaries.
+Partial roots, unsafe or foreign ancestors, symlinks, special files, and any
+other invalid path remain fail-closed.
+
+The absence postcheck must reproduce the same retained prefix identities and
+missing suffix. Any new component, boundary movement, replacement, symlink, or
+ownership/mode mutation rejects before receipt publication. Present-authority
+paths retain their existing parent snapshot, retained descriptors, qualifiers,
+and postchecks; the generic Phase3B, legacy-UV, and other external open helpers
+are not broadened.
+
+Strict RED must cover hosted-shaped missing intermediate roots for both native
+multi-authority and Nautilus external authority before implementation. GREEN
+adds appearance, symlink, unsafe-mode, and partial-root attacks in existing
+collected nodes, preserves collection and receipt/accounting contracts, and
+runs full topology/external affected and fresh standalone packets. No policy,
+Make, workflow, dependency, lock, PostgreSQL/database, P0-13, production,
+runtime/service, broker/provider, or live change is authorized.
