@@ -4273,3 +4273,42 @@ Make/workflow change, authority, PostgreSQL/database, dependency/lock,
 production/runtime, or live action. Stop for independent review without push,
 dispatch, hosted run, or any rerun of
 `7018c0d92025ae7786be4b3d7cad667474b0323b`.
+
+### P0-12R36 fix — canonical collection producer bytes
+
+Independent review approved R35 and exact reviewed HEAD
+`962d0e1e0b7dd16c22e39e41fdf14aef7f792b5d` was pushed. Its single authorized
+hosted run `31903985385` failed closed with zero artifacts and the exact token
+`ARTIFACT_FIREWALL_REJECTED LAYOUT PUBLICATION PROJECTION_VALIDATION COLLECTION DOCUMENT_SCHEMA KEY_SET`.
+The retained log `/tmp/p0-12-r35-run-31903985385.log` has SHA-256
+`1d764a051f9cb9668571b510613cf13fe74db012d72c810cc22ade78874abfe0`.
+That SHA is terminal and must not be rerun.
+
+The exact producer/consumer mismatch is now proven. Collection-only output from
+`scripts/test_governance_pytest.py` is emitted through `_atomic_json` as
+indented JSON plus a trailing newline. The local exact report is 1,726,341 raw
+bytes while its canonical compact representation is 1,399,997 bytes; parsed
+values are equal but bytes are not. The firewall correctly rejects this before
+the key predicate because `_object_leaf` requires exact canonical UTF-8 JSON
+bytes. Do not relax, bypass, or special-case the firewall consumer.
+
+Make only collection-only governance reports use compact canonical UTF-8 JSON
+bytes with sorted keys, compact separators, and no trailing newline. Preserve
+the current pretty JSON plus newline for ordinary execution reports unless a
+separate exact contract proves a global migration safe. Keep `_atomic_json`'s
+validated directory, retained descriptor, exclusive temporary creation,
+fsync, no-follow, no-clobber link, atomic replacement, postcheck and cleanup
+semantics unchanged.
+
+Strict RED must exercise the real governance plugin in an existing collected
+test and compare collection-only raw bytes to an independently derived compact
+canonical encoding. GREEN must also characterize ordinary report bytes as
+unchanged and retain the existing no-clobber/custody attack coverage. A real
+collect-baseline path must produce canonical raw bytes and the unchanged
+firewall must advance through every collection document predicate. Preserve
+exactly 6,526 collected tests and run focused, affected, static and fresh
+standalone verification. Scope is limited to the producer, existing tests and
+an exact topology fixture only if required. No policy/schema/marker, firewall,
+Make/workflow, authority, PostgreSQL/database, dependency/lock, production or
+live change. Stop for independent review without push, dispatch, hosted run or
+any rerun of `962d0e1e0b7dd16c22e39e41fdf14aef7f792b5d`.
