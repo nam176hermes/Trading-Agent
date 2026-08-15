@@ -3996,3 +3996,37 @@ baseline/contracts/P0/static gates, fresh standalone verification, and
 independent review before another push. Do not mint PostgreSQL approval, run a
 database, weaken skip/outcome policy, change Make/workflow routing, dependencies
 or locks, or touch production, broker/provider, or live authority.
+
+### P0-12R27 diagnostic — classify final acceptance publication stage
+
+Hosted run `31890844450` at exact
+`cd35075205c9b2e0eda90dca2fe260a7ad1a0b8f` proves the R26 allowlist
+correction: the portable remainder passed 6,131 nodes, the closure passed 49,
+the clean baseline passed, topology produced its valid portable DEFER result,
+and test governance accepted 6,860 passed observations with only the retained
+29 deselections, two legacy skips, and 17 externally blocked authorities. The
+final acceptance publisher then rejected with the undifferentiated
+`ARTIFACT_FIREWALL_REJECTED LAYOUT`; its failure catch also could not publish a
+topology-only diagnostic because topology had already completed successfully.
+No artifact exists, so the failed run does not prove whether raw binding,
+projection construction, source-tree identity, or final publication rejected.
+
+The bounded diagnostic correction adds only a closed final-publication stage
+token: `RAW_BINDING`, `PROJECTION`, `SOURCE_TREE`, or `PUBLICATION`. It must
+retain the existing error code/category, suppress every underlying exception,
+path, value, digest, argv, stdout, and stderr, and expose source-tree substage
+and reason only through the already reviewed closed source-tree enum. The
+acceptance schema, validators, evidence bytes, receipts, topology, Make and
+workflow routes, skip/outcome policy, and publication decisions remain
+byte-for-byte unchanged.
+
+Strict RED must inject one hostile failure at each real boundary from an
+existing collected test node and prove that the current CLI cannot name the
+closed stage without disclosing hostile values. GREEN must prove exact closed
+tokens, no retained cause/context, unchanged success publication, and all
+existing failure/topology publishers. Run focused firewall tests, affected
+Make/closure consumers, collection/static gates, a fresh standalone packet,
+and independent security review before one new hosted push attempt. Never
+rerun `cd35075205c9b2e0eda90dca2fe260a7ad1a0b8f`. Do not alter PostgreSQL/DB
+authority, execute a database, weaken policy, or touch production, live,
+broker/provider, dependency, or lock boundaries.
