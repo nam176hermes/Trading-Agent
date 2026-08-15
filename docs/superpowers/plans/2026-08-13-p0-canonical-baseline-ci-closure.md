@@ -3635,3 +3635,38 @@ final-commit RED and GREEN records plus the GREEN fixture plan. Packet C may
 not synthesize those records, start a database for preflight or local proof,
 weaken skip/outcome policy, access production/runtime data, push, dispatch a
 hosted run, start P0-13, or enable production/live authority.
+
+### P0-12R17 authority-schema erratum — separate RED evidence code
+
+The initial Packet C correction incorrectly assigned every RED node to one
+approval input. Two nodes request the same reviewed SQL through distinct stable
+operation IDs: the ordinary derivation node uses
+`jobs-authority-catalog-derivation-red-v1`, while
+`tests/jobs/test_job_authority_catalog.py::test_capture_reviewed_catalog_evidence_for_operator_review`
+internally uses `jobs-authority-catalog-evidence-derivation-red-v1`. The
+existing approval schema intentionally allows exactly one `red_sql_binding`
+bound to exactly one operation ID. One record therefore cannot authorize both
+without weakening the reviewed-operation boundary.
+
+Packet C must preserve that schema and split only the evidence node into
+`EXT-DISPOSABLE-PG-RED-EVIDENCE`, supplied by the fixed external input
+`DISPOSABLE_PG_RED_EVIDENCE_APPROVAL_RECORD`. The ordinary
+`EXT-DISPOSABLE-PG-RED` code becomes 44 nodes and uses
+`DISPOSABLE_PG_RED_APPROVAL_RECORD`; the new evidence code owns exactly one
+node. Both remain ordinary external-v2 receipts with independent retained
+authority sessions and exact operation/binding validation. Cross-code records,
+wrong SQL-binding operation IDs, additional approved operations, and missing
+or substituted records fail closed.
+
+The evidence session creates its own empty task-private mode-0700 output
+directory and injects it only as
+`TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR` for that exact subprocess.
+The directory is retained and postchecked through publication, then removed as
+task-owned state. Its raw database-derived files never enter receipts or the
+portable artifact. No composite or multi-record receipt is introduced.
+
+Accounting is unchanged: GREEN 206 plus ordinary RED 44 plus RED evidence one
+equals 251 PostgreSQL nodes; active remains 317, closure 49, governed 366, and
+the 6,497-node portable baseline remainder remains 6,131. Strict RED/GREEN must
+prove the exact one-node split and wrong-record/binding/cross-code rejection
+before any valid-session implementation proceeds.
