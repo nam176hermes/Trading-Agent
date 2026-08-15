@@ -187,6 +187,46 @@ class FailurePublicationError(FirewallError):
         self.source_tree_reason = source_tree_reason
 
 
+class FinalPublicationError(FirewallError):
+    """Closed acceptance-publisher stage with no underlying diagnostic values."""
+
+    def __init__(
+        self, stage: str, *, code: str, category: str,
+        source_tree_substage: str = "", source_tree_reason: str = "",
+    ) -> None:
+        if stage not in _FAILURE_PUBLICATION_STAGES:
+            raise ValueError("final publication stage is not closed")
+        if source_tree_substage or source_tree_reason:
+            if (
+                stage != "SOURCE_TREE"
+                or (source_tree_substage, source_tree_reason)
+                not in _SOURCE_TREE_FAILURES
+            ):
+                raise ValueError("final publication detail is not closed")
+        super().__init__(
+            "final publication rejected at a closed stage",
+            code=code, category=category,
+        )
+        self.stage = stage
+        self.source_tree_substage = source_tree_substage
+        self.source_tree_reason = source_tree_reason
+
+
+def _classify_final_publication(stage: str, exc: object) -> FinalPublicationError:
+    code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
+    category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
+    source_tree_substage = ""
+    source_tree_reason = ""
+    if stage == "SOURCE_TREE" and isinstance(exc, SourceTreeError):
+        source_tree_substage = exc.source_tree_substage
+        source_tree_reason = exc.source_tree_reason
+    return FinalPublicationError(
+        stage, code=code, category=category,
+        source_tree_substage=source_tree_substage,
+        source_tree_reason=source_tree_reason,
+    )
+
+
 def _classify_failure_publication(
     stage: str, exc: FirewallError | OSError | ValueError | subprocess.SubprocessError,
 ) -> FailurePublicationError:
@@ -1990,28 +2030,53 @@ def publish_final_evidence(
     """Validate raw P0 topology/governance evidence, then publish one final set."""
     from scripts import t_g03_capability_topology as topology
 
-    run_id, head_sha = topology._active_foundation_identity()
-    raw_root = raw_root.absolute()
-    with _snapshot_tree(raw_root, directory_mode=0o700, file_mode=0o600) as raw:
-        payloads, semantic, run_metadata = _final_payloads_from_raw(
-            raw, raw_root=raw_root, inventory=inventory,
-            foundation_context_path=foundation_context_path,
-            run_id=run_id, head_sha=head_sha,
-            governance_error=governance_error,
+    failure: FinalPublicationError | None = None
+    try:
+        run_id, head_sha = topology._active_foundation_identity()
+        raw_root = raw_root.absolute()
+        with _snapshot_tree(raw_root, directory_mode=0o700, file_mode=0o600) as raw:
+            payloads, semantic, run_metadata = _final_payloads_from_raw(
+                raw, raw_root=raw_root, inventory=inventory,
+                foundation_context_path=foundation_context_path,
+                run_id=run_id, head_sha=head_sha,
+                governance_error=governance_error,
+            )
+    except (FirewallError, OSError, ValueError, topology.TopologyError) as exc:
+        failure = _classify_final_publication("RAW_BINDING", exc)
+    if failure is not None:
+        raise failure
+    failure = None
+    try:
+        projection_name = f".final-projection-{secrets.token_hex(16)}"
+        with _validate_lineage(raw_root, create=False) as raw_lineage:
+            _build_candidate(raw_lineage.descriptor, projection_name, payloads)
+            raw_lineage.postcheck()
+    except (FirewallError, OSError, ValueError) as exc:
+        failure = _classify_final_publication("PROJECTION", exc)
+    if failure is not None:
+        raise failure
+    failure = None
+    try:
+        source_tree_sha256 = _source_tree_identity(repository_root, head_sha)
+    except (FirewallError, OSError, ValueError, subprocess.SubprocessError) as exc:
+        failure = _classify_final_publication("SOURCE_TREE", exc)
+    if failure is not None:
+        raise failure
+    failure = None
+    try:
+        manifest = publish_evidence_set(
+            staging_root=raw_root / projection_name,
+            destination=destination,
+            head_sha=head_sha,
+            source_tree_sha256=source_tree_sha256,
+            semantic_projection=semantic,
+            run_metadata=run_metadata,
         )
-    projection_name = f".final-projection-{secrets.token_hex(16)}"
-    with _validate_lineage(raw_root, create=False) as raw_lineage:
-        _build_candidate(raw_lineage.descriptor, projection_name, payloads)
-        raw_lineage.postcheck()
-    source_tree_sha256 = _source_tree_identity(repository_root, head_sha)
-    return publish_evidence_set(
-        staging_root=raw_root / projection_name,
-        destination=destination,
-        head_sha=head_sha,
-        source_tree_sha256=source_tree_sha256,
-        semantic_projection=semantic,
-        run_metadata=run_metadata,
-    )
+    except (FirewallError, OSError, ValueError) as exc:
+        failure = _classify_final_publication("PUBLICATION", exc)
+    if failure is not None:
+        raise failure
+    return manifest
 
 
 def _failure_payloads_from_raw(
@@ -2698,7 +2763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     governance_error=args.action == "publish-error",
                 )
     except (FirewallError, OSError, ValueError) as exc:
-        if isinstance(exc, FailurePublicationError):
+        if isinstance(exc, (FailurePublicationError, FinalPublicationError)):
             fields = [exc.code, exc.category, exc.stage]
             if exc.source_tree_substage:
                 fields.extend([

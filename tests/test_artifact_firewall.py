@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
 import shutil
 import subprocess
@@ -383,7 +384,9 @@ def _publish(staging: Path, destination: Path, **kwargs: object) -> dict[str, ob
     )
 
 
-def test_cli_publishes_one_final_evidence_set(tmp_path: Path) -> None:
+def test_cli_publishes_one_final_evidence_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
     staging = _staging(tmp_path)
     destination = tmp_path / "runtime/state/ci-portable"
     semantic_path = tmp_path / "semantic.json"
@@ -417,6 +420,103 @@ def test_cli_publishes_one_final_evidence_set(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert destination.is_dir()
     assert (destination / "manifest.json").is_file()
+
+    raw_root = tmp_path / "raw-acceptance"
+    raw_root.mkdir(mode=0o700)
+    hostile = "hostile-relative-path secret-value " + "f" * 64
+    expected = (
+        ("RAW_BINDING", "FirewallError"),
+        ("PROJECTION", "FirewallError"),
+        ("SOURCE_TREE", "SourceTreeError"),
+        ("PUBLICATION", "FirewallError"),
+    )
+    observed: list[tuple[str, str, str, object, object]] = []
+    for stage, injected_type in expected:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                topology, "_active_foundation_identity", lambda: ("1001", HEAD),
+            )
+            patch.setattr(
+                firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+            )
+            patch.setattr(
+                firewall,
+                "_final_payloads_from_raw",
+                lambda *args, **kwargs: ({"safe.json": b"{}\n"}, {}, _run_metadata()),
+            )
+            lineage = SimpleNamespace(descriptor=3, postcheck=lambda: None)
+            patch.setattr(
+                firewall, "_validate_lineage", lambda *args, **kwargs: nullcontext(lineage),
+            )
+            patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: None)
+            patch.setattr(firewall, "_source_tree_identity", lambda *args, **kwargs: TREE)
+            patch.setattr(firewall, "publish_evidence_set", lambda *args, **kwargs: {})
+
+            def reject() -> None:
+                if injected_type == "SourceTreeError":
+                    raise firewall.SourceTreeError("DIFF_FILES", "COMMAND_FAILURE")
+                raise firewall.FirewallError(
+                    hostile, relative_path="hostile-relative-path", sha256="f" * 64,
+                )
+
+            if stage == "RAW_BINDING":
+                patch.setattr(
+                    firewall, "_final_payloads_from_raw", lambda *args, **kwargs: reject(),
+                )
+            elif stage == "PROJECTION":
+                patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: reject())
+            elif stage == "SOURCE_TREE":
+                patch.setattr(
+                    firewall, "_source_tree_identity", lambda *args, **kwargs: reject(),
+                )
+            else:
+                patch.setattr(
+                    firewall, "publish_evidence_set", lambda *args, **kwargs: reject(),
+                )
+            try:
+                firewall.publish_final_evidence(
+                    raw_root=raw_root,
+                    destination=tmp_path / f"final-{stage.lower()}",
+                    inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                    foundation_context_path=raw_root / "foundation-context.json",
+                    repository_root=tmp_path,
+                )
+            except firewall.FirewallError as exc:
+                observed.append((
+                    type(exc).__name__, getattr(exc, "stage", ""), str(exc),
+                    exc.__cause__, exc.__context__,
+                ))
+            else:
+                pytest.fail(f"{stage} injection was accepted")
+    assert observed == [
+        ("FinalPublicationError", stage, "final publication rejected at a closed stage", None, None)
+        for stage, _ in expected
+    ]
+    assert hostile not in repr(observed)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+        patch.setattr(
+            firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+        )
+        patch.setattr(
+            firewall, "_final_payloads_from_raw",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                firewall.FirewallError(
+                    hostile, relative_path="hostile-relative-path", sha256="f" * 64,
+                )
+            ),
+        )
+        assert firewall.main([
+            "publish", "--raw-root", str(raw_root),
+            "--destination", str(tmp_path / "final-cli"),
+            "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            "--foundation-context-path", str(raw_root / "foundation-context.json"),
+            "--repository-root", str(tmp_path),
+        ]) == 2
+    assert capsys.readouterr().err == (
+        "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT RAW_BINDING\n"
+    )
 
 
 def test_semantic_digest_excludes_run_metadata_and_changes_for_each_semantic_mutation() -> None:
