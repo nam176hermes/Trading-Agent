@@ -4150,10 +4150,10 @@ def _validate_external_outcome(
             or authority["observed_uv_sha256"] != LEGACY_UV_SHA256
             or authority["expected_uv_version"] != LEGACY_UV_VERSION
             or authority["observed_uv_version"] != LEGACY_UV_VERSION
-            or authority["expected_uid"] != os.geteuid()
-            or authority["observed_uid"] != os.geteuid()
-            or authority["expected_gid"] != os.getegid()
-            or authority["observed_gid"] != os.getegid()
+            or authority["expected_uid"] < 0
+            or authority["expected_uid"] != authority["observed_uid"]
+            or authority["expected_gid"] < 0
+            or authority["expected_gid"] != authority["observed_gid"]
             or authority["expected_mode"] != 0o755
             or authority["observed_mode"] != 0o755
             or authority["legacy_closure_manifest_sha256"] == EMPTY_SHA256
@@ -5617,9 +5617,9 @@ def _legacy_absent_authority() -> dict[str, object]:
         "observed_uv_sha256": EMPTY_SHA256,
         "expected_uv_version": LEGACY_UV_VERSION,
         "observed_uv_version": "",
-        "expected_uid": os.geteuid(),
+        "expected_uid": -1,
         "observed_uid": -1,
-        "expected_gid": os.getegid(),
+        "expected_gid": -1,
         "observed_gid": -1,
         "expected_mode": 0o755,
         "observed_mode": -1,

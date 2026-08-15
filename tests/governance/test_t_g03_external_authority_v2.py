@@ -85,26 +85,7 @@ def _absent_authority(code: str) -> dict[str, object]:
         }
     if code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
         return topology._absent_nautilus_external_authority()
-    return {
-        "authority_kind": "LEGACY_UV_AND_CLOSURE_V1",
-        "regular_file_status": "ABSENT",
-        "expected_uv_sha256": topology.LEGACY_UV_SHA256,
-        "observed_uv_sha256": topology.EMPTY_SHA256,
-        "expected_uv_version": topology.LEGACY_UV_VERSION,
-        "observed_uv_version": "",
-        "expected_uid": os.geteuid(),
-        "observed_uid": -1,
-        "expected_gid": os.getegid(),
-        "observed_gid": -1,
-        "expected_mode": 0o755,
-        "observed_mode": -1,
-        "legacy_closure_manifest_sha256": topology.EMPTY_SHA256,
-        "legacy_closure_entry_count": 0,
-        "sync_command_id": "LEGACY_UV_SYNC_FROZEN_OFFLINE_V1",
-        "sync_exit_code": -1,
-        "sync_stdout_sha256": topology.EMPTY_SHA256,
-        "sync_stderr_sha256": topology.EMPTY_SHA256,
-    }
+    return topology._legacy_absent_authority()
 
 
 def _external_receipt(
@@ -279,6 +260,88 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
         foundation_head_sha=str(context["foundation_head_sha"]),
         foundation_context=context,
     ) == receipt
+
+    monkeypatch.setattr(topology.os, "geteuid", lambda: 1001)
+    monkeypatch.setattr(topology.os, "getegid", lambda: 1001)
+    runner_absence = _external_receipt("EXT-LEGACY-UV-AUTHORITY")
+    legacy_expected = list(topology._expected_rows(
+        rows, "EXT-LEGACY-UV-AUTHORITY",
+    )[1])
+    runner_pass_authority = {
+        **_absent_authority("EXT-LEGACY-UV-AUTHORITY"),
+        "regular_file_status": "PRIVATE_CURRENT_USER_EXECUTABLE",
+        "observed_uv_sha256": topology.LEGACY_UV_SHA256,
+        "observed_uv_version": topology.LEGACY_UV_VERSION,
+        "expected_uid": 1001,
+        "observed_uid": 1001,
+        "expected_gid": 1001,
+        "observed_gid": 1001,
+        "observed_mode": 0o755,
+        "legacy_closure_manifest_sha256": "8" * 64,
+        "legacy_closure_entry_count": len(topology.LEGACY_CLOSURE_ENTRIES),
+        "sync_exit_code": 0,
+    }
+    runner_pass = _external_receipt(
+        "EXT-LEGACY-UV-AUTHORITY",
+        collected_node_ids=legacy_expected,
+        preflight_state="VALID",
+        redacted_fact_class="AUTHORITY_COMPLETE_VALIDATED",
+        authority=runner_pass_authority,
+        selected_test_count=len(legacy_expected),
+        passed=len(legacy_expected),
+        unavailable=0,
+        outcome="PASS",
+    )
+    monkeypatch.setattr(topology.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(topology.os, "getegid", lambda: 1000)
+    cross_host_results: list[str] = []
+    for cross_host_receipt in (runner_absence, runner_pass):
+        try:
+            topology.validate_receipt(
+                topology.canonical_json_bytes(cross_host_receipt), rows=rows,
+                foundation_run_id=str(context["foundation_run_id"]),
+                foundation_head_sha=str(context["foundation_head_sha"]),
+                foundation_context=context,
+            )
+        except topology.TopologyError as error:
+            cross_host_results.append(str(error))
+        else:
+            cross_host_results.append("VALID")
+    assert (
+        runner_absence["authority"]["expected_uid"],
+        runner_absence["authority"]["expected_gid"],
+        cross_host_results,
+    ) == (-1, -1, ["VALID", "VALID"])
+
+    forged_receipts: list[tuple[dict[str, object], str]] = []
+    forged_absence_identity = json.loads(json.dumps(runner_absence))
+    forged_absence_identity["authority"]["expected_uid"] = 7
+    forged_receipts.append((forged_absence_identity, "exact absence"))
+    forged_absence_digest = json.loads(json.dumps(runner_absence))
+    forged_absence_digest["authority"]["observed_uv_sha256"] = "7" * 64
+    forged_receipts.append((forged_absence_digest, "exact absence"))
+    forged_pass_mismatch = json.loads(json.dumps(runner_pass))
+    forged_pass_mismatch["authority"]["observed_uid"] = 1002
+    forged_receipts.append((forged_pass_mismatch, "PASS authority facts"))
+    forged_pass_negative = json.loads(json.dumps(runner_pass))
+    forged_pass_negative["authority"]["expected_uid"] = -1
+    forged_pass_negative["authority"]["observed_uid"] = -1
+    forged_receipts.append((forged_pass_negative, "PASS authority facts"))
+    forged_outcome = json.loads(json.dumps(runner_absence))
+    forged_outcome["outcome"] = "PASS"
+    forged_receipts.append((forged_outcome, "execution proof"))
+    for forged, message in forged_receipts:
+        forged["completeness_sha256"] = topology.external_completeness_sha256(
+            forged,
+        )
+        forged["receipt_sha256"] = topology.payload_sha256(forged)
+        with pytest.raises(topology.TopologyError, match=message):
+            topology.validate_receipt(
+                topology.canonical_json_bytes(forged), rows=rows,
+                foundation_run_id=str(context["foundation_run_id"]),
+                foundation_head_sha=str(context["foundation_head_sha"]),
+                foundation_context=context,
+            )
 
     for mutation in (
         {"foundation_context_sha256": "5" * 64},
