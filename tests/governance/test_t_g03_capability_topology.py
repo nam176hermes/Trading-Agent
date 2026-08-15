@@ -571,6 +571,18 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
     assert (invalid.state, invalid.fact) == ("BROKEN", "NATIVE_IDENTITY_INVALID")
     assert invalid.descriptor == -1
 
+    bwrap = topology._open_bwrap_session(topology.TRUSTED_BWRAP_POLICY)
+    assert bwrap.state == "PROBE_PENDING"
+    try:
+        sandbox = topology._sandbox_authority_from_session(
+            bwrap, bwrap_policy_path=topology.TRUSTED_BWRAP_POLICY,
+        )
+        assert sandbox["observed_uid"] == sandbox["expected_uid"] == 0
+        assert sandbox["observed_gid"] == sandbox["expected_gid"] == 0
+        assert sandbox["observed_mode"] == sandbox["expected_mode"] == 0o755
+    finally:
+        os.close(bwrap.descriptor)
+
     with _safe_authority_tempdir() as raw:
         root = Path(raw)
         for code in sorted(topology.NATIVE_MULTI_CODES):

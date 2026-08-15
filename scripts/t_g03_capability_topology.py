@@ -4830,7 +4830,10 @@ def _sandbox_authority_from_session(
         and re.fullmatch(r"0[0-7]{3}", expected_mode_text) else -1
     )
     present = session.descriptor >= 0
-    held = os.fstat(session.descriptor) if present else None
+    named = (
+        session.executable_path.lstat()
+        if present and session.executable_path is not None else None
+    )
     return {
         "regular_file_status": (
             "ROOT_OWNED_POLICY_BOUND_EXECUTABLE" if present else "ABSENT"
@@ -4841,11 +4844,11 @@ def _sandbox_authority_from_session(
             session.probe["executable_sha256"] if present else EMPTY_SHA256
         ),
         "expected_uid": expected_uid,
-        "observed_uid": held.st_uid if held is not None else -1,
+        "observed_uid": named.st_uid if named is not None else -1,
         "expected_gid": expected_gid,
-        "observed_gid": held.st_gid if held is not None else -1,
+        "observed_gid": named.st_gid if named is not None else -1,
         "expected_mode": expected_mode,
-        "observed_mode": stat.S_IMODE(held.st_mode) if held is not None else -1,
+        "observed_mode": stat.S_IMODE(named.st_mode) if named is not None else -1,
     }
 
 
