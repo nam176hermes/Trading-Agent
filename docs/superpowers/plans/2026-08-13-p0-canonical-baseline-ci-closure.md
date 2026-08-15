@@ -246,7 +246,7 @@ Do not run P0-04 through P0-10 in parallel when they modify the same topology, M
 
 # Task P0-00 — Establish the isolated qualification workspace
 
-**Owner/model:** Hermes orchestrator with Codex `gpt-5.6-terra`, reasoning medium.  
+**Owner/model:** Hermes orchestrator with Codex `gpt-5.6-terra`, reasoning medium.
 **Reviewer:** `gpt-5.6-sol`, reasoning high.
 
 **Purpose:** Ensure all work begins from the existing candidate, not stale `main`, and prevent accidental changes to another worktree.
@@ -358,7 +358,7 @@ git commit -m "docs(p0): add canonical baseline and CI closure plan"
 
 # Task P0-01 — Pin the P0 baseline in a machine-readable manifest
 
-**Owner/model:** Codex `gpt-5.6-terra`, medium.  
+**Owner/model:** Codex `gpt-5.6-terra`, medium.
 **Reviewer:** Sol high.
 
 **Files:**
@@ -473,7 +473,7 @@ git commit -m "feat(p0): pin canonical candidate baseline"
 
 # Task P0-02 — Reproduce and instrument `POLICY_DATE_CONTEXT_MISMATCH`
 
-**Owner/model:** Codex Sol, reasoning xhigh.  
+**Owner/model:** Codex Sol, reasoning xhigh.
 **Reviewer:** Sol xhigh with fresh context.
 
 **Files:**
@@ -607,7 +607,7 @@ git commit -m "test(ci): reproduce sealed validation-date authority mismatch"
 
 # Task P0-03 — Make the sealed foundation context the only topology date authority
 
-**Owner/model:** Codex Sol, xhigh.  
+**Owner/model:** Codex Sol, xhigh.
 **Reviewer:** Sol xhigh, fresh context.
 
 **Files:**
@@ -768,7 +768,7 @@ git commit -m "fix(ci): derive topology date only from sealed context"
 
 # Task P0-04 — Close 27 sealed-UV portable fixture defects
 
-**Owner/model:** Codex Terra medium for mechanical fixture extraction; Sol xhigh for security review.  
+**Owner/model:** Codex Terra medium for mechanical fixture extraction; Sol xhigh for security review.
 **Reviewer:** Sol xhigh.
 
 **Files:**
@@ -916,7 +916,7 @@ Omit the optional helper path from `git add` if it was not created.
 
 # Task P0-05 — Close five UID/GID and fakeroot fixture defects
 
-**Owner/model:** Codex Sol high.  
+**Owner/model:** Codex Sol high.
 **Reviewer:** Sol xhigh.
 
 **Files:**
@@ -1050,7 +1050,7 @@ git commit -m "fix(test): bind portable runtime identity to current process"
 
 # Task P0-06 — Regenerate the inventory and close the portable-source lane
 
-**Owner/model:** Codex Sol high.  
+**Owner/model:** Codex Sol high.
 **Reviewer:** Sol xhigh.
 
 **Files:**
@@ -1157,7 +1157,7 @@ git commit -m "governance: close portable hosted-failure inventory"
 
 # Task P0-07 — Harden native-capability receipts
 
-**Owner/model:** Codex Sol xhigh.  
+**Owner/model:** Codex Sol xhigh.
 **Reviewer:** Sol xhigh, fresh context.
 
 **Files:**
@@ -1298,7 +1298,7 @@ git commit -m "feat(ci): seal native capability receipts"
 
 # Task P0-08 — Harden external-authority receipts
 
-**Owner/model:** Codex Sol xhigh.  
+**Owner/model:** Codex Sol xhigh.
 **Reviewer:** Sol xhigh.
 
 **Files:**
@@ -1431,7 +1431,7 @@ git commit -m "feat(ci): seal external authority receipts"
 
 # Task P0-09 — Normalize Make targets and split portable versus host workflows
 
-**Owner/model:** Codex Terra medium.  
+**Owner/model:** Codex Terra medium.
 **Reviewer:** Sol high.
 
 **Files:**
@@ -1584,7 +1584,7 @@ git commit -m "refactor(ci): isolate portable and host authority gates"
 
 # Task P0-10 — Seal deterministic evidence and enforce the artifact firewall
 
-**Owner/model:** Codex Sol high.  
+**Owner/model:** Codex Sol high.
 **Reviewer:** Sol xhigh.
 
 **Files:**
@@ -1755,7 +1755,7 @@ git commit -m "feat(ci): seal deterministic portable evidence"
 
 # Task P0-11 — Close the executable P0 matrix and documentation
 
-**Owner/model:** Codex Terra medium.  
+**Owner/model:** Codex Terra medium.
 **Reviewer:** Sol high.
 
 **Files:**
@@ -1921,8 +1921,8 @@ scope.
 
 # Task P0-12 — Clean-clone qualification and adversarial final review
 
-**Owner/model:** Hermes orchestrator.  
-**Implementer:** No new feature work unless verification finds a defect.  
+**Owner/model:** Hermes orchestrator.
+**Implementer:** No new feature work unless verification finds a defect.
 **Final reviewer:** Sol xhigh with fresh context and no prior verdict.
 
 ### Step 1 — Create a separate clean qualification clone/worktree
@@ -2788,7 +2788,7 @@ authorized.
 
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
-**Owner:** Operator.  
+**Owner:** Operator.
 **Codex role:** Read-only verification unless separately authorized for the exact Git action.
 
 ### Preconditions
