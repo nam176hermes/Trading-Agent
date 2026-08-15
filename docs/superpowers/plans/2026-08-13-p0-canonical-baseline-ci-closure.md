@@ -2742,6 +2742,49 @@ authorized.
 
 ---
 
+## P0-12R14 fix round 1 — Isolate worktree comparison from the real index
+
+Independent review of `4b82e6476248813eb2d7ea0a26be9a9e8388a6d4`
+proved that `git diff --quiet --no-ext-diff --no-textconv --` may refresh and
+rewrite the repository's real index even when content is clean. A deterministic
+future-mtime fixture changed the index bytes, inode, nanosecond mtime/ctime, and
+stored stat-cache entry, and changed the legacy stale signals from 1/1 to 0/0.
+`GIT_OPTIONAL_LOCKS=0` alone does not prevent this write and is prohibited as a
+standalone fix.
+
+Preserve the two source-cleanliness invariants without permitting any real-index
+mutation. First run a non-mutating cached comparison of the real index against
+the expected Foundation head SHA, with caller-provided `GIT_INDEX_FILE`
+authority removed. Only after that succeeds, create one task-private
+mode-0700 temporary directory under root-owned sticky `/tmp`, initialize an
+alternate index from the same expected head SHA using `git read-tree`, and run
+the exact worktree content comparison with `GIT_INDEX_FILE` bound to that
+alternate index. `GIT_OPTIONAL_LOCKS=0` may accompany these commands as defense
+in depth but is not the isolation authority. Remove the private directory
+synchronously before the existing checked head binding and tree enumeration.
+
+Strict RED must prove an mtime-only source check preserves the real index bytes,
+stable stat identity, nanosecond mtime/ctime, and exact `git ls-files --debug`
+stat-cache projection, and leaves both legacy stale signals at 1/1 after the
+check. It must retain exact staged/unstaged content and executable-mode drift
+classification, bind the expected head SHA and alternate-index environment,
+reject hostile caller `GIT_INDEX_FILE`/`GIT_OPTIONAL_LOCKS` overrides, classify
+read-tree/diff command and spawn failures without raw disclosure, and prove the
+task-private directory is removed on success and failure.
+
+Change only the minimum source-tree command orchestration and focused tests.
+Keep the R13 closed diagnostic schema, source-cleanliness policy, later head and
+tree bindings, skip/native/PASS policy, Make, workflows, dependencies, and locks
+unchanged. Refresh generator-owned broad-handler inventory rows only if exact
+line movement requires it. Require focused/full affected tests, a fresh
+standalone affected packet, P0 baseline/closure/contracts/source/security/
+inventory/actionlint/diff gates, an ignored report update, a clean fix commit,
+and independent re-review. No push, hosted rerun or dispatch, P0-12
+continuation, P0-13, production/runtime, broker/provider, or live action is
+authorized.
+
+---
+
 # Task P0-13 — Fast-forward promotion and post-promotion proof
 
 **Owner:** Operator.  
