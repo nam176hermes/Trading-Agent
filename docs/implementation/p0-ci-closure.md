@@ -55,7 +55,7 @@ substituted for another condition:
 | P0-E01 | Candidate ancestry and machine-readable baseline remain valid | PASS |
 | P0-E02 | Sealed Foundation date is the sole date authority; CLI/environment overrides fail | PASS |
 | P0-E03 | The 27 sealed-UV, 3 UID/GID, and 2 fakeroot portable defects have exact-node closure proofs | PASS |
-| P0-E04 | Zero portable source defects remain; active topology is exactly 24 native plus 6 external nodes | PASS |
+| P0-E04 | Zero portable source defects remain; topology has exactly 317 active authority nodes: 58 native and 259 external, 49 portable-defect closure nodes, 366 governed nodes and 6,131 portable remainder nodes | PASS |
 | P0-E05 | Native capability receipts are per-code, fail closed, and cannot prove another lane | PASS |
 | P0-E06 | External authority receipts are per-code, fail closed, and cannot synthesize authority | PASS |
 | P0-E07 | `ci` reaches portable authority only and cannot reach host authority | PASS |

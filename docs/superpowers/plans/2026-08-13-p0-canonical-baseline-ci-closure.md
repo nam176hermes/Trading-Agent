@@ -2048,8 +2048,9 @@ Reviewer must inspect:
 
 1. exact diff from `417c174...` to final candidate;
 2. topology date authority;
-3. all 32 portable-defect closures;
-4. all 30 unresolved receipt paths;
+3. all 49 portable-defect closure proofs;
+4. all 317 active authority receipt paths (58 native and 259 external), with
+   the exact 366 governed and 6,131 portable-remainder accounting;
 5. portable/host Make target reachability;
 6. workflow permissions and triggers;
 7. artifact publication and no-clobber semantics;

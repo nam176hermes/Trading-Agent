@@ -121,6 +121,13 @@ def test_cli_accepts_only_canonical_repository_matrix() -> None:
 def test_pending_source_matrix_is_an_executable_closed_contract(context: closure._ValidationContext) -> None:
     """Break caught: the checked-in source matrix fabricates qualification."""
     assert _validate(context) == "QUALIFICATION_PENDING"
+    completion_contract = (ROOT / "docs/implementation/p0-ci-closure.md").read_text(
+        encoding="utf-8",
+    )
+    assert "317 active authority nodes: 58 native and 259 external" in completion_contract
+    assert "49 portable-defect closure nodes" in completion_contract
+    assert "366 governed nodes and 6,131 portable remainder nodes" in completion_contract
+    assert "24 native plus 6 external nodes" not in completion_contract
 
 
 @pytest.mark.parametrize(
