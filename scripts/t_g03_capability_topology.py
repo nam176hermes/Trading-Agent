@@ -823,6 +823,13 @@ PORTABLE_ROOT_POLICY = {
     "portable_argument": "--portable-embedded-proof",
     "root_selector": "tests",
 }
+SEMANTIC_COLLECTOR_POLICY_FIELDS = (
+    "governance_plugin",
+    "marker_expression",
+    "native_custody_extension_sha256",
+    "portable_argument",
+    "root_selector",
+)
 
 
 @dataclass(frozen=True)
@@ -1965,6 +1972,31 @@ def _validate_custody_policy(policy: object) -> dict[str, str]:
     ):
         raise TopologyError("portable root collector policy drift")
     return {key: str(value) for key, value in policy.items()}
+
+
+def _semantic_collector_policy(policy: object) -> dict[str, str]:
+    expected_fields = {
+        *SEMANTIC_COLLECTOR_POLICY_FIELDS,
+        "native_custody_extension_identity",
+    }
+    if not isinstance(policy, dict) or set(policy) != expected_fields:
+        raise TopologyError("final topology semantic collector policy is malformed")
+    if any(
+        not isinstance(policy.get(key), str)
+        or not policy[key]
+        or any(character < "\x20" or character > "\x7e" for character in policy[key])
+        for key in expected_fields
+    ):
+        raise TopologyError("final topology semantic collector policy is malformed")
+    if (
+        not HEX64.fullmatch(policy["native_custody_extension_sha256"])
+        or not re.fullmatch(
+            r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:[0-9]+",
+            policy["native_custody_extension_identity"],
+        )
+    ):
+        raise TopologyError("final topology semantic collector policy is malformed")
+    return {key: policy[key] for key in SEMANTIC_COLLECTOR_POLICY_FIELDS}
 
 
 @contextmanager
@@ -4684,7 +4716,7 @@ def build_final_semantic_projection(
         },
         "inventory_sha256": inventory_sha256,
         "closure_sha256": closure_sha256,
-        "policy_sha256": _sha256(collector_policy),
+        "policy_sha256": _sha256(_semantic_collector_policy(collector_policy)),
         "statuses": {key: disclosure[key] for key in status_keys},
         "receipt_results": receipt_results,
     }

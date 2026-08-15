@@ -25,10 +25,15 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
         "foundation_validation_date": "2026-08-13",
         "foundation_context_sha256": "2" * 64,
     }
+    collector_policy = {
+        **topology.PORTABLE_ROOT_POLICY,
+        "native_custody_extension_identity": "2049:9452856:1001:600:1",
+        "native_custody_extension_sha256": "9" * 64,
+    }
     baseline = {
         "inventory_sha256": "3" * 64,
         "closure_sha256": "4" * 64,
-        "collector_policy": {"custody": "retained"},
+        "collector_policy": collector_policy,
     }
     disclosure = {
         "portable_source_status": "PASS",
@@ -54,10 +59,48 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
     rerun_context = dict(context, foundation_run_id="202", foundation_context_sha256="7" * 64)
     rerun_receipts = [dict(receipts[0], foundation_run_id="202", foundation_context_sha256="7" * 64, receipt_sha256="8" * 64)]
     assert builder(rerun_context, baseline, disclosure, rerun_receipts) == first
+    rerun_baseline = dict(baseline, collector_policy={
+        **collector_policy,
+        "native_custody_extension_identity": "2049:2106625:1001:600:1",
+    })
+    rerun_projection = builder(rerun_context, rerun_baseline, disclosure, rerun_receipts)
+    assert rerun_projection == first
+    assert topology._sha256(rerun_projection) == topology._sha256(first)
     assert "foundation_run_id" not in json.dumps(first)
     assert "receipt_sha256" not in json.dumps(first)
     changed = [dict(receipts[0], outcome="PASS", selected_test_count=8, passed=8, unavailable=0)]
     assert builder(context, baseline, disclosure, changed) != first
+    for field, replacement in (
+        ("governance_plugin", "scripts.other_governance_plugin"),
+        ("marker_expression", "other_marker"),
+        ("native_custody_extension_sha256", "a" * 64),
+        ("portable_argument", "--other-portable-proof"),
+        ("root_selector", "other-tests"),
+    ):
+        changed_policy = {**collector_policy, field: replacement}
+        changed_projection = builder(
+            context, dict(baseline, collector_policy=changed_policy), disclosure, receipts,
+        )
+        assert changed_projection != first
+        assert topology._sha256(changed_projection) != topology._sha256(first)
+    malformed_policies = [
+        {key: value for key, value in collector_policy.items() if key != "root_selector"},
+        {**collector_policy, "unexpected": "field"},
+        {**collector_policy, "native_custody_extension_sha256": "not-a-digest"},
+        {**collector_policy, "native_custody_extension_identity": "not-an-identity"},
+        {**collector_policy, "root_selector": "tests\nforeign"},
+        {**collector_policy, "root_selector": "t\N{LATIN SMALL LETTER E WITH ACUTE}sts"},
+    ]
+    malformed_policies.extend(
+        {**collector_policy, field: None}
+        for field in topology.SEMANTIC_COLLECTOR_POLICY_FIELDS
+    )
+    for malformed_policy in malformed_policies:
+        with pytest.raises(topology.TopologyError, match="semantic collector policy"):
+            builder(
+                context, dict(baseline, collector_policy=malformed_policy),
+                disclosure, receipts,
+            )
 
 
 def _seal_portable_root_baseline(

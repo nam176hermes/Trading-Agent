@@ -50,7 +50,9 @@ def _semantic(**updates: object) -> dict[str, object]:
         "foundation": {"head_sha": HEAD, "validation_date": "2026-08-13"},
         "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
         "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
-        "policy_sha256": topology._sha256(policy),
+        "policy_sha256": topology._sha256(
+            topology._semantic_collector_policy(policy),
+        ),
         "selected_tests": [],
         "statuses": {
             "portable_source_status": "PASS",
