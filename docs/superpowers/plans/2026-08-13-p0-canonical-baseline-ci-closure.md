@@ -4209,3 +4209,34 @@ review before exactly one new push-triggered run. Never rerun
 `0c789bbcdb3c63f4955bb1a27b72847c6fefd398`; do not change marker selection,
 skip/outcome policy, Make/workflow, PostgreSQL authority, database execution,
 dependencies/locks, production or live boundaries.
+
+### P0-12R34 diagnostic — classify collection invariant group
+
+Hosted run `31900271653` at exact
+`120902855323c542428293217161a55fbcda8095` failed closed before artifact
+publication with the exact token
+`ARTIFACT_FIREWALL_REJECTED LAYOUT PUBLICATION PROJECTION_VALIDATION COLLECTION`.
+The retained log SHA-256 is
+`90f0029cdf08970f63b6820f39cc4ae41472af16065a6b37b2c0307d577e947f`.
+Local reconstruction validates the obvious R33 collection document: exact six
+keys, 6,497 collected candidates, 29 disjoint collection-phase deselections,
+12 host-coupled and 17 runtime-PostgreSQL reasons, and exact sorted candidate
+equality. Do not infer or change the failing invariant from this local success.
+
+Add one closed observational detail beneath exactly
+`PUBLICATION PROJECTION_VALIDATION COLLECTION`: `DOCUMENT_SCHEMA`,
+`RECORD_SCHEMA`, `REASON_DOMAIN`, `SUMMARY_BINDING`, `CANDIDATE_BINDING`, or
+`DESELECTION_BINDING`. Mark the token immediately before each existing
+collection invariant group and preserve the prior code, category, stage,
+publication substage, and projection-validation substage. Thread only the
+closed token through `FinalPublicationError` and CLI output after `COLLECTION`.
+Never expose a path, value, digest, validator message, cause, or context.
+
+This packet is diagnostic-only. It must not change collection acceptance,
+document or receipt schemas, marker/deselection policy, candidate accounting,
+Make, workflow, dependencies/locks, external authority, PostgreSQL/database,
+production/runtime, or live behavior. Strict RED/GREEN must cover all six
+closed tokens, map one semantic mutation to each first failing invariant group,
+preserve all earlier token sequences, keep collection exactly 6,526, and run
+focused/affected/static plus fresh standalone verification. Stop for independent
+review without push or hosted rerun; never rerun `120902855323c542428293217161a55fbcda8095`.
