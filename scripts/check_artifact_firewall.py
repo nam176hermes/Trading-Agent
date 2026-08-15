@@ -2234,6 +2234,7 @@ def _topology_failure_payloads_from_raw(
     except (OSError, topology.TopologyError) as exc:
         raise _reject("topology failure Foundation binding is invalid") from exc
     failures: list[tuple[dict[str, object], dict[str, object]]] = []
+    receipts_by_code: dict[str, dict[str, object]] = {}
     try:
         for code in sorted(marker_codes):
             marker_path = raw_root / "capability-topology" / f"{code}.json"
@@ -2247,6 +2248,7 @@ def _topology_failure_payloads_from_raw(
                 )
                 if receipt["capability_or_authority_code"] != code:
                     raise topology.TopologyError("topology failure marker code drift")
+                receipts_by_code[code] = receipt
                 if receipt["outcome"] == "FAIL":
                     if artifacts.governance_raw is not None:
                         raise topology.TopologyError("topology FAIL has governance evidence")
@@ -2279,6 +2281,22 @@ def _topology_failure_payloads_from_raw(
     if len(failures) != 1:
         raise _reject("topology failure has no sole terminal receipt")
     receipt, manifest = failures[0]
+    ordered_codes = tuple(
+        code for lane in ("native-capabilities", "external-authorities")
+        for code in sorted(topology.CODE_CLASSIFICATION)
+        if topology.CLASSIFICATION_LANE[topology.CODE_CLASSIFICATION[code]] == lane
+    )
+    terminal_code = str(receipt["capability_or_authority_code"])
+    terminal_index = ordered_codes.index(terminal_code)
+    expected_prefix = ordered_codes[:terminal_index + 1]
+    if (
+        marker_codes != set(expected_prefix)
+        or any(
+            receipts_by_code[code]["outcome"] not in {"PASS", "DEFERRED"}
+            for code in expected_prefix[:-1]
+        )
+    ):
+        raise _reject("topology failure receipt prefix is incomplete or unordered")
     projection: dict[str, object] = {
         "schema_version": TOPOLOGY_FAILURE_PROJECTION_SCHEMA,
         "diagnostic_only": True,

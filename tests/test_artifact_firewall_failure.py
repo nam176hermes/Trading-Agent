@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 import pytest
@@ -544,6 +545,48 @@ def test_failure_publisher_rejects_malformed_stale_and_foreign_diagnostics(
                 repository_root=Path.cwd(),
             )
         assert not topology_destination.exists()
+    if mutation == "foreign":
+        topology_raw, topology_run_id, topology_head_sha, code = _topology_failure_source(
+            tmp_path / "topology-prefix", monkeypatch,
+        )
+        marker = topology_raw / f"capability-topology/{code}.json"
+        marker.unlink()
+        shutil.rmtree(topology_raw / f"capability-topology/{code}.artifacts")
+        context = topology.load_foundation_context(
+            topology_raw / "capability-topology/foundation-context.json",
+            run_id=topology_run_id, head_sha=topology_head_sha,
+        )
+        rows = topology.load_inventory(INVENTORY)
+        _lane, expected = topology._expected_rows(
+            rows, "NATIVE-USERNS-ROOT-PROVISION",
+        )
+        userns = topology.NativeProbeSession(
+            "NATIVE-USERNS-ROOT-PROVISION", "BROKEN",
+            "NATIVE_IDENTITY_INVALID",
+            topology._native_probe_record(
+                "NATIVE-USERNS-ROOT-PROVISION",
+                exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+            ),
+            -1, None, None, None, None,
+        )
+        topology._publish_native_failure_marker(
+            receipt=topology.make_native_receipt(
+                context=context, code=userns.code, expected=expected,
+                collected=(), session=userns, outcome="FAIL",
+                selected_test_count=0, passed=0, failed=0, unavailable=0,
+            ),
+            evidence_root=topology_raw,
+        )
+        with pytest.raises(firewall.FirewallError):
+            firewall.publish_topology_failure(
+                raw_root=topology_raw,
+                destination=tmp_path / "topology-prefix-final",
+                inventory=INVENTORY,
+                foundation_context_path=(
+                    topology_raw / "capability-topology/foundation-context.json"
+                ),
+                repository_root=Path.cwd(),
+            )
 
 
 @pytest.mark.parametrize("authority", ["context", "reservation", "baseline", "remainder"])
