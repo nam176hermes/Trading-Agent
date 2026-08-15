@@ -4419,3 +4419,27 @@ policy relaxation, Make/workflow, PostgreSQL/database, dependency/lock,
 production runtime or live change. Stop for independent review without push,
 dispatch, hosted run or rerun of
 `f2aab383f561fae5e3e027d08bafdd2692d9f813`.
+
+### P0-12R40 fix — scope simulated validator identity
+
+Independent review approved R39 and exact reviewed HEAD
+`33a8c293763eafd86ba76c0f9c9109dd8b1fd438` was pushed. Automatic Foundation
+run `31909964970` failed closed with zero artifacts after `1 failed, 6130
+passed`. The exact failure was the modified external-v2 cross-host test: its
+simulated validator UID/GID `1000` remained active when later helper code ran
+on the real UID `1001` hosted runner, selecting nonexistent `/run/user/1000`.
+The route then ended `EXACT_EXECUTION_NONPASS`; failure publication rejected
+`RAW_BINDING`. Never rerun this SHA.
+
+Strict RED/GREEN must save the real identity callables, simulate origin
+UID/GID `1001` and validator UID/GID `1000`, and prove both callables are
+restored before the existing safe-fixture helper and all later assertions.
+Use `monkeypatch.context()` or an equivalently narrow test-only scope. Preserve
+the R39 cross-host receipt assertions and every production topology byte.
+
+Run the exact node, full external module, affected topology/firewall packet,
+exact collection/static gates and a fresh standalone verification. Scope is
+test-only: no production topology, receipt schema/policy, Make/workflow,
+PostgreSQL/database, dependency/lock, production runtime or live change. Stop
+for independent review without push, dispatch, hosted run or rerun of
+`33a8c293763eafd86ba76c0f9c9109dd8b1fd438`.
