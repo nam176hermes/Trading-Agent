@@ -4118,3 +4118,33 @@ then run hosted-disclosure, firewall, topology/governance consumers, collection
 and static gates, fresh standalone verification and independent review. Never
 rerun `edf516ce31fd5581cd01560a83abd923b15f337e`; after approval use exactly one
 new push-triggered hosted attempt.
+
+### P0-12R31 diagnostic — classify final publication substage
+
+Hosted run `31896607371` at exact
+`26ed4d1da676e4a286fc8a8187c661f1a96ceaab` passed raw semantic and corrected
+disclosure binding, then ended with the closed rejection
+`ARTIFACT_FIREWALL_REJECTED LAYOUT PUBLICATION`; artifact count is zero. The
+run proves R30 closed its defect but cannot identify which retained-custody,
+projection, sealing, rename or final-validation operation rejected.
+
+Add an internal non-throwing publication-stage tracer that records one closed
+token immediately before each existing operation without adding catches or
+changing control flow: `INPUT_BINDING`, `STAGING_LINEAGE`,
+`DESTINATION_LINEAGE`, `DESTINATION_ABSENCE`, `SOURCE_SNAPSHOT`,
+`PROJECTION_VALIDATION`, `MANIFEST_BUILD`, `CANDIDATE_BUILD`,
+`STAGING_POSTCHECK`, `DESTINATION_POSTCHECK`, `CANDIDATE_SEAL`,
+`SEALED_VALIDATION`, `ATOMIC_RENAME`, or `PUBLISHED_VALIDATION`. Emit the token
+only below final stage `PUBLICATION`. Preserve existing closed code/category
+and suppress every message, path, identity, mode, digest, exception,
+cause/context, stdout and stderr.
+
+Strict RED/GREEN must exercise every allowlisted token from an existing
+collected publisher node, prove invalid stage/token combinations reject, retain
+positive publication and all existing boundary-hook behavior, and show no
+manifest/evidence byte or acceptance change. Run focused firewall and affected
+consumers, collection/static gates, a fresh standalone packet and independent
+review before exactly one new hosted push attempt. Never rerun
+`26ed4d1da676e4a286fc8a8187c661f1a96ceaab`. Do not weaken custody, lineage,
+no-clobber, sealing, validators, skip/outcome or authority policy; do not mint
+PostgreSQL approval, run a database or alter production/live/dependencies.
