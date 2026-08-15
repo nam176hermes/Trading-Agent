@@ -3457,3 +3457,104 @@ closure checks, and a clean standalone affected packet. Stop for independent
 review after committed evidence. This packet does not authorize push, hosted
 rerun or dispatch, Packet B or C, P0-13, production/runtime/database/service
 mutation, broker/provider access, or live trading.
+
+---
+
+## P0-12R16 Packet B correction — Nautilus capability and authority topology
+
+Packet B owns exactly 36 still-active Nautilus nodes from the reviewed final
+map `/tmp/p0-12-run-31853608129-node-map.tsv` (SHA-256
+`b7e8fa87d51af2f3f9dd65759ae167766de2046eb252a108ede28b1a8950cb0f`):
+two additional `NATIVE-BWRAP-OS-SANDBOX` nodes, 22
+`NATIVE-NAUTILUS-SEALED-TOOLCHAINS` nodes, ten
+`NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX` nodes, and two
+`EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS` nodes. The staged active inventory is
+therefore 66 rows: 58 native and eight external. With the already-reviewed
+49-row portable closure, the governed set is 115 and the 6,474-node baseline
+has a 6,359-node remainder. Packet B does not change the closure ledger or the
+skip allowlist.
+
+The existing native-v2 receipt and probe schemas remain byte-for-byte exact for
+`NATIVE-BWRAP-OS-SANDBOX` and `NATIVE-USERNS-ROOT-PROVISION`. The two new
+multi-authority native codes use
+`t-g03a-native-multi-authority-receipt/v3`. Its top-level fields are the v2
+fields plus `authority`; its `probe` has exactly `command_id`, `exit_code`,
+`stdout_sha256`, and `stderr_sha256`, and never mislabels an aggregate digest
+as `executable_sha256`. Toolchain receipts use the closed command ID
+`NAUTILUS_SEALED_TOOLCHAINS_V1` and an authority object containing exactly:
+
+```text
+authority_kind
+rust_root_status
+llvm_root_status
+rust_policy_sha256
+llvm_policy_sha256
+rust_manifest_sha256
+rust_tree_sha256
+rust_file_count
+llvm_manifest_sha256
+llvm_tool_count
+llvm_resource_header_count
+```
+
+The authority kind is `NAUTILUS_SEALED_TOOLCHAINS_V1`; both root statuses must
+be `PRIVATE_CURRENT_USER_SEALED_DIRECTORY` for PASS. The values bind the exact
+checked-in Rust 1.95.0 and LLVM 22.1.3 policies, their canonical materialized
+manifests, the Rust policy tree digest/count, and the complete LLVM tool and
+resource-header counts. The composite code uses the closed command ID
+`NAUTILUS_SEALED_BUILD_SANDBOX_V1`. Its authority has exactly
+`authority_kind`, `toolchains`, and `sandbox`; `toolchains` is the complete
+toolchain object above and `sandbox` contains exactly `regular_file_status`,
+`policy_sha256`, `expected_sha256`, `observed_sha256`, `expected_uid`,
+`observed_uid`, `expected_gid`, `observed_gid`, `expected_mode`, and
+`observed_mode`. The composite authority kind is
+`NAUTILUS_SEALED_BUILD_SANDBOX_V1`, and the sandbox facts independently bind
+the checked-in sealed-UV policy and retained `/usr/bin/bwrap` identity.
+
+Native-v3 qualification is a retained multi-descriptor session. It validates
+the exact checked-in policies and complete private sealed trees, retains the
+Rust root, LLVM root, required tool leaves, and composite Bubblewrap identity,
+and repeats exact named-versus-held policy/tree/manifest checks before each
+Architecture-A publication linearization point. Only an absent required root
+or leaf is `UNAVAILABLE/NATIVE_COMPONENT_ABSENT` and may produce DEFERRED.
+Partial presence, unsafe ownership/mode/lineage, policy or manifest mismatch,
+probe failure, and replacement are `BROKEN/FAIL`. The v3 parser, manifest, and
+validator are code-discriminated; native-v2 bytes, parser rules, artifacts,
+and outcome rules do not change.
+
+External v2 adds only the third code-discriminated authority-key set for
+`EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS`; the Phase-3B and legacy-UV schemas stay
+exact. The new authority contains exactly `authority_kind`,
+`base_root_status`, `artifact_root_status`, `runtime_policy_sha256`,
+`base_manifest_sha256`, `base_file_count`, `base_file_inventory_sha256`,
+`artifact_manifest_sha256`, `artifact_wheel_sha256`, and
+`artifact_wheel_size`. It retains both private reviewed directories, validates
+them with the production runtime-closure policy validators, and repeats exact
+ancestor/root/manifest/inventory checks through Architecture-A publication.
+Only both declared roots being absent is `ABSENT/DEFERRED`; one missing root,
+unsafe lineage or ownership/mode, mismatch, or replacement is
+`PARTIAL|INVALID|DRIFTED/FAIL`.
+
+Production defaults are the already-declared fixed authorities:
+`/home/thenam176/.cache/trading-agent/nautilus/rust-1.95.0`,
+`/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain`,
+`/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3`, and
+`/home/thenam176/.cache/trading-agent/nautilus/artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c`.
+Private path injection exists only as explicit retained-session factory
+arguments for adversarial tests; no CLI flag or environment variable may
+select a different authority. Portable absence publishes DEFERRED. Existing
+`validate-native --require-pass` and `validate-external --require-pass` reject
+any DEFERRED host qualification, so Packet B requires no Make or workflow route
+change.
+
+Strict RED must prove the missing exact mapping, stale native-v2 use for each
+new native code, missing code-discriminated sessions, and missing external
+authority schema before implementation. GREEN must cover exact node mapping,
+absence versus partial/unsafe states, policy and manifest mismatch, retained
+identity replacement, native-v2 non-regression, canonical receipt/manifest
+validation, Architecture-A no-clobber transactions, portable DEFER, host
+require-pass rejection, and exact 66/49/115/6,474/6,359 accounting. No packet
+may download, provision, synthesize, or self-approve a toolchain, cache, or
+sandbox, and Packet B does not authorize push, hosted rerun, Packet C, P0-13,
+production/runtime/database/service mutation, broker/provider access, or live
+trading.
