@@ -148,6 +148,10 @@ _COLLECTION_SUBSTAGES = frozenset({
     "DOCUMENT_SCHEMA", "RECORD_SCHEMA", "REASON_DOMAIN",
     "SUMMARY_BINDING", "CANDIDATE_BINDING", "DESELECTION_BINDING",
 })
+_DOCUMENT_SCHEMA_SUBSTAGES = frozenset({
+    "KEY_SET", "SCHEMA_VERSION", "COMPONENT", "COLLECTION_ONLY",
+    "EXIT_STATUS", "TESTS_TYPE",
+})
 _SOURCE_TREE_FAILURES = frozenset({
     ("DIFF_INDEX", "DRIFT"),
     ("DIFF_INDEX", "COMMAND_FAILURE"),
@@ -247,6 +251,7 @@ class FinalPublicationError(FirewallError):
         publication_substage: str = "",
         projection_validation_substage: str = "",
         collection_substage: str = "",
+        document_schema_substage: str = "",
         source_tree_substage: str = "", source_tree_reason: str = "",
     ) -> None:
         if stage not in _FAILURE_PUBLICATION_STAGES:
@@ -286,6 +291,15 @@ class FinalPublicationError(FirewallError):
                 or collection_substage not in _COLLECTION_SUBSTAGES
             ):
                 raise ValueError("final collection substage is not closed")
+        if document_schema_substage:
+            if (
+                stage != "PUBLICATION"
+                or publication_substage != "PROJECTION_VALIDATION"
+                or projection_validation_substage != "COLLECTION"
+                or collection_substage != "DOCUMENT_SCHEMA"
+                or document_schema_substage not in _DOCUMENT_SCHEMA_SUBSTAGES
+            ):
+                raise ValueError("final document schema substage is not closed")
         if source_tree_substage or source_tree_reason:
             if (
                 stage != "SOURCE_TREE"
@@ -303,6 +317,7 @@ class FinalPublicationError(FirewallError):
         self.publication_substage = publication_substage
         self.projection_validation_substage = projection_validation_substage
         self.collection_substage = collection_substage
+        self.document_schema_substage = document_schema_substage
         self.source_tree_substage = source_tree_substage
         self.source_tree_reason = source_tree_reason
 
@@ -311,6 +326,7 @@ def _classify_final_publication(
     stage: str, exc: object, *, publication_substage: str = "",
     projection_validation_substage: str = "",
     collection_substage: str = "",
+    document_schema_substage: str = "",
 ) -> FinalPublicationError:
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
@@ -336,6 +352,7 @@ def _classify_final_publication(
         publication_substage=publication_substage,
         projection_validation_substage=projection_validation_substage,
         collection_substage=collection_substage,
+        document_schema_substage=document_schema_substage,
         source_tree_substage=source_tree_substage,
         source_tree_reason=source_tree_reason,
     )
@@ -1035,6 +1052,7 @@ def _validate_projection_schemas(
     snapshot: _Snapshot, *,
     _projection_validation_substage_hook: Callable[[str], None] | None = None,
     _collection_substage_hook: Callable[[str], None] | None = None,
+    _document_schema_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     from scripts import t_g03_capability_topology as topology
 
@@ -1047,6 +1065,12 @@ def _validate_projection_schemas(
             raise ValueError("collection substage is not closed")
         if _collection_substage_hook is not None:
             _collection_substage_hook(substage)
+
+    def enter_document_schema(substage: str) -> None:
+        if substage not in _DOCUMENT_SCHEMA_SUBSTAGES:
+            raise ValueError("document schema substage is not closed")
+        if _document_schema_substage_hook is not None:
+            _document_schema_substage_hook(substage)
 
     enter("FOUNDATION_CONTEXT")
     prefix = "capability-topology/"
@@ -1144,19 +1168,28 @@ def _validate_projection_schemas(
         raise _reject("portable baseline custody policy is invalid") from exc
     enter("COLLECTION")
     enter_collection("DOCUMENT_SCHEMA")
+    enter_document_schema("KEY_SET")
     collection = _object_leaf(snapshot, prefix + "portable-root-collection.governance.json")
     collection_tests = collection.get("tests")
-    if (
-        set(collection) != {
-            "schema_version", "component", "collection_only",
-            "pytest_exit_status", "summary", "tests",
-        }
-        or collection.get("schema_version") != 1
-        or collection.get("component") != "root"
-        or collection.get("collection_only") is not True
-        or collection.get("pytest_exit_status") != 0
-        or not isinstance(collection_tests, list)
-    ):
+    if set(collection) != {
+        "schema_version", "component", "collection_only",
+        "pytest_exit_status", "summary", "tests",
+    }:
+        raise _reject("portable collection governance is invalid")
+    enter_document_schema("SCHEMA_VERSION")
+    if collection.get("schema_version") != 1:
+        raise _reject("portable collection governance is invalid")
+    enter_document_schema("COMPONENT")
+    if collection.get("component") != "root":
+        raise _reject("portable collection governance is invalid")
+    enter_document_schema("COLLECTION_ONLY")
+    if collection.get("collection_only") is not True:
+        raise _reject("portable collection governance is invalid")
+    enter_document_schema("EXIT_STATUS")
+    if collection.get("pytest_exit_status") != 0:
+        raise _reject("portable collection governance is invalid")
+    enter_document_schema("TESTS_TYPE")
+    if not isinstance(collection_tests, list):
         raise _reject("portable collection governance is invalid")
 
     enter_collection("RECORD_SCHEMA")
@@ -1378,6 +1411,7 @@ def _validate_projection_layout(
     snapshot: _Snapshot, *,
     _projection_validation_substage_hook: Callable[[str], None] | None = None,
     _collection_substage_hook: Callable[[str], None] | None = None,
+    _document_schema_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     def enter(substage: str) -> None:
         if substage not in _PROJECTION_VALIDATION_SUBSTAGES:
@@ -1439,6 +1473,7 @@ def _validate_projection_layout(
         snapshot,
         _projection_validation_substage_hook=_projection_validation_substage_hook,
         _collection_substage_hook=_collection_substage_hook,
+        _document_schema_substage_hook=_document_schema_substage_hook,
     )
     enter("SECRET_SCAN")
     for relative, leaf in snapshot.leaves.items():
@@ -2024,6 +2059,7 @@ def publish_evidence_set(
     _publication_substage_hook: Callable[[str], None] | None = None,
     _projection_validation_substage_hook: Callable[[str], None] | None = None,
     _collection_substage_hook: Callable[[str], None] | None = None,
+    _document_schema_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Seal retained acceptance projection bytes and publish without replacement."""
     def validate_projection(snapshot: _Snapshot) -> dict[str, object]:
@@ -2033,6 +2069,7 @@ def publish_evidence_set(
                 _projection_validation_substage_hook
             ),
             _collection_substage_hook=_collection_substage_hook,
+            _document_schema_substage_hook=_document_schema_substage_hook,
         )
 
     return _publish_evidence_set(
@@ -2349,6 +2386,7 @@ def publish_final_evidence(
     publication_substage = "INPUT_BINDING"
     projection_validation_substage = "ROOT_LAYOUT"
     collection_substage = ""
+    document_schema_substage = ""
 
     def remember_publication_substage(substage: str) -> None:
         nonlocal publication_substage
@@ -2361,6 +2399,10 @@ def publish_final_evidence(
     def remember_collection_substage(substage: str) -> None:
         nonlocal collection_substage
         collection_substage = substage
+
+    def remember_document_schema_substage(substage: str) -> None:
+        nonlocal document_schema_substage
+        document_schema_substage = substage
 
     try:
         projection_name = f".final-projection-{secrets.token_hex(16)}"
@@ -2392,6 +2434,7 @@ def publish_final_evidence(
                 remember_projection_validation_substage
             ),
             _collection_substage_hook=remember_collection_substage,
+            _document_schema_substage_hook=remember_document_schema_substage,
         )
     except (FirewallError, OSError, ValueError) as exc:
         failure = _classify_final_publication(
@@ -2407,6 +2450,15 @@ def publish_final_evidence(
                 if (
                     publication_substage == "PROJECTION_VALIDATION"
                     and projection_validation_substage == "COLLECTION"
+                )
+                else ""
+            ),
+            document_schema_substage=(
+                document_schema_substage
+                if (
+                    publication_substage == "PROJECTION_VALIDATION"
+                    and projection_validation_substage == "COLLECTION"
+                    and collection_substage == "DOCUMENT_SCHEMA"
                 )
                 else ""
             ),
@@ -3118,6 +3170,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     fields.append(exc.projection_validation_substage)
                     if exc.collection_substage:
                         fields.append(exc.collection_substage)
+                        if exc.document_schema_substage:
+                            fields.append(exc.document_schema_substage)
             if exc.source_tree_substage:
                 fields.extend([
                     exc.source_tree_substage, exc.source_tree_reason,
