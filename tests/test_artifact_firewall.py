@@ -175,13 +175,22 @@ def _staging(tmp_path: Path) -> Path:
             "reason": "marker expression deselected: runtime_postgres",
             "phase": "collection",
         },
+        {
+            "test_node_id": "tests/runtime/test_host_database.py::test_host_database",
+            "component": "root",
+            "outcome": "deselected",
+            "reason": (
+                "marker expression deselected: host_coupled, runtime_postgres"
+            ),
+            "phase": "collection",
+        },
     ]
     collection = {
         "schema_version": 1,
         "component": "root",
         "collection_only": True,
         "pytest_exit_status": 0,
-        "summary": {"collected": len(governed_nodes), "deselected": 2},
+        "summary": {"collected": len(governed_nodes), "deselected": 3},
         "tests": [
             {
                 "test_node_id": node,

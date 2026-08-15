@@ -1151,6 +1151,10 @@ def _validate_projection_schemas(
                     outcome == "deselected"
                     and reason not in {
                         "marker expression deselected: host_coupled",
+                        (
+                            "marker expression deselected: "
+                            "host_coupled, runtime_postgres"
+                        ),
                         "marker expression deselected: runtime_postgres",
                     }
                 )
