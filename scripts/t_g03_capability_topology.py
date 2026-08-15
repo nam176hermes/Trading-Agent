@@ -2349,7 +2349,7 @@ def execute_portable_defect_closure(
     foundation_context_path: Path,
     exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]] | None = None,
 ) -> Path:
-    """Execute all 32 closed nodes exactly once and publish one no-clobber proof."""
+    """Execute all 49 closed nodes exactly once and publish one no-clobber proof."""
     require_foundation_context(run_id, head_sha)
     context = load_foundation_context(
         foundation_context_path, run_id=run_id, head_sha=head_sha,
