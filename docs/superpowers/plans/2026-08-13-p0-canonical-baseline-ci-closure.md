@@ -4312,3 +4312,42 @@ an exact topology fixture only if required. No policy/schema/marker, firewall,
 Make/workflow, authority, PostgreSQL/database, dependency/lock, production or
 live change. Stop for independent review without push, dispatch, hosted run or
 any rerun of `962d0e1e0b7dd16c22e39e41fdf14aef7f792b5d`.
+
+### P0-12R37 fix — canonical authoritative governance producer bytes
+
+Independent review approved R36 and exact reviewed HEAD
+`e95897647e800b84ef97e3df6ae830ef11685330` was pushed. Its single authorized
+hosted run `31905403310` failed closed with zero artifacts and the exact token
+`ARTIFACT_FIREWALL_REJECTED LAYOUT PUBLICATION PROJECTION_VALIDATION REMAINDER_GOVERNANCE`.
+The retained log `/tmp/p0-12-r36-run-31905403310.log` has SHA-256
+`4aaf37bbc1cc7193846504d59878e99aa81bf3405c85065ce3eba4342d85ee96`.
+That SHA is terminal and must not be rerun.
+
+The exact producer/consumer mismatch is the same byte contract already proven
+for collection-only output, now at an authoritative execution report. The
+exact governance runner attaches a successfully parsed
+`TEST_GOVERNANCE_CUSTODY_POLICY`, but the R36 producer selects canonical bytes
+only for collection-only reports. The firewall correctly requires every
+authoritative governance object leaf to equal its compact canonical UTF-8 JSON
+encoding. Do not relax or special-case the firewall or topology consumer.
+
+Extend producer canonical mode to reports which are collection-only or which
+carry a successfully parsed object custody policy. Preserve ordinary reports
+with neither signal byte-for-byte as indented JSON plus one trailing newline.
+Malformed or non-object custody policy input must continue to fail before any
+report write. Keep the validated directory, retained descriptor, exclusive
+temporary creation, fsync, no-follow, no-clobber link, atomic replacement,
+postcheck and cleanup transaction unchanged.
+
+Strict RED/GREEN must use existing collected governance tests to prove exact
+compact bytes for valid custody reports, unchanged pretty bytes for ordinary
+reports, and no output for malformed custody input. Retain existing no-clobber
+and descriptor-custody attack coverage. Real closure and remainder governance
+production must emit canonical bytes, and the unchanged firewall must advance
+beyond `REMAINDER_GOVERNANCE`, ideally through the bounded final projection.
+Preserve exactly 6,526 collected tests and run focused, affected, static and
+fresh standalone verification. Scope is limited to the producer and existing
+tests. No firewall/topology, policy/schema, Make/workflow, authority,
+PostgreSQL/database, dependency/lock, production or live change. Stop for
+independent review without push, dispatch, hosted run or any rerun of
+`e95897647e800b84ef97e3df6ae830ef11685330`.
