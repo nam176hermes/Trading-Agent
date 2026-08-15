@@ -4090,3 +4090,31 @@ standalone packet and independent security review before one new hosted push.
 Never rerun `c7d824cbca592a5adcafd9437f78e296103b7a91`. Do not mint PostgreSQL
 authority, run a database, relax skip/outcome or acceptance policy, or change
 production, live, broker/provider, dependency or lock boundaries.
+
+### P0-12R30 correction — canonical reconciled disclosure parity
+
+Hosted run `31895551027` at exact
+`edf516ce31fd5581cd01560a83abd923b15f337e` ended with the closed rejection
+`ARTIFACT_FIREWALL_REJECTED LAYOUT RAW_BINDING SEMANTIC_BINDING
+DISCLOSURE_BINDING`, with no artifact. The governed report currently embeds the
+four fields returned by `aggregate_receipts`, while the final publisher
+correctly requires equality with `reconcile_portable_root_accounting`, which
+adds the already validated `portable_root_remainder_status=PASS` and exact
+string `baseline_candidate_count`. The two independently validated views are
+therefore deterministically unequal.
+
+The bounded correction makes `audit_topology_root_records` return the same
+six-field canonical disclosure after it has validated the exact baseline,
+remainder execution/deferral union, closure proof and receipt accounting. Keep
+the final publisher's exact equality unchanged. Do not synthesize counts from
+unvalidated report data, weaken accounting, change evidence or receipt schemas,
+or alter Make/workflow, skip/outcome, PostgreSQL authority, dependency, lock,
+production or live boundaries.
+
+Strict RED must update the existing topology-audit disclosure assertion to the
+six-field contract and fail on the current four-field result. GREEN must prove
+the exact remainder PASS and baseline count derived from the retained baseline,
+then run hosted-disclosure, firewall, topology/governance consumers, collection
+and static gates, fresh standalone verification and independent review. Never
+rerun `edf516ce31fd5581cd01560a83abd923b15f337e`; after approval use exactly one
+new push-triggered hosted attempt.
