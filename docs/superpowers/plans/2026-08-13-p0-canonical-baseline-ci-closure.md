@@ -3670,3 +3670,38 @@ equals 251 PostgreSQL nodes; active remains 317, closure 49, governed 366, and
 the 6,497-node portable baseline remainder remains 6,131. Strict RED/GREEN must
 prove the exact one-node split and wrong-record/binding/cross-code rejection
 before any valid-session implementation proceeds.
+
+### P0-12R17 fix round 1 — sealed source identity and exact Git environment
+
+Independent review found that the real disposable-PostgreSQL qualifier calls
+`_pg_source_tree`, which discovers `git` through ambient `PATH`. The existing
+no-child preflight test injected a fake qualifier and therefore did not cover
+that real boundary. Review also found that the exact child environment retains
+ambient `GIT_*` variables and caller `PATH`; PG authority tests that resolve
+source identity or enumerate tracked files can consequently execute against a
+foreign Git directory, index, object store, configuration, worktree, diff
+driver, or executable.
+
+Fix round 1 must remove source-tree discovery from the real qualification
+boundary. Qualification receives the already sealed Foundation commit/tree as
+explicit values and validates both approval and GREEN-plan source identities
+against those values; it must not spawn a subprocess. The retained session
+must preserve that binding through its postcheck and Architecture-A
+publication. The exact PG child environment must remove every ambient `GIT_*`
+key and must not inherit caller `PATH`. It may add only a closed Git environment
+needed by the existing source-identity tests: a fixed trusted executable search
+path plus explicit system/global-config isolation and optional-lock/prompt
+controls. No database harness, operation semantics, authority record, fixture
+plan, receipt, PASS/DEFER/FAIL, inventory, accounting, Make, or workflow
+contract changes.
+
+Strict RED precedes production edits and exercises the real qualifier rather
+than an injected substitute. It must prove qualification invokes no subprocess
+and that hostile `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_CONFIG*`,
+`GIT_EXTERNAL_DIFF`, and `PATH` values cannot influence the exact child. GREEN
+must preserve the existing child tests' legitimate Git access through the
+closed trusted path without starting or connecting to PostgreSQL. Stop after
+focused and affected verification for independent re-review; no push, hosted
+dispatch/rerun, P0-13, production/runtime/database/service mutation, or live
+authority is authorized.
