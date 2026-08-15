@@ -261,6 +261,8 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
         foundation_context=context,
     ) == receipt
 
+    real_geteuid = topology.os.geteuid
+    real_getegid = topology.os.getegid
     monkeypatch.setattr(topology.os, "geteuid", lambda: 1001)
     monkeypatch.setattr(topology.os, "getegid", lambda: 1001)
     runner_absence = _external_receipt("EXT-LEGACY-UV-AUTHORITY")
@@ -342,6 +344,10 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
                 foundation_head_sha=str(context["foundation_head_sha"]),
                 foundation_context=context,
             )
+    monkeypatch.setattr(topology.os, "geteuid", real_geteuid)
+    monkeypatch.setattr(topology.os, "getegid", real_getegid)
+    assert topology.os.geteuid is real_geteuid
+    assert topology.os.getegid is real_getegid
 
     for mutation in (
         {"foundation_context_sha256": "5" * 64},
