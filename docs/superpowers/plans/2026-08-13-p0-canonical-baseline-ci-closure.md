@@ -4240,3 +4240,36 @@ closed tokens, map one semantic mutation to each first failing invariant group,
 preserve all earlier token sequences, keep collection exactly 6,526, and run
 focused/affected/static plus fresh standalone verification. Stop for independent
 review without push or hosted rerun; never rerun `120902855323c542428293217161a55fbcda8095`.
+
+### P0-12R35 diagnostic — classify collection document-schema predicate
+
+Independent review approved R34 and exact reviewed HEAD
+`7018c0d92025ae7786be4b3d7cad667474b0323b` was pushed. Its single authorized
+hosted run `31902374455` failed closed with zero artifacts and the exact token
+`ARTIFACT_FIREWALL_REJECTED LAYOUT PUBLICATION PROJECTION_VALIDATION COLLECTION DOCUMENT_SCHEMA`.
+The retained log `/tmp/p0-12-r34-run-31902374455.log` has SHA-256
+`3adf78de2956aad2c8073690dbfd7493fc33cc291edeef277faa0a923aee2952`.
+That SHA is terminal and must not be rerun. The token does not identify which
+existing document predicate failed and does not authorize inference of an
+additional field or a change to accepted collection bytes.
+
+Add one closed observational detail beneath exactly
+`PUBLICATION PROJECTION_VALIDATION COLLECTION DOCUMENT_SCHEMA`, in existing
+evaluation order: `KEY_SET`, `SCHEMA_VERSION`, `COMPONENT`, `COLLECTION_ONLY`,
+`EXIT_STATUS`, or `TESTS_TYPE`. `KEY_SET` begins before the existing object-leaf
+read so absent, malformed, or non-object document bytes remain fail-closed with
+the first closed document predicate rather than losing the nested diagnostic.
+Split the existing conjunction only enough to identify the first rejecting
+predicate; preserve every accepted value, rejection code/category/message and
+all parent tokens. Thread the closed token through `FinalPublicationError` and
+append it in CLI output only after `DOCUMENT_SCHEMA`. Never expose a path,
+value, digest, validator message, cause, or context.
+
+Strict RED/GREEN must map a mutation to each of the six tokens, reject unknown
+or cross-parent tokens, retain prior R34 outputs, preserve exactly 6,526
+collected tests, and run focused, affected, static, and fresh standalone gates.
+This packet is diagnostic-only: no collection/schema/policy acceptance change,
+Make/workflow change, authority, PostgreSQL/database, dependency/lock,
+production/runtime, or live action. Stop for independent review without push,
+dispatch, hosted run, or any rerun of
+`7018c0d92025ae7786be4b3d7cad667474b0323b`.
