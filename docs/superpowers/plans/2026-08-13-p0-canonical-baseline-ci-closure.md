@@ -3929,3 +3929,37 @@ generated inventory, and diff checks. No outcome/policy/skip/schema,
 PostgreSQL/DB authority, Make/workflow, dependency/lock, production,
 broker/provider, or live change is authorized. Independent review is required
 before the next remote attempt.
+
+### P0-12R25 correction — validate the completed closure without re-execution
+
+Hosted run `31888119622` at exact
+`8a59067f97ac48072cc4d7b0a99e399bd2e90215` passed the 6,131-node portable
+remainder and the 49-node portable closure, then completed the native and
+external topology lanes. The later explicit `check-portable-defect-closure`
+target invoked the execution action `check-closure` a second time after the
+topology recipe had destroyed its private custody-extension build directory.
+It therefore failed first with `portable root collection requires native
+custody identity`. Merely preserving or rebuilding the extension is not a
+valid repair: the target would then execute the same 49 nodes again and collide
+with the already published no-clobber closure proof.
+
+The bounded correction keeps the required Make target and target graph, but
+changes that post-topology target to a distinct `validate-closure` action. The
+new action loads the sealed Foundation context and baseline, derives the sealed
+custody policy from the baseline, and validates the existing private closure
+governance/proof pair with the current inventory, closure ledger, head, date,
+context, custody, node, digest, command, and outcome bindings. It performs no
+pytest execution and publishes no artifact. The topology target remains the
+single owner of `check-closure` execution and no-clobber proof publication.
+
+Strict RED must prove the post-topology target still routes to the executing
+action and that no validate-only CLI exists. GREEN must prove that an already
+published closure validates after the live custody environment has been
+removed, while missing, malformed, foreign, stale, or custody-mismatched proof
+or governance evidence still rejects. Update the exact Make observer and CLI
+action contract without changing the recursive target graph or P0 matrix node
+identity. Run focused closure/Make tests, the P0 closure checker, affected
+consumers, compile/inventory/diff gates, and a fresh standalone packet before
+independent review. No native/external outcome or authority policy, skip
+policy, PostgreSQL/DB authority, workflow, dependency/lock, production,
+broker/provider, or live boundary may change.
