@@ -1555,11 +1555,20 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
             "external-authorities": ("ABSENT", "DEFERRED"),
         }[lane]
         if lane == "native-capabilities":
-            session = topology.NativeProbeSession(
-                code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
-                topology._native_probe_record(
-                    code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
-                ), -1, None, None, None, None,
+            session = (
+                topology.NativeMultiAuthoritySession(
+                    code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                    topology._native_multi_probe_record(
+                        code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                    ),
+                    topology._nautilus_multi_authority(code), (), lambda: None,
+                )
+                if code in topology.NATIVE_MULTI_CODES else topology.NativeProbeSession(
+                    code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                    topology._native_probe_record(
+                        code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                    ), -1, None, None, None, None,
+                )
             )
             receipt = topology.make_native_receipt(
                 context=context, code=code, expected=expected, collected=(),
@@ -1567,16 +1576,18 @@ def _write_topology_evidence(evidence: Path, *, malformed_root_record: bool = Fa
                 passed=0, failed=0, unavailable=len(expected),
             )
         else:
-            fact = (
-                "AUTHORITY_ROOT_ABSENT"
-                if code == "EXT-PHASE3B-CORPUS"
-                else "AUTHORITY_EXECUTABLE_ABSENT"
-            )
-            authority = (
-                topology._phase3b_absent_authority()
-                if code == "EXT-PHASE3B-CORPUS"
-                else topology._legacy_absent_authority()
-            )
+            if code in topology.DISPOSABLE_PG_CODES:
+                fact = "AUTHORITY_RECORD_ABSENT"
+                authority = topology._absent_disposable_pg_authority(code)
+            elif code == "EXT-PHASE3B-CORPUS":
+                fact = "AUTHORITY_ROOT_ABSENT"
+                authority = topology._phase3b_absent_authority()
+            elif code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
+                fact = "AUTHORITY_ROOT_ABSENT"
+                authority = topology._absent_nautilus_external_authority()
+            else:
+                fact = "AUTHORITY_EXECUTABLE_ABSENT"
+                authority = topology._legacy_absent_authority()
             session = topology.ExternalAuthoritySession(
                 code, "ABSENT", fact, authority, (), lambda: None,
             )

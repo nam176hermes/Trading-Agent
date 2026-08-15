@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import t_g03_capability_topology as topology
+from scripts import validate_disposable_postgres_approval as pg_approval
+from scripts import validate_disposable_postgres_fixture_plan as pg_plan
 
 
 INVENTORY = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
@@ -36,6 +39,33 @@ def _context() -> dict[str, object]:
 
 
 def _absent_authority(code: str) -> dict[str, object]:
+    if code in {
+        "EXT-DISPOSABLE-PG-GREEN", "EXT-DISPOSABLE-PG-RED",
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE",
+    }:
+        green = code == "EXT-DISPOSABLE-PG-GREEN"
+        evidence = code == "EXT-DISPOSABLE-PG-RED-EVIDENCE"
+        return {
+            "authority_kind": (
+                "DISPOSABLE_POSTGRES_GREEN_AUTHORITY_V1"
+                if green else (
+                    "DISPOSABLE_POSTGRES_RED_EVIDENCE_AUTHORITY_V1"
+                    if evidence else "DISPOSABLE_POSTGRES_RED_AUTHORITY_V1"
+                )
+            ),
+            "scope": "DISPOSABLE_PG_GREEN" if green else "DISPOSABLE_PG_RED",
+            "approval_record_status": "ABSENT",
+            "approval_record_sha256": topology.EMPTY_SHA256,
+            "approved_operation_count": 0,
+            "source_binding_count": 0,
+            "fixture_plan_status": "ABSENT" if green else "NOT_REQUIRED",
+            "fixture_plan_sha256": topology.EMPTY_SHA256,
+            "fixture_slot_count": 0,
+            "postgres_bin_status": "NOT_CHECKED",
+            "postgres_major_version": 16,
+            "postgres_executable_manifest_sha256": topology.EMPTY_SHA256,
+            "postgres_executable_count": 0,
+        }
     if code == "EXT-PHASE3B-CORPUS":
         return {
             "authority_kind": "PHASE3B_REVIEWED_CORPUS_V1",
@@ -98,7 +128,11 @@ def _external_receipt(
         "redacted_fact_class": (
             "AUTHORITY_EXECUTABLE_ABSENT"
             if code == "EXT-LEGACY-UV-AUTHORITY"
-            else "AUTHORITY_ROOT_ABSENT"
+            else (
+                "AUTHORITY_RECORD_ABSENT"
+                if code.startswith("EXT-DISPOSABLE-PG-")
+                else "AUTHORITY_ROOT_ABSENT"
+            )
         ),
         "authority": _absent_authority(code),
         "selected_test_count": 0,
@@ -169,6 +203,12 @@ def _complete_legacy(root: Path) -> None:
             _write_regular(path)
 
 
+def _complete_postgres_bin(root: Path) -> None:
+    root.mkdir(mode=0o700)
+    for executable in ("initdb", "pg_ctl", "psql", "pg_dump", "pg_restore"):
+        _write_regular(root / executable, b"postgres-16-fixture\n", mode=0o755)
+
+
 def _custody() -> dict[str, str]:
     return {
         **topology.PORTABLE_ROOT_POLICY,
@@ -225,7 +265,9 @@ def _phase3b_pass_receipt() -> dict[str, object]:
     )
 
 
-def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes() -> None:
+def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Break caught: flat or weak external evidence omits context, authority, or counts."""
     rows = topology.load_inventory(INVENTORY)
     context = _context()
@@ -266,6 +308,355 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes() -> 
     forged["receipt_sha256"] = topology.payload_sha256(forged)
     with pytest.raises(topology.TopologyError, match="authority facts"):
         topology.parse_receipt(topology.canonical_json_bytes(forged))
+
+    for code in (
+        "EXT-DISPOSABLE-PG-GREEN", "EXT-DISPOSABLE-PG-RED",
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE",
+    ):
+        disposable_pg = _external_receipt(code)
+        assert topology.validate_receipt(
+            topology.canonical_json_bytes(disposable_pg), rows=rows,
+            foundation_run_id=str(context["foundation_run_id"]),
+            foundation_head_sha=str(context["foundation_head_sha"]),
+            foundation_context=context,
+        ) == disposable_pg
+
+    visible_node = _external_receipt()
+    visible_node["expected_node_ids"] = [
+        "tests/example.py::test_example[param with visible spaces]",
+    ]
+    visible_node["completeness_sha256"] = topology.external_completeness_sha256(
+        visible_node,
+    )
+    visible_node["receipt_sha256"] = topology.payload_sha256(visible_node)
+    assert topology.parse_receipt(
+        topology.canonical_json_bytes(visible_node),
+    )["expected_node_ids"] == visible_node["expected_node_ids"]
+    for hostile_node in ("tests/example.py::test_example[line\nbreak]", "tests/é.py::test"):
+        hostile = json.loads(json.dumps(visible_node))
+        hostile["expected_node_ids"] = [hostile_node]
+        hostile["completeness_sha256"] = topology.external_completeness_sha256(
+            hostile,
+        )
+        hostile["receipt_sha256"] = topology.payload_sha256(hostile)
+        with pytest.raises(topology.TopologyError, match="expected_node_ids"):
+            topology.parse_receipt(topology.canonical_json_bytes(hostile))
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://hostile.example/runtime")
+    monkeypatch.setenv("TRADING_DB_FOREIGN", "hostile")
+    monkeypatch.setenv("TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE", "FOREIGN")
+    monkeypatch.setenv("DISPOSABLE_PG_RED_APPROVAL_RECORD", "/foreign/record")
+    isolated = topology._pg_exact_environment((("PG_SAFE_OVERLAY", "exact"),))
+    assert isolated["PG_SAFE_OVERLAY"] == "exact"
+    assert not {
+        "DATABASE_URL", "TRADING_DB_FOREIGN",
+        "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE",
+        "DISPOSABLE_PG_RED_APPROVAL_RECORD",
+    } & isolated.keys()
+    with pytest.raises(topology.TopologyError, match="runtime authority"):
+        topology._pg_exact_environment((("PGPASSWORD", "hostile"),))
+
+    monkeypatch.setattr(
+        topology.subprocess, "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("PostgreSQL preflight must not start a child process"),
+        ),
+    )
+    with _safe_fixture_root() as raw:
+        root = Path(raw)
+        approval = root / "approval.json"
+        plan = root / "plan.json"
+        postgres_bin = root / "postgres-bin"
+        _write_regular(approval, b'{"kind":"approval"}')
+        _write_regular(plan, b'{"kind":"plan"}')
+        _complete_postgres_bin(postgres_bin)
+        qualified: list[tuple[str, object, object]] = []
+
+        def qualifier(
+            code: str, approval_document: object, plan_document: object,
+            executable_manifest_sha256: str,
+        ) -> dict[str, object]:
+            qualified.append((code, approval_document, plan_document))
+            green = code == "EXT-DISPOSABLE-PG-GREEN"
+            evidence = code == "EXT-DISPOSABLE-PG-RED-EVIDENCE"
+            assert plan_document == ({"kind": "plan"} if green else None)
+            return {
+                "authority_kind": (
+                    "DISPOSABLE_POSTGRES_GREEN_AUTHORITY_V1"
+                    if green else (
+                        "DISPOSABLE_POSTGRES_RED_EVIDENCE_AUTHORITY_V1"
+                        if evidence else "DISPOSABLE_POSTGRES_RED_AUTHORITY_V1"
+                    )
+                ),
+                "scope": "DISPOSABLE_PG_GREEN" if green else "DISPOSABLE_PG_RED",
+                "approval_record_status": "PRIVATE_RETAINED_APPROVAL_RECORD",
+                "approval_record_sha256": hashlib.sha256(
+                    topology.canonical_json_bytes(approval_document),
+                ).hexdigest(),
+                "approved_operation_count": 26 if green else (2 if evidence else 3),
+                "source_binding_count": 13,
+                "fixture_plan_status": (
+                    "PRIVATE_RETAINED_FIXTURE_PLAN" if green else "NOT_REQUIRED"
+                ),
+                "fixture_plan_sha256": (
+                    hashlib.sha256(topology.canonical_json_bytes(plan_document)).hexdigest()
+                    if green else topology.EMPTY_SHA256
+                ),
+                "fixture_slot_count": 4 if green else 0,
+                "postgres_bin_status": "RETAINED_POSTGRESQL_16_BINARIES",
+                "postgres_major_version": 16,
+                "postgres_executable_manifest_sha256": executable_manifest_sha256,
+                "postgres_executable_count": 5,
+            }
+
+        copy_roots: list[Path] = []
+        for code in (
+            "EXT-DISPOSABLE-PG-GREEN", "EXT-DISPOSABLE-PG-RED",
+            "EXT-DISPOSABLE-PG-RED-EVIDENCE",
+        ):
+            with topology._retained_external_authority(
+                code,
+                pg_approval_path=approval,
+                pg_fixture_plan_path=(plan if code.endswith("GREEN") else None),
+                pg_postgres_bin=postgres_bin,
+                pg_copy_parent=root,
+                pg_qualifier=qualifier,
+            ) as session:
+                assert (session.state, session.fact) == (
+                    "VALID", "AUTHORITY_COMPLETE_VALIDATED",
+                )
+                environment = dict(session.execution_environment)
+                assert environment["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] == (
+                    "DISPOSABLE_PG_GREEN" if code.endswith("GREEN") else "DISPOSABLE_PG_RED"
+                )
+                assert environment["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"] != str(approval)
+                assert Path(environment["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"]).read_bytes() == (
+                    topology.canonical_json_bytes({"kind": "approval"})
+                )
+                if code.endswith("GREEN"):
+                    assert environment["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN"] != str(plan)
+                else:
+                    assert "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN" not in environment
+                if code.endswith("RED-EVIDENCE"):
+                    output = Path(
+                        environment["TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR"],
+                    )
+                    assert output.is_dir()
+                    assert stat.S_IMODE(output.stat().st_mode) == 0o700
+                else:
+                    assert (
+                        "TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR"
+                        not in environment
+                    )
+                copy_roots.append(
+                    Path(environment["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"]).parent,
+                )
+                topology._postcheck_external_authority(session)
+            assert not copy_roots[-1].exists()
+
+        hardlink = root / "approval-hardlink.json"
+        os.link(approval, hardlink)
+        forbidden = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("unsafe authority reached the validator"),
+        )
+        with topology._retained_external_authority(
+            "EXT-DISPOSABLE-PG-RED",
+            pg_approval_path=hardlink,
+            pg_postgres_bin=postgres_bin,
+            pg_copy_parent=root,
+            pg_qualifier=forbidden,
+        ) as session:
+            assert (session.state, session.fact) == ("INVALID", "AUTHORITY_INVALID")
+        hardlink.unlink()
+
+        approval_symlink = root / "approval-symlink.json"
+        approval_symlink.symlink_to(approval)
+        with topology._retained_external_authority(
+            "EXT-DISPOSABLE-PG-RED", pg_approval_path=approval_symlink,
+            pg_postgres_bin=postgres_bin, pg_copy_parent=root,
+            pg_qualifier=forbidden,
+        ) as session:
+            assert (session.state, session.fact) == ("INVALID", "AUTHORITY_INVALID")
+
+        with topology._retained_external_authority(
+            "EXT-DISPOSABLE-PG-GREEN", pg_approval_path=approval,
+            pg_postgres_bin=postgres_bin, pg_copy_parent=root,
+            pg_qualifier=forbidden,
+        ) as session:
+            assert (session.state, session.fact) == ("PARTIAL", "AUTHORITY_PARTIAL")
+
+        unsafe_copy_parent = root / "unsafe-copy-parent"
+        unsafe_copy_parent.mkdir(mode=0o777)
+        unsafe_copy_parent.chmod(0o777)
+        with topology._retained_external_authority(
+            "EXT-DISPOSABLE-PG-RED", pg_approval_path=approval,
+            pg_postgres_bin=postgres_bin, pg_copy_parent=unsafe_copy_parent,
+            pg_qualifier=qualifier,
+        ) as session:
+            assert (session.state, session.fact) == ("INVALID", "AUTHORITY_INVALID")
+
+        with topology._retained_external_authority(
+            "EXT-DISPOSABLE-PG-RED-EVIDENCE", pg_approval_path=approval,
+            pg_postgres_bin=postgres_bin, pg_copy_parent=root,
+            pg_qualifier=qualifier,
+        ) as session:
+            output = Path(dict(session.execution_environment)[
+                "TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR"
+            ])
+            output.chmod(0o755)
+            with pytest.raises(topology.TopologyError, match="authority changed"):
+                topology._postcheck_external_authority(session)
+        assert len(qualified) == 4
+
+        head = "a" * 40
+        tree = "b" * 40
+        monkeypatch.setattr(topology, "_pg_source_tree", lambda value: tree)
+        monkeypatch.setattr(
+            pg_approval, "validate_disposable_postgres_approval_record",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            pg_approval, "validate_source_binding_files",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            pg_plan, "validate_disposable_postgres_fixture_plan",
+            lambda *_args, **_kwargs: tuple(
+                SimpleNamespace(test_path=path, operation_id=operation, ordinal=1)
+                for path, operation in sorted(topology.PG_GREEN_PLANNED_OPERATIONS)
+            ),
+        )
+        sql_digest = hashlib.sha256(
+            (Path.cwd() / topology.PG_RED_SQL_PATH).read_bytes(),
+        ).hexdigest()
+
+        def authority_document(code: str) -> dict[str, object]:
+            binding = None
+            if code != "EXT-DISPOSABLE-PG-GREEN":
+                binding = {
+                    "operation_id": topology.PG_RED_BINDING_OPERATION[code],
+                    "sql_path": topology.PG_RED_SQL_PATH,
+                    "sql_sha256": sql_digest,
+                }
+            return {
+                "source": {"commit": head, "tree": tree},
+                "approved_operations": [
+                    {"test_path": path, "operation_id": operation}
+                    for path, operation in sorted(
+                        topology._disposable_pg_operations(code),
+                    )
+                ],
+                "red_sql_binding": binding,
+            }
+
+        for code in sorted(topology.DISPOSABLE_PG_CODES):
+            document = authority_document(code)
+            plan_document = {} if code.endswith("GREEN") else None
+            facts = topology._qualify_disposable_pg_authority(
+                code, document, plan_document, "c" * 64,
+                foundation_head_sha=head,
+            )
+            assert facts["approved_operation_count"] == len(
+                topology._disposable_pg_operations(code),
+            )
+
+        cross_code = authority_document("EXT-DISPOSABLE-PG-RED-EVIDENCE")
+        with pytest.raises(topology.TopologyError, match="operation authority"):
+            topology._qualify_disposable_pg_authority(
+                "EXT-DISPOSABLE-PG-RED", cross_code, None, "c" * 64,
+                foundation_head_sha=head,
+            )
+        wrong_binding = authority_document("EXT-DISPOSABLE-PG-RED")
+        wrong_binding["red_sql_binding"] = {
+            "operation_id": topology.PG_RED_BINDING_OPERATION[
+                "EXT-DISPOSABLE-PG-RED-EVIDENCE"
+            ],
+            "sql_path": topology.PG_RED_SQL_PATH,
+            "sql_sha256": sql_digest,
+        }
+        with pytest.raises(topology.TopologyError, match="SQL binding"):
+            topology._qualify_disposable_pg_authority(
+                "EXT-DISPOSABLE-PG-RED", wrong_binding, None, "c" * 64,
+                foundation_head_sha=head,
+            )
+
+        for code in sorted(topology.DISPOSABLE_PG_CODES):
+            green = code.endswith("GREEN")
+            evidence = code.endswith("RED-EVIDENCE")
+            expected = list(topology._expected_rows(
+                topology.load_inventory(INVENTORY), code,
+            )[1])
+            authority = {
+                **_absent_authority(code),
+                "approval_record_status": "PRIVATE_RETAINED_APPROVAL_RECORD",
+                "approval_record_sha256": "d" * 64,
+                "approved_operation_count": 26 if green else (2 if evidence else 3),
+                "source_binding_count": 13,
+                "fixture_plan_status": (
+                    "PRIVATE_RETAINED_FIXTURE_PLAN" if green else "NOT_REQUIRED"
+                ),
+                "fixture_plan_sha256": "e" * 64 if green else topology.EMPTY_SHA256,
+                "fixture_slot_count": 4 if green else 0,
+                "postgres_bin_status": "RETAINED_POSTGRESQL_16_BINARIES",
+                "postgres_executable_manifest_sha256": "f" * 64,
+                "postgres_executable_count": 5,
+            }
+            passed = _external_receipt(
+                code, collected_node_ids=expected, preflight_state="VALID",
+                redacted_fact_class="AUTHORITY_COMPLETE_VALIDATED",
+                authority=authority, selected_test_count=len(expected),
+                passed=len(expected), unavailable=0, outcome="PASS",
+            )
+            assert topology.validate_receipt(
+                topology.canonical_json_bytes(passed),
+                rows=topology.load_inventory(INVENTORY),
+                foundation_run_id=str(_context()["foundation_run_id"]),
+                foundation_head_sha=str(_context()["foundation_head_sha"]),
+                foundation_context=_context(),
+            ) == passed
+            forged = json.loads(json.dumps(passed))
+            forged["authority"]["approved_operation_count"] += 1
+            forged["completeness_sha256"] = topology.external_completeness_sha256(
+                forged,
+            )
+            forged["receipt_sha256"] = topology.payload_sha256(forged)
+            with pytest.raises(topology.TopologyError, match="authority facts drift"):
+                topology.validate_receipt(
+                    topology.canonical_json_bytes(forged),
+                    rows=topology.load_inventory(INVENTORY),
+                    foundation_run_id=str(_context()["foundation_run_id"]),
+                    foundation_head_sha=str(_context()["foundation_head_sha"]),
+                    foundation_context=_context(),
+                )
+
+        captured_environment: dict[str, str] = {}
+        exact_node = "tests/example.py::test_exact"
+        exact_report = root / "exact-governance.json"
+
+        def exact_subprocess(
+            _command: list[str], **kwargs: object,
+        ) -> subprocess.CompletedProcess[bytes]:
+            environment = kwargs["env"]
+            assert isinstance(environment, dict)
+            captured_environment.update(environment)
+            exact_report.write_text(json.dumps({
+                "tests": [{"test_node_id": exact_node, "outcome": "passed"}],
+            }), encoding="utf-8")
+            return subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(topology.subprocess, "run", exact_subprocess)
+        assert topology._run_exact(
+            (exact_node,), exact_report,
+            environment_overlay=tuple(sorted({
+                **topology.PG_PAPER_ENVIRONMENT,
+                "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE": "DISPOSABLE_PG_RED",
+            }.items())),
+        ) == (exact_node,)
+        assert captured_environment["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] == (
+            "DISPOSABLE_PG_RED"
+        )
+        assert "DATABASE_URL" not in captured_environment
+        assert "TRADING_DB_FOREIGN" not in captured_environment
 
 
 def test_external_v1_is_stale_without_changing_native_v2() -> None:
@@ -794,7 +1185,7 @@ def test_external_absence_uses_architecture_a_and_host_require_pass_rejects(
             external_session_factory=absent_factory,
             exact_runner=lambda nodes, _report: invoked.append(nodes) or nodes,
         )
-        assert len(publications) == 3
+        assert len(publications) == 6
         assert invoked == []
         rows = topology._installed_inventory_rows(INVENTORY, evidence)
         context = topology.load_foundation_context(
@@ -846,7 +1237,7 @@ def test_external_nonqualifying_state_publishes_strict_fail_and_stops_lane(
                 foundation_context_path=context_path,
                 external_session_factory=invalid_factory,
             )
-        marker = evidence / "capability-topology/EXT-LEGACY-UV-AUTHORITY.json"
+        marker = evidence / "capability-topology/EXT-DISPOSABLE-PG-GREEN.json"
         receipt = topology.parse_receipt(marker.read_bytes())
         assert receipt["schema_version"] == topology.EXTERNAL_RECEIPT_SCHEMA
         assert receipt["outcome"] == "FAIL"

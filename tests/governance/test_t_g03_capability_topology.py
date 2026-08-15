@@ -35,7 +35,7 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
         "external_authorities_status": "DEFERRED",
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
         "portable_root_remainder_status": "PASS",
-        "baseline_candidate_count": "115",
+        "baseline_candidate_count": "366",
     }
     receipts = [{
         "capability_or_authority_code": "NATIVE-BWRAP-OS-SANDBOX",
@@ -354,9 +354,12 @@ def _external_receipt(code: str) -> dict[str, object]:
     elif code == "EXT-LEGACY-UV-AUTHORITY":
         authority = topology._legacy_absent_authority()
         fact = "AUTHORITY_EXECUTABLE_ABSENT"
-    else:
+    elif code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
         authority = topology._absent_nautilus_external_authority()
         fact = "AUTHORITY_ROOT_ABSENT"
+    else:
+        authority = topology._absent_disposable_pg_authority(code)
+        fact = "AUTHORITY_RECORD_ABSENT"
     session = topology.ExternalAuthoritySession(
         code, "ABSENT", fact, authority, (), lambda: None,
     )
@@ -1727,10 +1730,7 @@ def test_locked_inventory_installs_exact_bytes_once_and_rejects_tampering(tmp_pa
         assert installed.read_bytes() == tracked.read_bytes()
         with pytest.raises(FileExistsError):
             topology.install_inventory(tracked, evidence)
-    assert len(rows) == 66
-    assert topology.LOCKED_INVENTORY_SHA256 == (
-        "44e6d1061b1a087935461edd265d80eda4580ecf23fbe6b3e1d2810e3383a7c1"
-    )
+    assert len(rows) == 317
     assert {
         code: sum(row.code == code for row in rows)
         for code in topology.CODE_CLASSIFICATION
@@ -1742,7 +1742,18 @@ def test_locked_inventory_installs_exact_bytes_once_and_rejects_tampering(tmp_pa
         "EXT-PHASE3B-CORPUS": 3,
         "EXT-LEGACY-UV-AUTHORITY": 3,
         "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": 2,
+        "EXT-DISPOSABLE-PG-GREEN": 206,
+        "EXT-DISPOSABLE-PG-RED": 44,
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE": 1,
     }
+    pg_rows = b"".join(
+        line
+        for line in tracked.read_bytes().splitlines(keepends=True)[1:]
+        if b"\tEXT-DISPOSABLE-PG-" in line
+    )
+    assert hashlib.sha256(pg_rows).hexdigest() == (
+        "8fe7c8e02170a04d31d276c891460341eb7cc704338e084e237c3bdb8679c840"
+    )
     changed = tmp_path / "changed.tsv"
     changed.write_bytes(tracked.read_bytes().replace(b"NATIVE_CAPABILITY_REQUIRED", b"NATIVE_CAPABILITY_REQUIREX", 1))
     with pytest.raises(topology.TopologyError, match="hash drift"):
@@ -2243,6 +2254,11 @@ def test_valid_external_sessions_select_exact_nodes_but_synthetic_fixture_never_
 
         @topology.contextmanager
         def external_session(code: str):
+            if code in topology.DISPOSABLE_PG_CODES:
+                with topology._retained_external_authority(code) as session:
+                    assert session.state == "ABSENT"
+                    yield session
+                return
             if code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
                 with topology._retained_external_authority(
                     code,
@@ -2272,8 +2288,8 @@ def test_valid_external_sessions_select_exact_nodes_but_synthetic_fixture_never_
             foundation_context_path=context,
             external_session_factory=external_session, exact_runner=exact,
         )
-        assert len(paths) == 3
-        assert len(staged_receipts) == 3
+        assert len(paths) == 6
+        assert len(staged_receipts) == 6
         assert not list((evidence / "capability-topology").glob("EXT-*.json"))
     assert sorted(len(nodes) for nodes in selected) == [3, 3]
 
@@ -2489,10 +2505,10 @@ def test_standalone_external_deferred_lane_does_not_require_portable_baseline(
         )
 
         assert not (evidence / "capability-topology/portable-root-baseline.json").exists()
-        assert len(receipts) == 3
+        assert len(receipts) == 6
         assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "DEFERRED" for path in receipts)
         assert not list((evidence / "capability-topology").glob("*.governance.json"))
-        assert len(list((evidence / "capability-topology").glob("EXT-*.artifacts"))) == 3
+        assert len(list((evidence / "capability-topology").glob("EXT-*.artifacts"))) == 6
 
 
 def test_topology_retry_fails_before_replacing_existing_governance_bytes(tmp_path: Path) -> None:

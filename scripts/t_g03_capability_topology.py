@@ -19,13 +19,14 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import date, datetime, timezone
 from typing import Any, Sequence
 
 
-LOCKED_INVENTORY_SHA256 = "44e6d1061b1a087935461edd265d80eda4580ecf23fbe6b3e1d2810e3383a7c1"
+LOCKED_INVENTORY_SHA256 = "b2aeb789b4f02ddea27f2a1fa2599184f3713951f86ac561168c985528723ba8"
 LOCKED_CLOSURE_SHA256 = "9b4b02af2972651f75d07b1758232a186041749598518e41ae40d6e34ca2aa88"
-LOCKED_GOVERNED_NODE_IDS_SHA256 = "c6c3df6b28154836bacc882f1e0c1d2b652afd4f14dac19f761479dbf5d1242c"
+LOCKED_GOVERNED_NODE_IDS_SHA256 = "bcfc9ec8723e4d51d470a7c9e173f66c105b7846e275158862180867e93d7769"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
 NATIVE_RECEIPT_SCHEMA = "t-g03a-native-capability-receipt/v2"
 NATIVE_MULTI_RECEIPT_SCHEMA = "t-g03a-native-multi-authority-receipt/v3"
@@ -98,6 +99,17 @@ NAUTILUS_RUNTIME_AUTHORITY_KEYS = frozenset({
     "runtime_policy_sha256", "base_manifest_sha256", "base_file_count",
     "base_file_inventory_sha256", "artifact_manifest_sha256",
     "artifact_wheel_sha256", "artifact_wheel_size",
+})
+DISPOSABLE_PG_AUTHORITY_KEYS = frozenset({
+    "authority_kind", "scope", "approval_record_status",
+    "approval_record_sha256", "approved_operation_count",
+    "source_binding_count", "fixture_plan_status", "fixture_plan_sha256",
+    "fixture_slot_count", "postgres_bin_status", "postgres_major_version",
+    "postgres_executable_manifest_sha256", "postgres_executable_count",
+})
+DISPOSABLE_PG_CODES = frozenset({
+    "EXT-DISPOSABLE-PG-GREEN", "EXT-DISPOSABLE-PG-RED",
+    "EXT-DISPOSABLE-PG-RED-EVIDENCE",
 })
 NAUTILUS_TOOLCHAIN_AUTHORITY_KEYS = frozenset({
     "authority_kind", "rust_root_status", "llvm_root_status",
@@ -667,6 +679,9 @@ CODE_CLASSIFICATION = {
     "EXT-PHASE3B-CORPUS": "EXTERNAL_AUTHORITY_REQUIRED",
     "EXT-LEGACY-UV-AUTHORITY": "EXTERNAL_AUTHORITY_REQUIRED",
     "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": "EXTERNAL_AUTHORITY_REQUIRED",
+    "EXT-DISPOSABLE-PG-GREEN": "EXTERNAL_AUTHORITY_REQUIRED",
+    "EXT-DISPOSABLE-PG-RED": "EXTERNAL_AUTHORITY_REQUIRED",
+    "EXT-DISPOSABLE-PG-RED-EVIDENCE": "EXTERNAL_AUTHORITY_REQUIRED",
 }
 CLOSED_CODE_CLASSIFICATION = {
     "SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING": "PORTABLE_SOURCE_DEFECT",
@@ -706,6 +721,7 @@ HEAD_SHA = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID = re.compile(r"^(0|[1-9][0-9]*)$")
 FOUNDATION_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 ASCII = re.compile(r"^[\x21-\x7e]+$")
+NODE_ID = re.compile(r"^[\x20-\x7e]+$")
 REDACTED_FACT_CLASSES = frozenset({
     "SOURCE_TEST_EXECUTED", "NATIVE_COMPONENT_ABSENT", "NATIVE_IDENTITY_INVALID",
     "NATIVE_CAPABILITY_VALIDATED", "RUNNER_POLICY_DISALLOWS_USERNS", "NATIVE_PROBE_INVALID",
@@ -720,6 +736,7 @@ NATIVE_FACT_CLASSES = frozenset({
 })
 EXTERNAL_FACT_CLASSES = frozenset({
     "AUTHORITY_ROOT_ABSENT", "AUTHORITY_EXECUTABLE_ABSENT",
+    "AUTHORITY_RECORD_ABSENT",
     "AUTHORITY_COMPLETE_VALIDATED", "AUTHORITY_PARTIAL", "AUTHORITY_INVALID",
     "AUTHORITY_DRIFTED", "EXTERNAL_EXACT_TEST_FAILURE",
 })
@@ -850,13 +867,13 @@ def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
         node_id = row["test_node_id"]
         classification = row["classification"]
         code = row["capability_or_authority_code"]
-        if node_id in seen or not ASCII.fullmatch(node_id):
+        if node_id in seen or not NODE_ID.fullmatch(node_id):
             raise TopologyError(f"inventory row {index} has duplicate or invalid node")
         if classification not in CLASSIFICATION_LANE or CODE_CLASSIFICATION.get(code) != classification:
             raise TopologyError(f"inventory row {index} has unknown classification or code")
         seen.add(node_id)
         rows.append(InventoryRow(node_id, classification, code))
-    if len(rows) != 66:
+    if len(rows) != 317:
         raise TopologyError("inventory row count drift")
     counts = {code: sum(row.code == code for row in rows) for code in CODE_CLASSIFICATION}
     if counts != {
@@ -867,6 +884,9 @@ def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
         "EXT-PHASE3B-CORPUS": 3,
         "EXT-LEGACY-UV-AUTHORITY": 3,
         "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": 2,
+        "EXT-DISPOSABLE-PG-GREEN": 206,
+        "EXT-DISPOSABLE-PG-RED": 44,
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE": 1,
     }:
         raise TopologyError("inventory native or external mapping drift")
     return tuple(rows)
@@ -962,7 +982,7 @@ def parse_portable_defect_closure(raw: bytes, *, head_sha: str) -> tuple[Closure
             item["fix_commit"], item["proof_command"], item["proof_result_digest"],
             item["closed_at_foundation_date"],
         )
-        if row.node_id in seen or not ASCII.fullmatch(row.node_id):
+        if row.node_id in seen or not NODE_ID.fullmatch(row.node_id):
             raise TopologyError(f"closure row {index} has duplicate or invalid node")
         if not row.node_id.startswith(f"{row.source_file}::") or not _is_portable_root_pytest_node_id(row.node_id):
             raise TopologyError(f"closure row {index} has wrong source file")
@@ -1020,7 +1040,7 @@ def load_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 115 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 366 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("active and closure governed-node set drift")
     return active, closed
 
@@ -2011,7 +2031,7 @@ def _installed_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 115 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 366 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("installed active and closure governed-node set drift")
     return active, closed
 
@@ -3688,7 +3708,7 @@ def _parse_native_receipt(value: dict[str, object], raw: bytes) -> dict[str, obj
         items = value[field]
         if (
             not isinstance(items, list)
-            or any(not isinstance(item, str) or not ASCII.fullmatch(item) for item in items)
+            or any(not isinstance(item, str) or not NODE_ID.fullmatch(item) for item in items)
             or items != sorted(set(items))
         ):
             raise TopologyError(f"native receipt has invalid {field}")
@@ -3754,6 +3774,7 @@ def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, o
     if value["capability_or_authority_code"] not in {
         "EXT-PHASE3B-CORPUS", "EXT-LEGACY-UV-AUTHORITY",
         "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+        *DISPOSABLE_PG_CODES,
     }:
         raise TopologyError("external receipt has invalid authority code")
     if value["redacted_fact_class"] not in EXTERNAL_FACT_CLASSES:
@@ -3764,7 +3785,7 @@ def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, o
         items = value[field]
         if (
             not isinstance(items, list)
-            or any(not isinstance(item, str) or not ASCII.fullmatch(item) for item in items)
+            or any(not isinstance(item, str) or not NODE_ID.fullmatch(item) for item in items)
             or items != sorted(set(items))
         ):
             raise TopologyError(f"external receipt has invalid {field}")
@@ -3778,6 +3799,9 @@ def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, o
         "EXT-PHASE3B-CORPUS": PHASE3B_AUTHORITY_KEYS,
         "EXT-LEGACY-UV-AUTHORITY": LEGACY_UV_AUTHORITY_KEYS,
         "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": NAUTILUS_RUNTIME_AUTHORITY_KEYS,
+        "EXT-DISPOSABLE-PG-GREEN": DISPOSABLE_PG_AUTHORITY_KEYS,
+        "EXT-DISPOSABLE-PG-RED": DISPOSABLE_PG_AUTHORITY_KEYS,
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE": DISPOSABLE_PG_AUTHORITY_KEYS,
     }[code]
     if not isinstance(authority, dict) or set(authority) != expected_keys:
         raise TopologyError("external receipt has invalid authority facts")
@@ -3802,6 +3826,18 @@ def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, o
             "runtime_policy_sha256", "base_manifest_sha256",
             "base_file_inventory_sha256", "artifact_manifest_sha256",
             "artifact_wheel_sha256",
+        ),
+        "EXT-DISPOSABLE-PG-GREEN": (
+            "approval_record_sha256", "fixture_plan_sha256",
+            "postgres_executable_manifest_sha256",
+        ),
+        "EXT-DISPOSABLE-PG-RED": (
+            "approval_record_sha256", "fixture_plan_sha256",
+            "postgres_executable_manifest_sha256",
+        ),
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE": (
+            "approval_record_sha256", "fixture_plan_sha256",
+            "postgres_executable_manifest_sha256",
         ),
     }[code]
     for field in digest_fields:
@@ -3846,7 +3882,7 @@ def _validate_receipt_shape(receipt: dict[str, object]) -> None:
         raise TopologyError("receipt has invalid outcome")
     for field in ("expected_node_ids", "collected_node_ids"):
         values = receipt[field]
-        if not isinstance(values, list) or any(not isinstance(item, str) or not ASCII.fullmatch(item) for item in values):
+        if not isinstance(values, list) or any(not isinstance(item, str) or not NODE_ID.fullmatch(item) for item in values):
             raise TopologyError(f"receipt has invalid {field}")
         if values != sorted(set(values)):
             raise TopologyError(f"receipt has duplicate or unordered {field}")
@@ -3950,12 +3986,26 @@ def _validate_external_outcome(
             "EXT-PHASE3B-CORPUS": "AUTHORITY_ROOT_ABSENT",
             "EXT-LEGACY-UV-AUTHORITY": "AUTHORITY_EXECUTABLE_ABSENT",
             "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": "AUTHORITY_ROOT_ABSENT",
+            "EXT-DISPOSABLE-PG-GREEN": "AUTHORITY_RECORD_ABSENT",
+            "EXT-DISPOSABLE-PG-RED": "AUTHORITY_RECORD_ABSENT",
+            "EXT-DISPOSABLE-PG-RED-EVIDENCE": "AUTHORITY_RECORD_ABSENT",
         }[code]
         expected_authority = {
             "EXT-PHASE3B-CORPUS": _phase3b_absent_authority,
             "EXT-LEGACY-UV-AUTHORITY": _legacy_absent_authority,
             "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": (
                 _absent_nautilus_external_authority
+            ),
+            "EXT-DISPOSABLE-PG-GREEN": lambda: _absent_disposable_pg_authority(
+                "EXT-DISPOSABLE-PG-GREEN",
+            ),
+            "EXT-DISPOSABLE-PG-RED": lambda: _absent_disposable_pg_authority(
+                "EXT-DISPOSABLE-PG-RED",
+            ),
+            "EXT-DISPOSABLE-PG-RED-EVIDENCE": lambda: (
+                _absent_disposable_pg_authority(
+                    "EXT-DISPOSABLE-PG-RED-EVIDENCE",
+                )
             ),
         }[code]()
         if (
@@ -4023,6 +4073,49 @@ def _validate_external_outcome(
                 or authority["artifact_wheel_size"] <= 0
             ):
                 raise TopologyError("external Nautilus PASS authority facts drift")
+            return
+        if code in DISPOSABLE_PG_CODES:
+            green = code == "EXT-DISPOSABLE-PG-GREEN"
+            expected_kind = {
+                "EXT-DISPOSABLE-PG-GREEN": (
+                    "DISPOSABLE_POSTGRES_GREEN_AUTHORITY_V1"
+                ),
+                "EXT-DISPOSABLE-PG-RED": (
+                    "DISPOSABLE_POSTGRES_RED_AUTHORITY_V1"
+                ),
+                "EXT-DISPOSABLE-PG-RED-EVIDENCE": (
+                    "DISPOSABLE_POSTGRES_RED_EVIDENCE_AUTHORITY_V1"
+                ),
+            }[code]
+            if (
+                authority["authority_kind"] != expected_kind
+                or authority["scope"]
+                != ("DISPOSABLE_PG_GREEN" if green else "DISPOSABLE_PG_RED")
+                or authority["approval_record_status"]
+                != "PRIVATE_RETAINED_APPROVAL_RECORD"
+                or authority["approval_record_sha256"] == EMPTY_SHA256
+                or authority["approved_operation_count"]
+                != len(_disposable_pg_operations(code))
+                or authority["source_binding_count"] != 13
+                or authority["fixture_plan_status"]
+                != (
+                    "PRIVATE_RETAINED_FIXTURE_PLAN"
+                    if green else "NOT_REQUIRED"
+                )
+                or (green and authority["fixture_plan_sha256"] == EMPTY_SHA256)
+                or (not green and authority["fixture_plan_sha256"] != EMPTY_SHA256)
+                or authority["fixture_slot_count"] != (4 if green else 0)
+                or authority["postgres_bin_status"]
+                != "RETAINED_POSTGRESQL_16_BINARIES"
+                or authority["postgres_major_version"] != 16
+                or authority["postgres_executable_manifest_sha256"]
+                == EMPTY_SHA256
+                or authority["postgres_executable_count"]
+                != len(PG_EXECUTABLE_NAMES)
+            ):
+                raise TopologyError(
+                    "external disposable PostgreSQL PASS authority facts drift",
+                )
             return
         if (
             authority["authority_kind"] != "LEGACY_UV_AND_CLOSURE_V1"
@@ -5508,7 +5601,42 @@ def _legacy_absent_authority() -> dict[str, object]:
     }
 
 
+def _absent_disposable_pg_authority(code: str) -> dict[str, object]:
+    if code not in DISPOSABLE_PG_CODES:
+        raise TopologyError("unknown disposable PostgreSQL authority code")
+    green = code == "EXT-DISPOSABLE-PG-GREEN"
+    evidence = code == "EXT-DISPOSABLE-PG-RED-EVIDENCE"
+    return {
+        "authority_kind": (
+            "DISPOSABLE_POSTGRES_GREEN_AUTHORITY_V1"
+            if green else (
+                "DISPOSABLE_POSTGRES_RED_EVIDENCE_AUTHORITY_V1"
+                if evidence else "DISPOSABLE_POSTGRES_RED_AUTHORITY_V1"
+            )
+        ),
+        "scope": "DISPOSABLE_PG_GREEN" if green else "DISPOSABLE_PG_RED",
+        "approval_record_status": "ABSENT",
+        "approval_record_sha256": EMPTY_SHA256,
+        "approved_operation_count": 0,
+        "source_binding_count": 0,
+        "fixture_plan_status": "ABSENT" if green else "NOT_REQUIRED",
+        "fixture_plan_sha256": EMPTY_SHA256,
+        "fixture_slot_count": 0,
+        "postgres_bin_status": "NOT_CHECKED",
+        "postgres_major_version": 16,
+        "postgres_executable_manifest_sha256": EMPTY_SHA256,
+        "postgres_executable_count": 0,
+    }
+
+
 def _invalid_external_authority(code: str) -> dict[str, object]:
+    if code in DISPOSABLE_PG_CODES:
+        authority = _absent_disposable_pg_authority(code)
+        authority["approval_record_status"] = "INVALID"
+        authority["fixture_plan_status"] = (
+            "INVALID" if code == "EXT-DISPOSABLE-PG-GREEN" else "NOT_REQUIRED"
+        )
+        return authority
     if code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
         authority = _absent_nautilus_external_authority()
         authority["base_root_status"] = "INVALID"
@@ -5797,6 +5925,8 @@ class ExternalAuthoritySession:
     authority: dict[str, object]
     descriptors: tuple[int, ...]
     postcheck: Callable[[], None]
+    execution_environment: tuple[tuple[str, str], ...] = ()
+    cleanup: Callable[[], None] = lambda: None
 
 
 def _postcheck_external_authority(session: ExternalAuthoritySession) -> None:
@@ -5806,6 +5936,575 @@ def _postcheck_external_authority(session: ExternalAuthoritySession) -> None:
         raise
     except Exception as exc:
         raise TopologyError("external authority changed during qualification") from exc
+
+
+def _disposable_pg_input_snapshot(code: str) -> tuple[str, str]:
+    if code == "EXT-DISPOSABLE-PG-GREEN":
+        return (
+            os.environ.get("DISPOSABLE_PG_GREEN_APPROVAL_RECORD", ""),
+            os.environ.get("DISPOSABLE_PG_GREEN_FIXTURE_PLAN", ""),
+        )
+    if code == "EXT-DISPOSABLE-PG-RED":
+        return (os.environ.get("DISPOSABLE_PG_RED_APPROVAL_RECORD", ""), "")
+    if code == "EXT-DISPOSABLE-PG-RED-EVIDENCE":
+        return (
+            os.environ.get("DISPOSABLE_PG_RED_EVIDENCE_APPROVAL_RECORD", ""),
+            "",
+        )
+    raise TopologyError("unknown disposable PostgreSQL authority code")
+
+
+PG_EXECUTABLE_NAMES = ("initdb", "pg_ctl", "psql", "pg_dump", "pg_restore")
+PG_POSTGRES_BIN = Path("/usr/lib/postgresql/16/bin")
+PG_PAPER_ENVIRONMENT = {
+    "TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES": "YES",
+    "TRADING_TEST_REQUESTED_MODE": "paper",
+    "TRADING_TEST_EFFECTIVE_MODE": "paper",
+    "LIVE_EXECUTION_ENABLED": "false",
+    "LIVE_TRADING_APPROVED": "false",
+    "LIVE_TRADING_ENABLED": "false",
+    "TRADING_TEST_KILL_SWITCH": "INACTIVE",
+}
+PG_RUNTIME_SETTING_NAMES = frozenset({
+    "DATABASE_URL", "PGDATA", "PGDATABASE", "PGHOST", "PGHOSTADDR",
+    "PGPASSFILE", "PGPASSWORD", "PGPORT", "PGSERVICE", "PGSERVICEFILE",
+    "PGUSER", "POSTGRES_URL", "TRADING_DATABASE_URL",
+})
+PG_RUNTIME_SETTING_PREFIXES = (
+    "TRADING_DATABASE_", "TRADING_DB_", "TRADING_POSTGRES_",
+)
+PG_GREEN_OPERATIONS = frozenset({
+    ("tests/control_api/test_alembic_schema.py", "control-api-alembic-head-cycle-v1"),
+    ("tests/control_api/test_alembic_schema.py", "control-api-application-role-permissions-v1"),
+    ("tests/control_api/test_alembic_schema.py", "control-api-alembic-0007-to-0008-v1"),
+    ("tests/control_api/test_alembic_schema.py", "control-api-alembic-0008-to-0009-v1"),
+    ("tests/control_api/test_fixture_importer.py", "control-api-fixture-importer-v1"),
+    ("tests/control_api/test_phase3b_transactions.py", "control-api-phase3b-transactions-v1"),
+    ("tests/control_api/test_real_data_apply.py", "control-api-real-data-apply-v1"),
+    ("tests/jobs/test_alembic_jobs_schema.py", "jobs-alembic-empty-upgrade-downgrade-v1"),
+    ("tests/jobs/test_alembic_jobs_schema.py", "jobs-alembic-0003-upgrade-v1"),
+    ("tests/jobs/test_alembic_jobs_schema.py", "jobs-alembic-heartbeat-git-sha1-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-0007-forward-green-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-green-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-0007-rejection-green-v1"),
+    ("tests/jobs/test_job_event_chain_authority.py", "jobs-event-chain-authority-green-v1"),
+    ("tests/jobs/test_job_role_permissions.py", "jobs-role-permissions-green-v1"),
+    ("tests/jobs/test_job_transition_authority.py", "jobs-transition-authority-green-v1"),
+    ("tests/jobs/test_job_transition_restore.py", "jobs-transition-restore-green-v1"),
+    ("tests/jobs/test_postgres_harness.py", "postgres-harness-isolated-environment-v1"),
+    ("tests/jobs/test_postgres_harness.py", "postgres-harness-base-provisioning-v1"),
+    ("tests/jobs/test_repository_enqueue.py", "jobs-repository-enqueue-v1"),
+    ("tests/jobs/test_repository_queries.py", "jobs-repository-queries-v1"),
+    ("tests/jobs/test_repository_transactions.py", "jobs-repository-transactions-v1"),
+    ("tests/jobs/test_scheduler_repository.py", "jobs-scheduler-repository-v1"),
+    ("tests/jobs/test_worker_claims.py", "jobs-worker-claims-v1"),
+    ("tests/jobs/test_worker_leases.py", "jobs-worker-leases-v1"),
+    ("tests/jobs/test_worker_recovery.py", "jobs-worker-recovery-v1"),
+})
+PG_GREEN_PLANNED_OPERATIONS = frozenset({
+    ("tests/control_api/test_alembic_schema.py", "control-api-alembic-head-cycle-v1"),
+    ("tests/control_api/test_alembic_schema.py", "control-api-application-role-permissions-v1"),
+    ("tests/control_api/test_alembic_schema.py", "control-api-alembic-0007-to-0008-v1"),
+    ("tests/control_api/test_alembic_schema.py", "control-api-alembic-0008-to-0009-v1"),
+})
+PG_RED_OPERATIONS = frozenset({
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-red-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-derivation-red-v1"),
+    ("tests/jobs/test_job_event_chain_authority.py", "jobs-event-chain-authority-red-v1"),
+})
+PG_RED_EVIDENCE_OPERATIONS = frozenset({
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-evidence-capture-red-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-evidence-derivation-red-v1"),
+})
+PG_RED_SQL_PATH = "ops/postgres/job-plane-authority/acl-repair-v1.sql"
+PG_RED_BINDING_OPERATION = {
+    "EXT-DISPOSABLE-PG-RED": "jobs-authority-catalog-derivation-red-v1",
+    "EXT-DISPOSABLE-PG-RED-EVIDENCE": (
+        "jobs-authority-catalog-evidence-derivation-red-v1"
+    ),
+}
+
+
+def _disposable_pg_operations(code: str) -> frozenset[tuple[str, str]]:
+    return {
+        "EXT-DISPOSABLE-PG-GREEN": PG_GREEN_OPERATIONS,
+        "EXT-DISPOSABLE-PG-RED": PG_RED_OPERATIONS,
+        "EXT-DISPOSABLE-PG-RED-EVIDENCE": PG_RED_EVIDENCE_OPERATIONS,
+    }[code]
+
+
+def _pg_exact_environment(
+    overlay: tuple[tuple[str, str], ...],
+) -> dict[str, str]:
+    if any(
+        name in PG_RUNTIME_SETTING_NAMES
+        or name.startswith(PG_RUNTIME_SETTING_PREFIXES)
+        for name, _value in overlay
+    ):
+        raise TopologyError("disposable PostgreSQL overlay contains runtime authority")
+    environment = {
+        name: value for name, value in os.environ.items()
+        if (
+            name not in PG_RUNTIME_SETTING_NAMES
+            and not name.startswith(PG_RUNTIME_SETTING_PREFIXES)
+            and not name.startswith("TRADING_TEST_DISPOSABLE_")
+            and name != "TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR"
+            and name not in {
+                "DISPOSABLE_PG_GREEN_APPROVAL_RECORD",
+                "DISPOSABLE_PG_GREEN_FIXTURE_PLAN",
+                "DISPOSABLE_PG_RED_APPROVAL_RECORD",
+                "DISPOSABLE_PG_RED_EVIDENCE_APPROVAL_RECORD",
+            }
+        )
+    }
+    if len(dict(overlay)) != len(overlay):
+        raise TopologyError("disposable PostgreSQL environment has duplicate keys")
+    environment.update(overlay)
+    return environment
+
+
+def _pg_source_tree(head_sha: str) -> str:
+    if not HEAD_SHA.fullmatch(head_sha):
+        raise TopologyError("disposable PostgreSQL source head is invalid")
+    git_environment = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith("GIT_")
+    }
+    git_environment["GIT_OPTIONAL_LOCKS"] = "0"
+    completed = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{head_sha}^{{tree}}"],
+        cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, check=False,
+        env=git_environment,
+    )
+    try:
+        tree = completed.stdout.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise TopologyError("disposable PostgreSQL source tree is unavailable") from exc
+    if completed.returncode != 0 or not HEAD_SHA.fullmatch(tree):
+        raise TopologyError("disposable PostgreSQL source tree is unavailable")
+    return tree
+
+
+def _qualify_disposable_pg_authority(
+    code: str, approval_document: object, plan_document: object,
+    executable_manifest_sha256: str, *, foundation_head_sha: str,
+) -> dict[str, object]:
+    from scripts.validate_disposable_postgres_approval import (
+        APPROVAL_SOURCE_BINDING_PATHS,
+        validate_disposable_postgres_approval_record,
+        validate_source_binding_files,
+    )
+    from scripts.validate_disposable_postgres_fixture_plan import (
+        validate_disposable_postgres_fixture_plan,
+    )
+
+    if code not in DISPOSABLE_PG_CODES or not isinstance(approval_document, dict):
+        raise TopologyError("disposable PostgreSQL authority is invalid")
+    source_tree = _pg_source_tree(foundation_head_sha)
+    source = approval_document.get("source")
+    if source != {"commit": foundation_head_sha, "tree": source_tree}:
+        raise TopologyError("disposable PostgreSQL source authority drift")
+    expected_operations = _disposable_pg_operations(code)
+    raw_operations = approval_document.get("approved_operations")
+    if not isinstance(raw_operations, list):
+        raise TopologyError("disposable PostgreSQL operation authority drift")
+    operations = frozenset(
+        (str(item.get("test_path")), str(item.get("operation_id")))
+        for item in raw_operations if isinstance(item, dict)
+    )
+    if len(raw_operations) != len(expected_operations) or operations != expected_operations:
+        raise TopologyError("disposable PostgreSQL operation authority drift")
+    expected_scope = (
+        "DISPOSABLE_PG_GREEN"
+        if code == "EXT-DISPOSABLE-PG-GREEN" else "DISPOSABLE_PG_RED"
+    )
+    sql_digest = hashlib.sha256((ROOT / PG_RED_SQL_PATH).read_bytes()).hexdigest()
+    expected_sql_digest = None if code == "EXT-DISPOSABLE-PG-GREEN" else sql_digest
+    validation_now = datetime.now(timezone.utc)
+    validate_disposable_postgres_approval_record(
+        approval_document, expected_scope=expected_scope,
+        expected_commit=foundation_head_sha, expected_tree=source_tree,
+        expected_sql_sha256=expected_sql_digest,
+        runtime_setting_names=frozenset(), now=validation_now,
+    )
+    validate_source_binding_files(approval_document, ROOT)
+    binding = approval_document.get("red_sql_binding")
+    if code == "EXT-DISPOSABLE-PG-GREEN":
+        if binding is not None:
+            raise TopologyError("disposable PostgreSQL GREEN SQL binding drift")
+    elif binding != {
+        "operation_id": PG_RED_BINDING_OPERATION[code],
+        "sql_path": PG_RED_SQL_PATH,
+        "sql_sha256": sql_digest,
+    }:
+        raise TopologyError("disposable PostgreSQL RED SQL binding drift")
+
+    fixture_slots = 0
+    if code == "EXT-DISPOSABLE-PG-GREEN":
+        if not isinstance(plan_document, dict):
+            raise TopologyError("disposable PostgreSQL GREEN fixture plan is missing")
+        slots = validate_disposable_postgres_fixture_plan(
+            plan_document, approval_document,
+            source_commit=foundation_head_sha, source_tree=source_tree,
+            now=validation_now,
+        )
+        observed_planned = frozenset(
+            (slot.test_path, slot.operation_id) for slot in slots
+        )
+        if (
+            len(slots) != len(PG_GREEN_PLANNED_OPERATIONS)
+            or observed_planned != PG_GREEN_PLANNED_OPERATIONS
+            or any(slot.ordinal != 1 for slot in slots)
+        ):
+            raise TopologyError("disposable PostgreSQL GREEN fixture plan drift")
+        fixture_slots = len(slots)
+    elif plan_document is not None:
+        raise TopologyError("disposable PostgreSQL RED fixture plan is forbidden")
+
+    return {
+        "authority_kind": {
+            "EXT-DISPOSABLE-PG-GREEN": "DISPOSABLE_POSTGRES_GREEN_AUTHORITY_V1",
+            "EXT-DISPOSABLE-PG-RED": "DISPOSABLE_POSTGRES_RED_AUTHORITY_V1",
+            "EXT-DISPOSABLE-PG-RED-EVIDENCE": (
+                "DISPOSABLE_POSTGRES_RED_EVIDENCE_AUTHORITY_V1"
+            ),
+        }[code],
+        "scope": expected_scope,
+        "approval_record_status": "PRIVATE_RETAINED_APPROVAL_RECORD",
+        "approval_record_sha256": hashlib.sha256(
+            canonical_json_bytes(approval_document),
+        ).hexdigest(),
+        "approved_operation_count": len(expected_operations),
+        "source_binding_count": len(APPROVAL_SOURCE_BINDING_PATHS),
+        "fixture_plan_status": (
+            "PRIVATE_RETAINED_FIXTURE_PLAN"
+            if code == "EXT-DISPOSABLE-PG-GREEN" else "NOT_REQUIRED"
+        ),
+        "fixture_plan_sha256": (
+            hashlib.sha256(canonical_json_bytes(plan_document)).hexdigest()
+            if code == "EXT-DISPOSABLE-PG-GREEN" else EMPTY_SHA256
+        ),
+        "fixture_slot_count": fixture_slots,
+        "postgres_bin_status": "RETAINED_POSTGRESQL_16_BINARIES",
+        "postgres_major_version": 16,
+        "postgres_executable_manifest_sha256": executable_manifest_sha256,
+        "postgres_executable_count": len(PG_EXECUTABLE_NAMES),
+    }
+
+
+def _pg_lineage_snapshot(path: Path) -> tuple[tuple[int, ...], ...] | None:
+    if not path.is_absolute():
+        return None
+    current = Path(path.anchor)
+    snapshots: list[tuple[int, ...]] = []
+    for part in (None, *path.parts[1:-1]):
+        if part is not None:
+            current /= part
+        try:
+            info = current.lstat()
+        except OSError:
+            return None
+        mode = stat.S_IMODE(info.st_mode)
+        sticky_shared = (
+            info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+            and mode == 0o1777
+        )
+        if (
+            stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid not in {0, os.geteuid()}
+            or info.st_gid not in {0, os.getegid()}
+            or (
+                info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                and not sticky_shared
+            )
+        ):
+            return None
+        snapshots.append(_artifact_identity(info))
+    return tuple(snapshots)
+
+
+def _open_pg_authority_file(
+    path: Path, *, exact_mode: int, owners: frozenset[int], maximum_size: int,
+) -> tuple[str, int, tuple[int, ...] | None, tuple[tuple[int, ...], ...] | None, bytes]:
+    lineage = _pg_lineage_snapshot(path)
+    if lineage is None:
+        return "INVALID", -1, None, None, b""
+    try:
+        named = path.lstat()
+    except FileNotFoundError:
+        return "ABSENT", -1, None, lineage, b""
+    except OSError:
+        return "INVALID", -1, None, lineage, b""
+    if (
+        stat.S_ISLNK(named.st_mode) or not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1 or named.st_uid not in owners
+        or named.st_gid not in {0, os.getegid()}
+        or stat.S_IMODE(named.st_mode) != exact_mode
+        or not 1 <= named.st_size <= maximum_size
+    ):
+        return "INVALID", -1, None, lineage, b""
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        identity = _artifact_identity(os.fstat(descriptor))
+        if identity != _artifact_identity(named):
+            raise OSError("authority identity changed")
+        raw = _read_descriptor_bytes(descriptor)
+        if (
+            len(raw) != named.st_size
+            or _artifact_identity(os.fstat(descriptor)) != identity
+        ):
+            raise OSError("authority bytes changed")
+    except OSError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        return "INVALID", -1, None, lineage, b""
+    return "PRESENT", descriptor, identity, lineage, raw
+
+
+def _write_pg_private_copy(root: Path, name: str, raw: bytes) -> tuple[Path, int, tuple[int, ...]]:
+    path = root / name
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+    try:
+        view = memoryview(raw)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("private authority copy write failed")
+            view = view[written:]
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    read_descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    identity = _artifact_identity(os.fstat(read_descriptor))
+    if stat.S_IMODE(identity[2]) != 0o600 or _read_descriptor_bytes(read_descriptor) != raw:
+        os.close(read_descriptor)
+        raise TopologyError("private authority copy is invalid")
+    return path, read_descriptor, identity
+
+
+def _open_disposable_pg_external_session(
+    code: str, *, approval_path: Path | None = None,
+    fixture_plan_path: Path | None = None,
+    postgres_bin: Path = PG_POSTGRES_BIN, copy_parent: Path = Path("/tmp"),
+    qualifier: Callable[[str, object, object, str], dict[str, object]] | None = None,
+    foundation_head_sha: str = "",
+) -> ExternalAuthoritySession:
+    environment_bound = approval_path is None
+    inputs = _disposable_pg_input_snapshot(code)
+    if approval_path is not None:
+        inputs = (
+            str(approval_path),
+            str(fixture_plan_path) if fixture_plan_path is not None else "",
+        )
+    required = inputs if code == "EXT-DISPOSABLE-PG-GREEN" else inputs[:1]
+
+    def unchanged() -> None:
+        if environment_bound and _disposable_pg_input_snapshot(code) != inputs:
+            raise TopologyError("external authority changed during qualification")
+
+    if not any(required):
+        return ExternalAuthoritySession(
+            code, "ABSENT", "AUTHORITY_RECORD_ABSENT",
+            _absent_disposable_pg_authority(code), (), unchanged,
+        )
+    if not all(required):
+        return ExternalAuthoritySession(
+            code, "PARTIAL", "AUTHORITY_PARTIAL",
+            _invalid_external_authority(code), (), unchanged,
+        )
+    approval = Path(inputs[0])
+    plan = Path(inputs[1]) if inputs[1] else None
+    descriptors: list[int] = []
+    retained: list[tuple[Path, int, tuple[int, ...], tuple[tuple[int, ...], ...], str]] = []
+    retained_directories: list[
+        tuple[Path, int, tuple[int, ...], tuple[tuple[int, ...], ...]]
+    ] = []
+    private_root: Path | None = None
+    private_root_lineage: tuple[tuple[int, ...], ...] | None = None
+    try:
+        if _pg_lineage_snapshot(copy_parent / ".t-g03-pg-candidate") is None:
+            raise _ExternalStateError("INVALID")
+        state, descriptor, identity, lineage, approval_raw = _open_pg_authority_file(
+            approval, exact_mode=0o600, owners=frozenset({os.geteuid()}),
+            maximum_size=65536,
+        )
+        if state != "PRESENT" or descriptor < 0 or identity is None or lineage is None:
+            raise _ExternalStateError("INVALID")
+        descriptors.append(descriptor)
+        retained.append((approval, descriptor, identity, lineage, hashlib.sha256(approval_raw).hexdigest()))
+        approval_document = _strict_json(approval_raw, label="disposable PostgreSQL approval")
+        if not isinstance(approval_document, dict):
+            raise TopologyError("disposable PostgreSQL approval is malformed")
+
+        plan_document: object = None
+        plan_raw = b""
+        if plan is not None:
+            state, descriptor, identity, lineage, plan_raw = _open_pg_authority_file(
+                plan, exact_mode=0o600, owners=frozenset({os.geteuid()}),
+                maximum_size=65536,
+            )
+            if state != "PRESENT" or descriptor < 0 or identity is None or lineage is None:
+                raise _ExternalStateError("INVALID")
+            descriptors.append(descriptor)
+            retained.append((plan, descriptor, identity, lineage, hashlib.sha256(plan_raw).hexdigest()))
+            plan_document = _strict_json(plan_raw, label="disposable PostgreSQL fixture plan")
+            if not isinstance(plan_document, dict):
+                raise TopologyError("disposable PostgreSQL fixture plan is malformed")
+        elif code == "EXT-DISPOSABLE-PG-GREEN":
+            raise _ExternalStateError("PARTIAL")
+
+        executable_records: list[dict[str, object]] = []
+        for name in PG_EXECUTABLE_NAMES:
+            path = postgres_bin / name
+            state, descriptor, identity, lineage, raw = _open_pg_authority_file(
+                path, exact_mode=0o755,
+                owners=frozenset({0, os.geteuid()}), maximum_size=128 * 1024 * 1024,
+            )
+            if state != "PRESENT" or descriptor < 0 or identity is None or lineage is None:
+                raise _ExternalStateError("INVALID")
+            descriptors.append(descriptor)
+            digest = hashlib.sha256(raw).hexdigest()
+            retained.append((path, descriptor, identity, lineage, digest))
+            executable_records.append({"name": name, "identity": identity, "sha256": digest})
+        executable_manifest = _sha256(executable_records)
+        authority = (
+            qualifier(code, approval_document, plan_document, executable_manifest)
+            if qualifier is not None else _qualify_disposable_pg_authority(
+                code, approval_document, plan_document, executable_manifest,
+                foundation_head_sha=foundation_head_sha,
+            )
+        )
+        if set(authority) != DISPOSABLE_PG_AUTHORITY_KEYS:
+            raise TopologyError("disposable PostgreSQL authority schema drift")
+
+        private_root = Path(tempfile.mkdtemp(prefix="t-g03-pg-authority-", dir=copy_parent))
+        private_root.chmod(0o700)
+        private_root_lineage = _pg_lineage_snapshot(private_root)
+        if private_root_lineage is None:
+            raise TopologyError("private authority copy root is unsafe")
+        approval_copy_raw = canonical_json_bytes(approval_document)
+        approval_copy, descriptor, identity = _write_pg_private_copy(
+            private_root, "approval.json", approval_copy_raw,
+        )
+        descriptors.append(descriptor)
+        copy_lineage = _pg_lineage_snapshot(approval_copy)
+        if copy_lineage is None:
+            raise TopologyError("private authority copy is unsafe")
+        retained.append((approval_copy, descriptor, identity, copy_lineage, hashlib.sha256(approval_copy_raw).hexdigest()))
+        execution_environment = dict(PG_PAPER_ENVIRONMENT)
+        execution_environment.update({
+            "TRADING_TEST_DISPOSABLE_APPROVAL_RECORD": str(approval_copy),
+            "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE": str(authority["scope"]),
+        })
+        if plan_document is not None:
+            plan_copy_raw = canonical_json_bytes(plan_document)
+            plan_copy, descriptor, identity = _write_pg_private_copy(
+                private_root, "fixture-plan.json", plan_copy_raw,
+            )
+            descriptors.append(descriptor)
+            copy_lineage = _pg_lineage_snapshot(plan_copy)
+            if copy_lineage is None:
+                raise TopologyError("private authority copy is unsafe")
+            retained.append((plan_copy, descriptor, identity, copy_lineage, hashlib.sha256(plan_copy_raw).hexdigest()))
+            execution_environment["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN"] = str(plan_copy)
+        if code == "EXT-DISPOSABLE-PG-RED-EVIDENCE":
+            evidence_output = private_root / "catalog-evidence"
+            evidence_output.mkdir(mode=0o700)
+            evidence_descriptor = os.open(
+                evidence_output,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            evidence_identity = _artifact_identity(os.fstat(evidence_descriptor))
+            evidence_lineage = _pg_lineage_snapshot(evidence_output)
+            if evidence_lineage is None:
+                os.close(evidence_descriptor)
+                raise TopologyError("private evidence output is unsafe")
+            descriptors.append(evidence_descriptor)
+            retained_directories.append((
+                evidence_output, evidence_descriptor, evidence_identity,
+                evidence_lineage,
+            ))
+            execution_environment[
+                "TRADING_TEST_JOB_AUTHORITY_EVIDENCE_OUTPUT_DIR"
+            ] = str(evidence_output)
+
+        retained = [
+            (path, held, identity, _pg_lineage_snapshot(path) or (), digest)
+            for path, held, identity, _lineage, digest in retained
+        ]
+
+        def postcheck() -> None:
+            unchanged()
+            if private_root is None:
+                raise TopologyError("external authority changed during qualification")
+            root_info = private_root.lstat()
+            if (
+                not stat.S_ISDIR(root_info.st_mode)
+                or root_info.st_uid != os.geteuid()
+                or stat.S_IMODE(root_info.st_mode) != 0o700
+                or _pg_lineage_snapshot(private_root) != private_root_lineage
+            ):
+                raise TopologyError("external authority changed during qualification")
+            for path, held, expected_identity, expected_lineage, expected_digest in retained:
+                if (
+                    _pg_lineage_snapshot(path) != expected_lineage
+                    or _artifact_identity(path.lstat()) != expected_identity
+                    or _artifact_identity(os.fstat(held)) != expected_identity
+                    or _digest_fd(held) != expected_digest
+                ):
+                    raise TopologyError("external authority changed during qualification")
+            for path, held, expected_identity, expected_lineage in retained_directories:
+                if (
+                    _pg_lineage_snapshot(path) != expected_lineage
+                    or _artifact_identity(path.lstat()) != expected_identity
+                    or _artifact_identity(os.fstat(held)) != expected_identity
+                ):
+                    raise TopologyError("external authority changed during qualification")
+
+        def cleanup() -> None:
+            if private_root is None or not os.path.lexists(private_root):
+                return
+            info = private_root.lstat()
+            if (
+                not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700
+            ):
+                raise TopologyError("private authority cleanup root is unsafe")
+            shutil.rmtree(private_root)
+
+        return ExternalAuthoritySession(
+            code, "VALID", "AUTHORITY_COMPLETE_VALIDATED", authority,
+            tuple(descriptors), postcheck,
+            tuple(sorted(execution_environment.items())), cleanup,
+        )
+    except _ExternalStateError as exc:
+        state = exc.state
+    except Exception:
+        state = "INVALID"
+    for descriptor in descriptors:
+        os.close(descriptor)
+    if private_root is not None and os.path.lexists(private_root):
+        shutil.rmtree(private_root)
+    return ExternalAuthoritySession(
+        code, state, "AUTHORITY_PARTIAL" if state == "PARTIAL" else "AUTHORITY_INVALID",
+        _invalid_external_authority(code), (), unchanged,
+    )
 
 
 def _phase3b_authority_from_analysis(
@@ -6261,6 +6960,12 @@ def _retained_external_authority(
     nautilus_qualifier: Callable[[Path, Path], dict[str, object]] = (
         _qualify_nautilus_external_inputs
     ),
+    pg_approval_path: Path | None = None,
+    pg_fixture_plan_path: Path | None = None,
+    pg_postgres_bin: Path = PG_POSTGRES_BIN,
+    pg_copy_parent: Path = Path("/tmp"),
+    pg_qualifier: Callable[[str, object, object, str], dict[str, object]] | None = None,
+    foundation_head_sha: str = "",
 ):
     if code == "EXT-PHASE3B-CORPUS":
         session = _open_phase3b_external_session(
@@ -6278,6 +6983,13 @@ def _retained_external_authority(
             artifact_root=nautilus_artifact_root,
             qualifier=nautilus_qualifier,
         )
+    elif code in DISPOSABLE_PG_CODES:
+        session = _open_disposable_pg_external_session(
+            code, approval_path=pg_approval_path,
+            fixture_plan_path=pg_fixture_plan_path,
+            postgres_bin=pg_postgres_bin, copy_parent=pg_copy_parent,
+            qualifier=pg_qualifier, foundation_head_sha=foundation_head_sha,
+        )
     else:
         raise TopologyError("unknown external authority")
     try:
@@ -6285,6 +6997,7 @@ def _retained_external_authority(
     finally:
         for descriptor in session.descriptors:
             os.close(descriptor)
+        session.cleanup()
 
 
 def _external_preflight(
@@ -6305,10 +7018,21 @@ def _external_preflight(
         return session.state, session.fact
 
 
-def _run_exact_observations(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+def _run_exact_observations(
+    nodes: tuple[str, ...], report: Path, *,
+    environment_overlay: tuple[tuple[str, str], ...] = (),
+) -> tuple[str, ...]:
     report.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(report.parent, 0o700)
-    environment = dict(os.environ, TEST_GOVERNANCE_REPORT=str(report), TEST_GOVERNANCE_COMPONENT="root", TEST_GOVERNANCE_NO_CLOBBER="1")
+    environment = (
+        _pg_exact_environment(environment_overlay)
+        if environment_overlay else dict(os.environ)
+    )
+    environment.update({
+        "TEST_GOVERNANCE_REPORT": str(report),
+        "TEST_GOVERNANCE_COMPONENT": "root",
+        "TEST_GOVERNANCE_NO_CLOBBER": "1",
+    })
     raw_descriptor = environment.get("TEST_GOVERNANCE_CUSTODY_FD")
     pass_fds: tuple[int, ...] = ()
     if raw_descriptor is not None:
@@ -6343,9 +7067,14 @@ def _run_exact_observations(nodes: tuple[str, ...], report: Path) -> tuple[str, 
     return nodes
 
 
-def _run_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+def _run_exact(
+    nodes: tuple[str, ...], report: Path, *,
+    environment_overlay: tuple[tuple[str, str], ...] = (),
+) -> tuple[str, ...]:
     """Legacy strict public runner retained for exact all-pass lane callers."""
-    if _run_exact_observations((*nodes,), report) != nodes:
+    if _run_exact_observations(
+        (*nodes,), report, environment_overlay=environment_overlay,
+    ) != nodes:
         raise TopologyError("exact runner changed the generated node list")
     document = _strict_json(report.read_bytes(), label="raw exact report")
     if not isinstance(document, dict) or not isinstance(document.get("tests"), list):
@@ -6606,9 +7335,24 @@ def _execute_external_pass_transaction(
     governance = execution_root / NATIVE_BUNDLE_GOVERNANCE
     selected_count = len(expected)
     try:
+        retained_runner = exact_runner
+        if session.execution_environment:
+            if exact_runner is not _run_exact:
+                raise TopologyError(
+                    "disposable PostgreSQL exact runner is not the canonical runner",
+                )
+
+            def retained_runner(
+                nodes: tuple[str, ...], report: Path,
+            ) -> tuple[str, ...]:
+                return _run_exact(
+                    nodes, report,
+                    environment_overlay=session.execution_environment,
+                )
+
         selected = _execute_exact_with_retained_custody(
             baseline=baseline, nodes=expected, report=governance,
-            runner=exact_runner, retain_provisional=True,
+            runner=retained_runner, retain_provisional=True,
             append_only_native_diagnostic=True,
         )
         custody = _validate_custody_policy(baseline["collector_policy"])
@@ -6735,7 +7479,12 @@ def run_lane(
                 ))
                 continue
         assert context is not None
-        with external_session_factory(code) as session:
+        external_authority = (
+            external_session_factory(code, foundation_head_sha=head_sha)
+            if external_session_factory is _retained_external_authority
+            else external_session_factory(code)
+        )
+        with external_authority as session:
             if not isinstance(session, ExternalAuthoritySession) or session.code != code:
                 raise TopologyError("external preflight returned an invalid authority session")
             if session.state in {"PARTIAL", "INVALID", "DRIFTED"}:

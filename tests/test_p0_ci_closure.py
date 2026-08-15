@@ -812,7 +812,9 @@ def test_public_completion_cli_uses_canonical_temp_repository(
     clone = tmp_path / "canonical-repository"
     subprocess.run(["git", "clone", "-q", "--shared", str(ROOT), str(clone)], check=True)
     for relative in (
-        MATRIX_RELATIVE, "scripts/check_p0_ci_closure.py", "tests/test_p0_ci_closure.py",
+            MATRIX_RELATIVE, "scripts/check_p0_ci_closure.py", "tests/test_p0_ci_closure.py",
+            "scripts/check_artifact_firewall.py", "scripts/t_g03_capability_topology.py",
+        "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
         "docs/implementation/p0-ci-closure.md", "Makefile", ".github/workflows/foundation.yml",
     ):
         shutil.copy2(ROOT / relative, clone / relative)

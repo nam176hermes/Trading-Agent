@@ -82,12 +82,16 @@ def _assert_event_vocabularies_closed(sql: str) -> None:
     assert set(codes) == VIOLATION_CODES
 
 
-@pytest.fixture(scope="module")
-def authority_database():
-    scope = os.environ.get("TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE")
+@pytest.fixture(
+    scope="module",
+    params=("DISPOSABLE_PG_RED", "DISPOSABLE_PG_GREEN"),
+    ids=("DISPOSABLE_PG_RED", "DISPOSABLE_PG_GREEN"),
+)
+def authority_database(request: pytest.FixtureRequest):
+    scope = str(request.param)
     if (
         os.environ.get("TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES") != "YES"
-        or scope not in {"DISPOSABLE_PG_RED", "DISPOSABLE_PG_GREEN"}
+        or os.environ.get("TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE") != scope
     ):
         pytest.skip("exact disposable PostgreSQL authority is not present")
     with disposable_database(

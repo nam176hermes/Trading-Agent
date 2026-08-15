@@ -23,7 +23,7 @@ def test_portable_source_defects_are_closed_not_unresolved() -> None:
     ).stdout.strip()
     closure = topology.load_portable_defect_closure(head_sha=head)
 
-    assert len(rows) == 66
+    assert len(rows) == 317
     assert all(row.classification != "PORTABLE_SOURCE_DEFECT" for row in rows)
     assert len(closure) == 49
     assert {row.node_id for row in rows}.isdisjoint(row.node_id for row in closure)
@@ -315,6 +315,9 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
             elif code == "EXT-LEGACY-UV-AUTHORITY":
                 authority = topology._legacy_absent_authority()
                 fact = "AUTHORITY_EXECUTABLE_ABSENT"
+            elif code in topology.DISPOSABLE_PG_CODES:
+                authority = topology._absent_disposable_pg_authority(code)
+                fact = "AUTHORITY_RECORD_ABSENT"
             else:
                 authority = topology._absent_nautilus_external_authority()
                 fact = "AUTHORITY_ROOT_ABSENT"
@@ -332,7 +335,7 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
             head_sha=head, foundation_context_path=context,
         )
         assert result["portable_source_status"] == "PASS"
-        assert result["baseline_candidate_count"] == "115"
+        assert result["baseline_candidate_count"] == "366"
         assert not list((evidence / "capability-topology").glob("SRC-*.json"))
 
 

@@ -57,7 +57,7 @@ def _semantic(**updates: object) -> dict[str, object]:
             "external_authorities_status": "DEFERRED",
             "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
             "portable_root_remainder_status": "PASS",
-            "baseline_candidate_count": "115",
+            "baseline_candidate_count": "366",
         },
         "receipt_results": [
             {
@@ -312,18 +312,28 @@ def _staging(tmp_path: Path) -> Path:
                 receipt, topology.canonical_json_bytes(receipt), None,
             )
         else:
-            authority = {
+            authority_builders = {
                 "EXT-PHASE3B-CORPUS": topology._phase3b_absent_authority,
                 "EXT-LEGACY-UV-AUTHORITY": topology._legacy_absent_authority,
                 "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": (
                     topology._absent_nautilus_external_authority
                 ),
-            }[code]()
+            }
+            authority = (
+                topology._absent_disposable_pg_authority(code)
+                if code in topology.DISPOSABLE_PG_CODES
+                else authority_builders[code]()
+            )
             session = SimpleNamespace(
                 state="ABSENT",
-                fact=("AUTHORITY_EXECUTABLE_ABSENT"
-                      if code == "EXT-LEGACY-UV-AUTHORITY"
-                      else "AUTHORITY_ROOT_ABSENT"),
+                fact=(
+                    "AUTHORITY_RECORD_ABSENT"
+                    if code in topology.DISPOSABLE_PG_CODES else (
+                        "AUTHORITY_EXECUTABLE_ABSENT"
+                        if code == "EXT-LEGACY-UV-AUTHORITY"
+                        else "AUTHORITY_ROOT_ABSENT"
+                    )
+                ),
                 authority=authority,
             )
             receipt = topology.make_external_receipt(
