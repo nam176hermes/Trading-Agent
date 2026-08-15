@@ -4443,3 +4443,34 @@ test-only: no production topology, receipt schema/policy, Make/workflow,
 PostgreSQL/database, dependency/lock, production runtime or live change. Stop
 for independent review without push, dispatch, hosted run or rerun of
 `33a8c293763eafd86ba76c0f9c9109dd8b1fd438`.
+
+### P0-12R41 fix — stable semantic collector-policy projection
+
+Independent review approved R40 and exact reviewed HEAD
+`7d0a32fd11360adea547ebf8a1ba2b14164dd46d` was pushed. Automatic Foundation
+run `31911000366` succeeded twice, and both artifacts passed strict
+post-download validation at the exact source HEAD/tree with source `PASS` and
+native/external `DEFERRED`. Do not trigger a third attempt or rerun this SHA.
+
+The two valid artifacts nevertheless produced different semantic digests.
+Recursive comparison proves that only semantic `policy_sha256` differs. The
+validated full collector policy differs only at
+`native_custody_extension_identity`, whose inode identity is intentionally
+per-attempt; its stable `native_custody_extension_sha256` is identical.
+
+Keep full baseline collector-policy validation and raw policy custody hashes
+unchanged. For the final semantic projection only, construct and hash an
+explicit closed policy subset containing exactly `governance_plugin`,
+`marker_expression`, `native_custody_extension_sha256`, `portable_argument`,
+and `root_selector`. Exclude only
+`native_custody_extension_identity`. Missing, extra or malformed full/stable
+policy fields must continue to reject.
+
+Strict RED/GREEN must prove that otherwise-identical valid final projections
+whose custody identity differs have the same semantic projection and digest,
+while mutation of each stable policy field changes semantic meaning. Preserve
+exact collection at 6,526 and run focused, affected, static and fresh
+standalone verification. Scope is the semantic projection helper and existing
+tests only: no raw validation, acceptance/policy schema, Make/workflow,
+authority, PostgreSQL/database, dependency/lock, production runtime or live
+change. Stop for independent review without push, dispatch or hosted run.
