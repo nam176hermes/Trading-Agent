@@ -18,7 +18,7 @@ Package: Test skip governance and critical coverage
 - Collection-integrity detection for individual tests removed by repository hooks.
 - Fail-closed session status for any collected test that never executes.
 - Shared recursive Dashboard inventory consumed by `npm test` and governance, with file-qualified TAP and shell integration observations plus per-file zero-observation rejection.
-- Committed 259-entry skip and deselection allowlist sealing component, exact node ID, outcome and normalized reason.
+- Committed 31-entry skip and deselection allowlist sealing component, exact node ID, outcome and normalized reason.
 - Strict approved-category, field, ownership, expiry and approval validation.
 - New skip, stale allowlist, outcome drift and runtime-reason drift rejection.
 - Security-critical approval-metadata enforcement based on canonical component, path and category rules.
@@ -78,17 +78,21 @@ The report records status `pass` only when every required safety case appears in
 
 | Check | Result |
 |---|---:|
-| Managed entries | 259 |
-| Root skips | 228 |
+| Managed entries | 31 |
+| Root skips | 0 |
 | Root deselections | 29 |
 | Legacy skips | 2 |
 | Dashboard skips | 0 |
 | Unknown categories | 0 |
 | Duplicate component/node pairs | 0 |
-| Security-critical entries | 248 |
+| Security-critical entries | 20 |
 | Security-critical entries without approval metadata | 0 |
 
-The historical supplied aggregate said 226 root skips. The current full-suite observation found 228. The node-level live result is committed and the discrepancy is visible rather than normalized away.
+The historical supplied aggregate said 226 root skips, and the later pre-Packet-C
+full-suite observation found 228. Packet C moved those 228 logical PostgreSQL
+nodes into explicit external authority receipts, so none remains eligible for
+ordinary-root skip acceptance. The 29 marker deselections and two legacy
+provider-credential skips retain their exact prior authority.
 
 ## Security hygiene evidence
 
@@ -108,7 +112,14 @@ The transition-repository evidence now includes 23 additional provider-free case
 
 The final `make check-critical-coverage` run executed 692 Python tests and 52 focused dashboard tests, validated every exact required case, and held every line, branch, denominator and covered-count ratchet. Exit status: 0.
 
-`make check-test-skips` collected all three components and validated the exact 259-entry allowlist. Its merged report recorded 5,085 passing tests, zero failures, 230 skips, 29 deselections, zero not-run tests and 245 approval-blocked observations. Dashboard evidence came from the same recursive inventory used by `npm test`: 14 Node test files plus `dashboard-security.integration.sh` and `mode-auth.integration.sh`. The command exited zero.
+The earlier pre-Packet-C `make check-test-skips` run collected all three
+components against the former 259-entry allowlist. Its merged report recorded
+5,085 passing tests, zero failures, 230 skips, 29 deselections, zero not-run
+tests and 245 approval-blocked observations. Packet C supersedes the 228 root
+PostgreSQL skip approvals with external authority receipts; that historical
+run is not current acceptance evidence. Dashboard evidence came from the same
+recursive inventory used by `npm test`: 14 Node test files plus
+`dashboard-security.integration.sh` and `mode-auth.integration.sh`.
 
 Portable source-authority integration separates strict and portable verification. Strict mode verifies source authority and imported bytes at each unique atomic introduction commit, while permitting legitimate later monorepo evolution. Portable audit is explicit and available only when every declared external repository is absent; it verifies introduction and HEAD against immutable embedded evidence. Partial authority availability, modified imported bytes, manifest identity drift, aggregate drift and coordinated authority-plus-manifest tampering fail closed. The complete consolidation suite passed 171 tests.
 

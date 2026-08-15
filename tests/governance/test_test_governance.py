@@ -188,6 +188,28 @@ def test_allowlist_schema_is_exact_and_unknown_is_never_accepted() -> None:
     with pytest.raises(GovernanceError, match="fields"):
         validate_allowlist_document(allowlist(extra), today=date(2026, 7, 24))
 
+    tracked = validate_allowlist_document(
+        json.loads((test_governance.ROOT / "tests/skip-allowlist.yaml").read_text()),
+        today=date(2026, 8, 14),
+    )
+    migrated_pg_skips = [
+        item for item in tracked
+        if item["component"] == "root"
+        and item["outcome"] == "skipped"
+        and item["reason_category"] == "DISPOSABLE_POSTGRES_REQUIRED"
+        and item["approval_record_type"] == "disposable-postgres-test-approval-v1"
+    ]
+    assert migrated_pg_skips == []
+    assert len(tracked) == 31
+    assert sum(
+        item["component"] == "root" and item["outcome"] == "deselected"
+        for item in tracked
+    ) == 29
+    assert sum(
+        item["component"] == "legacy" and item["outcome"] == "skipped"
+        for item in tracked
+    ) == 2
+
 
 def test_expired_and_unapproved_security_critical_entries_fail_closed() -> None:
     with pytest.raises(GovernanceError, match="expired"):
