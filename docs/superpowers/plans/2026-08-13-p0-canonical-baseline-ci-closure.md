@@ -3705,3 +3705,34 @@ closed trusted path without starting or connecting to PostgreSQL. Stop after
 focused and affected verification for independent re-review; no push, hosted
 dispatch/rerun, P0-13, production/runtime/database/service mutation, or live
 authority is authorized.
+
+### P0-12R18 correction — hosted deterministic fixtures and operation-ID uniqueness
+
+Hosted run `31865258494` at exact
+`c9fca10c24506196e8748e073e5faebc6d0c98b0` exposed exactly three source-test
+failures before artifact publication. This packet corrects only those three
+closed contracts; it does not authorize database execution, PostgreSQL
+qualification, skip/outcome changes, inventory or accounting changes, Make,
+workflow, dependency, lock, production, runtime, or live changes.
+
+The native classification test must not infer `PROBE_PENDING` from the hosted
+machine's real `/usr/bin/unshare`. It uses an injected task-private executable
+and retained probe/session seam so the classification assertion remains exact
+and deterministic while preserving real absent, unsafe, and BROKEN behavior.
+The receipt-first failure-diagnostic fixture must keep the original absent
+authority facts for the three pre-Packet-C external codes and use the exact
+code-specific absent disposable-PostgreSQL authority shape for each of the
+three PG codes. It must not weaken receipt validation or diagnostic ordering.
+
+The job-authority evidence capture operation ID remains the exact public value
+`jobs-authority-catalog-evidence-capture-red-v1`, but the topology authority
+must not introduce a second identical full string literal into the global
+source scan. Compose the topology value from stable fragments or one shared
+non-test authority without weakening the existing uniqueness assertion; audit
+the other evidence/derivation IDs for the same collision class.
+
+Strict RED is the exact three hosted nodes at the reviewed source state. GREEN
+requires all three exact nodes, their full affected modules, unchanged root
+collection, static contracts/P0/broad-handler checks, and a fresh standalone
+affected packet. Stop at a clean committed SHA for independent review; no push,
+hosted rerun/dispatch, P0-13, database/service mutation, or live action.
