@@ -301,6 +301,7 @@ class _GovernanceReporter:
             "tests": records,
         }
         raw_custody_policy = os.environ.get(_CUSTODY_POLICY_ENV)
+        canonical_report = collection_only
         if raw_custody_policy is not None:
             try:
                 custody_policy = json.loads(raw_custody_policy)
@@ -309,11 +310,12 @@ class _GovernanceReporter:
             if not isinstance(custody_policy, dict):
                 raise RuntimeError("test governance custody policy is malformed")
             document["custody_policy"] = custody_policy
+            canonical_report = True
         _atomic_json(
             self.destination,
             document,
             no_clobber=os.environ.get("TEST_GOVERNANCE_NO_CLOBBER") == "1",
-            canonical=collection_only,
+            canonical=canonical_report,
         )
 
 

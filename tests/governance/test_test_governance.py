@@ -743,6 +743,7 @@ def _run_governed_fixture(
     conftest: str,
     *,
     collection_only: bool = False,
+    custody_policy_json: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, dict, bytes]:
     tests = tmp_path / "fixture-tests"
     tests.mkdir()
@@ -760,6 +761,8 @@ def _run_governed_fixture(
     })
     if collection_only:
         env["TEST_GOVERNANCE_COLLECTION_ONLY"] = "1"
+    if custody_policy_json is not None:
+        env["TEST_GOVERNANCE_CUSTODY_POLICY"] = custody_policy_json
     result = subprocess.run(
         [
             sys.executable,
@@ -777,8 +780,8 @@ def _run_governed_fixture(
         stderr=subprocess.STDOUT,
         check=False,
     )
-    raw = report.read_bytes()
-    return result, json.loads(raw), raw
+    raw = report.read_bytes() if report.exists() else b""
+    return result, json.loads(raw) if raw else {}, raw
 
 
 def test_collection_hook_cannot_remove_one_test_without_failure(tmp_path: Path) -> None:
@@ -800,10 +803,17 @@ def test_collection_hook_cannot_remove_one_test_without_failure(tmp_path: Path) 
 
 
 def test_collected_test_suppressed_by_runtest_hook_fails_session(tmp_path: Path) -> None:
+    custody_case = tmp_path / "custody"
+    custody_case.mkdir()
     result, report, raw = _run_governed_fixture(
-        tmp_path,
+        custody_case,
         "def pytest_runtest_protocol(item, nextitem):\n"
         "    if item.name == 'test_hidden':\n        return True\n",
+        custody_policy_json=json.dumps(
+            {"descriptor_custody": "retained", "schema_version": 1},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
     )
 
     assert result.returncode != 0
@@ -812,9 +822,34 @@ def test_collected_test_suppressed_by_runtest_hook_fails_session(tmp_path: Path)
         and item["outcome"] == "not_run"
         for item in report["tests"]
     )
-    assert raw == (
-        json.dumps(report, indent=2, sort_keys=True) + "\n"
+    assert raw == json.dumps(
+        report, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
+
+    ordinary_case = tmp_path / "ordinary"
+    ordinary_case.mkdir()
+    ordinary_result, ordinary_report, ordinary_raw = _run_governed_fixture(
+        ordinary_case,
+        "def pytest_runtest_protocol(item, nextitem):\n"
+        "    if item.name == 'test_hidden':\n        return True\n",
+    )
+    assert ordinary_result.returncode != 0
+    assert ordinary_raw == (
+        json.dumps(ordinary_report, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+    for name, custody_policy_json in (("malformed", "{"), ("non-object", "[]")):
+        malformed_case = tmp_path / name
+        malformed_case.mkdir()
+        malformed_result, malformed_report, malformed_raw = _run_governed_fixture(
+            malformed_case,
+            "",
+            custody_policy_json=custody_policy_json,
+        )
+        assert malformed_result.returncode != 0
+        assert malformed_report == {}
+        assert malformed_raw == b""
+        assert "test governance custody policy is malformed" in malformed_result.stdout
 
 
 def test_dashboard_tap_identity_includes_file_and_parent_suite() -> None:
