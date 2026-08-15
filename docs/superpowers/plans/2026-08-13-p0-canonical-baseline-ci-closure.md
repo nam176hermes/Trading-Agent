@@ -4060,3 +4060,33 @@ standalone packet and independent security review before one new hosted push.
 Never rerun `d05ecf8b0cf3ce3b722a98ada1bc9f46c93aad53`. Do not change acceptance,
 policy, skip/outcome, PostgreSQL/DB authority, dependencies/locks, production,
 live, broker, or provider boundaries.
+
+### P0-12R29 diagnostic — classify final semantic-binding substage
+
+Hosted run `31894293654` at exact
+`c7d824cbca592a5adcafd9437f78e296103b7a91` completed the safe source route
+with 6,860 passed observations, two retained legacy skips, 29 deselections and
+17 explicit authority blocks, then ended with the exact closed rejection
+`ARTIFACT_FIREWALL_REJECTED LAYOUT RAW_BINDING SEMANTIC_BINDING`. Artifact
+count is zero. This proves the raw snapshot, root/accounting, topology receipt
+and governed-report inventory boundaries passed, but does not identify the
+failing operation inside semantic binding.
+
+The next bounded diagnostic adds one closed semantic substage only when the
+primary stage is `RAW_BINDING` and raw substage is `SEMANTIC_BINDING`:
+`TOPOLOGY_PROJECTION`, `PAYLOAD_BINDING`, `GOVERNANCE_DOCUMENT`,
+`DISCLOSURE_BINDING`, `GOVERNANCE_PROJECTION`, `TOPOLOGY_PAYLOAD_COPY`, or
+`RUN_METADATA`. Existing closed code/category must be retained; every message,
+path, value, receipt field, count, digest, exception, cause/context, stdout and
+stderr remains suppressed. Validation order, accepted evidence and semantic
+bytes, schemas, receipts, Make/workflow routes, publication decisions and all
+policy are unchanged.
+
+Strict RED/GREEN must exercise all seven closed boundaries from an existing
+collected firewall node, retain the R27/R28 taxonomy and hostile-data
+suppression, and preserve positive publication. Run focused firewall and
+affected topology/governance consumers, collection/static gates, a fresh
+standalone packet and independent security review before one new hosted push.
+Never rerun `c7d824cbca592a5adcafd9437f78e296103b7a91`. Do not mint PostgreSQL
+authority, run a database, relax skip/outcome or acceptance policy, or change
+production, live, broker/provider, dependency or lock boundaries.
