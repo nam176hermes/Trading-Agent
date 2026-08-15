@@ -1505,6 +1505,7 @@ def test_prohibited_command_text_is_rejected(
         "PGPASSWORD=credential-value",
         "-----BEGIN " + "PRIVATE KEY-----",
     ),
+    ids=("dsn-uri", "field-assignment", "environment-assignment", "pem-boundary"),
 )
 def test_secret_or_dsn_content_is_rejected(
     native_tmp_path: Path,

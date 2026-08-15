@@ -1528,6 +1528,54 @@ def test_publisher_scans_known_secret_formats_in_every_manifested_leaf(tmp_path:
 
 
 def test_publisher_creates_canonical_manifest_and_exact_checksums(tmp_path: Path) -> None:
+    collection_report = tmp_path / "production-collection.governance.json"
+    collection_environment = os.environ.copy()
+    collection_environment.pop("TEST_GOVERNANCE_CUSTODY_POLICY", None)
+    collection_environment.update({
+        "TEST_GOVERNANCE_COLLECTION_ONLY": "1",
+        "TEST_GOVERNANCE_COMPONENT": "root",
+        "TEST_GOVERNANCE_REPORT": str(collection_report),
+    })
+    collection_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "tests/production/test_postgres_recovery_approval.py",
+            "-p",
+            "scripts.test_governance_pytest",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=collection_environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert collection_result.returncode == 0, collection_result.stdout
+    collection_raw = collection_report.read_bytes()
+    collection_document = json.loads(collection_raw)
+    prefix = (
+        "tests/production/test_postgres_recovery_approval.py::"
+        "test_secret_or_dsn_content_is_rejected"
+    )
+    observed_ids = {
+        item["test_node_id"]
+        for item in collection_document["tests"]
+        if item["test_node_id"].startswith(prefix)
+    }
+    assert observed_ids == {
+        f"{prefix}[dsn-uri]",
+        f"{prefix}[environment-assignment]",
+        f"{prefix}[field-assignment]",
+        f"{prefix}[pem-boundary]",
+    }
+    firewall.scan_json_bytes(
+        "capability-topology/portable-root-collection.governance.json",
+        collection_raw,
+    )
+
     staging = _staging(tmp_path)
     destination = tmp_path / "runtime/state/ci-portable"
     manifest = _publish(staging, destination)
