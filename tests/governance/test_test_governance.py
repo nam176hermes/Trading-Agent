@@ -759,6 +759,7 @@ def _run_governed_fixture(
         "TEST_GOVERNANCE_REPORT": str(report),
         "TEST_GOVERNANCE_COMPONENT": "root",
     })
+    env.pop("TEST_GOVERNANCE_CUSTODY_POLICY", None)
     if collection_only:
         env["TEST_GOVERNANCE_COLLECTION_ONLY"] = "1"
     if custody_policy_json is not None:
@@ -802,7 +803,14 @@ def test_collection_hook_cannot_remove_one_test_without_failure(tmp_path: Path) 
     ).encode("utf-8")
 
 
-def test_collected_test_suppressed_by_runtest_hook_fails_session(tmp_path: Path) -> None:
+def test_collected_test_suppressed_by_runtest_hook_fails_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "TEST_GOVERNANCE_CUSTODY_POLICY",
+        '{"ambient":"must-not-authorize-a-nested-report"}',
+    )
     custody_case = tmp_path / "custody"
     custody_case.mkdir()
     result, report, raw = _run_governed_fixture(
