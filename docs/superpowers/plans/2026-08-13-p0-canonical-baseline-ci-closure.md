@@ -3736,3 +3736,28 @@ requires all three exact nodes, their full affected modules, unchanged root
 collection, static contracts/P0/broad-handler checks, and a fresh standalone
 affected packet. Stop at a clean committed SHA for independent review; no push,
 hosted rerun/dispatch, P0-13, database/service mutation, or live action.
+
+### P0-12R19 correction — deterministic bwrap classification fixture
+
+Hosted run `31866447559` at exact
+`d70d0ae5a83f2dc2211a3fcbd09eeb31c154658e` exposed one remaining source-test
+failure before artifact publication. The R18 native classification node no
+longer assumes a real `/usr/bin/unshare`, but its later bwrap branch still calls
+the trusted production policy and asserts `PROBE_PENDING`. A hosted runner with
+no `/usr/bin/bwrap` correctly returns `UNAVAILABLE`, making that test fixture
+host-dependent.
+
+The classification test must instead retain a task-private executable and an
+exact matching injected policy/session for the bwrap branch. It must preserve
+the production probe record, descriptor/named identity, policy digest,
+authority projection, and postcheck semantics. The same node continues to
+exercise real missing and nonregular leaf classification, and the existing
+multi-authority absent-bwrap branch remains fail-closed. Production native
+classification and trusted-policy defaults do not change.
+
+Strict RED must first reproduce the hosted absence at the exact existing node.
+GREEN requires that exact node, its full affected module, unchanged collection,
+static inventory/contracts/P0 checks, and a fresh standalone affected run.
+Stop at a clean committed SHA for independent review; no production
+classification, Make, workflow, dependency, lock, PostgreSQL/database, P0-13,
+hosted rerun/dispatch, service, broker/provider, or live change is authorized.
