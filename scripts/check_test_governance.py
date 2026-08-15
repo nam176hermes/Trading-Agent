@@ -1020,7 +1020,11 @@ def audit_topology_root_records(
             raise GovernanceError("root topology governance records overlap")
         if tuple(sorted(accounted)) != tuple(baseline["candidate_node_ids"]):
             raise GovernanceError("root topology governance accounting does not equal baseline")
-        return disclosure, root_records
+        return {
+            **disclosure,
+            "portable_root_remainder_status": "PASS",
+            "baseline_candidate_count": str(len(baseline["candidate_node_ids"])),
+        }, root_records
     except (capability_topology.TopologyError, OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise GovernanceError(f"root topology governance audit failed: {exc}") from exc
 

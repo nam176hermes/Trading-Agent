@@ -1650,6 +1650,11 @@ def test_topology_audit_discloses_deferred_receipts_without_claiming_pass(
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw)
         run_id, head_sha = _write_topology_evidence(evidence)
+        expected_baseline_count = str(len(json.loads(
+            (evidence / "capability-topology/portable-root-baseline.json").read_text(
+                encoding="utf-8",
+            )
+        )["candidate_node_ids"]))
         monkeypatch.setenv("GITHUB_RUN_ID", run_id)
         disclosure, root_records = audit_topology_root_records(
             evidence_root=evidence,
@@ -1657,12 +1662,24 @@ def test_topology_audit_discloses_deferred_receipts_without_claiming_pass(
             foundation_run_id=run_id,
             foundation_head_sha=head_sha,
         )
+        reconciled = topology.reconcile_portable_root_accounting(
+            inventory=ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            evidence_root=evidence,
+            run_id=run_id,
+            head_sha=head_sha,
+            foundation_context_path=(
+                evidence / "capability-topology/foundation-context.json"
+            ),
+        )
 
+    assert disclosure == reconciled
     assert disclosure == {
         "portable_source_status": "PASS",
         "native_capabilities_status": "DEFERRED",
         "external_authorities_status": "DEFERRED",
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
+        "portable_root_remainder_status": "PASS",
+        "baseline_candidate_count": expected_baseline_count,
     }
     assert len(root_records) == 50
     assert {record["outcome"] for record in root_records} == {"passed"}
