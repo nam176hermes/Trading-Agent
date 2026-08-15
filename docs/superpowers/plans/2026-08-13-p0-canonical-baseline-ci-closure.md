@@ -3808,3 +3808,34 @@ collected nodes, preserves collection and receipt/accounting contracts, and
 runs full topology/external affected and fresh standalone packets. No policy,
 Make, workflow, dependency, lock, PostgreSQL/database, P0-13, production,
 runtime/service, broker/provider, or live change is authorized.
+
+### P0-12R21 correction — sealed late-topology failure evidence
+
+Hosted run `31869750204` at exact
+`6fb87d3d420301556f717ba31618356ceffd0889` passed the 6,131-node root
+remainder and the 49-node portable closure, then terminated at native topology
+preflight. Its raw Architecture-A FAIL marker was retained, but the outer Make
+catch recognized only the root-remainder failure diagnostic. The upload step
+therefore had no final artifact, and the public log exposed only the closed
+terminal `BROKEN` classification.
+
+The outer catch must retain the root-remainder diagnostic as its first and only
+matching branch. If it is absent, it invokes a separate topology-failure
+publisher once, ignores only that publisher's result, and preserves the nested
+Make status. The new publisher accepts exactly one validated native or external
+Architecture-A FAIL marker/bundle plus the sealed Foundation/inventory
+authority and any validated earlier receipts. It emits a distinct sealed
+diagnostic projection containing only Foundation bindings, the terminal code,
+lane, closed preflight state/fact class, expected count, and receipt/manifest
+hashes. It cannot publish governance, acceptance, raw test output, paths,
+exception text, command arguments, or PASS evidence.
+
+The packet reuses the existing retained-FD snapshot, no-follow, mode sealing,
+checksum, and `RENAME_NOREPLACE` publication boundary. Malformed or foreign
+markers, partial root/closure progress, multiple terminal failures, unrelated
+raw entries, and terminal-diagnostic coexistence reject without publication.
+It does not change native/external qualification, policy denials, skip policy,
+workflow upload rules, PostgreSQL authority, dependency/lock state, or live
+authority. The next hosted run remains non-qualifying until its sealed
+diagnostic is independently inspected and the underlying native preflight
+cause receives its own RED/GREEN/review packet.
