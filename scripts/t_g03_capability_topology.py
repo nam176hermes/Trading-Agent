@@ -24,8 +24,8 @@ from typing import Any, Sequence
 
 
 LOCKED_INVENTORY_SHA256 = "86c157c8394f16e381d1e53a6884b6c3d93af5520ea9bdd6b3abd9efbc588a93"
-LOCKED_CLOSURE_SHA256 = "4feaed5b9e73f60ab192938a8b8b51b873f61e139a66b4926e7429c80144154a"
-LOCKED_GOVERNED_NODE_IDS_SHA256 = "aedeffcf5b9ad3d7704b3f6a15822f9862d9b84b279cc8a66b193b331262f7f0"
+LOCKED_CLOSURE_SHA256 = "9b4b02af2972651f75d07b1758232a186041749598518e41ae40d6e34ca2aa88"
+LOCKED_GOVERNED_NODE_IDS_SHA256 = "ceb4a127f66d48a536167c62226cda51bd802873a998eac7df3a709951d32a92"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
 NATIVE_RECEIPT_SCHEMA = "t-g03a-native-capability-receipt/v2"
 NATIVE_ARTIFACT_MANIFEST_SCHEMA = "t-g03a-native-artifact-manifest/v1"
@@ -635,17 +635,21 @@ CODE_CLASSIFICATION = {
     "EXT-LEGACY-UV-AUTHORITY": "EXTERNAL_AUTHORITY_REQUIRED",
 }
 CLOSED_CODE_CLASSIFICATION = {
+    "SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING": "PORTABLE_SOURCE_DEFECT",
     "SRC-PHASE4B-FAKEROOT-IDENTITY": "PORTABLE_SOURCE_DEFECT",
     "SRC-SEALEDUV-BWRAP-PREFLIGHT": "PORTABLE_SOURCE_DEFECT",
     "SRC-SEMANTIC-FIXTURE-IDENTITY": "PORTABLE_SOURCE_DEFECT",
 }
 CLOSED_CODE_COUNTS = {
+    "SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING": 17,
     "SRC-PHASE4B-FAKEROOT-IDENTITY": 2,
     "SRC-SEALEDUV-BWRAP-PREFLIGHT": 27,
     "SRC-SEMANTIC-FIXTURE-IDENTITY": 3,
 }
 CLOSED_SOURCE_CODE = {
+    "tests/foundation/test_nautilus_runtime_closure.py": "SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING",
     "tests/foundation/test_nautilus_sealed_uv_exec.py": "SRC-SEALEDUV-BWRAP-PREFLIGHT",
+    "tests/jobs/test_nautilus_closure.py": "SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING",
     "tests/runtime_release/test_provision_script.py": "SRC-PHASE4B-FAKEROOT-IDENTITY",
     "tests/runtime_release/test_semantic.py": "SRC-SEMANTIC-FIXTURE-IDENTITY",
 }
@@ -913,7 +917,7 @@ def parse_portable_defect_closure(raw: bytes, *, head_sha: str) -> tuple[Closure
         seen.add(row.node_id)
         commit_bindings.add((row.fix_commit, row.source_file))
         rows.append(row)
-    if len(rows) != 32:
+    if len(rows) != 49:
         raise TopologyError("closure row count drift")
     counts = {code: sum(row.former_code == code for row in rows) for code in CLOSED_CODE_COUNTS}
     if counts != CLOSED_CODE_COUNTS:
@@ -950,7 +954,7 @@ def load_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 62 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 79 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("active and closure governed-node set drift")
     return active, closed
 
@@ -1935,7 +1939,7 @@ def _installed_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 62 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 79 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("installed active and closure governed-node set drift")
     return active, closed
 

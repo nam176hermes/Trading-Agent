@@ -25,7 +25,7 @@ def test_portable_source_defects_are_closed_not_unresolved() -> None:
 
     assert len(rows) == 30
     assert all(row.classification != "PORTABLE_SOURCE_DEFECT" for row in rows)
-    assert len(closure) == 32
+    assert len(closure) == 49
     assert {row.node_id for row in rows}.isdisjoint(row.node_id for row in closure)
 
 
@@ -324,7 +324,7 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
             head_sha=head, foundation_context_path=context,
         )
         assert result["portable_source_status"] == "PASS"
-        assert result["baseline_candidate_count"] == "62"
+        assert result["baseline_candidate_count"] == "79"
         assert not list((evidence / "capability-topology").glob("SRC-*.json"))
 
 

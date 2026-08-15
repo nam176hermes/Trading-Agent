@@ -35,7 +35,7 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
         "external_authorities_status": "DEFERRED",
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
         "portable_root_remainder_status": "PASS",
-        "baseline_candidate_count": "62",
+        "baseline_candidate_count": "79",
     }
     receipts = [{
         "capability_or_authority_code": "NATIVE-BWRAP-OS-SANDBOX",

@@ -57,7 +57,7 @@ def _semantic(**updates: object) -> dict[str, object]:
             "external_authorities_status": "DEFERRED",
             "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
             "portable_root_remainder_status": "PASS",
-            "baseline_candidate_count": "62",
+            "baseline_candidate_count": "79",
         },
         "receipt_results": [
             {

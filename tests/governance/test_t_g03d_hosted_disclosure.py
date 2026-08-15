@@ -1653,7 +1653,7 @@ def test_topology_audit_discloses_deferred_receipts_without_claiming_pass(
         "external_authorities_status": "DEFERRED",
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
     }
-    assert len(root_records) == 33
+    assert len(root_records) == 50
     assert {record["outcome"] for record in root_records} == {"passed"}
 
 
@@ -1776,7 +1776,7 @@ def test_topology_runner_merges_sealed_root_with_retained_component_governance(
 def test_dynamic_baseline_includes_a_new_ordinary_root_node_and_derives_the_exact_remainder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Break caught: portable CI freezes the historical 62 IDs and loses a new root test."""
+    """Break caught: portable CI freezes the governed 79 IDs and loses a new root test."""
     run_id = "31641536482"
     head_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
