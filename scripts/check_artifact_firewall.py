@@ -138,6 +138,12 @@ _PUBLICATION_SUBSTAGES = frozenset({
     "DESTINATION_POSTCHECK", "CANDIDATE_SEAL", "SEALED_VALIDATION",
     "ATOMIC_RENAME", "PUBLISHED_VALIDATION",
 })
+_PROJECTION_VALIDATION_SUBSTAGES = frozenset({
+    "ROOT_LAYOUT", "GOVERNANCE_LAYOUT", "TOPOLOGY_LAYOUT", "PHASE_LAYOUT",
+    "FOUNDATION_CONTEXT", "RESERVATION", "LOCKED_INPUTS", "BASELINE",
+    "COLLECTION", "REMAINDER", "REMAINDER_GOVERNANCE", "CLOSURE",
+    "RECEIPTS", "AGGREGATE", "FINAL_GOVERNANCE", "SECRET_SCAN",
+})
 _SOURCE_TREE_FAILURES = frozenset({
     ("DIFF_INDEX", "DRIFT"),
     ("DIFF_INDEX", "COMMAND_FAILURE"),
@@ -235,6 +241,7 @@ class FinalPublicationError(FirewallError):
         raw_binding_substage: str = "",
         semantic_binding_substage: str = "",
         publication_substage: str = "",
+        projection_validation_substage: str = "",
         source_tree_substage: str = "", source_tree_reason: str = "",
     ) -> None:
         if stage not in _FAILURE_PUBLICATION_STAGES:
@@ -258,6 +265,14 @@ class FinalPublicationError(FirewallError):
                 or publication_substage not in _PUBLICATION_SUBSTAGES
             ):
                 raise ValueError("final publication substage is not closed")
+        if projection_validation_substage:
+            if (
+                stage != "PUBLICATION"
+                or publication_substage != "PROJECTION_VALIDATION"
+                or projection_validation_substage
+                not in _PROJECTION_VALIDATION_SUBSTAGES
+            ):
+                raise ValueError("final projection validation substage is not closed")
         if source_tree_substage or source_tree_reason:
             if (
                 stage != "SOURCE_TREE"
@@ -273,12 +288,14 @@ class FinalPublicationError(FirewallError):
         self.raw_binding_substage = raw_binding_substage
         self.semantic_binding_substage = semantic_binding_substage
         self.publication_substage = publication_substage
+        self.projection_validation_substage = projection_validation_substage
         self.source_tree_substage = source_tree_substage
         self.source_tree_reason = source_tree_reason
 
 
 def _classify_final_publication(
     stage: str, exc: object, *, publication_substage: str = "",
+    projection_validation_substage: str = "",
 ) -> FinalPublicationError:
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
@@ -302,6 +319,7 @@ def _classify_final_publication(
         raw_binding_substage=raw_binding_substage,
         semantic_binding_substage=semantic_binding_substage,
         publication_substage=publication_substage,
+        projection_validation_substage=projection_validation_substage,
         source_tree_substage=source_tree_substage,
         source_tree_reason=source_tree_reason,
     )
@@ -997,9 +1015,17 @@ def _validate_final_governance(
     }
 
 
-def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
+def _validate_projection_schemas(
+    snapshot: _Snapshot, *,
+    _projection_validation_substage_hook: Callable[[str], None] | None = None,
+) -> dict[str, object]:
     from scripts import t_g03_capability_topology as topology
 
+    def enter(substage: str) -> None:
+        if _projection_validation_substage_hook is not None:
+            _projection_validation_substage_hook(substage)
+
+    enter("FOUNDATION_CONTEXT")
     prefix = "capability-topology/"
     context = _object_leaf(snapshot, prefix + "foundation-context.json")
     context_required = {
@@ -1027,6 +1053,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
     run_id = str(context["foundation_run_id"])
     head_sha = str(context["foundation_head_sha"])
     context_hash = str(context["foundation_context_sha256"])
+    enter("RESERVATION")
     reservation = _object_leaf(snapshot, prefix + ".reservation")
     if reservation != {
         "schema_version": topology.RESERVATION_SCHEMA,
@@ -1037,6 +1064,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         "foundation_context_sha256": context_hash,
     }:
         raise _reject("Foundation reservation binding is invalid")
+    enter("LOCKED_INPUTS")
     inventory_raw = snapshot.leaves[prefix + "t-g03a-hosted-failure-inventory.tsv"].raw
     closure_raw = snapshot.leaves[prefix + topology.CLOSURE_RELATIVE_PATH.name].raw
     if (
@@ -1044,6 +1072,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         or hashlib.sha256(closure_raw).hexdigest() != topology.LOCKED_CLOSURE_SHA256
     ):
         raise _reject("locked inventory or closure binding is invalid")
+    enter("BASELINE")
     rows = topology.load_inventory(
         topology.ROOT / "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
     )
@@ -1090,6 +1119,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         policy = topology._validate_custody_policy(baseline.get("collector_policy"))
     except topology.TopologyError as exc:
         raise _reject("portable baseline custody policy is invalid") from exc
+    enter("COLLECTION")
     collection = _object_leaf(snapshot, prefix + "portable-root-collection.governance.json")
     collection_tests = collection.get("tests")
     collected = [
@@ -1121,6 +1151,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         or sorted(collected) != candidates
     ):
         raise _reject("portable collection governance is invalid")
+    enter("REMAINDER")
     remainder = _object_leaf(snapshot, prefix + "portable-root-remainder.json")
     remainder_required = {
         "schema_version", "foundation_run_id", "foundation_head_sha",
@@ -1146,6 +1177,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         or remainder.get("remainder_sha256") != topology._remainder_payload_sha256(remainder)
     ):
         raise _reject("portable remainder schema or binding is invalid")
+    enter("REMAINDER_GOVERNANCE")
     remainder_governance = _object_leaf(snapshot, prefix + "portable-root-remainder.governance.json")
     if (
         remainder_governance.get("component") != "root"
@@ -1154,6 +1186,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         or not isinstance(remainder_governance.get("tests"), list)
     ):
         raise _reject("portable remainder governance is invalid")
+    enter("CLOSURE")
     closure_governance_raw = snapshot.leaves[prefix + "portable-defect-closure.governance.json"].raw
     closure_governance = _object_leaf(snapshot, prefix + "portable-defect-closure.governance.json")
     closure_proof = _object_leaf(snapshot, prefix + "portable-defect-closure-proof.json")
@@ -1194,6 +1227,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         )
     except topology.TopologyError as exc:
         raise _reject("portable topology governance schema is invalid") from exc
+    enter("RECEIPTS")
     try:
         for code in sorted(_CODES):
             marker_raw = snapshot.leaves[f"{prefix}{code}.json"].raw
@@ -1227,6 +1261,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
                 )
     except topology.TopologyError as exc:
         raise _reject("topology receipt or bundle manifest schema is invalid") from exc
+    enter("AGGREGATE")
     aggregate = _object_leaf(snapshot, prefix + "aggregate.json")
     native_status = (
         "DEFERRED" if any(
@@ -1260,6 +1295,7 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
         or aggregate.get("baseline_candidate_count") != str(len(candidates))
     ):
         raise _reject("topology aggregate schema or binding is invalid")
+    enter("FINAL_GOVERNANCE")
     semantic = topology.build_final_semantic_projection(
         context, baseline, aggregate, receipts,
     )
@@ -1267,16 +1303,28 @@ def _validate_projection_schemas(snapshot: _Snapshot) -> dict[str, object]:
     return semantic
 
 
-def _validate_projection_layout(snapshot: _Snapshot) -> dict[str, object]:
+def _validate_projection_layout(
+    snapshot: _Snapshot, *,
+    _projection_validation_substage_hook: Callable[[str], None] | None = None,
+) -> dict[str, object]:
+    def enter(substage: str) -> None:
+        if substage not in _PROJECTION_VALIDATION_SUBSTAGES:
+            raise ValueError("projection validation substage is not closed")
+        if _projection_validation_substage_hook is not None:
+            _projection_validation_substage_hook(substage)
+
+    enter("ROOT_LAYOUT")
     root_entries = set(snapshot.directories[""].entries) - {"manifest.json", "SHA256SUMS"}
     if root_entries not in (
         {"capability-topology", "test-governance"},
         {"capability-topology", "test-governance", "phase-evidence"},
     ):
         raise _reject("projection root contains an extra or missing entry")
+    enter("GOVERNANCE_LAYOUT")
     governance_entries = set(snapshot.directories["test-governance"].entries)
     if governance_entries not in ({"summary.json"}, {"error.json"}):
         raise _reject("test governance projection contains an unmanifested entry")
+    enter("TOPOLOGY_LAYOUT")
     topology = snapshot.directories.get("capability-topology")
     if topology is None:
         raise _reject("projection lacks capability topology")
@@ -1310,11 +1358,16 @@ def _validate_projection_layout(snapshot: _Snapshot) -> dict[str, object]:
         receipt = snapshot.leaves[f"{bundle_relative}/receipt.json"].raw
         if marker != receipt:
             raise _reject("Architecture-A marker/bundle receipt mismatch")
+    enter("PHASE_LAYOUT")
     if "phase-evidence" in root_entries:
         if "phase-evidence/manifest.json" not in snapshot.leaves:
             raise _reject("phase evidence lacks its governed manifest")
         _validate_phase_manifest(snapshot)
-    semantic = _validate_projection_schemas(snapshot)
+    semantic = _validate_projection_schemas(
+        snapshot,
+        _projection_validation_substage_hook=_projection_validation_substage_hook,
+    )
+    enter("SECRET_SCAN")
     for relative, leaf in snapshot.leaves.items():
         scan_artifact_bytes(relative, leaf.raw)
     return semantic
@@ -1896,14 +1949,23 @@ def publish_evidence_set(
     run_metadata: Mapping[str, object],
     boundary_hook: Callable[[str], None] | None = None,
     _publication_substage_hook: Callable[[str], None] | None = None,
+    _projection_validation_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Seal retained acceptance projection bytes and publish without replacement."""
+    def validate_projection(snapshot: _Snapshot) -> dict[str, object]:
+        return _validate_projection_layout(
+            snapshot,
+            _projection_validation_substage_hook=(
+                _projection_validation_substage_hook
+            ),
+        )
+
     return _publish_evidence_set(
         staging_root=staging_root, destination=destination, head_sha=head_sha,
         source_tree_sha256=source_tree_sha256,
         semantic_projection=semantic_projection, run_metadata=run_metadata,
         manifest_schema=MANIFEST_SCHEMA,
-        projection_validator=_validate_projection_layout,
+        projection_validator=validate_projection,
         complete_validator=_validate_complete_snapshot,
         published_validator=validate_published_evidence,
         boundary_hook=boundary_hook,
@@ -2210,10 +2272,15 @@ def publish_final_evidence(
         raise failure
     failure = None
     publication_substage = "INPUT_BINDING"
+    projection_validation_substage = "ROOT_LAYOUT"
 
     def remember_publication_substage(substage: str) -> None:
         nonlocal publication_substage
         publication_substage = substage
+
+    def remember_projection_validation_substage(substage: str) -> None:
+        nonlocal projection_validation_substage
+        projection_validation_substage = substage
 
     try:
         projection_name = f".final-projection-{secrets.token_hex(16)}"
@@ -2241,11 +2308,19 @@ def publish_final_evidence(
             semantic_projection=semantic,
             run_metadata=run_metadata,
             _publication_substage_hook=remember_publication_substage,
+            _projection_validation_substage_hook=(
+                remember_projection_validation_substage
+            ),
         )
     except (FirewallError, OSError, ValueError) as exc:
         failure = _classify_final_publication(
             "PUBLICATION", exc,
             publication_substage=publication_substage,
+            projection_validation_substage=(
+                projection_validation_substage
+                if publication_substage == "PROJECTION_VALIDATION"
+                else ""
+            ),
         )
     if failure is not None:
         raise failure
@@ -2950,6 +3025,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and exc.publication_substage
             ):
                 fields.append(exc.publication_substage)
+                if exc.projection_validation_substage:
+                    fields.append(exc.projection_validation_substage)
             if exc.source_tree_substage:
                 fields.extend([
                     exc.source_tree_substage, exc.source_tree_reason,

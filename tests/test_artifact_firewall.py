@@ -441,13 +441,34 @@ def test_cli_publishes_one_final_evidence_set(
         "DESTINATION_POSTCHECK", "CANDIDATE_SEAL", "SEALED_VALIDATION",
         "ATOMIC_RENAME", "PUBLISHED_VALIDATION",
     )
+    projection_validation_substages = (
+        "ROOT_LAYOUT", "GOVERNANCE_LAYOUT", "TOPOLOGY_LAYOUT", "PHASE_LAYOUT",
+        "FOUNDATION_CONTEXT", "RESERVATION", "LOCKED_INPUTS", "BASELINE",
+        "COLLECTION", "REMAINDER", "REMAINDER_GOVERNANCE", "CLOSURE",
+        "RECEIPTS", "AGGREGATE", "FINAL_GOVERNANCE", "SECRET_SCAN",
+    )
     observed_publication_path: list[str] = []
+    observed_projection_validation_path: list[str] = []
     _publish(
         staging,
         tmp_path / "runtime/state/ci-portable-hooked",
         _publication_substage_hook=observed_publication_path.append,
+        _projection_validation_substage_hook=observed_projection_validation_path.append,
     )
     assert observed_publication_path == list(publication_substages)
+    assert observed_projection_validation_path == list(projection_validation_substages)
+    with pytest.raises(ValueError, match="projection validation substage is not closed"):
+        firewall.FinalPublicationError(
+            "PUBLICATION", code="ARTIFACT_FIREWALL_REJECTED", category="LAYOUT",
+            publication_substage="SEALED_VALIDATION",
+            projection_validation_substage="RECEIPTS",
+        )
+    with pytest.raises(ValueError, match="projection validation substage is not closed"):
+        firewall.FinalPublicationError(
+            "PUBLICATION", code="ARTIFACT_FIREWALL_REJECTED", category="LAYOUT",
+            publication_substage="PROJECTION_VALIDATION",
+            projection_validation_substage="UNKNOWN",
+        )
 
     def raw_error(substage: str) -> firewall.FirewallError:
         error_type = getattr(firewall, "RawBindingError", None)
@@ -673,6 +694,63 @@ def test_cli_publishes_one_final_evidence_set(
         for substage in publication_substages
     ]
 
+    observed_projection_validation_substages: list[
+        tuple[str, str, str, object, object]
+    ] = []
+    for projection_validation_substage in projection_validation_substages:
+        with monkeypatch.context() as patch:
+            patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+            patch.setattr(
+                firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+            )
+            patch.setattr(
+                firewall,
+                "_final_payloads_from_raw",
+                lambda *args, **kwargs: ({"safe.json": b"{}\n"}, {}, _run_metadata()),
+            )
+            lineage = SimpleNamespace(descriptor=3, postcheck=lambda: None)
+            patch.setattr(
+                firewall, "_validate_lineage", lambda *args, **kwargs: nullcontext(lineage),
+            )
+            patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: None)
+            patch.setattr(firewall, "_source_tree_identity", lambda *args, **kwargs: TREE)
+
+            def reject_projection_validation(*args: object, **kwargs: object) -> None:
+                publication_hook = kwargs.get("_publication_substage_hook")
+                projection_hook = kwargs.get("_projection_validation_substage_hook")
+                if callable(publication_hook):
+                    publication_hook("PROJECTION_VALIDATION")
+                if callable(projection_hook):
+                    projection_hook(projection_validation_substage)
+                raise firewall.FirewallError(
+                    hostile, relative_path="hostile-relative-path", sha256="f" * 64,
+                )
+
+            patch.setattr(firewall, "publish_evidence_set", reject_projection_validation)
+            with pytest.raises(firewall.FinalPublicationError) as captured:
+                firewall.publish_final_evidence(
+                    raw_root=raw_root,
+                    destination=tmp_path / (
+                        "final-projection-validation-"
+                        + projection_validation_substage.lower()
+                    ),
+                    inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                    foundation_context_path=raw_root / "foundation-context.json",
+                    repository_root=tmp_path,
+                )
+            error = captured.value
+            observed_projection_validation_substages.append((
+                error.stage,
+                getattr(error, "publication_substage", ""),
+                getattr(error, "projection_validation_substage", ""),
+                error.__cause__,
+                error.__context__,
+            ))
+    assert observed_projection_validation_substages == [
+        ("PUBLICATION", "PROJECTION_VALIDATION", substage, None, None)
+        for substage in projection_validation_substages
+    ]
+
     with monkeypatch.context() as patch:
         patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
         patch.setattr(
@@ -707,6 +785,45 @@ def test_cli_publishes_one_final_evidence_set(
     assert capsys.readouterr().err == (
         "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
         "PUBLICATION SEALED_VALIDATION\n"
+    )
+
+    with monkeypatch.context() as patch:
+        patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+        patch.setattr(
+            firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+        )
+        patch.setattr(
+            firewall,
+            "_final_payloads_from_raw",
+            lambda *args, **kwargs: ({"safe.json": b"{}\n"}, {}, _run_metadata()),
+        )
+        lineage = SimpleNamespace(descriptor=3, postcheck=lambda: None)
+        patch.setattr(
+            firewall, "_validate_lineage", lambda *args, **kwargs: nullcontext(lineage),
+        )
+        patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: None)
+        patch.setattr(firewall, "_source_tree_identity", lambda *args, **kwargs: TREE)
+
+        def reject_projection_validation_cli(*args: object, **kwargs: object) -> None:
+            publication_hook = kwargs.get("_publication_substage_hook")
+            projection_hook = kwargs.get("_projection_validation_substage_hook")
+            assert callable(publication_hook)
+            assert callable(projection_hook)
+            publication_hook("PROJECTION_VALIDATION")
+            projection_hook("RECEIPTS")
+            raise firewall.FirewallError(hostile)
+
+        patch.setattr(firewall, "publish_evidence_set", reject_projection_validation_cli)
+        assert firewall.main([
+            "publish", "--raw-root", str(raw_root),
+            "--destination", str(tmp_path / "final-projection-validation-cli"),
+            "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            "--foundation-context-path", str(raw_root / "foundation-context.json"),
+            "--repository-root", str(tmp_path),
+        ]) == 2
+    assert capsys.readouterr().err == (
+        "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
+        "PUBLICATION PROJECTION_VALIDATION RECEIPTS\n"
     )
 
     with monkeypatch.context() as patch:
