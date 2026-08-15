@@ -424,13 +424,27 @@ def test_cli_publishes_one_final_evidence_set(
     raw_root = tmp_path / "raw-acceptance"
     raw_root.mkdir(mode=0o700)
     hostile = "hostile-relative-path secret-value " + "f" * 64
+    raw_substages = (
+        "SOURCE_SNAPSHOT", "ROOT_INVENTORY", "ACCOUNTING",
+        "TOPOLOGY_INVENTORY", "RECEIPTS", "GOVERNANCE_REPORT",
+        "SEMANTIC_BINDING", "RAW_POSTCHECK",
+    )
+
+    def raw_error(substage: str) -> firewall.FirewallError:
+        error_type = getattr(firewall, "RawBindingError", None)
+        if error_type is None:
+            return firewall.FirewallError(
+                hostile, relative_path="hostile-relative-path", sha256="f" * 64,
+            )
+        return error_type(substage)
+
     expected = (
         ("RAW_BINDING", "FirewallError"),
         ("PROJECTION", "FirewallError"),
         ("SOURCE_TREE", "SourceTreeError"),
         ("PUBLICATION", "FirewallError"),
     )
-    observed: list[tuple[str, str, str, object, object]] = []
+    observed: list[tuple[str, str, str, str, object, object]] = []
     for stage, injected_type in expected:
         with monkeypatch.context() as patch:
             patch.setattr(
@@ -453,6 +467,8 @@ def test_cli_publishes_one_final_evidence_set(
             patch.setattr(firewall, "publish_evidence_set", lambda *args, **kwargs: {})
 
             def reject() -> None:
+                if stage == "RAW_BINDING":
+                    raise raw_error("ROOT_INVENTORY")
                 if injected_type == "SourceTreeError":
                     raise firewall.SourceTreeError("DIFF_FILES", "COMMAND_FAILURE")
                 raise firewall.FirewallError(
@@ -483,16 +499,52 @@ def test_cli_publishes_one_final_evidence_set(
                 )
             except firewall.FirewallError as exc:
                 observed.append((
-                    type(exc).__name__, getattr(exc, "stage", ""), str(exc),
+                    type(exc).__name__, getattr(exc, "stage", ""),
+                    getattr(exc, "raw_binding_substage", ""), str(exc),
                     exc.__cause__, exc.__context__,
                 ))
             else:
                 pytest.fail(f"{stage} injection was accepted")
     assert observed == [
-        ("FinalPublicationError", stage, "final publication rejected at a closed stage", None, None)
+        (
+            "FinalPublicationError", stage,
+            "ROOT_INVENTORY" if stage == "RAW_BINDING" else "",
+            "final publication rejected at a closed stage", None, None,
+        )
         for stage, _ in expected
     ]
     assert hostile not in repr(observed)
+
+    observed_raw_substages: list[tuple[str, str, object, object]] = []
+    for raw_substage in raw_substages:
+        with monkeypatch.context() as patch:
+            patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+            patch.setattr(
+                firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+            )
+            patch.setattr(
+                firewall,
+                "_final_payloads_from_raw",
+                lambda *args, _substage=raw_substage, **kwargs: (_ for _ in ()).throw(
+                    raw_error(_substage)
+                ),
+            )
+            with pytest.raises(firewall.FinalPublicationError) as captured:
+                firewall.publish_final_evidence(
+                    raw_root=raw_root,
+                    destination=tmp_path / f"final-raw-{raw_substage.lower()}",
+                    inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                    foundation_context_path=raw_root / "foundation-context.json",
+                    repository_root=tmp_path,
+                )
+            error = captured.value
+            observed_raw_substages.append((
+                error.stage, getattr(error, "raw_binding_substage", ""),
+                error.__cause__, error.__context__,
+            ))
+    assert observed_raw_substages == [
+        ("RAW_BINDING", substage, None, None) for substage in raw_substages
+    ]
 
     with monkeypatch.context() as patch:
         patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
@@ -502,9 +554,7 @@ def test_cli_publishes_one_final_evidence_set(
         patch.setattr(
             firewall, "_final_payloads_from_raw",
             lambda *args, **kwargs: (_ for _ in ()).throw(
-                firewall.FirewallError(
-                    hostile, relative_path="hostile-relative-path", sha256="f" * 64,
-                )
+                raw_error("ROOT_INVENTORY")
             ),
         )
         assert firewall.main([
@@ -515,7 +565,8 @@ def test_cli_publishes_one_final_evidence_set(
             "--repository-root", str(tmp_path),
         ]) == 2
     assert capsys.readouterr().err == (
-        "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT RAW_BINDING\n"
+        "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
+        "RAW_BINDING ROOT_INVENTORY\n"
     )
 
 

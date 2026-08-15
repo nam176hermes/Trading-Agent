@@ -121,6 +121,11 @@ _TOPOLOGY_FAILURE_PROJECTION_KEYS = frozenset({
 _FAILURE_PUBLICATION_STAGES = frozenset({
     "RAW_BINDING", "PROJECTION", "SOURCE_TREE", "PUBLICATION",
 })
+_RAW_BINDING_SUBSTAGES = frozenset({
+    "SOURCE_SNAPSHOT", "ROOT_INVENTORY", "ACCOUNTING",
+    "TOPOLOGY_INVENTORY", "RECEIPTS", "GOVERNANCE_REPORT",
+    "SEMANTIC_BINDING", "RAW_POSTCHECK",
+})
 _SOURCE_TREE_FAILURES = frozenset({
     ("DIFF_INDEX", "DRIFT"),
     ("DIFF_INDEX", "COMMAND_FAILURE"),
@@ -162,6 +167,16 @@ class SourceTreeError(FirewallError):
         self.source_tree_reason = reason
 
 
+class RawBindingError(FirewallError):
+    """Closed final raw-binding substage with no underlying diagnostic values."""
+
+    def __init__(self, substage: str) -> None:
+        if substage not in _RAW_BINDING_SUBSTAGES:
+            raise ValueError("raw binding substage is not closed")
+        super().__init__("raw binding rejected at a closed substage")
+        self.raw_binding_substage = substage
+
+
 class FailurePublicationError(FirewallError):
     """Closed failure-publisher stage with no underlying diagnostic values."""
 
@@ -192,10 +207,17 @@ class FinalPublicationError(FirewallError):
 
     def __init__(
         self, stage: str, *, code: str, category: str,
+        raw_binding_substage: str = "",
         source_tree_substage: str = "", source_tree_reason: str = "",
     ) -> None:
         if stage not in _FAILURE_PUBLICATION_STAGES:
             raise ValueError("final publication stage is not closed")
+        if raw_binding_substage:
+            if (
+                stage != "RAW_BINDING"
+                or raw_binding_substage not in _RAW_BINDING_SUBSTAGES
+            ):
+                raise ValueError("final raw binding detail is not closed")
         if source_tree_substage or source_tree_reason:
             if (
                 stage != "SOURCE_TREE"
@@ -208,6 +230,7 @@ class FinalPublicationError(FirewallError):
             code=code, category=category,
         )
         self.stage = stage
+        self.raw_binding_substage = raw_binding_substage
         self.source_tree_substage = source_tree_substage
         self.source_tree_reason = source_tree_reason
 
@@ -215,13 +238,21 @@ class FinalPublicationError(FirewallError):
 def _classify_final_publication(stage: str, exc: object) -> FinalPublicationError:
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
+    raw_binding_substage = ""
     source_tree_substage = ""
     source_tree_reason = ""
+    if stage == "RAW_BINDING":
+        raw_binding_substage = (
+            exc.raw_binding_substage
+            if isinstance(exc, RawBindingError)
+            else "SOURCE_SNAPSHOT"
+        )
     if stage == "SOURCE_TREE" and isinstance(exc, SourceTreeError):
         source_tree_substage = exc.source_tree_substage
         source_tree_reason = exc.source_tree_reason
     return FinalPublicationError(
         stage, code=code, category=category,
+        raw_binding_substage=raw_binding_substage,
         source_tree_substage=source_tree_substage,
         source_tree_reason=source_tree_reason,
     )
@@ -1915,46 +1946,56 @@ def _final_payloads_from_raw(
         "t-g03a-hosted-failure-inventory.tsv",
         topology.CLOSURE_RELATIVE_PATH.name,
     }
-    if set(raw.directories[""].entries) != expected_root:
-        raise _reject("raw evidence root inventory is not exact")
-    disclosure = topology.reconcile_portable_root_accounting(
-        inventory=inventory, evidence_root=raw_root,
-        run_id=run_id, head_sha=head_sha,
-        foundation_context_path=foundation_context_path,
-    )
-    context = topology.load_foundation_context(
-        foundation_context_path, run_id=run_id, head_sha=head_sha,
-    )
-    baseline = topology.load_portable_root_baseline(
-        inventory=inventory, evidence_root=raw_root,
-        run_id=run_id, head_sha=head_sha,
-        foundation_context_path=foundation_context_path,
-    )
+    root_directory = raw.directories.get("")
+    if root_directory is None or set(root_directory.entries) != expected_root:
+        raise RawBindingError("ROOT_INVENTORY")
+    try:
+        disclosure = topology.reconcile_portable_root_accounting(
+            inventory=inventory, evidence_root=raw_root,
+            run_id=run_id, head_sha=head_sha,
+            foundation_context_path=foundation_context_path,
+        )
+        context = topology.load_foundation_context(
+            foundation_context_path, run_id=run_id, head_sha=head_sha,
+        )
+        baseline = topology.load_portable_root_baseline(
+            inventory=inventory, evidence_root=raw_root,
+            run_id=run_id, head_sha=head_sha,
+            foundation_context_path=foundation_context_path,
+        )
+    except (FirewallError, OSError, ValueError, topology.TopologyError):
+        raise RawBindingError("ACCOUNTING") from None
     topology_directory = raw.directories.get("capability-topology")
     if topology_directory is None:
-        raise _reject("raw evidence lacks capability topology")
+        raise RawBindingError("TOPOLOGY_INVENTORY")
     expected_topology = set(_RAW_TOPOLOGY_FIXED_LEAVES)
     expected_topology.update(f"{code}.json" for code in _CODES)
     expected_topology.update(f"{code}.artifacts" for code in _CODES)
     if set(topology_directory.entries) != expected_topology:
-        raise _reject("raw capability topology inventory is not exact")
+        raise RawBindingError("TOPOLOGY_INVENTORY")
     receipts: list[dict[str, object]] = []
-    for code in sorted(_CODES):
-        marker_relative = f"capability-topology/{code}.json"
-        bundle_relative = f"capability-topology/{code}.artifacts"
-        marker = raw.leaves.get(marker_relative)
-        bundle = raw.directories.get(bundle_relative)
-        if marker is None or bundle is None:
-            raise _reject("raw Architecture-A marker/bundle set is incomplete")
-        receipt = topology.parse_receipt(marker.raw)
-        receipts.append(receipt)
-        expected_bundle = {"receipt.json", "manifest.json"}
-        if receipt.get("outcome") == "PASS":
-            expected_bundle.add("governance.json")
-        if set(bundle.entries) != expected_bundle:
-            raise _reject("raw Architecture-A bundle inventory is not exact")
-        if raw.leaves[f"{bundle_relative}/receipt.json"].raw != marker.raw:
-            raise _reject("raw Architecture-A marker/bundle receipt mismatch")
+    try:
+        for code in sorted(_CODES):
+            marker_relative = f"capability-topology/{code}.json"
+            bundle_relative = f"capability-topology/{code}.artifacts"
+            marker = raw.leaves.get(marker_relative)
+            bundle = raw.directories.get(bundle_relative)
+            if marker is None or bundle is None:
+                raise RawBindingError("RECEIPTS")
+            receipt = topology.parse_receipt(marker.raw)
+            receipts.append(receipt)
+            expected_bundle = {"receipt.json", "manifest.json"}
+            if receipt.get("outcome") == "PASS":
+                expected_bundle.add("governance.json")
+            if set(bundle.entries) != expected_bundle:
+                raise RawBindingError("RECEIPTS")
+            receipt_leaf = raw.leaves.get(f"{bundle_relative}/receipt.json")
+            if receipt_leaf is None or receipt_leaf.raw != marker.raw:
+                raise RawBindingError("RECEIPTS")
+    except RawBindingError:
+        raise
+    except (FirewallError, OSError, ValueError, KeyError, TypeError, topology.TopologyError):
+        raise RawBindingError("RECEIPTS") from None
     report_directory = raw.directories.get("test-governance-topology")
     success_report_entries = {
         "dashboard-raw.json", "dashboard.log", "legacy-raw.json", "legacy.log",
@@ -1975,50 +2016,61 @@ def _final_payloads_from_raw(
         )
         or (not governance_error and received_report_entries != success_report_entries)
     ):
-        raise _reject("raw governed report inventory is not exact")
-    semantic = topology.build_final_semantic_projection(
-        context, baseline, disclosure, receipts,
-    )
-    payloads: dict[str, bytes] = {
-        "capability-topology/t-g03a-hosted-failure-inventory.tsv":
-            raw.leaves["t-g03a-hosted-failure-inventory.tsv"].raw,
-        f"capability-topology/{topology.CLOSURE_RELATIVE_PATH.name}":
-            raw.leaves[topology.CLOSURE_RELATIVE_PATH.name].raw,
-        "capability-topology/aggregate.json": _canonical_json_bytes(disclosure),
-    }
-    if governance_error:
-        error_report = _parse_json_object(
-            raw.leaves[
-                "test-governance-topology/test-governance-error.json"
-            ].raw,
-            label="governed error report",
+        raise RawBindingError("GOVERNANCE_REPORT")
+    try:
+        semantic = topology.build_final_semantic_projection(
+            context, baseline, disclosure, receipts,
         )
-        error_raw, error_semantic = governance.build_final_governed_error(
-            error_report,
-        )
-        payloads["test-governance/error.json"] = error_raw
-        semantic["governance_error"] = error_semantic
-        generated_at_utc = str(error_report["generated_at_utc"])
-    else:
-        report = _parse_json_object(
-            raw.leaves["test-governance-topology/test-governance.json"].raw,
-            label="governed report",
-        )
-        if report.get("capability_topology") != disclosure:
-            raise _reject("governed report topology binding mismatch")
-        summary_raw, selected_tests = governance.build_final_governed_summary(report)
-        payloads["test-governance/summary.json"] = summary_raw
-        semantic["selected_tests"] = selected_tests
-        generated_at_utc = str(report["generated_at_utc"])
-    for relative, leaf in raw.leaves.items():
-        if relative.startswith("capability-topology/"):
-            payloads[relative] = leaf.raw
-    run_metadata = {
-        "run_id": run_id,
-        "attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
-        "generated_at_utc": generated_at_utc,
-    }
-    raw.postcheck()
+        payloads: dict[str, bytes] = {
+            "capability-topology/t-g03a-hosted-failure-inventory.tsv":
+                raw.leaves["t-g03a-hosted-failure-inventory.tsv"].raw,
+            f"capability-topology/{topology.CLOSURE_RELATIVE_PATH.name}":
+                raw.leaves[topology.CLOSURE_RELATIVE_PATH.name].raw,
+            "capability-topology/aggregate.json": _canonical_json_bytes(disclosure),
+        }
+        if governance_error:
+            error_report = _parse_json_object(
+                raw.leaves[
+                    "test-governance-topology/test-governance-error.json"
+                ].raw,
+                label="governed error report",
+            )
+            error_raw, error_semantic = governance.build_final_governed_error(
+                error_report,
+            )
+            payloads["test-governance/error.json"] = error_raw
+            semantic["governance_error"] = error_semantic
+            generated_at_utc = str(error_report["generated_at_utc"])
+        else:
+            report = _parse_json_object(
+                raw.leaves["test-governance-topology/test-governance.json"].raw,
+                label="governed report",
+            )
+            if report.get("capability_topology") != disclosure:
+                raise RawBindingError("SEMANTIC_BINDING")
+            summary_raw, selected_tests = governance.build_final_governed_summary(report)
+            payloads["test-governance/summary.json"] = summary_raw
+            semantic["selected_tests"] = selected_tests
+            generated_at_utc = str(report["generated_at_utc"])
+        for relative, leaf in raw.leaves.items():
+            if relative.startswith("capability-topology/"):
+                payloads[relative] = leaf.raw
+        run_metadata = {
+            "run_id": run_id,
+            "attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+            "generated_at_utc": generated_at_utc,
+        }
+    except RawBindingError:
+        raise
+    except (
+        FirewallError, OSError, ValueError, KeyError, TypeError,
+        governance.GovernanceError, topology.TopologyError,
+    ):
+        raise RawBindingError("SEMANTIC_BINDING") from None
+    try:
+        raw.postcheck()
+    except (FirewallError, OSError, ValueError):
+        raise RawBindingError("RAW_POSTCHECK") from None
     return payloads, semantic, run_metadata
 
 
@@ -2765,6 +2817,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (FirewallError, OSError, ValueError) as exc:
         if isinstance(exc, (FailurePublicationError, FinalPublicationError)):
             fields = [exc.code, exc.category, exc.stage]
+            if (
+                isinstance(exc, FinalPublicationError)
+                and exc.raw_binding_substage
+            ):
+                fields.append(exc.raw_binding_substage)
             if exc.source_tree_substage:
                 fields.extend([
                     exc.source_tree_substage, exc.source_tree_reason,
