@@ -3899,3 +3899,33 @@ collection, compile, inventory, and diff checks. No authority record,
 PostgreSQL/DB operation, policy/skip change, Make/workflow route, dependency,
 lock, production, broker/provider, or live change is authorized. Independent
 review is required before another remote update.
+
+### P0-12R24 correction — retained Phase3B corpus absence boundary
+
+Hosted run `31887391308` at exact
+`80a5ffd9b21071f424471e6e01d3568b39456f42` proves the native and legacy-UV
+corrections advanced to `EXT-PHASE3B-CORPUS`, then published a sealed terminal
+`INVALID` / `AUTHORITY_INVALID` receipt. Its fixed reviewed-corpus root
+`/home/thenam176/.hermes/crypto-research` is absent below a missing
+`/home/thenam176` component on the hosted runner. The Phase3B opener still
+requires a complete parent chain before its leaf-absence branch, so the safe
+missing boundary is mislabeled INVALID.
+
+The bounded correction applies the already reviewed retained
+nearest-safe-ancestor absence helper before the Phase3B present-corpus path.
+Safe missing corpus authority returns only the existing
+`ABSENT` / `AUTHORITY_ROOT_ABSENT` projection with one retained descriptor and
+the shared held/named/first-missing postcheck. The corpus analyzer and required
+entries are not read when the authority root is absent. Unsafe or foreign
+ancestry, symlinks, special entries, appearance, rename/replacement, and
+present-but-partial corpus contents remain fail-closed. The complete present
+corpus validator and authority facts remain unchanged.
+
+Strict RED must reproduce the hosted-shaped missing intermediate, require the
+retained descriptor, and prove appearance rejection in an existing canonical
+test node. GREEN must include initial symlink/0777 rejection, the full
+external-v2/topology packet, closure node identity, consumers, compile,
+generated inventory, and diff checks. No outcome/policy/skip/schema,
+PostgreSQL/DB authority, Make/workflow, dependency/lock, production,
+broker/provider, or live change is authorized. Independent review is required
+before the next remote attempt.
