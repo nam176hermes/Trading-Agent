@@ -5321,15 +5321,14 @@ def _open_bwrap_session(policy_path: Path) -> NativeProbeSession:
 
 
 def _native_probe_argv(session: NativeProbeSession) -> list[str]:
-    executable = f"/proc/self/fd/{session.descriptor}"
     if session.code == "NATIVE-BWRAP-OS-SANDBOX":
         return [
-            executable, "--die-with-parent", "--unshare-user", "--unshare-pid",
+            "bwrap", "--die-with-parent", "--unshare-user", "--unshare-pid",
             "--unshare-net", "--new-session", "--clearenv", "--ro-bind", "/usr", "/usr",
             "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
             "--tmpfs", "/tmp", "--", "/usr/bin/true",
         ]
-    return [executable, "--user", "--map-root-user", "/usr/bin/true"]
+    return ["unshare", "--user", "--map-root-user", "/usr/bin/true"]
 
 
 def _execute_native_probe(
@@ -5340,7 +5339,8 @@ def _execute_native_probe(
     command = _native_probe_argv(session)
     try:
         result = runner(
-            command, cwd=Path("/"), env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+            command, executable=f"/proc/self/fd/{session.descriptor}",
+            cwd=Path("/"), env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"},
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=10, check=False, pass_fds=(session.descriptor,),
         )

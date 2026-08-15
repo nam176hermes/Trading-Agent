@@ -537,9 +537,9 @@ def test_real_native_probe_argv_uses_retained_fd_and_exact_namespace_operations(
 
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         probe_factory = _available_native_probe_factory(Path(raw))
-        for code, suffix in (
+        for code, argv0, suffix in (
             (
-                "NATIVE-BWRAP-OS-SANDBOX",
+                "NATIVE-BWRAP-OS-SANDBOX", "bwrap",
                 [
                     "--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-net",
                     "--new-session", "--clearenv", "--ro-bind", "/usr", "/usr",
@@ -547,7 +547,10 @@ def test_real_native_probe_argv_uses_retained_fd_and_exact_namespace_operations(
                     "--tmpfs", "/tmp", "--", "/usr/bin/true",
                 ],
             ),
-            ("NATIVE-USERNS-ROOT-PROVISION", ["--user", "--map-root-user", "/usr/bin/true"]),
+            (
+                "NATIVE-USERNS-ROOT-PROVISION", "unshare",
+                ["--user", "--map-root-user", "/usr/bin/true"],
+            ),
         ):
             with probe_factory(code) as fixture:
                 pending = topology.NativeProbeSession(
@@ -565,8 +568,9 @@ def test_real_native_probe_argv_uses_retained_fd_and_exact_namespace_operations(
                 assert probe.state == "AVAILABLE"
                 assert probe.probe["exit_code"] == 0
                 command, kwargs = observed[-1]
-                assert command[0].startswith("/proc/self/fd/")
+                assert command[0] == argv0
                 assert command[1:] == suffix
+                assert kwargs["executable"] == f"/proc/self/fd/{probe.descriptor}"
                 assert kwargs["pass_fds"] == (probe.descriptor,)
                 assert kwargs["env"] == {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"}
 
