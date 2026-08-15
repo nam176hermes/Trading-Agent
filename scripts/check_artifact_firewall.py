@@ -131,6 +131,13 @@ _SEMANTIC_BINDING_SUBSTAGES = frozenset({
     "DISCLOSURE_BINDING", "GOVERNANCE_PROJECTION",
     "TOPOLOGY_PAYLOAD_COPY", "RUN_METADATA",
 })
+_PUBLICATION_SUBSTAGES = frozenset({
+    "INPUT_BINDING", "STAGING_LINEAGE", "DESTINATION_LINEAGE",
+    "DESTINATION_ABSENCE", "SOURCE_SNAPSHOT", "PROJECTION_VALIDATION",
+    "MANIFEST_BUILD", "CANDIDATE_BUILD", "STAGING_POSTCHECK",
+    "DESTINATION_POSTCHECK", "CANDIDATE_SEAL", "SEALED_VALIDATION",
+    "ATOMIC_RENAME", "PUBLISHED_VALIDATION",
+})
 _SOURCE_TREE_FAILURES = frozenset({
     ("DIFF_INDEX", "DRIFT"),
     ("DIFF_INDEX", "COMMAND_FAILURE"),
@@ -227,6 +234,7 @@ class FinalPublicationError(FirewallError):
         self, stage: str, *, code: str, category: str,
         raw_binding_substage: str = "",
         semantic_binding_substage: str = "",
+        publication_substage: str = "",
         source_tree_substage: str = "", source_tree_reason: str = "",
     ) -> None:
         if stage not in _FAILURE_PUBLICATION_STAGES:
@@ -244,6 +252,12 @@ class FinalPublicationError(FirewallError):
                 or semantic_binding_substage not in _SEMANTIC_BINDING_SUBSTAGES
             ):
                 raise ValueError("final semantic binding detail is not closed")
+        if publication_substage:
+            if (
+                stage != "PUBLICATION"
+                or publication_substage not in _PUBLICATION_SUBSTAGES
+            ):
+                raise ValueError("final publication substage is not closed")
         if source_tree_substage or source_tree_reason:
             if (
                 stage != "SOURCE_TREE"
@@ -258,11 +272,14 @@ class FinalPublicationError(FirewallError):
         self.stage = stage
         self.raw_binding_substage = raw_binding_substage
         self.semantic_binding_substage = semantic_binding_substage
+        self.publication_substage = publication_substage
         self.source_tree_substage = source_tree_substage
         self.source_tree_reason = source_tree_reason
 
 
-def _classify_final_publication(stage: str, exc: object) -> FinalPublicationError:
+def _classify_final_publication(
+    stage: str, exc: object, *, publication_substage: str = "",
+) -> FinalPublicationError:
     code = exc.code if isinstance(exc, FirewallError) else "ARTIFACT_FIREWALL_REJECTED"
     category = exc.category if isinstance(exc, FirewallError) else "LAYOUT"
     raw_binding_substage = ""
@@ -284,6 +301,7 @@ def _classify_final_publication(stage: str, exc: object) -> FinalPublicationErro
         stage, code=code, category=category,
         raw_binding_substage=raw_binding_substage,
         semantic_binding_substage=semantic_binding_substage,
+        publication_substage=publication_substage,
         source_tree_substage=source_tree_substage,
         source_tree_reason=source_tree_reason,
     )
@@ -1743,8 +1761,16 @@ def _publish_evidence_set(
     complete_validator: Callable[[_Snapshot], dict[str, object]],
     published_validator: Callable[..., dict[str, object]],
     boundary_hook: Callable[[str], None] | None = None,
+    _publication_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Seal retained staging bytes and atomically publish without replacement."""
+    def enter(substage: str) -> None:
+        if substage not in _PUBLICATION_SUBSTAGES:
+            raise ValueError("publication substage is not closed")
+        if _publication_substage_hook is not None:
+            _publication_substage_hook(substage)
+
+    enter("INPUT_BINDING")
     _validate_identity_inputs(
         head_sha, source_tree_sha256, semantic_projection, run_metadata,
     )
@@ -1753,23 +1779,29 @@ def _publish_evidence_set(
     # Reject an unsafe source before destination lineage creation can leave any
     # publication-side directory behind; the snapshot below then retains a
     # fresh lineage for the complete copy boundary.
+    enter("STAGING_LINEAGE")
     with _validate_lineage(staging_root, create=False):
         pass
+    enter("DESTINATION_LINEAGE")
     destination_lineage = _validate_lineage(destination.parent, create=True)
     parent_descriptor = destination_lineage.descriptor
     candidate_name = f".{destination.name}.staging-{secrets.token_hex(16)}"
     try:
         with destination_lineage:
+            enter("DESTINATION_ABSENCE")
             try:
                 os.stat(destination.name, dir_fd=parent_descriptor, follow_symlinks=False)
             except FileNotFoundError:
                 pass
             else:
                 raise _reject("destination already exists")
+            enter("SOURCE_SNAPSHOT")
             with _snapshot_tree(
                 staging_root, directory_mode=0o700, file_mode=0o600,
             ) as source:
+                enter("PROJECTION_VALIDATION")
                 projection_validator(source)
+                enter("MANIFEST_BUILD")
                 payloads = {relative: leaf.raw for relative, leaf in source.leaves.items()}
                 manifest = _make_manifest(
                     payloads=payloads, head_sha=head_sha,
@@ -1780,12 +1812,16 @@ def _publish_evidence_set(
                 manifest_raw = _canonical_json_bytes(manifest)
                 complete_payloads = {**payloads, "manifest.json": manifest_raw}
                 complete_payloads["SHA256SUMS"] = _checksum_bytes(complete_payloads)
+                enter("CANDIDATE_BUILD")
                 _build_candidate(parent_descriptor, candidate_name, complete_payloads)
                 if boundary_hook is not None:
                     boundary_hook("after-manifest")
+                enter("STAGING_POSTCHECK")
                 source.postcheck()
+            enter("DESTINATION_POSTCHECK")
             destination_lineage.postcheck()
             candidate = destination.parent / candidate_name
+            enter("CANDIDATE_SEAL")
             sealed_identity = _seal_candidate_modes(
                 parent_descriptor=parent_descriptor,
                 candidate_name=candidate_name,
@@ -1796,9 +1832,11 @@ def _publish_evidence_set(
                 retained_parent_descriptor=parent_descriptor,
                 retained_name=candidate_name,
             ) as sealed:
+                enter("SEALED_VALIDATION")
                 _require_tree_identity(sealed, sealed_identity)
                 complete_validator(sealed)
                 candidate_identity = _stable_identity(os.fstat(sealed.root_descriptor))
+                enter("ATOMIC_RENAME")
                 try:
                     _renameat2_noreplace(
                         parent_descriptor, candidate_name,
@@ -1827,6 +1865,7 @@ def _publish_evidence_set(
                             raise _reject("destination already exists") from exc
                         raise _reject("atomic publication success is unresolved") from exc
                 os.fsync(parent_descriptor)
+                enter("PUBLISHED_VALIDATION")
                 destination_lineage.postcheck()
                 sealed.postcheck(
                     named_parent_descriptor=parent_descriptor,
@@ -1856,6 +1895,7 @@ def publish_evidence_set(
     source_tree_sha256: str, semantic_projection: Mapping[str, object],
     run_metadata: Mapping[str, object],
     boundary_hook: Callable[[str], None] | None = None,
+    _publication_substage_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Seal retained acceptance projection bytes and publish without replacement."""
     return _publish_evidence_set(
@@ -1867,6 +1907,7 @@ def publish_evidence_set(
         complete_validator=_validate_complete_snapshot,
         published_validator=validate_published_evidence,
         boundary_hook=boundary_hook,
+        _publication_substage_hook=_publication_substage_hook,
     )
 
 
@@ -2168,6 +2209,12 @@ def publish_final_evidence(
     if failure is not None:
         raise failure
     failure = None
+    publication_substage = "INPUT_BINDING"
+
+    def remember_publication_substage(substage: str) -> None:
+        nonlocal publication_substage
+        publication_substage = substage
+
     try:
         projection_name = f".final-projection-{secrets.token_hex(16)}"
         with _validate_lineage(raw_root, create=False) as raw_lineage:
@@ -2193,9 +2240,13 @@ def publish_final_evidence(
             source_tree_sha256=source_tree_sha256,
             semantic_projection=semantic,
             run_metadata=run_metadata,
+            _publication_substage_hook=remember_publication_substage,
         )
     except (FirewallError, OSError, ValueError) as exc:
-        failure = _classify_final_publication("PUBLICATION", exc)
+        failure = _classify_final_publication(
+            "PUBLICATION", exc,
+            publication_substage=publication_substage,
+        )
     if failure is not None:
         raise failure
     return manifest
@@ -2894,6 +2945,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fields.append(exc.raw_binding_substage)
                 if exc.semantic_binding_substage:
                     fields.append(exc.semantic_binding_substage)
+            if (
+                isinstance(exc, FinalPublicationError)
+                and exc.publication_substage
+            ):
+                fields.append(exc.publication_substage)
             if exc.source_tree_substage:
                 fields.extend([
                     exc.source_tree_substage, exc.source_tree_reason,

@@ -434,6 +434,20 @@ def test_cli_publishes_one_final_evidence_set(
         "DISCLOSURE_BINDING", "GOVERNANCE_PROJECTION",
         "TOPOLOGY_PAYLOAD_COPY", "RUN_METADATA",
     )
+    publication_substages = (
+        "INPUT_BINDING", "STAGING_LINEAGE", "DESTINATION_LINEAGE",
+        "DESTINATION_ABSENCE", "SOURCE_SNAPSHOT", "PROJECTION_VALIDATION",
+        "MANIFEST_BUILD", "CANDIDATE_BUILD", "STAGING_POSTCHECK",
+        "DESTINATION_POSTCHECK", "CANDIDATE_SEAL", "SEALED_VALIDATION",
+        "ATOMIC_RENAME", "PUBLISHED_VALIDATION",
+    )
+    observed_publication_path: list[str] = []
+    _publish(
+        staging,
+        tmp_path / "runtime/state/ci-portable-hooked",
+        _publication_substage_hook=observed_publication_path.append,
+    )
+    assert observed_publication_path == list(publication_substages)
 
     def raw_error(substage: str) -> firewall.FirewallError:
         error_type = getattr(firewall, "RawBindingError", None)
@@ -610,6 +624,90 @@ def test_cli_publishes_one_final_evidence_set(
         )
         for substage in semantic_substages
     ]
+
+    observed_publication_substages: list[tuple[str, str, object, object]] = []
+    for publication_substage in publication_substages:
+        with monkeypatch.context() as patch:
+            patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+            patch.setattr(
+                firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+            )
+            patch.setattr(
+                firewall,
+                "_final_payloads_from_raw",
+                lambda *args, **kwargs: ({"safe.json": b"{}\n"}, {}, _run_metadata()),
+            )
+            lineage = SimpleNamespace(descriptor=3, postcheck=lambda: None)
+            patch.setattr(
+                firewall, "_validate_lineage", lambda *args, **kwargs: nullcontext(lineage),
+            )
+            patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: None)
+            patch.setattr(firewall, "_source_tree_identity", lambda *args, **kwargs: TREE)
+
+            def reject_publication(*args: object, **kwargs: object) -> None:
+                hook = kwargs.get("_publication_substage_hook")
+                if callable(hook):
+                    hook(publication_substage)
+                raise firewall.FirewallError(
+                    hostile, relative_path="hostile-relative-path", sha256="f" * 64,
+                )
+
+            patch.setattr(firewall, "publish_evidence_set", reject_publication)
+            with pytest.raises(firewall.FinalPublicationError) as captured:
+                firewall.publish_final_evidence(
+                    raw_root=raw_root,
+                    destination=tmp_path / f"final-publication-{publication_substage.lower()}",
+                    inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                    foundation_context_path=raw_root / "foundation-context.json",
+                    repository_root=tmp_path,
+                )
+            error = captured.value
+            observed_publication_substages.append((
+                error.stage,
+                getattr(error, "publication_substage", ""),
+                error.__cause__,
+                error.__context__,
+            ))
+    assert observed_publication_substages == [
+        ("PUBLICATION", substage, None, None)
+        for substage in publication_substages
+    ]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
+        patch.setattr(
+            firewall, "_snapshot_tree", lambda *args, **kwargs: nullcontext(SimpleNamespace()),
+        )
+        patch.setattr(
+            firewall,
+            "_final_payloads_from_raw",
+            lambda *args, **kwargs: ({"safe.json": b"{}\n"}, {}, _run_metadata()),
+        )
+        lineage = SimpleNamespace(descriptor=3, postcheck=lambda: None)
+        patch.setattr(
+            firewall, "_validate_lineage", lambda *args, **kwargs: nullcontext(lineage),
+        )
+        patch.setattr(firewall, "_build_candidate", lambda *args, **kwargs: None)
+        patch.setattr(firewall, "_source_tree_identity", lambda *args, **kwargs: TREE)
+
+        def reject_publication_cli(*args: object, **kwargs: object) -> None:
+            hook = kwargs.get("_publication_substage_hook")
+            assert callable(hook)
+            hook("SEALED_VALIDATION")
+            raise firewall.FirewallError(hostile)
+
+        patch.setattr(firewall, "publish_evidence_set", reject_publication_cli)
+        assert firewall.main([
+            "publish", "--raw-root", str(raw_root),
+            "--destination", str(tmp_path / "final-publication-cli"),
+            "--inventory", "tests/fixtures/t-g03a-hosted-failure-inventory.tsv",
+            "--foundation-context-path", str(raw_root / "foundation-context.json"),
+            "--repository-root", str(tmp_path),
+        ]) == 2
+    assert capsys.readouterr().err == (
+        "artifact firewall: ARTIFACT_FIREWALL_REJECTED LAYOUT "
+        "PUBLICATION SEALED_VALIDATION\n"
+    )
 
     with monkeypatch.context() as patch:
         patch.setattr(topology, "_active_foundation_identity", lambda: ("1001", HEAD))
