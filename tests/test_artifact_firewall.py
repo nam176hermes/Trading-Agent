@@ -160,11 +160,28 @@ def _staging(tmp_path: Path) -> Path:
         | {record["test_node_id"] for record in closure_records}
     ))
     candidate_raw = ("\n".join(governed_nodes) + "\n").encode()
+    deselected_records = [
+        {
+            "test_node_id": "tests/host/test_authority.py::test_host_authority",
+            "component": "root",
+            "outcome": "deselected",
+            "reason": "marker expression deselected: host_coupled",
+            "phase": "collection",
+        },
+        {
+            "test_node_id": "tests/runtime/test_database.py::test_runtime_database",
+            "component": "root",
+            "outcome": "deselected",
+            "reason": "marker expression deselected: runtime_postgres",
+            "phase": "collection",
+        },
+    ]
     collection = {
         "schema_version": 1,
         "component": "root",
         "collection_only": True,
         "pytest_exit_status": 0,
+        "summary": {"collected": len(governed_nodes), "deselected": 2},
         "tests": [
             {
                 "test_node_id": node,
@@ -174,7 +191,7 @@ def _staging(tmp_path: Path) -> Path:
                 "phase": "collection",
             }
             for node in governed_nodes
-        ],
+        ] + deselected_records,
     }
     collection_raw = _canonical(collection)
     baseline: dict[str, object] = {
@@ -469,6 +486,59 @@ def test_cli_publishes_one_final_evidence_set(
             publication_substage="PROJECTION_VALIDATION",
             projection_validation_substage="UNKNOWN",
         )
+    for collection_mutation in (
+        "summary-count", "summary-key", "duplicate", "overlap",
+        "reason", "phase", "outcome",
+    ):
+        case = tmp_path / f"collection-{collection_mutation}"
+        case.mkdir()
+        mutated_staging = _staging(case)
+        collection_path = (
+            mutated_staging
+            / "capability-topology/portable-root-collection.governance.json"
+        )
+        collection_document = json.loads(collection_path.read_text(encoding="utf-8"))
+        deselected = [
+            item for item in collection_document["tests"]
+            if item["outcome"] == "deselected"
+        ]
+        collected = next(
+            item for item in collection_document["tests"]
+            if item["outcome"] == "collected"
+        )
+        if collection_mutation == "summary-count":
+            collection_document["summary"]["deselected"] += 1
+        elif collection_mutation == "summary-key":
+            collection_document["summary"]["skipped"] = 0
+        elif collection_mutation == "duplicate":
+            collection_document["tests"].append(dict(deselected[0]))
+            collection_document["summary"]["deselected"] += 1
+        elif collection_mutation == "overlap":
+            deselected[0]["test_node_id"] = collected["test_node_id"]
+        elif collection_mutation == "reason":
+            deselected[0]["reason"] = "unreviewed deselection"
+        elif collection_mutation == "phase":
+            deselected[0]["phase"] = "setup"
+        else:
+            deselected[0]["outcome"] = "skipped"
+        mutated_collection_raw = _canonical(collection_document)
+        collection_path.write_bytes(mutated_collection_raw)
+        baseline_path = (
+            mutated_staging / "capability-topology/portable-root-baseline.json"
+        )
+        baseline_document = json.loads(baseline_path.read_text(encoding="utf-8"))
+        baseline_document["collection_report_sha256"] = hashlib.sha256(
+            mutated_collection_raw
+        ).hexdigest()
+        baseline_document["baseline_sha256"] = topology._baseline_payload_sha256(
+            baseline_document
+        )
+        baseline_path.write_bytes(_canonical(baseline_document))
+        with pytest.raises(firewall.FirewallError, match="collection governance"):
+            _publish(
+                mutated_staging,
+                case / "runtime/state/ci-portable-invalid-collection",
+            )
 
     def raw_error(substage: str) -> firewall.FirewallError:
         error_type = getattr(firewall, "RawBindingError", None)

@@ -1122,33 +1122,60 @@ def _validate_projection_schemas(
     enter("COLLECTION")
     collection = _object_leaf(snapshot, prefix + "portable-root-collection.governance.json")
     collection_tests = collection.get("tests")
-    collected = [
-        item.get("test_node_id") for item in collection_tests
-        if isinstance(item, dict) and item.get("outcome") == "collected"
-    ] if isinstance(collection_tests, list) else []
+    collected: list[str] = []
+    deselected: list[str] = []
+    collection_counts: dict[str, int] = {}
+    collection_records_valid = isinstance(collection_tests, list)
+    if isinstance(collection_tests, list):
+        for item in collection_tests:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {
+                    "test_node_id", "component", "outcome", "reason", "phase",
+                }
+                or item.get("component") != "root"
+                or item.get("phase") != "collection"
+                or not isinstance(item.get("test_node_id"), str)
+                or not topology._is_portable_root_pytest_node_id(
+                    str(item.get("test_node_id"))
+                )
+                or item.get("outcome") not in {"collected", "deselected"}
+            ):
+                collection_records_valid = False
+                continue
+            outcome = str(item["outcome"])
+            reason = item.get("reason")
+            if (
+                (outcome == "collected" and reason != "")
+                or (
+                    outcome == "deselected"
+                    and reason not in {
+                        "marker expression deselected: host_coupled",
+                        "marker expression deselected: runtime_postgres",
+                    }
+                )
+            ):
+                collection_records_valid = False
+                continue
+            node_id = str(item["test_node_id"])
+            (collected if outcome == "collected" else deselected).append(node_id)
+            collection_counts[outcome] = collection_counts.get(outcome, 0) + 1
     if (
         set(collection) != {
             "schema_version", "component", "collection_only",
-            "pytest_exit_status", "tests",
+            "pytest_exit_status", "summary", "tests",
         }
         or collection.get("schema_version") != 1
         or collection.get("component") != "root"
         or collection.get("collection_only") is not True
         or collection.get("pytest_exit_status") != 0
-        or not isinstance(collection_tests, list)
-        or len(collection_tests) != len(candidates)
-        or any(
-            not isinstance(item, dict)
-            or set(item) != {
-                "test_node_id", "component", "outcome", "reason", "phase",
-            }
-            or item.get("component") != "root"
-            or item.get("outcome") != "collected"
-            or item.get("reason") != ""
-            or item.get("phase") != "collection"
-            for item in collection_tests
-        )
+        or not collection_records_valid
+        or collection.get("summary") != collection_counts
         or sorted(collected) != candidates
+        or len(collected) != len(candidates)
+        or len(deselected) != len(set(deselected))
+        or set(deselected) & set(candidates)
+        or len(collected) + len(deselected) != len(collection_tests)
     ):
         raise _reject("portable collection governance is invalid")
     enter("REMAINDER")
