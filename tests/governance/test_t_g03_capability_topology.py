@@ -11,6 +11,7 @@ import tempfile
 import subprocess
 from types import SimpleNamespace
 
+from scripts import materialize_sealed_uv_exec as sealed_uv
 from scripts import t_g03_capability_topology as topology
 from scripts import test_governance_pytest as governance_plugin
 
@@ -209,6 +210,22 @@ def _valid_nautilus_toolchain_authority() -> dict[str, object]:
         "llvm_manifest_sha256": "5" * 64,
         "llvm_tool_count": 3,
         "llvm_resource_header_count": 305,
+    }
+
+
+def _valid_nautilus_sandbox_authority() -> dict[str, object]:
+    policy = sealed_uv.load_policy(topology.TRUSTED_BWRAP_POLICY)
+    return {
+        "regular_file_status": "ROOT_OWNED_POLICY_BOUND_EXECUTABLE",
+        "policy_sha256": topology._sha256_path(topology.TRUSTED_BWRAP_POLICY),
+        "expected_sha256": policy["sandbox_sha256"],
+        "observed_sha256": policy["sandbox_sha256"],
+        "expected_uid": policy["sandbox_uid"],
+        "observed_uid": policy["sandbox_uid"],
+        "expected_gid": policy["sandbox_gid"],
+        "observed_gid": policy["sandbox_gid"],
+        "expected_mode": int(str(policy["sandbox_mode"]), 8),
+        "observed_mode": int(str(policy["sandbox_mode"]), 8),
     }
 
 
@@ -610,17 +627,61 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
     assert (invalid.state, invalid.fact) == ("BROKEN", "NATIVE_IDENTITY_INVALID")
     assert invalid.descriptor == -1
 
-    bwrap = topology._open_bwrap_session(topology.TRUSTED_BWRAP_POLICY)
-    assert bwrap.state == "PROBE_PENDING"
-    try:
-        sandbox = topology._sandbox_authority_from_session(
-            bwrap, bwrap_policy_path=topology.TRUSTED_BWRAP_POLICY,
+    bwrap_executable = tmp_path / "retained-private-bwrap"
+    bwrap_raw = b"retained private bwrap fixture"
+    bwrap_executable.write_bytes(bwrap_raw)
+    bwrap_executable.chmod(0o755)
+    policy_document = json.loads(
+        topology.TRUSTED_BWRAP_POLICY.read_text(encoding="ascii"),
+    )
+    policy_document.update({
+        "sandbox_path": str(bwrap_executable),
+        "sandbox_sha256": hashlib.sha256(bwrap_raw).hexdigest(),
+        "sandbox_uid": os.geteuid(),
+        "sandbox_gid": os.getegid(),
+    })
+    policy_path = tmp_path / "private-bwrap-policy.json"
+    policy_path.write_bytes(topology.canonical_json_bytes(policy_document))
+    with monkeypatch.context() as private_bwrap:
+        private_bwrap.setattr(sealed_uv, "SANDBOX_PATH", str(bwrap_executable))
+        policy = sealed_uv.load_policy(policy_path)
+        bwrap_descriptor = os.open(bwrap_executable, os.O_RDONLY | os.O_CLOEXEC)
+        bwrap_named = bwrap_executable.lstat()
+        bwrap = topology.NativeProbeSession(
+            "NATIVE-BWRAP-OS-SANDBOX", "PROBE_PENDING", "NATIVE_PROBE_INVALID",
+            topology._native_probe_record(
+                "NATIVE-BWRAP-OS-SANDBOX",
+                exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                executable_sha256=hashlib.sha256(bwrap_raw).hexdigest(),
+            ),
+            bwrap_descriptor, bwrap_executable,
+            topology._artifact_identity(bwrap_named),
+            topology._artifact_identity(os.fstat(bwrap_descriptor)), policy,
         )
-        assert sandbox["observed_uid"] == sandbox["expected_uid"] == 0
-        assert sandbox["observed_gid"] == sandbox["expected_gid"] == 0
-        assert sandbox["observed_mode"] == sandbox["expected_mode"] == 0o755
-    finally:
-        os.close(bwrap.descriptor)
+        assert bwrap.state == "PROBE_PENDING"
+        try:
+            private_sandbox = topology._sandbox_authority_from_session(
+                bwrap, bwrap_policy_path=policy_path,
+            )
+            assert (
+                private_sandbox["observed_uid"]
+                == private_sandbox["expected_uid"] == os.geteuid()
+            )
+            assert (
+                private_sandbox["observed_gid"]
+                == private_sandbox["expected_gid"] == os.getegid()
+            )
+            assert (
+                private_sandbox["observed_mode"]
+                == private_sandbox["expected_mode"] == 0o755
+            )
+            assert (
+                private_sandbox["observed_sha256"]
+                == private_sandbox["expected_sha256"]
+            )
+            topology._postcheck_native_probe(bwrap)
+        finally:
+            os.close(bwrap.descriptor)
 
     with _safe_authority_tempdir() as raw:
         root = Path(raw)
@@ -712,7 +773,7 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
                         "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
                     )
                 )
-                inverse["authority"]["sandbox"] = sandbox
+                inverse["authority"]["sandbox"] = _valid_nautilus_sandbox_authority()
                 rehash(inverse)
                 assert validate(inverse) == inverse
 
