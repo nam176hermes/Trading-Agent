@@ -57,7 +57,7 @@ def _semantic(**updates: object) -> dict[str, object]:
             "external_authorities_status": "DEFERRED",
             "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
             "portable_root_remainder_status": "PASS",
-            "baseline_candidate_count": "79",
+            "baseline_candidate_count": "115",
         },
         "receipt_results": [
             {
@@ -288,12 +288,20 @@ def _staging(tmp_path: Path) -> Path:
     for code in sorted(topology.CODE_CLASSIFICATION):
         expected = topology._expected_rows(inventory_rows, code)[1]
         if code.startswith("NATIVE-"):
-            session = SimpleNamespace(
-                state="UNAVAILABLE",
-                fact="NATIVE_COMPONENT_ABSENT",
-                probe=topology._native_probe_record(
-                    code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
-                ),
+            session = (
+                topology.NativeMultiAuthoritySession(
+                    code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                    topology._native_multi_probe_record(
+                        code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                    ),
+                    topology._nautilus_multi_authority(code), (), lambda: None,
+                )
+                if code in topology.NATIVE_MULTI_CODES else SimpleNamespace(
+                    state="UNAVAILABLE", fact="NATIVE_COMPONENT_ABSENT",
+                    probe=topology._native_probe_record(
+                        code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                    ),
+                )
             )
             receipt = topology.make_native_receipt(
                 context=context, code=code, expected=expected, collected=(),
@@ -304,18 +312,18 @@ def _staging(tmp_path: Path) -> Path:
                 receipt, topology.canonical_json_bytes(receipt), None,
             )
         else:
-            authority = (
-                topology._phase3b_absent_authority()
-                if code == "EXT-PHASE3B-CORPUS"
-                else topology._legacy_absent_authority()
-            )
+            authority = {
+                "EXT-PHASE3B-CORPUS": topology._phase3b_absent_authority,
+                "EXT-LEGACY-UV-AUTHORITY": topology._legacy_absent_authority,
+                "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": (
+                    topology._absent_nautilus_external_authority
+                ),
+            }[code]()
             session = SimpleNamespace(
                 state="ABSENT",
-                fact=(
-                    "AUTHORITY_ROOT_ABSENT"
-                    if code == "EXT-PHASE3B-CORPUS"
-                    else "AUTHORITY_EXECUTABLE_ABSENT"
-                ),
+                fact=("AUTHORITY_EXECUTABLE_ABSENT"
+                      if code == "EXT-LEGACY-UV-AUTHORITY"
+                      else "AUTHORITY_ROOT_ABSENT"),
                 authority=authority,
             )
             receipt = topology.make_external_receipt(

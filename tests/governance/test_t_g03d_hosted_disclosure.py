@@ -1776,7 +1776,7 @@ def test_topology_runner_merges_sealed_root_with_retained_component_governance(
 def test_dynamic_baseline_includes_a_new_ordinary_root_node_and_derives_the_exact_remainder(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Break caught: portable CI freezes the governed 79 IDs and loses a new root test."""
+    """Break caught: portable CI freezes the governed 115 IDs and loses a new root test."""
     run_id = "31641536482"
     head_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,

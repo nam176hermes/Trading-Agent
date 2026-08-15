@@ -728,11 +728,11 @@ def _topology(context: _ValidationContext) -> None:
         getattr(row, "node_id", None) for row in closed
     }:
         _fail("P0_CLOSURE_TOPOLOGY_OVERLAP")
-    if len(active) != 30 or len(closed) != 49:
+    if len(active) != 66 or len(closed) != 49:
         _fail("P0_CLOSURE_TOPOLOGY_COUNT_INVALID")
     native = sum(getattr(row, "classification", None) == "NATIVE_CAPABILITY_REQUIRED" for row in active)
     external = sum(getattr(row, "classification", None) == "EXTERNAL_AUTHORITY_REQUIRED" for row in active)
-    if (native, external) != (24, 6):
+    if (native, external) != (58, 8):
         _fail("P0_CLOSURE_TOPOLOGY_COUNT_INVALID")
     if any(getattr(row, "proof_command", None) != topology.CLOSURE_PROOF_COMMAND for row in closed):
         _fail("P0_CLOSURE_TOPOLOGY_BROAD_SKIP")

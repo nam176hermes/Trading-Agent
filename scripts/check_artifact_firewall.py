@@ -45,8 +45,11 @@ _REDACTED = frozenset({"", "redacted", "[redacted]", "<redacted>", "absent", "no
 _CODES = frozenset({
     "NATIVE-BWRAP-OS-SANDBOX",
     "NATIVE-USERNS-ROOT-PROVISION",
+    "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
+    "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX",
     "EXT-PHASE3B-CORPUS",
     "EXT-LEGACY-UV-AUTHORITY",
+    "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
 })
 _TOPOLOGY_FIXED_LEAVES = frozenset({
     ".reservation",

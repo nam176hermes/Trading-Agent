@@ -35,7 +35,7 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
         "external_authorities_status": "DEFERRED",
         "runtime_proof": "COMPLETE_WITH_DEFERRED_RUNTIME_CHECKS",
         "portable_root_remainder_status": "PASS",
-        "baseline_candidate_count": "79",
+        "baseline_candidate_count": "115",
     }
     receipts = [{
         "capability_or_authority_code": "NATIVE-BWRAP-OS-SANDBOX",
@@ -119,6 +119,15 @@ def _available_native_probe_factory(
 ) -> object:
     @topology.contextmanager
     def factory(code: str):
+        if code in topology.NATIVE_MULTI_CODES:
+            yield topology.NativeMultiAuthoritySession(
+                code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                topology._native_multi_probe_record(
+                    code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                ),
+                topology._nautilus_multi_authority(code), (), lambda: None,
+            )
+            return
         executable = root / f"{code}.authority"
         executable.write_bytes(b"retained native authority")
         descriptor = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
@@ -143,7 +152,12 @@ def _available_native_probe_factory(
 
 
 def _patch_native_identity_postcheck(monkeypatch: pytest.MonkeyPatch) -> None:
-    def postcheck(session: topology.NativeProbeSession) -> None:
+    def postcheck(
+        session: topology.NativeProbeSession | topology.NativeMultiAuthoritySession,
+    ) -> None:
+        if isinstance(session, topology.NativeMultiAuthoritySession):
+            session.postcheck()
+            return
         assert session.executable_path is not None
         if (
             topology._artifact_identity(session.executable_path.lstat())
@@ -158,6 +172,43 @@ def _patch_native_identity_postcheck(monkeypatch: pytest.MonkeyPatch) -> None:
             )
 
     monkeypatch.setattr(topology, "_postcheck_native_probe", postcheck)
+
+
+def _fixture_nautilus_toolchain_authority() -> dict[str, object]:
+    return {
+        "authority_kind": "NAUTILUS_SEALED_TOOLCHAINS_V1",
+        "rust_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "llvm_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "rust_policy_sha256": "1" * 64,
+        "llvm_policy_sha256": "2" * 64,
+        "rust_manifest_sha256": "3" * 64,
+        "rust_tree_sha256": "4" * 64,
+        "rust_file_count": 149,
+        "llvm_manifest_sha256": "5" * 64,
+        "llvm_tool_count": 3,
+        "llvm_resource_header_count": 305,
+    }
+
+
+def _fixture_nautilus_toolchains(root: Path) -> tuple[Path, Path]:
+    rust = root / "rust"
+    llvm = root / "llvm"
+    for path in (
+        rust / "materialized-toolchain-manifest.json",
+        rust / "bin/cargo", rust / "bin/rustc",
+        llvm / "llvm-toolchain-manifest.json",
+        llvm / "bin/clang", llvm / "bin/clang++", llvm / "bin/ld.lld",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_bytes(b"sealed fixture\n")
+        path.chmod(0o500)
+    (rust / "materialized-toolchain-manifest.json").chmod(0o400)
+    (llvm / "llvm-toolchain-manifest.json").chmod(0o400)
+    (rust / "bin").chmod(0o500)
+    (llvm / "bin").chmod(0o500)
+    rust.chmod(0o500)
+    llvm.chmod(0o500)
+    return rust, llvm
 
 
 def _receipt(**overrides: object) -> dict[str, object]:
@@ -197,8 +248,9 @@ def _native_receipt(**overrides: object) -> dict[str, object]:
     code = str(overrides.get("capability_or_authority_code", "NATIVE-USERNS-ROOT-PROVISION"))
     expected = list(topology._expected_rows(rows, code)[1])
     context = _native_context()
+    multi = code in topology.NATIVE_MULTI_CODES
     document: dict[str, object] = {
-        "schema_version": "t-g03a-native-capability-receipt/v2",
+        "schema_version": topology._native_schema_for_code(code),
         "foundation_run_id": context["foundation_run_id"],
         "foundation_head_sha": context["foundation_head_sha"],
         "foundation_validation_date": context["foundation_validation_date"],
@@ -210,17 +262,14 @@ def _native_receipt(**overrides: object) -> dict[str, object]:
         "collected_node_ids": [],
         "preflight_state": "UNAVAILABLE",
         "redacted_fact_class": "NATIVE_COMPONENT_ABSENT",
-        "probe": {
-            "command_id": (
-                "BWRAP_USER_PID_NET_ISOLATION_V1"
-                if code == "NATIVE-BWRAP-OS-SANDBOX"
-                else "UNSHARE_MAP_ROOT_USER_V1"
-            ),
-            "exit_code": -1,
-            "stdout_sha256": hashlib.sha256(b"").hexdigest(),
-            "stderr_sha256": hashlib.sha256(b"").hexdigest(),
-            "executable_sha256": hashlib.sha256(b"").hexdigest(),
-        },
+        "probe": (
+            topology._native_multi_probe_record(
+                code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+            )
+            if multi else topology._native_probe_record(
+                code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+            )
+        ),
         "selected_test_count": 0,
         "passed": 0,
         "failed": 0,
@@ -229,6 +278,8 @@ def _native_receipt(**overrides: object) -> dict[str, object]:
         "outcome": "DEFERRED",
         "receipt_sha256": "",
     }
+    if multi:
+        document["authority"] = topology._nautilus_multi_authority(code)
     document.update(overrides)
     completeness_payload = {
         key: value
@@ -278,9 +329,12 @@ def _external_receipt(code: str) -> dict[str, object]:
     if code == "EXT-PHASE3B-CORPUS":
         authority = topology._phase3b_absent_authority()
         fact = "AUTHORITY_ROOT_ABSENT"
-    else:
+    elif code == "EXT-LEGACY-UV-AUTHORITY":
         authority = topology._legacy_absent_authority()
         fact = "AUTHORITY_EXECUTABLE_ABSENT"
+    else:
+        authority = topology._absent_nautilus_external_authority()
+        fact = "AUTHORITY_ROOT_ABSENT"
     session = topology.ExternalAuthoritySession(
         code, "ABSENT", fact, authority, (), lambda: None,
     )
@@ -338,6 +392,24 @@ def test_native_v2_receipt_binds_context_probe_and_exact_unavailable_count() -> 
                 foundation_head_sha=str(context["foundation_head_sha"]),
                 foundation_context=context,
             )
+
+    for code in sorted(topology.NATIVE_MULTI_CODES):
+        multi = _native_receipt(capability_or_authority_code=code)
+        assert multi["schema_version"] == topology.NATIVE_MULTI_RECEIPT_SCHEMA
+        assert "executable_sha256" not in multi["probe"]
+        assert topology.validate_receipt(
+            topology.canonical_json_bytes(multi), rows=rows,
+            foundation_run_id=str(context["foundation_run_id"]),
+            foundation_head_sha=str(context["foundation_head_sha"]),
+            foundation_context=context,
+        ) == multi
+        forged = json.loads(json.dumps(multi))
+        forged["authority"].pop("toolchains", None)
+        forged["authority"].pop("rust_manifest_sha256", None)
+        forged["completeness_sha256"] = topology.native_completeness_sha256(forged)
+        forged["receipt_sha256"] = topology.payload_sha256(forged)
+        with pytest.raises(topology.TopologyError, match="authority"):
+            topology.parse_receipt(topology.canonical_json_bytes(forged))
 
 
 @pytest.mark.parametrize(
@@ -499,6 +571,55 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
     assert (invalid.state, invalid.fact) == ("BROKEN", "NATIVE_IDENTITY_INVALID")
     assert invalid.descriptor == -1
 
+    with _safe_authority_tempdir() as raw:
+        root = Path(raw)
+        for code in sorted(topology.NATIVE_MULTI_CODES):
+            with topology._retained_native_probe(
+                code, rust_toolchain=root / "absent-rust",
+                llvm_toolchain=root / "absent-llvm",
+            ) as session:
+                assert (session.state, session.fact) == (
+                    "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                )
+                assert session.descriptors == ()
+
+        rust, llvm = _fixture_nautilus_toolchains(root)
+        with topology._retained_native_probe(
+            "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
+            rust_toolchain=rust, llvm_toolchain=llvm,
+            toolchain_qualifier=lambda _rust, _llvm: (
+                _fixture_nautilus_toolchain_authority()
+            ),
+        ) as session:
+            assert (session.state, session.fact) == (
+                "AVAILABLE", "NATIVE_CAPABILITY_VALIDATED",
+            )
+            assert len(session.descriptors) == 9
+            topology._postcheck_native_probe(session)
+            (rust / "bin/cargo").chmod(0o400)
+            with pytest.raises(topology.TopologyError, match="multi-authority"):
+                topology._postcheck_native_probe(session)
+
+        rust.chmod(0o700)
+        validator_called = False
+
+        def forbidden_validator(
+            _rust: Path, _llvm: Path,
+        ) -> dict[str, object]:
+            nonlocal validator_called
+            validator_called = True
+            return _fixture_nautilus_toolchain_authority()
+
+        with topology._retained_native_probe(
+            "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
+            rust_toolchain=rust, llvm_toolchain=llvm,
+            toolchain_qualifier=forbidden_validator,
+        ) as session:
+            assert (session.state, session.fact) == (
+                "BROKEN", "NATIVE_IDENTITY_INVALID",
+            )
+        assert not validator_called
+
 
 def test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass(
     tmp_path: Path,
@@ -509,10 +630,18 @@ def test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass(
     context = _native_context()
     topology_root = tmp_path / "capability-topology"
     topology_root.mkdir(mode=0o700)
-    for code in ("NATIVE-BWRAP-OS-SANDBOX", "NATIVE-USERNS-ROOT-PROVISION"):
+    for code in sorted(topology.NATIVE_COMMAND_IDS):
         _write_native_artifact_fixture(
             topology_root, _native_receipt(capability_or_authority_code=code),
         )
+
+    schemas = {
+        topology.parse_receipt(path.read_bytes())["schema_version"]
+        for path in topology_root.glob("NATIVE-*.json")
+    }
+    assert schemas == {
+        topology.NATIVE_RECEIPT_SCHEMA, topology.NATIVE_MULTI_RECEIPT_SCHEMA,
+    }
 
     assert topology.validate_native_artifacts(
         topology_root, rows=rows, foundation_context=context,
@@ -561,9 +690,13 @@ def test_native_available_path_runs_exact_16_and_8_once_and_failure_publishes_fa
             foundation_context_path=context, exact_runner=exact,
             native_probe_factory=_available_native_probe_factory(Path(raw)),
         )
-        assert sorted(len(nodes) for nodes in selected) == [8, 16]
-        assert len({node for group in selected for node in group}) == 24
-        assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "PASS" for path in receipts)
+        assert sorted(len(nodes) for nodes in selected) == [8, 18]
+        assert len({node for group in selected for node in group}) == 26
+        assert len(receipts) == 4
+        assert sorted(
+            topology.parse_receipt(path.read_bytes())["outcome"]
+            for path in receipts
+        ) == ["DEFERRED", "DEFERRED", "PASS", "PASS"]
 
     with tempfile.TemporaryDirectory(dir="/tmp") as raw:
         evidence = Path(raw) / "evidence"
@@ -960,22 +1093,25 @@ def test_native_architecture_a_accepts_only_atomic_bundle_marker(
             native_probe_factory=_available_native_probe_factory(root),
         )
 
-        assert len(paths) == 2
+        assert len(paths) == 4
         topology_root = evidence / "capability-topology"
         for marker in paths:
             code = marker.stem
             bundle = topology_root / f"{code}.artifacts"
+            receipt = topology.parse_receipt(marker.read_bytes())
+            governance_present = receipt["outcome"] == "PASS"
             assert bundle.is_dir()
             assert stat.S_IMODE(bundle.stat().st_mode) == 0o700
-            assert {entry.name for entry in bundle.iterdir()} == {
-                "receipt.json", "governance.json", "manifest.json",
-            }
+            expected_entries = {"receipt.json", "manifest.json"}
+            if governance_present:
+                expected_entries.add("governance.json")
+            assert {entry.name for entry in bundle.iterdir()} == expected_entries
             receipt_raw = (bundle / "receipt.json").read_bytes()
             assert marker.read_bytes() == receipt_raw
             assert not (topology_root / f"{code}.governance.json").exists()
             manifest_raw = (bundle / "manifest.json").read_bytes()
             manifest = json.loads(manifest_raw)
-            assert set(manifest) == {
+            expected_manifest_keys = {
                 "schema_version", "capability_or_authority_code",
                 "foundation_run_id", "foundation_head_sha",
                 "foundation_validation_date", "foundation_context_sha256",
@@ -987,15 +1123,24 @@ def test_native_architecture_a_accepts_only_atomic_bundle_marker(
                 "selected_test_count", "probe", "outcome",
                 "manifest_sha256",
             }
-            assert manifest["schema_version"] == "t-g03a-native-artifact-manifest/v1"
+            if code in topology.NATIVE_MULTI_CODES:
+                expected_manifest_keys.add("authority")
+            assert set(manifest) == expected_manifest_keys
+            assert manifest["schema_version"] == (
+                topology.NATIVE_MULTI_ARTIFACT_MANIFEST_SCHEMA
+                if code in topology.NATIVE_MULTI_CODES
+                else topology.NATIVE_ARTIFACT_MANIFEST_SCHEMA
+            )
             assert manifest["capability_or_authority_code"] == code
             assert manifest["receipt_bytes_sha256"] == hashlib.sha256(
                 receipt_raw,
             ).hexdigest()
-            assert manifest["governance_present"] is True
-            assert manifest["governance_sha256"] == hashlib.sha256(
-                (bundle / "governance.json").read_bytes(),
-            ).hexdigest()
+            assert manifest["governance_present"] is governance_present
+            expected_governance_sha256 = (
+                hashlib.sha256((bundle / "governance.json").read_bytes()).hexdigest()
+                if governance_present else topology.EMPTY_SHA256
+            )
+            assert manifest["governance_sha256"] == expected_governance_sha256
 
 
 def test_native_architecture_a_resolves_successful_marker_exception_by_exact_reread(
@@ -1042,8 +1187,8 @@ def test_native_architecture_a_resolves_successful_marker_exception_by_exact_rer
             native_probe_factory=_available_native_probe_factory(root),
         )
 
-        assert calls == 2
-        assert len(paths) == 2
+        assert calls == 4
+        assert len(paths) == 4
         for marker in paths:
             assert marker.read_bytes() == (
                 marker.with_suffix(".artifacts") / "receipt.json"
@@ -1308,7 +1453,8 @@ def test_native_artifact_reader_requires_private_receipt_and_complete_pass_gover
             "stderr_sha256": hashlib.sha256(b"").hexdigest(),
             "executable_sha256": "9" * 64,
         },
-        selected_test_count=16, passed=16, failed=0, unavailable=0, outcome="PASS",
+        selected_test_count=len(expected), passed=len(expected), failed=0,
+        unavailable=0, outcome="PASS",
     )
     nonzero_probe = dict(forged_pass["probe"])
     nonzero_probe["exit_code"] = 1
@@ -1316,7 +1462,8 @@ def test_native_artifact_reader_requires_private_receipt_and_complete_pass_gover
         capability_or_authority_code="NATIVE-BWRAP-OS-SANDBOX",
         collected_node_ids=list(expected), preflight_state="AVAILABLE",
         redacted_fact_class="NATIVE_CAPABILITY_VALIDATED", probe=nonzero_probe,
-        selected_test_count=16, passed=16, failed=0, unavailable=0, outcome="PASS",
+        selected_test_count=len(expected), passed=len(expected), failed=0,
+        unavailable=0, outcome="PASS",
     )
     with pytest.raises(topology.TopologyError, match="exact probe"):
         topology.validate_receipt(
@@ -1424,7 +1571,22 @@ def test_locked_inventory_installs_exact_bytes_once_and_rejects_tampering(tmp_pa
         assert installed.read_bytes() == tracked.read_bytes()
         with pytest.raises(FileExistsError):
             topology.install_inventory(tracked, evidence)
-    assert len(rows) == 30
+    assert len(rows) == 66
+    assert topology.LOCKED_INVENTORY_SHA256 == (
+        "44e6d1061b1a087935461edd265d80eda4580ecf23fbe6b3e1d2810e3383a7c1"
+    )
+    assert {
+        code: sum(row.code == code for row in rows)
+        for code in topology.CODE_CLASSIFICATION
+    } == {
+        "NATIVE-BWRAP-OS-SANDBOX": 18,
+        "NATIVE-USERNS-ROOT-PROVISION": 8,
+        "NATIVE-NAUTILUS-SEALED-TOOLCHAINS": 22,
+        "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX": 10,
+        "EXT-PHASE3B-CORPUS": 3,
+        "EXT-LEGACY-UV-AUTHORITY": 3,
+        "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": 2,
+    }
     changed = tmp_path / "changed.tsv"
     changed.write_bytes(tracked.read_bytes().replace(b"NATIVE_CAPABILITY_REQUIRED", b"NATIVE_CAPABILITY_REQUIREX", 1))
     with pytest.raises(topology.TopologyError, match="hash drift"):
@@ -1498,7 +1660,8 @@ def test_aggregate_rejects_renamed_native_pass_and_requires_external_v2_bundles(
                     "stderr_sha256": hashlib.sha256(b"").hexdigest(),
                     "executable_sha256": "9" * 64,
                 },
-                selected_test_count=16, passed=16, failed=0, unavailable=0,
+                selected_test_count=len(expected), passed=len(expected),
+                failed=0, unavailable=0,
                 outcome="PASS",
             )
             path = tmp_path / "renamed-native-pass.json"
@@ -1606,6 +1769,70 @@ def test_external_preflight_distinguishes_absent_partial_and_invalid(tmp_path: P
         partial = root / "partial"
         partial.mkdir(mode=0o700)
         assert topology._external_preflight("EXT-PHASE3B-CORPUS", corpus_root=partial)[0] == "PARTIAL"
+
+        base = root / "nautilus-base"
+        artifact = root / "nautilus-artifact"
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=base, nautilus_artifact_root=artifact,
+        ) as session:
+            assert (session.state, session.fact) == (
+                "ABSENT", "AUTHORITY_ROOT_ABSENT",
+            )
+        base.mkdir(mode=0o700)
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=base, nautilus_artifact_root=artifact,
+        ) as session:
+            assert (session.state, session.fact) == (
+                "PARTIAL", "AUTHORITY_PARTIAL",
+            )
+
+        artifact.mkdir(mode=0o500)
+        validator_called = False
+
+        def forbidden_validator(
+            _base: Path, _artifact: Path,
+        ) -> dict[str, object]:
+            nonlocal validator_called
+            validator_called = True
+            return {}
+
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=base, nautilus_artifact_root=artifact,
+            nautilus_qualifier=forbidden_validator,
+        ) as session:
+            assert (session.state, session.fact) == (
+                "INVALID", "AUTHORITY_INVALID",
+            )
+        assert not validator_called
+
+        base.chmod(0o500)
+        authority: dict[str, object] = {
+            "authority_kind": "NAUTILUS_RUNTIME_CLOSURE_INPUTS_V1",
+            "base_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+            "artifact_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+            "runtime_policy_sha256": "1" * 64,
+            "base_manifest_sha256": "2" * 64,
+            "base_file_count": 88,
+            "base_file_inventory_sha256": "3" * 64,
+            "artifact_manifest_sha256": "4" * 64,
+            "artifact_wheel_sha256": "5" * 64,
+            "artifact_wheel_size": 1,
+        }
+        with topology._retained_external_authority(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
+            nautilus_base_root=base, nautilus_artifact_root=artifact,
+            nautilus_qualifier=lambda _base, _artifact: authority,
+        ) as session:
+            assert (session.state, session.fact) == (
+                "VALID", "AUTHORITY_COMPLETE_VALIDATED",
+            )
+            topology._postcheck_external_authority(session)
+            artifact.chmod(0o700)
+            with pytest.raises(topology.TopologyError, match="authority"):
+                topology._postcheck_external_authority(session)
 
 
 def test_foundation_context_requires_current_github_run_and_checked_out_head(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1860,6 +2087,15 @@ def test_valid_external_sessions_select_exact_nodes_but_synthetic_fixture_never_
 
         @topology.contextmanager
         def external_session(code: str):
+            if code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
+                with topology._retained_external_authority(
+                    code,
+                    nautilus_base_root=root / "absent-nautilus-base",
+                    nautilus_artifact_root=root / "absent-nautilus-artifact",
+                ) as session:
+                    assert session.state == "ABSENT"
+                    yield session
+                return
             with topology._retained_external_authority(
                 code, corpus_root=corpus, legacy_root=legacy, uv_path=uv,
                 corpus_validator=lambda _root: _valid_phase3b_analysis(),
@@ -1880,8 +2116,8 @@ def test_valid_external_sessions_select_exact_nodes_but_synthetic_fixture_never_
             foundation_context_path=context,
             external_session_factory=external_session, exact_runner=exact,
         )
-        assert len(paths) == 2
-        assert len(staged_receipts) == 2
+        assert len(paths) == 3
+        assert len(staged_receipts) == 3
         assert not list((evidence / "capability-topology").glob("EXT-*.json"))
     assert sorted(len(nodes) for nodes in selected) == [3, 3]
 
@@ -2020,6 +2256,15 @@ def test_standalone_native_deferred_lane_does_not_require_portable_baseline(
     monkeypatch.setenv("GITHUB_RUN_ID", run_id)
     @topology.contextmanager
     def absent_probe(code: str):
+        if code in topology.NATIVE_MULTI_CODES:
+            yield topology.NativeMultiAuthoritySession(
+                code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                topology._native_multi_probe_record(
+                    code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                ),
+                topology._nautilus_multi_authority(code), (), lambda: None,
+            )
+            return
         yield topology.NativeProbeSession(
             code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
             topology._native_probe_record(code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED),
@@ -2044,7 +2289,7 @@ def test_standalone_native_deferred_lane_does_not_require_portable_baseline(
         )
 
         assert not (evidence / "capability-topology/portable-root-baseline.json").exists()
-        assert len(receipts) == 2
+        assert len(receipts) == 4
         assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "DEFERRED" for path in receipts)
         assert not list((evidence / "capability-topology").glob("*.governance.json"))
 
@@ -2072,6 +2317,8 @@ def test_standalone_external_deferred_lane_does_not_require_portable_baseline(
             with topology._retained_external_authority(
                 code, corpus_root=root / "absent-corpus",
                 uv_path=root / "absent-uv", legacy_root=root / "absent-legacy",
+                nautilus_base_root=root / "absent-nautilus-base",
+                nautilus_artifact_root=root / "absent-nautilus-artifact",
             ) as session:
                 yield session
 
@@ -2086,10 +2333,10 @@ def test_standalone_external_deferred_lane_does_not_require_portable_baseline(
         )
 
         assert not (evidence / "capability-topology/portable-root-baseline.json").exists()
-        assert len(receipts) == 2
+        assert len(receipts) == 3
         assert all(topology.parse_receipt(path.read_bytes())["outcome"] == "DEFERRED" for path in receipts)
         assert not list((evidence / "capability-topology").glob("*.governance.json"))
-        assert len(list((evidence / "capability-topology").glob("EXT-*.artifacts"))) == 2
+        assert len(list((evidence / "capability-topology").glob("EXT-*.artifacts"))) == 3
 
 
 def test_topology_retry_fails_before_replacing_existing_governance_bytes(tmp_path: Path) -> None:

@@ -23,7 +23,7 @@ def test_portable_source_defects_are_closed_not_unresolved() -> None:
     ).stdout.strip()
     closure = topology.load_portable_defect_closure(head_sha=head)
 
-    assert len(rows) == 30
+    assert len(rows) == 66
     assert all(row.classification != "PORTABLE_SOURCE_DEFECT" for row in rows)
     assert len(closure) == 49
     assert {row.node_id for row in rows}.isdisjoint(row.node_id for row in closure)
@@ -284,6 +284,15 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
         ) == []
         @topology.contextmanager
         def absent_native_probe(code: str):
+            if code in topology.NATIVE_MULTI_CODES:
+                yield topology.NativeMultiAuthoritySession(
+                    code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                    topology._native_multi_probe_record(
+                        code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+                    ),
+                    topology._nautilus_multi_authority(code), (), lambda: None,
+                )
+                return
             yield topology.NativeProbeSession(
                 code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
                 topology._native_probe_record(
@@ -300,16 +309,15 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
 
         @topology.contextmanager
         def absent_external_session(code: str):
-            authority = (
-                topology._phase3b_absent_authority()
-                if code == "EXT-PHASE3B-CORPUS"
-                else topology._legacy_absent_authority()
-            )
-            fact = (
-                "AUTHORITY_ROOT_ABSENT"
-                if code == "EXT-PHASE3B-CORPUS"
-                else "AUTHORITY_EXECUTABLE_ABSENT"
-            )
+            if code == "EXT-PHASE3B-CORPUS":
+                authority = topology._phase3b_absent_authority()
+                fact = "AUTHORITY_ROOT_ABSENT"
+            elif code == "EXT-LEGACY-UV-AUTHORITY":
+                authority = topology._legacy_absent_authority()
+                fact = "AUTHORITY_EXECUTABLE_ABSENT"
+            else:
+                authority = topology._absent_nautilus_external_authority()
+                fact = "AUTHORITY_ROOT_ABSENT"
             yield topology.ExternalAuthoritySession(
                 code, "ABSENT", fact, authority, (), lambda: None,
             )
@@ -324,7 +332,7 @@ def test_closure_proof_is_required_directly_and_accounts_every_node_once(
             head_sha=head, foundation_context_path=context,
         )
         assert result["portable_source_status"] == "PASS"
-        assert result["baseline_candidate_count"] == "79"
+        assert result["baseline_candidate_count"] == "115"
         assert not list((evidence / "capability-topology").glob("SRC-*.json"))
 
 

@@ -53,6 +53,8 @@ def _absent_authority(code: str) -> dict[str, object]:
             "expected_asset_source_files": 2209,
             "observed_asset_source_files": 0,
         }
+    if code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
+        return topology._absent_nautilus_external_authority()
     return {
         "authority_kind": "LEGACY_UV_AND_CLOSURE_V1",
         "regular_file_status": "ABSENT",
@@ -94,9 +96,9 @@ def _external_receipt(
         "collected_node_ids": [],
         "preflight_state": "ABSENT",
         "redacted_fact_class": (
-            "AUTHORITY_ROOT_ABSENT"
-            if code == "EXT-PHASE3B-CORPUS"
-            else "AUTHORITY_EXECUTABLE_ABSENT"
+            "AUTHORITY_EXECUTABLE_ABSENT"
+            if code == "EXT-LEGACY-UV-AUTHORITY"
+            else "AUTHORITY_ROOT_ABSENT"
         ),
         "authority": _absent_authority(code),
         "selected_test_count": 0,
@@ -250,6 +252,20 @@ def test_external_v2_binds_exact_context_nodes_counts_authority_and_hashes() -> 
                 foundation_head_sha=str(context["foundation_head_sha"]),
                 foundation_context=context,
             )
+
+    nautilus = _external_receipt("EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS")
+    assert topology.validate_receipt(
+        topology.canonical_json_bytes(nautilus), rows=rows,
+        foundation_run_id=str(context["foundation_run_id"]),
+        foundation_head_sha=str(context["foundation_head_sha"]),
+        foundation_context=context,
+    ) == nautilus
+    forged = json.loads(json.dumps(nautilus))
+    forged["authority"].pop("artifact_wheel_sha256")
+    forged["completeness_sha256"] = topology.external_completeness_sha256(forged)
+    forged["receipt_sha256"] = topology.payload_sha256(forged)
+    with pytest.raises(topology.TopologyError, match="authority facts"):
+        topology.parse_receipt(topology.canonical_json_bytes(forged))
 
 
 def test_external_v1_is_stale_without_changing_native_v2() -> None:
@@ -765,6 +781,8 @@ def test_external_absence_uses_architecture_a_and_host_require_pass_rejects(
                 corpus_root=root / "absent-corpus",
                 uv_path=root / "absent-uv",
                 legacy_root=root / "absent-legacy",
+                nautilus_base_root=root / "absent-nautilus-base",
+                nautilus_artifact_root=root / "absent-nautilus-artifact",
             ) as session:
                 yield session
 
@@ -776,7 +794,7 @@ def test_external_absence_uses_architecture_a_and_host_require_pass_rejects(
             external_session_factory=absent_factory,
             exact_runner=lambda nodes, _report: invoked.append(nodes) or nodes,
         )
-        assert len(publications) == 2
+        assert len(publications) == 3
         assert invoked == []
         rows = topology._installed_inventory_rows(INVENTORY, evidence)
         context = topology.load_foundation_context(

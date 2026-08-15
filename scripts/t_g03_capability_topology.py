@@ -23,12 +23,16 @@ from datetime import date, datetime, timezone
 from typing import Any, Sequence
 
 
-LOCKED_INVENTORY_SHA256 = "86c157c8394f16e381d1e53a6884b6c3d93af5520ea9bdd6b3abd9efbc588a93"
+LOCKED_INVENTORY_SHA256 = "44e6d1061b1a087935461edd265d80eda4580ecf23fbe6b3e1d2810e3383a7c1"
 LOCKED_CLOSURE_SHA256 = "9b4b02af2972651f75d07b1758232a186041749598518e41ae40d6e34ca2aa88"
-LOCKED_GOVERNED_NODE_IDS_SHA256 = "ceb4a127f66d48a536167c62226cda51bd802873a998eac7df3a709951d32a92"
+LOCKED_GOVERNED_NODE_IDS_SHA256 = "c6c3df6b28154836bacc882f1e0c1d2b652afd4f14dac19f761479dbf5d1242c"
 RECEIPT_SCHEMA = "t-g03a-capability-receipt/v1"
 NATIVE_RECEIPT_SCHEMA = "t-g03a-native-capability-receipt/v2"
+NATIVE_MULTI_RECEIPT_SCHEMA = "t-g03a-native-multi-authority-receipt/v3"
 NATIVE_ARTIFACT_MANIFEST_SCHEMA = "t-g03a-native-artifact-manifest/v1"
+NATIVE_MULTI_ARTIFACT_MANIFEST_SCHEMA = (
+    "t-g03a-native-multi-authority-artifact-manifest/v2"
+)
 EXTERNAL_RECEIPT_SCHEMA = "t-g03a-external-authority-receipt/v2"
 EXTERNAL_ARTIFACT_MANIFEST_SCHEMA = "t-g03a-external-artifact-manifest/v1"
 PORTABLE_CLOSURE_PROOF_SCHEMA = "t-g03a-portable-closure-proof/v2"
@@ -61,6 +65,10 @@ NATIVE_PROBE_KEYS = frozenset({
     "command_id", "exit_code", "stdout_sha256", "stderr_sha256",
     "executable_sha256",
 })
+NATIVE_MULTI_PROBE_KEYS = frozenset({
+    "command_id", "exit_code", "stdout_sha256", "stderr_sha256",
+})
+NATIVE_MULTI_RECEIPT_KEYS = NATIVE_RECEIPT_KEYS | {"authority"}
 EXTERNAL_RECEIPT_KEYS = frozenset({
     "schema_version", "foundation_run_id", "foundation_head_sha",
     "foundation_validation_date", "foundation_context_sha256", "inventory_sha256",
@@ -85,6 +93,26 @@ LEGACY_UV_AUTHORITY_KEYS = frozenset({
     "legacy_closure_entry_count", "sync_command_id", "sync_exit_code",
     "sync_stdout_sha256", "sync_stderr_sha256",
 })
+NAUTILUS_RUNTIME_AUTHORITY_KEYS = frozenset({
+    "authority_kind", "base_root_status", "artifact_root_status",
+    "runtime_policy_sha256", "base_manifest_sha256", "base_file_count",
+    "base_file_inventory_sha256", "artifact_manifest_sha256",
+    "artifact_wheel_sha256", "artifact_wheel_size",
+})
+NAUTILUS_TOOLCHAIN_AUTHORITY_KEYS = frozenset({
+    "authority_kind", "rust_root_status", "llvm_root_status",
+    "rust_policy_sha256", "llvm_policy_sha256", "rust_manifest_sha256",
+    "rust_tree_sha256", "rust_file_count", "llvm_manifest_sha256",
+    "llvm_tool_count", "llvm_resource_header_count",
+})
+NAUTILUS_COMPOSITE_AUTHORITY_KEYS = frozenset({
+    "authority_kind", "toolchains", "sandbox",
+})
+NAUTILUS_SANDBOX_AUTHORITY_KEYS = frozenset({
+    "regular_file_status", "policy_sha256", "expected_sha256",
+    "observed_sha256", "expected_uid", "observed_uid", "expected_gid",
+    "observed_gid", "expected_mode", "observed_mode",
+})
 NATIVE_ARTIFACT_MANIFEST_KEYS = frozenset({
     "schema_version", "capability_or_authority_code", "foundation_run_id",
     "foundation_head_sha", "foundation_validation_date",
@@ -94,6 +122,9 @@ NATIVE_ARTIFACT_MANIFEST_KEYS = frozenset({
     "expected_node_ids_sha256", "expected_node_count", "selected_test_count",
     "probe", "outcome", "manifest_sha256",
 })
+NATIVE_MULTI_ARTIFACT_MANIFEST_KEYS = NATIVE_ARTIFACT_MANIFEST_KEYS | {
+    "authority",
+}
 EXTERNAL_ARTIFACT_MANIFEST_KEYS = frozenset({
     "schema_version", "capability_or_authority_code", "foundation_run_id",
     "foundation_head_sha", "foundation_validation_date",
@@ -631,8 +662,11 @@ CLASSIFICATION_LANE = {
 CODE_CLASSIFICATION = {
     "NATIVE-BWRAP-OS-SANDBOX": "NATIVE_CAPABILITY_REQUIRED",
     "NATIVE-USERNS-ROOT-PROVISION": "NATIVE_CAPABILITY_REQUIRED",
+    "NATIVE-NAUTILUS-SEALED-TOOLCHAINS": "NATIVE_CAPABILITY_REQUIRED",
+    "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX": "NATIVE_CAPABILITY_REQUIRED",
     "EXT-PHASE3B-CORPUS": "EXTERNAL_AUTHORITY_REQUIRED",
     "EXT-LEGACY-UV-AUTHORITY": "EXTERNAL_AUTHORITY_REQUIRED",
+    "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": "EXTERNAL_AUTHORITY_REQUIRED",
 }
 CLOSED_CODE_CLASSIFICATION = {
     "SRC-NAUTILUS-PREFLIGHT-FIXTURE-GATING": "PORTABLE_SOURCE_DEFECT",
@@ -696,7 +730,20 @@ NATIVE_PROBE_TIMEOUT = -2
 NATIVE_COMMAND_IDS = {
     "NATIVE-BWRAP-OS-SANDBOX": "BWRAP_USER_PID_NET_ISOLATION_V1",
     "NATIVE-USERNS-ROOT-PROVISION": "UNSHARE_MAP_ROOT_USER_V1",
+    "NATIVE-NAUTILUS-SEALED-TOOLCHAINS": "NAUTILUS_SEALED_TOOLCHAINS_V1",
+    "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX": "NAUTILUS_SEALED_BUILD_SANDBOX_V1",
 }
+NATIVE_MULTI_CODES = frozenset({
+    "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
+    "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX",
+})
+
+
+def _native_schema_for_code(code: object) -> str:
+    return (
+        NATIVE_MULTI_RECEIPT_SCHEMA
+        if code in NATIVE_MULTI_CODES else NATIVE_RECEIPT_SCHEMA
+    )
 NATIVE_DENIAL_STDERR = {
     "NATIVE-BWRAP-OS-SANDBOX": frozenset({
         b"bwrap: Creating new namespace failed: Operation not permitted\n",
@@ -718,6 +765,22 @@ LEGACY_UV = Path("/home/thenam176/.local/bin/uv")
 LEGACY_UV_SHA256 = "cd952ca51e2c730e848a45c4e0dfb58926d79d90550b6a5feb5543b43d3248b4"
 LEGACY_UV_VERSION = "uv 0.11.7 (x86_64-unknown-linux-gnu)"
 ROOT = Path(__file__).resolve().parents[1]
+NAUTILUS_RUST_TOOLCHAIN = Path(
+    "/home/thenam176/.cache/trading-agent/nautilus/rust-1.95.0"
+)
+NAUTILUS_LLVM_TOOLCHAIN = Path(
+    "/home/thenam176/.cache/trading-agent/nautilus/llvm-22.1.3-resource-toolchain"
+)
+NAUTILUS_BASE_RUNTIME = Path(
+    "/home/thenam176/.cache/trading-agent/nautilus/runtime-closure-v3"
+)
+NAUTILUS_ARTIFACT_ROOT = Path(
+    "/home/thenam176/.cache/trading-agent/nautilus/artifacts/"
+    "nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c"
+)
+NAUTILUS_RUST_POLICY = ROOT / "engines/nautilus/toolchain-inputs.json"
+NAUTILUS_LLVM_POLICY = ROOT / "engines/nautilus/llvm-toolchain-policy.json"
+NAUTILUS_RUNTIME_POLICY = ROOT / "engines/nautilus/runtime-closure-policy.json"
 REAL_LEGACY_ROOT = ROOT / "legacy/research-backend"
 TRUSTED_BWRAP_POLICY = ROOT / "engines/nautilus/sealed-uv-exec-policy.json"
 CLOSURE_PATH = ROOT / CLOSURE_RELATIVE_PATH
@@ -793,14 +856,17 @@ def load_inventory(path: Path) -> tuple[InventoryRow, ...]:
             raise TopologyError(f"inventory row {index} has unknown classification or code")
         seen.add(node_id)
         rows.append(InventoryRow(node_id, classification, code))
-    if len(rows) != 30:
+    if len(rows) != 66:
         raise TopologyError("inventory row count drift")
     counts = {code: sum(row.code == code for row in rows) for code in CODE_CLASSIFICATION}
     if counts != {
-        "NATIVE-BWRAP-OS-SANDBOX": 16,
+        "NATIVE-BWRAP-OS-SANDBOX": 18,
         "NATIVE-USERNS-ROOT-PROVISION": 8,
+        "NATIVE-NAUTILUS-SEALED-TOOLCHAINS": 22,
+        "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX": 10,
         "EXT-PHASE3B-CORPUS": 3,
         "EXT-LEGACY-UV-AUTHORITY": 3,
+        "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": 2,
     }:
         raise TopologyError("inventory native or external mapping drift")
     return tuple(rows)
@@ -954,7 +1020,7 @@ def load_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 79 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 115 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("active and closure governed-node set drift")
     return active, closed
 
@@ -1367,8 +1433,12 @@ def _native_artifact_manifest(
     governance_raw: bytes | None,
 ) -> dict[str, object]:
     expected = tuple(str(item) for item in receipt["expected_node_ids"])
+    multi = receipt["schema_version"] == NATIVE_MULTI_RECEIPT_SCHEMA
     manifest: dict[str, object] = {
-        "schema_version": NATIVE_ARTIFACT_MANIFEST_SCHEMA,
+        "schema_version": (
+            NATIVE_MULTI_ARTIFACT_MANIFEST_SCHEMA
+            if multi else NATIVE_ARTIFACT_MANIFEST_SCHEMA
+        ),
         "capability_or_authority_code": receipt["capability_or_authority_code"],
         "foundation_run_id": receipt["foundation_run_id"],
         "foundation_head_sha": receipt["foundation_head_sha"],
@@ -1392,6 +1462,8 @@ def _native_artifact_manifest(
         "outcome": receipt["outcome"],
         "manifest_sha256": "",
     }
+    if multi:
+        manifest["authority"] = receipt["authority"]
     manifest["manifest_sha256"] = _sha256({
         key: value for key, value in manifest.items() if key != "manifest_sha256"
     })
@@ -1939,7 +2011,7 @@ def _installed_governance_state(
     if overlap:
         raise TopologyError("active inventory overlaps portable closure")
     governed = tuple(sorted({row.node_id for row in active} | {row.node_id for row in closed}))
-    if len(governed) != 79 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
+    if len(governed) != 115 or _ids_sha256(governed) != LOCKED_GOVERNED_NODE_IDS_SHA256:
         raise TopologyError("installed active and closure governed-node set drift")
     return active, closed
 
@@ -3422,10 +3494,102 @@ def _parse_v1_receipt(value: dict[str, object], raw: bytes) -> dict[str, object]
     return value
 
 
+def _validate_native_multi_authority(code: str, authority: object) -> None:
+    if not isinstance(authority, dict):
+        raise TopologyError("native multi-authority facts are invalid")
+    toolchains = (
+        authority
+        if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS"
+        else authority.get("toolchains")
+    )
+    if (
+        code == "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX"
+        and set(authority) != NAUTILUS_COMPOSITE_AUTHORITY_KEYS
+    ):
+        raise TopologyError("native composite authority facts are invalid")
+    if not isinstance(toolchains, dict) or set(toolchains) != NAUTILUS_TOOLCHAIN_AUTHORITY_KEYS:
+        raise TopologyError("native toolchain authority facts are invalid")
+    for field in (
+        "rust_policy_sha256", "llvm_policy_sha256", "rust_manifest_sha256",
+        "rust_tree_sha256", "llvm_manifest_sha256",
+    ):
+        if not isinstance(toolchains[field], str) or not HEX64.fullmatch(toolchains[field]):
+            raise TopologyError("native toolchain authority digest is invalid")
+    for field in ("rust_file_count", "llvm_tool_count", "llvm_resource_header_count"):
+        if (
+            not isinstance(toolchains[field], int)
+            or isinstance(toolchains[field], bool) or toolchains[field] < 0
+        ):
+            raise TopologyError("native toolchain authority count is invalid")
+    if code == "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX":
+        sandbox = authority.get("sandbox")
+        if not isinstance(sandbox, dict) or set(sandbox) != NAUTILUS_SANDBOX_AUTHORITY_KEYS:
+            raise TopologyError("native sandbox authority facts are invalid")
+        for field in ("policy_sha256", "expected_sha256", "observed_sha256"):
+            if not isinstance(sandbox[field], str) or not HEX64.fullmatch(sandbox[field]):
+                raise TopologyError("native sandbox authority digest is invalid")
+        for field in (
+            "expected_uid", "observed_uid", "expected_gid", "observed_gid",
+            "expected_mode", "observed_mode",
+        ):
+            if not isinstance(sandbox[field], int) or isinstance(sandbox[field], bool):
+                raise TopologyError("native sandbox authority identity is invalid")
+
+
+def _native_multi_authority_is_valid(
+    code: str, authority: dict[str, object],
+) -> bool:
+    toolchains = (
+        authority
+        if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS"
+        else authority["toolchains"]
+    )
+    assert isinstance(toolchains, dict)
+    if (
+        toolchains["authority_kind"] != "NAUTILUS_SEALED_TOOLCHAINS_V1"
+        or toolchains["rust_root_status"]
+        != "PRIVATE_CURRENT_USER_SEALED_DIRECTORY"
+        or toolchains["llvm_root_status"]
+        != "PRIVATE_CURRENT_USER_SEALED_DIRECTORY"
+        or toolchains["rust_policy_sha256"]
+        != "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe"
+        or toolchains["llvm_policy_sha256"]
+        != "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        or toolchains["rust_manifest_sha256"] == EMPTY_SHA256
+        or toolchains["rust_tree_sha256"]
+        != "29e25dea5701900ead25006933dc230879930f7e74577b8bb0de1f0bce3278e7"
+        or toolchains["rust_file_count"] != 149
+        or toolchains["llvm_manifest_sha256"] == EMPTY_SHA256
+        or toolchains["llvm_tool_count"] != 3
+        or toolchains["llvm_resource_header_count"] != 305
+    ):
+        return False
+    if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS":
+        return True
+    sandbox = authority["sandbox"]
+    assert isinstance(sandbox, dict)
+    return (
+        authority["authority_kind"] == "NAUTILUS_SEALED_BUILD_SANDBOX_V1"
+        and sandbox["regular_file_status"]
+        == "ROOT_OWNED_POLICY_BOUND_EXECUTABLE"
+        and sandbox["policy_sha256"]
+        == "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"
+        and sandbox["expected_sha256"]
+        == "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+        and sandbox["observed_sha256"] == sandbox["expected_sha256"]
+        and sandbox["expected_uid"] == sandbox["observed_uid"] == 0
+        and sandbox["expected_gid"] == sandbox["observed_gid"] == 0
+        and sandbox["expected_mode"] == sandbox["observed_mode"] == 0o755
+    )
+
+
 def _parse_native_receipt(value: dict[str, object], raw: bytes) -> dict[str, object]:
-    if set(value) != NATIVE_RECEIPT_KEYS:
+    schema = value.get("schema_version")
+    multi = schema == NATIVE_MULTI_RECEIPT_SCHEMA
+    expected_keys = NATIVE_MULTI_RECEIPT_KEYS if multi else NATIVE_RECEIPT_KEYS
+    if set(value) != expected_keys:
         raise TopologyError("native receipt has invalid schema keys")
-    if value.get("schema_version") != NATIVE_RECEIPT_SCHEMA:
+    if schema not in {NATIVE_RECEIPT_SCHEMA, NATIVE_MULTI_RECEIPT_SCHEMA}:
         raise TopologyError("native receipt has invalid schema version")
     for field, pattern, label in (
         ("foundation_run_id", RUN_ID, "foundation run"),
@@ -3449,7 +3613,11 @@ def _parse_native_receipt(value: dict[str, object], raw: bytes) -> dict[str, obj
             raise TopologyError(f"native receipt has invalid {field}")
     if value["lane"] != "native-capabilities":
         raise TopologyError("native receipt has invalid lane")
-    if value["capability_or_authority_code"] not in NATIVE_COMMAND_IDS:
+    code = str(value["capability_or_authority_code"])
+    expected_codes = (
+        NATIVE_MULTI_CODES if multi else set(NATIVE_COMMAND_IDS) - NATIVE_MULTI_CODES
+    )
+    if code not in expected_codes:
         raise TopologyError("native receipt has invalid capability code")
     if value["redacted_fact_class"] not in NATIVE_FACT_CLASSES:
         raise TopologyError("native receipt has unredacted fact class")
@@ -3468,7 +3636,8 @@ def _parse_native_receipt(value: dict[str, object], raw: bytes) -> dict[str, obj
         if not isinstance(item, int) or isinstance(item, bool) or item < 0:
             raise TopologyError(f"native receipt has invalid {field}")
     probe = value["probe"]
-    if not isinstance(probe, dict) or set(probe) != NATIVE_PROBE_KEYS:
+    probe_keys = NATIVE_MULTI_PROBE_KEYS if multi else NATIVE_PROBE_KEYS
+    if not isinstance(probe, dict) or set(probe) != probe_keys:
         raise TopologyError("native receipt has invalid probe")
     if (
         not isinstance(probe["command_id"], str)
@@ -3477,10 +3646,15 @@ def _parse_native_receipt(value: dict[str, object], raw: bytes) -> dict[str, obj
         or isinstance(probe["exit_code"], bool)
     ):
         raise TopologyError("native receipt has invalid probe command result")
-    for field in ("stdout_sha256", "stderr_sha256", "executable_sha256"):
+    digest_fields = ["stdout_sha256", "stderr_sha256"]
+    if not multi:
+        digest_fields.append("executable_sha256")
+    for field in digest_fields:
         item = probe[field]
         if not isinstance(item, str) or not HEX64.fullmatch(item):
             raise TopologyError(f"native receipt has invalid probe {field}")
+    if multi:
+        _validate_native_multi_authority(code, value["authority"])
     if value["completeness_sha256"] != native_completeness_sha256(value):
         raise TopologyError("native receipt completeness hash mismatch")
     if value["receipt_sha256"] != payload_sha256(value):
@@ -3518,6 +3692,7 @@ def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, o
         raise TopologyError("external receipt has invalid lane")
     if value["capability_or_authority_code"] not in {
         "EXT-PHASE3B-CORPUS", "EXT-LEGACY-UV-AUTHORITY",
+        "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS",
     }:
         raise TopologyError("external receipt has invalid authority code")
     if value["redacted_fact_class"] not in EXTERNAL_FACT_CLASSES:
@@ -3538,10 +3713,11 @@ def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, o
             raise TopologyError(f"external receipt has invalid {field}")
     authority = value["authority"]
     code = str(value["capability_or_authority_code"])
-    expected_keys = (
-        PHASE3B_AUTHORITY_KEYS
-        if code == "EXT-PHASE3B-CORPUS" else LEGACY_UV_AUTHORITY_KEYS
-    )
+    expected_keys = {
+        "EXT-PHASE3B-CORPUS": PHASE3B_AUTHORITY_KEYS,
+        "EXT-LEGACY-UV-AUTHORITY": LEGACY_UV_AUTHORITY_KEYS,
+        "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": NAUTILUS_RUNTIME_AUTHORITY_KEYS,
+    }[code]
     if not isinstance(authority, dict) or set(authority) != expected_keys:
         raise TopologyError("external receipt has invalid authority facts")
     for key, item in authority.items():
@@ -3551,15 +3727,22 @@ def _parse_external_receipt(value: dict[str, object], raw: bytes) -> dict[str, o
             raise TopologyError(f"external receipt has invalid authority field {key}")
         if isinstance(item, str) and item.startswith("/"):
             raise TopologyError("external receipt authority facts expose an absolute path")
-    digest_fields = (
-        ("expected_inventory_sha256", "observed_inventory_sha256", "required_entry_manifest_sha256")
-        if code == "EXT-PHASE3B-CORPUS"
-        else (
+    digest_fields = {
+        "EXT-PHASE3B-CORPUS": (
+            "expected_inventory_sha256", "observed_inventory_sha256",
+            "required_entry_manifest_sha256",
+        ),
+        "EXT-LEGACY-UV-AUTHORITY": (
             "expected_uv_sha256", "observed_uv_sha256",
             "legacy_closure_manifest_sha256", "sync_stdout_sha256",
             "sync_stderr_sha256",
-        )
-    )
+        ),
+        "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": (
+            "runtime_policy_sha256", "base_manifest_sha256",
+            "base_file_inventory_sha256", "artifact_manifest_sha256",
+            "artifact_wheel_sha256",
+        ),
+    }[code]
     for field in digest_fields:
         if not isinstance(authority[field], str) or not HEX64.fullmatch(authority[field]):
             raise TopologyError(f"external receipt has invalid authority digest {field}")
@@ -3576,7 +3759,9 @@ def parse_receipt(raw: bytes) -> dict[str, object]:
         raise TopologyError("receipt has invalid schema keys")
     if canonical_json_bytes(value) != raw:
         raise TopologyError("receipt is not canonical")
-    if value.get("schema_version") == NATIVE_RECEIPT_SCHEMA:
+    if value.get("schema_version") in {
+        NATIVE_RECEIPT_SCHEMA, NATIVE_MULTI_RECEIPT_SCHEMA,
+    }:
         return _parse_native_receipt(value, raw)
     if value.get("schema_version") == EXTERNAL_RECEIPT_SCHEMA:
         return _parse_external_receipt(value, raw)
@@ -3629,8 +3814,13 @@ def validate_receipt(
     if receipt["lane"] != lane or tuple(receipt["expected_node_ids"]) != expected:
         raise TopologyError("receipt lane/code/node mapping drift")
     if lane == "native-capabilities":
-        if receipt["schema_version"] != NATIVE_RECEIPT_SCHEMA:
+        expected_native_schema = _native_schema_for_code(
+            receipt["capability_or_authority_code"],
+        )
+        if receipt["schema_version"] == RECEIPT_SCHEMA:
             raise TopologyError("native v1 receipt is stale")
+        if receipt["schema_version"] != expected_native_schema:
+            raise TopologyError("native receipt schema is stale for its code")
         if foundation_context is None:
             raise TopologyError("native receipt requires sealed Foundation context")
         if (
@@ -3695,16 +3885,18 @@ def _validate_external_outcome(
     collected = tuple(receipt["collected_node_ids"])
     expected_count = len(expected)
     if outcome == "DEFERRED":
-        expected_fact = (
-            "AUTHORITY_ROOT_ABSENT"
-            if code == "EXT-PHASE3B-CORPUS"
-            else "AUTHORITY_EXECUTABLE_ABSENT"
-        )
-        expected_authority = (
-            _phase3b_absent_authority()
-            if code == "EXT-PHASE3B-CORPUS"
-            else _legacy_absent_authority()
-        )
+        expected_fact = {
+            "EXT-PHASE3B-CORPUS": "AUTHORITY_ROOT_ABSENT",
+            "EXT-LEGACY-UV-AUTHORITY": "AUTHORITY_EXECUTABLE_ABSENT",
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": "AUTHORITY_ROOT_ABSENT",
+        }[code]
+        expected_authority = {
+            "EXT-PHASE3B-CORPUS": _phase3b_absent_authority,
+            "EXT-LEGACY-UV-AUTHORITY": _legacy_absent_authority,
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS": (
+                _absent_nautilus_external_authority
+            ),
+        }[code]()
         if (
             (state, fact) != ("ABSENT", expected_fact)
             or authority != expected_authority
@@ -3750,6 +3942,26 @@ def _validate_external_outcome(
                 != PHASE3B_EXPECTED_ASSET_SOURCE_FILES
             ):
                 raise TopologyError("external Phase-3B PASS authority facts drift")
+            return
+        if code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
+            if (
+                authority["authority_kind"]
+                != "NAUTILUS_RUNTIME_CLOSURE_INPUTS_V1"
+                or authority["base_root_status"]
+                != "PRIVATE_CURRENT_USER_SEALED_DIRECTORY"
+                or authority["artifact_root_status"]
+                != "PRIVATE_CURRENT_USER_SEALED_DIRECTORY"
+                or authority["runtime_policy_sha256"]
+                != "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2"
+                or authority["base_manifest_sha256"] == EMPTY_SHA256
+                or authority["base_file_count"] != 88
+                or authority["base_file_inventory_sha256"]
+                != "894e8048d062877dda374f7968ee04c3e75febfc948f82669f23485ecc7f6126"
+                or authority["artifact_manifest_sha256"] == EMPTY_SHA256
+                or authority["artifact_wheel_sha256"] == EMPTY_SHA256
+                or authority["artifact_wheel_size"] <= 0
+            ):
+                raise TopologyError("external Nautilus PASS authority facts drift")
             return
         if (
             authority["authority_kind"] != "LEGACY_UV_AND_CLOSURE_V1"
@@ -3803,16 +4015,23 @@ def _validate_native_outcome(receipt: dict[str, object], expected: tuple[str, ..
     unavailable = int(receipt["unavailable"])
     collected = tuple(receipt["collected_node_ids"])
     expected_count = len(expected)
+    multi = receipt["schema_version"] == NATIVE_MULTI_RECEIPT_SCHEMA
     if outcome == "PASS":
         if (
             (state, fact) != ("AVAILABLE", "NATIVE_CAPABILITY_VALIDATED")
             or probe["exit_code"] != 0
             or probe["stdout_sha256"] != EMPTY_SHA256
             or probe["stderr_sha256"] != EMPTY_SHA256
-            or probe["executable_sha256"] == EMPTY_SHA256
+            or (not multi and probe["executable_sha256"] == EMPTY_SHA256)
             or collected != expected
             or (selected, passed, failed, unavailable)
             != (expected_count, expected_count, 0, 0)
+            or (
+                multi
+                and not _native_multi_authority_is_valid(
+                    code, receipt["authority"],
+                )
+            )
         ):
             raise TopologyError("native PASS receipt lacks exact probe or execution proof")
         return
@@ -3829,18 +4048,33 @@ def _validate_native_outcome(receipt: dict[str, object], expected: tuple[str, ..
                 probe["exit_code"] != NATIVE_PROBE_NOT_EXECUTED
                 or probe["stdout_sha256"] != EMPTY_SHA256
                 or probe["stderr_sha256"] != EMPTY_SHA256
-                or probe["executable_sha256"] != EMPTY_SHA256
+                or (not multi and probe["executable_sha256"] != EMPTY_SHA256)
             ):
                 raise TopologyError("native absent receipt falsely claims probe execution")
+            if multi:
+                authority = receipt["authority"]
+                toolchains = (
+                    authority
+                    if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS"
+                    else authority["toolchains"]
+                )
+                if (
+                    toolchains["rust_root_status"] != "ABSENT"
+                    or toolchains["llvm_root_status"] != "ABSENT"
+                ):
+                    raise TopologyError("native absent receipt has present authority facts")
             return
         allowed_stderr = {
-            hashlib.sha256(value).hexdigest() for value in NATIVE_DENIAL_STDERR[code]
+            hashlib.sha256(value).hexdigest()
+            for value in NATIVE_DENIAL_STDERR[
+                "NATIVE-BWRAP-OS-SANDBOX" if multi else code
+            ]
         }
         if (
             probe["exit_code"] != 1
             or probe["stdout_sha256"] != EMPTY_SHA256
             or probe["stderr_sha256"] not in allowed_stderr
-            or probe["executable_sha256"] == EMPTY_SHA256
+            or (not multi and probe["executable_sha256"] == EMPTY_SHA256)
         ):
             raise TopologyError("native namespace-policy deferral is not exact")
         return
@@ -3864,8 +4098,10 @@ def _reduce_native_artifact_status(
     receipts: list[dict[str, object]], *, require_pass: bool,
 ) -> str:
     if any(
-        receipt.get("schema_version") != NATIVE_RECEIPT_SCHEMA
-        or receipt.get("capability_or_authority_code") not in NATIVE_COMMAND_IDS
+        receipt.get("capability_or_authority_code") not in NATIVE_COMMAND_IDS
+        or receipt.get("schema_version") != _native_schema_for_code(
+            receipt.get("capability_or_authority_code"),
+        )
         for receipt in receipts
     ):
         raise TopologyError("native artifact set contains a non-native receipt")
@@ -3885,7 +4121,12 @@ def _validate_native_manifest_bytes(
     governance_raw: bytes | None,
 ) -> dict[str, object]:
     manifest = _strict_json(raw, label="native artifact manifest")
-    if not isinstance(manifest, dict) or set(manifest) != NATIVE_ARTIFACT_MANIFEST_KEYS:
+    expected_keys = (
+        NATIVE_MULTI_ARTIFACT_MANIFEST_KEYS
+        if receipt["schema_version"] == NATIVE_MULTI_RECEIPT_SCHEMA
+        else NATIVE_ARTIFACT_MANIFEST_KEYS
+    )
+    if not isinstance(manifest, dict) or set(manifest) != expected_keys:
         raise TopologyError("native artifact manifest has invalid schema keys")
     if canonical_json_bytes(manifest) != raw:
         raise TopologyError("native artifact manifest is not canonical")
@@ -3912,7 +4153,7 @@ def validate_native_artifact_set(
         )
         code = str(receipt["capability_or_authority_code"])
         if (
-            receipt.get("schema_version") != NATIVE_RECEIPT_SCHEMA
+            receipt.get("schema_version") != _native_schema_for_code(code)
             or code not in NATIVE_COMMAND_IDS
             or receipt_path.name != f"{code}.json"
         ):
@@ -4285,12 +4526,17 @@ def make_receipt(*, run_id: str, head_sha: str, lane: str, code: str, expected: 
 
 def make_native_receipt(
     *, context: dict[str, object], code: str, expected: tuple[str, ...],
-    collected: tuple[str, ...], session: NativeProbeSession, outcome: str,
+    collected: tuple[str, ...],
+    session: NativeProbeSession | NativeMultiAuthoritySession, outcome: str,
     selected_test_count: int, passed: int, failed: int, unavailable: int,
     fact: str | None = None,
 ) -> dict[str, object]:
     receipt: dict[str, object] = {
-        "schema_version": NATIVE_RECEIPT_SCHEMA,
+        "schema_version": (
+            NATIVE_MULTI_RECEIPT_SCHEMA
+            if isinstance(session, NativeMultiAuthoritySession)
+            else NATIVE_RECEIPT_SCHEMA
+        ),
         "foundation_run_id": context["foundation_run_id"],
         "foundation_head_sha": context["foundation_head_sha"],
         "foundation_validation_date": context["foundation_validation_date"],
@@ -4311,6 +4557,8 @@ def make_native_receipt(
         "outcome": outcome,
         "receipt_sha256": "",
     }
+    if isinstance(session, NativeMultiAuthoritySession):
+        receipt["authority"] = dict(session.authority)
     receipt["completeness_sha256"] = native_completeness_sha256(receipt)
     receipt["receipt_sha256"] = payload_sha256(receipt)
     return receipt
@@ -4390,6 +4638,366 @@ class NativeProbeSession:
     named_identity: tuple[int, ...] | None
     descriptor_identity: tuple[int, ...] | None
     policy: dict[str, object] | None
+
+
+@dataclass(frozen=True)
+class NativeMultiAuthoritySession:
+    code: str
+    state: str
+    fact: str
+    probe: dict[str, object]
+    authority: dict[str, object]
+    descriptors: tuple[int, ...]
+    postcheck: Callable[[], None]
+
+
+def _native_multi_probe_record(
+    code: str, *, exit_code: int, stdout: bytes = b"", stderr: bytes = b"",
+) -> dict[str, object]:
+    return {
+        "command_id": NATIVE_COMMAND_IDS[code],
+        "exit_code": exit_code,
+        "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+    }
+
+
+def _absent_nautilus_toolchain_authority() -> dict[str, object]:
+    return {
+        "authority_kind": "NAUTILUS_SEALED_TOOLCHAINS_V1",
+        "rust_root_status": "ABSENT",
+        "llvm_root_status": "ABSENT",
+        "rust_policy_sha256": EMPTY_SHA256,
+        "llvm_policy_sha256": EMPTY_SHA256,
+        "rust_manifest_sha256": EMPTY_SHA256,
+        "rust_tree_sha256": EMPTY_SHA256,
+        "rust_file_count": 0,
+        "llvm_manifest_sha256": EMPTY_SHA256,
+        "llvm_tool_count": 0,
+        "llvm_resource_header_count": 0,
+    }
+
+
+def _invalid_nautilus_toolchain_authority() -> dict[str, object]:
+    authority = _absent_nautilus_toolchain_authority()
+    authority["rust_root_status"] = "INVALID"
+    authority["llvm_root_status"] = "INVALID"
+    return authority
+
+
+def _absent_nautilus_sandbox_authority() -> dict[str, object]:
+    return {
+        "regular_file_status": "ABSENT",
+        "policy_sha256": EMPTY_SHA256,
+        "expected_sha256": EMPTY_SHA256,
+        "observed_sha256": EMPTY_SHA256,
+        "expected_uid": -1,
+        "observed_uid": -1,
+        "expected_gid": -1,
+        "observed_gid": -1,
+        "expected_mode": -1,
+        "observed_mode": -1,
+    }
+
+
+def _nautilus_multi_authority(
+    code: str, *, invalid: bool = False,
+) -> dict[str, object]:
+    toolchains = (
+        _invalid_nautilus_toolchain_authority()
+        if invalid else _absent_nautilus_toolchain_authority()
+    )
+    if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS":
+        return toolchains
+    return {
+        "authority_kind": "NAUTILUS_SEALED_BUILD_SANDBOX_V1",
+        "toolchains": toolchains,
+        "sandbox": _absent_nautilus_sandbox_authority(),
+    }
+
+
+def _path_absent(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _qualify_nautilus_toolchains(
+    rust_toolchain: Path, llvm_toolchain: Path,
+) -> dict[str, object]:
+    from scripts import prepare_nautilus_llvm_toolchain as llvm
+    from scripts import prepare_nautilus_toolchain as rust
+
+    rust_policy_sha256 = _sha256_path(NAUTILUS_RUST_POLICY)
+    llvm_policy_sha256 = _sha256_path(NAUTILUS_LLVM_POLICY)
+    if (
+        rust_policy_sha256
+        != "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe"
+        or llvm_policy_sha256
+        != "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+    ):
+        raise TopologyError("Nautilus toolchain policy identity drift")
+    rust_policy = rust.load_manifest(NAUTILUS_RUST_POLICY)
+    llvm_policy = llvm.load_policy(NAUTILUS_LLVM_POLICY)
+    rust.verify_materialized_toolchain(rust_toolchain, rust_policy)
+    llvm.verify_materialized(llvm_toolchain, llvm_policy)
+    rust_materialized = rust_policy["materialized_toolchain"]
+    llvm_tools = llvm_policy["tools"]
+    llvm_resources = llvm_policy["resource_headers"]
+    assert isinstance(rust_materialized, dict)
+    assert isinstance(llvm_tools, dict)
+    assert isinstance(llvm_resources, dict)
+    resource_files = llvm_resources["files"]
+    assert isinstance(resource_files, dict)
+    return {
+        "authority_kind": "NAUTILUS_SEALED_TOOLCHAINS_V1",
+        "rust_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "llvm_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "rust_policy_sha256": rust_policy_sha256,
+        "llvm_policy_sha256": llvm_policy_sha256,
+        "rust_manifest_sha256": _sha256_path(
+            rust_toolchain / "materialized-toolchain-manifest.json",
+        ),
+        "rust_tree_sha256": rust_materialized["tree_sha256"],
+        "rust_file_count": rust_materialized["file_count"],
+        "llvm_manifest_sha256": _sha256_path(
+            llvm_toolchain / "llvm-toolchain-manifest.json",
+        ),
+        "llvm_tool_count": len(llvm_tools),
+        "llvm_resource_header_count": len(resource_files),
+    }
+
+
+def _retain_nautilus_leaf(
+    path: Path, *, expected_mode: int,
+) -> tuple[int, tuple[int, ...], str]:
+    named = path.lstat()
+    if (
+        stat.S_ISLNK(named.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or named.st_nlink != 1
+        or named.st_uid != os.geteuid()
+        or named.st_gid != os.getegid()
+        or stat.S_IMODE(named.st_mode) != expected_mode
+    ):
+        raise TopologyError("Nautilus retained toolchain leaf is unsafe")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        held = os.fstat(descriptor)
+        identity = _artifact_identity(named)
+        if _artifact_identity(held) != identity:
+            raise TopologyError("Nautilus retained toolchain leaf changed")
+        return descriptor, identity, _digest_fd(descriptor)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _sandbox_authority_from_session(
+    session: NativeProbeSession, *, bwrap_policy_path: Path,
+) -> dict[str, object]:
+    policy_sha256 = _sha256_path(bwrap_policy_path)
+    if (
+        bwrap_policy_path == TRUSTED_BWRAP_POLICY
+        and policy_sha256
+        != "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"
+    ):
+        raise TopologyError("Nautilus sandbox policy identity drift")
+    policy = session.policy or {}
+    expected_sha256 = policy.get("sandbox_sha256", EMPTY_SHA256)
+    expected_uid = policy.get("sandbox_uid", -1)
+    expected_gid = policy.get("sandbox_gid", -1)
+    expected_mode_text = policy.get("sandbox_mode", "")
+    expected_mode = (
+        int(expected_mode_text, 8)
+        if isinstance(expected_mode_text, str)
+        and re.fullmatch(r"0[0-7]{3}", expected_mode_text) else -1
+    )
+    present = session.descriptor >= 0
+    held = os.fstat(session.descriptor) if present else None
+    return {
+        "regular_file_status": (
+            "ROOT_OWNED_POLICY_BOUND_EXECUTABLE" if present else "ABSENT"
+        ),
+        "policy_sha256": policy_sha256,
+        "expected_sha256": expected_sha256,
+        "observed_sha256": (
+            session.probe["executable_sha256"] if present else EMPTY_SHA256
+        ),
+        "expected_uid": expected_uid,
+        "observed_uid": held.st_uid if held is not None else -1,
+        "expected_gid": expected_gid,
+        "observed_gid": held.st_gid if held is not None else -1,
+        "expected_mode": expected_mode,
+        "observed_mode": stat.S_IMODE(held.st_mode) if held is not None else -1,
+    }
+
+
+def _multi_probe_from_native(
+    code: str, session: NativeProbeSession,
+) -> dict[str, object]:
+    return {
+        "command_id": NATIVE_COMMAND_IDS[code],
+        "exit_code": session.probe["exit_code"],
+        "stdout_sha256": session.probe["stdout_sha256"],
+        "stderr_sha256": session.probe["stderr_sha256"],
+    }
+
+
+def _open_nautilus_multi_session(
+    code: str, *, rust_toolchain: Path, llvm_toolchain: Path,
+    toolchain_qualifier: Callable[[Path, Path], dict[str, object]],
+    runner: Callable[..., subprocess.CompletedProcess[bytes]],
+    bwrap_policy_path: Path,
+) -> NativeMultiAuthoritySession:
+    rust_ancestors = _external_parent_chain_snapshot(rust_toolchain)
+    llvm_ancestors = _external_parent_chain_snapshot(llvm_toolchain)
+    rust_absent = _path_absent(rust_toolchain)
+    llvm_absent = _path_absent(llvm_toolchain)
+    if (
+        rust_absent and llvm_absent
+        and rust_ancestors is not None and llvm_ancestors is not None
+    ):
+        def absent_postcheck() -> None:
+            if (
+                not _path_absent(rust_toolchain)
+                or not _path_absent(llvm_toolchain)
+                or _external_parent_chain_snapshot(rust_toolchain) != rust_ancestors
+                or _external_parent_chain_snapshot(llvm_toolchain) != llvm_ancestors
+            ):
+                raise TopologyError("native multi-authority changed during qualification")
+
+        return NativeMultiAuthoritySession(
+            code, "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+            _native_multi_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
+            _nautilus_multi_authority(code), (), absent_postcheck,
+        )
+    if rust_absent or llvm_absent or rust_ancestors is None or llvm_ancestors is None:
+        return NativeMultiAuthoritySession(
+            code, "BROKEN", "NATIVE_IDENTITY_INVALID",
+            _native_multi_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
+            _nautilus_multi_authority(code, invalid=True), (), lambda: None,
+        )
+
+    descriptors: list[int] = []
+    retained: list[tuple[Path, int, tuple[int, ...], str | None]] = []
+    bwrap_session: NativeProbeSession | None = None
+    try:
+        for root in (rust_toolchain, llvm_toolchain):
+            state, descriptor, identity = _open_external_directory(
+                root, exact_mode=0o500,
+            )
+            if state != "PRESENT" or identity is None:
+                raise TopologyError("Nautilus toolchain root is unsafe")
+            descriptors.append(descriptor)
+            retained.append((root, descriptor, identity, None))
+        for path, expected_mode in (
+            (rust_toolchain / "materialized-toolchain-manifest.json", 0o400),
+            (rust_toolchain / "bin/cargo", 0o500),
+            (rust_toolchain / "bin/rustc", 0o500),
+            (llvm_toolchain / "llvm-toolchain-manifest.json", 0o400),
+            (llvm_toolchain / "bin/clang", 0o500),
+            (llvm_toolchain / "bin/clang++", 0o500),
+            (llvm_toolchain / "bin/ld.lld", 0o500),
+        ):
+            descriptor, identity, digest = _retain_nautilus_leaf(
+                path, expected_mode=expected_mode,
+            )
+            descriptors.append(descriptor)
+            retained.append((path, descriptor, identity, digest))
+        authority = toolchain_qualifier(rust_toolchain, llvm_toolchain)
+        if set(authority) != NAUTILUS_TOOLCHAIN_AUTHORITY_KEYS:
+            raise TopologyError("Nautilus toolchain authority schema drift")
+        if toolchain_qualifier(rust_toolchain, llvm_toolchain) != authority:
+            raise TopologyError("Nautilus toolchain authority changed before probe")
+        probe = _native_multi_probe_record(code, exit_code=0)
+        state = "AVAILABLE"
+        fact = "NATIVE_CAPABILITY_VALIDATED"
+        if code == "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX":
+            bwrap_session = _execute_native_probe(
+                _open_bwrap_session(bwrap_policy_path), runner=runner,
+            )
+            if bwrap_session.descriptor >= 0:
+                descriptors.append(bwrap_session.descriptor)
+            sandbox = _sandbox_authority_from_session(
+                bwrap_session, bwrap_policy_path=bwrap_policy_path,
+            )
+            combined = {
+                "authority_kind": "NAUTILUS_SEALED_BUILD_SANDBOX_V1",
+                "toolchains": authority,
+                "sandbox": sandbox,
+            }
+            if bwrap_session.state == "UNAVAILABLE":
+                state = "UNAVAILABLE"
+                fact = bwrap_session.fact
+                probe = _multi_probe_from_native(code, bwrap_session)
+            elif bwrap_session.state != "AVAILABLE":
+                raise TopologyError("Nautilus build sandbox probe failed")
+            authority_value = combined
+        else:
+            authority_value = authority
+
+        def postcheck() -> None:
+            try:
+                if (
+                    _external_parent_chain_snapshot(rust_toolchain) != rust_ancestors
+                    or _external_parent_chain_snapshot(llvm_toolchain) != llvm_ancestors
+                    or toolchain_qualifier(rust_toolchain, llvm_toolchain) != authority
+                ):
+                    raise TopologyError(
+                        "native multi-authority changed during qualification",
+                    )
+                for path, descriptor, identity, digest in retained:
+                    named = path.lstat()
+                    held = os.fstat(descriptor)
+                    if (
+                        _artifact_identity(named) != identity
+                        or _artifact_identity(held) != identity
+                        or (digest is not None and _digest_fd(descriptor) != digest)
+                    ):
+                        raise TopologyError(
+                            "native multi-authority changed during qualification",
+                        )
+                if bwrap_session is not None:
+                    _postcheck_native_probe(bwrap_session)
+            except TopologyError:
+                raise
+            except Exception as exc:
+                raise TopologyError(
+                    "native multi-authority changed during qualification",
+                ) from exc
+
+        return NativeMultiAuthoritySession(
+            code, state, fact, probe,
+            authority_value, tuple(descriptors), postcheck,
+        )
+    except Exception:
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        return NativeMultiAuthoritySession(
+            code, "BROKEN", "NATIVE_IDENTITY_INVALID",
+            _native_multi_probe_record(code, exit_code=NATIVE_PROBE_NOT_EXECUTED),
+            _nautilus_multi_authority(code, invalid=True), (), lambda: None,
+        )
 
 
 def _native_probe_record(
@@ -4606,7 +5214,19 @@ def _execute_native_probe(
     )
 
 
-def _postcheck_native_probe(session: NativeProbeSession) -> None:
+def _postcheck_native_probe(
+    session: NativeProbeSession | NativeMultiAuthoritySession,
+) -> None:
+    if isinstance(session, NativeMultiAuthoritySession):
+        try:
+            session.postcheck()
+        except TopologyError:
+            raise
+        except Exception as exc:
+            raise TopologyError(
+                "native multi-authority changed during qualification",
+            ) from exc
+        return
     if session.descriptor < 0:
         return
     if (
@@ -4639,6 +5259,11 @@ def _retained_native_probe(
     code: str, *, runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
     bwrap_policy_path: Path | None = None,
     unshare_path: Path | None = None,
+    rust_toolchain: Path = NAUTILUS_RUST_TOOLCHAIN,
+    llvm_toolchain: Path = NAUTILUS_LLVM_TOOLCHAIN,
+    toolchain_qualifier: Callable[[Path, Path], dict[str, object]] = (
+        _qualify_nautilus_toolchains
+    ),
 ):
     bwrap_policy_path = TRUSTED_BWRAP_POLICY if bwrap_policy_path is None else bwrap_policy_path
     unshare_path = TRUSTED_UNSHARE if unshare_path is None else unshare_path
@@ -4646,13 +5271,22 @@ def _retained_native_probe(
         session = _open_bwrap_session(bwrap_policy_path)
     elif code == "NATIVE-USERNS-ROOT-PROVISION":
         session = _open_unshare_session(unshare_path)
+    elif code in NATIVE_MULTI_CODES:
+        session = _open_nautilus_multi_session(
+            code, rust_toolchain=rust_toolchain, llvm_toolchain=llvm_toolchain,
+            toolchain_qualifier=toolchain_qualifier, runner=runner,
+            bwrap_policy_path=bwrap_policy_path,
+        )
     else:
         raise TopologyError("unknown native capability")
     session = _execute_native_probe(session, runner=runner)
     try:
         yield session
     finally:
-        if session.descriptor >= 0:
+        if isinstance(session, NativeMultiAuthoritySession):
+            for descriptor in session.descriptors:
+                os.close(descriptor)
+        elif session.descriptor >= 0:
             os.close(session.descriptor)
 
 
@@ -4810,6 +5444,11 @@ def _legacy_absent_authority() -> dict[str, object]:
 
 
 def _invalid_external_authority(code: str) -> dict[str, object]:
+    if code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
+        authority = _absent_nautilus_external_authority()
+        authority["base_root_status"] = "INVALID"
+        authority["artifact_root_status"] = "INVALID"
+        return authority
     authority = (
         _phase3b_absent_authority()
         if code == "EXT-PHASE3B-CORPUS" else _legacy_absent_authority()
@@ -4820,6 +5459,21 @@ def _invalid_external_authority(code: str) -> dict[str, object]:
     )
     authority[status_key] = "INVALID"
     return authority
+
+
+def _absent_nautilus_external_authority() -> dict[str, object]:
+    return {
+        "authority_kind": "NAUTILUS_RUNTIME_CLOSURE_INPUTS_V1",
+        "base_root_status": "ABSENT",
+        "artifact_root_status": "ABSENT",
+        "runtime_policy_sha256": EMPTY_SHA256,
+        "base_manifest_sha256": EMPTY_SHA256,
+        "base_file_count": 0,
+        "base_file_inventory_sha256": EMPTY_SHA256,
+        "artifact_manifest_sha256": EMPTY_SHA256,
+        "artifact_wheel_sha256": EMPTY_SHA256,
+        "artifact_wheel_size": 0,
+    }
 
 
 class _ExternalStateError(TopologyError):
@@ -5388,6 +6042,147 @@ def _open_legacy_external_session(
     )
 
 
+def _qualify_nautilus_external_inputs(
+    base_runtime: Path, artifact_root: Path,
+) -> dict[str, object]:
+    from scripts import materialize_nautilus_runtime_closure as runtime
+
+    policy_sha256 = _sha256_path(NAUTILUS_RUNTIME_POLICY)
+    if (
+        policy_sha256
+        != "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2"
+    ):
+        raise TopologyError("Nautilus runtime policy identity drift")
+    policy = runtime._load_policy(NAUTILUS_RUNTIME_POLICY)
+    base_manifest, base_files = runtime._validate_base_runtime(
+        base_runtime, policy,
+    )
+    artifact_manifest, wheel_path = runtime._validate_artifact(
+        artifact_root, policy,
+    )
+    wheel = artifact_manifest["wheel"]
+    assert isinstance(wheel, dict)
+    return {
+        "authority_kind": "NAUTILUS_RUNTIME_CLOSURE_INPUTS_V1",
+        "base_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "artifact_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "runtime_policy_sha256": policy_sha256,
+        "base_manifest_sha256": _sha256_path(
+            base_runtime / "closure-manifest.json",
+        ),
+        "base_file_count": len(base_files),
+        "base_file_inventory_sha256": str(policy["base_file_inventory_sha256"]),
+        "artifact_manifest_sha256": _sha256_path(
+            artifact_root / "artifact-manifest.json",
+        ),
+        "artifact_wheel_sha256": _sha256_path(wheel_path),
+        "artifact_wheel_size": int(wheel["size"]),
+    }
+
+
+def _open_nautilus_external_session(
+    *, base_runtime: Path, artifact_root: Path,
+    qualifier: Callable[[Path, Path], dict[str, object]],
+) -> ExternalAuthoritySession:
+    base_ancestors = _external_parent_chain_snapshot(base_runtime)
+    artifact_ancestors = _external_parent_chain_snapshot(artifact_root)
+    base_state, base_descriptor, _ = _open_external_directory(
+        base_runtime, exact_mode=0o500,
+    )
+    artifact_state, artifact_descriptor, _ = _open_external_directory(
+        artifact_root, exact_mode=0o500,
+    )
+    if base_state == artifact_state == "ABSENT":
+        def absent_postcheck() -> None:
+            current_base, current_base_descriptor, _ = _open_external_directory(
+                base_runtime, exact_mode=0o500,
+            )
+            current_artifact, current_artifact_descriptor, _ = _open_external_directory(
+                artifact_root, exact_mode=0o500,
+            )
+            for retained in (current_base_descriptor, current_artifact_descriptor):
+                if retained >= 0:
+                    os.close(retained)
+            if (
+                current_base != "ABSENT"
+                or current_artifact != "ABSENT"
+                or _external_parent_chain_snapshot(base_runtime) != base_ancestors
+                or _external_parent_chain_snapshot(artifact_root) != artifact_ancestors
+            ):
+                raise TopologyError("external authority changed during qualification")
+
+        return ExternalAuthoritySession(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS", "ABSENT",
+            "AUTHORITY_ROOT_ABSENT", _absent_nautilus_external_authority(), (),
+            absent_postcheck,
+        )
+    if "ABSENT" in {base_state, artifact_state}:
+        for descriptor in (base_descriptor, artifact_descriptor):
+            if descriptor >= 0:
+                os.close(descriptor)
+        return ExternalAuthoritySession(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS", "PARTIAL",
+            "AUTHORITY_PARTIAL",
+            _invalid_external_authority("EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS"),
+            (), lambda: None,
+        )
+    if (
+        base_state != "PRESENT" or artifact_state != "PRESENT"
+        or base_ancestors is None or artifact_ancestors is None
+    ):
+        for descriptor in (base_descriptor, artifact_descriptor):
+            if descriptor >= 0:
+                os.close(descriptor)
+        return ExternalAuthoritySession(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS", "INVALID",
+            "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS"),
+            (), lambda: None,
+        )
+    try:
+        base_identity = _artifact_identity(os.fstat(base_descriptor))
+        artifact_identity = _artifact_identity(os.fstat(artifact_descriptor))
+        authority = qualifier(base_runtime, artifact_root)
+        if set(authority) != NAUTILUS_RUNTIME_AUTHORITY_KEYS:
+            raise TopologyError("Nautilus external authority schema drift")
+        if qualifier(base_runtime, artifact_root) != authority:
+            raise TopologyError("Nautilus external authority changed before session")
+    except Exception:
+        os.close(base_descriptor)
+        os.close(artifact_descriptor)
+        return ExternalAuthoritySession(
+            "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS", "INVALID",
+            "AUTHORITY_INVALID",
+            _invalid_external_authority("EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS"),
+            (), lambda: None,
+        )
+
+    def postcheck() -> None:
+        try:
+            if (
+                _external_parent_chain_snapshot(base_runtime) != base_ancestors
+                or _external_parent_chain_snapshot(artifact_root) != artifact_ancestors
+                or _artifact_identity(base_runtime.lstat()) != base_identity
+                or _artifact_identity(os.fstat(base_descriptor)) != base_identity
+                or _artifact_identity(artifact_root.lstat()) != artifact_identity
+                or _artifact_identity(os.fstat(artifact_descriptor)) != artifact_identity
+                or qualifier(base_runtime, artifact_root) != authority
+            ):
+                raise TopologyError("external authority changed during qualification")
+        except TopologyError:
+            raise
+        except Exception as exc:
+            raise TopologyError(
+                "external authority changed during qualification",
+            ) from exc
+
+    return ExternalAuthoritySession(
+        "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS", "VALID",
+        "AUTHORITY_COMPLETE_VALIDATED", authority,
+        (base_descriptor, artifact_descriptor), postcheck,
+    )
+
+
 @contextmanager
 def _retained_external_authority(
     code: str, *, corpus_root: Path = PHASE3B_ROOT, uv_path: Path = LEGACY_UV,
@@ -5396,6 +6191,11 @@ def _retained_external_authority(
     expected_uv_sha256: str = LEGACY_UV_SHA256,
     expected_uv_version: str = LEGACY_UV_VERSION,
     runner: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
+    nautilus_base_root: Path = NAUTILUS_BASE_RUNTIME,
+    nautilus_artifact_root: Path = NAUTILUS_ARTIFACT_ROOT,
+    nautilus_qualifier: Callable[[Path, Path], dict[str, object]] = (
+        _qualify_nautilus_external_inputs
+    ),
 ):
     if code == "EXT-PHASE3B-CORPUS":
         session = _open_phase3b_external_session(
@@ -5406,6 +6206,12 @@ def _retained_external_authority(
             uv_path=uv_path, legacy_root=legacy_root,
             expected_uv_sha256=expected_uv_sha256,
             expected_uv_version=expected_uv_version, runner=runner,
+        )
+    elif code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
+        session = _open_nautilus_external_session(
+            base_runtime=nautilus_base_root,
+            artifact_root=nautilus_artifact_root,
+            qualifier=nautilus_qualifier,
         )
     else:
         raise TopologyError("unknown external authority")
@@ -5529,8 +6335,14 @@ def _publish_native_marker_or_resolve(
 
 def _publish_native_receipt_transaction(
     *, receipt: dict[str, object], evidence_root: Path,
-    session: NativeProbeSession, governance_raw: bytes | None,
+    session: NativeProbeSession | NativeMultiAuthoritySession,
+    governance_raw: bytes | None,
 ) -> Path:
+    if (
+        receipt.get("outcome") not in {"PASS", "DEFERRED"}
+        or (receipt["outcome"] == "PASS") != (governance_raw is not None)
+    ):
+        raise TopologyError("native receipt outcome/governance shape is invalid")
     topology_root = evidence_root / "capability-topology"
     code = str(receipt["capability_or_authority_code"])
     marker = topology_root / f"{code}.json"
@@ -5805,7 +6617,12 @@ def run_lane(
         if lane == "native-capabilities":
             assert context is not None
             with native_probe_factory(code) as session:
-                if not isinstance(session, NativeProbeSession) or session.code != code:
+                if (
+                    not isinstance(
+                        session, (NativeProbeSession, NativeMultiAuthoritySession),
+                    )
+                    or session.code != code
+                ):
                     raise TopologyError("native probe returned an invalid capability session")
                 if session.state == "BROKEN":
                     failure = make_native_receipt(
