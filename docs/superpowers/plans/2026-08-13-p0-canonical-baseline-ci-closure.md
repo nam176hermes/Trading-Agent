@@ -3790,6 +3790,16 @@ paths retain their existing parent snapshot, retained descriptors, qualifiers,
 and postchecks; the generic Phase3B, legacy-UV, and other external open helpers
 are not broadened.
 
+The prefix identity is not pathname-only evidence. The qualifier must open and
+retain a no-follow directory descriptor for the nearest existing safe ancestor,
+bind its opened identity to the validated named identity, and return that
+descriptor in the native or external session custody. Postcheck verifies the
+held descriptor, revalidates the named prefix identities, and checks the first
+missing component relative to the held descriptor with no symlink following.
+All descriptors close through the existing session context-manager lifecycle.
+This retained-FD requirement prevents a pathname replacement window between
+qualification and Architecture-A publication.
+
 Strict RED must cover hosted-shaped missing intermediate roots for both native
 multi-authority and Nautilus external authority before implementation. GREEN
 adds appearance, symlink, unsafe-mode, and partial-root attacks in existing
