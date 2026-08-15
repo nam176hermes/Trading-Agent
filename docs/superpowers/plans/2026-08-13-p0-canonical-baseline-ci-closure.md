@@ -4148,3 +4148,33 @@ review before exactly one new hosted push attempt. Never rerun
 `26ed4d1da676e4a286fc8a8187c661f1a96ceaab`. Do not weaken custody, lineage,
 no-clobber, sealing, validators, skip/outcome or authority policy; do not mint
 PostgreSQL approval, run a database or alter production/live/dependencies.
+
+### P0-12R32 diagnostic — classify projection-validation substage
+
+Hosted run `31897847824` at exact
+`e272e644097541f2aaec2a257c7213fabd47e676` completed 6,860 tests with two
+authority-gated skips and exact 6497/6526 portable collection, then ended with
+`ARTIFACT_FIREWALL_REJECTED LAYOUT PUBLICATION PROJECTION_VALIDATION`. Artifact
+count is zero. R31 therefore proves input and both lineages, destination
+absence and the retained source snapshot passed; rejection occurred while
+validating the private final projection, before manifest or candidate creation.
+
+Add one closed observational projection substage beneath exactly
+`PUBLICATION PROJECTION_VALIDATION`: `ROOT_LAYOUT`, `GOVERNANCE_LAYOUT`,
+`TOPOLOGY_LAYOUT`, `PHASE_LAYOUT`, `FOUNDATION_CONTEXT`, `RESERVATION`,
+`LOCKED_INPUTS`, `BASELINE`, `COLLECTION`, `REMAINDER`,
+`REMAINDER_GOVERNANCE`, `CLOSURE`, `RECEIPTS`, `AGGREGATE`,
+`FINAL_GOVERNANCE`, or `SECRET_SCAN`. Mark a token immediately before the
+existing operation. Do not add a catch, expose validator text/data, or change
+accepted layouts, schemas, bytes, ordering, control flow or policy. Preserve
+the R27–R31 closed code/category/stage taxonomy and cause/context suppression.
+
+Strict RED/GREEN must exercise every token from the existing collected
+firewall node and prove the real successful projection traverses the exact
+ordered token sequence. Run the full firewall/failure packet, affected
+topology/governance consumers, collection/static gates, a fresh standalone
+packet and independent review before exactly one new push-triggered hosted
+attempt. Never rerun `e272e644097541f2aaec2a257c7213fabd47e676`. Do not
+accept the currently rejected projection, weaken validation or custody, mint
+PostgreSQL authority, run a database, or alter Make/workflow, skip/outcome,
+dependencies/locks, production or live boundaries.
