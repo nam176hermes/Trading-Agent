@@ -3536,16 +3536,10 @@ def _validate_native_multi_authority(code: str, authority: object) -> None:
                 raise TopologyError("native sandbox authority identity is invalid")
 
 
-def _native_multi_authority_is_valid(
-    code: str, authority: dict[str, object],
+def _nautilus_toolchain_authority_is_valid(
+    toolchains: dict[str, object],
 ) -> bool:
-    toolchains = (
-        authority
-        if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS"
-        else authority["toolchains"]
-    )
-    assert isinstance(toolchains, dict)
-    if (
+    return not (
         toolchains["authority_kind"] != "NAUTILUS_SEALED_TOOLCHAINS_V1"
         or toolchains["rust_root_status"]
         != "PRIVATE_CURRENT_USER_SEALED_DIRECTORY"
@@ -3562,15 +3556,14 @@ def _native_multi_authority_is_valid(
         or toolchains["llvm_manifest_sha256"] == EMPTY_SHA256
         or toolchains["llvm_tool_count"] != 3
         or toolchains["llvm_resource_header_count"] != 305
-    ):
-        return False
-    if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS":
-        return True
-    sandbox = authority["sandbox"]
-    assert isinstance(sandbox, dict)
+    )
+
+
+def _nautilus_sandbox_authority_is_valid(
+    sandbox: dict[str, object],
+) -> bool:
     return (
-        authority["authority_kind"] == "NAUTILUS_SEALED_BUILD_SANDBOX_V1"
-        and sandbox["regular_file_status"]
+        sandbox["regular_file_status"]
         == "ROOT_OWNED_POLICY_BOUND_EXECUTABLE"
         and sandbox["policy_sha256"]
         == "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"
@@ -3580,6 +3573,74 @@ def _native_multi_authority_is_valid(
         and sandbox["expected_uid"] == sandbox["observed_uid"] == 0
         and sandbox["expected_gid"] == sandbox["observed_gid"] == 0
         and sandbox["expected_mode"] == sandbox["observed_mode"] == 0o755
+    )
+
+
+def _native_multi_authority_is_valid(
+    code: str, authority: dict[str, object],
+) -> bool:
+    toolchains = (
+        authority
+        if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS"
+        else authority["toolchains"]
+    )
+    assert isinstance(toolchains, dict)
+    if not _nautilus_toolchain_authority_is_valid(toolchains):
+        return False
+    if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS":
+        return True
+    sandbox = authority["sandbox"]
+    assert isinstance(sandbox, dict)
+    return (
+        authority["authority_kind"] == "NAUTILUS_SEALED_BUILD_SANDBOX_V1"
+        and _nautilus_sandbox_authority_is_valid(sandbox)
+    )
+
+
+def _native_multi_authority_can_defer(
+    code: str, authority: dict[str, object],
+) -> bool:
+    if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS":
+        return authority == _absent_nautilus_toolchain_authority()
+    toolchains = authority["toolchains"]
+    sandbox = authority["sandbox"]
+    assert isinstance(toolchains, dict)
+    assert isinstance(sandbox, dict)
+    toolchains_absent = toolchains == _absent_nautilus_toolchain_authority()
+    sandbox_absent = sandbox in (
+        _absent_nautilus_sandbox_authority(),
+        {
+            "regular_file_status": "ABSENT",
+            "policy_sha256": (
+                "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"
+            ),
+            "expected_sha256": (
+                "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+            ),
+            "observed_sha256": EMPTY_SHA256,
+            "expected_uid": 0,
+            "observed_uid": -1,
+            "expected_gid": 0,
+            "observed_gid": -1,
+            "expected_mode": 0o755,
+            "observed_mode": -1,
+        },
+    )
+    return (
+        authority["authority_kind"] == "NAUTILUS_SEALED_BUILD_SANDBOX_V1"
+        and (
+            (
+                toolchains_absent
+                and (
+                    sandbox_absent
+                    or _nautilus_sandbox_authority_is_valid(sandbox)
+                )
+            )
+            or (
+                _nautilus_toolchain_authority_is_valid(toolchains)
+                and sandbox_absent
+            )
+        )
     )
 
 
@@ -4053,16 +4114,8 @@ def _validate_native_outcome(receipt: dict[str, object], expected: tuple[str, ..
                 raise TopologyError("native absent receipt falsely claims probe execution")
             if multi:
                 authority = receipt["authority"]
-                toolchains = (
-                    authority
-                    if code == "NATIVE-NAUTILUS-SEALED-TOOLCHAINS"
-                    else authority["toolchains"]
-                )
-                if (
-                    toolchains["rust_root_status"] != "ABSENT"
-                    or toolchains["llvm_root_status"] != "ABSENT"
-                ):
-                    raise TopologyError("native absent receipt has present authority facts")
+                if not _native_multi_authority_can_defer(code, authority):
+                    raise TopologyError("native DEFERRED authority facts are invalid")
             return
         allowed_stderr = {
             hashlib.sha256(value).hexdigest()
@@ -4075,6 +4128,15 @@ def _validate_native_outcome(receipt: dict[str, object], expected: tuple[str, ..
             or probe["stdout_sha256"] != EMPTY_SHA256
             or probe["stderr_sha256"] not in allowed_stderr
             or (not multi and probe["executable_sha256"] == EMPTY_SHA256)
+            or (
+                multi
+                and (
+                    code != "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX"
+                    or not _native_multi_authority_is_valid(
+                        code, receipt["authority"],
+                    )
+                )
+            )
         ):
             raise TopologyError("native namespace-policy deferral is not exact")
         return

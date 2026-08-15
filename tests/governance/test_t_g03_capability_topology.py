@@ -190,6 +190,28 @@ def _fixture_nautilus_toolchain_authority() -> dict[str, object]:
     }
 
 
+def _valid_nautilus_toolchain_authority() -> dict[str, object]:
+    return {
+        "authority_kind": "NAUTILUS_SEALED_TOOLCHAINS_V1",
+        "rust_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "llvm_root_status": "PRIVATE_CURRENT_USER_SEALED_DIRECTORY",
+        "rust_policy_sha256": (
+            "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe"
+        ),
+        "llvm_policy_sha256": (
+            "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        ),
+        "rust_manifest_sha256": "3" * 64,
+        "rust_tree_sha256": (
+            "29e25dea5701900ead25006933dc230879930f7e74577b8bb0de1f0bce3278e7"
+        ),
+        "rust_file_count": 149,
+        "llvm_manifest_sha256": "5" * 64,
+        "llvm_tool_count": 3,
+        "llvm_resource_header_count": 305,
+    }
+
+
 def _fixture_nautilus_toolchains(root: Path) -> tuple[Path, Path]:
     rust = root / "rust"
     llvm = root / "llvm"
@@ -530,7 +552,7 @@ def test_real_native_probe_argv_uses_retained_fd_and_exact_namespace_operations(
 
 
 def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Break caught: misleading output, timeout, or a nonregular leaf becomes DEFERRED."""
     opened = topology._open_unshare_session(Path("/usr/bin/unshare"))
@@ -596,6 +618,128 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
                 assert session.descriptors == ()
 
         rust, llvm = _fixture_nautilus_toolchains(root)
+        original_native_path_leaf = topology._native_path_leaf
+        with monkeypatch.context() as absent_bwrap:
+            absent_bwrap.setattr(
+                topology, "_native_path_leaf",
+                lambda path: (
+                    ("ABSENT", None)
+                    if path == Path("/usr/bin/bwrap")
+                    else original_native_path_leaf(path)
+                ),
+            )
+            with topology._retained_native_probe(
+                "NATIVE-NAUTILUS-SEALED-BUILD-SANDBOX",
+                rust_toolchain=rust, llvm_toolchain=llvm,
+                toolchain_qualifier=lambda _rust, _llvm: (
+                    _valid_nautilus_toolchain_authority()
+                ),
+            ) as session:
+                assert (session.state, session.fact) == (
+                    "UNAVAILABLE", "NATIVE_COMPONENT_ABSENT",
+                )
+                topology._postcheck_native_probe(session)
+                rows = topology.load_inventory(
+                    Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+                )
+                expected = topology._expected_rows(rows, session.code)[1]
+                receipt = topology.make_native_receipt(
+                    context=_native_context(), code=session.code, expected=expected,
+                    collected=(), session=session, outcome="DEFERRED",
+                    selected_test_count=0, passed=0, failed=0,
+                    unavailable=len(expected),
+                )
+                context = _native_context()
+
+                def validate(candidate: dict[str, object]) -> dict[str, object]:
+                    return topology.validate_receipt(
+                        topology.canonical_json_bytes(candidate), rows=rows,
+                        foundation_run_id=str(context["foundation_run_id"]),
+                        foundation_head_sha=str(context["foundation_head_sha"]),
+                        foundation_context=context,
+                    )
+
+                def rehash(candidate: dict[str, object]) -> None:
+                    candidate["completeness_sha256"] = (
+                        topology.native_completeness_sha256(candidate)
+                    )
+                    candidate["receipt_sha256"] = topology.payload_sha256(candidate)
+
+                assert validate(receipt) == receipt
+                topology_root = tmp_path / "absent-sandbox-topology"
+                _write_native_artifact_fixture(
+                    topology_root, receipt,
+                )
+                for other_code in sorted(
+                    set(topology.NATIVE_COMMAND_IDS) - {session.code},
+                ):
+                    _write_native_artifact_fixture(
+                        topology_root,
+                        _native_receipt(
+                            capability_or_authority_code=other_code,
+                        ),
+                    )
+                assert topology.validate_native_artifacts(
+                    topology_root, rows=rows, foundation_context=context,
+                    sealed_custody={}, require_pass=False,
+                ) == "DEFERRED"
+                with pytest.raises(topology.TopologyError, match="requires PASS"):
+                    topology.validate_native_artifacts(
+                        topology_root, rows=rows, foundation_context=context,
+                        sealed_custody={}, require_pass=True,
+                    )
+
+                inverse = json.loads(json.dumps(receipt))
+                inverse["authority"]["toolchains"] = (
+                    topology._nautilus_multi_authority(
+                        "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
+                    )
+                )
+                inverse["authority"]["sandbox"] = sandbox
+                rehash(inverse)
+                assert validate(inverse) == inverse
+
+                invalid_toolchain = json.loads(json.dumps(receipt))
+                invalid_toolchain["authority"]["toolchains"][
+                    "rust_policy_sha256"
+                ] = "0" * 64
+                rehash(invalid_toolchain)
+                with pytest.raises(topology.TopologyError, match="authority facts"):
+                    validate(invalid_toolchain)
+
+                invalid_sandbox = json.loads(json.dumps(inverse))
+                invalid_sandbox["authority"]["sandbox"]["observed_uid"] = 1
+                rehash(invalid_sandbox)
+                with pytest.raises(topology.TopologyError, match="authority facts"):
+                    validate(invalid_sandbox)
+
+                bwrap_denial = next(iter(
+                    topology.NATIVE_DENIAL_STDERR["NATIVE-BWRAP-OS-SANDBOX"],
+                ))
+                toolchain_denial = _native_receipt(
+                    capability_or_authority_code=(
+                        "NATIVE-NAUTILUS-SEALED-TOOLCHAINS"
+                    ),
+                    redacted_fact_class="RUNNER_POLICY_DISALLOWS_USERNS",
+                    probe=topology._native_multi_probe_record(
+                        "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
+                        exit_code=1, stderr=bwrap_denial,
+                    ),
+                )
+                with pytest.raises(topology.TopologyError, match="namespace-policy"):
+                    validate(toolchain_denial)
+
+                invalid_denial = json.loads(json.dumps(receipt))
+                invalid_denial["redacted_fact_class"] = (
+                    "RUNNER_POLICY_DISALLOWS_USERNS"
+                )
+                invalid_denial["probe"] = topology._native_multi_probe_record(
+                    session.code, exit_code=1, stderr=bwrap_denial,
+                )
+                rehash(invalid_denial)
+                with pytest.raises(topology.TopologyError, match="namespace-policy"):
+                    validate(invalid_denial)
+
         with topology._retained_native_probe(
             "NATIVE-NAUTILUS-SEALED-TOOLCHAINS",
             rust_toolchain=rust, llvm_toolchain=llvm,
