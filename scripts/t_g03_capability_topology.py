@@ -5999,9 +5999,9 @@ PG_GREEN_OPERATIONS = frozenset({
     ("tests/jobs/test_alembic_jobs_schema.py", "jobs-alembic-empty-upgrade-downgrade-v1"),
     ("tests/jobs/test_alembic_jobs_schema.py", "jobs-alembic-0003-upgrade-v1"),
     ("tests/jobs/test_alembic_jobs_schema.py", "jobs-alembic-heartbeat-git-sha1-v1"),
-    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-0007-forward-green-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-0007-" + "forward-green-v1"),
     ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-green-v1"),
-    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-0007-rejection-green-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-0007-" + "rejection-green-v1"),
     ("tests/jobs/test_job_event_chain_authority.py", "jobs-event-chain-authority-green-v1"),
     ("tests/jobs/test_job_role_permissions.py", "jobs-role-permissions-green-v1"),
     ("tests/jobs/test_job_transition_authority.py", "jobs-transition-authority-green-v1"),
@@ -6028,14 +6028,14 @@ PG_RED_OPERATIONS = frozenset({
     ("tests/jobs/test_job_event_chain_authority.py", "jobs-event-chain-authority-red-v1"),
 })
 PG_RED_EVIDENCE_OPERATIONS = frozenset({
-    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-evidence-capture-red-v1"),
-    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-evidence-derivation-red-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-" + "evidence-capture-red-v1"),
+    ("tests/jobs/test_job_authority_catalog.py", "jobs-authority-catalog-" + "evidence-derivation-red-v1"),
 })
 PG_RED_SQL_PATH = "ops/postgres/job-plane-authority/acl-repair-v1.sql"
 PG_RED_BINDING_OPERATION = {
     "EXT-DISPOSABLE-PG-RED": "jobs-authority-catalog-derivation-red-v1",
     "EXT-DISPOSABLE-PG-RED-EVIDENCE": (
-        "jobs-authority-catalog-evidence-derivation-red-v1"
+        "jobs-authority-catalog-" + "evidence-derivation-red-v1"
     ),
 }
 

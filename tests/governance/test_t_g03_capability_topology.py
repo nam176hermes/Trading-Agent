@@ -558,8 +558,22 @@ def test_native_probe_classification_is_narrow_and_never_uses_path_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Break caught: misleading output, timeout, or a nonregular leaf becomes DEFERRED."""
-    opened = topology._open_unshare_session(Path("/usr/bin/unshare"))
-    assert opened.state == "PROBE_PENDING"
+    executable = tmp_path / "retained-private-unshare"
+    executable.write_bytes(b"retained private unshare fixture")
+    descriptor = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
+    named = executable.lstat()
+    opened = topology.NativeProbeSession(
+        "NATIVE-USERNS-ROOT-PROVISION", "PROBE_PENDING", "NATIVE_PROBE_INVALID",
+        topology._native_probe_record(
+            "NATIVE-USERNS-ROOT-PROVISION",
+            exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+            executable_sha256=hashlib.sha256(
+                b"retained private unshare fixture"
+            ).hexdigest(),
+        ),
+        descriptor, executable, topology._artifact_identity(named),
+        topology._artifact_identity(os.fstat(descriptor)), None,
+    )
     try:
         exact_denial = next(iter(topology.NATIVE_DENIAL_STDERR[opened.code]))
         deferred = topology._execute_native_probe(

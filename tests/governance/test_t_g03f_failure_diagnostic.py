@@ -408,16 +408,18 @@ def test_receipt_first_complete_nonpass_does_not_publish_a_diagnostic(
 
         @topology.contextmanager
         def absent_external_session(code: str):
-            authority = (
-                topology._phase3b_absent_authority()
-                if code == "EXT-PHASE3B-CORPUS"
-                else topology._legacy_absent_authority()
-            )
-            fact = (
-                "AUTHORITY_ROOT_ABSENT"
-                if code == "EXT-PHASE3B-CORPUS"
-                else "AUTHORITY_EXECUTABLE_ABSENT"
-            )
+            if code == "EXT-PHASE3B-CORPUS":
+                authority = topology._phase3b_absent_authority()
+                fact = "AUTHORITY_ROOT_ABSENT"
+            elif code == "EXT-LEGACY-UV-AUTHORITY":
+                authority = topology._legacy_absent_authority()
+                fact = "AUTHORITY_EXECUTABLE_ABSENT"
+            elif code == "EXT-NAUTILUS-RUNTIME-CLOSURE-INPUTS":
+                authority = topology._absent_nautilus_external_authority()
+                fact = "AUTHORITY_ROOT_ABSENT"
+            else:
+                authority = topology._absent_disposable_pg_authority(code)
+                fact = "AUTHORITY_RECORD_ABSENT"
             yield topology.ExternalAuthoritySession(
                 code, "ABSENT", fact, authority, (), lambda: None,
             )
