@@ -1254,7 +1254,7 @@ def test_all_portable_publishers_and_workflow_share_exact_private_final_path() -
     assert '$${GITHUB_RUN_ID:?}.$${GITHUB_RUN_ATTEMPT:?}"' in makefile
     assert 'artifact_root="$$publication_parent/artifact"' in makefile
     assert 'export PORTABLE_CI_ARTIFACT_ROOT="$$artifact_root"' in makefile
-    assert makefile.count(make_destination) == 3
+    assert makefile.count(make_destination) == 4
     assert '$(CURDIR)/runtime/state/ci-portable' not in makefile
     assert f"path: {workflow_path}" in workflow
     assert "path: runtime/state/ci-portable/**" not in workflow
