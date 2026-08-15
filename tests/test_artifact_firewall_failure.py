@@ -116,6 +116,65 @@ def _publish_failure(
     )
 
 
+def _topology_failure_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, str, str, str]:
+    """Build the raw state left by a fail-closed native preflight."""
+    tmp_path.mkdir()
+    raw_root, run_id, head_sha, _skipped = _failure_source(tmp_path, monkeypatch)
+    diagnostic = raw_root / "capability-topology/portable-root-remainder.failure-diagnostic.json"
+    diagnostic.unlink()
+
+    def passing_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+        report.write_text(json.dumps({
+            "schema_version": 1,
+            "component": "root",
+            "pytest_exit_status": 0,
+            "custody_policy": json.loads(os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"]),
+            "tests": [
+                {
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "passed",
+                    "reason": "",
+                    "phase": "call",
+                }
+                for node in nodes
+            ],
+        }), encoding="utf-8")
+        return nodes
+
+    topology.execute_portable_root_remainder(
+        inventory=INVENTORY, evidence_root=raw_root, run_id=run_id,
+        head_sha=head_sha, exact_runner=passing_exact,
+        foundation_context_path=(
+            raw_root / "capability-topology/foundation-context.json"
+        ),
+    )
+
+    @topology.contextmanager
+    def broken_probe(code: str):
+        assert code == "NATIVE-BWRAP-OS-SANDBOX"
+        yield topology.NativeProbeSession(
+            code, "BROKEN", "NATIVE_IDENTITY_INVALID",
+            topology._native_probe_record(
+                code, exit_code=topology.NATIVE_PROBE_NOT_EXECUTED,
+            ),
+            -1, None, None, None, None,
+        )
+
+    with pytest.raises(topology.TopologyError, match="preflight is BROKEN"):
+        topology.run_lane(
+            lane="native-capabilities", inventory=INVENTORY,
+            evidence_root=raw_root, run_id=run_id, head_sha=head_sha,
+            foundation_context_path=(
+                raw_root / "capability-topology/foundation-context.json"
+            ),
+            native_probe_factory=broken_probe,
+        )
+    return raw_root, run_id, head_sha, "NATIVE-BWRAP-OS-SANDBOX"
+
+
 def _source_tree_run_stub(
     *, head_sha: str, mode: str,
     calls: list[tuple[list[str], str, str]],
@@ -412,6 +471,36 @@ def test_failure_publisher_emits_only_a_sealed_diagnostic_projection(
     assert (destination.stat().st_mode & 0o777) == 0o500
     assert all((path.stat().st_mode & 0o777) == 0o400 for path in destination.iterdir())
 
+    topology_raw, topology_run_id, topology_head_sha, code = _topology_failure_source(
+        tmp_path / "topology", monkeypatch,
+    )
+    topology_destination = tmp_path / "runtime/state/ci-portable-topology"
+    topology_manifest = firewall.publish_topology_failure(
+        raw_root=topology_raw, destination=topology_destination,
+        inventory=INVENTORY,
+        foundation_context_path=(
+            topology_raw / "capability-topology/foundation-context.json"
+        ),
+        repository_root=Path.cwd(),
+    )
+
+    assert topology_manifest["head_sha"] == topology_head_sha
+    assert topology_manifest["run_metadata"]["run_id"] == topology_run_id
+    assert set(
+        path.relative_to(topology_destination).as_posix()
+        for path in topology_destination.rglob("*") if path.is_file()
+    ) == {"SHA256SUMS", "manifest.json", "topology-lane-failure.json"}
+    topology_projection_raw = (
+        topology_destination / "topology-lane-failure.json"
+    ).read_bytes()
+    topology_projection = json.loads(topology_projection_raw)
+    assert topology_projection["diagnostic_only"] is True
+    assert topology_projection["terminal_code"] == code
+    assert topology_projection["terminal_outcome"] == "FAIL"
+    assert topology_projection["terminal_preflight_state"] == "BROKEN"
+    assert topology_projection["terminal_fact_class"] == "NATIVE_IDENTITY_INVALID"
+    assert b'"outcome":"PASS"' not in topology_projection_raw
+
 
 @pytest.mark.parametrize("mutation", ["malformed", "stale", "foreign"])
 def test_failure_publisher_rejects_malformed_stale_and_foreign_diagnostics(
@@ -438,6 +527,23 @@ def test_failure_publisher_rejects_malformed_stale_and_foreign_diagnostics(
     with pytest.raises(firewall.FirewallError):
         _publish_failure(raw_root, destination, monkeypatch)
     assert not destination.exists()
+    if mutation == "malformed":
+        topology_raw, _run_id, _head_sha, code = _topology_failure_source(
+            tmp_path / "topology", monkeypatch,
+        )
+        marker = topology_raw / f"capability-topology/{code}.json"
+        marker.write_bytes(marker.read_bytes() + b"\n")
+        topology_destination = tmp_path / "topology-final"
+        with pytest.raises(firewall.FirewallError):
+            firewall.publish_topology_failure(
+                raw_root=topology_raw, destination=topology_destination,
+                inventory=INVENTORY,
+                foundation_context_path=(
+                    topology_raw / "capability-topology/foundation-context.json"
+                ),
+                repository_root=Path.cwd(),
+            )
+        assert not topology_destination.exists()
 
 
 @pytest.mark.parametrize("authority", ["context", "reservation", "baseline", "remainder"])
@@ -924,11 +1030,12 @@ def test_failure_publisher_cli_reports_only_the_closed_failure_stage(
 
 
 @pytest.mark.parametrize(
-    ("inner_status", "create_diagnostic", "expected_publish_count"),
-    [(0, False, 0), (23, False, 0), (37, True, 1)],
+    ("inner_status", "create_diagnostic", "create_topology_failure", "expected_publish_count"),
+    [(0, False, False, 0), (23, False, True, 1), (37, True, False, 1)],
 )
 def test_ci_portable_catch_is_single_shot_and_preserves_the_original_status(
     tmp_path: Path, inner_status: int, create_diagnostic: bool,
+    create_topology_failure: bool,
     expected_publish_count: int,
 ) -> None:
     binary = tmp_path / "bin"
@@ -941,6 +1048,11 @@ def test_ci_portable_catch_is_single_shot_and_preserves_the_original_status(
             'mkdir -p "$TEST_EVIDENCE_DIR/capability-topology"\n'
             'touch "$TEST_EVIDENCE_DIR/capability-topology/portable-root-remainder.failure-diagnostic.json"\n'
             if create_diagnostic else ""
+        )
+        + (
+            'mkdir -p "$TEST_EVIDENCE_DIR/capability-topology/NATIVE-BWRAP-OS-SANDBOX.artifacts"\n'
+            'touch "$TEST_EVIDENCE_DIR/capability-topology/NATIVE-BWRAP-OS-SANDBOX.json"\n'
+            if create_topology_failure else ""
         )
         + f"exit {inner_status}\n",
         encoding="utf-8",
@@ -978,6 +1090,10 @@ def test_ci_portable_catch_is_single_shot_and_preserves_the_original_status(
     )
     published = [] if not invocation_log.exists() else invocation_log.read_text().splitlines()
     assert len(published) == expected_publish_count
+    if create_topology_failure:
+        assert published[0].startswith("run python -m scripts.check_artifact_firewall publish-topology-failure ")
+    if create_diagnostic:
+        assert published[0].startswith("run python -m scripts.check_artifact_firewall publish-failure ")
     if inner_status == 0:
         assert result.returncode == 0
     else:

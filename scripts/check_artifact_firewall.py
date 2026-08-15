@@ -24,6 +24,9 @@ MANIFEST_SCHEMA = "portable-ci-evidence-manifest/v1"
 FAILURE_MANIFEST_SCHEMA = "portable-ci-failure-evidence-manifest/v1"
 FAILURE_PROJECTION_SCHEMA = "portable-ci-root-remainder-failure/v1"
 FAILURE_SEMANTIC_SCHEMA = "portable-ci-root-remainder-failure-semantic/v1"
+TOPOLOGY_FAILURE_MANIFEST_SCHEMA = "portable-ci-topology-failure-evidence-manifest/v1"
+TOPOLOGY_FAILURE_PROJECTION_SCHEMA = "portable-ci-topology-lane-failure/v1"
+TOPOLOGY_FAILURE_SEMANTIC_SCHEMA = "portable-ci-topology-lane-failure-semantic/v1"
 _RENAME_NOREPLACE = 1
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
@@ -105,6 +108,15 @@ _FAILURE_OBSERVATION_KEYS = frozenset({
     "test_node_id", "phase", "reason_class", "reason_provenance",
     "normalized_reason_commitment_sha256", "policy_match_result",
     "existing_policy_entry_sha256",
+})
+_TOPOLOGY_FAILURE_PROJECTION_KEYS = frozenset({
+    "schema_version", "diagnostic_only", "failure_class",
+    "foundation_run_id", "foundation_head_sha", "foundation_validation_date",
+    "foundation_context_sha256", "inventory_sha256", "terminal_code",
+    "terminal_lane", "terminal_outcome", "terminal_preflight_state",
+    "terminal_fact_class", "terminal_expected_node_count",
+    "terminal_receipt_sha256", "terminal_manifest_sha256",
+    "topology_failure_projection_sha256",
 })
 _FAILURE_PUBLICATION_STAGES = frozenset({
     "RAW_BINDING", "PROJECTION", "SOURCE_TREE", "PUBLICATION",
@@ -1204,6 +1216,96 @@ def _failure_semantic_projection(document: Mapping[str, object]) -> dict[str, ob
     }
 
 
+def _topology_failure_projection_sha256(document: Mapping[str, object]) -> str:
+    return hashlib.sha256(_canonical_json_bytes({
+        key: value for key, value in document.items()
+        if key != "topology_failure_projection_sha256"
+    })).hexdigest()
+
+
+def _topology_failure_semantic_projection(
+    document: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "schema_version": TOPOLOGY_FAILURE_SEMANTIC_SCHEMA,
+        "diagnostic_only": True,
+        "failure_class": "TOPOLOGY_LANE_NONPASS",
+        "foundation": {
+            "run_id": document["foundation_run_id"],
+            "head_sha": document["foundation_head_sha"],
+            "validation_date": document["foundation_validation_date"],
+            "context_sha256": document["foundation_context_sha256"],
+        },
+        "inventory_sha256": document["inventory_sha256"],
+        "terminal": {
+            "code": document["terminal_code"],
+            "lane": document["terminal_lane"],
+            "outcome": document["terminal_outcome"],
+            "preflight_state": document["terminal_preflight_state"],
+            "fact_class": document["terminal_fact_class"],
+            "expected_node_count": document["terminal_expected_node_count"],
+            "receipt_sha256": document["terminal_receipt_sha256"],
+            "manifest_sha256": document["terminal_manifest_sha256"],
+        },
+    }
+
+
+def _validate_topology_failure_projection_layout(
+    snapshot: _Snapshot,
+) -> dict[str, object]:
+    from scripts import t_g03_capability_topology as topology
+
+    root_entries = set(snapshot.directories[""].entries) - {"manifest.json", "SHA256SUMS"}
+    if root_entries != {"topology-lane-failure.json"} or set(snapshot.directories) != {""}:
+        raise _reject("topology failure projection inventory is not exact")
+    raw = snapshot.leaves["topology-lane-failure.json"].raw
+    document = _strict_json(raw, relative="topology-lane-failure.json")
+    if not isinstance(document, dict) or set(document) != _TOPOLOGY_FAILURE_PROJECTION_KEYS:
+        raise _reject("topology failure projection schema is incomplete")
+    try:
+        topology.parse_foundation_validation_date(document["foundation_validation_date"])
+    except topology.TopologyError as exc:
+        raise _reject("topology failure projection Foundation date is invalid") from exc
+    if (
+        document["schema_version"] != TOPOLOGY_FAILURE_PROJECTION_SCHEMA
+        or document["diagnostic_only"] is not True
+        or document["failure_class"] != "TOPOLOGY_LANE_NONPASS"
+        or not isinstance(document["foundation_run_id"], str)
+        or not topology.RUN_ID.fullmatch(document["foundation_run_id"])
+        or document["foundation_run_id"] == "0"
+        or not isinstance(document["foundation_head_sha"], str)
+        or not _HEAD.fullmatch(document["foundation_head_sha"])
+        or any(
+            not isinstance(document[field], str) or not _HEX64.fullmatch(document[field])
+            for field in (
+                "foundation_context_sha256", "inventory_sha256",
+                "terminal_receipt_sha256", "terminal_manifest_sha256",
+                "topology_failure_projection_sha256",
+            )
+        )
+        or document["terminal_code"] not in _CODES
+        or document["terminal_lane"] not in {"native-capabilities", "external-authorities"}
+        or document["terminal_outcome"] != "FAIL"
+        or document["terminal_preflight_state"] not in {
+            "BROKEN", "INVALID", "DRIFTED", "PARTIAL",
+        }
+        or document["terminal_fact_class"] not in topology.REDACTED_FACT_CLASSES
+        or not isinstance(document["terminal_expected_node_count"], int)
+        or isinstance(document["terminal_expected_node_count"], bool)
+        or document["terminal_expected_node_count"] < 1
+        or document["topology_failure_projection_sha256"]
+        != _topology_failure_projection_sha256(document)
+    ):
+        raise _reject("topology failure projection binding is invalid")
+    if (
+        document["terminal_lane"]
+        != topology.CLASSIFICATION_LANE[topology.CODE_CLASSIFICATION[document["terminal_code"]]]
+    ):
+        raise _reject("topology failure projection lane binding is invalid")
+    scan_artifact_bytes("topology-lane-failure.json", raw)
+    return _topology_failure_semantic_projection(document)
+
+
 def _validate_failure_projection_layout(snapshot: _Snapshot) -> dict[str, object]:
     from scripts import t_g03_capability_topology as topology
 
@@ -2030,6 +2132,187 @@ def _failure_payloads_from_raw(
     return payloads, semantic, run_metadata
 
 
+def _topology_failure_payloads_from_raw(
+    raw: _Snapshot, *, raw_root: Path, inventory: Path,
+    foundation_context_path: Path, run_id: str, head_sha: str,
+) -> tuple[dict[str, bytes], dict[str, object], dict[str, object]]:
+    """Project exactly one sealed native/external FAIL receipt without acceptance."""
+    from scripts import t_g03_capability_topology as topology
+
+    expected_root = {
+        "capability-topology", "t-g03a-hosted-failure-inventory.tsv",
+        topology.CLOSURE_RELATIVE_PATH.name,
+    }
+    topology_directory = raw.directories.get("capability-topology")
+    if (
+        set(raw.directories[""].entries) != expected_root
+        or topology_directory is None
+    ):
+        raise _reject("raw topology failure root inventory is not exact")
+    canonical_context = raw_root / "capability-topology/foundation-context.json"
+    if foundation_context_path.absolute() != canonical_context:
+        raise _reject("topology failure Foundation context path is foreign")
+    if raw.leaves["t-g03a-hosted-failure-inventory.tsv"].raw != inventory.read_bytes():
+        raise _reject("topology failure inventory binding drift")
+    if (
+        raw.leaves[topology.CLOSURE_RELATIVE_PATH.name].raw
+        != topology.CLOSURE_RELATIVE_PATH.read_bytes()
+    ):
+        raise _reject("topology failure closure binding drift")
+    fixed = set(_RAW_TOPOLOGY_FIXED_LEAVES)
+    entries = set(topology_directory.entries)
+    if not {".reservation", "foundation-context.json"} <= entries:
+        raise _reject("topology failure lacks sealed Foundation authority")
+    marker_codes = {
+        entry[:-5] for entry in entries
+        if entry.endswith(".json") and entry[:-5] in _CODES
+    }
+    bundle_codes = {
+        entry[:-10] for entry in entries
+        if entry.endswith(".artifacts") and entry[:-10] in _CODES
+    }
+    if not marker_codes or marker_codes != bundle_codes or entries != (
+        (entries & fixed)
+        | {f"{code}.json" for code in marker_codes}
+        | {f"{code}.artifacts" for code in marker_codes}
+    ):
+        raise _reject("topology failure marker/bundle inventory is not exact")
+    progress = {
+        "portable-root-baseline.json", "portable-root-candidates.txt",
+        "portable-root-collection.governance.json", "portable-root-remainder.json",
+        "portable-root-remainder.txt", "portable-root-remainder.governance.json",
+    }
+    if entries & progress and not progress <= entries:
+        raise _reject("topology failure root-progress inventory is partial")
+    closure = {
+        "portable-defect-closure.governance.json",
+        "portable-defect-closure-proof.json",
+    }
+    if entries & closure and not closure <= entries:
+        raise _reject("topology failure closure inventory is partial")
+    if any(
+        entry in entries for entry in (
+            "portable-root-remainder.failure-diagnostic.json",
+            "portable-root-remainder.unsafe-raw-reason-nonacceptance.json",
+            "policy-validation-nonacceptance.json",
+        )
+    ):
+        raise _reject("topology failure conflicts with another terminal diagnostic")
+    try:
+        context = topology.load_foundation_context(
+            canonical_context, run_id=run_id, head_sha=head_sha,
+        )
+        topology._require_topology_reservation(
+            raw_root, run_id, head_sha, context,
+        )
+        rows = topology.load_inventory(inventory)
+        sealed_custody: dict[str, str] | None = None
+        if progress <= entries:
+            baseline = topology.load_portable_root_baseline(
+                inventory=inventory, evidence_root=raw_root, run_id=run_id,
+                head_sha=head_sha, foundation_context_path=canonical_context,
+            )
+            sealed_custody = topology._validate_custody_policy(
+                baseline["collector_policy"],
+            )
+            _remainder, nodes = topology._load_portable_root_remainder(
+                inventory=inventory, evidence_root=raw_root, run_id=run_id,
+                head_sha=head_sha, foundation_context_path=canonical_context,
+            )
+            topology._validate_exact_governance_record(
+                raw_root / "capability-topology/portable-root-remainder.governance.json",
+                nodes, sealed_custody,
+            )
+        if closure <= entries:
+            if sealed_custody is None:
+                raise topology.TopologyError("closure proof lacks root custody")
+            topology.validate_portable_closure_proof(
+                raw_root / "capability-topology/portable-defect-closure-proof.json",
+                foundation_run_id=run_id, foundation_head_sha=head_sha,
+                foundation_context=context, sealed_custody=sealed_custody,
+            )
+    except (OSError, topology.TopologyError) as exc:
+        raise _reject("topology failure Foundation binding is invalid") from exc
+    failures: list[tuple[dict[str, object], dict[str, object]]] = []
+    try:
+        for code in sorted(marker_codes):
+            marker_path = raw_root / "capability-topology" / f"{code}.json"
+            with topology._retained_private_native_artifacts(marker_path) as artifacts:
+                if artifacts.marker_raw != artifacts.bundle_receipt_raw:
+                    raise topology.TopologyError("topology failure marker/bundle mismatch")
+                receipt = topology.validate_receipt(
+                    artifacts.bundle_receipt_raw, rows=rows,
+                    foundation_run_id=run_id, foundation_head_sha=head_sha,
+                    foundation_context=context,
+                )
+                if receipt["capability_or_authority_code"] != code:
+                    raise topology.TopologyError("topology failure marker code drift")
+                if receipt["outcome"] == "FAIL":
+                    if artifacts.governance_raw is not None:
+                        raise topology.TopologyError("topology FAIL has governance evidence")
+                    if receipt["lane"] == "native-capabilities":
+                        manifest = topology._validate_native_manifest_bytes(
+                            artifacts.manifest_raw, receipt,
+                            artifacts.bundle_receipt_raw, None,
+                        )
+                    else:
+                        manifest = topology._validate_external_manifest_bytes(
+                            artifacts.manifest_raw, receipt,
+                            artifacts.bundle_receipt_raw, None,
+                        )
+                    failures.append((receipt, manifest))
+                elif sealed_custody is None:
+                    raise topology.TopologyError("topology prefix receipt lacks root custody")
+                elif receipt["lane"] == "native-capabilities":
+                    topology.validate_native_artifact_set(
+                        marker_path, rows=rows, foundation_context=context,
+                        sealed_custody=sealed_custody,
+                    )
+                else:
+                    topology.validate_external_artifact_set(
+                        marker_path, rows=rows, foundation_context=context,
+                        sealed_custody=sealed_custody,
+                    )
+                topology._postcheck_private_native_artifacts(artifacts)
+    except (OSError, topology.TopologyError) as exc:
+        raise _reject("topology failure receipt binding is invalid") from exc
+    if len(failures) != 1:
+        raise _reject("topology failure has no sole terminal receipt")
+    receipt, manifest = failures[0]
+    projection: dict[str, object] = {
+        "schema_version": TOPOLOGY_FAILURE_PROJECTION_SCHEMA,
+        "diagnostic_only": True,
+        "failure_class": "TOPOLOGY_LANE_NONPASS",
+        "foundation_run_id": run_id,
+        "foundation_head_sha": head_sha,
+        "foundation_validation_date": context["foundation_validation_date"],
+        "foundation_context_sha256": context["foundation_context_sha256"],
+        "inventory_sha256": receipt["inventory_sha256"],
+        "terminal_code": receipt["capability_or_authority_code"],
+        "terminal_lane": receipt["lane"],
+        "terminal_outcome": receipt["outcome"],
+        "terminal_preflight_state": receipt["preflight_state"],
+        "terminal_fact_class": receipt["redacted_fact_class"],
+        "terminal_expected_node_count": len(receipt["expected_node_ids"]),
+        "terminal_receipt_sha256": receipt["receipt_sha256"],
+        "terminal_manifest_sha256": manifest["manifest_sha256"],
+        "topology_failure_projection_sha256": "",
+    }
+    projection["topology_failure_projection_sha256"] = (
+        _topology_failure_projection_sha256(projection)
+    )
+    raw.postcheck()
+    return (
+        {"topology-lane-failure.json": _canonical_json_bytes(projection)},
+        _topology_failure_semantic_projection(projection),
+        {
+            "run_id": run_id,
+            "attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
 def publish_root_remainder_failure(
     *, raw_root: Path, destination: Path, inventory: Path,
     foundation_context_path: Path, repository_root: Path,
@@ -2090,6 +2373,37 @@ def publish_root_remainder_failure(
     if failure is not None:
         raise failure
     return manifest
+
+
+def publish_topology_failure(
+    *, raw_root: Path, destination: Path, inventory: Path,
+    foundation_context_path: Path, repository_root: Path,
+) -> dict[str, object]:
+    """Publish one sealed redacted topology-lane failure projection."""
+    from scripts import t_g03_capability_topology as topology
+
+    run_id, head_sha = topology._active_foundation_identity()
+    raw_root = raw_root.absolute()
+    with _snapshot_tree(raw_root, directory_mode=0o700, file_mode=0o600) as raw:
+        payloads, semantic, run_metadata = _topology_failure_payloads_from_raw(
+            raw, raw_root=raw_root, inventory=inventory,
+            foundation_context_path=foundation_context_path,
+            run_id=run_id, head_sha=head_sha,
+        )
+    projection_name = f".topology-failure-projection-{secrets.token_hex(16)}"
+    with _validate_lineage(raw_root, create=False) as raw_lineage:
+        _build_candidate(raw_lineage.descriptor, projection_name, payloads)
+        raw_lineage.postcheck()
+    source_tree_sha256 = _source_tree_identity(repository_root, head_sha)
+    return _publish_evidence_set(
+        staging_root=raw_root / projection_name, destination=destination,
+        head_sha=head_sha, source_tree_sha256=source_tree_sha256,
+        semantic_projection=semantic, run_metadata=run_metadata,
+        manifest_schema=TOPOLOGY_FAILURE_MANIFEST_SCHEMA,
+        projection_validator=_validate_topology_failure_projection_layout,
+        complete_validator=_validate_topology_failure_complete_snapshot,
+        published_validator=validate_published_topology_failure_evidence,
+    )
 
 
 def _strict_json(raw: bytes, *, relative: str) -> object:
@@ -2195,6 +2509,15 @@ def _validate_failure_complete_snapshot(snapshot: _Snapshot) -> dict[str, object
     )
 
 
+def _validate_topology_failure_complete_snapshot(
+    snapshot: _Snapshot,
+) -> dict[str, object]:
+    return _validate_complete_snapshot(
+        snapshot, projection_validator=_validate_topology_failure_projection_layout,
+        manifest_schema=TOPOLOGY_FAILURE_MANIFEST_SCHEMA,
+    )
+
+
 def _validate_published_evidence(
     destination: Path, *, expected_head_sha: str | None = None,
     expected_source_tree_sha256: str | None = None,
@@ -2265,6 +2588,21 @@ def validate_published_failure_evidence(
     )
 
 
+def validate_published_topology_failure_evidence(
+    destination: Path, *, expected_head_sha: str | None = None,
+    expected_source_tree_sha256: str | None = None,
+    expected_semantic_projection: Mapping[str, object] | None = None,
+    expected_root_identity: tuple[int, int, int, int, int] | None = None,
+) -> dict[str, object]:
+    return _validate_published_evidence(
+        destination, expected_head_sha=expected_head_sha,
+        expected_source_tree_sha256=expected_source_tree_sha256,
+        expected_semantic_projection=expected_semantic_projection,
+        expected_root_identity=expected_root_identity,
+        complete_validator=_validate_topology_failure_complete_snapshot,
+    )
+
+
 def _read_object(path: Path) -> dict[str, object]:
     try:
         raw = path.read_bytes()
@@ -2282,7 +2620,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "action",
         choices=(
             "publish", "publish-error", "publish-failure", "publish-projection",
-            "validate",
+            "publish-topology-failure", "validate",
         ),
     )
     parser.add_argument("--raw-root", type=Path)
@@ -2321,6 +2659,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise _reject("final publication inputs are incomplete")
             if args.action == "publish-failure":
                 publish_root_remainder_failure(
+                    raw_root=args.raw_root, destination=args.destination,
+                    inventory=args.inventory,
+                    foundation_context_path=args.foundation_context_path,
+                    repository_root=args.repository_root,
+                )
+            elif args.action == "publish-topology-failure":
+                publish_topology_failure(
                     raw_root=args.raw_root, destination=args.destination,
                     inventory=args.inventory,
                     foundation_context_path=args.foundation_context_path,

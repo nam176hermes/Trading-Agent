@@ -84,6 +84,8 @@ _CI_PORTABLE_WRAPPER_RECIPE = " ".join((
     'failure_diagnostic="$$raw_evidence_root/capability-topology/portable-root-remainder.failure-diagnostic.json";',
     'if test -e "$$failure_diagnostic" || test -L "$$failure_diagnostic"; then',
     'uv run python -m scripts.check_artifact_firewall publish-failure --raw-root "$$raw_evidence_root" --destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}" --inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH" --repository-root "$(CURDIR)" || :;',
+    'else',
+    'uv run python -m scripts.check_artifact_firewall publish-topology-failure --raw-root "$$raw_evidence_root" --destination "$${PORTABLE_CI_ARTIFACT_ROOT:?}" --inventory "tests/fixtures/t-g03a-hosted-failure-inventory.tsv" --foundation-context-path "$$FOUNDATION_CONTEXT_PATH" --repository-root "$(CURDIR)" || :;',
     'fi;',
     'exit "$$original_status";',
     '}',
