@@ -4030,3 +4030,33 @@ and independent security review before one new hosted push attempt. Never
 rerun `cd35075205c9b2e0eda90dca2fe260a7ad1a0b8f`. Do not alter PostgreSQL/DB
 authority, execute a database, weaken policy, or touch production, live,
 broker/provider, dependency, or lock boundaries.
+
+### P0-12R28 diagnostic — classify final raw-binding substage
+
+Hosted run `31892046623` at exact
+`d05ecf8b0cf3ce3b722a98ada1bc9f46c93aad53` reproduced the complete safe
+source route and ended with the new exact stage
+`ARTIFACT_FIREWALL_REJECTED LAYOUT RAW_BINDING`. The artifact count is zero,
+so that run proves the destination, source-tree and publication stages were not
+reached, but it cannot distinguish the raw source snapshot, root inventory,
+accounting/context, topology inventory, Architecture-A receipts, governed
+report, semantic binding, or retained raw postcheck.
+
+The bounded diagnostic correction adds one second-level closed token only when
+the final stage is `RAW_BINDING`: `SOURCE_SNAPSHOT`, `ROOT_INVENTORY`,
+`ACCOUNTING`, `TOPOLOGY_INVENTORY`, `RECEIPTS`, `GOVERNANCE_REPORT`,
+`SEMANTIC_BINDING`, or `RAW_POSTCHECK`. No underlying error message, path,
+identity, count, digest, receipt field, exception, stdout, or stderr may cross
+the boundary. Later final stages retain their R27 output. Raw validators and
+their order, accepted schemas/bytes, topology/governance semantics, Make and
+workflow routes, and all publication decisions remain unchanged.
+
+Strict RED must inject each raw substage through the existing collected CLI
+node and show that R27 emits only `RAW_BINDING`. GREEN must emit exactly one
+allowlisted substage, retain no cause/context, and keep all four R27 stage
+attacks, positive publication, failure/topology publishers, collection and
+static gates green. Use the canonical broad-handler generator, a fresh
+standalone packet and independent security review before one new hosted push.
+Never rerun `d05ecf8b0cf3ce3b722a98ada1bc9f46c93aad53`. Do not change acceptance,
+policy, skip/outcome, PostgreSQL/DB authority, dependencies/locks, production,
+live, broker, or provider boundaries.
