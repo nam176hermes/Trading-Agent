@@ -92,6 +92,16 @@ def _value_names_make_executable(value: str) -> bool:
     )
 
 
+def _value_starts_with_shell_command_prefix(value: str) -> bool:
+    try:
+        words = shlex.split(value.strip())
+    except ValueError:
+        return True
+    while words and _SHELL_ASSIGNMENT.fullmatch(words[0]) is not None:
+        words = words[1:]
+    return not words or Path(words[0]).name in _SHELL_COMMAND_PREFIX
+
+
 def _proven_safe_command_aliases(assignments: dict[str, list[str]]) -> set[str]:
     """Classify only bounded literals and source-closed pure aliases as safe."""
     dependencies: dict[str, set[str]] = {}
@@ -108,7 +118,7 @@ def _proven_safe_command_aliases(assignments: dict[str, list[str]]) -> set[str]:
         ):
             if dependencies[name]:
                 pure_aliases.add(name)
-            else:
+            elif not _value_starts_with_shell_command_prefix(values[0]):
                 safe.add(name)
 
     changed = True
@@ -426,6 +436,26 @@ def test_make_graph_rejects_command_variable_after_time_option() -> None:
 .PHONY: ci ci-portable ci-host-authority
 ci: ci-portable
 \ttime -p $(RUNNER) ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_rejects_multiword_shell_prefix_alias() -> None:
+    """A multiword prefix alias cannot conceal an unassigned command variable."""
+    makefile = b"""\
+PREFIX := time -p
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\t$(PREFIX) $(RUNNER) ci-host-authority
 ci-portable:
 \t@:
 ci-host-authority:
