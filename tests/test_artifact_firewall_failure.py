@@ -1159,7 +1159,7 @@ def test_real_recursive_gnu_make_cannot_override_private_artifact_root(
     original_private = (
         "ci-portable-private:\n"
         "\t$(MAKE) ci-common-private ci-portable-topology "
-        "check-portable-defect-closure check-p0-baseline "
+        "check-portable-defect-closure check-p0-baseline check-p0-maintainability "
         "check-test-governance-topology check-p0-ci-closure "
         "artifact-firewall-check audit-delivery-contract\n"
     )

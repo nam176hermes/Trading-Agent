@@ -470,9 +470,10 @@ ci-host-authority:
 
 
 def test_portable_make_graph_is_literal_and_cannot_reach_host_authority() -> None:
-    """The checked-in portable route must be fully resolved without host authority."""
+    """Portable CI must reach its guard without reaching host authority."""
     graph = _strict_portable_make_graph((ROOT / "Makefile").read_bytes())
 
     assert graph["ci"] == {"ci-portable"}
+    assert closure._reachable(graph, "ci-portable", "check-p0-maintainability")
     assert not closure._reachable(graph, "ci", "ci-host-authority")
     assert not closure._reachable(graph, "ci-portable", "ci-host-authority")
