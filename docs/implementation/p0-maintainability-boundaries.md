@@ -84,6 +84,10 @@ The C16 characterization entry binds the exact executable governance proofs:
 - `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_one_character_make_command_alias`
   proves that GNU Make's one-character `$M` reference form cannot hide the
   same Make-derived command alias.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_unassigned_command_variable`
+  proves that a command-position variable such as `$(RUNNER)` is rejected when
+  it has no canonical source assignment, so an environment or command-line
+  value cannot manufacture an untracked recursive Make edge.
 - `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_variable_indirected_recursive_target`
   proves that a recursive Make target hidden behind a variable is rejected
   instead of silently disappearing from the graph.
@@ -94,13 +98,16 @@ The C16 characterization entry binds the exact executable governance proofs:
 - `tests/governance/test_p0_m1_p1_boundary.py::test_portable_make_graph_is_literal_and_cannot_reach_host_authority`
   accepts only direct built-in `$(MAKE)` calls with literal targets, folds
   same-root `-C` calls into the graph, and proves that neither `ci` nor
-  `ci-portable` can reach `ci-host-authority`. Alias analysis permits only a
-  fixed literal command or one simple `$(NAME)`, `${NAME}`, or `$N` reference
-  per assignment value. It rejects literal Make executables, aliases derived
-  transitively from `MAKE`, and any reachable alias whose value uses a GNU Make
-  function, composed/dynamic expansion, repeated assignment, or shell-dollar
-  form. This is conservative source grammar: it does not execute Make or claim
-  to emulate GNU Make functions or arbitrary shell expansion.
+  `ci-portable` can reach `ci-host-authority`. Every command-position Make
+  variable other than direct built-in `$(MAKE)` must have a canonical source
+  assignment classified as proven-safe. Fixed literal commands seed that safe
+  set, and a pure `$(NAME)`, `${NAME}`, or `$N` alias becomes safe only when its
+  source variable is already proven-safe. Unassigned or externally supplied
+  names, literal Make executables, aliases derived transitively from `MAKE`, GNU
+  Make functions, composed/dynamic expansions, repeated assignments, and
+  shell-dollar forms fail closed. This is conservative source grammar: it does
+  not execute Make or claim to emulate GNU Make functions or arbitrary shell
+  expansion.
 - `tests/test_p0_ci_closure.py::test_pending_source_matrix_is_an_executable_closed_contract`
   runs the fail-closed closure validator. That validator requires the
   Foundation workflow to invoke only `make ci-portable NONINTERACTIVE=1` and
