@@ -9,7 +9,11 @@
       "max_net_growth_bytes": 0,
       "responsibility_id": "P0_CAPABILITY_TOPOLOGY",
       "baseline_first_party_imports": [
-        "scripts",
+        "scripts.check_test_governance",
+        "scripts.materialize_nautilus_runtime_closure",
+        "scripts.materialize_sealed_uv_exec",
+        "scripts.prepare_nautilus_llvm_toolchain",
+        "scripts.prepare_nautilus_toolchain",
         "scripts.validate_disposable_postgres_approval",
         "scripts.validate_disposable_postgres_fixture_plan",
         "trading_control.phase3b_sources"
@@ -22,7 +26,8 @@
       "max_net_growth_bytes": 0,
       "responsibility_id": "P0_ARTIFACT_FIREWALL",
       "baseline_first_party_imports": [
-        "scripts"
+        "scripts.check_test_governance",
+        "scripts.t_g03_capability_topology"
       ]
     },
     {
@@ -31,8 +36,8 @@
       "baseline_bytes": 43300,
       "responsibility_id": "P0_CLOSURE_CHECKER",
       "baseline_first_party_imports": [
-        "scripts",
-        "scripts.check_artifact_firewall"
+        "scripts.check_artifact_firewall",
+        "scripts.t_g03_capability_topology"
       ]
     }
   ]

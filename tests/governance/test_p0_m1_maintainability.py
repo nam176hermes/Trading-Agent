@@ -22,7 +22,11 @@ EXPECTED_HOTSPOTS = [
         "max_net_growth_bytes": 0,
         "responsibility_id": "P0_CAPABILITY_TOPOLOGY",
         "baseline_first_party_imports": [
-            "scripts",
+            "scripts.check_test_governance",
+            "scripts.materialize_nautilus_runtime_closure",
+            "scripts.materialize_sealed_uv_exec",
+            "scripts.prepare_nautilus_llvm_toolchain",
+            "scripts.prepare_nautilus_toolchain",
             "scripts.validate_disposable_postgres_approval",
             "scripts.validate_disposable_postgres_fixture_plan",
             "trading_control.phase3b_sources",
@@ -34,14 +38,20 @@ EXPECTED_HOTSPOTS = [
         "baseline_bytes": 141810,
         "max_net_growth_bytes": 0,
         "responsibility_id": "P0_ARTIFACT_FIREWALL",
-        "baseline_first_party_imports": ["scripts"],
+        "baseline_first_party_imports": [
+            "scripts.check_test_governance",
+            "scripts.t_g03_capability_topology",
+        ],
     },
     {
         "path": "scripts/check_p0_ci_closure.py",
         "status": MONITOR,
         "baseline_bytes": 43300,
         "responsibility_id": "P0_CLOSURE_CHECKER",
-        "baseline_first_party_imports": ["scripts", "scripts.check_artifact_firewall"],
+        "baseline_first_party_imports": [
+            "scripts.check_artifact_firewall",
+            "scripts.t_g03_capability_topology",
+        ],
     },
 ]
 
@@ -359,6 +369,47 @@ def test_checker_rejects_new_frozen_runtime_import_without_review(
     assert result.returncode != 0
     assert "first-party import drift" in result.stderr
     assert import_name in result.stderr
+
+
+def test_checker_rejects_unlisted_repository_package_import_without_review(
+    checker_repo: Path,
+) -> None:
+    """A local package discovered from repository layout cannot bypass review."""
+    package = checker_repo / "apps/control_api/local_authority"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "runtime.py").write_text("", encoding="utf-8")
+    _git(checker_repo, "add", "apps/control_api/local_authority")
+    _git(checker_repo, "commit", "-qm", "local package layout")
+    hotspot = checker_repo / "scripts/hotspot.py"
+    hotspot.write_text("import local_authority.runtime\n", encoding="utf-8")
+    manifest = _write_fixture_manifest(checker_repo, max_net_growth_bytes=100)
+    result = _run_checker(checker_repo, manifest)
+    assert result.returncode != 0
+    assert "first-party import drift" in result.stderr
+    assert "local_authority.runtime" in result.stderr
+
+
+def test_checker_rejects_new_from_import_module_without_review(checker_repo: Path) -> None:
+    """A `from scripts import module` dependency is pinned at module granularity."""
+    scripts = checker_repo / "scripts"
+    (scripts / "reviewed_module.py").write_text("", encoding="utf-8")
+    (scripts / "authority_module.py").write_text("", encoding="utf-8")
+    hotspot = scripts / "hotspot.py"
+    hotspot.write_text("from scripts import reviewed_module\n", encoding="utf-8")
+    _git(checker_repo, "add", "scripts")
+    _git(checker_repo, "commit", "-qm", "from import baseline")
+    hotspot.write_text("from scripts import authority_module\n", encoding="utf-8")
+    manifest = _write_fixture_manifest(
+        checker_repo,
+        baseline_bytes=len(b"from scripts import reviewed_module\n"),
+        max_net_growth_bytes=100,
+        baseline_first_party_imports=["scripts.reviewed_module"],
+    )
+    result = _run_checker(checker_repo, manifest)
+    assert result.returncode != 0
+    assert "first-party import drift" in result.stderr
+    assert "scripts.authority_module" in result.stderr
 
 
 def test_checker_has_no_automatic_policy_rewrite_mode() -> None:
