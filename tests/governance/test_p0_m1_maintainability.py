@@ -83,6 +83,12 @@ REQUIRED_CHARACTERIZATIONS = {
     "C15": "secret-bearing evidence fails",
     "C16": "portable lane cannot imply host qualification",
 }
+P1_BOUNDARY_PROOF_NODES = (
+    "tests/test_test_all_host_split.py::"
+    "test_ci_routes_only_to_the_portable_gate_and_never_host_authority",
+    "tests/test_p0_ci_closure.py::"
+    "test_pending_source_matrix_is_an_executable_closed_contract",
+)
 
 
 def _run_checker(root: Path, manifest: Path) -> subprocess.CompletedProcess[str]:
@@ -573,6 +579,18 @@ def test_checker_prints_only_unique_validated_characterization_nodes() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == expected
+
+
+def test_p1_boundary_reuses_exact_executable_authority_proofs() -> None:
+    """Portable CI cannot reach host authority or materialize enabled live gates."""
+    result = subprocess.run(
+        ["uv", "run", "pytest", "-q", "--", *P1_BOUNDARY_PROOF_NODES],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
