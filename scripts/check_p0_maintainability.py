@@ -47,6 +47,11 @@ def checked_path(root: Path, value: Any) -> tuple[str, Path]:
     if any(part in {"", ".", ".."} for part in path.parts):
         fail(f"path traversal is forbidden: {value}")
     candidate = root.joinpath(*path.parts)
+    component = root
+    for part in path.parts:
+        component /= part
+        if component.is_symlink():
+            fail(f"symlink hotspot path component is forbidden: {value}")
     try:
         candidate.resolve().relative_to(root.resolve())
     except ValueError:
@@ -160,11 +165,11 @@ def check_hotspots(hotspots: list[dict[str, Any]]) -> None:
         if status == "FROZEN_FOR_GROWTH":
             if delta > hotspot["max_net_growth_bytes"]:
                 fail(f"frozen hotspot growth exceeds approved ceiling: {hotspot['path']}")
-            baseline_imports = first_party_imports(hotspot["_baseline_source"])
-            current_imports = first_party_imports(path.read_bytes())
-            drift = sorted(current_imports - baseline_imports)
-            if drift:
-                fail(f"first-party import drift: {hotspot['path']}: {', '.join(drift)}")
+        baseline_imports = first_party_imports(hotspot["_baseline_source"])
+        current_imports = first_party_imports(path.read_bytes())
+        drift = sorted(current_imports - baseline_imports)
+        if drift:
+            fail(f"first-party import drift: {hotspot['path']}: {', '.join(drift)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -173,8 +178,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.root.is_symlink():
+            fail(f"root must be a non-symlink directory: {args.root}")
         root = args.root.resolve(strict=True)
-        if not root.is_dir() or root.is_symlink():
+        if not root.is_dir():
             fail(f"root must be a non-symlink directory: {args.root}")
         hotspots = validate_manifest(root, args.manifest)
         check_hotspots(hotspots)

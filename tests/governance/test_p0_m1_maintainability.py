@@ -223,6 +223,22 @@ def test_checker_rejects_symlink_hotspot(checker_repo: Path) -> None:
     assert "symlink" in result.stderr.lower()
 
 
+def test_checker_rejects_symlinked_parent_hotspot(checker_repo: Path) -> None:
+    """Every logical path component must be a real directory, not an alias."""
+    linked_hotspot = checker_repo / "linked/hotspot.py"
+    linked_hotspot.parent.mkdir()
+    linked_hotspot.write_bytes(b"pass")
+    _git(checker_repo, "add", "linked/hotspot.py")
+    _git(checker_repo, "commit", "-qm", "linked baseline")
+    linked_hotspot.unlink()
+    linked_hotspot.parent.rmdir()
+    linked_hotspot.parent.symlink_to("scripts", target_is_directory=True)
+    manifest = _write_fixture_manifest(checker_repo, path="linked/hotspot.py")
+    result = _run_checker(checker_repo, manifest)
+    assert result.returncode != 0
+    assert "symlink" in result.stderr.lower()
+
+
 def test_checker_rejects_non_regular_hotspot(checker_repo: Path) -> None:
     """Directories do not have a stable source-byte meaning and must be rejected."""
     hotspot = checker_repo / "scripts/hotspot.py"
@@ -252,7 +268,7 @@ def test_checker_enforces_frozen_net_growth(
 
 def test_checker_reports_monitor_growth_without_failing(checker_repo: Path) -> None:
     """MONITOR hotspots expose growth for review without imposing a size ceiling."""
-    (checker_repo / "scripts/hotspot.py").write_bytes(b"pass grows")
+    (checker_repo / "scripts/hotspot.py").write_bytes(b"pass\n#grow")
     manifest = _write_fixture_manifest(checker_repo, status=MONITOR, max_net_growth_bytes=None)
     result = _run_checker(checker_repo, manifest)
     assert result.returncode == 0
@@ -261,6 +277,27 @@ def test_checker_reports_monitor_growth_without_failing(checker_repo: Path) -> N
     assert "baseline_bytes=4" in result.stderr
     assert "delta_bytes=6" in result.stderr
     assert "status=MONITOR" in result.stderr
+
+
+@pytest.mark.parametrize("status", [FROZEN_FOR_GROWTH, MONITOR])
+def test_checker_rejects_same_size_first_party_import_drift(
+    checker_repo: Path, status: str
+) -> None:
+    """Status only controls size ceilings; new first-party coupling is always rejected."""
+    hotspot = checker_repo / "scripts/hotspot.py"
+    hotspot.write_bytes(b"import sys #\n")
+    _git(checker_repo, "add", "scripts/hotspot.py")
+    _git(checker_repo, "commit", "-qm", "import baseline")
+    hotspot.write_bytes(b"import ops #\n")
+    manifest = _write_fixture_manifest(
+        checker_repo,
+        status=status,
+        baseline_bytes=13,
+        max_net_growth_bytes=0 if status == FROZEN_FOR_GROWTH else None,
+    )
+    result = _run_checker(checker_repo, manifest)
+    assert result.returncode != 0
+    assert "first-party import drift" in result.stderr
 
 
 def test_checker_has_no_automatic_policy_rewrite_mode() -> None:
