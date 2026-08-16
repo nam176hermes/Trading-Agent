@@ -115,6 +115,7 @@
       "description": "portable lane cannot imply host qualification",
       "test_node_ids": [
         "tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_bare_make_executable",
+        "tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_command_variable_after_time_option",
         "tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_literal_make_command_alias",
         "tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_make_derived_command_alias",
         "tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_make_function_derived_command_alias",

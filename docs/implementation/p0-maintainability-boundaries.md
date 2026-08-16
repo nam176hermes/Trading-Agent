@@ -71,6 +71,11 @@ The C16 characterization entry binds the exact executable governance proofs:
 - `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_bare_make_executable`
   proves that bare or alternate Make executables are rejected in reachable
   recipes instead of being ignored.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_command_variable_after_time_option`
+  proves that the bounded shell-prefix grammar consumes only the explicit
+  `time -p` option and still rejects a following command-position `$(RUNNER)`.
+  Unsupported prefix options or Make-variable ambiguity in that position fail
+  closed rather than concealing the command.
 - `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_literal_make_command_alias`
   proves that a literal `make`, `gmake`, or path to either executable cannot be
   hidden behind a variable alias.
@@ -105,9 +110,11 @@ The C16 characterization entry binds the exact executable governance proofs:
   source variable is already proven-safe. Unassigned or externally supplied
   names, literal Make executables, aliases derived transitively from `MAKE`, GNU
   Make functions, composed/dynamic expansions, repeated assignments, and
-  shell-dollar forms fail closed. This is conservative source grammar: it does
-  not execute Make or claim to emulate GNU Make functions or arbitrary shell
-  expansion.
+  shell-dollar forms fail closed. Shell-prefix scanning admits only an explicit
+  `time -p` option grammar; every other prefix option, or a Make variable where
+  a prefix option or command could occur, fails closed. This is conservative
+  source grammar: it does not execute Make or claim to emulate GNU Make
+  functions or arbitrary shell expansion.
 - `tests/test_p0_ci_closure.py::test_pending_source_matrix_is_an_executable_closed_contract`
   runs the fail-closed closure validator. That validator requires the
   Foundation workflow to invoke only `make ci-portable NONINTERACTIVE=1` and
