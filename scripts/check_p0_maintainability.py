@@ -24,7 +24,7 @@ HOTSPOT_KEYS = {
 }
 FROZEN_KEYS = HOTSPOT_KEYS | {"max_net_growth_bytes"}
 STATUSES = {"FROZEN_FOR_GROWTH", "MONITOR"}
-FIRST_PARTY_ROOTS = {
+MINIMUM_FIRST_PARTY_ROOTS = {
     "apps",
     "services",
     "packages",
@@ -32,8 +32,6 @@ FIRST_PARTY_ROOTS = {
     "legacy",
     "native",
     "ops",
-    "scripts",
-    "trading_control",
 }
 
 
@@ -92,22 +90,53 @@ def baseline_bytes(root: Path, baseline_sha: str, path: str) -> tuple[int, bytes
     return size, contents.stdout
 
 
-def first_party_imports(source: bytes) -> set[str]:
+def repository_import_roots(root: Path) -> set[str]:
+    """Return import roots exposed by this checkout's directories and packages."""
+    roots = set(MINIMUM_FIRST_PARTY_ROOTS)
+    roots.update(
+        child.name
+        for child in root.iterdir()
+        if child.is_dir() and not child.name.startswith(".")
+    )
+    for package_init in root.rglob("__init__.py"):
+        relative = package_init.relative_to(root)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        roots.add(package_init.parent.name)
+    return roots
+
+
+def is_repository_module(root: Path, name: str) -> bool:
+    """Whether a dotted import name resolves to a source module in this checkout."""
+    candidate = root.joinpath(*name.split("."))
+    return candidate.with_suffix(".py").is_file() or (candidate / "__init__.py").is_file()
+
+
+def first_party_imports(root: Path, source: bytes) -> set[str]:
     try:
         tree = ast.parse(source.decode("utf-8"))
     except (SyntaxError, UnicodeDecodeError) as error:
         fail(f"cannot parse hotspot imports: {error}")
     imports: set[str] = set()
+    import_roots = repository_import_roots(root)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names = (alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names = (node.module,)
+            if node.module.split(".", 1)[0] not in import_roots:
+                continue
+            names = (
+                f"{node.module}.{alias.name}"
+                if alias.name != "*"
+                and is_repository_module(root, f"{node.module}.{alias.name}")
+                else node.module
+                for alias in node.names
+            )
         else:
             continue
         for name in names:
-            root = name.split(".", 1)[0]
-            if root in FIRST_PARTY_ROOTS:
+            import_root = name.split(".", 1)[0]
+            if import_root in import_roots:
                 imports.add(name)
     return imports
 
@@ -169,10 +198,10 @@ def validate_manifest(root: Path, manifest: Path) -> list[dict[str, Any]]:
         actual_baseline, source = baseline_bytes(root, baseline_sha, path)
         if actual_baseline != hotspot["baseline_bytes"]:
             fail(f"baseline bytes do not match baseline object: {path}")
-        parsed_baseline_imports = sorted(first_party_imports(source))
+        parsed_baseline_imports = sorted(first_party_imports(root, source))
         if declared_imports != parsed_baseline_imports:
             fail(f"baseline first-party imports do not match baseline object: {path}")
-        checked.append({**hotspot, "_path": candidate})
+        checked.append({**hotspot, "_path": candidate, "_root": root})
     return checked
 
 
@@ -191,7 +220,7 @@ def check_hotspots(hotspots: list[dict[str, Any]]) -> None:
         if status == "FROZEN_FOR_GROWTH":
             if delta > hotspot["max_net_growth_bytes"]:
                 fail(f"frozen hotspot growth exceeds approved ceiling: {hotspot['path']}")
-        current_imports = first_party_imports(path.read_bytes())
+        current_imports = first_party_imports(hotspot["_root"], path.read_bytes())
         drift = sorted(current_imports - set(hotspot["baseline_first_party_imports"]))
         if drift:
             fail(f"first-party import drift: {hotspot['path']}: {', '.join(drift)}")
