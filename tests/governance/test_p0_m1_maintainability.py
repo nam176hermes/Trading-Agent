@@ -9,6 +9,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "docs/implementation/p0-maintainability-hotspots.json"
 SCHEMA_VERSION = "p0-maintainability-hotspots/v1"
+EXPECTED_BASELINE_SHA = "e0baa410cdcf0de4344d58ad82fd8a56788f84df"
 FROZEN_FOR_GROWTH = "FROZEN_FOR_GROWTH"
 MONITOR = "MONITOR"
 EXPECTED_HOTSPOTS = [
@@ -42,7 +43,7 @@ def test_p0_maintainability_hotspot_inventory_is_a_strict_custody_manifest() -> 
     assert set(document) == {"schema_version", "baseline_sha", "hotspots"}
     assert document["schema_version"] == SCHEMA_VERSION
     assert isinstance(document["baseline_sha"], str)
-    assert document["baseline_sha"]
+    assert document["baseline_sha"] == EXPECTED_BASELINE_SHA
     assert subprocess.run(
         ["git", "cat-file", "-e", f"{document['baseline_sha']}^{{commit}}"],
         cwd=ROOT,
@@ -82,7 +83,7 @@ def test_p0_maintainability_hotspot_inventory_is_a_strict_custody_manifest() -> 
         assert not candidate.is_symlink()
         assert stat.S_ISREG(candidate.stat().st_mode)
 
-        assert isinstance(hotspot["baseline_bytes"], int)
+        assert type(hotspot["baseline_bytes"]) is int
         assert hotspot["baseline_bytes"] > 0
         baseline_size = subprocess.run(
             ["git", "cat-file", "-s", f"{document['baseline_sha']}:{path}"],
@@ -96,5 +97,5 @@ def test_p0_maintainability_hotspot_inventory_is_a_strict_custody_manifest() -> 
         assert isinstance(hotspot["responsibility_id"], str)
         assert hotspot["responsibility_id"]
         if status == FROZEN_FOR_GROWTH:
-            assert isinstance(hotspot["max_net_growth_bytes"], int)
+            assert type(hotspot["max_net_growth_bytes"]) is int
             assert hotspot["max_net_growth_bytes"] >= 0
