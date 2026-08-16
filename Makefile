@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable check-p0-baseline audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -35,6 +35,11 @@ audit-portable:
 
 check-p0-baseline:
 	$(PYTHON) scripts/audit_canonical_repo.py --portable --check-p0-baseline
+
+check-p0-maintainability:
+	$(PYTHON) scripts/check_p0_maintainability.py \
+		--manifest docs/implementation/p0-maintainability-hotspots.json \
+		--root "$(CURDIR)"
 
 check-p0-ci-closure:
 	$(PYTHON) scripts/check_p0_ci_closure.py \
