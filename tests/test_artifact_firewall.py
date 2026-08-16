@@ -9,6 +9,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
+from datetime import date
 from types import SimpleNamespace
 
 import pytest
@@ -128,15 +130,18 @@ def _fixture_staging(tmp_path: Path) -> Path:
     return root
 
 
-def _staging(tmp_path: Path) -> Path:
+def _staging(
+    tmp_path: Path, *, run_id: str = "1001",
+    validation_date: str = "2026-08-13",
+    generated_at_utc: str = "2026-08-13T12:00:00+00:00",
+) -> Path:
     root = tmp_path / "raw-final-projection"
     root.mkdir(parents=True, mode=0o700)
-    run_id = "1001"
     context: dict[str, object] = {
         "schema_version": topology.FOUNDATION_CONTEXT_SCHEMA,
         "foundation_run_id": run_id,
         "foundation_head_sha": HEAD,
-        "foundation_validation_date": "2026-08-13",
+        "foundation_validation_date": validation_date,
         "foundation_context_sha256": "",
     }
     context["foundation_context_sha256"] = topology._sha256({
@@ -209,7 +214,7 @@ def _staging(tmp_path: Path) -> Path:
         "schema_version": topology.BASELINE_SCHEMA,
         "foundation_run_id": run_id,
         "foundation_head_sha": HEAD,
-        "foundation_validation_date": "2026-08-13",
+        "foundation_validation_date": validation_date,
         "foundation_context_sha256": context_hash,
         "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
         "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
@@ -262,7 +267,7 @@ def _staging(tmp_path: Path) -> Path:
         "schema_version": topology.PORTABLE_CLOSURE_PROOF_SCHEMA,
         "foundation_run_id": run_id,
         "foundation_head_sha": HEAD,
-        "foundation_validation_date": "2026-08-13",
+        "foundation_validation_date": validation_date,
         "foundation_context_sha256": context_hash,
         "inventory_sha256": topology.LOCKED_INVENTORY_SHA256,
         "closure_sha256": topology.LOCKED_CLOSURE_SHA256,
@@ -394,7 +399,7 @@ def _staging(tmp_path: Path) -> Path:
         "tests": [],
         "suite_exit_codes": {"root": 0},
         "allowlist": "tests/skip-allowlist.yaml",
-        "generated_at_utc": "2026-08-13T12:00:00+00:00",
+        "generated_at_utc": generated_at_utc,
     }
     _write_leaf(root, "test-governance/summary.json", summary)
     return root
@@ -1361,17 +1366,195 @@ def test_semantic_digest_excludes_run_metadata_and_changes_for_each_semantic_mut
             run_id="2002", attempt="9", generated_at_utc="2026-08-14T00:00:00+00:00",
         ),
     )
-    for key, replacement in (
-        ("inventory_sha256", "e" * 64),
-        ("closure_sha256", "f" * 64),
-        ("policy_sha256", "0" * 64),
-        ("selected_tests", [{"node_id": "tests/test_safe.py::test_one", "outcome": "failed"}]),
-        ("statuses", {"portable_source": "FAIL"}),
-        ("receipt_results", [{"code": "NATIVE-BWRAP-OS-SANDBOX", "outcome": "PASS", "selected": 8, "passed": 8, "failed": 0, "unavailable": 0}]),
+    changed_statuses = dict(base["statuses"])
+    changed_statuses["portable_source_status"] = "FAIL"
+    changed_receipts = [dict(item) for item in base["receipt_results"]]
+    changed_receipts[0]["outcome"] = "PASS"
+    for changed in (
+        _semantic(inventory_sha256="e" * 64),
+        _semantic(closure_sha256="f" * 64),
+        _semantic(policy_sha256="0" * 64),
+        _semantic(selected_tests=[{
+            "component": "root",
+            "node_id": "tests/test_safe.py::test_one",
+            "outcome": "passed",
+            "phase": "call",
+        }]),
+        _semantic(statuses=changed_statuses),
+        _semantic(receipt_results=changed_receipts),
     ):
-        changed = dict(base)
-        changed[key] = replacement
         assert firewall.semantic_result_sha256(changed) != first
+
+
+def test_duplicate_hosted_runs_reproduce_semantic_result_across_run_attestation_drift() -> None:
+    """Break caught: raw capture date drift alone changes the semantic result."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        manifests: list[dict[str, object]] = []
+        for label, run_id, validation_date, generated_at_utc in (
+            ("first", "31915821707", "2026-08-15", "2026-08-15T12:00:00+00:00"),
+            ("second", "31921895951", "2026-08-16", "2026-08-16T12:00:00+00:00"),
+        ):
+            destination = root / f"{label}-final"
+            firewall.publish_evidence_set(
+                staging_root=_staging(
+                    root / label,
+                    run_id=run_id,
+                    validation_date=validation_date,
+                    generated_at_utc=generated_at_utc,
+                ),
+                destination=destination,
+                head_sha=HEAD,
+                source_tree_sha256=TREE,
+                semantic_projection=_semantic(
+                    foundation={"head_sha": HEAD, "validation_date": validation_date},
+                ),
+                run_metadata=_run_metadata(
+                    run_id=run_id,
+                    generated_at_utc=generated_at_utc,
+                ),
+            )
+            manifests.append(firewall.validate_published_evidence(destination))
+
+        first_projection = dict(manifests[0]["semantic_projection"])
+        second_projection = dict(manifests[1]["semantic_projection"])
+        first_foundation = dict(first_projection.pop("foundation"))
+        second_foundation = dict(second_projection.pop("foundation"))
+
+        assert first_projection == second_projection
+        assert first_foundation == {"head_sha": HEAD, "validation_date": "2026-08-15"}
+        assert second_foundation == {"head_sha": HEAD, "validation_date": "2026-08-16"}
+        assert manifests[0]["semantic_result_sha256"] == manifests[1]["semantic_result_sha256"]
+
+
+def test_foundation_validation_date_remains_bound_in_per_run_attestation() -> None:
+    """Break caught: digest stabilization drops or stops validating the raw date."""
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root = Path(raw)
+        for label, run_id, validation_date in (
+            ("first", "31915821707", "2026-08-15"),
+            ("second", "31921895951", "2026-08-16"),
+        ):
+            destination = root / f"{label}-final"
+            firewall.publish_evidence_set(
+                staging_root=_staging(
+                    root / label, run_id=run_id, validation_date=validation_date,
+                ),
+                destination=destination,
+                head_sha=HEAD,
+                source_tree_sha256=TREE,
+                semantic_projection=_semantic(
+                    foundation={"head_sha": HEAD, "validation_date": validation_date},
+                ),
+                run_metadata=_run_metadata(run_id=run_id),
+            )
+            manifest = firewall.validate_published_evidence(destination)
+            context = json.loads((
+                destination / "capability-topology/foundation-context.json"
+            ).read_bytes())
+            assert context["foundation_validation_date"] == validation_date
+            assert manifest["semantic_projection"]["foundation"]["validation_date"] == validation_date
+
+        with pytest.raises(firewall.FirewallError, match="Foundation context date is invalid"):
+            firewall.publish_evidence_set(
+                staging_root=_staging(
+                    root / "malformed", run_id="31921895952",
+                    validation_date="2026-8-16",
+                ),
+                destination=root / "malformed-final",
+                head_sha=HEAD,
+                source_tree_sha256=TREE,
+                semantic_projection=_semantic(
+                    foundation={"head_sha": HEAD, "validation_date": "2026-8-16"},
+                ),
+                run_metadata=_run_metadata(run_id="31921895952"),
+            )
+
+
+def test_semantic_digest_ignores_run_instance_fields_when_policy_outcome_is_unchanged() -> None:
+    """Break caught: run identity or an in-policy raw date changes source semantics."""
+    first = firewall._make_manifest(
+        payloads={},
+        head_sha=HEAD,
+        source_tree_sha256=TREE,
+        semantic_projection=_semantic(
+            foundation={"head_sha": HEAD, "validation_date": "2026-08-15"},
+        ),
+        run_metadata=_run_metadata(
+            run_id="31915821707", attempt="1",
+            generated_at_utc="2026-08-15T12:00:00+00:00",
+        ),
+    )
+    second = firewall._make_manifest(
+        payloads={},
+        head_sha=HEAD,
+        source_tree_sha256=TREE,
+        semantic_projection=_semantic(
+            foundation={"head_sha": HEAD, "validation_date": "2026-08-16"},
+        ),
+        run_metadata=_run_metadata(
+            run_id="31921895951", attempt="9",
+            generated_at_utc="2026-08-16T23:59:59+00:00",
+        ),
+    )
+
+    assert first["head_sha"] == second["head_sha"] == HEAD
+    assert first["source_tree_sha256"] == second["source_tree_sha256"] == TREE
+    assert first["run_metadata"] != second["run_metadata"]
+    assert first["semantic_result_sha256"] == second["semantic_result_sha256"]
+
+
+def test_semantic_digest_changes_when_validation_date_changes_governed_policy_outcome() -> None:
+    """Break caught: date normalization hides an expired allowlist policy verdict."""
+    from scripts import check_test_governance as governance
+
+    policy = json.loads(Path("tests/skip-allowlist.yaml").read_bytes())
+    for entry in policy["entries"]:
+        entry["review_by"] = "2026-08-15"
+    assert len(governance.validate_allowlist_document(
+        policy, today=date(2026, 8, 15),
+    )) == 31
+    with pytest.raises(governance.AllowlistValidationError) as caught:
+        governance.validate_allowlist_document(policy, today=date(2026, 8, 16))
+    assert caught.value.policy_class == "POLICY_REVIEW_DATE_EXPIRED"
+
+    valid = _semantic(
+        foundation={"head_sha": HEAD, "validation_date": "2026-08-15"},
+        selected_tests=[{
+            "component": "root",
+            "node_id": "tests/control_api/test_postgres_api.py::test_postgres_backed_api_smoke_is_read_only_and_contract_compatible",
+            "outcome": "approval_blocked",
+            "phase": "collection",
+        }],
+    )
+    expired = _semantic(
+        foundation={"head_sha": HEAD, "validation_date": "2026-08-16"},
+        governance_error={
+            "error_code": caught.value.policy_class,
+            "suite_exit_codes": {},
+        },
+    )
+    expired.pop("selected_tests")
+
+    assert valid["selected_tests"][0]["outcome"] == "approval_blocked"
+    assert expired["governance_error"]["error_code"] == "POLICY_REVIEW_DATE_EXPIRED"
+    assert firewall.semantic_result_sha256(valid) != firewall.semantic_result_sha256(expired)
+
+
+def test_semantic_digest_changes_for_every_governed_test_outcome() -> None:
+    """Break caught: a selected test or one governed outcome is normalized away."""
+    empty = firewall.semantic_result_sha256(_semantic())
+    observed: set[str] = set()
+    for outcome in ("passed", "failed", "skipped", "approval_blocked"):
+        digest = firewall.semantic_result_sha256(_semantic(selected_tests=[{
+            "component": "root",
+            "node_id": "tests/test_safe.py::test_one",
+            "outcome": outcome,
+            "phase": "call",
+        }]))
+        assert digest != empty
+        observed.add(digest)
+    assert len(observed) == 4
 
 
 def test_publisher_binds_source_tree_digest_into_canonical_semantic_projection(

@@ -410,9 +410,9 @@ def semantic_result_sha256(
     semantic_projection: Mapping[str, object],
     *, run_metadata: Mapping[str, object] | None = None,
 ) -> str:
-    """Hash semantic meaning only; run identity is intentionally ignored."""
+    """Hash stable source meaning while retaining raw per-run attestation."""
     del run_metadata
-    return hashlib.sha256(_canonical_json_bytes(semantic_projection)).hexdigest()
+    return hashlib.sha256(_canonical_json_bytes(_stable_semantic_projection(semantic_projection))).hexdigest()
 
 
 def manifest_payload_sha256(manifest: Mapping[str, object]) -> str:
@@ -3016,14 +3016,14 @@ def _validate_published_evidence(
             raise _reject("published source-tree binding mismatch")
         if (
             expected_semantic_projection is not None
-            and manifest["semantic_result_sha256"] != semantic_result_sha256({
+            and manifest["semantic_projection"] != {
                 **expected_semantic_projection,
                 "source_tree_sha256": (
                     expected_source_tree_sha256
                     if expected_source_tree_sha256 is not None
                     else manifest["source_tree_sha256"]
                 ),
-            })
+            }
         ):
             raise _reject("published semantic binding mismatch")
         snapshot.postcheck()
@@ -3184,6 +3184,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("artifact firewall: ARTIFACT_FIREWALL_REJECTED", file=sys.stderr)
         return 2
     return 0
+
+
+def _stable_semantic_projection(
+    semantic_projection: Mapping[str, object],
+) -> dict[str, object]:
+    stable_projection = dict(semantic_projection)
+    foundation = stable_projection.get("foundation")
+    if isinstance(foundation, Mapping) and "validation_date" in foundation:
+        stable_projection["foundation"] = {
+            key: value for key, value in foundation.items()
+            if key != "validation_date"
+        }
+    return stable_projection
 
 
 if __name__ == "__main__":
