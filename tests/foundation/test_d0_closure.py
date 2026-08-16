@@ -186,7 +186,7 @@ def test_portable_ci_uses_a_private_linux_temp_root() -> None:
     assert "ci-portable:\n\t@set -eu;" in makefile
     assert portable_private_recipe == (
         "\t$(MAKE) ci-common-private ci-portable-topology "
-        "check-portable-defect-closure check-p0-baseline "
+        "check-portable-defect-closure check-p0-baseline check-p0-maintainability "
         "check-test-governance-topology check-p0-ci-closure "
         "artifact-firewall-check audit-delivery-contract"
     )
@@ -215,7 +215,7 @@ def test_portable_ci_rejects_an_appended_duplicate_private_route_target(
     makefile = MAKEFILE.read_text(encoding="utf-8")
     approved_route = (
         "\t$(MAKE) ci-common-private ci-portable-topology "
-        "check-portable-defect-closure check-p0-baseline "
+        "check-portable-defect-closure check-p0-baseline check-p0-maintainability "
         "check-test-governance-topology check-p0-ci-closure "
         "artifact-firewall-check audit-delivery-contract"
     )

@@ -193,7 +193,7 @@ def test_route_spoofs_fail_closed(context: closure._ValidationContext, relative:
 
 _CANONICAL_PRIVATE_ROUTE = (
     "ci-common-private ci-portable-topology check-portable-defect-closure "
-    "check-p0-baseline check-test-governance-topology check-p0-ci-closure "
+    "check-p0-baseline check-p0-maintainability check-test-governance-topology check-p0-ci-closure "
     "artifact-firewall-check audit-delivery-contract"
 )
 

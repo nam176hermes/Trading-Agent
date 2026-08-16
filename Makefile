@@ -377,7 +377,7 @@ ci-portable:
 		}
 
 ci-portable-private:
-	$(MAKE) ci-common-private ci-portable-topology check-portable-defect-closure check-p0-baseline check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
+	$(MAKE) ci-common-private ci-portable-topology check-portable-defect-closure check-p0-baseline check-p0-maintainability check-test-governance-topology check-p0-ci-closure artifact-firewall-check audit-delivery-contract
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install
