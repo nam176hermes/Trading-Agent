@@ -18,9 +18,20 @@ _ASSIGNMENT = re.compile(
     r"(?P<name>[A-Za-z_.][A-Za-z0-9_.-]*)\s*"
     r"(?:::=|:=|\?=|\+=|=)\s*(?P<value>.*)\Z"
 )
-_VARIABLE_REFERENCE = re.compile(
-    r"\$\((?P<paren>[A-Za-z_.][A-Za-z0-9_.-]*)\)"
-    r"|\$\{(?P<brace>[A-Za-z_.][A-Za-z0-9_.-]*)\}"
+_SIMPLE_VARIABLE_REFERENCE = re.compile(
+    r"(?<!\$)\$(?!\$)(?:"
+    r"\((?P<paren>[A-Za-z_.][A-Za-z0-9_.-]*)\)"
+    r"|\{(?P<brace>[A-Za-z_.][A-Za-z0-9_.-]*)\}"
+    r"|(?P<short>[A-Za-z_.])"
+    r")"
+)
+_MAKE_EXPANSION_START = re.compile(r"(?<!\$)\$(?!\$)[({]")
+_LITERAL_COMMAND = re.compile(
+    r"[A-Za-z0-9_./+-]+(?:[ \t]+[A-Za-z0-9_./+, :=@%-]+)*\Z"
+)
+_MAKE_EXECUTABLE = re.compile(r"(?:g?make)(?:\.exe)?\Z", re.IGNORECASE)
+_SHELL_ESCAPED_MAKE_REFERENCE = re.compile(
+    r"\$\$(?:MAKE|\(MAKE\)|\{MAKE\})"
 )
 
 
@@ -30,23 +41,72 @@ def _unresolved() -> None:
 
 def _variable_references(value: str) -> set[str]:
     return {
-        match.group("paren") or match.group("brace")
-        for match in _VARIABLE_REFERENCE.finditer(value)
+        match.group("paren") or match.group("brace") or match.group("short")
+        for match in _SIMPLE_VARIABLE_REFERENCE.finditer(value)
     }
 
 
-def _make_derived_aliases(assignments: dict[str, list[str]]) -> set[str]:
-    derived = {"MAKE"}
+def _has_unsupported_make_expansion(value: str) -> bool:
+    simple_starts = {
+        match.start() for match in _SIMPLE_VARIABLE_REFERENCE.finditer(value)
+    }
+    return any(
+        match.start() not in simple_starts
+        for match in _MAKE_EXPANSION_START.finditer(value)
+    )
+
+
+def _assignment_value_is_ambiguous(value: str) -> bool:
+    """Accept only a fixed literal command or one simple variable reference."""
+    source = value.strip()
+    references = list(_SIMPLE_VARIABLE_REFERENCE.finditer(source))
+    if (
+        not source
+        or "$$" in source
+        or _has_unsupported_make_expansion(source)
+    ):
+        return True
+    if references:
+        return not (
+            len(references) == 1
+            and references[0].span() == (0, len(source))
+        )
+    return "$" in source or _LITERAL_COMMAND.fullmatch(source) is None
+
+
+def _value_names_make_executable(value: str) -> bool:
+    try:
+        words = shlex.split(value.strip())
+    except ValueError:
+        return False
+    return any(
+        _MAKE_EXECUTABLE.fullmatch(Path(word).name) is not None for word in words
+    )
+
+
+def _unsafe_command_aliases(assignments: dict[str, list[str]]) -> set[str]:
+    """Find aliases that are Make-derived or outside the bounded value grammar."""
+    dependencies: dict[str, set[str]] = {}
+    unsafe = {"MAKE"}
+    for name, values in assignments.items():
+        dependencies[name] = set().union(
+            *(_variable_references(value) for value in values)
+        )
+        if (
+            len(values) != 1
+            or any(_assignment_value_is_ambiguous(value) for value in values)
+            or any(_value_names_make_executable(value) for value in values)
+        ):
+            unsafe.add(name)
+
     changed = True
     while changed:
         changed = False
-        for name, values in assignments.items():
-            if name not in derived and any(
-                _variable_references(value) & derived for value in values
-            ):
-                derived.add(name)
+        for name, referenced_names in dependencies.items():
+            if name not in unsafe and referenced_names & unsafe:
+                unsafe.add(name)
                 changed = True
-    return derived - {"MAKE"}
+    return unsafe - {"MAKE"}
 
 
 def _wrapped_recursive_targets(
@@ -118,7 +178,7 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
         statement = closure._make_statement(line, seen_targets)
         current_targets = () if statement is None else statement[0]
 
-    make_aliases = _make_derived_aliases(assignments)
+    unsafe_aliases = _unsafe_command_aliases(assignments)
     reachable: set[str] = set()
     pending = ["ci", "ci-portable"]
     while pending:
@@ -127,9 +187,16 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
             continue
         reachable.add(target)
         for recipe in recipes.get(target, ()):
-            if _variable_references(recipe) & make_aliases:
+            if (
+                _variable_references(recipe) & unsafe_aliases
+                or _has_unsupported_make_expansion(recipe)
+            ):
                 _unresolved()
-            if _ALTERNATE_MAKE.search(recipe) or "${MAKE}" in recipe or "$$MAKE" in recipe:
+            if (
+                _ALTERNATE_MAKE.search(recipe)
+                or "${MAKE}" in recipe
+                or _SHELL_ESCAPED_MAKE_REFERENCE.search(recipe)
+            ):
                 _unresolved()
             if "$(MAKE)" not in recipe:
                 continue
@@ -201,6 +268,66 @@ def test_make_graph_rejects_make_derived_command_alias() -> None:
     """A variable whose value derives from `$(MAKE)` cannot become a command."""
     makefile = b"""\
 MAKE_ALIAS := $(MAKE)
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\t$(MAKE_ALIAS) ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_rejects_one_character_make_command_alias() -> None:
+    """A one-character reference cannot hide a Make-derived command alias."""
+    makefile = b"""\
+M := $(MAKE)
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\t$M ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_rejects_make_function_derived_command_alias() -> None:
+    """An unsupported Make function cannot manufacture a command alias."""
+    makefile = b"""\
+MAKE_ALIAS := $(value MAKE)
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\t$(MAKE_ALIAS) ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_rejects_literal_make_command_alias() -> None:
+    """A literal Make executable cannot be invoked through a variable alias."""
+    makefile = b"""\
+MAKE_ALIAS := /usr/bin/make
 .PHONY: ci ci-portable ci-host-authority
 ci: ci-portable
 \t$(MAKE_ALIAS) ci-host-authority
