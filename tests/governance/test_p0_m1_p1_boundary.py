@@ -33,6 +33,11 @@ _MAKE_EXECUTABLE = re.compile(r"(?:g?make)(?:\.exe)?\Z", re.IGNORECASE)
 _SHELL_ESCAPED_MAKE_REFERENCE = re.compile(
     r"\$\$(?:MAKE|\(MAKE\)|\{MAKE\})"
 )
+_SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*\Z")
+_SHELL_COMMAND_PREFIX = frozenset({
+    "!", "(", "{", "command", "do", "elif", "else", "env", "exec", "if",
+    "then", "time", "until", "while",
+})
 
 
 def _unresolved() -> None:
@@ -84,29 +89,65 @@ def _value_names_make_executable(value: str) -> bool:
     )
 
 
-def _unsafe_command_aliases(assignments: dict[str, list[str]]) -> set[str]:
-    """Find aliases that are Make-derived or outside the bounded value grammar."""
+def _proven_safe_command_aliases(assignments: dict[str, list[str]]) -> set[str]:
+    """Classify only bounded literals and source-closed pure aliases as safe."""
     dependencies: dict[str, set[str]] = {}
-    unsafe = {"MAKE"}
+    pure_aliases: set[str] = set()
+    safe: set[str] = set()
     for name, values in assignments.items():
         dependencies[name] = set().union(
             *(_variable_references(value) for value in values)
         )
         if (
-            len(values) != 1
-            or any(_assignment_value_is_ambiguous(value) for value in values)
-            or any(_value_names_make_executable(value) for value in values)
+            len(values) == 1
+            and not _assignment_value_is_ambiguous(values[0])
+            and not _value_names_make_executable(values[0])
         ):
-            unsafe.add(name)
+            if dependencies[name]:
+                pure_aliases.add(name)
+            else:
+                safe.add(name)
 
     changed = True
     while changed:
         changed = False
-        for name, referenced_names in dependencies.items():
-            if name not in unsafe and referenced_names & unsafe:
-                unsafe.add(name)
+        for name in pure_aliases:
+            referenced_names = dependencies[name]
+            if name not in safe and referenced_names and referenced_names <= safe:
+                safe.add(name)
                 changed = True
-    return unsafe - {"MAKE"}
+    return safe
+
+
+def _command_position_variable_references(recipe: str) -> set[str]:
+    """Return Make variables used as commands in the bounded shell grammar."""
+    lexer = shlex.shlex(recipe, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        words = list(lexer)
+    except ValueError:
+        _unresolved()
+
+    references: set[str] = set()
+    command_position = True
+    recipe_start = True
+    for word in words:
+        if word and set(word) <= set(";&|"):
+            command_position = True
+            continue
+        if not command_position:
+            recipe_start = False
+            continue
+        candidate = word.lstrip("@+-") if recipe_start else word
+        recipe_start = False
+        if not candidate or candidate in _SHELL_COMMAND_PREFIX:
+            continue
+        if _SHELL_ASSIGNMENT.fullmatch(candidate) is not None:
+            continue
+        references.update(_variable_references(candidate))
+        command_position = False
+    return references
 
 
 def _wrapped_recursive_targets(
@@ -178,7 +219,8 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
         statement = closure._make_statement(line, seen_targets)
         current_targets = () if statement is None else statement[0]
 
-    unsafe_aliases = _unsafe_command_aliases(assignments)
+    safe_aliases = _proven_safe_command_aliases(assignments)
+    unsafe_aliases = set(assignments) - safe_aliases
     reachable: set[str] = set()
     pending = ["ci", "ci-portable"]
     while pending:
@@ -187,8 +229,10 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
             continue
         reachable.add(target)
         for recipe in recipes.get(target, ()):
+            command_aliases = _command_position_variable_references(recipe)
             if (
                 _variable_references(recipe) & unsafe_aliases
+                or command_aliases - {"MAKE"} - safe_aliases
                 or _has_unsupported_make_expansion(recipe)
             ):
                 _unresolved()
@@ -331,6 +375,25 @@ MAKE_ALIAS := /usr/bin/make
 .PHONY: ci ci-portable ci-host-authority
 ci: ci-portable
 \t$(MAKE_ALIAS) ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_rejects_unassigned_command_variable() -> None:
+    """An externally supplied command variable cannot become recursive Make."""
+    makefile = b"""\
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\t$(RUNNER) ci-host-authority
 ci-portable:
 \t@:
 ci-host-authority:
