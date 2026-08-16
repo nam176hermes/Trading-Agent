@@ -28,8 +28,11 @@ classification, receipt validation and publication, semantic projection, and
 topology aggregation to the topology hotspot; evidence custody and artifact
 validation/publication to the firewall; and historical closure proof to the
 closure checker. The characterization index binds C01-C16 to exact collected
-pytest nodes, but it does not by itself prove an untested import shim or a new
-module boundary.
+pytest nodes. Existing tests also exercise the current helper and parser
+surfaces transitively or directly; a compatibility shim kept at those surfaces
+would therefore be exercised. Characterization is evidence about preserved
+behavior and API reachability, not a requirement to predict a future module
+location.
 
 ## Eligibility gate
 
@@ -49,7 +52,7 @@ A proposal must satisfy every item below. `NOT PROVEN` on any item is a NO-GO.
 | E10 | no PASS/FAIL/DEFERRED decision | No terminal or lane outcome decision may move. |
 | E11 | no schema/version/path/error-code change | Values, spelling, locations, exceptions, and externally observed contracts must remain exact. |
 | E12 | no semantic-result meaning change | The stable semantic projection and digest meaning must remain exact. |
-| E13 | existing characterization already covers it | Exact collected tests must cover both behavior and any compatibility shim/API surface needed by the move. |
+| E13 | existing characterization already covers it | Existing exact tests must exercise the behavior and old API surface through which a compatibility shim would be reached; they need not pre-prove a future module path. |
 | E14 | no more than about 500 moved logical lines | The exact symbol set must remain a small single responsibility. |
 | E15 | extraction can preserve the old import/API surface via a shim if required | Existing callers and imports must continue to resolve identically. |
 
@@ -69,28 +72,37 @@ a newline, while the other forms do not. The public topology helper could be
 retained as a shim, so E15 appears feasible for that symbol.
 
 The indexed C01/C02 projection proof and C11-C15 artifact proofs exercise
-canonical bytes transitively, and other tests call the current topology helper.
-No exact indexed node proves the proposed new-module import boundary or the
-compatibility shim itself. Therefore E13 is not proven for a move. Consolidating
-four or five lines would also modify qualified hotspot blobs and add a reviewed
-first-party dependency without reducing an authority-bearing responsibility;
-the required lower-risk case is not established. Candidate status: **NO-GO**.
+canonical bytes transitively, and existing tests call the current topology
+helper directly and traverse the firewall and closure helpers through their
+current public behavior. A shim left at each old surface would be exercised, so
+E13 is satisfied for a behavior-preserving move; no test must know the future
+module's location in advance. E11 still requires preserving the newline
+difference and exact byte spelling. Consolidating four- or five-line helpers
+would modify qualified hotspot blobs and add a reviewed first-party
+dependency without reducing an authority-bearing responsibility or a
+demonstrated maintenance risk. The required lower-risk case is not established.
+Candidate status: **NO-GO**.
 
 ### Digest helpers
 
-Plausible symbols include topology's `closed_node_proof_digest`,
-`completeness_sha256`, `payload_sha256`, `native_completeness_sha256`, and
-`external_completeness_sha256` (20 physical lines total), plus the firewall's
-`semantic_result_sha256` and `manifest_payload_sha256` (11 total).
+Each digest candidate requires its own assessment. None of these pure
+calculations publishes a receipt or decides PASS/FAIL/DEFERRED merely because a
+caller later uses its result for validation.
 
-Although the byte hashing is deterministic and bounded by E14, these helpers
-select receipt fields, bind closed-node proof, validate receipt acceptance,
-and define stable semantic-result meaning. The exact C01/C02 tests intentionally
-prove that meaning, and C05-C13 prove fail-closed receipt/evidence consequences;
-that coverage is evidence that these are policy boundaries, not generic digest
-utilities. The group fails E08, E10, E11, and E12 and crosses the forbidden
-receipt-acceptance and semantic-policy categories. Candidate status:
-**NO-GO**.
+| Symbol | Individual assessment | Existing characterization | Decision |
+| --- | --- | --- | --- |
+| topology `closed_node_proof_digest` (4 physical lines) | Pure deterministic digest of `_closed_node_proof_payload`; E01-E12 and E14 can be preserved, and a same-name shim is feasible under E15. Moving it alone would leave its payload construction behind and add a dependency without isolating a responsibility. | Portable-defect closure tests call it directly and exercise the current surface, satisfying E13 for a shim. | Technically plausible, but **NO-GO** because no lower-risk or maintenance benefit is demonstrated. |
+| topology `completeness_sha256` (4) | Pure deterministic field selection and digest; it does not publish or accept a receipt and does not decide an outcome. Exact field selection remains an E11 contract that a shim can preserve. | Topology receipt construction/parsing tests call it directly and traverse it through existing receipt behavior, satisfying E13. | **NO-GO**: moving four lines changes a qualified blob/import graph without reducing risk. |
+| topology `payload_sha256` (2) | Pure deterministic digest excluding `receipt_sha256`; E01-E12 and E14 can be preserved, with a feasible old-name shim. | Topology and firewall tests call it directly and exercise receipt round trips, satisfying E13. | **NO-GO**: a two-line move has no demonstrated maintenance or risk benefit. |
+| topology `native_completeness_sha256` (5) | Pure deterministic native-receipt digest; no publication or terminal decision occurs in this helper. E11 requires exact exclusion fields, which a shim can preserve. | Native receipt tests call it directly and exercise parsing/construction, satisfying E13. | **NO-GO**: no cohesive responsibility or lower-risk case is created by moving five lines. |
+| topology `external_completeness_sha256` (5) | Pure deterministic external-receipt digest; no publication, authority probe, classification transition, or terminal decision occurs here. E11 can be preserved by a shim. | External authority receipt tests call it directly and exercise parsing/construction, satisfying E13. | **NO-GO**: no demonstrated maintenance benefit offsets changing the qualified hotspot/import graph. |
+| firewall `manifest_payload_sha256` (4) | Pure deterministic copy/blank-field/digest computation; it does not publish or accept the manifest. E11 and E15 can be preserved. | Artifact-firewall tests call it directly and validators traverse it, satisfying E13. | **NO-GO**: moving four lines provides no lower-risk boundary. |
+| firewall `semantic_result_sha256` (7) | The hashing is pure, but this symbol invokes `_stable_semantic_projection`; moving the symbol as a unit would move or couple across the semantic-policy decision that defines result meaning. Extracting that policy is forbidden by F10 and cannot be treated as a generic digest-only move under E12. | Direct artifact-firewall tests strongly characterize stable semantic meaning and run-metadata exclusion. | **NO-GO** because the candidate is policy-coupled; extracting only a wrapper has no standalone responsibility, while extracting its projection crosses F10. |
+
+The first six rows are not rejected under E08 or E10: their callers perform
+publication, acceptance, or fail-closed decisions. Their NO-GO result follows
+from the architectural requirement to prove that changing qualified blobs is
+lower risk than leaving these two-to-five-line calculations in place.
 
 ### Immutable constants and pure schema field sets
 
@@ -103,32 +115,44 @@ They are nevertheless the executable definitions of schema/version keys,
 evidence paths, capability/authority classifications, accepted closure states,
 and PASS/FAIL/DEFERRED meaning. Splitting only the apparently neutral values
 would still change the import graph of qualified hotspots. C03-C09 and C11-C16
-cover consequences, but no exact characterization proves a new constants
-module and compatibility surface. The set fails E09-E13, depending on the
-specific constant, and crosses the forbidden classification, receipt
-acceptance, validation-date, and semantic-policy categories. Candidate status:
-**NO-GO**.
+exercise their consequences through the current surfaces, so a preserved
+old-name shim would be traversed. Policy-bearing constants fail E09-E12,
+depending on the specific constant, and cross the forbidden classification,
+receipt-acceptance, validation-date, or semantic-policy categories. Neutral
+schema strings and field sets have no demonstrated cohesive maintenance or
+lower-risk benefit when moved alone. Candidate status: **NO-GO**.
 
 ### Pure dataclasses
 
-The closest pure data-only types are topology's `_PolicyStageFailure` (5
-physical lines), `InventoryRow` (4), and `ClosureRow` (8), and the closure
-checker's `_YamlLine` (3). They meet the size limit. `InventoryRow` carries
-capability classifications, `ClosureRow` binds historical proof and receipt
-acceptance, and `_PolicyStageFailure` carries a public policy class. They fail
-E09-E12 as applicable. `_YamlLine` is authority-neutral, but no exact indexed
-node characterizes its import/API boundary; moving three private lines offers
-no proven risk reduction, so E13 and the architectural GO condition are not
-met.
+The pure immutable data-only types are topology's `_PolicyStageFailure` (5
+physical lines), `InventoryRow` (4), and `ClosureRow` (8), plus the closure
+checker's `_ValidationContext` (11) and `_YamlLine` (3). These containers do not
+themselves classify, accept, publish, mutate, or decide an outcome; their
+callers do. Their exact field shapes can be preserved under E11/E12, they meet
+E14, and old-name aliases are feasible under E15. Existing topology, closure,
+workflow, and diagnostic tests instantiate or traverse the current types, so
+those aliases would be exercised and E13 is satisfied. Each data shape exists
+only to connect adjacent parser/validator logic in its current file. Moving
+three to eleven lines adds an import boundary without isolating a reusable
+responsibility or reducing a demonstrated maintenance risk. Candidate status:
+**NO-GO** under the architectural GO condition, not because the containers
+perform their callers' authority behavior.
 
 The remaining apparent dataclasses are not pure extraction candidates:
+topology's `_RetainedClosureArtifacts` and `_RetainedNativeArtifacts` retain
+directory and leaf descriptors plus inode identity snapshots; its
 `NativeProbeSession`, `NativeMultiAuthoritySession`,
-`ExternalAuthoritySession`, `_ExternalAbsentLineage`, the firewall's `_Leaf`,
-`_Directory`, `_LineageEntry`, `_RetainedLineage`, and `_Snapshot`, and the
-closure checker's `_ValidationContext` hold descriptors, inode identities,
-paths, cleanup/postcheck callbacks, receipt locations, or authority state.
-They fail E02, E03, E06, E08, E09, or E10 and cross explicit custody/TOCTOU,
-authority-probe, and publication boundaries. Candidate status: **NO-GO**.
+`ExternalAuthoritySession`, and `_ExternalAbsentLineage` retain descriptors,
+named identities, paths, postchecks, cleanup callbacks, or authority state.
+The firewall's `_Leaf`, `_Directory`, `_LineageEntry`, `_RetainedLineage`, and
+`_Snapshot` retain and manage descriptor/identity lifecycles. Its
+`_TreeIdentity` has no open descriptor itself, but its directory and leaf inode
+identity maps are custody evidence, so it still fails E03. The closure
+checker has no comparable descriptor-custody dataclass. Every type in this
+paragraph fails E03 because the type itself retains descriptors, inode identity
+evidence, or callbacks that preserve and recheck that custody; several also
+sit inside the explicitly forbidden authority-probe and publication paths.
+Candidate status: **NO-GO**.
 
 ## Forbidden extraction categories
 
