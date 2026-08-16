@@ -87,6 +87,8 @@ P1_BOUNDARY_PROOF_NODES = (
     "tests/governance/test_p0_m1_p1_boundary.py::"
     "test_make_graph_rejects_bare_make_executable",
     "tests/governance/test_p0_m1_p1_boundary.py::"
+    "test_make_graph_rejects_make_derived_command_alias",
+    "tests/governance/test_p0_m1_p1_boundary.py::"
     "test_make_graph_rejects_variable_indirected_recursive_target",
     "tests/governance/test_p0_m1_p1_boundary.py::"
     "test_make_graph_traverses_same_root_dash_c_target",
