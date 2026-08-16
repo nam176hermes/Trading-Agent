@@ -14,10 +14,39 @@ _TARGET = re.compile(r"[A-Za-z0-9_.-]+\Z")
 _ALTERNATE_MAKE = re.compile(
     r"(?:^|[;&|][ \t]*|[ \t])(?:/[A-Za-z0-9_./-]+/)?g?make(?=[ \t])"
 )
+_ASSIGNMENT = re.compile(
+    r"(?P<name>[A-Za-z_.][A-Za-z0-9_.-]*)\s*"
+    r"(?:::=|:=|\?=|\+=|=)\s*(?P<value>.*)\Z"
+)
+_VARIABLE_REFERENCE = re.compile(
+    r"\$\((?P<paren>[A-Za-z_.][A-Za-z0-9_.-]*)\)"
+    r"|\$\{(?P<brace>[A-Za-z_.][A-Za-z0-9_.-]*)\}"
+)
 
 
 def _unresolved() -> None:
     raise closure.ClosureError("P0_M1_P1_MAKE_RECURSION_UNRESOLVED")
+
+
+def _variable_references(value: str) -> set[str]:
+    return {
+        match.group("paren") or match.group("brace")
+        for match in _VARIABLE_REFERENCE.finditer(value)
+    }
+
+
+def _make_derived_aliases(assignments: dict[str, list[str]]) -> set[str]:
+    derived = {"MAKE"}
+    changed = True
+    while changed:
+        changed = False
+        for name, values in assignments.items():
+            if name not in derived and any(
+                _variable_references(value) & derived for value in values
+            ):
+                derived.add(name)
+                changed = True
+    return derived - {"MAKE"}
 
 
 def _wrapped_recursive_targets(
@@ -72,6 +101,7 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
     """Layer fail-closed recursive-Make resolution over the reviewed parser."""
     graph = closure._make_graph(raw)
     recipes: dict[str, list[str]] = {}
+    assignments: dict[str, list[str]] = {}
     current_targets: tuple[str, ...] = ()
     seen_targets: set[str] = set()
     lines = raw.decode("utf-8").splitlines()
@@ -80,9 +110,15 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
             for target in current_targets:
                 recipes.setdefault(target, []).append(line.lstrip(" \t"))
             continue
+        assignment = _ASSIGNMENT.fullmatch(line.strip())
+        if assignment is not None:
+            assignments.setdefault(assignment.group("name"), []).append(
+                assignment.group("value")
+            )
         statement = closure._make_statement(line, seen_targets)
         current_targets = () if statement is None else statement[0]
 
+    make_aliases = _make_derived_aliases(assignments)
     reachable: set[str] = set()
     pending = ["ci", "ci-portable"]
     while pending:
@@ -91,6 +127,8 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
             continue
         reachable.add(target)
         for recipe in recipes.get(target, ()):
+            if _variable_references(recipe) & make_aliases:
+                _unresolved()
             if _ALTERNATE_MAKE.search(recipe) or "${MAKE}" in recipe or "$$MAKE" in recipe:
                 _unresolved()
             if "$(MAKE)" not in recipe:
@@ -146,6 +184,26 @@ def test_make_graph_rejects_bare_make_executable() -> None:
 .PHONY: ci ci-portable ci-host-authority
 ci: ci-portable
 \tmake ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_rejects_make_derived_command_alias() -> None:
+    """A variable whose value derives from `$(MAKE)` cannot become a command."""
+    makefile = b"""\
+MAKE_ALIAS := $(MAKE)
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\t$(MAKE_ALIAS) ci-host-authority
 ci-portable:
 \t@:
 ci-host-authority:

@@ -78,11 +78,17 @@ The C16 characterization entry binds the exact executable governance proofs:
 - `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_bare_make_executable`
   proves that bare or alternate Make executables are rejected in reachable
   recipes instead of being ignored.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_make_derived_command_alias`
+  proves that assignments derived transitively from the built-in `MAKE`
+  variable cannot be invoked through `$(NAME)` or `${NAME}` aliases in a
+  reachable recipe.
 - `tests/governance/test_p0_m1_p1_boundary.py::test_portable_make_graph_is_literal_and_cannot_reach_host_authority`
-  accepts only explicit `$(MAKE)` calls with literal targets, folds same-root
-  `-C` calls into the graph, rejects unsupported Make command forms, and proves
-  that neither `ci` nor `ci-portable` can reach `ci-host-authority`. It does not
-  execute Make or emulate arbitrary shell expansion.
+  accepts only direct built-in `$(MAKE)` calls with literal targets, folds
+  same-root `-C` calls into the graph, rejects Make-derived simple variable
+  aliases and unsupported Make executable forms, and proves that neither `ci`
+  nor `ci-portable` can reach `ci-host-authority`. The proof recognizes
+  canonical `$(NAME)` and `${NAME}` assignment references; it does not execute
+  Make or claim to emulate GNU Make functions or arbitrary shell expansion.
 - `tests/test_p0_ci_closure.py::test_pending_source_matrix_is_an_executable_closed_contract`
   runs the fail-closed closure validator. That validator requires the
   Foundation workflow to invoke only `make ci-portable NONINTERACTIVE=1` and
