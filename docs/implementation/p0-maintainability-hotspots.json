@@ -1,0 +1,26 @@
+{
+  "schema_version": "p0-maintainability-hotspots/v1",
+  "baseline_sha": "e0baa410cdcf0de4344d58ad82fd8a56788f84df",
+  "hotspots": [
+    {
+      "path": "scripts/t_g03_capability_topology.py",
+      "status": "FROZEN_FOR_GROWTH",
+      "baseline_bytes": 362662,
+      "max_net_growth_bytes": 0,
+      "responsibility_id": "P0_CAPABILITY_TOPOLOGY"
+    },
+    {
+      "path": "scripts/check_artifact_firewall.py",
+      "status": "FROZEN_FOR_GROWTH",
+      "baseline_bytes": 141810,
+      "max_net_growth_bytes": 0,
+      "responsibility_id": "P0_ARTIFACT_FIREWALL"
+    },
+    {
+      "path": "scripts/check_p0_ci_closure.py",
+      "status": "MONITOR",
+      "baseline_bytes": 43300,
+      "responsibility_id": "P0_CLOSURE_CHECKER"
+    }
+  ]
+}
