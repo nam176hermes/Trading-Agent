@@ -28,7 +28,7 @@
       "description": "CLI/env date override fails closed",
       "test_node_ids": [
         "tests/governance/test_t_g03f_validation_date.py::test_foundation_context_seals_the_capture_date_and_rejects_date_environment",
-        "tests/governance/test_t_g03f_validation_date.py::test_topology_governance_rejects_a_cli_today_override"
+        "tests/governance/test_t_g03f_validation_date.py::test_topology_governance_subprocess_rejects_date_overrides_with_safe_diagnostics[cli-expected_sources0]"
       ]
     },
     {
