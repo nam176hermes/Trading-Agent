@@ -84,8 +84,10 @@ REQUIRED_CHARACTERIZATIONS = {
     "C16": "portable lane cannot imply host qualification",
 }
 P1_BOUNDARY_PROOF_NODES = (
-    "tests/test_test_all_host_split.py::"
-    "test_ci_routes_only_to_the_portable_gate_and_never_host_authority",
+    "tests/governance/test_p0_m1_p1_boundary.py::"
+    "test_make_graph_rejects_variable_indirected_recursive_target",
+    "tests/governance/test_p0_m1_p1_boundary.py::"
+    "test_portable_make_graph_is_literal_and_cannot_reach_host_authority",
     "tests/test_p0_ci_closure.py::"
     "test_pending_source_matrix_is_an_executable_closed_contract",
 )
