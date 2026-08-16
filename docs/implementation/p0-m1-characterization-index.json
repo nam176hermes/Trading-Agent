@@ -1,6 +1,6 @@
 {
   "schema_version": "p0-m1-characterization-index/v1",
-  "baseline_sha": "bed2af3dd048086766f329870c3b0384fa44959e",
+  "baseline_sha": "e0baa410cdcf0de4344d58ad82fd8a56788f84df",
   "contracts": [
     {
       "id": "C01",
@@ -35,7 +35,7 @@
       "id": "C05",
       "description": "portable defect remains fail-closed",
       "test_node_ids": [
-        "tests/governance/test_t_g03_portable_defect_closure.py::test_portable_source_defects_are_closed_not_unresolved"
+        "tests/governance/test_t_g03_portable_defect_closure.py::test_closure_proof_rejects_failure_stale_artifact_and_tampering"
       ]
     },
     {
