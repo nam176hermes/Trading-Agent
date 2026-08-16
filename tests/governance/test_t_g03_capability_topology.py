@@ -2874,8 +2874,9 @@ def test_completed_topology_retry_preserves_inventory_governance_and_receipt_bef
 def test_retained_uv_rejects_named_replacement_after_descriptor_execution(tmp_path: Path) -> None:
     """Break caught: UV is digested then a replacement pathname executes or is accepted."""
     del tmp_path
-    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+    with _safe_authority_tempdir() as raw:
         root = Path(raw)
+        root.chmod(0o700)
         legacy = root / "legacy"
         for relative, _ in topology.LEGACY_CLOSURE_ENTRIES:
             _write_direct(legacy / relative, executable=relative.endswith("python"))
@@ -2885,6 +2886,7 @@ def test_retained_uv_rejects_named_replacement_after_descriptor_execution(tmp_pa
         replacement = root / "replacement"
         _write_direct(replacement, payload, executable=True)
         expected = topology.hashlib.sha256(uv.read_bytes()).hexdigest()
+        original_named_uv_inode = uv.lstat().st_ino
         commands: list[list[str]] = []
 
         def swapping_runner(command, **kwargs):
@@ -2894,5 +2896,22 @@ def test_retained_uv_rejects_named_replacement_after_descriptor_execution(tmp_pa
                 os.replace(replacement, uv)
             return result
 
-        assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy, expected_uv_sha256=expected, expected_uv_version="fixture-uv 1.0", runner=swapping_runner)[0] == "INVALID"
-        assert all(command[0].startswith("/proc/self/fd/") for command in commands)
+        with pytest.raises(
+            topology.TopologyError,
+            match=r"^external authority changed during qualification$",
+        ):
+            topology._external_preflight(
+                "EXT-LEGACY-UV-AUTHORITY",
+                uv_path=uv,
+                legacy_root=legacy,
+                expected_uv_sha256=expected,
+                expected_uv_version="fixture-uv 1.0",
+                runner=swapping_runner,
+            )
+
+        assert len(commands) == 2
+        assert commands[0][1:] == ["--version"]
+        assert commands[1][1:] == ["sync", "--frozen", "--extra", "test"]
+        assert commands[0][0].startswith("/proc/self/fd/")
+        assert commands[1][0].startswith("/proc/self/fd/")
+        assert uv.lstat().st_ino != original_named_uv_inode
