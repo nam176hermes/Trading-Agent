@@ -11,13 +11,20 @@ from scripts import check_p0_ci_closure as closure
 
 ROOT = Path(__file__).resolve().parents[2]
 _TARGET = re.compile(r"[A-Za-z0-9_.-]+\Z")
+_ALTERNATE_MAKE = re.compile(
+    r"(?:^|[;&|][ \t]*|[ \t])(?:/[A-Za-z0-9_./-]+/)?g?make(?=[ \t])"
+)
 
 
 def _unresolved() -> None:
     raise closure.ClosureError("P0_M1_P1_MAKE_RECURSION_UNRESOLVED")
 
 
-def _wrapped_recursive_targets(recipe: str, graph: dict[str, set[str]]) -> set[str]:
+def _wrapped_recursive_targets(
+    recipe: str,
+    graph: dict[str, set[str]],
+    root: Path,
+) -> set[str]:
     """Resolve every Make call in a shell wrapper or fail closed."""
     matches = re.findall(r"\$\(MAKE\)[ \t]+([^;]+)", recipe)
     if len(matches) != recipe.count("$(MAKE)"):
@@ -49,6 +56,11 @@ def _wrapped_recursive_targets(recipe: str, graph: dict[str, set[str]]) -> set[s
                 _TARGET.fullmatch(word) is None for word in external_words
             ):
                 _unresolved()
+            directory = (root / words[1]).resolve()
+            if directory == root.resolve():
+                if any(word not in graph for word in external_words):
+                    _unresolved()
+                root_targets.update(external_words)
             continue
         if any(_TARGET.fullmatch(word) is None or word not in graph for word in words):
             _unresolved()
@@ -79,11 +91,13 @@ def _strict_portable_make_graph(raw: bytes) -> dict[str, set[str]]:
             continue
         reachable.add(target)
         for recipe in recipes.get(target, ()):
+            if _ALTERNATE_MAKE.search(recipe) or "${MAKE}" in recipe or "$$MAKE" in recipe:
+                _unresolved()
             if "$(MAKE)" not in recipe:
                 continue
             called = closure._recursive_make_targets(recipe)
             if not called:
-                called = _wrapped_recursive_targets(recipe, graph)
+                called = _wrapped_recursive_targets(recipe, graph, ROOT)
             graph[target].update(called)
         pending.extend(graph.get(target, ()))
     return graph
@@ -96,6 +110,42 @@ HOST_TARGET := ci-host-authority
 .PHONY: ci ci-portable ci-host-authority
 ci: ci-portable
 \t$(MAKE) $(HOST_TARGET)
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_traverses_same_root_dash_c_target() -> None:
+    """A `-C .` recursive target must remain a root-graph edge."""
+    makefile = b"""\
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\t$(MAKE) -C . ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    graph = _strict_portable_make_graph(makefile)
+
+    assert closure._reachable(graph, "ci", "ci-host-authority")
+
+
+def test_make_graph_rejects_bare_make_executable() -> None:
+    """A bare Make executable must not bypass recursive-call resolution."""
+    makefile = b"""\
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\tmake ci-host-authority
 ci-portable:
 \t@:
 ci-host-authority:

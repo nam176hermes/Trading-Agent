@@ -85,7 +85,11 @@ REQUIRED_CHARACTERIZATIONS = {
 }
 P1_BOUNDARY_PROOF_NODES = (
     "tests/governance/test_p0_m1_p1_boundary.py::"
+    "test_make_graph_rejects_bare_make_executable",
+    "tests/governance/test_p0_m1_p1_boundary.py::"
     "test_make_graph_rejects_variable_indirected_recursive_target",
+    "tests/governance/test_p0_m1_p1_boundary.py::"
+    "test_make_graph_traverses_same_root_dash_c_target",
     "tests/governance/test_p0_m1_p1_boundary.py::"
     "test_portable_make_graph_is_literal_and_cannot_reach_host_authority",
     "tests/test_p0_ci_closure.py::"
