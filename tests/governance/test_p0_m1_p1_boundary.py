@@ -38,6 +38,9 @@ _SHELL_COMMAND_PREFIX = frozenset({
     "!", "(", "{", "command", "do", "elif", "else", "env", "exec", "if",
     "then", "time", "until", "while",
 })
+_SHELL_PREFIX_OPTIONS = {
+    "time": frozenset({"-p"}),
+}
 
 
 def _unresolved() -> None:
@@ -132,17 +135,27 @@ def _command_position_variable_references(recipe: str) -> set[str]:
     references: set[str] = set()
     command_position = True
     recipe_start = True
+    active_prefix: str | None = None
     for word in words:
         if word and set(word) <= set(";&|"):
             command_position = True
+            active_prefix = None
             continue
         if not command_position:
             recipe_start = False
             continue
         candidate = word.lstrip("@+-") if recipe_start else word
         recipe_start = False
-        if not candidate or candidate in _SHELL_COMMAND_PREFIX:
+        if not candidate:
             continue
+        if candidate in _SHELL_COMMAND_PREFIX:
+            active_prefix = candidate
+            continue
+        if active_prefix is not None:
+            if candidate in _SHELL_PREFIX_OPTIONS.get(active_prefix, ()):
+                continue
+            if candidate.startswith("-") or _variable_references(candidate):
+                _unresolved()
         if _SHELL_ASSIGNMENT.fullmatch(candidate) is not None:
             continue
         references.update(_variable_references(candidate))
@@ -394,6 +407,25 @@ def test_make_graph_rejects_unassigned_command_variable() -> None:
 .PHONY: ci ci-portable ci-host-authority
 ci: ci-portable
 \t$(RUNNER) ci-host-authority
+ci-portable:
+\t@:
+ci-host-authority:
+\t@:
+"""
+
+    with pytest.raises(
+        closure.ClosureError,
+        match="^P0_M1_P1_MAKE_RECURSION_UNRESOLVED$",
+    ):
+        _strict_portable_make_graph(makefile)
+
+
+def test_make_graph_rejects_command_variable_after_time_option() -> None:
+    """A shell-prefix option cannot conceal an unassigned command variable."""
+    makefile = b"""\
+.PHONY: ci ci-portable ci-host-authority
+ci: ci-portable
+\ttime -p $(RUNNER) ci-host-authority
 ci-portable:
 \t@:
 ci-host-authority:
