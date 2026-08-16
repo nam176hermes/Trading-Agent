@@ -412,6 +412,33 @@ def test_checker_rejects_new_from_import_module_without_review(checker_repo: Pat
     assert "scripts.authority_module" in result.stderr
 
 
+def test_checker_rejects_new_from_import_nested_package_without_review(
+    checker_repo: Path,
+) -> None:
+    """A nested source-root package pins `from` imports at module granularity."""
+    package = checker_repo / "apps/control_api/control_api"
+    repositories = package / "repositories"
+    repositories.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (repositories / "__init__.py").write_text("", encoding="utf-8")
+    (package / "authority.py").write_text("", encoding="utf-8")
+    hotspot = checker_repo / "scripts/hotspot.py"
+    hotspot.write_text("from control_api import repositories\n", encoding="utf-8")
+    _git(checker_repo, "add", "apps/control_api/control_api", "scripts/hotspot.py")
+    _git(checker_repo, "commit", "-qm", "nested package from import baseline")
+    hotspot.write_text("from control_api import authority\n", encoding="utf-8")
+    manifest = _write_fixture_manifest(
+        checker_repo,
+        baseline_bytes=len(b"from control_api import repositories\n"),
+        max_net_growth_bytes=100,
+        baseline_first_party_imports=["control_api.repositories"],
+    )
+    result = _run_checker(checker_repo, manifest)
+    assert result.returncode != 0
+    assert "first-party import drift" in result.stderr
+    assert "control_api.authority" in result.stderr
+
+
 def test_checker_has_no_automatic_policy_rewrite_mode() -> None:
     """Policy updates remain source-reviewed instead of accepting local drift by CLI."""
     result = subprocess.run(

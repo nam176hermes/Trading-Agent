@@ -90,26 +90,28 @@ def baseline_bytes(root: Path, baseline_sha: str, path: str) -> tuple[int, bytes
     return size, contents.stdout
 
 
-def repository_import_roots(root: Path) -> set[str]:
-    """Return import roots exposed by this checkout's directories and packages."""
-    roots = set(MINIMUM_FIRST_PARTY_ROOTS)
-    roots.update(
-        child.name
-        for child in root.iterdir()
-        if child.is_dir() and not child.name.startswith(".")
-    )
+def repository_import_locations(root: Path) -> dict[str, set[Path]]:
+    """Map each repository import root to all source locations that expose it."""
+    locations: dict[str, set[Path]] = {}
+    for child in root.iterdir():
+        if child.is_dir() and not child.name.startswith("."):
+            locations.setdefault(child.name, set()).add(child)
     for package_init in root.rglob("__init__.py"):
         relative = package_init.relative_to(root)
         if any(part.startswith(".") for part in relative.parts):
             continue
-        roots.add(package_init.parent.name)
-    return roots
+        locations.setdefault(package_init.parent.name, set()).add(package_init.parent)
+    return locations
 
 
-def is_repository_module(root: Path, name: str) -> bool:
+def is_repository_module(locations: dict[str, set[Path]], name: str) -> bool:
     """Whether a dotted import name resolves to a source module in this checkout."""
-    candidate = root.joinpath(*name.split("."))
-    return candidate.with_suffix(".py").is_file() or (candidate / "__init__.py").is_file()
+    import_root, *submodules = name.split(".")
+    return any(
+        (candidate := location.joinpath(*submodules)).with_suffix(".py").is_file()
+        or (candidate / "__init__.py").is_file()
+        for location in locations.get(import_root, set())
+    )
 
 
 def first_party_imports(root: Path, source: bytes) -> set[str]:
@@ -118,7 +120,8 @@ def first_party_imports(root: Path, source: bytes) -> set[str]:
     except (SyntaxError, UnicodeDecodeError) as error:
         fail(f"cannot parse hotspot imports: {error}")
     imports: set[str] = set()
-    import_roots = repository_import_roots(root)
+    locations = repository_import_locations(root)
+    import_roots = set(MINIMUM_FIRST_PARTY_ROOTS) | set(locations)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names = (alias.name for alias in node.names)
@@ -128,7 +131,7 @@ def first_party_imports(root: Path, source: bytes) -> set[str]:
             names = (
                 f"{node.module}.{alias.name}"
                 if alias.name != "*"
-                and is_repository_module(root, f"{node.module}.{alias.name}")
+                and is_repository_module(locations, f"{node.module}.{alias.name}")
                 else node.module
                 for alias in node.names
             )
