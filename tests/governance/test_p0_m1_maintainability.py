@@ -56,6 +56,29 @@ EXPECTED_HOTSPOTS = [
 ]
 
 CHECKER = ROOT / "scripts/check_p0_maintainability.py"
+CHARACTERIZATION_INDEX = (
+    ROOT / "docs/implementation/p0-m1-characterization-index.json"
+)
+CHARACTERIZATION_SCHEMA_VERSION = "p0-m1-characterization-index/v1"
+EXPECTED_CHARACTERIZATION_BASELINE_SHA = "bed2af3dd048086766f329870c3b0384fa44959e"
+REQUIRED_CHARACTERIZATIONS = {
+    "C01": "final semantic projection ignores run-custody-only identity",
+    "C02": "semantic projection changes when governed meaning changes",
+    "C03": "sealed foundation validation date is authoritative",
+    "C04": "CLI/env date override fails closed",
+    "C05": "portable defect remains fail-closed",
+    "C06": "native absent authority is deferred, not passed",
+    "C07": "native present-invalid authority fails",
+    "C08": "external absent authority is deferred",
+    "C09": "external present-invalid authority fails",
+    "C10": "native evidence publication is append-only/no rollback",
+    "C11": "canonical acceptance is no-clobber/create-if-absent",
+    "C12": "wrong head/context/inventory binding fails",
+    "C13": "artifact manifest/checksum mismatch fails",
+    "C14": "symlink/path substitution fails",
+    "C15": "secret-bearing evidence fails",
+    "C16": "portable lane cannot imply host qualification",
+}
 
 
 def _run_checker(root: Path, manifest: Path) -> subprocess.CompletedProcess[str]:
@@ -450,3 +473,151 @@ def test_checker_has_no_automatic_policy_rewrite_mode() -> None:
     assert result.returncode == 0
     assert "--update" not in result.stdout
     assert "--accept-current" not in result.stdout
+
+
+def test_p0_characterization_index_pins_collected_non_xfail_exact_nodes() -> None:
+    """A missing, stale, wildcard, or xfail-only proof cannot satisfy a P0 contract."""
+    document = json.loads(CHARACTERIZATION_INDEX.read_text(encoding="utf-8"))
+
+    assert set(document) == {"schema_version", "baseline_sha", "contracts"}
+    assert document["schema_version"] == CHARACTERIZATION_SCHEMA_VERSION
+    assert document["baseline_sha"] == EXPECTED_CHARACTERIZATION_BASELINE_SHA
+    assert subprocess.run(
+        ["git", "cat-file", "-e", f"{document['baseline_sha']}^{{commit}}"],
+        cwd=ROOT,
+        check=False,
+    ).returncode == 0
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", document["baseline_sha"], "HEAD"],
+        cwd=ROOT,
+        check=False,
+    ).returncode == 0
+
+    contracts = document["contracts"]
+    assert isinstance(contracts, list)
+    ids = [contract["id"] for contract in contracts]
+    assert ids == list(REQUIRED_CHARACTERIZATIONS)
+    assert len(ids) == len(set(ids))
+
+    all_nodes: list[str] = []
+    for contract in contracts:
+        assert set(contract) == {"id", "description", "test_node_ids"}
+        assert contract["description"] == REQUIRED_CHARACTERIZATIONS[contract["id"]]
+        nodes = contract["test_node_ids"]
+        assert isinstance(nodes, list) and nodes
+        assert nodes == sorted(set(nodes))
+        for node in nodes:
+            assert isinstance(node, str) and node.startswith("tests/")
+            assert "::" in node and not any(character in node for character in "*?\n\r\t ")
+            source = ROOT / node.split("::", 1)[0]
+            assert source.is_file() and not source.is_symlink()
+        all_nodes.extend(nodes)
+
+    unique_nodes = list(dict.fromkeys(all_nodes))
+    collected = subprocess.run(
+        ["uv", "run", "pytest", "--collect-only", "-q", "--", *unique_nodes],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert collected.returncode == 0, collected.stdout + collected.stderr
+    collected_nodes = {
+        line for line in collected.stdout.splitlines() if line.startswith("tests/")
+    }
+    assert set(unique_nodes) <= collected_nodes
+
+    xfail_collection = subprocess.run(
+        [
+            "uv", "run", "pytest", "--collect-only", "-q", "-m", "xfail",
+            "--", *unique_nodes,
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert xfail_collection.returncode in {0, 5}
+    xfail_nodes = {
+        line for line in xfail_collection.stdout.splitlines() if line.startswith("tests/")
+    }
+    for contract in contracts:
+        assert not set(contract["test_node_ids"]) <= xfail_nodes
+
+
+def test_checker_prints_only_unique_validated_characterization_nodes() -> None:
+    """The execution helper must emit safe pytest arguments without duplicate work."""
+    document = json.loads(CHARACTERIZATION_INDEX.read_text(encoding="utf-8"))
+    expected = list(dict.fromkeys(
+        node
+        for contract in document["contracts"]
+        for node in contract["test_node_ids"]
+    ))
+    result = subprocess.run(
+        [
+            "python", str(CHECKER),
+            "--manifest", str(MANIFEST),
+            "--characterization-index", str(CHARACTERIZATION_INDEX),
+            "--print-characterization-nodes",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == expected
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        (lambda document: document.update(unexpected=True), "unknown"),
+        (
+            lambda document: document["contracts"].append(
+                document["contracts"][0].copy()
+            ),
+            "duplicate",
+        ),
+        (lambda document: document["contracts"].pop(), "required"),
+        (
+            lambda document: document["contracts"][0].update(test_node_ids=[]),
+            "non-empty",
+        ),
+        (
+            lambda document: document["contracts"][0].update(
+                test_node_ids=["tests/**/*.py::test_placeholder"]
+            ),
+            "wildcard",
+        ),
+        (
+            lambda document: document["contracts"][0].update(
+                test_node_ids=["tests/missing.py::test_missing"]
+            ),
+            "regular file",
+        ),
+    ],
+)
+def test_checker_rejects_invalid_characterization_index(
+    tmp_path: Path, change: object, expected: str,
+) -> None:
+    """Malformed index data cannot become executable pytest arguments."""
+    document = json.loads(CHARACTERIZATION_INDEX.read_text(encoding="utf-8"))
+    change(document)  # type: ignore[operator]
+    index = tmp_path / "characterization-index.json"
+    index.write_text(json.dumps(document), encoding="utf-8")
+    result = subprocess.run(
+        [
+            "python", str(CHECKER),
+            "--root", str(ROOT),
+            "--manifest", str(MANIFEST),
+            "--characterization-index", str(index),
+            "--print-characterization-nodes",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert expected in result.stderr.lower()

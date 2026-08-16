@@ -1,0 +1,121 @@
+{
+  "schema_version": "p0-m1-characterization-index/v1",
+  "baseline_sha": "bed2af3dd048086766f329870c3b0384fa44959e",
+  "contracts": [
+    {
+      "id": "C01",
+      "description": "final semantic projection ignores run-custody-only identity",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_capability_topology.py::test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning"
+      ]
+    },
+    {
+      "id": "C02",
+      "description": "semantic projection changes when governed meaning changes",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_capability_topology.py::test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning"
+      ]
+    },
+    {
+      "id": "C03",
+      "description": "sealed foundation validation date is authoritative",
+      "test_node_ids": [
+        "tests/governance/test_t_g03f_validation_date.py::test_sealed_date_controls_policy_validation_and_binds_the_v3_baseline"
+      ]
+    },
+    {
+      "id": "C04",
+      "description": "CLI/env date override fails closed",
+      "test_node_ids": [
+        "tests/governance/test_t_g03f_validation_date.py::test_foundation_context_seals_the_capture_date_and_rejects_date_environment",
+        "tests/governance/test_t_g03f_validation_date.py::test_topology_governance_rejects_a_cli_today_override"
+      ]
+    },
+    {
+      "id": "C05",
+      "description": "portable defect remains fail-closed",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_portable_defect_closure.py::test_portable_source_defects_are_closed_not_unresolved"
+      ]
+    },
+    {
+      "id": "C06",
+      "description": "native absent authority is deferred, not passed",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_capability_topology.py::test_standalone_native_deferred_lane_does_not_require_portable_baseline"
+      ]
+    },
+    {
+      "id": "C07",
+      "description": "native present-invalid authority fails",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_capability_topology.py::test_broken_native_probe_publishes_fail_before_lane_failure"
+      ]
+    },
+    {
+      "id": "C08",
+      "description": "external absent authority is deferred",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_capability_topology.py::test_standalone_external_deferred_lane_does_not_require_portable_baseline"
+      ]
+    },
+    {
+      "id": "C09",
+      "description": "external present-invalid authority fails",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_external_authority_v2.py::test_external_nonqualifying_state_publishes_strict_fail_and_stops_lane[INVALID]"
+      ]
+    },
+    {
+      "id": "C10",
+      "description": "native evidence publication is append-only/no rollback",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_capability_topology.py::test_native_bundle_rename_failure_and_foreign_occupancy_never_delete",
+        "tests/governance/test_t_g03_capability_topology.py::test_native_publication_is_no_clobber_for_receipt_and_governance"
+      ]
+    },
+    {
+      "id": "C11",
+      "description": "canonical acceptance is no-clobber/create-if-absent",
+      "test_node_ids": [
+        "tests/test_artifact_firewall.py::test_existing_destination_is_conflict_and_is_never_overwritten",
+        "tests/test_artifact_firewall.py::test_publisher_creates_canonical_manifest_and_exact_checksums"
+      ]
+    },
+    {
+      "id": "C12",
+      "description": "wrong head/context/inventory binding fails",
+      "test_node_ids": [
+        "tests/test_artifact_firewall.py::test_binding_validator_rejects_stale_head_tree_inventory_context_and_policy"
+      ]
+    },
+    {
+      "id": "C13",
+      "description": "artifact manifest/checksum mismatch fails",
+      "test_node_ids": [
+        "tests/test_artifact_firewall.py::test_validator_rejects_partial_manifest_checksum_mismatch_and_duplicates"
+      ]
+    },
+    {
+      "id": "C14",
+      "description": "symlink/path substitution fails",
+      "test_node_ids": [
+        "tests/test_artifact_firewall.py::test_publisher_rejects_unsafe_staging_and_final_parent_symlinks"
+      ]
+    },
+    {
+      "id": "C15",
+      "description": "secret-bearing evidence fails",
+      "test_node_ids": [
+        "tests/test_artifact_firewall.py::test_publisher_scans_known_secret_formats_in_every_manifested_leaf"
+      ]
+    },
+    {
+      "id": "C16",
+      "description": "portable lane cannot imply host qualification",
+      "test_node_ids": [
+        "tests/governance/test_t_g03_capability_topology.py::test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass"
+      ]
+    }
+  ]
+}

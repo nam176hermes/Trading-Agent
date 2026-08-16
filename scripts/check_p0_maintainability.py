@@ -15,6 +15,10 @@ from typing import Any
 
 SCHEMA_VERSION = "p0-maintainability-hotspots/v1"
 MANIFEST_KEYS = {"schema_version", "baseline_sha", "hotspots"}
+CHARACTERIZATION_SCHEMA_VERSION = "p0-m1-characterization-index/v1"
+CHARACTERIZATION_KEYS = {"schema_version", "baseline_sha", "contracts"}
+CHARACTERIZATION_CONTRACT_KEYS = {"id", "description", "test_node_ids"}
+REQUIRED_CHARACTERIZATION_IDS = tuple(f"C{number:02d}" for number in range(1, 17))
 HOTSPOT_KEYS = {
     "path",
     "status",
@@ -208,6 +212,67 @@ def validate_manifest(root: Path, manifest: Path) -> list[dict[str, Any]]:
     return checked
 
 
+def validate_characterization_index(root: Path, index: Path) -> list[str]:
+    if index.is_symlink() or not index.is_file():
+        fail(f"characterization index is missing or not a regular file: {index}")
+    try:
+        document = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"characterization index cannot be parsed: {error}")
+    if not isinstance(document, dict) or set(document) != CHARACTERIZATION_KEYS:
+        fail("characterization index has unknown or missing keys")
+    if document["schema_version"] != CHARACTERIZATION_SCHEMA_VERSION:
+        fail("characterization index schema_version is unsupported")
+    baseline_sha = document["baseline_sha"]
+    if not isinstance(baseline_sha, str) or not baseline_sha:
+        fail("characterization baseline SHA must be a non-empty string")
+    git(root, "cat-file", "-e", f"{baseline_sha}^{{commit}}")
+    git(root, "merge-base", "--is-ancestor", baseline_sha, "HEAD")
+
+    contracts = document["contracts"]
+    if not isinstance(contracts, list) or not contracts:
+        fail("characterization contracts must be a non-empty list")
+    ids: list[str] = []
+    nodes: list[str] = []
+    for contract in contracts:
+        if not isinstance(contract, dict) or set(contract) != CHARACTERIZATION_CONTRACT_KEYS:
+            fail("characterization contract has unknown or missing keys")
+        contract_id = contract["id"]
+        if not isinstance(contract_id, str) or not contract_id:
+            fail("characterization contract ID must be a non-empty string")
+        if contract_id in ids:
+            fail(f"duplicate characterization contract ID: {contract_id}")
+        ids.append(contract_id)
+        if not isinstance(contract["description"], str) or not contract["description"]:
+            fail(f"characterization description must be a non-empty string: {contract_id}")
+        contract_nodes = contract["test_node_ids"]
+        if not isinstance(contract_nodes, list) or not contract_nodes:
+            fail(f"characterization nodes must be a non-empty list: {contract_id}")
+        if contract_nodes != sorted(set(contract_nodes)):
+            fail(f"characterization nodes must be sorted and unique: {contract_id}")
+        for node in contract_nodes:
+            if not isinstance(node, str) or not node:
+                fail(f"characterization node must be a non-empty string: {contract_id}")
+            if "*" in node or "?" in node:
+                fail(f"wildcard characterization node is forbidden: {node}")
+            if any(character.isspace() for character in node):
+                fail(f"unsafe whitespace in characterization node: {node}")
+            source_name, separator, test_name = node.partition("::")
+            if not separator or not test_name or not source_name.startswith("tests/"):
+                fail(f"characterization node must be an exact test node: {node}")
+            _, source = checked_path(root, source_name)
+            if (
+                source.is_symlink()
+                or not source.exists()
+                or not stat.S_ISREG(source.stat().st_mode)
+            ):
+                fail(f"characterization source must be a regular file: {source_name}")
+            nodes.append(node)
+    if tuple(ids) != REQUIRED_CHARACTERIZATION_IDS:
+        fail("required characterization IDs C01-C16 must appear once in order")
+    return list(dict.fromkeys(nodes))
+
+
 def check_hotspots(hotspots: list[dict[str, Any]]) -> None:
     for hotspot in hotspots:
         path = hotspot["_path"]
@@ -232,7 +297,9 @@ def check_hotspots(hotspots: list[dict[str, Any]]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
-    parser.add_argument("--root", required=True, type=Path)
+    parser.add_argument("--root", default=Path.cwd(), type=Path)
+    parser.add_argument("--characterization-index", type=Path)
+    parser.add_argument("--print-characterization-nodes", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.root.is_symlink():
@@ -242,9 +309,19 @@ def main(argv: list[str] | None = None) -> int:
             fail(f"root must be a non-symlink directory: {args.root}")
         hotspots = validate_manifest(root, args.manifest)
         check_hotspots(hotspots)
+        if args.print_characterization_nodes and args.characterization_index is None:
+            fail("--print-characterization-nodes requires --characterization-index")
+        nodes = (
+            validate_characterization_index(root, args.characterization_index)
+            if args.characterization_index is not None
+            else []
+        )
     except PolicyError as error:
         print(f"P0_MAINTAINABILITY_GUARD_FAIL: {error}", file=sys.stderr)
         return 1
+    if args.print_characterization_nodes:
+        print(*nodes, sep="\n")
+        return 0
     print("P0_MAINTAINABILITY_GUARD_PASS")
     return 0
 
