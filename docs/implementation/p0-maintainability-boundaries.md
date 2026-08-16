@@ -71,11 +71,18 @@ The C16 characterization entry binds the exact executable governance proofs:
 - `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_variable_indirected_recursive_target`
   proves that a recursive Make target hidden behind a variable is rejected
   instead of silently disappearing from the graph.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_traverses_same_root_dash_c_target`
+  proves that `$(MAKE) -C . <target>` is resolved as a root-graph edge, while
+  only a literal directory resolving somewhere other than the repository root
+  may remain a bounded external leaf.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_bare_make_executable`
+  proves that bare or alternate Make executables are rejected in reachable
+  recipes instead of being ignored.
 - `tests/governance/test_p0_m1_p1_boundary.py::test_portable_make_graph_is_literal_and_cannot_reach_host_authority`
-  resolves every recursive Make invocation reachable from `ci` or
-  `ci-portable`, fails closed on unresolved or indirect invocations, proves
-  that `ci` has the sole prerequisite `ci-portable`, and proves that neither
-  start target can reach `ci-host-authority`. It does not execute Make.
+  accepts only explicit `$(MAKE)` calls with literal targets, folds same-root
+  `-C` calls into the graph, rejects unsupported Make command forms, and proves
+  that neither `ci` nor `ci-portable` can reach `ci-host-authority`. It does not
+  execute Make or emulate arbitrary shell expansion.
 - `tests/test_p0_ci_closure.py::test_pending_source_matrix_is_an_executable_closed_contract`
   runs the fail-closed closure validator. That validator requires the
   Foundation workflow to invoke only `make ci-portable NONINTERACTIVE=1` and
