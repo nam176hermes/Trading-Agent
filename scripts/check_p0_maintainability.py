@@ -15,10 +15,26 @@ from typing import Any
 
 SCHEMA_VERSION = "p0-maintainability-hotspots/v1"
 MANIFEST_KEYS = {"schema_version", "baseline_sha", "hotspots"}
-HOTSPOT_KEYS = {"path", "status", "baseline_bytes", "responsibility_id"}
+HOTSPOT_KEYS = {
+    "path",
+    "status",
+    "baseline_bytes",
+    "responsibility_id",
+    "baseline_first_party_imports",
+}
 FROZEN_KEYS = HOTSPOT_KEYS | {"max_net_growth_bytes"}
 STATUSES = {"FROZEN_FOR_GROWTH", "MONITOR"}
-FIRST_PARTY_ROOTS = {"apps", "services", "packages", "engines", "legacy", "native", "ops"}
+FIRST_PARTY_ROOTS = {
+    "apps",
+    "services",
+    "packages",
+    "engines",
+    "legacy",
+    "native",
+    "ops",
+    "scripts",
+    "trading_control",
+}
 
 
 class PolicyError(Exception):
@@ -138,6 +154,13 @@ def validate_manifest(root: Path, manifest: Path) -> list[dict[str, Any]]:
             fail(f"baseline bytes must be a positive integer: {path}")
         if not isinstance(hotspot["responsibility_id"], str) or not hotspot["responsibility_id"]:
             fail(f"responsibility ID must be a non-empty string: {path}")
+        declared_imports = hotspot["baseline_first_party_imports"]
+        if (
+            not isinstance(declared_imports, list)
+            or any(not isinstance(name, str) or not name for name in declared_imports)
+            or declared_imports != sorted(set(declared_imports))
+        ):
+            fail(f"baseline first-party imports must be a sorted unique string list: {path}")
         if status == "FROZEN_FOR_GROWTH" and (
             type(hotspot["max_net_growth_bytes"]) is not int
             or hotspot["max_net_growth_bytes"] < 0
@@ -146,7 +169,10 @@ def validate_manifest(root: Path, manifest: Path) -> list[dict[str, Any]]:
         actual_baseline, source = baseline_bytes(root, baseline_sha, path)
         if actual_baseline != hotspot["baseline_bytes"]:
             fail(f"baseline bytes do not match baseline object: {path}")
-        checked.append({**hotspot, "_path": candidate, "_baseline_source": source})
+        parsed_baseline_imports = sorted(first_party_imports(source))
+        if declared_imports != parsed_baseline_imports:
+            fail(f"baseline first-party imports do not match baseline object: {path}")
+        checked.append({**hotspot, "_path": candidate})
     return checked
 
 
@@ -165,9 +191,8 @@ def check_hotspots(hotspots: list[dict[str, Any]]) -> None:
         if status == "FROZEN_FOR_GROWTH":
             if delta > hotspot["max_net_growth_bytes"]:
                 fail(f"frozen hotspot growth exceeds approved ceiling: {hotspot['path']}")
-        baseline_imports = first_party_imports(hotspot["_baseline_source"])
         current_imports = first_party_imports(path.read_bytes())
-        drift = sorted(current_imports - baseline_imports)
+        drift = sorted(current_imports - set(hotspot["baseline_first_party_imports"]))
         if drift:
             fail(f"first-party import drift: {hotspot['path']}: {', '.join(drift)}")
 

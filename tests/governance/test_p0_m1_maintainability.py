@@ -21,6 +21,12 @@ EXPECTED_HOTSPOTS = [
         "baseline_bytes": 362662,
         "max_net_growth_bytes": 0,
         "responsibility_id": "P0_CAPABILITY_TOPOLOGY",
+        "baseline_first_party_imports": [
+            "scripts",
+            "scripts.validate_disposable_postgres_approval",
+            "scripts.validate_disposable_postgres_fixture_plan",
+            "trading_control.phase3b_sources",
+        ],
     },
     {
         "path": "scripts/check_artifact_firewall.py",
@@ -28,12 +34,14 @@ EXPECTED_HOTSPOTS = [
         "baseline_bytes": 141810,
         "max_net_growth_bytes": 0,
         "responsibility_id": "P0_ARTIFACT_FIREWALL",
+        "baseline_first_party_imports": ["scripts"],
     },
     {
         "path": "scripts/check_p0_ci_closure.py",
         "status": MONITOR,
         "baseline_bytes": 43300,
         "responsibility_id": "P0_CLOSURE_CHECKER",
+        "baseline_first_party_imports": ["scripts", "scripts.check_artifact_firewall"],
     },
 ]
 
@@ -67,12 +75,14 @@ def _write_fixture_manifest(
     path: str = "scripts/hotspot.py",
     baseline_bytes: int = 4,
     max_net_growth_bytes: int | None = 0,
+    baseline_first_party_imports: list[str] | None = None,
 ) -> Path:
     hotspot: dict[str, object] = {
         "path": path,
         "status": status,
         "baseline_bytes": baseline_bytes,
         "responsibility_id": "P0_FIXTURE",
+        "baseline_first_party_imports": baseline_first_party_imports or [],
     }
     if max_net_growth_bytes is not None:
         hotspot["max_net_growth_bytes"] = max_net_growth_bytes
@@ -137,6 +147,7 @@ def test_p0_maintainability_hotspot_inventory_is_a_strict_custody_manifest() -> 
             "status",
             "baseline_bytes",
             "responsibility_id",
+            "baseline_first_party_imports",
         }
         if status == FROZEN_FOR_GROWTH:
             expected_keys.add("max_net_growth_bytes")
@@ -166,6 +177,14 @@ def test_p0_maintainability_hotspot_inventory_is_a_strict_custody_manifest() -> 
         assert int(baseline_size.stdout) == hotspot["baseline_bytes"]
         assert isinstance(hotspot["responsibility_id"], str)
         assert hotspot["responsibility_id"]
+        assert isinstance(hotspot["baseline_first_party_imports"], list)
+        assert hotspot["baseline_first_party_imports"] == sorted(
+            hotspot["baseline_first_party_imports"]
+        )
+        assert all(
+            isinstance(import_name, str) and import_name
+            for import_name in hotspot["baseline_first_party_imports"]
+        )
         if status == FROZEN_FOR_GROWTH:
             assert type(hotspot["max_net_growth_bytes"]) is int
             assert hotspot["max_net_growth_bytes"] >= 0
@@ -209,6 +228,18 @@ def test_checker_rejects_baseline_object_path_absent(checker_repo: Path) -> None
     result = _run_checker(checker_repo, manifest)
     assert result.returncode != 0
     assert "baseline" in result.stderr.lower()
+
+
+def test_checker_rejects_import_baseline_not_derived_from_pinned_blob(
+    checker_repo: Path,
+) -> None:
+    """A manifest cannot silently grandfather a dependency absent from its Git blob."""
+    manifest = _write_fixture_manifest(
+        checker_repo, baseline_first_party_imports=["services.market_data"]
+    )
+    result = _run_checker(checker_repo, manifest)
+    assert result.returncode != 0
+    assert "baseline first-party imports" in result.stderr.lower()
 
 
 def test_checker_rejects_symlink_hotspot(checker_repo: Path) -> None:
@@ -298,6 +329,36 @@ def test_checker_rejects_same_size_first_party_import_drift(
     result = _run_checker(checker_repo, manifest)
     assert result.returncode != 0
     assert "first-party import drift" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "import_name",
+    [
+        "services.market_data",
+        "services.quant_research",
+        "services.agent_reasoning",
+        "packages.portfolio_strategy",
+        "engines.nautilus.runtime",
+    ],
+)
+def test_checker_rejects_new_frozen_runtime_import_without_review(
+    checker_repo: Path, import_name: str
+) -> None:
+    """Frozen topology code cannot acquire runtime-domain dependencies unreviewed."""
+    hotspot = checker_repo / "scripts/hotspot.py"
+    hotspot.write_bytes(b"import sys #\n")
+    _git(checker_repo, "add", "scripts/hotspot.py")
+    _git(checker_repo, "commit", "-qm", "stdlib import baseline")
+    hotspot.write_text(f"import {import_name}\n", encoding="utf-8")
+    manifest = _write_fixture_manifest(
+        checker_repo,
+        baseline_bytes=13,
+        max_net_growth_bytes=100,
+    )
+    result = _run_checker(checker_repo, manifest)
+    assert result.returncode != 0
+    assert "first-party import drift" in result.stderr
+    assert import_name in result.stderr
 
 
 def test_checker_has_no_automatic_policy_rewrite_mode() -> None:
