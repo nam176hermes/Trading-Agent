@@ -18,7 +18,14 @@ MANIFEST_KEYS = {"schema_version", "baseline_sha", "hotspots"}
 CHARACTERIZATION_SCHEMA_VERSION = "p0-m1-characterization-index/v1"
 CHARACTERIZATION_KEYS = {"schema_version", "baseline_sha", "contracts"}
 CHARACTERIZATION_CONTRACT_KEYS = {"id", "description", "test_node_ids"}
+REQUIRED_CHARACTERIZATION_BASELINE_SHA = "e0baa410cdcf0de4344d58ad82fd8a56788f84df"
 REQUIRED_CHARACTERIZATION_IDS = tuple(f"C{number:02d}" for number in range(1, 17))
+REQUIRED_CHARACTERIZATION_NODES = {
+    "C05": (
+        "tests/governance/test_t_g03_portable_defect_closure.py::"
+        "test_closure_proof_rejects_failure_stale_artifact_and_tampering"
+    ),
+}
 HOTSPOT_KEYS = {
     "path",
     "status",
@@ -226,6 +233,8 @@ def validate_characterization_index(root: Path, index: Path) -> list[str]:
     baseline_sha = document["baseline_sha"]
     if not isinstance(baseline_sha, str) or not baseline_sha:
         fail("characterization baseline SHA must be a non-empty string")
+    if baseline_sha != REQUIRED_CHARACTERIZATION_BASELINE_SHA:
+        fail("characterization index must use the required frozen baseline SHA")
     git(root, "cat-file", "-e", f"{baseline_sha}^{{commit}}")
     git(root, "merge-base", "--is-ancestor", baseline_sha, "HEAD")
 
@@ -250,6 +259,9 @@ def validate_characterization_index(root: Path, index: Path) -> list[str]:
             fail(f"characterization nodes must be a non-empty list: {contract_id}")
         if contract_nodes != sorted(set(contract_nodes)):
             fail(f"characterization nodes must be sorted and unique: {contract_id}")
+        required_node = REQUIRED_CHARACTERIZATION_NODES.get(contract_id)
+        if required_node is not None and required_node not in contract_nodes:
+            fail(f"{contract_id} behavioral proof is required: {required_node}")
         for node in contract_nodes:
             if not isinstance(node, str) or not node:
                 fail(f"characterization node must be a non-empty string: {contract_id}")

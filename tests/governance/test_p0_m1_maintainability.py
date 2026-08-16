@@ -60,7 +60,11 @@ CHARACTERIZATION_INDEX = (
     ROOT / "docs/implementation/p0-m1-characterization-index.json"
 )
 CHARACTERIZATION_SCHEMA_VERSION = "p0-m1-characterization-index/v1"
-EXPECTED_CHARACTERIZATION_BASELINE_SHA = "bed2af3dd048086766f329870c3b0384fa44959e"
+EXPECTED_CHARACTERIZATION_BASELINE_SHA = "e0baa410cdcf0de4344d58ad82fd8a56788f84df"
+REQUIRED_C05_FAILURE_NODE = (
+    "tests/governance/test_t_g03_portable_defect_closure.py::"
+    "test_closure_proof_rejects_failure_stale_artifact_and_tampering"
+)
 REQUIRED_CHARACTERIZATIONS = {
     "C01": "final semantic projection ignores run-custody-only identity",
     "C02": "semantic projection changes when governed meaning changes",
@@ -498,6 +502,8 @@ def test_p0_characterization_index_pins_collected_non_xfail_exact_nodes() -> Non
     ids = [contract["id"] for contract in contracts]
     assert ids == list(REQUIRED_CHARACTERIZATIONS)
     assert len(ids) == len(set(ids))
+    c05 = next(contract for contract in contracts if contract["id"] == "C05")
+    assert REQUIRED_C05_FAILURE_NODE in c05["test_node_ids"]
 
     all_nodes: list[str] = []
     for contract in contracts:
@@ -580,6 +586,21 @@ def test_checker_prints_only_unique_validated_characterization_nodes() -> None:
             "duplicate",
         ),
         (lambda document: document["contracts"].pop(), "required"),
+        (
+            lambda document: document.update(
+                baseline_sha="bed2af3dd048086766f329870c3b0384fa44959e"
+            ),
+            "required frozen baseline",
+        ),
+        (
+            lambda document: document["contracts"][4].update(
+                test_node_ids=[
+                    "tests/governance/test_t_g03_portable_defect_closure.py::"
+                    "test_portable_source_defects_are_closed_not_unresolved"
+                ]
+            ),
+            "c05 behavioral proof",
+        ),
         (
             lambda document: document["contracts"][0].update(test_node_ids=[]),
             "non-empty",
