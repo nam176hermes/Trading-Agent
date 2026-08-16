@@ -114,7 +114,10 @@
       "id": "C16",
       "description": "portable lane cannot imply host qualification",
       "test_node_ids": [
-        "tests/governance/test_t_g03_capability_topology.py::test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass"
+        "tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_variable_indirected_recursive_target",
+        "tests/governance/test_p0_m1_p1_boundary.py::test_portable_make_graph_is_literal_and_cannot_reach_host_authority",
+        "tests/governance/test_t_g03_capability_topology.py::test_native_caller_mode_accepts_deferred_portably_but_host_requires_pass",
+        "tests/test_p0_ci_closure.py::test_pending_source_matrix_is_an_executable_closed_contract"
       ]
     }
   ]

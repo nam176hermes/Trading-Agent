@@ -66,13 +66,16 @@ ci -> ci-portable -> portable source checks
                      X  ci-host-authority
 ```
 
-The boundary reuses existing executable governance proofs instead of adding a
-second Makefile parser:
+The C16 characterization entry binds the exact executable governance proofs:
 
-- `tests/test_test_all_host_split.py::test_ci_routes_only_to_the_portable_gate_and_never_host_authority`
-  parses prerequisites and recursive Make invocations, proves that `ci` has the
-  sole prerequisite `ci-portable`, and proves that neither `ci` nor
-  `ci-portable` can reach `ci-host-authority`. It does not execute host targets.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_variable_indirected_recursive_target`
+  proves that a recursive Make target hidden behind a variable is rejected
+  instead of silently disappearing from the graph.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_portable_make_graph_is_literal_and_cannot_reach_host_authority`
+  resolves every recursive Make invocation reachable from `ci` or
+  `ci-portable`, fails closed on unresolved or indirect invocations, proves
+  that `ci` has the sole prerequisite `ci-portable`, and proves that neither
+  start target can reach `ci-host-authority`. It does not execute Make.
 - `tests/test_p0_ci_closure.py::test_pending_source_matrix_is_an_executable_closed_contract`
   runs the fail-closed closure validator. That validator requires the
   Foundation workflow to invoke only `make ci-portable NONINTERACTIVE=1` and
