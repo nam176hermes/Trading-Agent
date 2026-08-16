@@ -68,6 +68,22 @@ ci -> ci-portable -> portable source checks
 
 The C16 characterization entry binds the exact executable governance proofs:
 
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_bare_make_executable`
+  proves that bare or alternate Make executables are rejected in reachable
+  recipes instead of being ignored.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_literal_make_command_alias`
+  proves that a literal `make`, `gmake`, or path to either executable cannot be
+  hidden behind a variable alias.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_make_derived_command_alias`
+  proves that assignments derived transitively from the built-in `MAKE`
+  variable cannot be invoked through `$(NAME)` or `${NAME}` aliases in a
+  reachable recipe.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_make_function_derived_command_alias`
+  proves that unsupported GNU Make function forms such as `$(value MAKE)` are
+  rejected when their result is used through a reachable command alias.
+- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_one_character_make_command_alias`
+  proves that GNU Make's one-character `$M` reference form cannot hide the
+  same Make-derived command alias.
 - `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_variable_indirected_recursive_target`
   proves that a recursive Make target hidden behind a variable is rejected
   instead of silently disappearing from the graph.
@@ -75,20 +91,16 @@ The C16 characterization entry binds the exact executable governance proofs:
   proves that `$(MAKE) -C . <target>` is resolved as a root-graph edge, while
   only a literal directory resolving somewhere other than the repository root
   may remain a bounded external leaf.
-- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_bare_make_executable`
-  proves that bare or alternate Make executables are rejected in reachable
-  recipes instead of being ignored.
-- `tests/governance/test_p0_m1_p1_boundary.py::test_make_graph_rejects_make_derived_command_alias`
-  proves that assignments derived transitively from the built-in `MAKE`
-  variable cannot be invoked through `$(NAME)` or `${NAME}` aliases in a
-  reachable recipe.
 - `tests/governance/test_p0_m1_p1_boundary.py::test_portable_make_graph_is_literal_and_cannot_reach_host_authority`
   accepts only direct built-in `$(MAKE)` calls with literal targets, folds
-  same-root `-C` calls into the graph, rejects Make-derived simple variable
-  aliases and unsupported Make executable forms, and proves that neither `ci`
-  nor `ci-portable` can reach `ci-host-authority`. The proof recognizes
-  canonical `$(NAME)` and `${NAME}` assignment references; it does not execute
-  Make or claim to emulate GNU Make functions or arbitrary shell expansion.
+  same-root `-C` calls into the graph, and proves that neither `ci` nor
+  `ci-portable` can reach `ci-host-authority`. Alias analysis permits only a
+  fixed literal command or one simple `$(NAME)`, `${NAME}`, or `$N` reference
+  per assignment value. It rejects literal Make executables, aliases derived
+  transitively from `MAKE`, and any reachable alias whose value uses a GNU Make
+  function, composed/dynamic expansion, repeated assignment, or shell-dollar
+  form. This is conservative source grammar: it does not execute Make or claim
+  to emulate GNU Make functions or arbitrary shell expansion.
 - `tests/test_p0_ci_closure.py::test_pending_source_matrix_is_an_executable_closed_contract`
   runs the fail-closed closure validator. That validator requires the
   Foundation workflow to invoke only `make ci-portable NONINTERACTIVE=1` and
