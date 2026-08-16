@@ -7,20 +7,33 @@
       "status": "FROZEN_FOR_GROWTH",
       "baseline_bytes": 362662,
       "max_net_growth_bytes": 0,
-      "responsibility_id": "P0_CAPABILITY_TOPOLOGY"
+      "responsibility_id": "P0_CAPABILITY_TOPOLOGY",
+      "baseline_first_party_imports": [
+        "scripts",
+        "scripts.validate_disposable_postgres_approval",
+        "scripts.validate_disposable_postgres_fixture_plan",
+        "trading_control.phase3b_sources"
+      ]
     },
     {
       "path": "scripts/check_artifact_firewall.py",
       "status": "FROZEN_FOR_GROWTH",
       "baseline_bytes": 141810,
       "max_net_growth_bytes": 0,
-      "responsibility_id": "P0_ARTIFACT_FIREWALL"
+      "responsibility_id": "P0_ARTIFACT_FIREWALL",
+      "baseline_first_party_imports": [
+        "scripts"
+      ]
     },
     {
       "path": "scripts/check_p0_ci_closure.py",
       "status": "MONITOR",
       "baseline_bytes": 43300,
-      "responsibility_id": "P0_CLOSURE_CHECKER"
+      "responsibility_id": "P0_CLOSURE_CHECKER",
+      "baseline_first_party_imports": [
+        "scripts",
+        "scripts.check_artifact_firewall"
+      ]
     }
   ]
 }
