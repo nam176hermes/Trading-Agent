@@ -7534,6 +7534,329 @@ def _publish_external_failure_marker(
     return marker
 
 
+def _is_private_pass_cleanup_parent(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return (
+        stat.S_ISDIR(info.st_mode)
+        and not stat.S_ISLNK(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and info.st_gid == os.getegid()
+        and stat.S_IMODE(info.st_mode) == 0o700
+    )
+
+
+@contextmanager
+def _retained_package6_cleanup_parent(baseline: dict[str, object]):
+    """Bind the direct-target fallback to its sealed Package 6 build root."""
+    trusted_tmp = Path("/tmp")
+    trusted_tmp_descriptor = -1
+    with _retained_sealed_custody(baseline) as (sealed, custody_descriptor):
+        raw_path = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
+        if not raw_path:
+            raise TopologyError("verified PASS staging cleanup authority is absent")
+        custody_path = Path(raw_path)
+        build_root = custody_path.parent.parent
+        python_root = custody_path.parent
+        if (
+            not custody_path.is_absolute()
+            or custody_path.parts[:2] != ("/", "tmp")
+            or len(custody_path.parts) != 5
+            or python_root.name != "python"
+            or build_root.parent != trusted_tmp
+            or not re.fullmatch(
+                r"package6-custodian-(?:native-capabilities|external-authorities|portable-topology)\.[A-Za-z0-9_]{6,32}",
+                build_root.name,
+            )
+            or not re.fullmatch(
+                r"_package6_fd_custody[A-Za-z0-9._-]*\.so",
+                custody_path.name,
+            )
+        ):
+            raise TopologyError("verified PASS staging cleanup authority is malformed")
+        try:
+            trusted_before = trusted_tmp.lstat()
+            if (
+                not stat.S_ISDIR(trusted_before.st_mode)
+                or stat.S_ISLNK(trusted_before.st_mode)
+                or trusted_before.st_uid != 0
+                or trusted_before.st_gid != 0
+                or stat.S_IMODE(trusted_before.st_mode) != 0o1777
+            ):
+                raise TopologyError(
+                    "verified PASS staging cleanup ancestry is unsafe",
+                )
+            trusted_tmp_descriptor = os.open(
+                trusted_tmp,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+            if (
+                _stable_object_identity(os.fstat(trusted_tmp_descriptor))
+                != _stable_object_identity(trusted_before)
+            ):
+                raise TopologyError(
+                    "verified PASS staging cleanup ancestry changed",
+                )
+            with _retained_private_directory(
+                build_root, label="verified PASS staging Package 6 build root",
+            ) as (build_descriptor, _), _retained_private_directory(
+                python_root, label="verified PASS staging Package 6 python root",
+            ) as (python_descriptor, _):
+                build_info = os.stat(
+                    build_root.name, dir_fd=trusted_tmp_descriptor,
+                    follow_symlinks=False,
+                )
+                python_info = os.stat(
+                    python_root.name, dir_fd=build_descriptor,
+                    follow_symlinks=False,
+                )
+                custody_info = os.stat(
+                    custody_path.name, dir_fd=python_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    _stable_object_identity(build_info)
+                    != _stable_object_identity(os.fstat(build_descriptor))
+                    or _stable_object_identity(python_info)
+                    != _stable_object_identity(os.fstat(python_descriptor))
+                    or _artifact_identity(custody_info)
+                    != _artifact_identity(os.fstat(custody_descriptor))
+                    or _custody_policy_from_artifact(
+                        custody_info, _digest_fd(custody_descriptor),
+                    ) != sealed
+                ):
+                    raise TopologyError(
+                        "verified PASS staging cleanup authority changed",
+                    )
+                yield build_root, build_descriptor, trusted_tmp_descriptor
+                if (
+                    _stable_object_identity(os.fstat(trusted_tmp_descriptor))
+                    != _stable_object_identity(trusted_before)
+                    or _stable_object_identity(os.stat(
+                        build_root.name, dir_fd=trusted_tmp_descriptor,
+                        follow_symlinks=False,
+                    )) != _stable_object_identity(build_info)
+                    or _stable_object_identity(os.stat(
+                        python_root.name, dir_fd=build_descriptor,
+                        follow_symlinks=False,
+                    )) != _stable_object_identity(python_info)
+                    or _artifact_identity(os.stat(
+                        custody_path.name, dir_fd=python_descriptor,
+                        follow_symlinks=False,
+                    )) != _artifact_identity(custody_info)
+                ):
+                    raise TopologyError(
+                        "verified PASS staging cleanup authority changed",
+                    )
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError(
+                "verified PASS staging cleanup authority is unsafe",
+            ) from exc
+        finally:
+            if trusted_tmp_descriptor >= 0:
+                os.close(trusted_tmp_descriptor)
+
+
+@contextmanager
+def _retained_pass_cleanup_parent(
+    evidence_root: Path, baseline: dict[str, object],
+):
+    candidate = evidence_root.parent
+    if _is_private_pass_cleanup_parent(candidate):
+        with _retained_private_directory(
+            candidate, label="verified PASS staging cleanup parent",
+        ) as (descriptor, _):
+            yield candidate, descriptor, descriptor
+        return
+    if candidate != Path("/tmp"):
+        raise TopologyError("verified PASS staging cleanup evidence ancestry is unsafe")
+    with _retained_package6_cleanup_parent(baseline) as retained:
+        yield retained
+
+
+def _cleanup_verified_pass_staging(
+    *, baseline: dict[str, object], topology_root: Path, execution_root: Path,
+    kind: str, code: str, governance_raw: bytes,
+) -> None:
+    """Atomically retain verified PASS staging outside the governed topology."""
+    prefix = f".{kind}-execution-{code}-"
+    token = execution_root.name.removeprefix(prefix)
+    evidence_root = topology_root.parent
+    if (
+        kind not in {"native", "external"}
+        or execution_root.parent != topology_root
+        or not topology_root.is_absolute()
+        or evidence_root == evidence_root.parent
+        or execution_root.name != f"{prefix}{token}"
+        or len(token) != 32
+        or any(character not in "0123456789abcdef" for character in token)
+    ):
+        raise TopologyError("verified PASS staging root is malformed")
+    leaf_names = (
+        f".{NATIVE_BUNDLE_GOVERNANCE}.executing", NATIVE_BUNDLE_GOVERNANCE,
+    )
+    def leaf_identity(info: os.stat_result) -> tuple[int, ...]:
+        return (*_stable_object_identity(info), info.st_nlink, info.st_size)
+
+    def root_identity(info: os.stat_result) -> tuple[int, ...]:
+        return (*_stable_object_identity(info), info.st_nlink)
+
+    execution_descriptor = -1
+    leaf_descriptors: list[tuple[str, int, tuple[int, ...]]] = []
+    with _retained_pass_cleanup_parent(
+        evidence_root, baseline,
+    ) as (
+        _cleanup_parent, cleanup_parent_descriptor, evidence_parent_descriptor,
+    ), _retained_private_directory(
+        evidence_root, label="verified PASS staging evidence root",
+    ) as (evidence_descriptor, _), _retained_private_directory(
+        topology_root, label="verified PASS staging topology root",
+    ) as (topology_descriptor, _):
+        try:
+            evidence_info = os.fstat(evidence_descriptor)
+            topology_info = os.fstat(topology_descriptor)
+            if (
+                _stable_object_identity(os.stat(
+                    evidence_root.name, dir_fd=evidence_parent_descriptor,
+                    follow_symlinks=False,
+                )) != _stable_object_identity(evidence_info)
+                or _stable_object_identity(os.stat(
+                    topology_root.name, dir_fd=evidence_descriptor,
+                    follow_symlinks=False,
+                )) != _stable_object_identity(topology_info)
+            ):
+                raise TopologyError("verified PASS staging cleanup lineage changed")
+            before = os.stat(
+                execution_root.name, dir_fd=topology_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or before.st_gid != os.getegid()
+                or before.st_nlink != 2
+                or stat.S_IMODE(before.st_mode) != 0o700
+            ):
+                raise TopologyError("verified PASS staging root is unsafe")
+            execution_descriptor = os.open(
+                execution_root.name,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=topology_descriptor,
+            )
+            retained_root_identity = root_identity(
+                os.fstat(execution_descriptor),
+            )
+            if retained_root_identity != root_identity(before):
+                raise TopologyError("verified PASS staging root identity changed")
+            if tuple(sorted(os.listdir(execution_descriptor))) != tuple(sorted(leaf_names)):
+                raise TopologyError("verified PASS staging shape is unexpected")
+            for name in leaf_names:
+                descriptor, _ = _open_private_artifact_leaf(
+                    execution_descriptor, name,
+                    label="verified PASS staging leaf",
+                )
+                identity = leaf_identity(os.fstat(descriptor))
+                leaf_descriptors.append((name, descriptor, identity))
+                if _read_descriptor_bytes(descriptor) != governance_raw:
+                    raise TopologyError("verified PASS staging content drifted")
+            if (
+                cleanup_parent_descriptor == topology_descriptor
+                or evidence_info.st_dev != topology_info.st_dev
+                or topology_info.st_dev != before.st_dev
+                or os.fstat(cleanup_parent_descriptor).st_dev != before.st_dev
+            ):
+                raise TopologyError("verified PASS staging relocation is not atomic")
+            if (
+                root_identity(os.fstat(execution_descriptor))
+                != retained_root_identity
+                or root_identity(os.stat(
+                    execution_root.name, dir_fd=topology_descriptor,
+                    follow_symlinks=False,
+                )) != retained_root_identity
+            ):
+                raise TopologyError("verified PASS staging root identity changed")
+            for name, descriptor, identity in leaf_descriptors:
+                if (
+                    leaf_identity(os.fstat(descriptor)) != identity
+                    or leaf_identity(os.stat(
+                        name, dir_fd=execution_descriptor,
+                        follow_symlinks=False,
+                    )) != identity
+                ):
+                    raise TopologyError("verified PASS staging leaf identity changed")
+            retained_name = (
+                f".pass-staging-cleanup-{kind}-{code}-{token}-"
+                f"{secrets.token_hex(16)}"
+            )
+            try:
+                os.stat(
+                    retained_name, dir_fd=cleanup_parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise TopologyError("verified PASS staging cleanup destination exists")
+            os.fsync(execution_descriptor)
+            for _, descriptor, _ in leaf_descriptors:
+                os.fsync(descriptor)
+            _renameat2_noreplace(
+                topology_descriptor, execution_root.name,
+                cleanup_parent_descriptor, retained_name,
+            )
+            os.fsync(topology_descriptor)
+            os.fsync(cleanup_parent_descriptor)
+            try:
+                os.stat(
+                    execution_root.name, dir_fd=topology_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise TopologyError("verified PASS staging relocation is ambiguous")
+            relocated = os.stat(
+                retained_name, dir_fd=cleanup_parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                root_identity(os.fstat(execution_descriptor))
+                != retained_root_identity
+                or root_identity(relocated) != retained_root_identity
+                or tuple(sorted(os.listdir(execution_descriptor)))
+                != tuple(sorted(leaf_names))
+            ):
+                raise TopologyError("verified PASS staging relocation changed")
+            for name, descriptor, identity in leaf_descriptors:
+                if (
+                    leaf_identity(os.fstat(descriptor)) != identity
+                    or leaf_identity(os.stat(
+                        name, dir_fd=execution_descriptor,
+                        follow_symlinks=False,
+                    )) != identity
+                    or _read_descriptor_bytes(descriptor) != governance_raw
+                ):
+                    raise TopologyError("verified PASS staging relocation changed")
+            os.fsync(execution_descriptor)
+            os.fsync(topology_descriptor)
+            os.fsync(cleanup_parent_descriptor)
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("verified PASS staging cleanup failed") from exc
+        finally:
+            for _, descriptor, _ in reversed(leaf_descriptors):
+                os.close(descriptor)
+            if execution_descriptor >= 0:
+                os.close(execution_descriptor)
+
+
 def _execute_native_pass_transaction(
     *, baseline: dict[str, object], expected: tuple[str, ...],
     evidence_root: Path, context: dict[str, object], code: str,
@@ -7564,10 +7887,16 @@ def _execute_native_pass_transaction(
             session=session, outcome="PASS", selected_test_count=selected_count,
             passed=selected_count, failed=0, unavailable=0,
         )
-        return _publish_native_receipt_transaction(
+        marker = _publish_native_receipt_transaction(
             receipt=passed_receipt, evidence_root=evidence_root,
             session=session, governance_raw=governance_raw,
         )
+        _cleanup_verified_pass_staging(
+            baseline=baseline,
+            topology_root=topology_root, execution_root=execution_root,
+            kind="native", code=code, governance_raw=governance_raw,
+        )
+        return marker
     except Exception as exc:
         if os.path.lexists(topology_root / f"{code}.json"):
             raise
@@ -7633,10 +7962,16 @@ def _execute_external_pass_transaction(
             session=session, outcome="PASS", selected_test_count=selected_count,
             passed=selected_count, failed=0, unavailable=0,
         )
-        return _publish_external_receipt_transaction(
+        marker = _publish_external_receipt_transaction(
             receipt=passed_receipt, evidence_root=evidence_root,
             session=session, governance_raw=governance_raw,
         )
+        _cleanup_verified_pass_staging(
+            baseline=baseline,
+            topology_root=topology_root, execution_root=execution_root,
+            kind="external", code=code, governance_raw=governance_raw,
+        )
+        return marker
     except Exception as exc:
         if os.path.lexists(topology_root / f"{code}.json"):
             raise

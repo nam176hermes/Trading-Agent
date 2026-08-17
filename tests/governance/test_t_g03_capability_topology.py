@@ -155,6 +155,7 @@ def _passing_exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
         }),
         encoding="utf-8",
     )
+    report.chmod(0o600)
     return nodes
 
 
@@ -1430,6 +1431,11 @@ def test_native_pass_transaction_never_deletes_and_publishes_exact_fail_before_m
             assert topology.parse_receipt(
                 (bundle / "receipt.json").read_bytes(),
             )["outcome"] == "PASS"
+            execution_roots = list(topology_root.glob(".native-execution-*"))
+            assert len(execution_roots) == 1
+            assert {path.name for path in execution_roots[0].iterdir()} == {
+                ".governance.json.executing", "governance.json",
+            }
             return
         receipt = topology.parse_receipt(fail_path.read_bytes())
         assert receipt["outcome"] == "FAIL"
@@ -2439,6 +2445,769 @@ def test_fully_valid_external_fixtures_reach_valid_without_network(tmp_path: Pat
         _write_direct(uv, "#!/bin/sh\nif [ \"$1\" = --version ]; then printf 'fixture-uv 1.0\\n'; fi\n", executable=True)
         expected = topology.hashlib.sha256(uv.read_bytes()).hexdigest()
         assert topology._external_preflight("EXT-LEGACY-UV-AUTHORITY", uv_path=uv, legacy_root=legacy, expected_uv_sha256=expected, expected_uv_version="fixture-uv 1.0") == ("VALID", "AUTHORITY_COMPLETE_VALIDATED")
+
+
+def _prepared_pass_transaction(
+    monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> tuple[Path, Path, str, dict[str, object], dict[str, object]]:
+    run_id = "31641536482"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    monkeypatch.setenv("GITHUB_RUN_ID", run_id)
+    root = Path(raw)
+    evidence = root / "evidence"
+    context_path = topology._capture_foundation_context(
+        evidence, clock=lambda: datetime(2026, 8, 13, tzinfo=timezone.utc),
+    )
+    topology.reserve_topology_evidence(
+        evidence, run_id=run_id, head_sha=head,
+        foundation_context_path=context_path,
+    )
+    _seal_portable_root_baseline(
+        monkeypatch, evidence, raw, run_id=run_id, head_sha=head,
+        foundation_context_path=context_path,
+    )
+    context = topology.load_foundation_context(
+        context_path, run_id=run_id, head_sha=head,
+    )
+    baseline = topology.load_portable_root_baseline(
+        inventory=Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        evidence_root=evidence, run_id=run_id, head_sha=head,
+        foundation_context_path=context_path,
+    )
+    return root, evidence, head, context, baseline
+
+
+def _assert_relocated_pass_staging(
+    *, cleanup_parent: Path, kind: str, code: str,
+    source_identity: tuple[int, int, int, int, int], governance_raw: bytes,
+) -> Path:
+    prefix = f".pass-staging-cleanup-{kind}-{code}-"
+    retained = [
+        path for path in cleanup_parent.iterdir()
+        if path.name.startswith(prefix)
+    ]
+    assert len(retained) == 1
+    tokens = retained[0].name.removeprefix(prefix).split("-")
+    assert len(tokens) == 2
+    assert all(
+        len(token) == 32
+        and all(character in "0123456789abcdef" for character in token)
+        for token in tokens
+    )
+    assert topology._stable_object_identity(retained[0].lstat()) == source_identity
+    assert stat.S_IMODE(retained[0].stat().st_mode) == 0o700
+    assert {path.name for path in retained[0].iterdir()} == {
+        ".governance.json.executing", "governance.json",
+    }
+    for leaf in retained[0].iterdir():
+        info = leaf.lstat()
+        assert stat.S_ISREG(info.st_mode)
+        assert stat.S_IMODE(info.st_mode) == 0o600
+        assert info.st_nlink == 1
+        assert leaf.read_bytes() == governance_raw
+    return retained[0]
+
+
+@pytest.mark.parametrize(
+    ("kind", "code"),
+    (
+        ("native", "NATIVE-BWRAP-OS-SANDBOX"),
+        ("external", "EXT-PHASE3B-CORPUS"),
+    ),
+)
+def test_direct_target_pass_cleanup_uses_sealed_package6_build_root(
+    monkeypatch: pytest.MonkeyPatch, kind: str, code: str,
+) -> None:
+    """Break caught: the supported /tmp evidence default has no private parent."""
+    with (
+        tempfile.TemporaryDirectory(
+            prefix="trading-agent-test-evidence.", dir="/tmp",
+        ) as evidence_raw,
+        tempfile.TemporaryDirectory(
+            prefix="package6-custodian-native-capabilities.", dir="/tmp",
+        ) as build_raw,
+    ):
+        evidence = Path(evidence_raw)
+        topology_root = evidence / "capability-topology"
+        topology_root.mkdir(mode=0o700)
+        token = "0" * 32
+        execution_root = topology_root / f".{kind}-execution-{code}-{token}"
+        execution_root.mkdir(mode=0o700)
+        governance_raw = b'{"verified":"governance"}'
+        for name in (".governance.json.executing", "governance.json"):
+            leaf = execution_root / name
+            leaf.write_bytes(governance_raw)
+            leaf.chmod(0o600)
+
+        build_root = Path(build_raw)
+        python_root = build_root / "python"
+        python_root.mkdir(mode=0o700)
+        extension = python_root / "_package6_fd_custody.cpython-311-x86_64-linux-gnu.so"
+        extension.write_bytes(b"sealed package 6 custody")
+        extension.chmod(0o600)
+        digest = hashlib.sha256(extension.read_bytes()).hexdigest()
+        baseline = {
+            "collector_policy": topology._custody_policy_from_artifact(
+                extension.lstat(), digest,
+            ),
+        }
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+
+        source_identity = topology._stable_object_identity(
+            execution_root.lstat(),
+        )
+        topology._cleanup_verified_pass_staging(
+            baseline=baseline, topology_root=topology_root,
+            execution_root=execution_root, kind=kind, code=code,
+            governance_raw=governance_raw,
+        )
+
+        assert not execution_root.exists()
+        _assert_relocated_pass_staging(
+            cleanup_parent=build_root, kind=kind, code=code,
+            source_identity=source_identity, governance_raw=governance_raw,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("forged-env", "escape", "symlink", "build-mode", "python-mode", "owner"),
+)
+def test_direct_target_cleanup_parent_rejects_forged_package6_authority(
+    monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    """Break caught: fallback selection trusts an unsealed path or unsafe parent."""
+    with (
+        tempfile.TemporaryDirectory(
+            prefix="trading-agent-test-evidence.", dir="/tmp",
+        ) as evidence_raw,
+        tempfile.TemporaryDirectory(
+            prefix="package6-custodian-native-capabilities.", dir="/tmp",
+        ) as build_raw,
+    ):
+        evidence = Path(evidence_raw)
+        topology_root = evidence / "capability-topology"
+        topology_root.mkdir(mode=0o700)
+        code = "NATIVE-BWRAP-OS-SANDBOX"
+        execution_root = topology_root / f".native-execution-{code}-{'1' * 32}"
+        execution_root.mkdir(mode=0o700)
+        governance_raw = b'{"verified":"governance"}'
+        for name in (".governance.json.executing", "governance.json"):
+            leaf = execution_root / name
+            leaf.write_bytes(governance_raw)
+            leaf.chmod(0o600)
+
+        build_root = Path(build_raw)
+        python_root = build_root / "python"
+        python_root.mkdir(mode=0o700)
+        extension = python_root / "_package6_fd_custody.cpython-311-x86_64-linux-gnu.so"
+        extension.write_bytes(b"sealed package 6 custody")
+        extension.chmod(0o600)
+        digest = hashlib.sha256(extension.read_bytes()).hexdigest()
+        baseline = {
+            "collector_policy": topology._custody_policy_from_artifact(
+                extension.lstat(), digest,
+            ),
+        }
+        selected_path = str(extension)
+        if mutation == "forged-env":
+            forged = evidence / "forged-custody.so"
+            forged.write_bytes(extension.read_bytes())
+            forged.chmod(0o600)
+            selected_path = str(forged)
+        elif mutation == "escape":
+            selected_path = str(python_root / ".." / "python" / extension.name)
+        elif mutation == "symlink":
+            link = build_root / "python-link"
+            link.symlink_to(python_root.name)
+            selected_path = str(link / extension.name)
+        elif mutation == "build-mode":
+            build_root.chmod(0o750)
+        elif mutation == "python-mode":
+            python_root.chmod(0o750)
+        elif mutation == "owner":
+            real_geteuid = topology.os.geteuid
+            monkeypatch.setattr(topology.os, "geteuid", lambda: real_geteuid() + 1)
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", selected_path)
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+
+        with pytest.raises(topology.TopologyError):
+            topology._cleanup_verified_pass_staging(
+                baseline=baseline, topology_root=topology_root,
+                execution_root=execution_root, kind="native", code=code,
+                governance_raw=governance_raw,
+            )
+        assert execution_root.is_dir()
+        assert not list(build_root.glob(".pass-staging-cleanup-*"))
+
+
+@pytest.mark.skipif(not Path("/dev/shm").is_dir(), reason="no second tmpfs device")
+def test_direct_target_cleanup_parent_rejects_cross_device_relocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: fallback cleanup silently degrades to a non-atomic move."""
+    with (
+        tempfile.TemporaryDirectory(
+            prefix="trading-agent-test-evidence.", dir="/dev/shm",
+        ) as evidence_raw,
+        tempfile.TemporaryDirectory(
+            prefix="package6-custodian-native-capabilities.", dir="/tmp",
+        ) as build_raw,
+    ):
+        evidence = Path(evidence_raw)
+        topology_root = evidence / "capability-topology"
+        topology_root.mkdir(mode=0o700)
+        code = "NATIVE-BWRAP-OS-SANDBOX"
+        execution_root = topology_root / f".native-execution-{code}-{'2' * 32}"
+        execution_root.mkdir(mode=0o700)
+        governance_raw = b'{"verified":"governance"}'
+        for name in (".governance.json.executing", "governance.json"):
+            leaf = execution_root / name
+            leaf.write_bytes(governance_raw)
+            leaf.chmod(0o600)
+        build_root = Path(build_raw)
+        python_root = build_root / "python"
+        python_root.mkdir(mode=0o700)
+        extension = python_root / "_package6_fd_custody.cpython-311-x86_64-linux-gnu.so"
+        extension.write_bytes(b"sealed package 6 custody")
+        extension.chmod(0o600)
+        digest = hashlib.sha256(extension.read_bytes()).hexdigest()
+        baseline = {
+            "collector_policy": topology._custody_policy_from_artifact(
+                extension.lstat(), digest,
+            ),
+        }
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+
+        with pytest.raises(topology.TopologyError, match="ancestry is unsafe"):
+            topology._cleanup_verified_pass_staging(
+                baseline=baseline, topology_root=topology_root,
+                execution_root=execution_root, kind="native", code=code,
+                governance_raw=governance_raw,
+            )
+        assert execution_root.is_dir()
+        assert not list(build_root.glob(".pass-staging-cleanup-*"))
+
+
+def test_native_pass_transaction_relocates_only_verified_publisher_staging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: accepted native PASS leaves its private execution root in raw evidence."""
+    _patch_native_identity_postcheck(monkeypatch)
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root, evidence, _, context, baseline = _prepared_pass_transaction(
+            monkeypatch, raw,
+        )
+        rows = topology.load_inventory(
+            Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        )
+        code = "NATIVE-BWRAP-OS-SANDBOX"
+        expected = topology._expected_rows(rows, code)[1]
+        executed_governance: list[bytes] = []
+        execution_identities: list[tuple[int, int, int, int, int]] = []
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            selected = _passing_exact(nodes, report)
+            executed_governance.append(report.read_bytes())
+            execution_identities.append(
+                topology._stable_object_identity(report.parent.lstat()),
+            )
+            return selected
+
+        factory = _available_native_probe_factory(root)
+        with factory(code) as session:
+            marker = topology._execute_native_pass_transaction(
+                baseline=baseline, expected=expected, evidence_root=evidence,
+                context=context, code=code, session=session, exact_runner=exact,
+            )
+
+        topology_root = evidence / "capability-topology"
+        assert not list(topology_root.glob(".native-execution-*"))
+        _assert_relocated_pass_staging(
+            cleanup_parent=root, kind="native", code=code,
+            source_identity=execution_identities[0],
+            governance_raw=executed_governance[0],
+        )
+        assert marker.read_bytes() == (marker.with_suffix(".artifacts") / "receipt.json").read_bytes()
+        assert (marker.with_suffix(".artifacts") / "governance.json").read_bytes() == executed_governance[0]
+        receipt, selected = topology.validate_native_artifact_set(
+            marker, rows=rows, foundation_context=context,
+            sealed_custody=topology._validate_custody_policy(
+                baseline["collector_policy"],
+            ),
+        )
+        assert receipt["outcome"] == "PASS"
+        assert selected == expected
+
+
+def test_external_pass_transaction_relocates_only_verified_publisher_staging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: accepted external PASS leaves its private execution root in raw evidence."""
+    with (
+        tempfile.TemporaryDirectory(dir="/tmp") as raw,
+        _safe_authority_tempdir() as authority_raw,
+    ):
+        root, evidence, _, context, baseline = _prepared_pass_transaction(
+            monkeypatch, raw,
+        )
+        rows = topology.load_inventory(
+            Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        )
+        code = "EXT-PHASE3B-CORPUS"
+        expected = topology._expected_rows(rows, code)[1]
+        corpus = Path(authority_raw) / "corpus"
+        _complete_corpus_fixture(corpus)
+        executed_governance: list[bytes] = []
+        execution_identities: list[tuple[int, int, int, int, int]] = []
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            selected = _passing_exact(nodes, report)
+            executed_governance.append(report.read_bytes())
+            execution_identities.append(
+                topology._stable_object_identity(report.parent.lstat()),
+            )
+            return selected
+
+        with topology._retained_external_authority(
+            code, corpus_root=corpus,
+            corpus_validator=lambda _root: _valid_phase3b_analysis(),
+        ) as session:
+            assert session.state == "VALID"
+            marker = topology._execute_external_pass_transaction(
+                baseline=baseline, expected=expected, evidence_root=evidence,
+                context=context, code=code, session=session, exact_runner=exact,
+            )
+
+        topology_root = evidence / "capability-topology"
+        assert not list(topology_root.glob(".external-execution-*"))
+        _assert_relocated_pass_staging(
+            cleanup_parent=root, kind="external", code=code,
+            source_identity=execution_identities[0],
+            governance_raw=executed_governance[0],
+        )
+        assert marker.read_bytes() == (marker.with_suffix(".artifacts") / "receipt.json").read_bytes()
+        assert (marker.with_suffix(".artifacts") / "governance.json").read_bytes() == executed_governance[0]
+        receipt, selected = topology.validate_external_artifact_set(
+            marker, rows=rows, foundation_context=context,
+            sealed_custody=topology._validate_custody_policy(
+                baseline["collector_policy"],
+            ),
+        )
+        assert receipt["outcome"] == "PASS"
+        assert selected == expected
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("unexpected", "type", "owner", "mode", "symlink", "hardlink", "content"),
+)
+def test_verified_pass_cleanup_rejects_staging_shape_mutation_and_retains_evidence(
+    monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    """Break caught: success cleanup deletes staging it did not prove publisher-owned."""
+    _patch_native_identity_postcheck(monkeypatch)
+    real_geteuid = topology.os.geteuid
+    with tempfile.TemporaryDirectory(dir="/tmp") as raw:
+        root, evidence, _, context, baseline = _prepared_pass_transaction(
+            monkeypatch, raw,
+        )
+        rows = topology.load_inventory(
+            Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        )
+        code = "NATIVE-BWRAP-OS-SANDBOX"
+        expected = topology._expected_rows(rows, code)[1]
+        execution_roots: list[Path] = []
+        executed_governance: list[bytes] = []
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            selected = _passing_exact(nodes, report)
+            execution_roots.append(report.parent)
+            executed_governance.append(report.read_bytes())
+            return selected
+
+        real_publish = topology._publish_native_receipt_transaction
+
+        def publish_then_mutate(**kwargs: object) -> Path:
+            marker = real_publish(**kwargs)
+            execution_root = execution_roots[0]
+            provisional = execution_root / ".governance.json.executing"
+            governance = execution_root / "governance.json"
+            if mutation == "unexpected":
+                foreign = execution_root / "unexpected"
+                foreign.write_bytes(b"foreign")
+                foreign.chmod(0o600)
+            elif mutation == "type":
+                provisional.unlink()
+                provisional.mkdir(mode=0o700)
+            elif mutation == "owner":
+                monkeypatch.setattr(
+                    topology.os, "geteuid", lambda: real_geteuid() + 1,
+                )
+            elif mutation == "mode":
+                provisional.chmod(0o640)
+            elif mutation == "symlink":
+                provisional.unlink()
+                provisional.symlink_to(governance.name)
+            elif mutation == "hardlink":
+                provisional.unlink()
+                os.link(governance, provisional)
+            else:
+                governance.write_bytes(b"foreign governance content")
+            return marker
+
+        monkeypatch.setattr(
+            topology, "_publish_native_receipt_transaction", publish_then_mutate,
+        )
+        factory = _available_native_probe_factory(root)
+        with factory(code) as session:
+            with pytest.raises(topology.TopologyError, match="PASS staging"):
+                topology._execute_native_pass_transaction(
+                    baseline=baseline, expected=expected,
+                    evidence_root=evidence, context=context, code=code,
+                    session=session, exact_runner=exact,
+                )
+        monkeypatch.setattr(topology.os, "geteuid", real_geteuid)
+
+        execution_root = execution_roots[0]
+        assert execution_root.is_dir()
+        marker = evidence / f"capability-topology/{code}.json"
+        bundle = marker.with_suffix(".artifacts")
+        assert marker.read_bytes() == (bundle / "receipt.json").read_bytes()
+        assert (bundle / "governance.json").read_bytes() == executed_governance[0]
+        receipt, selected = topology.validate_native_artifact_set(
+            marker, rows=rows, foundation_context=context,
+            sealed_custody=topology._validate_custody_policy(
+                baseline["collector_policy"],
+            ),
+        )
+        assert receipt["outcome"] == "PASS"
+        assert selected == expected
+
+
+@pytest.mark.parametrize("kind", ("native", "external"))
+@pytest.mark.parametrize(
+    "race",
+    (
+        "source-replacement", "destination-occupancy",
+        "destination-replacement", "source-reappearance", "leaf-replacement",
+    ),
+)
+def test_verified_pass_cleanup_relocation_fails_closed_on_same_uid_race(
+    monkeypatch: pytest.MonkeyPatch, kind: str, race: str,
+) -> None:
+    """Break caught: a same-UID race substitutes a pathname during PASS cleanup."""
+    _patch_native_identity_postcheck(monkeypatch)
+    with (
+        tempfile.TemporaryDirectory(dir="/tmp") as raw,
+        _safe_authority_tempdir() as authority_raw,
+    ):
+        root, evidence, _, context, baseline = _prepared_pass_transaction(
+            monkeypatch, raw,
+        )
+        rows = topology.load_inventory(
+            Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        )
+        code = (
+            "NATIVE-BWRAP-OS-SANDBOX"
+            if kind == "native" else "EXT-PHASE3B-CORPUS"
+        )
+        expected = topology._expected_rows(rows, code)[1]
+        topology_root = evidence / "capability-topology"
+        execution_roots: list[Path] = []
+        execution_identities: list[tuple[int, int, int, int, int]] = []
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            selected = _passing_exact(nodes, report)
+            execution_roots.append(report.parent)
+            execution_identities.append(
+                topology._stable_object_identity(report.parent.lstat()),
+            )
+            return selected
+
+        real_rename = topology._renameat2_noreplace
+        raced = False
+        retained_path: Path | None = None
+        foreign_path: Path | None = None
+
+        def rename_with_race(
+            old_directory_descriptor: int, old_name: str,
+            new_directory_descriptor: int, new_name: str,
+        ) -> None:
+            nonlocal raced, retained_path, foreign_path
+            is_relocation = (
+                execution_roots
+                and old_name == execution_roots[0].name
+                and old_directory_descriptor != new_directory_descriptor
+            )
+            if raced or not is_relocation:
+                real_rename(
+                    old_directory_descriptor, old_name,
+                    new_directory_descriptor, new_name,
+                )
+                return
+            raced = True
+            if race == "source-replacement":
+                retained_name = f".retained-raced-source-{kind}"
+                os.rename(
+                    old_name, retained_name,
+                    src_dir_fd=old_directory_descriptor,
+                    dst_dir_fd=old_directory_descriptor,
+                )
+                os.mkdir(old_name, mode=0o700, dir_fd=old_directory_descriptor)
+                retained_path = topology_root / retained_name
+                real_rename(
+                    old_directory_descriptor, old_name,
+                    new_directory_descriptor, new_name,
+                )
+                foreign_path = root / new_name
+                return
+            if race == "destination-occupancy":
+                os.mkdir(new_name, mode=0o700, dir_fd=new_directory_descriptor)
+                foreign_path = root / new_name
+                retained_path = execution_roots[0]
+                real_rename(
+                    old_directory_descriptor, old_name,
+                    new_directory_descriptor, new_name,
+                )
+                return
+            real_rename(
+                old_directory_descriptor, old_name,
+                new_directory_descriptor, new_name,
+            )
+            retained_path = root / new_name
+            if race == "destination-replacement":
+                retained_name = f".retained-raced-destination-{kind}"
+                os.rename(
+                    new_name, retained_name,
+                    src_dir_fd=new_directory_descriptor,
+                    dst_dir_fd=new_directory_descriptor,
+                )
+                os.mkdir(new_name, mode=0o700, dir_fd=new_directory_descriptor)
+                retained_path = root / retained_name
+                foreign_path = root / new_name
+            elif race == "source-reappearance":
+                os.mkdir(old_name, mode=0o700, dir_fd=old_directory_descriptor)
+                foreign_path = topology_root / old_name
+            else:
+                relocated_descriptor = os.open(
+                    new_name,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=new_directory_descriptor,
+                )
+                try:
+                    retained_leaf = ".retained-raced-governance"
+                    os.rename(
+                        "governance.json", retained_leaf,
+                        src_dir_fd=relocated_descriptor,
+                        dst_dir_fd=relocated_descriptor,
+                    )
+                    descriptor = os.open(
+                        "governance.json",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600, dir_fd=relocated_descriptor,
+                    )
+                    try:
+                        os.write(descriptor, b"foreign raced governance")
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                finally:
+                    os.close(relocated_descriptor)
+                foreign_path = retained_path / "governance.json"
+
+        monkeypatch.setattr(topology, "_renameat2_noreplace", rename_with_race)
+        with pytest.raises(topology.TopologyError, match="PASS staging"):
+            if kind == "native":
+                factory = _available_native_probe_factory(root)
+                with factory(code) as session:
+                    topology._execute_native_pass_transaction(
+                        baseline=baseline, expected=expected,
+                        evidence_root=evidence, context=context, code=code,
+                        session=session, exact_runner=exact,
+                    )
+            else:
+                corpus = Path(authority_raw) / "corpus"
+                _complete_corpus_fixture(corpus)
+                with topology._retained_external_authority(
+                    code, corpus_root=corpus,
+                    corpus_validator=lambda _root: _valid_phase3b_analysis(),
+                ) as session:
+                    topology._execute_external_pass_transaction(
+                        baseline=baseline, expected=expected,
+                        evidence_root=evidence, context=context, code=code,
+                        session=session, exact_runner=exact,
+                    )
+
+        assert raced is True
+        assert retained_path is not None and retained_path.is_dir()
+        assert topology._stable_object_identity(
+            retained_path.lstat(),
+        ) == execution_identities[0]
+        assert foreign_path is not None and foreign_path.exists()
+        marker = topology_root / f"{code}.json"
+        bundle = marker.with_suffix(".artifacts")
+        assert marker.read_bytes() == (bundle / "receipt.json").read_bytes()
+        validator = (
+            topology.validate_native_artifact_set
+            if kind == "native" else topology.validate_external_artifact_set
+        )
+        receipt, selected = validator(
+            marker, rows=rows, foundation_context=context,
+            sealed_custody=topology._validate_custody_policy(
+                baseline["collector_policy"],
+            ),
+        )
+        assert receipt["outcome"] == "PASS"
+        assert selected == expected
+
+
+@pytest.mark.parametrize("kind", ("native", "external"))
+def test_pass_staging_is_retained_when_canonical_marker_verification_fails(
+    monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    """Break caught: cleanup starts before the bundle and sole marker are verified."""
+    _patch_native_identity_postcheck(monkeypatch)
+    with (
+        tempfile.TemporaryDirectory(dir="/tmp") as raw,
+        _safe_authority_tempdir() as authority_raw,
+    ):
+        root, evidence, _, context, baseline = _prepared_pass_transaction(
+            monkeypatch, raw,
+        )
+        rows = topology.load_inventory(
+            Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        )
+        code = (
+            "NATIVE-BWRAP-OS-SANDBOX"
+            if kind == "native" else "EXT-PHASE3B-CORPUS"
+        )
+        expected = topology._expected_rows(rows, code)[1]
+
+        def reject_verification(*_args: object, **_kwargs: object) -> None:
+            raise topology.TopologyError("simulated canonical verification failure")
+
+        if kind == "native":
+            monkeypatch.setattr(
+                topology, "_resolve_exact_native_artifact_set",
+                reject_verification,
+            )
+            factory = _available_native_probe_factory(root)
+            with factory(code) as session:
+                with pytest.raises(
+                    topology.TopologyError,
+                    match="simulated canonical verification failure",
+                ):
+                    topology._execute_native_pass_transaction(
+                        baseline=baseline, expected=expected,
+                        evidence_root=evidence, context=context, code=code,
+                        session=session, exact_runner=_passing_exact,
+                    )
+        else:
+            monkeypatch.setattr(
+                topology, "_resolve_exact_external_artifact_set",
+                reject_verification,
+            )
+            corpus = Path(authority_raw) / "corpus"
+            _complete_corpus_fixture(corpus)
+            with topology._retained_external_authority(
+                code, corpus_root=corpus,
+                corpus_validator=lambda _root: _valid_phase3b_analysis(),
+            ) as session:
+                assert session.state == "VALID"
+                with pytest.raises(
+                    topology.TopologyError,
+                    match="simulated canonical verification failure",
+                ):
+                    topology._execute_external_pass_transaction(
+                        baseline=baseline, expected=expected,
+                        evidence_root=evidence, context=context, code=code,
+                        session=session, exact_runner=_passing_exact,
+                    )
+
+        execution_roots = list(
+            (evidence / "capability-topology").glob(f".{kind}-execution-*")
+        )
+        assert len(execution_roots) == 1
+        assert {path.name for path in execution_roots[0].iterdir()} == {
+            ".governance.json.executing", "governance.json",
+        }
+
+
+def test_external_exact_nonpass_retains_private_staging_and_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: external FAIL evidence enters success-staging cleanup."""
+    with (
+        tempfile.TemporaryDirectory(dir="/tmp") as raw,
+        _safe_authority_tempdir() as authority_raw,
+    ):
+        _, evidence, _, context, baseline = _prepared_pass_transaction(
+            monkeypatch, raw,
+        )
+        rows = topology.load_inventory(
+            Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        )
+        code = "EXT-PHASE3B-CORPUS"
+        expected = topology._expected_rows(rows, code)[1]
+        corpus = Path(authority_raw) / "corpus"
+        _complete_corpus_fixture(corpus)
+
+        def nonpassing_exact(
+            nodes: tuple[str, ...], report: Path,
+        ) -> tuple[str, ...]:
+            topology._publish_no_clobber(report, json.dumps({
+                "schema_version": 1,
+                "component": "root",
+                "pytest_exit_status": 1,
+                "custody_policy": json.loads(
+                    os.environ["TEST_GOVERNANCE_CUSTODY_POLICY"],
+                ),
+                "tests": [{
+                    "test_node_id": node,
+                    "component": "root",
+                    "outcome": "failed" if index == 0 else "passed",
+                    "reason": "assertion failed" if index == 0 else "",
+                    "phase": "call",
+                } for index, node in enumerate(nodes)],
+            }, sort_keys=True).encode("utf-8"))
+            return nodes
+
+        with topology._retained_external_authority(
+            code, corpus_root=corpus,
+            corpus_validator=lambda _root: _valid_phase3b_analysis(),
+        ) as session:
+            assert session.state == "VALID"
+            with pytest.raises(topology.TopologyError) as caught:
+                topology._execute_external_pass_transaction(
+                    baseline=baseline, expected=expected,
+                    evidence_root=evidence, context=context, code=code,
+                    session=session, exact_runner=nonpassing_exact,
+                )
+
+        assert str(caught.value) == "EXACT_EXECUTION_NONPASS"
+        topology_root = evidence / "capability-topology"
+        marker = topology_root / f"{code}.json"
+        assert topology.parse_receipt(marker.read_bytes())["outcome"] == "FAIL"
+        assert not (marker.with_suffix(".artifacts") / "governance.json").exists()
+        execution_roots = list(topology_root.glob(".external-execution-*"))
+        assert len(execution_roots) == 1
+        execution_root = execution_roots[0]
+        assert stat.S_IMODE(execution_root.stat().st_mode) == 0o700
+        provisional = execution_root / ".governance.json.executing"
+        diagnostic = execution_root / "portable-root-remainder.failure-diagnostic.json"
+        assert stat.S_IMODE(provisional.stat().st_mode) == 0o600
+        assert stat.S_IMODE(diagnostic.stat().st_mode) == 0o600
+        assert topology.parse_failure_diagnostic(
+            topology._read_private_regular_file(
+                diagnostic, label="inert external failure diagnostic",
+            ),
+        )["diagnostic_only"] is True
 
 
 def test_ci_portable_keeps_artifact_evidence_outside_deleted_tmp_root() -> None:
