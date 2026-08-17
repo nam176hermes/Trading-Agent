@@ -2532,8 +2532,10 @@ def test_direct_target_pass_cleanup_uses_sealed_package6_build_root(
         evidence = Path(evidence_raw)
         topology_root = evidence / "capability-topology"
         topology_root.mkdir(mode=0o700)
-        token = "0" * 32
-        execution_root = topology_root / f".{kind}-execution-{code}-{token}"
+        execution_suffix = "0" * 32
+        execution_root = topology_root / (
+            f".{kind}-execution-{code}-{execution_suffix}"
+        )
         execution_root.mkdir(mode=0o700)
         governance_raw = b'{"verified":"governance"}'
         for name in (".governance.json.executing", "governance.json"):
