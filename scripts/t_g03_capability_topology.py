@@ -1883,7 +1883,7 @@ def _validate_root_candidates(node_ids: tuple[str, ...]) -> None:
 
 
 def _custody_artifact_identity(info: os.stat_result) -> str:
-    if not stat.S_ISREG(info.st_mode):
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise TopologyError("portable root custody extension is unsafe")
     return ":".join(
         str(value)
@@ -1968,7 +1968,7 @@ def _validate_custody_policy(policy: object) -> dict[str, str]:
         not isinstance(digest, str)
         or not HEX64.fullmatch(digest)
         or not isinstance(identity, str)
-        or not re.fullmatch(r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:[0-9]+", identity)
+        or not re.fullmatch(r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:1", identity)
     ):
         raise TopologyError("portable root collector policy drift")
     return {key: str(value) for key, value in policy.items()}
@@ -1991,7 +1991,7 @@ def _semantic_collector_policy(policy: object) -> dict[str, str]:
     if (
         not HEX64.fullmatch(policy["native_custody_extension_sha256"])
         or not re.fullmatch(
-            r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:[0-9]+",
+            r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:1",
             policy["native_custody_extension_identity"],
         )
     ):
@@ -7970,6 +7970,24 @@ def _cleanup_verified_pass_staging(
             os.fsync(execution_descriptor)
             os.fsync(topology_descriptor)
             os.fsync(cleanup_parent_descriptor)
+            try:
+                os.stat(
+                    execution_root.name, dir_fd=topology_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise TopologyError("verified PASS staging relocation is ambiguous")
+            if (
+                root_identity(os.fstat(execution_descriptor))
+                != retained_root_identity
+                or root_identity(os.stat(
+                    retained_name, dir_fd=cleanup_parent_descriptor,
+                    follow_symlinks=False,
+                )) != retained_root_identity
+            ):
+                raise TopologyError("verified PASS staging relocation changed")
         except TopologyError:
             raise
         except OSError as exc:
