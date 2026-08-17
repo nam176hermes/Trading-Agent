@@ -432,7 +432,7 @@ def test_aggregate_rejects_proof_custody_forged_away_from_sealed_baseline(
 
         def forge_custody(proof_document: dict[str, object], governance_document: dict[str, object]) -> None:
             forged = dict(sealed_custody)
-            forged["native_custody_extension_identity"] = "9:9:9:600:9"
+            forged["native_custody_extension_identity"] = "9:9:9:600:1"
             proof_document["custody_policy"] = forged
             proof_document["custody_policy_sha256"] = topology._sha256(forged)
             governance_document["custody_policy"] = forged
