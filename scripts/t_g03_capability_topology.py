@@ -7534,6 +7534,130 @@ def _publish_external_failure_marker(
     return marker
 
 
+def _execute_native_pass_transaction(
+    *, baseline: dict[str, object], expected: tuple[str, ...],
+    evidence_root: Path, context: dict[str, object], code: str,
+    session: NativeProbeSession,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+) -> Path:
+    """Publish an append-only bundle, then its sole canonical acceptance marker."""
+    topology_root = evidence_root / "capability-topology"
+    execution_root = topology_root / (
+        f".native-execution-{code}-{secrets.token_hex(16)}"
+    )
+    _prepare_private_evidence_directory(execution_root)
+    governance = execution_root / NATIVE_BUNDLE_GOVERNANCE
+    selected_count = len(expected)
+    try:
+        selected = _execute_exact_with_retained_custody(
+            baseline=baseline, nodes=expected, report=governance,
+            runner=exact_runner, retain_provisional=True,
+            append_only_native_diagnostic=True,
+        )
+        custody = _validate_custody_policy(baseline["collector_policy"])
+        governance_raw = _read_private_regular_file(
+            governance, label="native PASS governance staging record",
+        )
+        _validate_exact_governance_bytes(governance_raw, expected, custody)
+        passed_receipt = make_native_receipt(
+            context=context, code=code, expected=expected, collected=selected,
+            session=session, outcome="PASS", selected_test_count=selected_count,
+            passed=selected_count, failed=0, unavailable=0,
+        )
+        return _publish_verified_native_pass(
+            passed_receipt, baseline, evidence_root, topology_root, execution_root,
+            session, code, governance_raw,
+        )
+    except Exception as exc:
+        if os.path.lexists(topology_root / f"{code}.json"):
+            raise
+        identity_drift = isinstance(exc, TopologyError) and (
+            "native executable identity changed" in str(exc)
+        )
+        failure = make_native_receipt(
+            context=context, code=code, expected=expected, collected=(),
+            session=session, outcome="FAIL", selected_test_count=selected_count,
+            passed=0, failed=selected_count, unavailable=0,
+            fact=(
+                "NATIVE_IDENTITY_REPLACED"
+                if identity_drift else "NATIVE_EXACT_TEST_FAILURE"
+            ),
+        )
+        _publish_native_failure_marker(receipt=failure, evidence_root=evidence_root)
+        if isinstance(exc, TopologyError):
+            raise
+        raise TopologyError("native exact transaction failed") from exc
+
+
+def _execute_external_pass_transaction(
+    *, baseline: dict[str, object], expected: tuple[str, ...],
+    evidence_root: Path, context: dict[str, object], code: str,
+    session: ExternalAuthoritySession,
+    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+) -> Path:
+    topology_root = evidence_root / "capability-topology"
+    execution_root = topology_root / (
+        f".external-execution-{code}-{secrets.token_hex(16)}"
+    )
+    _prepare_private_evidence_directory(execution_root)
+    governance = execution_root / NATIVE_BUNDLE_GOVERNANCE
+    selected_count = len(expected)
+    try:
+        retained_runner = exact_runner
+        if session.execution_environment:
+            if exact_runner is not _run_exact:
+                raise TopologyError(
+                    "disposable PostgreSQL exact runner is not the canonical runner",
+                )
+
+            def retained_runner(
+                nodes: tuple[str, ...], report: Path,
+            ) -> tuple[str, ...]:
+                return _run_exact(
+                    nodes, report,
+                    environment_overlay=session.execution_environment,
+                )
+
+        selected = _execute_exact_with_retained_custody(
+            baseline=baseline, nodes=expected, report=governance,
+            runner=retained_runner, retain_provisional=True,
+            append_only_native_diagnostic=True,
+        )
+        custody = _validate_custody_policy(baseline["collector_policy"])
+        governance_raw = _read_private_regular_file(
+            governance, label="external PASS governance staging record",
+        )
+        _validate_exact_governance_bytes(governance_raw, expected, custody)
+        passed_receipt = make_external_receipt(
+            context=context, code=code, expected=expected, collected=selected,
+            session=session, outcome="PASS", selected_test_count=selected_count,
+            passed=selected_count, failed=0, unavailable=0,
+        )
+        return _publish_verified_external_pass(
+            passed_receipt, baseline, evidence_root, topology_root, execution_root,
+            session, code, governance_raw,
+        )
+    except Exception as exc:
+        if os.path.lexists(topology_root / f"{code}.json"):
+            raise
+        authority_drift = isinstance(exc, TopologyError) and (
+            "external authority changed" in str(exc)
+        )
+        failure = make_external_receipt(
+            context=context, code=code, expected=expected, collected=(),
+            session=session, outcome="FAIL", selected_test_count=selected_count,
+            passed=0, failed=selected_count, unavailable=0,
+            fact=("AUTHORITY_DRIFTED" if authority_drift else "EXTERNAL_EXACT_TEST_FAILURE"),
+            state=("DRIFTED" if authority_drift else "INVALID"),
+        )
+        _publish_external_failure_marker(
+            receipt=failure, evidence_root=evidence_root,
+        )
+        if isinstance(exc, TopologyError):
+            raise
+        raise TopologyError("external exact transaction failed") from exc
+
+
 def _is_private_pass_cleanup_parent(path: Path) -> bool:
     try:
         info = path.lstat()
@@ -7857,140 +7981,39 @@ def _cleanup_verified_pass_staging(
                 os.close(execution_descriptor)
 
 
-def _execute_native_pass_transaction(
-    *, baseline: dict[str, object], expected: tuple[str, ...],
-    evidence_root: Path, context: dict[str, object], code: str,
-    session: NativeProbeSession,
-    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+def _publish_verified_native_pass(
+    receipt: dict[str, object], baseline: dict[str, object], evidence_root: Path,
+    topology_root: Path, execution_root: Path, session: NativeProbeSession,
+    code: str, governance_raw: bytes,
 ) -> Path:
-    """Publish an append-only bundle, then its sole canonical acceptance marker."""
-    topology_root = evidence_root / "capability-topology"
-    execution_root = topology_root / (
-        f".native-execution-{code}-{secrets.token_hex(16)}"
+    marker = _publish_native_receipt_transaction(
+        receipt=receipt, evidence_root=evidence_root,
+        session=session, governance_raw=governance_raw,
     )
-    _prepare_private_evidence_directory(execution_root)
-    governance = execution_root / NATIVE_BUNDLE_GOVERNANCE
-    selected_count = len(expected)
-    try:
-        selected = _execute_exact_with_retained_custody(
-            baseline=baseline, nodes=expected, report=governance,
-            runner=exact_runner, retain_provisional=True,
-            append_only_native_diagnostic=True,
-        )
-        custody = _validate_custody_policy(baseline["collector_policy"])
-        governance_raw = _read_private_regular_file(
-            governance, label="native PASS governance staging record",
-        )
-        _validate_exact_governance_bytes(governance_raw, expected, custody)
-        passed_receipt = make_native_receipt(
-            context=context, code=code, expected=expected, collected=selected,
-            session=session, outcome="PASS", selected_test_count=selected_count,
-            passed=selected_count, failed=0, unavailable=0,
-        )
-        marker = _publish_native_receipt_transaction(
-            receipt=passed_receipt, evidence_root=evidence_root,
-            session=session, governance_raw=governance_raw,
-        )
-        _cleanup_verified_pass_staging(
-            baseline=baseline,
-            topology_root=topology_root, execution_root=execution_root,
-            kind="native", code=code, governance_raw=governance_raw,
-        )
-        return marker
-    except Exception as exc:
-        if os.path.lexists(topology_root / f"{code}.json"):
-            raise
-        identity_drift = isinstance(exc, TopologyError) and (
-            "native executable identity changed" in str(exc)
-        )
-        failure = make_native_receipt(
-            context=context, code=code, expected=expected, collected=(),
-            session=session, outcome="FAIL", selected_test_count=selected_count,
-            passed=0, failed=selected_count, unavailable=0,
-            fact=(
-                "NATIVE_IDENTITY_REPLACED"
-                if identity_drift else "NATIVE_EXACT_TEST_FAILURE"
-            ),
-        )
-        _publish_native_failure_marker(receipt=failure, evidence_root=evidence_root)
-        if isinstance(exc, TopologyError):
-            raise
-        raise TopologyError("native exact transaction failed") from exc
+    _cleanup_verified_pass_staging(
+        baseline=baseline, topology_root=topology_root,
+        execution_root=execution_root, kind="native", code=code,
+        governance_raw=governance_raw,
+    )
+    return marker
 
 
-def _execute_external_pass_transaction(
-    *, baseline: dict[str, object], expected: tuple[str, ...],
-    evidence_root: Path, context: dict[str, object], code: str,
-    session: ExternalAuthoritySession,
-    exact_runner: Callable[[tuple[str, ...], Path], tuple[str, ...]],
+def _publish_verified_external_pass(
+    receipt: dict[str, object], baseline: dict[str, object], evidence_root: Path,
+    topology_root: Path, execution_root: Path, session: ExternalAuthoritySession,
+    code: str, governance_raw: bytes,
 ) -> Path:
-    topology_root = evidence_root / "capability-topology"
-    execution_root = topology_root / (
-        f".external-execution-{code}-{secrets.token_hex(16)}"
+    marker = _publish_external_receipt_transaction(
+        receipt=receipt, evidence_root=evidence_root,
+        session=session, governance_raw=governance_raw,
     )
-    _prepare_private_evidence_directory(execution_root)
-    governance = execution_root / NATIVE_BUNDLE_GOVERNANCE
-    selected_count = len(expected)
-    try:
-        retained_runner = exact_runner
-        if session.execution_environment:
-            if exact_runner is not _run_exact:
-                raise TopologyError(
-                    "disposable PostgreSQL exact runner is not the canonical runner",
-                )
+    _cleanup_verified_pass_staging(
+        baseline=baseline, topology_root=topology_root,
+        execution_root=execution_root, kind="external", code=code,
+        governance_raw=governance_raw,
+    )
+    return marker
 
-            def retained_runner(
-                nodes: tuple[str, ...], report: Path,
-            ) -> tuple[str, ...]:
-                return _run_exact(
-                    nodes, report,
-                    environment_overlay=session.execution_environment,
-                )
-
-        selected = _execute_exact_with_retained_custody(
-            baseline=baseline, nodes=expected, report=governance,
-            runner=retained_runner, retain_provisional=True,
-            append_only_native_diagnostic=True,
-        )
-        custody = _validate_custody_policy(baseline["collector_policy"])
-        governance_raw = _read_private_regular_file(
-            governance, label="external PASS governance staging record",
-        )
-        _validate_exact_governance_bytes(governance_raw, expected, custody)
-        passed_receipt = make_external_receipt(
-            context=context, code=code, expected=expected, collected=selected,
-            session=session, outcome="PASS", selected_test_count=selected_count,
-            passed=selected_count, failed=0, unavailable=0,
-        )
-        marker = _publish_external_receipt_transaction(
-            receipt=passed_receipt, evidence_root=evidence_root,
-            session=session, governance_raw=governance_raw,
-        )
-        _cleanup_verified_pass_staging(
-            baseline=baseline,
-            topology_root=topology_root, execution_root=execution_root,
-            kind="external", code=code, governance_raw=governance_raw,
-        )
-        return marker
-    except Exception as exc:
-        if os.path.lexists(topology_root / f"{code}.json"):
-            raise
-        authority_drift = isinstance(exc, TopologyError) and (
-            "external authority changed" in str(exc)
-        )
-        failure = make_external_receipt(
-            context=context, code=code, expected=expected, collected=(),
-            session=session, outcome="FAIL", selected_test_count=selected_count,
-            passed=0, failed=selected_count, unavailable=0,
-            fact=("AUTHORITY_DRIFTED" if authority_drift else "EXTERNAL_EXACT_TEST_FAILURE"),
-            state=("DRIFTED" if authority_drift else "INVALID"),
-        )
-        _publish_external_failure_marker(
-            receipt=failure, evidence_root=evidence_root,
-        )
-        if isinstance(exc, TopologyError):
-            raise
-        raise TopologyError("external exact transaction failed") from exc
 
 
 def run_lane(
