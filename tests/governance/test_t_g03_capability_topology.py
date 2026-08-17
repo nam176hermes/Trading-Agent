@@ -27,8 +27,18 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
     }
     collector_policy = {
         **topology.PORTABLE_ROOT_POLICY,
+        "native_custody_build_root_identity": "2049:7452856:1001:1001:700",
+        "native_custody_build_root_name": (
+            "package6-custodian-native-capabilities.ABCDEF"
+        ),
         "native_custody_extension_identity": "2049:9452856:1001:600:1",
+        "native_custody_extension_path": (
+            "/tmp/package6-custodian-native-capabilities.ABCDEF/python/"
+            "_package6_fd_custody.cpython-311-x86_64-linux-gnu.so"
+        ),
         "native_custody_extension_sha256": "9" * 64,
+        "native_custody_python_root_identity": "2049:8452856:1001:1001:700",
+        "native_custody_python_root_name": "python",
     }
     baseline = {
         "inventory_sha256": "3" * 64,
@@ -61,7 +71,16 @@ def test_final_semantic_projection_excludes_run_custody_hashes_but_binds_meaning
     assert builder(rerun_context, baseline, disclosure, rerun_receipts) == first
     rerun_baseline = dict(baseline, collector_policy={
         **collector_policy,
+        "native_custody_build_root_identity": "2049:1106625:1001:1001:700",
+        "native_custody_build_root_name": (
+            "package6-custodian-native-capabilities.GHIJKL"
+        ),
         "native_custody_extension_identity": "2049:2106625:1001:600:1",
+        "native_custody_extension_path": (
+            "/tmp/package6-custodian-native-capabilities.GHIJKL/python/"
+            "_package6_fd_custody.cpython-311-x86_64-linux-gnu.so"
+        ),
+        "native_custody_python_root_identity": "2049:3106625:1001:1001:700",
     })
     rerun_projection = builder(rerun_context, rerun_baseline, disclosure, rerun_receipts)
     assert rerun_projection == first
@@ -2550,13 +2569,9 @@ def test_direct_target_pass_cleanup_uses_sealed_package6_build_root(
         extension.write_bytes(b"sealed package 6 custody")
         extension.chmod(0o600)
         digest = hashlib.sha256(extension.read_bytes()).hexdigest()
-        baseline = {
-            "collector_policy": topology._custody_policy_from_artifact(
-                extension.lstat(), digest,
-            ),
-        }
         monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
         monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+        baseline = {"collector_policy": topology._native_custody_policy()}
 
         source_identity = topology._stable_object_identity(
             execution_root.lstat(),
@@ -2618,11 +2633,67 @@ def test_direct_target_cleanup_rejects_presealed_package6_hardlink_alias(
         monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
 
         with pytest.raises(topology.TopologyError, match="custody extension is unsafe"):
-            baseline = {
-                "collector_policy": topology._custody_policy_from_artifact(
-                    extension.lstat(), digest,
-                ),
-            }
+            topology._native_custody_policy()
+
+        assert execution_root.is_dir()
+        assert not list(original_root.glob(".pass-staging-cleanup-*"))
+        assert not list(alias_root.glob(".pass-staging-cleanup-*"))
+
+
+def test_direct_target_cleanup_rejects_renamed_sealed_package6_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Break caught: a renamed sealed tree escapes pathname-bound teardown."""
+    with (
+        tempfile.TemporaryDirectory(
+            prefix="trading-agent-test-evidence.", dir="/tmp",
+        ) as evidence_raw,
+        tempfile.TemporaryDirectory(
+            prefix="package6-custodian-native-capabilities.", dir="/tmp",
+        ) as original_raw,
+        tempfile.TemporaryDirectory(
+            prefix="package6-custodian-native-capabilities.", dir="/tmp",
+        ) as renamed_raw,
+    ):
+        evidence = Path(evidence_raw)
+        topology_root = evidence / "capability-topology"
+        topology_root.mkdir(mode=0o700)
+        code = "NATIVE-BWRAP-OS-SANDBOX"
+        execution_root = topology_root / f".native-execution-{code}-{'5' * 32}"
+        execution_root.mkdir(mode=0o700)
+        governance_raw = b'{"verified":"governance"}'
+        for name in (".governance.json.executing", "governance.json"):
+            leaf = execution_root / name
+            leaf.write_bytes(governance_raw)
+            leaf.chmod(0o600)
+
+        original_root = Path(original_raw)
+        original_python = original_root / "python"
+        original_python.mkdir(mode=0o700)
+        extension_name = "_package6_fd_custody.cpython-311-x86_64-linux-gnu.so"
+        extension = original_python / extension_name
+        extension.write_bytes(b"sealed package 6 custody")
+        extension.chmod(0o600)
+        digest = hashlib.sha256(extension.read_bytes()).hexdigest()
+        sealed_inode = extension.lstat().st_ino
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+        baseline = {"collector_policy": topology._native_custody_policy()}
+
+        renamed_root = Path(renamed_raw)
+        renamed_root.rmdir()
+        os.rename(original_root, renamed_root)
+        renamed_extension = renamed_root / "python" / extension_name
+        assert renamed_extension.lstat().st_ino == sealed_inode
+        assert renamed_extension.lstat().st_nlink == 1
+        monkeypatch.setenv(
+            "PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(renamed_extension),
+        )
+
+        with pytest.raises(
+            topology.TopologyError,
+            match="custody lineage|cleanup authority",
+        ):
             topology._cleanup_verified_pass_staging(
                 baseline=baseline, topology_root=topology_root,
                 execution_root=execution_root, kind="native", code=code,
@@ -2630,8 +2701,10 @@ def test_direct_target_cleanup_rejects_presealed_package6_hardlink_alias(
             )
 
         assert execution_root.is_dir()
+        assert not original_root.exists()
+        assert renamed_root.is_dir()
         assert not list(original_root.glob(".pass-staging-cleanup-*"))
-        assert not list(alias_root.glob(".pass-staging-cleanup-*"))
+        assert not list(renamed_root.glob(".pass-staging-cleanup-*"))
 
 
 def test_direct_target_cleanup_rejects_sealed_multilink_package6_policy(
@@ -2664,22 +2737,22 @@ def test_direct_target_cleanup_rejects_sealed_multilink_package6_policy(
         extension = python_root / "_package6_fd_custody.cpython-311-x86_64-linux-gnu.so"
         extension.write_bytes(b"sealed package 6 custody")
         extension.chmod(0o600)
+        digest = hashlib.sha256(extension.read_bytes()).hexdigest()
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+        sealed = topology._native_custody_policy()
         alias = python_root / "_package6_fd_custody.alias.so"
         os.link(extension, alias)
         info = extension.lstat()
-        digest = hashlib.sha256(extension.read_bytes()).hexdigest()
+        sealed["native_custody_extension_identity"] = ":".join(
+            str(value) for value in (
+                info.st_dev, info.st_ino, info.st_uid,
+                f"{stat.S_IMODE(info.st_mode):o}", info.st_nlink,
+            )
+        )
         baseline = {
-            "collector_policy": {
-                **topology.PORTABLE_ROOT_POLICY,
-                "native_custody_extension_identity": ":".join(str(value) for value in (
-                    info.st_dev, info.st_ino, info.st_uid,
-                    f"{stat.S_IMODE(info.st_mode):o}", info.st_nlink,
-                )),
-                "native_custody_extension_sha256": digest,
-            },
+            "collector_policy": sealed,
         }
-        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
-        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
 
         with pytest.raises(topology.TopologyError, match="collector policy drift"):
             topology._cleanup_verified_pass_staging(
@@ -2727,11 +2800,9 @@ def test_direct_target_cleanup_parent_rejects_forged_package6_authority(
         extension.write_bytes(b"sealed package 6 custody")
         extension.chmod(0o600)
         digest = hashlib.sha256(extension.read_bytes()).hexdigest()
-        baseline = {
-            "collector_policy": topology._custody_policy_from_artifact(
-                extension.lstat(), digest,
-            ),
-        }
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
+        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+        baseline = {"collector_policy": topology._native_custody_policy()}
         selected_path = str(extension)
         if mutation == "forged-env":
             forged = evidence / "forged-custody.so"
@@ -2752,7 +2823,6 @@ def test_direct_target_cleanup_parent_rejects_forged_package6_authority(
             real_geteuid = topology.os.geteuid
             monkeypatch.setattr(topology.os, "geteuid", lambda: real_geteuid() + 1)
         monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", selected_path)
-        monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
 
         with pytest.raises(topology.TopologyError):
             topology._cleanup_verified_pass_staging(
@@ -2795,13 +2865,9 @@ def test_direct_target_cleanup_parent_rejects_cross_device_relocation(
         extension.write_bytes(b"sealed package 6 custody")
         extension.chmod(0o600)
         digest = hashlib.sha256(extension.read_bytes()).hexdigest()
-        baseline = {
-            "collector_policy": topology._custody_policy_from_artifact(
-                extension.lstat(), digest,
-            ),
-        }
         monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_PATH", str(extension))
         monkeypatch.setenv("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256", digest)
+        baseline = {"collector_policy": topology._native_custody_policy()}
 
         @topology.contextmanager
         def cross_device_cleanup_parent(
@@ -3343,6 +3409,140 @@ def test_verified_pass_cleanup_rebinds_destination_at_success_boundary(
         ) == execution_identities[0]
         assert foreign_path is not None and foreign_path.is_dir()
         assert not list(topology_root.glob(f".{kind}-execution-*"))
+
+
+@pytest.mark.parametrize("kind", ("native", "external"))
+@pytest.mark.parametrize("race", ("source-reappears", "destination-replaced"))
+def test_verified_pass_cleanup_rebinds_after_custody_context_unwind(
+    monkeypatch: pytest.MonkeyPatch, kind: str, race: str,
+) -> None:
+    """Break caught: context-exit reads leave a later namespace race unbound."""
+    _patch_native_identity_postcheck(monkeypatch)
+    with (
+        tempfile.TemporaryDirectory(dir="/tmp") as raw,
+        _safe_authority_tempdir() as authority_raw,
+    ):
+        root, evidence, _, context, baseline = _prepared_pass_transaction(
+            monkeypatch, raw,
+        )
+        rows = topology.load_inventory(
+            Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv"),
+        )
+        code = (
+            "NATIVE-BWRAP-OS-SANDBOX"
+            if kind == "native" else "EXT-PHASE3B-CORPUS"
+        )
+        expected = topology._expected_rows(rows, code)[1]
+        topology_root = evidence / "capability-topology"
+        execution_identities: list[tuple[int, int, int, int, int]] = []
+
+        def exact(nodes: tuple[str, ...], report: Path) -> tuple[str, ...]:
+            selected = _passing_exact(nodes, report)
+            execution_identities.append(
+                topology._stable_object_identity(report.parent.lstat()),
+            )
+            return selected
+
+        real_rename = topology._renameat2_noreplace
+        relocation: list[tuple[int, str, int, str]] = []
+
+        def record_relocation(
+            old_directory_descriptor: int, old_name: str,
+            new_directory_descriptor: int, new_name: str,
+        ) -> None:
+            real_rename(
+                old_directory_descriptor, old_name,
+                new_directory_descriptor, new_name,
+            )
+            if (
+                old_name.startswith(f".{kind}-execution-{code}-")
+                and old_directory_descriptor != new_directory_descriptor
+            ):
+                relocation.append((
+                    old_directory_descriptor, old_name,
+                    new_directory_descriptor, new_name,
+                ))
+
+        real_retained_directory = topology._retained_private_directory
+        mutated = False
+        authentic_path: Path | None = None
+        foreign_path: Path | None = None
+
+        @topology.contextmanager
+        def mutate_during_topology_context_unwind(
+            path: Path, *, label: str,
+        ):
+            nonlocal mutated, authentic_path, foreign_path
+            with real_retained_directory(path, label=label) as retained:
+                yield retained
+                if (
+                    label == "verified PASS staging topology root"
+                    and relocation and not mutated
+                ):
+                    assert len(relocation) == 1
+                    (
+                        topology_descriptor, source_name,
+                        cleanup_descriptor, retained_name,
+                    ) = relocation[0]
+                    if race == "source-reappears":
+                        os.mkdir(
+                            source_name, mode=0o700,
+                            dir_fd=topology_descriptor,
+                        )
+                        authentic_path = root / retained_name
+                        foreign_path = topology_root / source_name
+                    else:
+                        authentic_name = f".late-unwind-authentic-{kind}"
+                        os.rename(
+                            retained_name, authentic_name,
+                            src_dir_fd=cleanup_descriptor,
+                            dst_dir_fd=cleanup_descriptor,
+                        )
+                        os.mkdir(
+                            retained_name, mode=0o700,
+                            dir_fd=cleanup_descriptor,
+                        )
+                        authentic_path = root / authentic_name
+                        foreign_path = root / retained_name
+                    mutated = True
+
+        monkeypatch.setattr(topology, "_renameat2_noreplace", record_relocation)
+        monkeypatch.setattr(
+            topology, "_retained_private_directory",
+            mutate_during_topology_context_unwind,
+        )
+        with pytest.raises(topology.TopologyError, match="PASS staging"):
+            if kind == "native":
+                factory = _available_native_probe_factory(root)
+                with factory(code) as session:
+                    topology._execute_native_pass_transaction(
+                        baseline=baseline, expected=expected,
+                        evidence_root=evidence, context=context, code=code,
+                        session=session, exact_runner=exact,
+                    )
+            else:
+                corpus = Path(authority_raw) / "corpus"
+                _complete_corpus_fixture(corpus)
+                with topology._retained_external_authority(
+                    code, corpus_root=corpus,
+                    corpus_validator=lambda _root: _valid_phase3b_analysis(),
+                ) as session:
+                    topology._execute_external_pass_transaction(
+                        baseline=baseline, expected=expected,
+                        evidence_root=evidence, context=context, code=code,
+                        session=session, exact_runner=exact,
+                    )
+
+        assert mutated is True
+        assert authentic_path is not None and authentic_path.parent == root
+        assert authentic_path.is_dir()
+        assert topology._stable_object_identity(
+            authentic_path.lstat(),
+        ) == execution_identities[0]
+        assert foreign_path is not None and foreign_path.is_dir()
+        marker = topology_root / f"{code}.json"
+        bundle = marker.with_suffix(".artifacts")
+        assert marker.read_bytes() == (bundle / "receipt.json").read_bytes()
 
 
 @pytest.mark.parametrize("kind", ("native", "external"))

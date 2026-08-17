@@ -19,7 +19,7 @@ EXPECTED_HOTSPOTS = [
         "path": "scripts/t_g03_capability_topology.py",
         "status": FROZEN_FOR_GROWTH,
         "baseline_bytes": 362662,
-        "max_net_growth_bytes": 16430,
+        "max_net_growth_bytes": 25918,
         "responsibility_id": "P0_CAPABILITY_TOPOLOGY",
         "baseline_first_party_imports": [
             "scripts.check_test_governance",

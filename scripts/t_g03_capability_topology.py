@@ -1897,14 +1897,46 @@ def _custody_artifact_identity(info: os.stat_result) -> str:
     )
 
 
-def _custody_policy_from_artifact(info: os.stat_result, digest: str) -> dict[str, str]:
-    if not HEX64.fullmatch(digest):
-        raise TopologyError("portable root custody extension is unsafe")
-    return {
-        **PORTABLE_ROOT_POLICY,
-        "native_custody_extension_identity": _custody_artifact_identity(info),
-        "native_custody_extension_sha256": digest,
-    }
+def _custody_directory_identity(info: os.stat_result) -> str:
+    if not stat.S_ISDIR(info.st_mode):
+        raise TopologyError("portable root custody lineage is unsafe")
+    return ":".join(
+        str(value)
+        for value in (
+            info.st_dev,
+            info.st_ino,
+            info.st_uid,
+            info.st_gid,
+            f"{stat.S_IMODE(info.st_mode):o}",
+        )
+    )
+
+
+def _normalized_custody_extension_path(raw: str) -> Path:
+    path = Path(raw)
+    normalized = os.path.normpath(raw)
+    if (
+        not path.is_absolute()
+        or raw != normalized
+        or path.parent == path
+        or path.parent.parent == path.parent
+        or any(character < "!" or character > "~" for character in raw)
+        or not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", path.name)
+        or not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", path.parent.name)
+        or not re.fullmatch(r"[A-Za-z0-9._-]{1,255}", path.parent.parent.name)
+    ):
+        raise TopologyError("portable root custody lineage is unsafe")
+    return path
+
+
+def _custody_policy_from_artifact(
+    info: os.stat_result, digest: str, *, path: Path,
+    build_root_info: os.stat_result, python_root_info: os.stat_result,
+) -> dict[str, str]:
+    return _lineage_custody_policy_from_artifact(
+        info, digest, path=path, build_root_info=build_root_info,
+        python_root_info=python_root_info,
+    )
 
 
 def _require_named_custody_matches_descriptor(path: Path, descriptor: int) -> None:
@@ -1919,33 +1951,9 @@ def _require_named_custody_matches_descriptor(path: Path, descriptor: int) -> No
 
 @contextmanager
 def _retained_native_custody():
-    """Hold one no-follow extension descriptor through a root exact execution."""
-    raw_path = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
-    expected = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256")
-    if not raw_path or not expected or not HEX64.fullmatch(expected):
-        raise TopologyError("portable root collection requires native custody identity")
-    path = Path(raw_path)
-    if not path.is_absolute():
-        raise TopologyError("portable root custody extension is unsafe")
-    descriptor = -1
-    try:
-        try:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-            policy = _custody_policy_from_artifact(os.fstat(descriptor), _digest_fd(descriptor))
-            _require_named_custody_matches_descriptor(path, descriptor)
-        except OSError as exc:
-            raise TopologyError("portable root custody extension is unsafe") from exc
-        if policy["native_custody_extension_sha256"] != expected:
-            raise TopologyError("portable root custody extension digest drift")
-        yield policy, descriptor
-        _require_named_custody_matches_descriptor(path, descriptor)
-        if _custody_policy_from_artifact(
-            os.fstat(descriptor), _digest_fd(descriptor),
-        ) != policy:
-            raise TopologyError("portable root custody extension changed during execution")
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+    """Hold the exact no-follow extension lineage through a root execution."""
+    with _retained_native_custody_lineage() as retained:
+        yield retained
 
 
 def _native_custody_policy() -> dict[str, str]:
@@ -1953,50 +1961,42 @@ def _native_custody_policy() -> dict[str, str]:
         return policy
 
 
-def _validate_custody_policy(policy: object) -> dict[str, str]:
-    if not isinstance(policy, dict) or set(policy) != {
-        *PORTABLE_ROOT_POLICY,
-        "native_custody_extension_identity",
-        "native_custody_extension_sha256",
-    }:
-        raise TopologyError("portable root collector policy drift")
-    if any(policy.get(key) != value for key, value in PORTABLE_ROOT_POLICY.items()):
-        raise TopologyError("portable root collector policy drift")
-    digest = policy.get("native_custody_extension_sha256")
-    identity = policy.get("native_custody_extension_identity")
+def _validate_custody_lineage_fields(
+    policy: dict[str, object], *, message: str,
+) -> None:
+    path_raw = policy.get("native_custody_extension_path")
+    build_identity = policy.get("native_custody_build_root_identity")
+    build_name = policy.get("native_custody_build_root_name")
+    python_identity = policy.get("native_custody_python_root_identity")
+    python_name = policy.get("native_custody_python_root_name")
     if (
-        not isinstance(digest, str)
-        or not HEX64.fullmatch(digest)
-        or not isinstance(identity, str)
-        or not re.fullmatch(r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:1", identity)
+        not isinstance(build_identity, str)
+        or not re.fullmatch(
+            r"[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-7]+", build_identity,
+        )
+        or not isinstance(python_identity, str)
+        or not re.fullmatch(
+            r"[0-9]+:[0-9]+:[0-9]+:[0-9]+:[0-7]+", python_identity,
+        )
+        or not isinstance(build_name, str)
+        or not isinstance(python_name, str)
+        or not isinstance(path_raw, str)
     ):
-        raise TopologyError("portable root collector policy drift")
-    return {key: str(value) for key, value in policy.items()}
+        raise TopologyError(message)
+    try:
+        path = _normalized_custody_extension_path(path_raw)
+    except TopologyError as exc:
+        raise TopologyError(message) from exc
+    if path.parent.parent.name != build_name or path.parent.name != python_name:
+        raise TopologyError(message)
+
+
+def _validate_custody_policy(policy: object) -> dict[str, str]:
+    return _validate_lineage_custody_policy(policy)
 
 
 def _semantic_collector_policy(policy: object) -> dict[str, str]:
-    expected_fields = {
-        *SEMANTIC_COLLECTOR_POLICY_FIELDS,
-        "native_custody_extension_identity",
-    }
-    if not isinstance(policy, dict) or set(policy) != expected_fields:
-        raise TopologyError("final topology semantic collector policy is malformed")
-    if any(
-        not isinstance(policy.get(key), str)
-        or not policy[key]
-        or any(character < "\x20" or character > "\x7e" for character in policy[key])
-        for key in expected_fields
-    ):
-        raise TopologyError("final topology semantic collector policy is malformed")
-    if (
-        not HEX64.fullmatch(policy["native_custody_extension_sha256"])
-        or not re.fullmatch(
-            r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:1",
-            policy["native_custody_extension_identity"],
-        )
-    ):
-        raise TopologyError("final topology semantic collector policy is malformed")
-    return {key: policy[key] for key in SEMANTIC_COLLECTOR_POLICY_FIELDS}
+    return _semantic_lineage_collector_policy(policy)
 
 
 @contextmanager
@@ -2004,7 +2004,7 @@ def _retained_sealed_custody(baseline: dict[str, object]):
     sealed = _validate_custody_policy(baseline["collector_policy"])
     with _retained_native_custody() as (current, descriptor):
         if current != sealed:
-            raise TopologyError("portable root custody identity drift")
+            raise TopologyError("portable root custody lineage drift")
         yield sealed, descriptor
 
 
@@ -7658,6 +7658,180 @@ def _execute_external_pass_transaction(
         raise TopologyError("external exact transaction failed") from exc
 
 
+CUSTODY_LINEAGE_POLICY_FIELDS = (
+    "native_custody_build_root_identity",
+    "native_custody_build_root_name",
+    "native_custody_extension_path",
+    "native_custody_python_root_identity",
+    "native_custody_python_root_name",
+)
+
+
+def _lineage_custody_policy_from_artifact(
+    info: os.stat_result, digest: str, *, path: Path,
+    build_root_info: os.stat_result, python_root_info: os.stat_result,
+) -> dict[str, str]:
+    if not HEX64.fullmatch(digest):
+        raise TopologyError("portable root custody extension is unsafe")
+    normalized = _normalized_custody_extension_path(str(path))
+    return {
+        **PORTABLE_ROOT_POLICY,
+        "native_custody_build_root_identity": _custody_directory_identity(
+            build_root_info,
+        ),
+        "native_custody_build_root_name": normalized.parent.parent.name,
+        "native_custody_extension_identity": _custody_artifact_identity(info),
+        "native_custody_extension_path": str(normalized),
+        "native_custody_extension_sha256": digest,
+        "native_custody_python_root_identity": _custody_directory_identity(
+            python_root_info,
+        ),
+        "native_custody_python_root_name": normalized.parent.name,
+    }
+
+
+def _require_custody_lineage_matches_descriptors(
+    *, path: Path, build_descriptor: int, build_info: os.stat_result,
+    python_descriptor: int, python_info: os.stat_result,
+) -> None:
+    try:
+        named_build = path.parent.parent.lstat()
+        held_build = os.fstat(build_descriptor)
+        named_python = os.stat(
+            path.parent.name, dir_fd=build_descriptor, follow_symlinks=False,
+        )
+        held_python = os.fstat(python_descriptor)
+    except OSError as exc:
+        raise TopologyError(
+            "portable root custody lineage changed during execution",
+        ) from exc
+    if (
+        _stable_object_identity(named_build) != _stable_object_identity(build_info)
+        or _stable_object_identity(held_build) != _stable_object_identity(build_info)
+        or _stable_object_identity(named_python) != _stable_object_identity(python_info)
+        or _stable_object_identity(held_python) != _stable_object_identity(python_info)
+    ):
+        raise TopologyError(
+            "portable root custody lineage changed during execution",
+        )
+
+
+@contextmanager
+def _retained_native_custody_lineage():
+    raw_path = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
+    expected = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_SHA256")
+    if not raw_path or not expected or not HEX64.fullmatch(expected):
+        raise TopologyError("portable root collection requires native custody identity")
+    path = _normalized_custody_extension_path(raw_path)
+    build_descriptor = python_descriptor = descriptor = -1
+    try:
+        try:
+            directory_flags = (
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+            )
+            build_descriptor = os.open(path.parent.parent, directory_flags)
+            python_descriptor = os.open(
+                path.parent.name, directory_flags, dir_fd=build_descriptor,
+            )
+            descriptor = os.open(
+                path.name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=python_descriptor,
+            )
+            build_info = os.fstat(build_descriptor)
+            python_info = os.fstat(python_descriptor)
+            policy = _custody_policy_from_artifact(
+                os.fstat(descriptor), _digest_fd(descriptor), path=path,
+                build_root_info=build_info, python_root_info=python_info,
+            )
+            _require_custody_lineage_matches_descriptors(
+                path=path, build_descriptor=build_descriptor,
+                build_info=build_info, python_descriptor=python_descriptor,
+                python_info=python_info,
+            )
+            _require_named_custody_matches_descriptor(path, descriptor)
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("portable root custody extension is unsafe") from exc
+        if policy["native_custody_extension_sha256"] != expected:
+            raise TopologyError("portable root custody extension digest drift")
+        yield policy, descriptor
+        _require_custody_lineage_matches_descriptors(
+            path=path, build_descriptor=build_descriptor,
+            build_info=build_info, python_descriptor=python_descriptor,
+            python_info=python_info,
+        )
+        _require_named_custody_matches_descriptor(path, descriptor)
+        if _custody_policy_from_artifact(
+            os.fstat(descriptor), _digest_fd(descriptor), path=path,
+            build_root_info=os.fstat(build_descriptor),
+            python_root_info=os.fstat(python_descriptor),
+        ) != policy:
+            raise TopologyError(
+                "portable root custody extension changed during execution",
+            )
+    finally:
+        for held_descriptor in (descriptor, python_descriptor, build_descriptor):
+            if held_descriptor >= 0:
+                os.close(held_descriptor)
+
+
+def _validate_lineage_custody_policy(policy: object) -> dict[str, str]:
+    if not isinstance(policy, dict) or set(policy) != {
+        *PORTABLE_ROOT_POLICY,
+        *CUSTODY_LINEAGE_POLICY_FIELDS,
+        "native_custody_extension_identity",
+        "native_custody_extension_sha256",
+    }:
+        raise TopologyError("portable root collector policy drift")
+    if any(policy.get(key) != value for key, value in PORTABLE_ROOT_POLICY.items()):
+        raise TopologyError("portable root collector policy drift")
+    digest = policy.get("native_custody_extension_sha256")
+    identity = policy.get("native_custody_extension_identity")
+    if (
+        not isinstance(digest, str)
+        or not HEX64.fullmatch(digest)
+        or not isinstance(identity, str)
+        or not re.fullmatch(r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:1", identity)
+    ):
+        raise TopologyError("portable root collector policy drift")
+    _validate_custody_lineage_fields(
+        policy, message="portable root collector policy drift",
+    )
+    return {key: str(value) for key, value in policy.items()}
+
+
+def _semantic_lineage_collector_policy(policy: object) -> dict[str, str]:
+    expected_fields = {
+        *SEMANTIC_COLLECTOR_POLICY_FIELDS,
+        *CUSTODY_LINEAGE_POLICY_FIELDS,
+        "native_custody_extension_identity",
+    }
+    message = "final topology semantic collector policy is malformed"
+    if not isinstance(policy, dict) or set(policy) != expected_fields:
+        raise TopologyError(message)
+    if any(
+        not isinstance(policy.get(key), str)
+        or not policy[key]
+        or any(character < "\x20" or character > "\x7e" for character in policy[key])
+        for key in expected_fields
+    ):
+        raise TopologyError(message)
+    if (
+        not HEX64.fullmatch(policy["native_custody_extension_sha256"])
+        or not re.fullmatch(
+            r"[0-9]+:[0-9]+:[0-9]+:[0-7]+:1",
+            policy["native_custody_extension_identity"],
+        )
+    ):
+        raise TopologyError(message)
+    _validate_custody_lineage_fields(policy, message=message)
+    return {key: policy[key] for key in SEMANTIC_COLLECTOR_POLICY_FIELDS}
+
+
 def _is_private_pass_cleanup_parent(path: Path) -> bool:
     try:
         info = path.lstat()
@@ -7681,7 +7855,12 @@ def _retained_package6_cleanup_parent(baseline: dict[str, object]):
         raw_path = os.environ.get("PACKAGE6_FD_CUSTODY_EXTENSION_PATH")
         if not raw_path:
             raise TopologyError("verified PASS staging cleanup authority is absent")
-        custody_path = Path(raw_path)
+        try:
+            custody_path = _normalized_custody_extension_path(raw_path)
+        except TopologyError as exc:
+            raise TopologyError(
+                "verified PASS staging cleanup authority is malformed",
+            ) from exc
         build_root = custody_path.parent.parent
         python_root = custody_path.parent
         if (
@@ -7750,6 +7929,8 @@ def _retained_package6_cleanup_parent(baseline: dict[str, object]):
                     != _artifact_identity(os.fstat(custody_descriptor))
                     or _custody_policy_from_artifact(
                         custody_info, _digest_fd(custody_descriptor),
+                        path=custody_path, build_root_info=build_info,
+                        python_root_info=python_info,
                     ) != sealed
                 ):
                     raise TopologyError(
@@ -7803,6 +7984,77 @@ def _retained_pass_cleanup_parent(
         yield retained
 
 
+@contextmanager
+def _final_pass_staging_pathname_rebind():
+    """Perform the last best-effort same-UID pathname custody revalidation."""
+    descriptors: list[int] = []
+    binding: tuple[str, str, tuple[int, ...]] | None = None
+
+    def arm(
+        *, topology_descriptor: int, source_name: str,
+        cleanup_parent_descriptor: int, retained_name: str,
+        execution_descriptor: int, retained_root_identity: tuple[int, ...],
+    ) -> None:
+        nonlocal binding
+        if binding is not None or descriptors:
+            raise TopologyError("verified PASS staging final rebind is ambiguous")
+        opened: list[int] = []
+        try:
+            opened = [
+                os.dup(topology_descriptor),
+                os.dup(cleanup_parent_descriptor),
+                os.dup(execution_descriptor),
+            ]
+        except OSError:
+            for descriptor in reversed(opened):
+                os.close(descriptor)
+            raise
+        descriptors.extend(opened)
+        binding = source_name, retained_name, retained_root_identity
+
+    try:
+        yield arm
+        if binding is None or len(descriptors) != 3:
+            raise TopologyError("verified PASS staging final rebind is absent")
+        source_name, retained_name, retained_root_identity = binding
+        topology_descriptor, cleanup_descriptor, execution_descriptor = descriptors
+        try:
+            try:
+                os.stat(
+                    source_name, dir_fd=topology_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                raise TopologyError(
+                    "verified PASS staging relocation is ambiguous",
+                )
+            held = os.fstat(execution_descriptor)
+            held_identity = (*_stable_object_identity(held), held.st_nlink)
+            named = os.stat(
+                retained_name, dir_fd=cleanup_descriptor,
+                follow_symlinks=False,
+            )
+            named_identity = (*_stable_object_identity(named), named.st_nlink)
+            if (
+                held_identity != retained_root_identity
+                or named_identity != retained_root_identity
+            ):
+                raise TopologyError("verified PASS staging relocation changed")
+            # Linux cannot bind an unlink to a retained inode. This source/name
+            # pair is therefore the strongest best-effort pathname revalidation
+            # available against a same-UID namespace mutator, not an unlink
+            # guarantee. No pathname, content, custody, or fsync read follows it.
+        except TopologyError:
+            raise
+        except OSError as exc:
+            raise TopologyError("verified PASS staging cleanup failed") from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def _cleanup_verified_pass_staging(
     *, baseline: dict[str, object], topology_root: Path, execution_root: Path,
     kind: str, code: str, governance_raw: bytes,
@@ -7832,7 +8084,7 @@ def _cleanup_verified_pass_staging(
 
     execution_descriptor = -1
     leaf_descriptors: list[tuple[str, int, tuple[int, ...]]] = []
-    with _retained_pass_cleanup_parent(
+    with _final_pass_staging_pathname_rebind() as arm_final_rebind, _retained_pass_cleanup_parent(
         evidence_root, baseline,
     ) as (
         _cleanup_parent, cleanup_parent_descriptor, evidence_parent_descriptor,
@@ -7970,24 +8222,14 @@ def _cleanup_verified_pass_staging(
             os.fsync(execution_descriptor)
             os.fsync(topology_descriptor)
             os.fsync(cleanup_parent_descriptor)
-            try:
-                os.stat(
-                    execution_root.name, dir_fd=topology_descriptor,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                pass
-            else:
-                raise TopologyError("verified PASS staging relocation is ambiguous")
-            if (
-                root_identity(os.fstat(execution_descriptor))
-                != retained_root_identity
-                or root_identity(os.stat(
-                    retained_name, dir_fd=cleanup_parent_descriptor,
-                    follow_symlinks=False,
-                )) != retained_root_identity
-            ):
-                raise TopologyError("verified PASS staging relocation changed")
+            arm_final_rebind(
+                topology_descriptor=topology_descriptor,
+                source_name=execution_root.name,
+                cleanup_parent_descriptor=cleanup_parent_descriptor,
+                retained_name=retained_name,
+                execution_descriptor=execution_descriptor,
+                retained_root_identity=retained_root_identity,
+            )
         except TopologyError:
             raise
         except OSError as exc:

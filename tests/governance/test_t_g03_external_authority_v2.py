@@ -193,8 +193,18 @@ def _complete_postgres_bin(root: Path) -> None:
 def _custody() -> dict[str, str]:
     return {
         **topology.PORTABLE_ROOT_POLICY,
+        "native_custody_build_root_identity": "1:3:1000:1000:700",
+        "native_custody_build_root_name": (
+            "package6-custodian-external-authorities.ABCDEF"
+        ),
         "native_custody_extension_identity": "1:2:1000:600:1",
+        "native_custody_extension_path": (
+            "/tmp/package6-custodian-external-authorities.ABCDEF/python/"
+            "_package6_fd_custody.fixture.so"
+        ),
         "native_custody_extension_sha256": "9" * 64,
+        "native_custody_python_root_identity": "1:4:1000:1000:700",
+        "native_custody_python_root_name": "python",
     }
 
 

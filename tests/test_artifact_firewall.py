@@ -45,8 +45,22 @@ def _semantic(**updates: object) -> dict[str, object]:
     )
     policy = {
         **topology.PORTABLE_ROOT_POLICY,
+        "native_custody_build_root_identity": (
+            f"1:3:{os.geteuid()}:{os.getegid()}:700"
+        ),
+        "native_custody_build_root_name": (
+            "package6-custodian-portable-topology.ABCDEF"
+        ),
         "native_custody_extension_identity": f"1:2:{os.geteuid()}:600:1",
+        "native_custody_extension_path": (
+            "/tmp/package6-custodian-portable-topology.ABCDEF/python/"
+            "_package6_fd_custody.fixture.so"
+        ),
         "native_custody_extension_sha256": "e" * 64,
+        "native_custody_python_root_identity": (
+            f"1:4:{os.geteuid()}:{os.getegid()}:700"
+        ),
+        "native_custody_python_root_name": "python",
     }
     value: dict[str, object] = {
         "foundation": {"head_sha": HEAD, "validation_date": "2026-08-13"},
@@ -151,8 +165,22 @@ def _staging(
     context_hash = str(context["foundation_context_sha256"])
     policy = {
         **topology.PORTABLE_ROOT_POLICY,
+        "native_custody_build_root_identity": (
+            f"1:3:{os.geteuid()}:{os.getegid()}:700"
+        ),
+        "native_custody_build_root_name": (
+            "package6-custodian-portable-topology.ABCDEF"
+        ),
         "native_custody_extension_identity": f"1:2:{os.geteuid()}:600:1",
+        "native_custody_extension_path": (
+            "/tmp/package6-custodian-portable-topology.ABCDEF/python/"
+            "_package6_fd_custody.fixture.so"
+        ),
         "native_custody_extension_sha256": "e" * 64,
+        "native_custody_python_root_identity": (
+            f"1:4:{os.geteuid()}:{os.getegid()}:700"
+        ),
+        "native_custody_python_root_name": "python",
     }
     inventory_path = Path("tests/fixtures/t-g03a-hosted-failure-inventory.tsv")
     inventory_raw = inventory_path.read_bytes()
