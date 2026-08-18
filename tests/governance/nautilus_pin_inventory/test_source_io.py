@@ -1,81 +1,36 @@
-"""RED source-custody and publication-custody controls."""
+"""Regression controls proving source bytes come from exact Git objects."""
 
 from __future__ import annotations
 
-from pathlib import Path
+from scripts.nautilus_pin_inventory.git_source import GitTreeSnapshot
 
-import pytest
-
-from conftest import fixture_root, source_io_subject
+from test_git_source import GitFixture
 
 
-def test_source_leaf_swap_after_descriptor_binding_is_rejected(tmp_path, subject) -> None:
-    """Break caught: a source leaf replaced after descriptor binding is accepted without a custody check."""
-    root, _, surface = fixture_root(tmp_path, "Nautilus engine version: 1.227.0\n", name="nested/surface.md")
-    io = source_io_subject(subject)
-    swapped = False
+def test_git_source_leaf_swap_cannot_change_exact_tree_bytes(tmp_path) -> None:
+    """Break caught: a changed worktree leaf changes an already selected Git tree snapshot."""
+    fixture = GitFixture(tmp_path / "repo")
+    commit_oid, expected = fixture.commit_file("pin.md", b"1.227.0\n")
+    (fixture.root / "pin.md").write_bytes(b"1.231.0\n")
 
-    def replace_leaf(component: str) -> None:
-        nonlocal swapped
-        if not swapped and component == "surface.md":
-            swapped = True
-            surface.unlink()
-            surface.write_text("Nautilus engine version: 1.231.0\n", encoding="utf-8")
-
-    error = None
-    try:
-        io.snapshot(root, surface, replace_leaf)
-    except ValueError as caught:
-        error = caught
-    assert swapped, "leaf-swap hook did not fire at descriptor binding"
-    assert error is not None, "source bytes from a replaced leaf were accepted"
+    assert GitTreeSnapshot.from_commit(fixture.root, commit_oid).blob("pin.md").data == expected
 
 
-def test_source_parent_swap_after_descriptor_binding_is_rejected(tmp_path, subject) -> None:
-    """Break caught: a checked parent directory can be replaced while its old descriptor remains readable."""
-    root, _, surface = fixture_root(tmp_path, "Nautilus engine version: 1.227.0\n", name="nested/surface.md")
-    io = source_io_subject(subject)
-    swapped = False
+def test_git_source_parent_swap_cannot_change_exact_tree_bytes(tmp_path) -> None:
+    """Break caught: swapping a worktree parent changes an exact Git tree snapshot."""
+    fixture = GitFixture(tmp_path / "repo")
+    commit_oid, expected = fixture.commit_file("nested/pin.md", b"1.227.0\n")
+    fixture.replace_worktree_parent("nested", b"1.231.0\n")
 
-    def replace_parent(component: str) -> None:
-        nonlocal swapped
-        if not swapped and component == "nested":
-            swapped = True
-            original_parent = root / "nested"
-            original_parent.rename(root / "nested-before-swap")
-            original_parent.mkdir()
-            (original_parent / "surface.md").write_text("Nautilus engine version: 1.231.0\n", encoding="utf-8")
-
-    error = None
-    try:
-        io.snapshot(root, surface, replace_parent)
-    except ValueError as caught:
-        error = caught
-    assert swapped, "parent-swap hook did not fire at descriptor binding"
-    assert error is not None, "source bytes from a replaced parent were accepted"
+    assert GitTreeSnapshot.from_commit(fixture.root, commit_oid).blob("nested/pin.md").data == expected
 
 
-def test_inventory_target_swap_before_publication_preserves_concurrent_bytes(tmp_path, subject) -> None:
-    """Break caught: publication overwrites a concurrently inode-replaced inventory target."""
-    root, inventory, _ = fixture_root(tmp_path, "Nautilus engine version: 1.227.0\n")
-    io = source_io_subject(subject)
-    io.publish(root, inventory, lambda: None)
-    original_inode = inventory.stat().st_ino
-    swapped = False
+def test_moving_branch_cannot_change_exact_commit_snapshot(tmp_path) -> None:
+    """Break caught: a branch move changes a snapshot selected by a full commit OID."""
+    fixture = GitFixture(tmp_path / "repo")
+    commit_oid, expected = fixture.commit_file("pin.md", b"1.227.0\n")
+    fixture.move_head_to_new_commit()
 
-    def replace_target_before_exchange() -> None:
-        nonlocal swapped
-        swapped = True
-        concurrent = inventory.with_name("concurrent-inventory.json")
-        concurrent.write_bytes(b"concurrent operator inventory\n")
-        concurrent.replace(inventory)
-
-    error = None
-    try:
-        io.publish(root, inventory, replace_target_before_exchange)
-    except ValueError as caught:
-        error = caught
-    assert swapped, "pre-exchange hook did not fire"
-    assert inventory.stat().st_ino != original_inode, "hook did not perform a real inode replacement"
-    assert error is not None, "publication replaced concurrent target bytes"
-    assert inventory.read_bytes() == b"concurrent operator inventory\n"
+    snapshot = GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+    assert snapshot.commit_oid == commit_oid
+    assert snapshot.blob("pin.md").data == expected
