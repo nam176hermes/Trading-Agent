@@ -186,7 +186,8 @@ For every blob it must verify:
 
 - the listed type is `blob`;
 - the tracked mode is an allowed regular-file mode;
-- the path is canonical UTF-8 with no NUL, absolute component, `.` or `..`;
+- the path is strict NFC-normalized UTF-8, relative POSIX form, with no NUL,
+  backslash, empty/absolute/`.`/`..` component, surrogate, or control code;
 - the returned object ID, type, and size equal the `ls-tree` record;
 - the Git object ID recomputed from `blob <size>\0<data>` equals `blob_oid`;
 - the independent SHA-256 equals the stored receipt;
@@ -304,28 +305,67 @@ Generation fails before creating a final-tree receipt when:
 
 `--generate` never blesses an unknown value.
 
+### 7.1 Dynamic governed checks are audited separately
+
+The accepted structured-extractor commit
+`bc025c09631333510a89677bb5d2e09ec56e17bf` deliberately rejects a governed field
+compared with a dynamic mapping value. The exact accepted repository contains
+runtime consistency guards of that form, including the materializer and job
+worker comparisons between policy, specification, closure manifest, and
+expected-identity mappings. They are runtime checks, not static pin values.
+
+The Git-tree engine must not solve this conflict with a path allowlist, a broad
+ignore, or by treating a dynamic value as an identity. It introduces a second
+typed result:
+
+```python
+@dataclass(frozen=True)
+class DynamicGovernedCheck:
+    path: str
+    left_root: str
+    left_field: str
+    operator: str
+    right_root: str
+    right_field: str
+    syntax_fingerprint: str
+    span: SourceSpan
+```
+
+Only direct `==` and `!=` comparisons between two statically resolved
+governed mapping fields are admitted. Both roots and both literal field names
+must survive the same scope, alias, rebinding, mutation, and source-origin
+analysis used for literal expectations. Calls, attributes, computed keys,
+chained comparisons, mixed operators, unknown roots, and dynamic expressions
+remain stable errors.
+
+Schema v4 serializes these records in a separate `dynamic_guards` collection.
+They do not receive an `AllowedIdentity`, are not counted as rollback or
+candidate pins, and cannot satisfy a required-identity occurrence. Removal,
+addition, operator change, root/field change, or normalized-AST fingerprint
+change makes the inventory stale and requires review.
+
 ## 8. Review candidate and local commit
 
 ### 8.1 Candidate creation
 
-Task 6 runs in a dedicated local task branch and worktree created from the
-accepted Task 5 commit. After T1 passes focused checks, the implementer stages
-only the explicit Task 6 paths. `git write-tree` must equal the reviewed
-`final_tree_oid=T1`.
+The final candidate packet runs in a dedicated local task branch and worktree
+created from the last accepted implementation commit. After T1 passes focused
+checks, the implementer stages only the explicit final-packet paths.
+`git write-tree` must equal the reviewed `final_tree_oid=T1`.
 
 The implementer creates the candidate commit:
 
 ```bash
-git commit-tree T1 \
-  -p <expected-task5-parent> \
+git commit-tree "$FINAL_TREE_OID" \
+  -p "$EXPECTED_PARENT_COMMIT_OID" \
   -m "docs(p1u): freeze Nautilus 1.227 rollback baseline"
 ```
 
-The task branch is advanced from the exact Task 5 parent to the returned commit
-with a three-argument `git update-ref`. The returned commit OID, rather than
-the task branch name, is reviewed in a fresh detached worktree and standalone
-qualification environment. Candidate creation does not move the recovery
-branch.
+The returned commit OID, rather than the task branch name, is reviewed in a
+fresh detached worktree and standalone qualification environment. Candidate
+creation does not move any ref. Only after both task reviewers PASS is the task
+branch advanced from the exact expected parent with a three-argument
+`git update-ref`; the recovery branch remains unchanged.
 
 ### 8.2 Review and promotion
 
@@ -342,13 +382,18 @@ The detached candidate must pass:
 - fresh security/code-quality review.
 
 Only after both reviewers PASS may the recovery branch fast-forward to the
-already-reviewed candidate commit:
+already-reviewed candidate commit. Because the recovery branch is checked out
+in its own worktree, that clean worktree first detaches at the candidate. The
+now-unattached branch is then updated by CAS and reattached, preventing a stale
+index/worktree without using merge, cherry-pick, or reset:
 
 ```bash
+git switch --detach "$CANDIDATE_COMMIT_OID"
 git update-ref \
   refs/heads/task/p1-u00-recovery \
-  <candidate-commit-oid> \
-  <expected-task5-parent>
+  "$CANDIDATE_COMMIT_OID" \
+  "$EXPECTED_PARENT_COMMIT_OID"
+git switch task/p1-u00-recovery
 ```
 
 The three-argument `update-ref` is the commit-point compare-and-swap. A branch
@@ -459,7 +504,22 @@ scripts/inventory_nautilus_pins.py
 docs/implementation/p1-real-nautilus/upgrade/1.227-rollback-baseline.md
 docs/implementation/p1-real-nautilus/upgrade/pin-inventory.json
 tests/governance/test_nautilus_pin_inventory.py
+tests/governance/nautilus_pin_inventory/conftest.py
 tests/governance/nautilus_pin_inventory/test_end_to_end.py
+```
+
+The current-subject test adapter builds private fixture Git commits and exact
+T0/T1 trees. It does not retain the legacy `--fixture-filesystem` production
+path. The immutable known-bad adapter remains available only to reproduce the
+historical RED candidate by exact commit/blob receipt.
+
+Packet C also makes the narrowly required model/extractor changes for
+`DynamicGovernedCheck`:
+
+```text
+scripts/nautilus_pin_inventory/model.py
+scripts/nautilus_pin_inventory/python_extractor.py
+tests/governance/nautilus_pin_inventory/test_python.py
 ```
 
 ### Packet D — Qualification and integration
@@ -475,14 +535,17 @@ P1-U00 is complete only when:
 3. Git source and candidate authority focused tests pass without skip or xfail.
 4. Schema v4 contains zero unknown entries and cites every independent-oracle
    occurrence.
-5. The inventory binds exact T0 blob and tree receipts.
-6. The candidate commit binds exact T1 and expected Task 5 parent.
-7. No active runtime policy, live flag, execution authority, or 1.227 rollback
+5. Every admitted dynamic governed check is serialized separately and matches
+   the exact reviewed Git tree; unsupported dynamic expressions still fail.
+6. The inventory binds exact T0 blob and tree receipts.
+7. The candidate commit binds exact T1 and the expected last implementation
+   parent.
+8. No active runtime policy, live flag, execution authority, or 1.227 rollback
    closure changes.
-8. Provenance, P0 baseline, P0 maintainability, artifact firewall, critical
+9. Provenance, P0 baseline, P0 maintainability, artifact firewall, critical
    coverage, and full portable CI pass.
-9. Fresh spec and security/code-quality reviewers return PASS.
-10. The Integration Lead verifies the final branch CAS, HEAD, parent, tree,
+10. Fresh spec and security/code-quality reviewers return PASS.
+11. The Integration Lead verifies the final branch CAS, HEAD, parent, tree,
     index, worktree, diff scope, and retained evidence hashes.
 
 Only then may P1-U01 start automatically.
