@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import hashlib
+import json
 import re
 import tokenize
 import unicodedata
@@ -10,7 +12,13 @@ from dataclasses import dataclass
 from io import StringIO
 from typing import Iterable
 
-from .model import Observation, SourceSpan
+from .model import (
+    DynamicGovernedCheck,
+    GovernedRelation,
+    Observation,
+    PythonExtractionResult,
+    SourceSpan,
+)
 from .registry import Registry
 
 
@@ -26,6 +34,15 @@ _FIELDS = {
     "schema_version": "closure_schema",
     "semantic_profile": "semantic_profile",
 }
+
+_DOCUMENT_FIELDS = {
+    "nautilus_engine_build_policy": _FIELDS,
+    "nautilus_runtime_closure_policy": {**_FIELDS, "source_commit": "selected_source"},
+    "nautilus_closure_manifest": {**_FIELDS, "source_commit": "selected_source"},
+    "nautilus_base_runtime_manifest": _FIELDS,
+}
+_CONDITIONAL_ROOTS = frozenset({"specification", "expected_identity"})
+_GOVERNED_ROOTS = _OBJECTS | _CONDITIONAL_ROOTS
 
 
 class PythonExtractionError(ValueError):
@@ -294,7 +311,7 @@ class PythonExtractor:
             raise ValueError("extractor registry must be a Registry")
         self._registry = registry
 
-    def extract(self, path: str, text: str) -> tuple[Observation, ...]:
+    def extract(self, path: str, text: str) -> PythonExtractionResult:
         if type(path) is not str or type(text) is not str:
             raise ValueError("Python extraction path and text must be strings")
         try:
@@ -304,10 +321,172 @@ class PythonExtractor:
         tokens = _string_tokens(text)
         bindings, invalid_names, invalid_governed_names = self._bindings(tree, tokens, text)
         observations = set(self._literal_observations(path, text, tokens, tree))
+        dynamic_guards: set[DynamicGovernedCheck] = set()
+        governed_relations: set[GovernedRelation] = set()
+        parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        document_kind = self._document_kind(path, tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Compare):
+                evidence = self._governed_evidence(path, text, tree, node, parents)
+                if evidence is not None:
+                    guard, relation = evidence
+                    if guard is not None:
+                        dynamic_guards.add(guard)
+                    if relation is not None:
+                        governed_relations.add(relation)
+                    continue
+                # A proved governed document can contain unrelated derived
+                # predicates. They are deliberately outside the relation
+                # inventory; only direct two-endpoint evidence is governed.
+                if document_kind is not None:
+                    continue
                 observations.update(self._comparison_observations(path, text, node, tokens, bindings, invalid_names, invalid_governed_names))
-        return tuple(sorted(observations, key=self._sort_key))
+        return PythonExtractionResult(
+            tuple(sorted(observations, key=self._sort_key)),
+            tuple(sorted(dynamic_guards, key=self._dynamic_sort_key)),
+            tuple(sorted(governed_relations, key=self._relation_sort_key)),
+        )
+
+    @staticmethod
+    def _canonical(value: object) -> bytes:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=False).encode("utf-8")
+
+    @classmethod
+    def _fingerprint(cls, value: object) -> str:
+        return hashlib.sha256(cls._canonical(value)).hexdigest()
+
+    @staticmethod
+    def _document_kind(path: str, tree: ast.Module) -> str | None:
+        """Accept only exact reviewed module shapes, never a root spelling alone."""
+        names = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        if path == "scripts/materialize_nautilus_runtime_closure.py" and "_validate_policy_bytes" in names:
+            return "nautilus_runtime_closure_policy"
+        if path == "services/job_worker/nautilus_closure.py" and "attest_nautilus_backtest_closure" in names:
+            return "nautilus_closure_manifest"
+        return None
+
+    @staticmethod
+    def _scope(tree: ast.Module, node: ast.AST) -> ast.AST:
+        candidates = [
+            candidate for candidate in ast.walk(tree)
+            if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            and candidate.lineno <= node.lineno <= candidate.end_lineno
+        ]
+        return max(candidates, key=lambda candidate: candidate.lineno) if candidates else tree
+
+    @staticmethod
+    def _scope_bindings(scope: ast.AST) -> dict[str, ast.AST]:
+        """Return single-assignment direct bindings in one lexical scope."""
+        values: dict[str, list[ast.AST]] = {}
+        deleted: set[str] = set()
+        for item in ast.walk(scope):
+            if item is not scope and isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            if isinstance(item, ast.Assign):
+                for target in item.targets:
+                    if isinstance(target, ast.Name):
+                        values.setdefault(target.id, []).append(item.value)
+            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and item.value is not None:
+                values.setdefault(item.target.id, []).append(item.value)
+            elif isinstance(item, ast.Name) and isinstance(item.ctx, ast.Del):
+                deleted.add(item.id)
+        return {name: entries[0] for name, entries in values.items() if len(entries) == 1 and name not in deleted}
+
+    @staticmethod
+    def _binding_kind(root: str, value: ast.AST) -> str | None:
+        if root == "policy" and isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "_json_object":
+            return "runtime_policy_json_object"
+        if root == "closure_manifest" and isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "_read_json":
+            return "closure_manifest_read_json"
+        if root == "specification" and isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and isinstance(value.func.value, ast.Name) and value.func.value.id == "_PROFILE_SPECS" and value.func.attr == "get":
+            return "profile_specification_lookup"
+        if root == "expected_identity" and isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name) and value.value.id == "_PROFILES":
+            return "profile_identity_lookup"
+        return None
+
+    @staticmethod
+    def _direct_access(node: ast.AST, families: dict[str, str]) -> tuple[str, str, str] | None:
+        if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name) or node.value.id not in _GOVERNED_ROOTS:
+            return None
+        if not isinstance(node.slice, ast.Constant) or type(node.slice.value) is not str:
+            return None
+        field = node.slice.value
+        family = families.get(field)
+        return (node.value.id, field, family) if family is not None else None
+
+    @staticmethod
+    def _node_span(path: str, text: str, node: ast.AST) -> SourceSpan:
+        starts = _offsets(text)
+        start = _ast_offset(text, starts, node.lineno, node.col_offset)
+        end = _ast_offset(text, starts, node.end_lineno, node.end_col_offset)
+        return _span(path, text, (_Origin(start, end),))
+
+    @staticmethod
+    def _terminal_failure(node: ast.Compare, parents: dict[int, ast.AST]) -> bool:
+        current: ast.AST = node
+        while id(current) in parents:
+            current = parents[id(current)]
+            if isinstance(current, ast.If):
+                return any(
+                    isinstance(statement, ast.Raise)
+                    or (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+                        and isinstance(statement.value.func, ast.Name) and statement.value.func.id == "_blocked")
+                    for statement in current.body
+                )
+        return False
+
+    def _governed_evidence(
+        self,
+        path: str,
+        text: str,
+        tree: ast.Module,
+        node: ast.Compare,
+        parents: dict[int, ast.AST],
+    ) -> tuple[DynamicGovernedCheck | None, GovernedRelation | None] | None:
+        kind = self._document_kind(path, tree)
+        if kind is None or len(node.ops) != 1 or len(node.comparators) != 1:
+            return None
+        operator = "==" if isinstance(node.ops[0], ast.Eq) else "!=" if isinstance(node.ops[0], ast.NotEq) else None
+        if operator is None:
+            return None
+        families = _DOCUMENT_FIELDS[kind]
+        left = self._direct_access(node.left, families)
+        right = self._direct_access(node.comparators[0], families)
+        if left is None or right is None:
+            return None
+        scope = self._scope(tree, node)
+        bindings = self._scope_bindings(scope)
+        roots = {left[0], right[0]}
+        bound: list[list[str]] = []
+        for root in sorted(roots):
+            value = bindings.get(root)
+            binding_kind = self._binding_kind(root, value) if value is not None else None
+            if binding_kind is None:
+                return None
+            bound.append([root, binding_kind, ast.dump(value, annotate_fields=True, include_attributes=False)])
+        scope_name = getattr(scope, "name", "<module>")
+        qualified_scope = f"{scope_name}@{getattr(scope, 'lineno', 1)}"
+        binding_fingerprint = self._fingerprint([path, qualified_scope, bound])
+        syntax_fingerprint = self._fingerprint([left[0], left[1], operator, right[0], right[1]])
+        span = self._node_span(path, text, node)
+        if left[2] == right[2]:
+            return (
+                DynamicGovernedCheck(path, left[0], left[1], operator, right[0], right[1], syntax_fingerprint, span),
+                None,
+            )
+        # A raw equality inside a terminal invalidity predicate represents the
+        # accepted cross-family inequality relation, as approved for this baseline.
+        relation_operator = "!=" if operator == "==" and self._terminal_failure(node, parents) else operator
+        if relation_operator != "!=":
+            return None
+        return (
+            None,
+            GovernedRelation(
+                path, left[0], left[1], left[2], relation_operator,
+                right[0], right[1], right[2], "cross_family_consistency_guard",
+                binding_fingerprint, syntax_fingerprint, span,
+            ),
+        )
 
     def _bindings(self, tree: ast.Module, tokens: tuple[_StringToken, ...], text: str) -> tuple[dict[str, _Binding], set[str], set[str]]:
         """Build one whole-module binding-event and conservative provenance graph."""
@@ -602,3 +781,22 @@ class PythonExtractor:
     def _sort_key(observation: Observation) -> tuple[object, ...]:
         span = observation.span
         return (span.path, span.start_line, span.start_column, span.end_line, span.end_column, observation.family, observation.value)
+
+    @staticmethod
+    def _dynamic_sort_key(guard: DynamicGovernedCheck) -> tuple[object, ...]:
+        span = guard.span
+        return (
+            guard.path, guard.left_root, guard.left_field, guard.operator,
+            guard.right_root, guard.right_field, guard.syntax_fingerprint,
+            span.start_line, span.start_column, span.end_line, span.end_column,
+        )
+
+    @staticmethod
+    def _relation_sort_key(relation: GovernedRelation) -> tuple[object, ...]:
+        span = relation.span
+        return (
+            relation.path, relation.left_root, relation.left_field, relation.left_family,
+            relation.operator, relation.right_root, relation.right_field, relation.right_family,
+            relation.relation_kind, relation.binding_fingerprint, relation.syntax_fingerprint,
+            span.start_line, span.start_column, span.end_line, span.end_column,
+        )

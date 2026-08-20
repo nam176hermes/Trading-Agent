@@ -7,13 +7,60 @@ from pathlib import Path
 import pytest
 
 from conftest import fixture_root, generate_baseline, run_subject
-from scripts.nautilus_pin_inventory.model import Observation, SourceSpan
+from scripts.nautilus_pin_inventory.model import (
+    DynamicGovernedCheck,
+    GovernedRelation,
+    Observation,
+    SourceSpan,
+)
 from scripts.nautilus_pin_inventory.registry import DEFAULT_REGISTRY
 from scripts.nautilus_pin_inventory.python_extractor import PythonExtractionError, PythonExtractor
 
 
 def _extract(source: str):
-    return PythonExtractor(DEFAULT_REGISTRY).extract("nautilus_consumer.py", source)
+    return PythonExtractor(DEFAULT_REGISTRY).extract("nautilus_consumer.py", source).observations
+
+
+def test_python_real_runtime_policy_captures_proven_dynamic_guards_and_relation() -> None:
+    """Break caught: exact runtime policy comparisons cannot be audited as evidence."""
+    root = Path(__file__).resolve().parents[3]
+    path = "scripts/materialize_nautilus_runtime_closure.py"
+    result = PythonExtractor(DEFAULT_REGISTRY).extract(path, (root / path).read_text(encoding="utf-8"))
+
+    assert any(
+        isinstance(guard, DynamicGovernedCheck)
+        and (guard.left_root, guard.left_field, guard.operator, guard.right_root, guard.right_field)
+        == ("policy", "result_validator_id", "!=", "specification", "result_validator_id")
+        for guard in result.dynamic_guards
+    )
+    assert any(
+        isinstance(relation, GovernedRelation)
+        and (relation.left_root, relation.left_field, relation.left_family, relation.operator,
+             relation.right_root, relation.right_field, relation.right_family, relation.relation_kind)
+        == ("policy", "source_commit", "selected_source", "!=",
+            "policy", "engine_upstream_commit", "upstream_commit", "cross_family_consistency_guard")
+        for relation in result.governed_relations
+    )
+
+
+def test_python_real_closure_manifest_captures_conditional_expected_identity_and_relation() -> None:
+    """Break caught: conditionally bound expected identity is treated as an ungoverned name."""
+    root = Path(__file__).resolve().parents[3]
+    path = "services/job_worker/nautilus_closure.py"
+    result = PythonExtractor(DEFAULT_REGISTRY).extract(path, (root / path).read_text(encoding="utf-8"))
+
+    assert any(
+        (guard.left_root, guard.left_field, guard.operator, guard.right_root, guard.right_field)
+        == ("closure_manifest", "result_validator_id", "!=", "expected_identity", "result_validator_id")
+        for guard in result.dynamic_guards
+    )
+    assert any(
+        (relation.left_root, relation.left_field, relation.left_family, relation.operator,
+         relation.right_root, relation.right_field, relation.right_family)
+        == ("closure_manifest", "source_commit", "selected_source", "!=",
+            "closure_manifest", "engine_upstream_commit", "upstream_commit")
+        for relation in result.governed_relations
+    )
 
 
 def test_python_literals_keep_their_physical_decoded_origins() -> None:
@@ -125,24 +172,10 @@ def test_python_unicode_escape_uses_the_physical_escape_extent() -> None:
     assert expected in _extract(source)
 
 
-@pytest.mark.parametrize(
-    "relative",
-    (
-        "scripts/materialize_nautilus_runtime_closure.py",
-        "services/job_worker/nautilus_closure.py",
-    ),
-)
-def test_python_real_governed_consumers_reject_existing_nonclosed_governed_predicates(relative: str) -> None:
-    """Break caught: real paths silently relax a governed dynamic RHS."""
-    root = Path(__file__).resolve().parents[3]
-    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
-        PythonExtractor(DEFAULT_REGISTRY).extract(relative, (root / relative).read_text(encoding="utf-8"))
-
-
 @pytest.mark.parametrize("relative", ("scripts/prepare_nautilus_llvm_toolchain.py", "scripts/materialize_nautilus_runtime_closure.py", "services/job_worker/nautilus_closure.py"))
 def test_python_ordinary_static_policy_fields_are_ignored_on_every_path(relative: str) -> None:
     """Break caught: ignoring ordinary fields depends on a path allowlist."""
-    assert PythonExtractor(DEFAULT_REGISTRY).extract(relative, 'if policy["ordinary_metadata"] != source: pass\n') == ()
+    assert PythonExtractor(DEFAULT_REGISTRY).extract(relative, 'if policy["ordinary_metadata"] != source: pass\n').observations == ()
 
 
 def test_python_real_root_parameter_invalidates_the_closed_comparison_globally() -> None:

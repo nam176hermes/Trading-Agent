@@ -83,6 +83,90 @@ class Observation:
         _require_string(self.syntax, "observation syntax")
 
 
+@dataclass(frozen=True)
+class DynamicGovernedCheck:
+    """One proved direct same-family governed comparison."""
+
+    path: str
+    left_root: str
+    left_field: str
+    operator: Literal["==", "!="]
+    right_root: str
+    right_field: str
+    syntax_fingerprint: str
+    span: SourceSpan
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("dynamic guard path", self.path),
+            ("dynamic guard left root", self.left_root),
+            ("dynamic guard left field", self.left_field),
+            ("dynamic guard right root", self.right_root),
+            ("dynamic guard right field", self.right_field),
+            ("dynamic guard syntax fingerprint", self.syntax_fingerprint),
+        ):
+            _require_string(value, name)
+        if self.operator not in ("==", "!="):
+            raise ValueError("dynamic guard operator is invalid")
+        if type(self.span) is not SourceSpan or self.span.path != self.path:
+            raise ValueError("dynamic guard span must bind the claimed path")
+
+
+@dataclass(frozen=True)
+class GovernedRelation:
+    """A proved cross-family consistency relation; never a literal pin."""
+
+    path: str
+    left_root: str
+    left_field: str
+    left_family: str
+    operator: Literal["==", "!="]
+    right_root: str
+    right_field: str
+    right_family: str
+    relation_kind: Literal["cross_family_consistency_guard"]
+    binding_fingerprint: str
+    syntax_fingerprint: str
+    span: SourceSpan
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("relation path", self.path),
+            ("relation left root", self.left_root),
+            ("relation left field", self.left_field),
+            ("relation left family", self.left_family),
+            ("relation right root", self.right_root),
+            ("relation right field", self.right_field),
+            ("relation right family", self.right_family),
+            ("relation binding fingerprint", self.binding_fingerprint),
+            ("relation syntax fingerprint", self.syntax_fingerprint),
+        ):
+            _require_string(value, name)
+        if self.operator not in ("==", "!="):
+            raise ValueError("relation operator is invalid")
+        if self.relation_kind != "cross_family_consistency_guard":
+            raise ValueError("relation kind is invalid")
+        if type(self.span) is not SourceSpan or self.span.path != self.path:
+            raise ValueError("relation span must bind the claimed path")
+
+
+@dataclass(frozen=True)
+class PythonExtractionResult:
+    """Immutable Python extraction channels with no legacy tuple compatibility."""
+
+    observations: tuple[Observation, ...]
+    dynamic_guards: tuple[DynamicGovernedCheck, ...]
+    governed_relations: tuple[GovernedRelation, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.observations) is not tuple or any(type(value) is not Observation for value in self.observations):
+            raise ValueError("Python observations must be an Observation tuple")
+        if type(self.dynamic_guards) is not tuple or any(type(value) is not DynamicGovernedCheck for value in self.dynamic_guards):
+            raise ValueError("Python dynamic guards must be a DynamicGovernedCheck tuple")
+        if type(self.governed_relations) is not tuple or any(type(value) is not GovernedRelation for value in self.governed_relations):
+            raise ValueError("Python governed relations must be a GovernedRelation tuple")
+
+
 IdentityRole = Literal["ROLLBACK", "CANDIDATE_CONTEXT"]
 
 
