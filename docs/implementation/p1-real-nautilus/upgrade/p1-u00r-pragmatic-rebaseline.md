@@ -51,6 +51,44 @@ The approved successor path is
 `U00R -> U01 -> U02 -> U03 -> U04 -> U05 -> U06 -> U07 -> U08 -> P1-00`.
 The removed `P1_U00_COMPLETE` verdict cannot be used.
 
+## T through T4 narrow repair exception
+
+The Task 1 protected-path guard has one exact, reviewable exception for the
+single repair commit `T`: only
+`scripts/nautilus_pin_inventory/git_source.py`,
+`tests/governance/nautilus_pin_inventory/test_git_source.py`, and this overlay
+may differ from accepted base `f007624191077edd0ba01e42b421e8bff12cbbf0`.
+T2, T3, and T4 are successive reconciliation work inside that same exception,
+not separate authority or a general release of protected-path equality.  The
+four R3 paths remain excluded from `T` and retain their independent dirty-work
+status.
+
+The persistent batch reader and its bootstrap have deliberately different
+lifetimes.  The sole live reader closes, verifies, reaps, and releases its
+streams and mutation guard before copied-closure publication.  The immutable
+bootstrap then remains reader-free, never reopens, and retains only the
+descriptor, selected-entry, link, and cleanup receipts required until normal
+runner cleanup.  Copied-store cleanup releases its own link first and hands
+the resulting receipt to the retained bootstrap; bootstrap cleanup then
+releases its last link back to the operation-start baseline.
+
+T4 migrates accepted one-shot fixture assumptions to semantic equivalents for
+the persistent protocol: request-bound mutation phases, exact selected-entry
+and private-inventory checks, header-first limits, reader reap, retained-owner
+cleanup, and distinct primary/cleanup aggregation.  A late canonical name that
+was absent at freeze is never scanned or adopted; an unrelated such name is
+ignored, while a required late pair and every private addition remain terminal.
+
+The T2 production draft existed before its mandatory behavioral RED matrix.
+That ordering error is retained as disclosed recovery history: the draft was
+preserved in its named path-specific stash, behavioral tests were established
+against the committed base, and only then was the reconciliation resumed.  It
+does not convert a passing test into independent review or release authority.
+
+`U00R_TRUSTED_HOST_COOPERATIVE_GIT_V1` is unchanged.  This exception does not
+claim resistance to a malicious same-UID raw writer, ptrace, root, kernel
+compromise, lock-bypassing CAS writer, or upstream cryptographic compromise.
+
 ## Governed comparison interpretation
 
 Python literal pins are required occurrences. Dynamic checks and governed

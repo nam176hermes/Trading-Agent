@@ -17,6 +17,7 @@ import tempfile
 import time
 import hashlib
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -1190,26 +1191,24 @@ def test_transient_private_namespace_swap_cannot_supply_non_authoritative_pack(
         "object_path = pathlib.Path(os.readlink(object_text) if object_text is not None and object_text.startswith('/proc/self/fd/') else object_text) if object_text is not None else None\n"
             "should_swap = object_path is not None and 'p1-u00-pack-' in str(object_path) and 'cat-file' in sys.argv\n"
         "if not should_swap:\n"
-        "    result = subprocess.run([real_git, *sys.argv[1:]], input=sys.stdin.buffer.read(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=authority_fds)\n"
-        "else:\n"
-        "    selected = {'root': object_path.parent, 'objects': object_path, 'pack': object_path / 'pack'}[swap_level]\n"
-        "    donor = {'root': donor_root, 'objects': donor_root / 'objects', 'pack': donor_root / 'objects' / 'pack'}[swap_level]\n"
-        "    parked = selected.with_name(selected.name + '.operation-start')\n"
-        "    selected.rename(parked)\n"
-        "    donor.rename(selected)\n"
-        "    marker.write_text('swapped', encoding='ascii')\n"
-        "    try:\n"
-        "        result = subprocess.run([real_git, *sys.argv[1:]], input=sys.stdin.buffer.read(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=authority_fds)\n"
-        "    finally:\n"
-        "        try:\n"
-        "            selected.rename(donor)\n"
-        "            parked.rename(selected)\n"
-        "        except BaseException as restore_error:\n"
-        "            marker.write_text('restore=' + repr(restore_error), encoding='utf-8')\n"
-        "            raise\n"
-        "sys.stdout.buffer.write(result.stdout)\n"
-        "sys.stderr.buffer.write(result.stderr)\n"
-        "raise SystemExit(result.returncode)",
+        "    raise SystemExit(subprocess.call([real_git, *sys.argv[1:]], pass_fds=authority_fds))\n"
+        "selected = {'root': object_path.parent, 'objects': object_path, 'pack': object_path / 'pack'}[swap_level]\n"
+        "donor = {'root': donor_root, 'objects': donor_root / 'objects', 'pack': donor_root / 'objects' / 'pack'}[swap_level]\n"
+        "parked = selected.with_name(selected.name + '.operation-start')\n"
+        "child = subprocess.Popen([real_git, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=authority_fds)\n"
+        "swapped = False\n"
+        "try:\n"
+        "    for request in sys.stdin.buffer:\n"
+        "        selected.rename(parked); donor.rename(selected); swapped = True\n"
+        "        marker.write_text('pre-request', encoding='ascii')\n"
+        "        child.stdin.write(request); child.stdin.flush()\n"
+        "        header = child.stdout.readline(); size = int(header.rstrip(b'\\n').rsplit(b' ', 1)[1]); body = child.stdout.read(size + 1)\n"
+        "        sys.stdout.buffer.write(header + body); sys.stdout.buffer.flush()\n"
+        "        selected.rename(donor); parked.rename(selected); swapped = False\n"
+        "finally:\n"
+        "    if swapped:\n"
+        "        selected.rename(donor); parked.rename(selected)\n"
+        "    child.stdin.close(); child.wait()",
     )
     monkeypatch.setattr(git_source.shutil, "which", lambda _name: str(wrapper))
 
@@ -1217,7 +1216,7 @@ def test_transient_private_namespace_swap_cannot_supply_non_authoritative_pack(
         with pytest.raises(GitAuthorityError) as raised:
             GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
         assert "mutation guard observed authority drift" in str(raised.value)
-        assert marker.read_text(encoding="ascii") == "swapped"
+        assert marker.read_text(encoding="ascii") == "pre-request"
         assert donor_bytes == b"non-authoritative donor pack bytes\n"
     finally:
         shutil.rmtree(donor_root, ignore_errors=True)
@@ -1236,6 +1235,7 @@ def test_private_directory_identity_rejects_mode_and_owner_drift(
     git_fixture._git("gc", "--prune=now")
     runner = git_source._GitRunner(git_fixture.root, GitScanLimits())
     runner.seal_object_store(commit_oid, "commit", "sha1")
+    assert runner._persistent_reader is None
     bootstrap = runner._pack_bootstraps[0]
     try:
         if drift == "mode":
@@ -1520,6 +1520,7 @@ def test_pinned_pack_source_drift_is_rejected_but_late_unrelated_pack_is_ignored
     commit_oid, expected = git_fixture.commit_file("pin.md", b"packed authority\n")
     git_fixture._git("gc", "--prune=now")
     pack = next((git_fixture.root / ".git/objects/pack").glob("*.pack"))
+    phase = tmp_path / f"pack-race-{operation}.phase"
     real_git = shutil.which("git")
     assert real_git
     wrapper = _controlled_executable(
@@ -1527,26 +1528,53 @@ def test_pinned_pack_source_drift_is_rejected_but_late_unrelated_pack_is_ignored
         "import os, pathlib, subprocess, sys\n"
         f"pack = pathlib.Path({str(pack)!r})\n"
         f"operation = {operation!r}\n"
+        f"phase = pathlib.Path({str(phase)!r})\n"
         "object_text = os.environ.get('GIT_OBJECT_DIRECTORY')\n"
         "authority_fds = (int(object_text.rsplit('/', 1)[1]),) if object_text is not None and object_text.startswith('/proc/self/fd/') else ()\n"
-        f"result = subprocess.run([{real_git!r}, *sys.argv[1:]], input=sys.stdin.buffer.read(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=authority_fds)\n"
-        "if 'cat-file' in sys.argv and '--batch' in sys.argv:\n"
+        "if 'cat-file' not in sys.argv or '--batch' not in sys.argv:\n"
+        f"    raise SystemExit(subprocess.call([{real_git!r}, *sys.argv[1:]], pass_fds=authority_fds))\n"
+        f"child = subprocess.Popen([{real_git!r}, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=authority_fds)\n"
+        "for request in sys.stdin.buffer:\n"
+        "    child.stdin.write(request); child.stdin.flush()\n"
+        "    header = child.stdout.readline(); size = int(header.rstrip(b'\\n').rsplit(b' ', 1)[1]); body = child.stdout.read(size + 1)\n"
+        "    phase.write_text('post-body-pre-forward ' + str(child.pid), encoding='ascii')\n"
         "    if operation == 'replace':\n"
         "        replacement = pack.with_name('replacement.pack'); replacement.write_bytes(pack.read_bytes()); replacement.replace(pack)\n"
         "    elif operation == 'corrupt':\n"
         "        os.chmod(pack, 0o600); pack.write_bytes(b'corrupt')\n"
         "    else:\n"
         "        pack.with_name('late-unrelated.pack').write_bytes(b'unrelated')\n"
-        "sys.stdout.buffer.write(result.stdout); sys.stderr.buffer.write(result.stderr); raise SystemExit(result.returncode)",
+        "    sys.stdout.buffer.write(header + body); sys.stdout.buffer.flush()\n"
+        "child.stdin.close(); raise SystemExit(child.wait())",
     )
     import scripts.nautilus_pin_inventory.git_source as git_source
     monkeypatch.setattr(git_source.shutil, "which", lambda _name: str(wrapper))
 
-    if operation == "late-unrelated":
-        assert GitTreeSnapshot.from_commit(git_fixture.root, commit_oid).blob("pin.md").data == expected
-    else:
-        with pytest.raises(GitAuthorityError, match="Git pack changed|bootstrap Git object|primary pack bootstrap"):
-            GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
+    try:
+        if operation == "late-unrelated":
+            assert GitTreeSnapshot.from_commit(git_fixture.root, commit_oid).blob("pin.md").data == expected
+            assert phase.read_text(encoding="ascii").startswith("post-body-pre-forward ")
+        else:
+            snapshot = None
+            caught: BaseException | None = None
+            try:
+                snapshot = GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
+            except BaseException as exc:
+                caught = exc
+            assert snapshot is None
+            assert type(caught) is git_source.GitAuthorityAggregateError
+            assert isinstance(caught, git_source.GitAuthorityAggregateError)
+            assert "Git pack namespace changed during source snapshot" in str(caught.primary)
+            assert "private Git pack bootstrap entry changed during cleanup" in str(caught.cleanup)
+            phase_text = phase.read_text(encoding="ascii")
+            assert phase_text.startswith("post-body-pre-forward ")
+            child_pid = int(phase_text.rsplit(" ", 1)[1])
+            deadline = time.monotonic() + 2.0
+            while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert not Path(f"/proc/{child_pid}").exists()
+    finally:
+        phase.unlink(missing_ok=True)
 
 
 def _object_database_digest(root: Path) -> str:
@@ -1987,6 +2015,77 @@ def test_post_seal_pinned_pack_and_index_drift_is_rejected(git_fixture: GitFixtu
         runner.close(suppress_terminal_error=True)
 
 
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_bootstrap_owned_hardlink_advances_namespace_receipt_but_external_drift_is_terminal(
+    object_format: str,
+) -> None:
+    """Break caught: bootstrap-owned nlink/ctime changes look like an external pack mutation."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    initial = git_source._PackEntry(
+        f"pack-{object_format}.idx", (11, 22, stat.S_IFREG, 1, 4096, 33, 44)
+    )
+    namespace = git_source._PackNamespace(
+        Path("/non-authority"), None, None, {initial.name: initial}, None
+    )
+    linked = (11, 22, stat.S_IFREG, 2, 4096, 33, 55)
+
+    git_source._advance_namespace_owned_hardlink(namespace, initial.name, linked)
+    assert namespace.entries[initial.name].identity == linked
+
+    with pytest.raises(GitAuthorityError, match="namespace"):
+        git_source._advance_namespace_owned_hardlink(
+            namespace, initial.name, (11, 22, stat.S_IFREG, 4, 4096, 33, 56)
+        )
+
+
+def test_bootstrap_owned_hardlink_receipt_does_not_relax_pack_byte_or_inode_drift() -> None:
+    """Break caught: accepting the expected metadata transition masks replacement or byte drift."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    initial = git_source._PackEntry("pack-safe.pack", (11, 22, stat.S_IFREG, 1, 4096, 33, 44))
+    namespace = git_source._PackNamespace(Path("/non-authority"), None, None, {initial.name: initial}, None)
+
+    with pytest.raises(GitAuthorityError, match="namespace"):
+        git_source._advance_namespace_owned_hardlink(
+            namespace, initial.name, (11, 23, stat.S_IFREG, 2, 4096, 33, 55)
+        )
+    with pytest.raises(GitAuthorityError, match="namespace"):
+        git_source._advance_namespace_owned_hardlink(
+            namespace, initial.name, (11, 22, stat.S_IFREG, 2, 4097, 33, 55)
+        )
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_bootstrap_object_read_uses_one_authoritative_header_and_body_call(
+    monkeypatch, object_format: str
+) -> None:
+    """Break caught: one packed object incurs a second authority subprocess just to read its header."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    payload = b"one bounded packed read\n"
+    raw = b"blob " + str(len(payload)).encode("ascii") + b"\0" + payload
+    oid = hashlib.new(object_format, raw).hexdigest()
+    output = f"{oid} blob {len(payload)}\n".encode("ascii") + payload + b"\n"
+    runner = object.__new__(git_source._GitRunner)
+    runner.limits = GitScanLimits()
+    runner._returned_object_sha256 = {}
+    calls: list[tuple[str, ...]] = []
+
+    def run(arguments, **_kwargs):
+        calls.append(arguments)
+        return output
+
+    runner.run = run
+    monkeypatch.setattr(git_source, "_verify_private_pack_bootstrap", lambda _bootstrap: None)
+    result = runner._read_bootstrap_object(
+        SimpleNamespace(object_authority=object()), oid, "blob", object_format
+    )
+
+    assert result == ("blob", payload)
+    assert calls == [("cat-file", "--batch")]
+
+
 def test_pack_discovery_setup_oserror_is_normalized(git_fixture: GitFixture, monkeypatch) -> None:
     """Break caught: pack-directory enumeration leaks a raw setup OSError."""
     import scripts.nautilus_pin_inventory.git_source as git_source
@@ -2006,21 +2105,21 @@ def test_late_private_loose_object_cannot_be_adopted_by_packed_bootstrap(git_fix
     commit_oid, expected = git_fixture.commit_file("nested/pin.md", b"packed provenance\n")
     tree_oid = git_fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
     tree_raw = git_fixture._git("cat-file", "tree", tree_oid)
-    original = git_source._GitRunner._read_bootstrap_object
+    original = git_source._BootstrapBatchReader.read_object
     injected = False
 
-    def inject_after_commit(self, bootstrap, oid, expected_type, object_format):
+    def inject_after_commit(self, oid, expected_type, object_format):
         nonlocal injected
-        result = original(self, bootstrap, oid, expected_type, object_format)
+        result = original(self, oid, expected_type, object_format)
         if not injected and expected_type == "commit":
             injected = True
-            target = bootstrap.destination / tree_oid[:2] / tree_oid[2:]
+            target = self.bootstrap.destination / tree_oid[:2] / tree_oid[2:]
             target.parent.mkdir(mode=0o700)
             target.write_bytes(zlib.compress(b"tree " + str(len(tree_raw)).encode("ascii") + b"\0" + tree_raw))
         return result
 
     git_fixture._git("gc", "--prune=now")
-    monkeypatch.setattr(git_source._GitRunner, "_read_bootstrap_object", inject_after_commit)
+    monkeypatch.setattr(git_source._BootstrapBatchReader, "read_object", inject_after_commit)
     with pytest.raises(GitAuthorityError, match="private Git pack bootstrap|private bootstrap|inventory"):
         GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
     assert injected
@@ -2277,6 +2376,7 @@ def _sealed_pack_runner(git_fixture: GitFixture, payload: bytes):
     git_fixture._git("gc", "--prune=now")
     runner = git_source._GitRunner(git_fixture.root, GitScanLimits())
     runner.seal_object_store(commit_oid, "commit", "sha1")
+    assert runner._persistent_reader is None
     assert len(runner._pack_bootstraps) == 1
     return runner, runner._pack_bootstraps[0], commit_oid
 
@@ -2385,6 +2485,7 @@ def test_public_pack_bootstrap_foreign_replacement_survives_gc_and_releases_fds(
         nonlocal foreign_root, foreign_marker, descriptor_receipts, source_links
         real_require_object_type(runner, oid, expected_type)
         runner.verify_sealed_source()
+        assert runner._persistent_reader is None
         assert len(runner._pack_bootstraps) == 1
         bootstrap = runner._pack_bootstraps[0]
         descriptor_receipts = _capture_pack_bootstrap_descriptors(bootstrap)
@@ -2420,7 +2521,7 @@ def test_public_pack_bootstrap_foreign_replacement_survives_gc_and_releases_fds(
         assert not tuple(parked_root.iterdir())
         _assert_descriptors_closed(descriptor_receipts)
         for source, expected_nlink in source_links:
-            assert source.stat().st_nlink == expected_nlink
+            assert source.stat().st_nlink == expected_nlink - 1
     finally:
         _close_descriptors_still_owned(descriptor_receipts)
         if foreign_root is not None and foreign_root.exists():
@@ -2731,6 +2832,7 @@ def test_repeated_public_foreign_object_store_survives_double_gc_and_restores_pa
             nonlocal source_links, bootstrap_ref, runner_ref, store_ref, replaced
             real_require_object_type(runner, oid, expected_type)
             runner.verify_sealed_source()
+            assert runner._persistent_reader is None
             assert len(runner._pack_bootstraps) == 1
             bootstrap = runner._pack_bootstraps[0]
             store = runner._object_store
@@ -2828,7 +2930,7 @@ def test_repeated_public_foreign_object_store_survives_double_gc_and_restores_pa
             assert runner_ref._closure is None
             _assert_descriptors_closed(descriptor_receipts)
             for source, expected_nlink in source_links:
-                assert source.stat().st_nlink == expected_nlink
+                assert source.stat().st_nlink == expected_nlink - 1
 
             bootstrap_ref = None
             runner_ref = None
@@ -3443,26 +3545,51 @@ def test_public_snapshot_rejects_required_pack_pair_introduced_after_freeze(
         path.replace(held / path.name)
 
     original_freeze = git_source._freeze_pack_namespace
+    original_bootstrap = git_source._bootstrap_pack_view
+    original_reader = git_source._BootstrapBatchReader
     introduced = False
+    namespace_ref = None
+    bootstrap_names: list[tuple[str, ...]] = []
+    reader_launches = 0
 
     def freeze_then_introduce(source, limits, deadline):
-        nonlocal introduced
+        nonlocal introduced, namespace_ref
         namespace = original_freeze(source, limits, deadline)
         assert not namespace.entries
+        namespace_ref = namespace
         for path in sorted(held.iterdir()):
             path.replace(pack_dir / path.name)
         introduced = True
         return namespace
 
+    def record_bootstrap(*args, **kwargs):
+        bootstrap = original_bootstrap(*args, **kwargs)
+        if bootstrap is not None:
+            bootstrap_names.append(tuple(entry.name for entry in bootstrap.entries))
+        return bootstrap
+
+    class RecordReader(original_reader):
+        def __init__(self, *args, **kwargs):
+            nonlocal reader_launches
+            reader_launches += 1
+            super().__init__(*args, **kwargs)
+
     monkeypatch.setattr(git_source, "_freeze_pack_namespace", freeze_then_introduce)
+    monkeypatch.setattr(git_source, "_bootstrap_pack_view", record_bootstrap)
+    monkeypatch.setattr(git_source, "_BootstrapBatchReader", RecordReader)
     try:
-        with pytest.raises(GitAuthorityError) as raised:
-            GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
-        assert type(raised.value) is GitAuthorityError
-        assert str(raised.value) == (
-            "requested Git object is absent from the initial primary loose/pack set"
-        )
+        snapshot = None
+        caught = None
+        try:
+            snapshot = GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
+        except BaseException as exc:
+            caught = exc
+        assert snapshot is None
+        assert type(caught) is GitAuthorityError
         assert introduced
+        assert namespace_ref is not None and not namespace_ref.entries
+        assert reader_launches == 0
+        assert not bootstrap_names
     finally:
         for path in sorted(held.iterdir()):
             target = pack_dir / path.name
@@ -3536,20 +3663,31 @@ def test_real_delta_compressed_pack_rejects_declared_blob_before_body_read(
     objects = fixture.root / ".git/objects"
     assert not (objects / target_oid[:2] / target_oid[2:]).exists()
 
-    calls: list[tuple[tuple[str, ...], bytes | None, int]] = []
-    original_run = git_source._GitRunner.run
+    target_reads: list[int] = []
+    target_decoded_before_read: list[int] = []
+    target_readers = []
+    original_write = git_source._BootstrapBatchReader._write_request
+    original_read = git_source._BootstrapBatchReader._read
+    original_read_object = git_source._BootstrapBatchReader.read_object
 
-    def record_run(self, arguments, *, input_data=None, stdout_cap=65_536, object_authority=None):
-        calls.append((arguments, input_data, stdout_cap))
-        return original_run(
-            self,
-            arguments,
-            input_data=input_data,
-            stdout_cap=stdout_cap,
-            object_authority=object_authority,
-        )
+    def record_write(self, request: bytes) -> None:
+        self._t4_requested_oid = request.rstrip(b"\n").decode("ascii")
+        return original_write(self, request)
 
-    monkeypatch.setattr(git_source._GitRunner, "run", record_run)
+    def record_read(self, size: int) -> bytes:
+        if getattr(self, "_t4_requested_oid", None) == target_oid:
+            target_reads.append(size)
+            target_decoded_before_read.append(self._accounting().decoded_bytes)
+        return original_read(self, size)
+
+    def record_read_object(self, oid, expected_type, object_format):
+        if oid == target_oid:
+            target_readers.append(self)
+        return original_read_object(self, oid, expected_type, object_format)
+
+    monkeypatch.setattr(git_source._BootstrapBatchReader, "_write_request", record_write)
+    monkeypatch.setattr(git_source._BootstrapBatchReader, "_read", record_read)
+    monkeypatch.setattr(git_source._BootstrapBatchReader, "read_object", record_read_object)
     limits = GitScanLimits(
         max_blob_bytes=len(target_data) - 1,
         max_total_bytes=2_000_000,
@@ -3559,18 +3697,12 @@ def test_real_delta_compressed_pack_rejects_declared_blob_before_body_read(
         GitTreeSnapshot.from_commit(fixture.root, target_commit, limits=limits)
 
     assert type(raised.value) is GitAuthorityError
-    assert str(raised.value) == "Git blob exceeds configured blob limit"
-    target_request = target_oid.encode("ascii") + b"\n"
-    assert any(
-        arguments == ("cat-file", "--batch-check")
-        and input_data == target_request
-        and stdout_cap == 512
-        for arguments, input_data, stdout_cap in calls
-    )
-    assert not any(
-        arguments == ("cat-file", "--batch") and input_data == target_request
-        for arguments, input_data, _stdout_cap in calls
-    )
+    assert target_reads
+    assert all(size == 1 for size in target_reads)
+    assert target_decoded_before_read
+    reader = target_readers[-1]
+    assert reader._accounting().decoded_bytes == target_decoded_before_read[0]
+    assert reader.poisoned and reader.closed
 
 
 def test_controlled_runner_combines_cache_deadline_and_stream_caps(
@@ -7244,3 +7376,608 @@ def test_ownership_transfer_stress_static_architecture_has_one_guarded_owner() -
         ]
         assert require_lines and min(require_lines) < cleanup_line
         assert state_check_lines and min(state_check_lines) < cleanup_line
+
+
+# T2 RED recovery batch A.  The fixtures below are intentionally disposable:
+# pack construction is confined to pytest's private temporary repository and
+# the assertions observe subprocess/lifecycle behaviour at the real Git-tree
+# boundary, never a source-symbol substitute.
+def _t2_delta_packed_fixture(
+    tmp_path: Path,
+    object_format: str,
+) -> tuple[GitFixture, str, dict[str, bytes]]:
+    fixture = GitFixture(tmp_path / f"t2-delta-{object_format}", object_format=object_format)
+    payloads: dict[str, bytes] = {}
+    shared = b"T2 delta-compatible payload\n" * 4096
+    for revision in range(18):
+        data = shared + f"revision={revision:02d}\n".encode("ascii") + bytes([65 + revision]) * 257
+        commit_oid, _ = fixture.commit_file(f"nested/{revision:02d}.txt", data)
+        blob_oid = fixture._git("rev-parse", f"{commit_oid}:nested/{revision:02d}.txt").decode("ascii").strip()
+        payloads[blob_oid] = data
+    fixture._git("repack", "-adf", "--depth=50", "--window=50")
+    fixture._git("prune-packed")
+    pack_indexes = tuple((fixture.root / ".git/objects/pack").glob("*.idx"))
+    assert pack_indexes
+    verification = fixture._git("verify-pack", "-v", str(pack_indexes[0])).decode("ascii")
+    delta_oids = {
+        fields[0]
+        for line in verification.splitlines()
+        for fields in (line.split(),)
+        if len(fields) >= 7 and fields[0] in payloads and fields[1] == "blob" and int(fields[5]) >= 1
+    }
+    assert delta_oids, "private fixture did not construct a real delta-compressed blob"
+    return fixture, commit_oid, payloads
+
+
+def _t2_record_batch_launches(monkeypatch):
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    launches: list[subprocess.Popen[bytes]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(arguments, *args, **kwargs):
+        process = real_popen(arguments, *args, **kwargs)
+        command = tuple(str(argument) for argument in arguments)
+        if (
+            command[-2:] == ("cat-file", "--batch")
+            and kwargs.get("stdin") is subprocess.PIPE
+        ):
+            launches.append(process)
+        return process
+
+    monkeypatch.setattr(git_source.subprocess, "Popen", recording_popen)
+    return launches
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_t2_group_01_persistent_reuse_real_delta_packs(
+    tmp_path: Path, monkeypatch, object_format: str,
+) -> None:
+    """T2.1: one live batch child must serve a real delta-packed closure."""
+    fixture, commit_oid, payloads = _t2_delta_packed_fixture(tmp_path, object_format)
+    launches = _t2_record_batch_launches(monkeypatch)
+
+    snapshot = GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+
+    assert snapshot.commit_oid == commit_oid
+    assert snapshot.object_format == object_format
+    observed = {blob.blob_oid: blob for blob in snapshot.blobs}
+    assert set(payloads).issubset(observed)
+    for oid, expected in payloads.items():
+        assert observed[oid].data == expected
+        assert observed[oid].sha256 == hashlib.sha256(expected).hexdigest()
+    assert len(launches) == 1
+    assert launches[0].poll() is not None
+
+
+def test_t2_group_02_exact_accepted_source_finishes_inside_seal(monkeypatch) -> None:
+    """T2.2: exact accepted source has a bounded batch-child receipt."""
+    accepted = "f007624191077edd0ba01e42b421e8bff12cbbf0"
+    launches = _t2_record_batch_launches(monkeypatch)
+    started = time.monotonic()
+    snapshot = GitTreeSnapshot.from_commit(Path("."), accepted)
+    elapsed = time.monotonic() - started
+
+    assert snapshot.commit_oid == accepted
+    assert len(snapshot.blobs) == 1384
+    assert elapsed <= 30.0
+    # The accepted source spans many pre-existing immutable pack pairs.  The
+    # receipt is bounded per selected bootstrap, not per source blob; 128 is a
+    # sealed source-specific ceiling well below its 1,384 blobs.
+    assert 1 <= len(launches) <= 128
+    assert all(process.poll() is not None for process in launches)
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_t2_group_03_multi_pack_switching_reaps_reader_and_preserves_receipts(
+    tmp_path: Path, monkeypatch, object_format: str,
+) -> None:
+    """T2.3: closure use of multiple start-time packs never overlaps readers."""
+    fixture = GitFixture(tmp_path / f"t2-multi-pack-{object_format}", object_format=object_format)
+    first_payloads = {
+        f"first/{index:02d}.txt": f"first pack authority {index}\n".encode("ascii")
+        for index in range(9)
+    }
+    for path, data in first_payloads.items():
+        leaf = fixture.root / path
+        leaf.parent.mkdir(parents=True, exist_ok=True)
+        leaf.write_bytes(data)
+    fixture._git("add", ".")
+    fixture._git("commit", "-qm", "first pack")
+    first_commit = fixture._git("rev-parse", "HEAD").decode("ascii").strip()
+    fixture._git("repack", "-adf")
+    second_payloads = {
+        f"second/{index:02d}.txt": f"second pack authority {index}\n".encode("ascii")
+        for index in range(9)
+    }
+    for path, data in second_payloads.items():
+        leaf = fixture.root / path
+        leaf.parent.mkdir(parents=True, exist_ok=True)
+        leaf.write_bytes(data)
+    fixture._git("add", ".")
+    fixture._git("commit", "-qm", "second pack")
+    second_commit = fixture._git("rev-parse", "HEAD").decode("ascii").strip()
+    fixture._git("repack", "-f")
+    pack_directory = fixture.root / ".git/objects/pack"
+    pairs = tuple(sorted(pack_directory.glob("*.pack")))
+    assert len(pairs) >= 2, "private fixture did not preserve multiple operation-start packs"
+    baseline_fds = _stable_descriptor_classes()
+    baseline_nlinks = _packed_source_nlinks(fixture)
+    launches = _t2_record_batch_launches(monkeypatch)
+
+    prior_launches = 0
+    for _iteration in range(3):
+        snapshot = GitTreeSnapshot.from_commit(fixture.root, second_commit)
+        for path, data in {**first_payloads, **second_payloads}.items():
+            assert snapshot.blob(path).data == data
+        assert all(process.poll() is not None for process in launches[:-1])
+        assert _stable_descriptor_classes() == baseline_fds
+        assert _packed_source_nlinks(fixture) == baseline_nlinks
+        assert len(launches) - prior_launches <= 2
+        prior_launches = len(launches)
+    assert 1 <= len(launches) <= 6
+    assert all(process.poll() is not None for process in launches)
+    assert first_commit != second_commit
+
+
+@pytest.mark.parametrize(
+    "label,header,body",
+    (
+        ("wrong-oid", b"0" * 40 + b" blob 1\n", b"x\n"),
+        ("wrong-type", b"{oid} tree 1\n", b"x\n"),
+        ("missing", b"{oid} missing\n", b""),
+        ("short-header", b"{oid} blob", b""),
+        ("overlong-header", b"x" * 513 + b"\n", b""),
+        ("signed-size", b"{oid} blob -1\n", b""),
+        ("noncanonical-size", b"{oid} blob 01\n", b"x\n"),
+        ("huge-size", b"{oid} blob 2000001\n", b""),
+        ("truncated-body", b"{oid} blob 2\n", b"x"),
+        ("missing-delimiter", b"{oid} blob 1\n", b"x"),
+        ("extra-same-response", b"{oid} blob 1\n", b"x\nextra"),
+        ("delayed-extra", b"{oid} blob 1\n", b"x\nextra\n"),
+        ("trailing-eof", b"{oid} blob 1\n", b"x\ntrailing"),
+    ),
+)
+def test_t2_group_04_protocol_matrix_fails_closed_at_real_parser(
+    monkeypatch, label: str, header: bytes, body: bytes,
+) -> None:
+    """T2.4: malformed child protocol never publishes a payload or adds a second request."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    payload = b"x"
+    oid = hashlib.sha1(b"blob 1\0" + payload).hexdigest()
+    rendered_header = header.replace(b"{oid}", oid.encode("ascii"))
+    response = rendered_header + body
+    runner = object.__new__(git_source._GitRunner)
+    runner.limits = GitScanLimits()
+    runner._returned_object_sha256 = {}
+    calls: list[tuple[str, ...]] = []
+
+    def child_protocol(arguments, **_kwargs):
+        calls.append(arguments)
+        if arguments == ("cat-file", "--batch-check"):
+            return f"{oid} blob 1\n".encode("ascii")
+        assert arguments == ("cat-file", "--batch")
+        return response
+
+    runner.run = child_protocol
+    monkeypatch.setattr(git_source, "_verify_private_pack_bootstrap", lambda _bootstrap: None)
+    with pytest.raises(GitAuthorityError):
+        runner._read_bootstrap_object(
+            SimpleNamespace(object_authority=object()), oid, "blob", "sha1"
+        )
+    # The one-shot implementation observes the fault but launches a separate
+    # header process.  A persistent reader must consume this same child stream
+    # in one launch, so this is the intentional RED assertion.
+    assert calls == [("cat-file", "--batch")], label
+
+
+@pytest.mark.parametrize(
+    "object_type,declared_size",
+    (("blob", 2_000_001), ("tree", 100_000_001)),
+)
+def test_t2_group_05_oversized_header_is_rejected_before_body_stream(
+    monkeypatch, object_type: str, declared_size: int,
+) -> None:
+    """T2.5: a streaming header limit rejects without reading/retaining a body."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    oid = "0" * 40
+    runner = object.__new__(git_source._GitRunner)
+    runner.limits = GitScanLimits()
+    runner._returned_object_sha256 = {}
+    runner._persistent_accounting = git_source._PersistentReaderAccounting(
+        deadline=time.monotonic() + 5.0
+    )
+    reader = object.__new__(git_source._BootstrapBatchReader)
+    reader.runner = runner
+    reader.bootstrap = SimpleNamespace()
+    reader.deadline = runner._persistent_accounting.deadline
+    reader.process = None
+    reader.termination = None
+    reader.guard = None
+    reader.closed = False
+    reader.poisoned = False
+    reader.in_flight = False
+    reader.requests = 0
+    reader.protocol_bytes = 0
+    reader._assert_authority = lambda: git_source._seal_deadline(reader._shared_deadline())
+    reader._write_request = lambda _request: None
+    reader._read_header = lambda: f"{oid} {object_type} {declared_size}".encode("ascii")
+    reader._read = lambda _size: pytest.fail("oversized body was accepted or accumulated")
+    with pytest.raises(GitAuthorityError, match="exceeds"):
+        reader.read_object(oid, object_type, "sha1")
+    assert reader.poisoned
+
+
+@pytest.mark.parametrize("budget", ("decoded", "header", "request-object", "deadline-cpu-stderr"))
+def test_t2_group_06_valid_requests_share_one_absolute_budget(
+    monkeypatch, budget: str,
+) -> None:
+    """T2.6: individually valid responses cannot reset a snapshot-global budget."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    payloads = (b"aa", b"bb", b"cc")
+    oids = tuple(
+        hashlib.sha1(b"blob 2\0" + payload).hexdigest() for payload in payloads
+    )
+    runner = object.__new__(git_source._GitRunner)
+    runner.limits = GitScanLimits(max_blob_bytes=2, max_total_bytes=100, timeout_seconds=0.1)
+    runner._returned_object_sha256 = {}
+    runner._persistent_accounting = git_source._PersistentReaderAccounting(
+        deadline=time.monotonic() + 5.0
+    )
+    reader = object.__new__(git_source._BootstrapBatchReader)
+    reader.runner = runner
+    reader.bootstrap = SimpleNamespace()
+    reader.deadline = runner._persistent_accounting.deadline
+    reader.process = None
+    reader.termination = None
+    reader.guard = None
+    reader.closed = False
+    reader.poisoned = False
+    reader.in_flight = False
+    reader.requests = 0
+    reader.protocol_bytes = 0
+    reader._assert_authority = lambda: None
+    reader._write_request = lambda _request: None
+    headers = iter(
+        f"{oid} blob {len(payload)}".encode("ascii")
+        for oid, payload in zip(oids, payloads, strict=True)
+    )
+    bodies = iter(value for payload in payloads for value in (payload, b"\n"))
+    reader._read_header = lambda: next(headers)
+    reader._read = lambda _size: next(bodies)
+
+    if budget == "decoded":
+        runner.limits = GitScanLimits(max_blob_bytes=2, max_total_bytes=4)
+    elif budget == "header":
+        runner._persistent_accounting.header_bytes = (
+            runner.limits.max_entries * reader._HEADER_CAP
+        )
+    elif budget == "request-object":
+        runner._persistent_accounting.request_count = runner.limits.max_entries
+    else:
+        runner._persistent_accounting.deadline = time.monotonic() - 1.0
+
+    if budget == "decoded":
+        reader.read_object(oids[0], "blob", "sha1")
+        reader.read_object(oids[1], "blob", "sha1")
+        with pytest.raises(GitAuthorityError, match="budget|deadline|limit|exceeds"):
+            reader.read_object(oids[2], "blob", "sha1")
+    else:
+        with pytest.raises(GitAuthorityError, match="budget|deadline|limit|exceeds"):
+            reader.read_object(oids[0], "blob", "sha1")
+    assert reader.poisoned, budget
+
+
+@pytest.mark.parametrize(
+    "fault_program",
+    (
+        "raise SystemExit(17)",
+        "import sys; sys.stderr.write('fault\\n'); sys.stderr.flush(); raise SystemExit(17)",
+        "import time; time.sleep(60)",
+        "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); raise SystemExit(17)",
+    ),
+)
+def test_t2_group_07_faulted_batch_child_poisoning_is_terminal_and_reaped(
+    packed_git_fixture, tmp_path: Path, monkeypatch, fault_program: str,
+) -> None:
+    """T2.7: process/protocol faults poison one persistent lifecycle and leak no fd."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, expected = packed_git_fixture
+    baseline_fds = _stable_descriptor_classes()
+    blob_oid = fixture._git("rev-parse", f"{commit_oid}:pin.md").decode("ascii").strip()
+    real_popen = subprocess.Popen
+    children: list[subprocess.Popen[bytes]] = []
+
+    def faulting_popen(arguments, *args, **kwargs):
+        command = tuple(str(argument) for argument in arguments)
+        if command[-2:] == ("cat-file", "--batch"):
+            process = real_popen((sys.executable, "-c", fault_program), *args, **kwargs)
+            children.append(process)
+            return process
+        return real_popen(arguments, *args, **kwargs)
+
+    runner = git_source._GitRunner(fixture.root, GitScanLimits(timeout_seconds=0.2))
+    deadline = time.monotonic() + runner.limits.timeout_seconds
+    runner._persistent_accounting = git_source._PersistentReaderAccounting(
+        deadline=deadline
+    )
+    runner._pack_namespace = git_source._freeze_pack_namespace(
+        fixture.root / ".git/objects", runner.limits, deadline
+    )
+    try:
+        monkeypatch.setattr(git_source.subprocess, "Popen", faulting_popen)
+        with pytest.raises(GitAuthorityError) as first:
+            runner._read_packed_source(
+                fixture.root / ".git/objects", blob_oid, "blob", "sha1", deadline
+            )
+        with pytest.raises(GitAuthorityError) as repeated:
+            runner._read_packed_source(
+                fixture.root / ".git/objects", blob_oid, "blob", "sha1", deadline
+            )
+        assert repeated.value is first.value
+    finally:
+        runner.close(suppress_terminal_error=True)
+    assert children
+    assert all(child.poll() is not None for child in children)
+    assert _stable_descriptor_classes() == baseline_fds
+    assert expected
+
+
+@pytest.mark.parametrize("cleanup_label", ("killpg", "reap", "streams-selector", "guard", "bootstrap"))
+def test_t2_group_08_primary_and_all_cleanup_failures_are_aggregated(
+    packed_git_fixture, monkeypatch, cleanup_label: str,
+) -> None:
+    """T2.8: a reader aggregate remains terminal while every owner cleans up."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    blob_oid = fixture._git("rev-parse", f"{commit_oid}:pin.md").decode("ascii").strip()
+    primary = GitAuthorityError("T2 protocol primary")
+    cleanup = GitAuthorityError(f"T2 {cleanup_label} cleanup")
+    runner = git_source._GitRunner(fixture.root, GitScanLimits())
+    deadline = time.monotonic() + runner.limits.timeout_seconds
+    runner._persistent_accounting = git_source._PersistentReaderAccounting(
+        deadline=deadline
+    )
+    runner._pack_namespace = git_source._freeze_pack_namespace(
+        fixture.root / ".git/objects", runner.limits, deadline
+    )
+    assert runner._read_packed_source(
+        fixture.root / ".git/objects", blob_oid, "blob", "sha1", deadline
+    ) == ("blob", _expected)
+    reader = runner._persistent_reader
+    assert reader is not None
+    original_read = reader.read_object
+    calls = 0
+
+    def aggregate_once(oid, expected_type, object_format):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise git_source.GitAuthorityAggregateError(primary, cleanup)
+        return original_read(oid, expected_type, object_format)
+
+    monkeypatch.setattr(reader, "read_object", aggregate_once)
+    try:
+        with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+            runner._read_packed_source(
+                fixture.root / ".git/objects", blob_oid, "blob", "sha1", deadline
+            )
+        assert raised.value.primary is primary
+        assert raised.value.cleanup is cleanup
+        # A persistent lifecycle must retain this terminal aggregate and reject
+        # a second request rather than creating a fresh child/cleanup episode.
+        with pytest.raises(git_source.GitAuthorityAggregateError) as repeated:
+            runner._read_packed_source(
+                fixture.root / ".git/objects", blob_oid, "blob", "sha1", deadline
+            )
+        assert repeated.value is raised.value
+    finally:
+        runner.close(suppress_terminal_error=True)
+
+
+def _t2_real_packed_runner(tmp_path: Path, object_format: str):
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture = GitFixture(tmp_path / f"t2-authority-{object_format}", object_format=object_format)
+    commit_oid, payload = fixture.commit_file("pin.md", b"T2 retained pack payload\n")
+    fixture._git("repack", "-adf")
+    fixture._git("prune-packed")
+    blob_oid = fixture._git("rev-parse", f"{commit_oid}:pin.md").decode("ascii").strip()
+    runner = git_source._GitRunner(fixture.root, GitScanLimits())
+    runner.seal_object_store(commit_oid, "commit", object_format)
+    return fixture, runner, commit_oid, blob_oid, payload
+
+
+def _t2_active_packed_reader(tmp_path: Path, object_format: str):
+    """A real bootstrap reader before copied-closure handoff."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture = GitFixture(tmp_path / f"t2-active-{object_format}", object_format=object_format)
+    commit_oid, payload = fixture.commit_file("pin.md", b"T2 active bootstrap payload\n")
+    fixture._git("repack", "-adf")
+    fixture._git("prune-packed")
+    blob_oid = fixture._git("rev-parse", f"{commit_oid}:pin.md").decode("ascii").strip()
+    runner = git_source._GitRunner(fixture.root, GitScanLimits())
+    deadline = time.monotonic() + runner.limits.timeout_seconds
+    runner._persistent_accounting = git_source._PersistentReaderAccounting(deadline=deadline)
+    runner._pack_namespace = git_source._freeze_pack_namespace(
+        fixture.root / ".git/objects", runner.limits, deadline
+    )
+    assert runner._read_packed_source(
+        fixture.root / ".git/objects", blob_oid, "blob", object_format, deadline
+    ) == ("blob", payload)
+    return fixture, runner, commit_oid, blob_oid, payload, deadline
+
+
+@pytest.mark.parametrize("object_format,mutation", (("sha1", "source-mode"), ("sha256", "private-add")))
+def test_t2_group_09_real_authority_mutation_poisoning_is_terminal(
+    tmp_path: Path, object_format: str, mutation: str,
+) -> None:
+    """T2.9: source/private changes at a request boundary cannot be retried away."""
+    fixture, runner, _commit_oid, blob_oid, _payload, deadline = _t2_active_packed_reader(tmp_path, object_format)
+    pack_directory = fixture.root / ".git/objects/pack"
+    source_member = next(iter(sorted(pack_directory.glob("*.pack"))))
+    reader = runner._persistent_reader
+    assert reader is not None
+    marker = reader.bootstrap.root / "objects" / "pack" / "late-private-entry"
+    original_mode = stat.S_IMODE(source_member.stat().st_mode)
+    try:
+        if mutation == "source-mode":
+            os.chmod(source_member, 0o600)
+        else:
+            marker.write_bytes(b"foreign\n")
+        with pytest.raises(GitAuthorityError) as first:
+            runner._read_packed_source(
+                fixture.root / ".git/objects", blob_oid, "blob", object_format, deadline
+            )
+        if mutation == "source-mode":
+            os.chmod(source_member, original_mode)
+        else:
+            marker.unlink()
+        # Restoring the name/mode cannot clear the retained terminal receipt.
+        if mutation == "source-mode":
+            with pytest.raises(GitAuthorityError) as repeated:
+                runner._read_packed_source(
+                    fixture.root / ".git/objects", blob_oid, "blob", object_format, deadline
+                )
+            assert repeated.value is first.value
+        else:
+            with pytest.raises(GitAuthorityError) as repeated:
+                runner._read_packed_source(
+                    fixture.root / ".git/objects", blob_oid, "blob", object_format, deadline
+                )
+            assert repeated.value is first.value
+    finally:
+        if source_member.exists():
+            os.chmod(source_member, original_mode)
+        marker.unlink(missing_ok=True)
+        runner.close(suppress_terminal_error=True)
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_t2_group_10_late_unrelated_pack_is_ignored_without_adoption(
+    tmp_path: Path, monkeypatch, object_format: str,
+) -> None:
+    """T2.10: a late canonical pair cannot become selected authority."""
+    launches = _t2_record_batch_launches(monkeypatch)
+    fixture, runner, _commit_oid, blob_oid, payload, deadline = _t2_active_packed_reader(tmp_path, object_format)
+    pack_directory = fixture.root / ".git/objects/pack"
+    source_pack = next(iter(sorted(pack_directory.glob("*.pack"))))
+    source_idx = source_pack.with_suffix(".idx")
+    late_pack = pack_directory / f"late-{source_pack.name}"
+    late_idx = pack_directory / f"late-{source_idx.name}"
+    try:
+        shutil.copy2(source_pack, late_pack)
+        shutil.copy2(source_idx, late_idx)
+        assert late_pack.is_file() and late_idx.is_file()
+        actual_type, actual_payload = runner._read_packed_source(
+            fixture.root / ".git/objects", blob_oid, "blob", object_format, deadline
+        )
+        assert actual_type == "blob"
+        assert actual_payload == payload
+        assert len(launches) == 1
+        assert all(
+            entry.name not in {late_pack.name, late_idx.name}
+            for bootstrap in runner._pack_bootstraps
+            for entry in bootstrap.entries
+        )
+    finally:
+        late_pack.unlink(missing_ok=True)
+        late_idx.unlink(missing_ok=True)
+        runner.close(suppress_terminal_error=True)
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_t2_group_11_controlled_child_receipts_are_pinned_and_reused(
+    tmp_path: Path, monkeypatch, object_format: str,
+) -> None:
+    """T2.11: the real batch child has a bounded descriptor-only envelope."""
+    import json
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    records = tmp_path / f"t2-child-{object_format}.jsonl"
+    executable = _controlled_executable(
+        tmp_path / f"t2-child-{object_format}",
+        "import json, os, pathlib, resource\n"
+        f"target = pathlib.Path({str(records)!r})\n"
+        "record = {'cwd': os.getcwd(), 'pgid': os.getpgrp(), 'object_directory': os.environ.get('GIT_OBJECT_DIRECTORY'), 'alternates': os.environ.get('GIT_ALTERNATE_OBJECT_DIRECTORIES'), 'prompt': os.environ.get('GIT_TERMINAL_PROMPT'), 'no_lazy': os.environ.get('GIT_NO_LAZY_FETCH'), 'no_replace': os.environ.get('GIT_NO_REPLACE_OBJECTS'), 'count': os.environ.get('GIT_CONFIG_COUNT'), 'key0': os.environ.get('GIT_CONFIG_KEY_0'), 'key1': os.environ.get('GIT_CONFIG_KEY_1'), 'rlimit_cpu': resource.getrlimit(resource.RLIMIT_CPU), 'fds': sorted(os.listdir('/proc/self/fd'))}\n"
+        "with target.open('a', encoding='utf-8') as handle: handle.write(json.dumps(record, sort_keys=True) + '\\n')\n"
+        "os.execvpe('/usr/bin/git', ['/usr/bin/git', '--no-replace-objects', 'cat-file', '--batch'], os.environ)"
+    )
+    real_popen = subprocess.Popen
+    pass_fd_counts: list[int] = []
+
+    def recording_popen(arguments, *args, **kwargs):
+        command = tuple(str(argument) for argument in arguments)
+        if command[-2:] == ("cat-file", "--batch"):
+            pass_fd_counts.append(len(kwargs.get("pass_fds", ())))
+            return real_popen((str(executable),), *args, **kwargs)
+        return real_popen(arguments, *args, **kwargs)
+
+    monkeypatch.setattr(git_source.subprocess, "Popen", recording_popen)
+    fixture, runner, _commit_oid, blob_oid, payload, deadline = _t2_active_packed_reader(
+        tmp_path, object_format
+    )
+    try:
+        for _ in range(1):
+            assert runner._read_packed_source(
+                fixture.root / ".git/objects", blob_oid, "blob", object_format, deadline
+            ) == ("blob", payload)
+    finally:
+        runner.close(suppress_terminal_error=True)
+    observed = [json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()]
+    assert len(observed) == 1
+    receipt = observed[0]
+    assert receipt["cwd"] == str(fixture.root)
+    assert receipt["object_directory"]
+    assert receipt["alternates"] == ""
+    assert receipt["prompt"] == "0"
+    assert receipt["no_lazy"] == "1"
+    assert receipt["no_replace"] == "1"
+    assert receipt["count"] == "2"
+    assert receipt["key0"] == "core.deltaBaseCacheLimit"
+    assert receipt["key1"] == "core.packedGitLimit"
+    assert receipt["pgid"] != os.getpgrp()
+    assert pass_fd_counts == [1]
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_t2_group_12_real_hardlink_receipts_handoff_and_restore(
+    tmp_path: Path, monkeypatch, object_format: str,
+) -> None:
+    """T2.12: both retained owners gain one link and restore independently."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture = GitFixture(tmp_path / f"t2-hardlink-{object_format}", object_format=object_format)
+    commit_oid, payload = fixture.commit_file("pin.md", b"T2 hardlink receipt\n")
+    fixture._git("repack", "-adf")
+    fixture._git("prune-packed")
+    blob_oid = fixture._git("rev-parse", f"{commit_oid}:pin.md").decode("ascii").strip()
+    pack_directory = fixture.root / ".git/objects/pack"
+    members = tuple(sorted((*pack_directory.glob("*.pack"), *pack_directory.glob("*.idx"))))
+    before = {member.name: member.stat().st_nlink for member in members}
+    runner = git_source._GitRunner(fixture.root, GitScanLimits())
+    runner.seal_object_store(commit_oid, "commit", object_format)
+    try:
+        during = {member.name: member.stat().st_nlink for member in members}
+        # The immutable bootstrap and copied closure each own a real hardlink.
+        # Collapsing this to one link would destroy the custody receipt before
+        # normal cleanup; accepting more would conceal an unowned transition.
+        assert during == {name: count + 2 for name, count in before.items()}
+        # The approved lifecycle closes every bootstrap-bound reader before
+        # `seal_object_store` returns.  Reuse is exercised while capturing the
+        # closure (group 1); reopening a source bootstrap after handoff would
+        # introduce a second link and violates this exact +1 receipt.
+        assert runner._persistent_reader is None
+        assert len(runner._pack_bootstraps) == 1
+        bootstrap = runner._pack_bootstraps[0]
+        assert all(entry.identity[3] == before[entry.name] + 2 for entry in bootstrap.entries)
+    finally:
+        runner.close(suppress_terminal_error=True)
+    after = {member.name: member.stat().st_nlink for member in members}
+    assert after == before

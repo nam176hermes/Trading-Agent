@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import selectors
+import select
 import shutil
 import signal
 import stat
@@ -2305,6 +2306,283 @@ class _PackBootstrap:
 
 
 @dataclass
+class _PersistentReaderAccounting:
+    """Snapshot-owned limits which a replacement batch reader cannot reset."""
+
+    deadline: float | None = None
+    decoded_bytes: int = 0
+    compressed_bytes: int = 0
+    header_bytes: int = 0
+    request_count: int = 0
+    object_count: int = 0
+    stderr_bytes: int = 0
+
+
+class _BootstrapBatchReader:
+    """One unbuffered cat-file child bound to one immutable pack bootstrap."""
+
+    _HEADER_CAP = 512
+
+    def __init__(self, runner: "_GitRunner", bootstrap: _PackBootstrap, deadline: float) -> None:
+        self.runner = runner
+        self.bootstrap = bootstrap
+        self.deadline = deadline
+        self.process: subprocess.Popen[bytes] | None = None
+        self.termination: _ProcessTermination | None = None
+        self.guard: _DirectoryMutationGuard | None = None
+        self.closed = False
+        self.poisoned = False
+        self.in_flight = False
+        self.requests = 0
+        self.protocol_bytes = 0
+        self._launch()
+
+    def _assert_authority(self) -> None:
+        _seal_deadline(self._shared_deadline())
+        self.runner._assert_frozen_pack_namespace(self._shared_deadline())
+        _regular_inode_matches(self.runner.executable, self.runner._executable_inode, "Git executable")
+        _verify_pack_bootstrap(self.bootstrap, self.runner.limits, self.deadline)
+        _verify_private_pack_bootstrap(self.bootstrap)
+        if self.guard is None:
+            raise GitAuthorityError("persistent Git reader guard is unavailable")
+        self.guard.assert_quiet()
+
+    def _accounting(self) -> _PersistentReaderAccounting:
+        accounting = getattr(self.runner, "_persistent_accounting", None)
+        if accounting is None:
+            accounting = _PersistentReaderAccounting(deadline=self.deadline)
+            self.runner._persistent_accounting = accounting
+        if accounting.deadline is None:
+            accounting.deadline = self.deadline
+        if accounting.deadline != self.deadline:
+            raise GitAuthorityError("persistent Git reader deadline changed")
+        return accounting
+
+    def _shared_deadline(self) -> float:
+        deadline = self._accounting().deadline
+        assert deadline is not None
+        return deadline
+
+    def _launch(self) -> None:
+        _seal_deadline(self.deadline)
+        authority = self.bootstrap.object_authority
+        directories = self.runner._verify_private_child_authority(authority)
+        guard = _DirectoryMutationGuard.arm(directories)
+        self.guard = guard
+        try:
+            self._assert_authority()
+            environment = _git_env()
+            environment.update(_bounded_git_resource_environment(self.runner.limits))
+            environment.update({
+                "GIT_OBJECT_DIRECTORY": authority.child_path,
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES": "",
+                "GIT_TERMINAL_PROMPT": "0",
+            })
+            envelope = _derive_child_resource_envelope(self.runner.limits)
+            process = subprocess.Popen(
+                (str(self.runner.executable), "--no-replace-objects", "cat-file", "--batch"),
+                cwd=self.runner.repo_root,
+                env=environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                preexec_fn=_bounded_git_preexec(envelope),
+                pass_fds=authority.pass_fds,
+            )
+            if process.stdin is None or process.stdout is None or process.stderr is None:
+                raise GitAuthorityError("persistent Git reader pipes are unavailable")
+            os.set_blocking(process.stdout.fileno(), False)
+            os.set_blocking(process.stderr.fileno(), False)
+            self.process = process
+            self.termination = _ProcessTermination(process=process, pgid=process.pid)
+            self._assert_authority()
+        except BaseException as exc:
+            self.poisoned = True
+            cleanup = self.close(suppress_primary=True)
+            primary = exc if isinstance(exc, GitAuthorityError) else GitAuthorityError("persistent Git reader launch failed")
+            if cleanup is not None:
+                raise GitAuthorityAggregateError(primary, cleanup) from exc
+            raise primary from exc
+
+    def _read(self, size: int) -> bytes:
+        if size < 0:
+            raise GitAuthorityError("persistent Git reader size is invalid")
+        process = self.process
+        if process is None or process.stdout is None or process.stderr is None:
+            raise GitAuthorityError("persistent Git reader is unavailable")
+        result = bytearray()
+        selector = selectors.DefaultSelector()
+        try:
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            while len(result) < size:
+                self._assert_authority()
+                remaining = self._shared_deadline() - time.monotonic()
+                if remaining <= 0:
+                    raise GitAuthorityError("Git object-store seal deadline exceeded")
+                events = selector.select(remaining)
+                if not events:
+                    continue
+                for key, _event in events:
+                    stream = key.data
+                    chunk = os.read(key.fileobj.fileno(), min(65_536, size - len(result)) if stream == "stdout" else _STDERR_CAP + 1)
+                    if stream == "stderr":
+                        accounting = self._accounting()
+                        accounting.stderr_bytes += len(chunk)
+                        if accounting.stderr_bytes > self.runner.limits.max_total_bytes:
+                            raise GitAuthorityError("persistent Git reader stderr budget exceeded")
+                        if chunk:
+                            raise GitAuthorityError("persistent Git reader wrote stderr")
+                        selector.unregister(key.fileobj)
+                        continue
+                    if not chunk:
+                        raise GitAuthorityError("persistent Git reader stdout ended early")
+                    result.extend(chunk)
+            return bytes(result)
+        finally:
+            selector.close()
+
+    def _read_header(self) -> bytes:
+        header = bytearray()
+        while True:
+            if len(header) >= self._HEADER_CAP:
+                raise GitAuthorityError("persistent Git reader header exceeds cap")
+            character = self._read(1)
+            header.extend(character)
+            if character == b"\n":
+                return bytes(header[:-1])
+
+    def _write_request(self, request: bytes) -> None:
+        process = self.process
+        if process is None or process.stdin is None:
+            raise GitAuthorityError("persistent Git reader stdin is unavailable")
+        offset = 0
+        descriptor = process.stdin.fileno()
+        while offset < len(request):
+            self._assert_authority()
+            remaining = self._shared_deadline() - time.monotonic()
+            if remaining <= 0:
+                raise GitAuthorityError("Git object-store seal deadline exceeded")
+            _readable, writable, _exceptional = select.select((), (descriptor,), (), remaining)
+            if not writable:
+                continue
+            try:
+                written = os.write(descriptor, request[offset:])
+            except OSError as exc:
+                raise GitAuthorityError("persistent Git reader request write failed") from exc
+            if written <= 0:
+                raise GitAuthorityError("persistent Git reader request write was short")
+            offset += written
+
+    def read_object(self, oid: str, expected_type: str, object_format: str) -> tuple[str, bytes]:
+        if self.closed or self.poisoned or self.in_flight:
+            raise GitAuthorityError("persistent Git reader is not available for one in-flight request")
+        _require_full_oid(oid, object_format, "packed object")
+        if expected_type not in {"commit", "tree", "blob"}:
+            raise GitAuthorityError("persistent Git reader object type is invalid")
+        self.in_flight = True
+        primary: BaseException | None = None
+        try:
+            self._assert_authority()
+            accounting = self._accounting()
+            if accounting.request_count >= self.runner.limits.max_entries:
+                raise GitAuthorityError("persistent Git reader request budget exceeded")
+            accounting.request_count += 1
+            self._write_request(oid.encode("ascii") + b"\n")
+            header = self._read_header()
+            header_size = len(header) + 1
+            self.protocol_bytes += header_size
+            accounting.header_bytes += header_size
+            if accounting.header_bytes > self.runner.limits.max_entries * self._HEADER_CAP:
+                raise GitAuthorityError("persistent Git reader protocol budget exceeded")
+            try:
+                actual_raw, type_raw, size_raw = header.split(b" ")
+                actual = actual_raw.decode("ascii")
+                object_type = type_raw.decode("ascii")
+                size_text = size_raw.decode("ascii")
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise GitAuthorityError("malformed persistent Git reader header") from exc
+            if not size_text.isdecimal() or (len(size_text) > 1 and size_text.startswith("0")):
+                raise GitAuthorityError("persistent Git reader size is noncanonical")
+            size = int(size_text)
+            if actual != oid or object_type != expected_type:
+                raise GitAuthorityError("persistent Git reader OID/type does not match request")
+            if (
+                (expected_type == "blob" and size > self.runner.limits.max_blob_bytes)
+                or size > self.runner.limits.max_total_bytes
+                or accounting.decoded_bytes + size > self.runner.limits.max_total_bytes
+            ):
+                raise GitAuthorityError("persistent Git reader object exceeds limit")
+            payload = self._read(size)
+            if self._read(1) != b"\n":
+                raise GitAuthorityError("persistent Git reader body delimiter is missing")
+            raw = f"{object_type} {size}\0".encode("ascii") + payload
+            if hashlib.new(object_format, raw).hexdigest() != oid:
+                raise GitAuthorityError("persistent Git reader object bytes do not reproduce OID")
+            self._assert_authority()
+            key = (oid, object_type)
+            receipt = hashlib.sha256(payload).hexdigest()
+            previous = self.runner._returned_object_sha256.get(key)
+            if previous is not None and previous != receipt:
+                raise GitAuthorityError("persistent Git reader SHA-256 changed between reads")
+            self.runner._returned_object_sha256[key] = receipt
+            if accounting.object_count >= self.runner.limits.max_entries:
+                raise GitAuthorityError("persistent Git reader object budget exceeded")
+            accounting.decoded_bytes += size
+            accounting.object_count += 1
+            self.requests += 1
+            return object_type, payload
+        except BaseException as exc:
+            primary = exc
+            self.poisoned = True
+            raise
+        finally:
+            self.in_flight = False
+            if primary is not None:
+                cleanup = self.close(suppress_primary=True)
+                if cleanup is not None:
+                    raise GitAuthorityAggregateError(primary, cleanup) from primary
+
+    def close(self, *, suppress_primary: bool = False) -> BaseException | None:
+        if self.closed:
+            return None
+        self.closed = True
+        errors: list[BaseException] = []
+        process = self.process
+        if process is not None:
+            try:
+                self._assert_authority()
+            except BaseException as exc:
+                errors.append(exc)
+            if process.stdin is not None and not process.stdin.closed:
+                try:
+                    process.stdin.close()
+                except OSError as exc:
+                    errors.append(GitAuthorityError("persistent Git reader stdin cleanup failed"))
+            try:
+                process.wait(timeout=1.0)
+                if process.returncode != 0:
+                    errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
+                elif self.termination is not None:
+                    self.termination.leader_reaped = True
+            except (OSError, subprocess.TimeoutExpired):
+                if self.termination is not None:
+                    error = self.termination.terminate()
+                    if error is not None:
+                        errors.append(error)
+            stream_error = _close_process_streams(process)
+            if stream_error is not None:
+                errors.append(stream_error)
+        if self.guard is not None:
+            try:
+                self.guard.close()
+            except BaseException as exc:
+                errors.append(exc)
+        return _aggregate_errors(errors)
+
+
+@dataclass
 class _PackNamespace:
     source: Path
     fd: int | None
@@ -2319,6 +2597,61 @@ class _PackNamespace:
             except OSError as exc:
                 raise GitAuthorityError("Git pack namespace descriptor cleanup failed") from exc
             self.fd = None
+
+
+def _verify_frozen_pack_namespace(
+    namespace: _PackNamespace,
+    deadline: float,
+) -> None:
+    """Reject any post-freeze entry or receipt drift before a reader request."""
+    _seal_deadline(deadline)
+    if namespace.sentinel is not None:
+        raise GitAuthorityError(namespace.sentinel)
+    if namespace.fd is None or namespace.identity is None:
+        raise GitAuthorityError("Git pack namespace is unavailable")
+    try:
+        actual_directory = _directory_identity(os.fstat(namespace.fd))
+    except OSError as exc:
+        raise GitAuthorityError("Git pack namespace changed during source snapshot") from exc
+    # Names absent at freeze are never selected.  Their later presence is not
+    # authority drift; the immutable selected-entry receipts below remain the
+    # complete authority boundary.
+    if actual_directory != namespace.identity:
+        raise GitAuthorityError("Git pack namespace changed during source snapshot")
+    for name, entry in namespace.entries.items():
+        try:
+            actual = _store_identity(
+                os.stat(name, dir_fd=namespace.fd, follow_symlinks=False)
+            )
+        except OSError as exc:
+            raise GitAuthorityError("Git pack namespace changed during source snapshot") from exc
+        # The owned bootstrap link/unlink transition necessarily updates ctime.
+        # Namespace authority keeps device/inode/type/nlink/size/mtime exact.
+        if actual[:6] != entry.identity[:6]:
+            raise GitAuthorityError("Git pack namespace changed during source snapshot")
+
+
+def _advance_namespace_owned_hardlink(
+    namespace: _PackNamespace,
+    name: str,
+    linked_identity: tuple[int, int, int, int, int, int, int],
+) -> None:
+    """Record exactly the metadata transition caused by our successful hardlink.
+
+    `st_nlink` and `st_ctime_ns` necessarily change when a source pack entry is
+    hardlinked into the private bootstrap.  All other source identity fields
+    remain immutable, and later reads compare against this post-link receipt.
+    """
+    prior = namespace.entries.get(name)
+    if prior is None or len(linked_identity) != 7:
+        raise GitAuthorityError("Git pack namespace owned hardlink receipt is invalid")
+    expected = prior.identity
+    if (
+        linked_identity[:3] + linked_identity[4:6] != expected[:3] + expected[4:6]
+        or linked_identity[3] != expected[3] + 1
+    ):
+        raise GitAuthorityError("Git pack namespace changed outside owned hardlink")
+    namespace.entries[name] = _PackEntry(name, linked_identity)
 
 
 @dataclass(frozen=True)
@@ -2442,6 +2775,9 @@ class _GitRunner:
         self._returned_object_sha256: dict[tuple[str, str], str] = {}
         self._closure: _ClosureCapture | None = None
         self._pack_bootstraps: list[_PackBootstrap] = []
+        self._persistent_reader: _BootstrapBatchReader | None = None
+        self._persistent_accounting = _PersistentReaderAccounting()
+        self._persistent_terminal_error: BaseException | None = None
         self._pack_namespace: _PackNamespace | None = None
         self._closed = False
         self._verify_repository_root()
@@ -2473,6 +2809,8 @@ class _GitRunner:
             return
         source = self.common_dir / "objects"
         deadline = time.monotonic() + self.limits.timeout_seconds
+        self._persistent_accounting = _PersistentReaderAccounting(deadline=deadline)
+        self._persistent_terminal_error = None
         self.assert_ambient_authority_absent()
         capture: _ClosureCapture | None = None
         store: _OwnedTemporaryRoot | None = None
@@ -2482,6 +2820,7 @@ class _GitRunner:
             self._pack_namespace = _freeze_pack_namespace(source, self.limits, deadline)
             packed_reader = lambda oid, expected: self._read_packed_source(source, oid, expected, object_format, deadline)
             capture = _capture_requested_closure(source, root_oid, root_type, object_format, self.limits, deadline, packed_reader)
+            self._close_persistent_reader()
             pack_sources: list[_ClosurePackSource] = []
             for bootstrap in self._pack_bootstraps:
                 _verify_pack_bootstrap(bootstrap, self.limits, deadline)
@@ -2509,6 +2848,9 @@ class _GitRunner:
             )
             _verify_requested_closure(capture, self.limits, deadline)
             _verify_private_closure(private_closure, self.limits, deadline)
+            # Closing the live batch reader is a publication prerequisite, but
+            # its immutable bootstrap remains the descriptor-owned custody and
+            # hardlink receipt until ordinary runner cleanup.
             for bootstrap in self._pack_bootstraps:
                 _verify_pack_bootstrap(bootstrap, self.limits, deadline)
             self.assert_ambient_authority_absent()
@@ -2594,6 +2936,10 @@ class _GitRunner:
                 except BaseException as exc:
                     cleanup_errors.append(exc)
             try:
+                self._close_persistent_reader()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+            try:
                 self._close_pack_bootstraps()
             except BaseException as exc:
                 cleanup_errors.append(exc)
@@ -2623,25 +2969,96 @@ class _GitRunner:
 
     def _read_packed_source(self, source: Path, oid: str, expected_type: str, object_format: str, deadline: float) -> tuple[str, bytes]:
         """Expose exactly one descriptor-pinned pair which indexes this full OID."""
-        for bootstrap in self._pack_bootstraps:
-            if _pack_index_contains(bootstrap.entries[1].name, bootstrap.source_fd, oid, object_format, self.limits, deadline):
-                _verify_pack_bootstrap(bootstrap, self.limits, deadline)
-                result = self._read_bootstrap_object(bootstrap, oid, expected_type, object_format)
-                _verify_pack_bootstrap(bootstrap, self.limits, deadline)
-                return result
+        terminal = self._persistent_terminal_error
+        if terminal is not None:
+            raise terminal
+        try:
+            self._assert_frozen_pack_namespace(
+                self._persistent_accounting.deadline or deadline
+            )
+            for bootstrap in self._pack_bootstraps:
+                if _pack_index_contains(bootstrap.entries[1].name, bootstrap.source_fd, oid, object_format, self.limits, deadline):
+                    _verify_pack_bootstrap(bootstrap, self.limits, deadline)
+                    result = self._read_persistent_bootstrap_object(bootstrap, oid, expected_type, object_format, deadline)
+                    _verify_pack_bootstrap(bootstrap, self.limits, deadline)
+                    return result
+            namespace = self._pack_namespace
+            if namespace is None:
+                raise GitAuthorityError("Git pack namespace was not frozen before source closure")
+            bootstrap = _bootstrap_pack_view(namespace, self.common_dir, oid, object_format, self.limits, deadline)
+            if bootstrap is None:
+                raise GitAuthorityError("requested Git object is absent from the initial primary loose/pack set")
+            self._pack_bootstraps.append(bootstrap)
+            _verify_pack_bootstrap(bootstrap, self.limits, deadline)
+            result = self._read_persistent_bootstrap_object(bootstrap, oid, expected_type, object_format, deadline)
+            _verify_pack_bootstrap(bootstrap, self.limits, deadline)
+            return result
+        except BaseException as exc:
+            terminal_error = (
+                exc if isinstance(exc, GitAuthorityError)
+                else GitAuthorityError("persistent Git reader operation failed")
+            )
+            self._persistent_terminal_error = terminal_error
+            raise terminal_error from exc
+
+    def _assert_frozen_pack_namespace(self, deadline: float) -> None:
+        private_closure = self._private_closure
+        if private_closure is not None:
+            try:
+                _verify_private_closure(private_closure, self.limits, deadline)
+            except BaseException as exc:
+                terminal = (
+                    exc if isinstance(exc, GitAuthorityError)
+                    else GitAuthorityError("private Git closure verification failed")
+                )
+                self._persistent_terminal_error = terminal
+                raise terminal from exc
         namespace = self._pack_namespace
         if namespace is None:
-            raise GitAuthorityError("Git pack namespace was not frozen before source closure")
-        bootstrap = _bootstrap_pack_view(namespace, self.common_dir, oid, object_format, self.limits, deadline)
-        if bootstrap is None:
-            raise GitAuthorityError("requested Git object is absent from the initial primary loose/pack set")
-        self._pack_bootstraps.append(bootstrap)
-        _verify_pack_bootstrap(bootstrap, self.limits, deadline)
-        result = self._read_bootstrap_object(bootstrap, oid, expected_type, object_format)
-        _verify_pack_bootstrap(bootstrap, self.limits, deadline)
-        return result
+            return
+        try:
+            _verify_frozen_pack_namespace(namespace, deadline)
+        except BaseException as exc:
+            terminal = (
+                exc if isinstance(exc, GitAuthorityError)
+                else GitAuthorityError("Git pack namespace verification failed")
+            )
+            self._persistent_terminal_error = terminal
+            raise terminal from exc
+
+    def _read_persistent_bootstrap_object(self, bootstrap: _PackBootstrap, oid: str, expected_type: str, object_format: str, deadline: float) -> tuple[str, bytes]:
+        terminal = self._persistent_terminal_error
+        if terminal is not None:
+            raise terminal
+        effective_deadline = self._persistent_accounting.deadline or deadline
+        reader = self._persistent_reader
+        try:
+            if reader is not None and reader.bootstrap is not bootstrap:
+                self._close_persistent_reader()
+                reader = None
+            if reader is None:
+                reader = _BootstrapBatchReader(self, bootstrap, effective_deadline)
+                self._persistent_reader = reader
+            return reader.read_object(oid, expected_type, object_format)
+        except BaseException as exc:
+            terminal_error = (
+                exc if isinstance(exc, GitAuthorityError)
+                else GitAuthorityError("persistent Git reader operation failed")
+            )
+            self._persistent_terminal_error = terminal_error
+            raise terminal_error from exc
+
+    def _close_persistent_reader(self) -> None:
+        reader = self._persistent_reader
+        if reader is None:
+            return
+        self._persistent_reader = None
+        error = reader.close()
+        if error is not None:
+            raise error
 
     def _close_pack_bootstraps(self) -> None:
+        self._close_persistent_reader()
         retained = list(self._pack_bootstraps)
         final_errors: list[BaseException] = []
         for _attempt in range(2):
@@ -2665,44 +3082,41 @@ class _GitRunner:
     def _read_bootstrap_object(self, bootstrap: _PackBootstrap, oid: str, expected_type: str, object_format: str) -> tuple[str, bytes]:
         request = oid.encode("ascii") + b"\n"
         _verify_private_pack_bootstrap(bootstrap)
-        checked = self.run(
-            ("cat-file", "--batch-check"),
-            input_data=request,
-            stdout_cap=512,
-            object_authority=bootstrap.object_authority,
-        )
-        _verify_private_pack_bootstrap(bootstrap)
-        newline = checked.find(b"\n")
-        if newline < 0 or newline + 1 != len(checked):
-            raise GitAuthorityError("truncated bootstrap Git object header")
-        header = checked[:newline]
-        if header == oid.encode("ascii") + b" missing":
-            raise GitAuthorityError("requested Git object is absent from the private primary pack bootstrap")
-        try:
-            actual_oid_raw, object_type_raw, size_raw = header.split(b" ")
-            actual_oid = actual_oid_raw.decode("ascii")
-            object_type = object_type_raw.decode("ascii")
-            size = int(size_raw.decode("ascii"))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise GitAuthorityError("malformed bootstrap Git object header") from exc
-        if actual_oid != oid or object_type != expected_type or size < 0:
-            raise GitAuthorityError("bootstrap Git object OID/type/size does not match request")
-        if expected_type == "blob" and size > self.limits.max_blob_bytes:
-            raise GitAuthorityError("Git blob exceeds configured blob limit")
-        if size > self.limits.max_total_bytes:
-            raise GitAuthorityError("bootstrap Git object exceeds aggregate limit")
         output = self.run(
             ("cat-file", "--batch"),
             input_data=request,
-            stdout_cap=size + 512,
+            stdout_cap=(
+                self.limits.max_blob_bytes + 512
+                if expected_type == "blob"
+                else self.limits.max_total_bytes + 512
+            ),
             object_authority=bootstrap.object_authority,
         )
         _verify_private_pack_bootstrap(bootstrap)
         newline = output.find(b"\n")
         if newline < 0:
             raise GitAuthorityError("truncated bootstrap Git object header")
-        if output[:newline] != header:
-            raise GitAuthorityError("bootstrap Git object changed between type/size and body reads")
+        header = output[:newline]
+        if header == oid.encode("ascii") + b" missing":
+            raise GitAuthorityError("requested Git object is absent from the private primary pack bootstrap")
+        try:
+            actual_oid_raw, object_type_raw, size_raw = header.split(b" ")
+            actual_oid = actual_oid_raw.decode("ascii")
+            object_type = object_type_raw.decode("ascii")
+            size_text = size_raw.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise GitAuthorityError("malformed bootstrap Git object header") from exc
+        if not size_text.isdecimal() or (
+            len(size_text) > 1 and size_text.startswith("0")
+        ):
+            raise GitAuthorityError("bootstrap Git object size is noncanonical")
+        size = int(size_text)
+        if actual_oid != oid or object_type != expected_type or size < 0:
+            raise GitAuthorityError("bootstrap Git object OID/type/size does not match request")
+        if expected_type == "blob" and size > self.limits.max_blob_bytes:
+            raise GitAuthorityError("Git blob exceeds configured blob limit")
+        if size > self.limits.max_total_bytes:
+            raise GitAuthorityError("bootstrap Git object exceeds aggregate limit")
         body_start = newline + 1
         body_end = body_start + size
         if body_end >= len(output) or output[body_end:body_end + 1] != b"\n" or body_end + 1 != len(output):
@@ -2785,6 +3199,14 @@ class _GitRunner:
                     self._pack_bootstraps,
                     private_closure.restored_source_receipts,
                 )
+                # The copied closure has released exactly its own link.  The
+                # retained bootstrap now owns the sole extra link and must
+                # verify its final unlink against the operation-start count.
+                for bootstrap in self._pack_bootstraps:
+                    bootstrap.source_nlinks = tuple(
+                        (name, expected_nlink - 1)
+                        for name, expected_nlink in bootstrap.source_nlinks
+                    )
             except BaseException as exc:
                 errors.append(exc)
         self._object_store_descriptors_closed = private_closure.descriptors_closed
@@ -3613,7 +4035,9 @@ def _bootstrap_pack_view(namespace: _PackNamespace, common_dir: Path, required_o
             _seal_deadline(deadline)
             if not name.endswith(".idx"):
                 continue
-            if _store_identity(os.stat(name, dir_fd=source_fd, follow_symlinks=False)) != entry.identity:
+            if _store_identity(
+                os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+            )[:6] != entry.identity[:6]:
                 raise GitAuthorityError("Git pack namespace changed during source snapshot")
             try:
                 if _pack_index_contains(name, source_fd, required_oid, object_format, limits, deadline):
@@ -3648,7 +4072,7 @@ def _bootstrap_pack_view(namespace: _PackNamespace, common_dir: Path, required_o
                 if not stat.S_ISREG(metadata.st_mode):
                     raise GitAuthorityError("requested Git pack/index pair contains a non-regular entry")
                 identity = _store_identity(metadata)
-                if identity != initial.identity:
+                if identity[:6] != initial.identity[:6]:
                     raise GitAuthorityError("requested Git pack/index pair changed during bootstrap")
                 if name.endswith(".idx") and identity[4] > limits.max_total_bytes:
                     raise GitAuthorityError("requested Git pack index exceeds configured limit")
@@ -3769,6 +4193,9 @@ def _bootstrap_pack_view(namespace: _PackNamespace, common_dir: Path, required_o
                     raise GitAuthorityError(
                         "private Git pack bootstrap identity mismatch"
                     )
+                _advance_namespace_owned_hardlink(
+                    namespace, entry.name, linked_identity
+                )
                 bootstrap.entries = (
                     *bootstrap.entries[:-1],
                     _PackEntry(entry.name, linked_identity),
@@ -4048,6 +4475,124 @@ def _handoff_active_pack_receipts_after_builder_seal(
                 )
             refreshed_entries.append(_PackEntry(entry.name, active))
         bootstrap.entries = tuple(refreshed_entries)
+        bootstrap.source_nlinks = tuple(
+            (name, expected_nlink + 1)
+            for name, expected_nlink in bootstrap.source_nlinks
+        )
+
+
+def _refresh_private_pack_receipts_after_bootstrap_release(
+    private: _PrivateClosureStore,
+) -> None:
+    """Accept only the known nlink transition caused by bootstrap release."""
+    ownership = private.ownership
+    ownership.require(_PrivateClosureOwnershipState.STORE)
+    refreshed: dict[str, _OwnedFileEntry] = {}
+    for name, entry in sorted(ownership.pack_entries.items()):
+        try:
+            actual = _private_file_identity(
+                os.stat(name, dir_fd=ownership.pack.descriptor, follow_symlinks=False),
+                label="private Git copied pack entry",
+            )
+        except OSError as exc:
+            raise GitAuthorityError(
+                "private Git copied pack entry is unavailable after bootstrap release"
+            ) from exc
+        if (
+            actual[:6] + actual[7:] != entry.identity[:6] + entry.identity[7:]
+            or actual[6] != entry.identity[6] - 1
+        ):
+            raise GitAuthorityError(
+                "private Git copied pack entry changed during bootstrap release"
+            )
+        refreshed[name] = _OwnedFileEntry(
+            name=entry.name,
+            identity=actual,
+            sha256=entry.sha256,
+            size=entry.size,
+            mode=entry.mode,
+        )
+    ownership.pack_entries = refreshed
+    refreshed_sources: dict[tuple[int, str], tuple[int, ...]] = {}
+    refreshed_baselines: dict[tuple[int, str], tuple[tuple[int, ...], int]] = {}
+    for key, (_initial, expected_nlink) in sorted(
+        ownership.source_nlinks.items(), key=lambda item: (item[0][1], item[0][0])
+    ):
+        source_fd, source_name = key
+        try:
+            actual = _store_identity(
+                os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
+            )
+        except OSError as exc:
+            raise GitAuthorityError(
+                "private Git copied pack source is unavailable after bootstrap release"
+            ) from exc
+        active = ownership.active_source_receipts.get(key)
+        if active is None or (
+            actual[:3] + actual[4:6] != active[:3] + active[4:6]
+            or actual[3] != expected_nlink
+        ):
+            raise GitAuthorityError(
+                "private Git copied pack source changed during bootstrap release"
+            )
+        baseline_nlink = expected_nlink - 1
+        if baseline_nlink < 1:
+            raise GitAuthorityError(
+                "private Git copied pack source hardlink baseline is invalid"
+            )
+        refreshed_sources[key] = actual
+        refreshed_baselines[key] = (
+            (
+                actual[0], actual[1], actual[2], baseline_nlink,
+                actual[4], actual[5], actual[6],
+            ),
+            baseline_nlink,
+        )
+    ownership.active_source_receipts = refreshed_sources
+    ownership.source_nlinks = refreshed_baselines
+
+
+def _rebase_capture_pack_receipts_after_bootstrap_release(
+    capture: _ClosureCapture,
+) -> None:
+    """Keep the copied-closure's one remaining source link as its receipt."""
+    rebased_sources: list[_ClosurePackSource] = []
+    for source in capture.pack_sources:
+        rebased_entries: list[_ClosurePackEntry] = []
+        for entry in source.entries:
+            try:
+                actual = _store_identity(
+                    os.stat(entry.name, dir_fd=source.directory_fd, follow_symlinks=False)
+                )
+            except OSError as exc:
+                raise GitAuthorityError(
+                    "requested Git pack/index pair is unavailable after bootstrap release"
+                ) from exc
+            if (
+                actual[:3] + actual[4:6] != entry.identity[:3] + entry.identity[4:6]
+                or actual[3] != entry.identity[3]
+                or actual[3] < 2
+            ):
+                raise GitAuthorityError(
+                    "requested Git pack/index pair changed during bootstrap release"
+                )
+            rebased_entries.append(
+                _ClosurePackEntry(
+                    entry.name,
+                    (
+                        actual[0], actual[1], actual[2], actual[3] - 1,
+                        actual[4], actual[5], actual[6],
+                    ),
+                )
+            )
+        rebased_sources.append(
+            _ClosurePackSource(
+                directory_fd=source.directory_fd,
+                directory_identity=source.directory_identity,
+                entries=tuple(rebased_entries),
+            )
+        )
+    capture.pack_sources = tuple(rebased_sources)
 
 
 def _capture_requested_closure(source: Path, root_oid: str, root_type: str, object_format: str, limits: GitScanLimits, deadline: float, packed_reader: Callable[[str, str], tuple[str, bytes]] | None = None) -> _ClosureCapture:
