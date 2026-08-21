@@ -45,6 +45,47 @@ _CONDITIONAL_ROOTS = frozenset({"specification", "expected_identity"})
 _GOVERNED_ROOTS = _OBJECTS | _CONDITIONAL_ROOTS
 
 
+@dataclass(frozen=True)
+class _Endpoint:
+    path: str
+    qualified_scope: str
+    root: str
+    binding_kind: str
+    document_kind: str
+
+
+_ENDPOINTS = (
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@422",
+        "policy",
+        "runtime_policy_json_object",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@422",
+        "specification",
+        "profile_specification_lookup",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "services/job_worker/nautilus_closure.py",
+        "attest_nautilus_backtest_closure@515",
+        "closure_manifest",
+        "closure_manifest_read_json",
+        "nautilus_closure_manifest",
+    ),
+    _Endpoint(
+        "services/job_worker/nautilus_closure.py",
+        "attest_nautilus_backtest_closure@515",
+        "expected_identity",
+        "profile_identity_lookup",
+        "nautilus_closure_manifest",
+    ),
+)
+
+
 class PythonExtractionError(ValueError):
     """A governed Python expression cannot be given an exact, safe citation."""
 
@@ -324,7 +365,6 @@ class PythonExtractor:
         dynamic_guards: set[DynamicGovernedCheck] = set()
         governed_relations: set[GovernedRelation] = set()
         parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-        document_kind = self._document_kind(path, tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Compare):
                 evidence = self._governed_evidence(path, text, tree, node, parents)
@@ -335,10 +375,14 @@ class PythonExtractor:
                     if relation is not None:
                         governed_relations.add(relation)
                     continue
-                # A proved governed document can contain unrelated derived
-                # predicates. They are deliberately outside the relation
-                # inventory; only direct two-endpoint evidence is governed.
-                if document_kind is not None:
+                if self._known_governed_module_access(path, tree, node) or (
+                    self._has_endpoint_scope(path, tree)
+                    and any(
+                        isinstance(candidate, ast.Name)
+                        and (candidate.id in _OBJECTS or candidate.id in invalid_governed_names)
+                        for candidate in ast.walk(node)
+                    )
+                ):
                     continue
                 observations.update(self._comparison_observations(path, text, node, tokens, bindings, invalid_names, invalid_governed_names))
         return PythonExtractionResult(
@@ -354,16 +398,6 @@ class PythonExtractor:
     @classmethod
     def _fingerprint(cls, value: object) -> str:
         return hashlib.sha256(cls._canonical(value)).hexdigest()
-
-    @staticmethod
-    def _document_kind(path: str, tree: ast.Module) -> str | None:
-        """Accept only exact reviewed module shapes, never a root spelling alone."""
-        names = {node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        if path == "scripts/materialize_nautilus_runtime_closure.py" and "_validate_policy_bytes" in names:
-            return "nautilus_runtime_closure_policy"
-        if path == "services/job_worker/nautilus_closure.py" and "attest_nautilus_backtest_closure" in names:
-            return "nautilus_closure_manifest"
-        return None
 
     @staticmethod
     def _scope(tree: ast.Module, node: ast.AST) -> ast.AST:
@@ -394,25 +428,189 @@ class PythonExtractor:
 
     @staticmethod
     def _binding_kind(root: str, value: ast.AST) -> str | None:
-        if root == "policy" and isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "_json_object":
+        if (
+            root == "policy"
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_json_object"
+            and len(value.args) == 1
+            and isinstance(value.args[0], ast.Name)
+            and value.args[0].id == "raw"
+            and len(value.keywords) == 1
+            and value.keywords[0].arg == "label"
+            and isinstance(value.keywords[0].value, ast.Constant)
+            and value.keywords[0].value.value == "runtime closure policy"
+        ):
             return "runtime_policy_json_object"
-        if root == "closure_manifest" and isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "_read_json":
+        if (
+            root == "closure_manifest"
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_read_json"
+            and len(value.args) == 2
+            and not value.keywords
+            and isinstance(value.args[0], ast.BinOp)
+            and isinstance(value.args[0].left, ast.Attribute)
+            and isinstance(value.args[0].left.value, ast.Name)
+            and value.args[0].left.value.id == "config"
+            and value.args[0].left.attr == "runtime_root"
+            and isinstance(value.args[0].op, ast.Div)
+            and isinstance(value.args[0].right, ast.Name)
+            and value.args[0].right.id == "_MANIFEST_NAME"
+            and isinstance(value.args[1], ast.Constant)
+            and value.args[1].value == "closure manifest"
+        ):
             return "closure_manifest_read_json"
-        if root == "specification" and isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute) and isinstance(value.func.value, ast.Name) and value.func.value.id == "_PROFILE_SPECS" and value.func.attr == "get":
+        if (
+            root == "specification"
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and isinstance(value.func.value, ast.Name)
+            and value.func.value.id == "_PROFILE_SPECS"
+            and value.func.attr == "get"
+            and len(value.args) == 1
+            and not value.keywords
+            and isinstance(value.args[0], ast.Call)
+            and isinstance(value.args[0].func, ast.Name)
+            and value.args[0].func.id == "str"
+            and len(value.args[0].args) == 1
+            and isinstance(value.args[0].args[0], ast.Name)
+            and value.args[0].args[0].id == "profile"
+            and not value.args[0].keywords
+        ):
             return "profile_specification_lookup"
-        if root == "expected_identity" and isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name) and value.value.id == "_PROFILES":
+        if root == "expected_identity" and isinstance(value, ast.Subscript) and isinstance(value.value, ast.Name) and value.value.id == "_PROFILES" and isinstance(value.slice, ast.Name) and value.slice.id == "profile":
             return "profile_identity_lookup"
         return None
 
     @staticmethod
-    def _direct_access(node: ast.AST, families: dict[str, str]) -> tuple[str, str, str] | None:
+    def _direct_access(node: ast.AST) -> tuple[str, str] | None:
         if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name) or node.value.id not in _GOVERNED_ROOTS:
             return None
         if not isinstance(node.slice, ast.Constant) or type(node.slice.value) is not str:
             return None
-        field = node.slice.value
-        family = families.get(field)
-        return (node.value.id, field, family) if family is not None else None
+        return node.value.id, node.slice.value
+
+    @staticmethod
+    def _qualified_scope(scope: ast.AST) -> str:
+        return f"{getattr(scope, 'name', '<module>')}@{getattr(scope, 'lineno', 1)}"
+
+    @staticmethod
+    def _target_base(target: ast.AST) -> ast.Name | None:
+        while isinstance(target, (ast.Attribute, ast.Subscript)):
+            target = target.value
+        return target if isinstance(target, ast.Name) else None
+
+    @classmethod
+    def _scope_binding_is_proved(cls, scope: ast.AST, root: str, value: ast.AST) -> bool:
+        approved_target: ast.Name | None = None
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Assign) and node.value is value and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == root:
+                approved_target = node.targets[0]
+                break
+            if isinstance(node, ast.AnnAssign) and node.value is value and isinstance(node.target, ast.Name) and node.target.id == root:
+                approved_target = node.target
+                break
+        if approved_target is None:
+            return False
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Name) and node.id == root and isinstance(node.ctx, (ast.Store, ast.Del)) and node is not approved_target:
+                return False
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                target = node.target if not isinstance(node, ast.Assign) else node.targets[0] if len(node.targets) == 1 else None
+                base = cls._target_base(target) if target is not None else None
+                if base is not None and base.id == root and target is not approved_target:
+                    return False
+                if isinstance(node.value, ast.Name) and node.value.id == root and target is not approved_target:
+                    return False
+            if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                if any(item.id == root for item in ast.walk(node.target) if isinstance(item, ast.Name)):
+                    return False
+            if isinstance(node, (ast.With, ast.AsyncWith)):
+                if any(item.optional_vars is not None and any(name.id == root for name in ast.walk(item.optional_vars) if isinstance(name, ast.Name)) for item in node.items):
+                    return False
+            if isinstance(node, ast.ExceptHandler) and node.name == root:
+                return False
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and any((alias.asname or alias.name.split(".")[0]) == root for alias in node.names):
+                return False
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == root:
+                return False
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                arguments = node.args
+                if any(argument.arg == root for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)):
+                    return False
+                if (arguments.vararg is not None and arguments.vararg.arg == root) or (arguments.kwarg is not None and arguments.kwarg.arg == root):
+                    return False
+        return True
+
+    @classmethod
+    def _mapping_origin_is_proved(cls, tree: ast.Module, name: str) -> bool:
+        matches = [
+            statement
+            for statement in tree.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+            and statement.targets[0].id == name
+            and isinstance(statement.value, ast.Dict)
+        ]
+        return len(matches) == 1 and cls._scope_binding_is_proved(tree, name, matches[0].value)
+
+    @classmethod
+    def _binding_fingerprint(
+        cls,
+        path: str,
+        qualified_scope: str,
+        bindings: Iterable[tuple[str, str, str, str]],
+    ) -> str:
+        return cls._fingerprint([path, qualified_scope, [list(binding) for binding in sorted(bindings)]])
+
+    @staticmethod
+    def _has_endpoint_scope(path: str, tree: ast.Module) -> bool:
+        return any(
+            endpoint.path == path and endpoint.qualified_scope == PythonExtractor._qualified_scope(scope)
+            for endpoint in _ENDPOINTS
+            for scope in ast.walk(tree)
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+
+    @classmethod
+    def _known_governed_module_access(cls, path: str, tree: ast.Module, node: ast.Compare) -> bool:
+        return cls._has_endpoint_scope(path, tree) and any(
+            PythonExtractor._direct_access(candidate) is not None for candidate in ast.walk(node)
+        )
+
+    def _endpoint(
+        self,
+        path: str,
+        tree: ast.Module,
+        node: ast.AST,
+        access: tuple[str, str],
+    ) -> tuple[str, str, str, str, str, str] | None:
+        root, field = access
+        scope = self._scope(tree, node)
+        qualified_scope = self._qualified_scope(scope)
+        candidates = tuple(endpoint for endpoint in _ENDPOINTS if endpoint.path == path and endpoint.qualified_scope == qualified_scope and endpoint.root == root)
+        if not candidates:
+            bindings = self._scope_bindings(scope)
+            value = bindings.get(root)
+            if value is not None and self._binding_kind(root, value) is not None and any(endpoint.path == path and endpoint.root == root for endpoint in _ENDPOINTS):
+                raise _invalid()
+            return None
+        bindings = self._scope_bindings(scope)
+        value = bindings.get(root)
+        binding_kind = self._binding_kind(root, value) if value is not None else None
+        endpoint = next((item for item in candidates if item.binding_kind == binding_kind), None)
+        if endpoint is None or value is None or not self._scope_binding_is_proved(scope, root, value):
+            raise _invalid()
+        if root == "specification" and not self._mapping_origin_is_proved(tree, "_PROFILE_SPECS"):
+            raise _invalid()
+        if root == "expected_identity" and not self._mapping_origin_is_proved(tree, "_PROFILES"):
+            raise _invalid()
+        family = _DOCUMENT_FIELDS[endpoint.document_kind].get(field)
+        if family is None:
+            return None
+        return root, endpoint.document_kind, field, family, endpoint.binding_kind, ast.dump(value, annotate_fields=True, include_attributes=False)
 
     @staticmethod
     def _node_span(path: str, text: str, node: ast.AST) -> SourceSpan:
@@ -443,35 +641,30 @@ class PythonExtractor:
         node: ast.Compare,
         parents: dict[int, ast.AST],
     ) -> tuple[DynamicGovernedCheck | None, GovernedRelation | None] | None:
-        kind = self._document_kind(path, tree)
-        if kind is None or len(node.ops) != 1 or len(node.comparators) != 1:
+        if len(node.ops) != 1 or len(node.comparators) != 1:
             return None
         operator = "==" if isinstance(node.ops[0], ast.Eq) else "!=" if isinstance(node.ops[0], ast.NotEq) else None
         if operator is None:
             return None
-        families = _DOCUMENT_FIELDS[kind]
-        left = self._direct_access(node.left, families)
-        right = self._direct_access(node.comparators[0], families)
+        left_access = self._direct_access(node.left)
+        right_access = self._direct_access(node.comparators[0])
+        if left_access is None or right_access is None:
+            return None
+        left = self._endpoint(path, tree, node, left_access)
+        right = self._endpoint(path, tree, node, right_access)
         if left is None or right is None:
             return None
         scope = self._scope(tree, node)
-        bindings = self._scope_bindings(scope)
-        roots = {left[0], right[0]}
-        bound: list[list[str]] = []
-        for root in sorted(roots):
-            value = bindings.get(root)
-            binding_kind = self._binding_kind(root, value) if value is not None else None
-            if binding_kind is None:
-                return None
-            bound.append([root, binding_kind, ast.dump(value, annotate_fields=True, include_attributes=False)])
-        scope_name = getattr(scope, "name", "<module>")
-        qualified_scope = f"{scope_name}@{getattr(scope, 'lineno', 1)}"
-        binding_fingerprint = self._fingerprint([path, qualified_scope, bound])
-        syntax_fingerprint = self._fingerprint([left[0], left[1], operator, right[0], right[1]])
+        binding_fingerprint = self._binding_fingerprint(
+            path,
+            self._qualified_scope(scope),
+            {(left[0], left[1], left[4], left[5]), (right[0], right[1], right[4], right[5])},
+        )
+        syntax_fingerprint = self._fingerprint([left[0], left[2], operator, right[0], right[2]])
         span = self._node_span(path, text, node)
-        if left[2] == right[2]:
+        if left[3] == right[3]:
             return (
-                DynamicGovernedCheck(path, left[0], left[1], operator, right[0], right[1], syntax_fingerprint, span),
+                DynamicGovernedCheck(path, left[0], left[2], operator, right[0], right[2], syntax_fingerprint, span),
                 None,
             )
         # A raw equality inside a terminal invalidity predicate represents the
@@ -482,8 +675,8 @@ class PythonExtractor:
         return (
             None,
             GovernedRelation(
-                path, left[0], left[1], left[2], relation_operator,
-                right[0], right[1], right[2], "cross_family_consistency_guard",
+                path, left[0], left[1], left[2], left[3], relation_operator,
+                right[0], right[1], right[2], right[3], "cross_family_consistency_guard",
                 binding_fingerprint, syntax_fingerprint, span,
             ),
         )
@@ -795,8 +988,8 @@ class PythonExtractor:
     def _relation_sort_key(relation: GovernedRelation) -> tuple[object, ...]:
         span = relation.span
         return (
-            relation.path, relation.left_root, relation.left_field, relation.left_family,
-            relation.operator, relation.right_root, relation.right_field, relation.right_family,
+            relation.path, relation.left_root, relation.left_document_kind, relation.left_field, relation.left_family,
+            relation.operator, relation.right_root, relation.right_document_kind, relation.right_field, relation.right_family,
             relation.relation_kind, relation.binding_fingerprint, relation.syntax_fingerprint,
             span.start_line, span.start_column, span.end_line, span.end_column,
         )

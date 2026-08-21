@@ -35,10 +35,12 @@ def test_python_real_runtime_policy_captures_proven_dynamic_guards_and_relation(
     )
     assert any(
         isinstance(relation, GovernedRelation)
-        and (relation.left_root, relation.left_field, relation.left_family, relation.operator,
-             relation.right_root, relation.right_field, relation.right_family, relation.relation_kind)
-        == ("policy", "source_commit", "selected_source", "!=",
-            "policy", "engine_upstream_commit", "upstream_commit", "cross_family_consistency_guard")
+        and (relation.left_root, relation.left_document_kind, relation.left_field, relation.left_family,
+             relation.operator, relation.right_root, relation.right_document_kind, relation.right_field,
+             relation.right_family, relation.relation_kind)
+        == ("policy", "nautilus_runtime_closure_policy", "source_commit", "selected_source", "!=",
+            "policy", "nautilus_runtime_closure_policy", "engine_upstream_commit", "upstream_commit",
+            "cross_family_consistency_guard")
         for relation in result.governed_relations
     )
 
@@ -55,12 +57,116 @@ def test_python_real_closure_manifest_captures_conditional_expected_identity_and
         for guard in result.dynamic_guards
     )
     assert any(
-        (relation.left_root, relation.left_field, relation.left_family, relation.operator,
-         relation.right_root, relation.right_field, relation.right_family)
-        == ("closure_manifest", "source_commit", "selected_source", "!=",
-            "closure_manifest", "engine_upstream_commit", "upstream_commit")
+        (relation.left_root, relation.left_document_kind, relation.left_field, relation.left_family,
+         relation.operator, relation.right_root, relation.right_document_kind, relation.right_field,
+         relation.right_family)
+        == ("closure_manifest", "nautilus_closure_manifest", "source_commit", "selected_source", "!=",
+            "closure_manifest", "nautilus_closure_manifest", "engine_upstream_commit", "upstream_commit")
         for relation in result.governed_relations
     )
+
+
+def _runtime_policy_source() -> str:
+    root = Path(__file__).resolve().parents[3]
+    return (root / "scripts/materialize_nautilus_runtime_closure.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "specification = replacement",
+        "del specification",
+        "specification[\"replacement\"] = replacement",
+        "import collections as specification",
+        "[specification for specification in values]",
+        "lambda specification: specification",
+    ),
+)
+def test_python_specification_requires_its_exact_proved_origin(replacement: str) -> None:
+    """Break caught: a spelling-compatible specification binding survives an unproved module event."""
+    source = _runtime_policy_source().replace(
+        "specification = _PROFILE_SPECS.get(str(profile))",
+        "specification = _PROFILE_SPECS.get(str(profile))\n    " + replacement,
+        1,
+    )
+
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
+
+
+def test_python_governed_endpoint_requires_exact_scope_and_path() -> None:
+    """Break caught: a matching root binding becomes authority outside its reviewed endpoint."""
+    source = _runtime_policy_source().replace("def _validate_policy_bytes(", "def replacement(", 1)
+
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/wrong.py", _runtime_policy_source())
+
+
+def test_python_ordinary_literal_outside_proved_governed_scope_remains_an_observation() -> None:
+    """Break caught: one proved scope makes unrelated literal pin extraction disappear module-wide."""
+    result = PythonExtractor(DEFAULT_REGISTRY).extract(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        _runtime_policy_source() + '\nif unrelated == "1.231.0":\n    pass\n',
+    )
+
+    assert any(item.family == "engine_version" and item.value == "1.231.0" for item in result.observations)
+
+
+def test_python_relation_fingerprints_bind_document_kind_and_raw_operator() -> None:
+    """Break caught: relation identity loses endpoint kind or normalizes raw equality to semantic inequality."""
+    extractor = PythonExtractor(DEFAULT_REGISTRY)
+    source = _runtime_policy_source()
+    baseline = extractor.extract("scripts/materialize_nautilus_runtime_closure.py", source).governed_relations
+    raw_inequality = extractor.extract(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        source.replace('policy["source_commit"] == policy["engine_upstream_commit"]', 'policy["source_commit"] != policy["engine_upstream_commit"]', 1),
+    ).governed_relations
+    baseline_kind = extractor._binding_fingerprint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@422",
+        (("policy", "nautilus_runtime_closure_policy", "runtime_policy_json_object", "Name(id='policy')"),),
+    )
+    changed_kind = extractor._binding_fingerprint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@422",
+        (("policy", "nautilus_engine_build_policy", "runtime_policy_json_object", "Name(id='policy')"),),
+    )
+
+    assert baseline[0].syntax_fingerprint != raw_inequality[0].syntax_fingerprint
+    assert baseline_kind != changed_kind
+
+
+@pytest.mark.parametrize("invalid_kind", ("", "unknown", 1, None))
+def test_governed_relation_rejects_unknown_document_kind_and_sorts_by_kind(invalid_kind: object) -> None:
+    """Break caught: a relation accepts an invented kind or sorting ignores an identity component."""
+    span = SourceSpan.content("policy.py", 1, 1, 1, 2)
+    arguments = dict(
+        path="policy.py",
+        left_root="policy",
+        left_document_kind="nautilus_runtime_closure_policy",
+        left_field="source_commit",
+        left_family="selected_source",
+        operator="!=",
+        right_root="policy",
+        right_document_kind="nautilus_runtime_closure_policy",
+        right_field="engine_upstream_commit",
+        right_family="upstream_commit",
+        relation_kind="cross_family_consistency_guard",
+        binding_fingerprint="binding",
+        syntax_fingerprint="syntax",
+        span=span,
+    )
+    with pytest.raises(ValueError, match="document kind"):
+        GovernedRelation(**{**arguments, "left_document_kind": invalid_kind})
+
+    left = GovernedRelation(**arguments)
+    right = GovernedRelation(**{**arguments, "left_document_kind": "nautilus_engine_build_policy"})
+    assert [item.left_document_kind for item in sorted((left, right), key=PythonExtractor._relation_sort_key)] == [
+        "nautilus_engine_build_policy",
+        "nautilus_runtime_closure_policy",
+    ]
 
 
 def test_python_literals_keep_their_physical_decoded_origins() -> None:

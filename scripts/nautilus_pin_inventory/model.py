@@ -7,6 +7,16 @@ from enum import StrEnum
 from typing import Literal
 
 
+_DOCUMENT_KINDS = frozenset(
+    {
+        "nautilus_engine_build_policy",
+        "nautilus_runtime_closure_policy",
+        "nautilus_closure_manifest",
+        "nautilus_base_runtime_manifest",
+    }
+)
+
+
 def _require_string(value: object, name: str) -> None:
     if type(value) is not str or not value:
         raise ValueError(f"{name} must be a non-empty string")
@@ -118,10 +128,12 @@ class GovernedRelation:
 
     path: str
     left_root: str
+    left_document_kind: str
     left_field: str
     left_family: str
     operator: Literal["==", "!="]
     right_root: str
+    right_document_kind: str
     right_field: str
     right_family: str
     relation_kind: Literal["cross_family_consistency_guard"]
@@ -133,9 +145,11 @@ class GovernedRelation:
         for name, value in (
             ("relation path", self.path),
             ("relation left root", self.left_root),
+            ("relation left document kind", self.left_document_kind),
             ("relation left field", self.left_field),
             ("relation left family", self.left_family),
             ("relation right root", self.right_root),
+            ("relation right document kind", self.right_document_kind),
             ("relation right field", self.right_field),
             ("relation right family", self.right_family),
             ("relation binding fingerprint", self.binding_fingerprint),
@@ -144,6 +158,8 @@ class GovernedRelation:
             _require_string(value, name)
         if self.operator not in ("==", "!="):
             raise ValueError("relation operator is invalid")
+        if self.left_document_kind not in _DOCUMENT_KINDS or self.right_document_kind not in _DOCUMENT_KINDS:
+            raise ValueError("relation document kind is invalid")
         if self.relation_kind != "cross_family_consistency_guard":
             raise ValueError("relation kind is invalid")
         if type(self.span) is not SourceSpan or self.span.path != self.path:
