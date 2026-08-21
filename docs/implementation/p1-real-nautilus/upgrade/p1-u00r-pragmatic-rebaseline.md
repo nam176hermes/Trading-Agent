@@ -54,14 +54,14 @@ The removed `P1_U00_COMPLETE` verdict cannot be used.
 ## T through T8 narrow repair exception
 
 The Task 1 protected-path guard has one exact, reviewable exception for the
-repair sequence `T..T6`: only
+repair sequence `T..T8`: only
 `scripts/nautilus_pin_inventory/git_source.py`,
 `tests/governance/nautilus_pin_inventory/test_git_source.py`, and this overlay
 may differ from accepted base `f007624191077edd0ba01e42b421e8bff12cbbf0`.
 T2 is the review correction inside that same exception; exact `T` was rejected
 and is superseded, not certified, by T2.  This is not separate authority or a
 general release of protected-path equality.  The four R3 paths remain excluded
-from both commits and retain their independent dirty-work status.
+from every repair commit and retain their independent dirty-work status.
 
 T, T2, and T3 are rejected immutable history, not verified behavior
 boundaries. T3's exact reviews found capture-primary clean-EOF descendant
@@ -71,15 +71,15 @@ CPU receipt evidence. T4's exact reviews then rejected its real
 reader-close/capture-close double fault: a failed retained descriptor close
 lost externally reachable cleanup custody. T5's exact reviews then rejected
 duplicate pending ownership after a failed retry and self-cycling exception
-causes. T6 was an incomplete intermediate; T7 is the review candidate only.
-T7 adds binding public cleanup-route receipts for partial capture,
-post-capture sealing, and final runner close, but local receipts do not verify
-its behavior or authority. Its public
+causes. T6 was an incomplete intermediate and T7 was rejected for implicit
+exception-context cycles. T8 is the review candidate only. T8 adds bounded
+back-edge detachment receipts for active retry and nested runner cleanup, but
+local receipts do not verify its behavior or authority. Its public
 `GitAuthorityCleanupPendingError` retains one private capture owner for bounded
 explicit retry under the cooperative-host model; it does not guarantee that a
 host which keeps denying `close(2)` will release the descriptor. No reader lifecycle, publication, retained-owner
 cleanup, or semantic-equivalence claim in this repair sequence is certified
-until fresh exact-T7 specification and authority reviews pass.
+until fresh exact-T8 specification and authority reviews pass.
 
 The T2 production draft existed before its mandatory behavioral RED matrix.
 That ordering error is retained as disclosed recovery history: the draft was

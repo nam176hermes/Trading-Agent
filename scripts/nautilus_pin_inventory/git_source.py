@@ -59,6 +59,31 @@ class GitAuthorityAggregateError(GitAuthorityError):
         super().__init__(f"Git authority failure: {primary}; required cleanup failure: {cleanup}")
 
 
+_MAX_CLEANUP_CONTEXT_GRAPH_NODES: Final = 64
+
+
+def _detach_cleanup_context_back_edges(
+    incoming: BaseException, owner: BaseException
+) -> None:
+    """Keep an attached cleanup subtree from implicitly pointing back to its owner."""
+    pending = [incoming]
+    visited: set[int] = set()
+    while pending and len(visited) < _MAX_CLEANUP_CONTEXT_GRAPH_NODES:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        context = current.__context__
+        if context is owner:
+            current.__context__ = None
+        elif context is not None:
+            pending.append(context)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if isinstance(current, GitAuthorityAggregateError):
+            pending.extend((current.primary, current.cleanup))
+
+
 class GitAuthorityCleanupPendingError(GitAuthorityAggregateError):
     """A bounded retained-capture cleanup retry remains the caller's authority."""
 
@@ -90,7 +115,8 @@ class GitAuthorityCleanupPendingError(GitAuthorityAggregateError):
             return
         try:
             capture._retry_close()
-        except BaseException:
+        except BaseException as cleanup:
+            _detach_cleanup_context_back_edges(cleanup, self)
             raise self from None
         self._capture = None
 
@@ -104,6 +130,7 @@ class GitAuthorityCleanupPendingError(GitAuthorityAggregateError):
     def _append_cleanup(self, cleanup: BaseException) -> None:
         if cleanup is self:
             return
+        _detach_cleanup_context_back_edges(cleanup, self)
         if isinstance(cleanup, GitAuthorityCleanupPendingError):
             capture = cleanup._capture
             if capture is not None:

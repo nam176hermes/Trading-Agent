@@ -9226,6 +9226,194 @@ def test_t10_successful_snapshot_final_close_retains_one_public_owner(
         _t8_release_captures(captures)
 
 
+def _t11_assert_acyclic(error: BaseException, pending_owners: int) -> None:
+    visiting: set[int] = set()
+    visited: set[int] = set()
+    owners = []
+
+    def visit(current: BaseException) -> None:
+        assert current.__cause__ is not current
+        assert current.__context__ is not current
+        assert id(current) not in visiting
+        if id(current) in visited:
+            return
+        visiting.add(id(current))
+        if getattr(current, "cleanup_pending", False):
+            owners.append(current)
+        children = [current.__cause__, current.__context__]
+        if isinstance(current, GitAuthorityError):
+            children.extend((getattr(current, "primary", None), getattr(current, "cleanup", None)))
+        for child in children:
+            if isinstance(child, BaseException):
+                visit(child)
+        visiting.remove(id(current))
+        visited.add(id(current))
+
+    visit(error)
+    assert len(owners) == pending_owners
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t11_active_handler_failed_retry_detaches_real_cleanup_context_cycles(
+    packed_git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """A failed public retry from its active handler keeps one acyclic owner graph."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, _packed_commit, _expected = packed_git_fixture
+    commit_oid, _expected = fixture.commit_file("late.md", b"loose object in packed repository\n")
+    tree_oid = fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    captures = []
+    blocked_descriptors: set[int] = set()
+    attempts = []
+    real_close = os.close
+    real_capture_close = git_source._ClosureCapture.close
+
+    def record_capture_close(capture):
+        if not captures:
+            captures.append(capture)
+            assert capture.prefixes
+            blocked_descriptors.update((capture.root_fd, next(iter(capture.prefixes.values()))[0]))
+        return real_capture_close(capture)
+
+    def fail_two_retained_closes(descriptor: int) -> None:
+        if descriptor in blocked_descriptors:
+            attempts.append(descriptor)
+            raise OSError(errno.EIO, "T11 injected retained descriptor close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source.os, "close", fail_two_retained_closes)
+    try:
+        try:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(fixture.root, tree_oid)
+        except git_source.GitAuthorityCleanupPendingError as error:
+            assert len(captures) == 1
+            with pytest.raises(git_source.GitAuthorityCleanupPendingError) as retried:
+                error.retry_cleanup()
+            assert retried.value is error
+            _t11_assert_acyclic(error, pending_owners=1)
+            blocked_descriptors.clear()
+            error.retry_cleanup()
+            _t11_assert_acyclic(error, pending_owners=0)
+            no_op_attempts = len(attempts)
+            error.retry_cleanup()
+            assert len(attempts) == no_op_attempts
+        else:
+            raise AssertionError("expected retained cleanup owner")
+    finally:
+        blocked_descriptors.clear()
+        _t8_release_captures(captures)
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t11_nested_runner_cleanup_detaches_multi_error_context_cycles(
+    packed_git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """Nested runner cleanup keeps its pending owner acyclic through both wrappers."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    tree_oid = fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    blocked = [True]
+    captures, _attempts = _t8_reader_close_primary_with_blocked_capture_root(
+        monkeypatch, blocked=blocked
+    )
+    active = [False]
+    real_runner_close = git_source._GitRunner.close
+    real_assert_ambient = git_source._GitRunner.assert_ambient_authority_absent
+    real_close_bootstraps = git_source._GitRunner._close_pack_bootstraps
+
+    def close_with_faults(runner, *args, **kwargs):
+        active[0] = True
+        return real_runner_close(runner, *args, **kwargs)
+
+    def assert_ambient_then_fail(runner):
+        real_assert_ambient(runner)
+        if active[0]:
+            raise GitAuthorityError("T11 injected runner authority cleanup")
+
+    def close_bootstraps_then_fail(runner):
+        real_close_bootstraps(runner)
+        if active[0]:
+            raise GitAuthorityError("T11 injected runner bootstrap cleanup")
+
+    monkeypatch.setattr(git_source._GitRunner, "close", close_with_faults)
+    monkeypatch.setattr(git_source._GitRunner, "assert_ambient_authority_absent", assert_ambient_then_fail)
+    monkeypatch.setattr(git_source._GitRunner, "_close_pack_bootstraps", close_bootstraps_then_fail)
+    try:
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(fixture.root, tree_oid)
+        error = raised.value
+        assert len(captures) == 1
+        assert "runner authority cleanup" in str(error.cleanup)
+        assert "runner bootstrap cleanup" in str(error.cleanup)
+        _t11_assert_acyclic(error, pending_owners=1)
+        blocked[0] = False
+        error.retry_cleanup()
+        _t11_assert_acyclic(error, pending_owners=0)
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t11_packed_partial_capture_cleanup_retains_one_public_owner(
+    packed_git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """Packed partial construction retains its real root descriptor for retry."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    tree_oid = fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    captures = []
+    blocked = [True]
+    packed_read = [False]
+    real_close = os.close
+    real_packed_read = git_source._GitRunner._read_packed_source
+    real_capture_close = git_source._ClosureCapture.close
+
+    def read_then_fail(runner, *args, **kwargs):
+        real_packed_read(runner, *args, **kwargs)
+        packed_read[0] = True
+        raise GitAuthorityError("T11 injected packed partial-capture primary")
+
+    def record_capture_close(capture):
+        captures.append(capture)
+        return real_capture_close(capture)
+
+    def fail_retained_root_close(descriptor: int) -> None:
+        if blocked[0] and captures and descriptor == captures[-1].root_fd:
+            raise OSError(errno.EIO, "T11 injected packed retained root close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(git_source._GitRunner, "_read_packed_source", read_then_fail)
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source.os, "close", fail_retained_root_close)
+    try:
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(fixture.root, tree_oid)
+        error = raised.value
+        assert packed_read[0] and len(captures) == 1
+        assert os.fstat(captures[0].root_fd).st_ino == captures[0].root_identity[1]
+        _t11_assert_acyclic(error, pending_owners=1)
+        blocked[0] = False
+        error.retry_cleanup()
+        _t11_assert_acyclic(error, pending_owners=0)
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
 def test_t7_i3_normal_reader_exact_reap_error_still_closes_all_real_owners(
     tmp_path: Path, monkeypatch,
 ) -> None:
