@@ -8622,3 +8622,291 @@ def test_t6_i2_real_abnormal_drain_reaps_zero_exit_group_descendant(
     finally:
         runner.close(suppress_terminal_error=True)
         fixture.root.exists()
+
+
+def test_t7_i1_capture_primary_terminates_a_clean_eof_authority_descendant(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A capture failure must terminate a clean-EOF reader group before its authority escapes."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture = GitFixture(tmp_path / "t7-capture-primary")
+    commit_oid, _payload = fixture.commit_file("pin.md", b"x")
+    fixture._git("repack", "-adf")
+    fixture._git("prune-packed")
+    descendant = tmp_path / "t7-capture-descendant"
+    real_git = shutil.which("git")
+    assert real_git
+    executable = _controlled_executable(
+        tmp_path / "git-t7-capture-primary",
+        "import os, pathlib, subprocess, sys, time\n"
+        f"state = pathlib.Path({str(descendant)!r})\n"
+        "if 'cat-file' not in sys.argv or '--batch' not in sys.argv:\n"
+        f"    raise SystemExit(subprocess.call([{real_git!r}, *sys.argv[1:]]))\n"
+        "authority_fd = int(os.environ['GIT_OBJECT_DIRECTORY'].rsplit('/', 1)[1])\n"
+        f"child = subprocess.Popen([{real_git!r}, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(authority_fd,))\n"
+        "for request in sys.stdin.buffer:\n"
+        "    child.stdin.write(request); child.stdin.flush()\n"
+        "    header = child.stdout.readline(); size = int(header.rstrip(b'\\n').rsplit(b' ', 1)[1]); body = child.stdout.read(size + 1)\n"
+        "    sys.stdout.buffer.write(header + body); sys.stdout.buffer.flush()\n"
+        "child.stdin.close(); child.wait()\n"
+        "descendant = subprocess.Popen([sys.executable, '-c', 'import os, time; os.fstat(int(sys.argv[1])); time.sleep(60)', str(authority_fd)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(authority_fd,))\n"
+        "state.write_text(f'{descendant.pid} {os.getpgrp()} {authority_fd}', encoding='ascii')\n",
+    )
+    readers = []
+    real_reader = git_source._BootstrapBatchReader
+    real_close = git_source._close_retained_descriptor
+
+    def record_reader(*args, **kwargs):
+        reader = real_reader(*args, **kwargs)
+        readers.append(reader)
+        return reader
+
+    def close_then_report(descriptor, identity, *, label):
+        real_close(descriptor, identity, label=label)
+        if label == "Git closure root":
+            raise GitAuthorityError("T7 injected provisional capture descriptor failure")
+
+    monkeypatch.setattr(git_source.shutil, "which", lambda _name: str(executable))
+    monkeypatch.setattr(git_source, "_BootstrapBatchReader", record_reader)
+    monkeypatch.setattr(git_source, "_close_retained_descriptor", close_then_report)
+    descendant_pid = descendant_pgid = -1
+    try:
+        with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+            GitTreeSnapshot.from_commit(
+                fixture.root, commit_oid, limits=GitScanLimits(max_entries=3)
+            )
+        assert "entry seal cap" in str(raised.value.primary)
+        assert "provisional capture descriptor failure" in str(raised.value.cleanup)
+        assert readers and readers[-1].process is not None and readers[-1].termination is not None
+        reader = readers[-1]
+        assert descendant.is_file()
+        descendant_pid, descendant_pgid, _authority_fd = map(
+            int, descendant.read_text(encoding="ascii").split()
+        )
+        assert descendant_pgid == reader.termination.pgid
+        assert reader.process.stdout is not None and reader.process.stdout.closed
+        assert reader.process.stderr is not None and reader.process.stderr.closed
+        assert reader.guard is not None and reader.guard._closed
+        assert reader.termination.leader_reaped
+        assert reader.termination.group_absence_confirmed
+        assert not Path(f"/proc/{descendant_pid}").exists()
+        with pytest.raises(ProcessLookupError):
+            os.killpg(descendant_pgid, 0)
+    finally:
+        if descendant_pgid > 0:
+            try:
+                os.killpg(descendant_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if descendant_pid > 0:
+            deadline = time.monotonic() + 1.0
+            while Path(f"/proc/{descendant_pid}").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+
+def test_t7_i2_public_capture_aggregates_reader_and_capture_close_failures(
+    packed_git_fixture, monkeypatch,
+) -> None:
+    """A completed capture retains both real-owner close failures and no caller custody."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    captures = []
+    real_reader_close = git_source._BootstrapBatchReader.close
+    real_capture_close = git_source._ClosureCapture.close
+
+    def reader_close_then_fail(reader, *args, **kwargs):
+        real_reader_close(reader, *args, **kwargs)
+        raise GitAuthorityError("T7 injected reader-close primary")
+
+    def capture_close_then_fail(capture):
+        captures.append(capture)
+        real_capture_close(capture)
+        raise GitAuthorityError("T7 injected capture descriptor close")
+
+    monkeypatch.setattr(git_source._BootstrapBatchReader, "close", reader_close_then_fail)
+    monkeypatch.setattr(git_source._ClosureCapture, "close", capture_close_then_fail)
+    with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+        GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+    assert "reader-close primary" in str(raised.value.primary)
+    assert "capture descriptor close" in str(raised.value.cleanup)
+    assert captures and all(capture.closed for capture in captures)
+    for capture in captures:
+        with pytest.raises(OSError):
+            os.fstat(capture.root_fd)
+        for descriptor, _identity in capture.prefixes.values():
+            with pytest.raises(OSError):
+                os.fstat(descriptor)
+
+
+def test_t7_i3_normal_reader_exact_reap_error_still_closes_all_real_owners(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """An exact wait4 receipt failure cannot bypass process, stream, selector, or guard cleanup."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    _fixture, runner, reader, _oid, _deadline = _t6_group_08_live_reader(tmp_path)
+    assert reader.process is not None and reader.termination is not None and reader.guard is not None
+    real_wait4 = git_source.os.wait4
+    failed = False
+
+    def fail_exact_wait4(pid: int, options: int):
+        nonlocal failed
+        if pid == reader.process.pid and not failed:
+            failed = True
+            raise OSError(errno.EIO, "T7 injected exact wait4 failure")
+        return real_wait4(pid, options)
+
+    monkeypatch.setattr(git_source.os, "wait4", fail_exact_wait4)
+    try:
+        error = reader.close()
+        assert error is not None
+        assert "exact reap receipt is unavailable" in str(error)
+        assert failed
+        assert reader.process.poll() is not None
+        assert reader.process.stdout is not None and reader.process.stdout.closed
+        assert reader.process.stderr is not None and reader.process.stderr.closed
+        assert reader.guard._closed
+        assert reader.termination.leader_reaped
+        assert reader.termination.group_absence_confirmed
+    finally:
+        runner.close(suppress_terminal_error=True)
+
+
+def test_t7_i4_clean_drain_nonzero_reader_signals_owned_group_before_reap(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """A cleanly drained nonzero leader cannot strand a detached-stdio same-PGID child."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    descendant = tmp_path / "t7-nonzero-descendant"
+    real_git = shutil.which("git")
+    assert real_git
+    executable = _controlled_executable(
+        tmp_path / "git-t7-nonzero-descendant",
+        "import os, pathlib, subprocess, sys\n"
+        f"state = pathlib.Path({str(descendant)!r})\n"
+        "if 'cat-file' not in sys.argv or '--batch' not in sys.argv:\n"
+        f"    raise SystemExit(subprocess.call([{real_git!r}, *sys.argv[1:]]))\n"
+        "authority_fd = int(os.environ['GIT_OBJECT_DIRECTORY'].rsplit('/', 1)[1])\n"
+        f"child = subprocess.Popen([{real_git!r}, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(authority_fd,))\n"
+        "for request in sys.stdin.buffer:\n"
+        "    child.stdin.write(request); child.stdin.flush()\n"
+        "    header = child.stdout.readline(); size = int(header.rstrip(b'\\n').rsplit(b' ', 1)[1]); body = child.stdout.read(size + 1)\n"
+        "    sys.stdout.buffer.write(header + body); sys.stdout.buffer.flush()\n"
+        "child.stdin.close(); child.wait()\n"
+        "descendant = subprocess.Popen([sys.executable, '-c', 'import os, time; os.fstat(int(sys.argv[1])); time.sleep(60)', str(authority_fd)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(authority_fd,))\n"
+        "state.write_text(f'{descendant.pid} {os.getpgrp()}', encoding='ascii')\n"
+        "raise SystemExit(17)\n",
+    )
+    monkeypatch.setattr(git_source.shutil, "which", lambda _name: str(executable))
+    fixture, runner, _commit_oid, _blob_oid, _payload, _deadline = _t2_active_packed_reader(
+        tmp_path, "sha1"
+    )
+    reader = runner._persistent_reader
+    assert reader is not None and reader.termination is not None
+    descendant_pid = descendant_pgid = -1
+    try:
+        error = reader.close()
+        assert error is not None
+        assert "exited nonzero" in str(error)
+        assert descendant.is_file()
+        descendant_pid, descendant_pgid = map(int, descendant.read_text(encoding="ascii").split())
+        assert descendant_pgid == reader.termination.pgid
+        assert reader.termination.leader_reaped
+        assert reader.termination.group_signal_confirmed
+        assert reader.termination.group_absence_confirmed
+        assert not Path(f"/proc/{descendant_pid}").exists()
+        with pytest.raises(ProcessLookupError):
+            os.killpg(descendant_pgid, 0)
+    finally:
+        if descendant_pgid > 0:
+            try:
+                os.killpg(descendant_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        runner.close(suppress_terminal_error=True)
+        fixture.root.exists()
+
+
+@pytest.mark.parametrize("object_format", ("sha1", "sha256"))
+def test_t7_i5_bootstrap_switch_keeps_one_cpu_accounting_budget(
+    tmp_path: Path, monkeypatch, object_format: str,
+) -> None:
+    """A real multi-pack bootstrap switch cannot renew CPU budget or receipt ownership."""
+    import json
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture = GitFixture(tmp_path / f"t7-cpu-switch-{object_format}", object_format=object_format)
+    for prefix in ("first", "second"):
+        for index in range(4):
+            leaf = fixture.root / prefix / f"{index}.txt"
+            leaf.parent.mkdir(parents=True, exist_ok=True)
+            leaf.write_bytes(f"{prefix}-{index}\n".encode("ascii"))
+        fixture._git("add", ".")
+        fixture._git("commit", "-qm", prefix)
+        fixture._git("repack", "-adf" if prefix == "first" else "-f")
+    first_commit = fixture._git("rev-parse", "HEAD~1").decode("ascii").strip()
+    commit_oid = fixture._git("rev-parse", "HEAD").decode("ascii").strip()
+    assert len(tuple((fixture.root / ".git/objects/pack").glob("*.pack"))) >= 2
+    records = tmp_path / f"t7-cpu-{object_format}.jsonl"
+    real_git = shutil.which("git")
+    assert real_git
+    executable = _controlled_executable(
+        tmp_path / f"git-t7-cpu-{object_format}",
+        "import json, os, pathlib, resource, sys\n"
+        "if 'cat-file' in sys.argv and '--batch' in sys.argv:\n"
+        "    burn = 0\n"
+        "    for value in range(12_000_000): burn += value\n"
+        f"    with pathlib.Path({str(records)!r}).open('a', encoding='utf-8') as handle:\n"
+        "        handle.write(json.dumps({'pid': os.getpid(), 'rlimit_cpu': resource.getrlimit(resource.RLIMIT_CPU)}) + '\\n')\n"
+        f"os.execvpe({real_git!r}, [{real_git!r}, *sys.argv[1:]], os.environ)\n",
+    )
+    receipt_ids: list[int] = []
+    receipt_counts: list[int] = []
+    receipt_seconds: list[float] = []
+    original_receipt = git_source._BootstrapBatchReader._record_cpu_receipt
+
+    def record_receipt(reader, usage):
+        original_receipt(reader, usage)
+        accounting = reader._accounting()
+        receipt_ids.append(id(accounting))
+        receipt_counts.append(accounting.cpu_receipt_count)
+        receipt_seconds.append(float(usage.ru_utime) + float(usage.ru_stime))
+
+    monkeypatch.setattr(git_source.shutil, "which", lambda _name: str(executable))
+    monkeypatch.setattr(git_source._BootstrapBatchReader, "_record_cpu_receipt", record_receipt)
+    limits = GitScanLimits(timeout_seconds=10.0)
+    runner = git_source._GitRunner(fixture.root, limits)
+    deadline = time.monotonic() + limits.timeout_seconds
+    runner._persistent_accounting = git_source._PersistentReaderAccounting(deadline=deadline)
+    runner._pack_namespace = git_source._freeze_pack_namespace(
+        fixture.root / ".git/objects", limits, deadline
+    )
+    first_oid = fixture._git("rev-parse", f"{first_commit}:first/0.txt").decode("ascii").strip()
+    second_oid = fixture._git("rev-parse", f"{commit_oid}:second/0.txt").decode("ascii").strip()
+    try:
+        assert runner._read_packed_source(
+            fixture.root / ".git/objects", first_oid, "blob", object_format, deadline
+        ) == ("blob", b"first-0\n")
+        first_reader = runner._persistent_reader
+        assert first_reader is not None
+        assert runner._read_packed_source(
+            fixture.root / ".git/objects", second_oid, "blob", object_format, deadline
+        ) == ("blob", b"second-0\n")
+        second_reader = runner._persistent_reader
+        assert second_reader is not None and second_reader.bootstrap is not first_reader.bootstrap
+        assert first_reader.closed
+        runner._close_persistent_reader()
+    finally:
+        runner.close(suppress_terminal_error=True)
+    receipts = [json.loads(line) for line in records.read_text(encoding="utf-8").splitlines()]
+    assert len(receipts) == 2
+    assert len(set(receipt_ids)) == 1
+    assert receipt_counts == [1, 2]
+    assert receipt_seconds[0] > 0
+    assert receipts[1]["rlimit_cpu"][0] < receipts[0]["rlimit_cpu"][0], (
+        receipts,
+        receipt_seconds,
+    )

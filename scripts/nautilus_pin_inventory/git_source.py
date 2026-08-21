@@ -2649,7 +2649,9 @@ class _BootstrapBatchReader:
             errors.append(GitAuthorityError("persistent Git reader wrote stderr during cleanup"))
         return _aggregate_errors(errors)
 
-    def close(self, *, suppress_primary: bool = False) -> BaseException | None:
+    def close(
+        self, *, suppress_primary: bool = False, force_terminate: bool = False
+    ) -> BaseException | None:
         if self.closed:
             return None
         self.closed = True
@@ -2670,6 +2672,14 @@ class _BootstrapBatchReader:
                     error = self.termination.terminate()
                     if error is not None:
                         errors.append(error)
+            elif force_terminate:
+                drain_error = self._drain_close_streams(process)
+                if drain_error is not None:
+                    errors.append(drain_error)
+                if self.termination is not None:
+                    error = self.termination.terminate()
+                    if error is not None:
+                        errors.append(error)
             else:
                 termination_attempted = False
                 drain_error = self._drain_close_streams(process)
@@ -2680,22 +2690,43 @@ class _BootstrapBatchReader:
                         cleanup = self.termination.terminate()
                         if cleanup is not None:
                             errors.append(cleanup)
+                if isinstance(self.termination, _ProcessTermination):
+                    exit_state = self.termination._observe_leader_exit()
+                    if isinstance(exit_state, GitAuthorityError):
+                        errors.append(exit_state)
+                        if not termination_attempted:
+                            termination_attempted = True
+                            cleanup = self.termination.terminate()
+                            if cleanup is not None:
+                                errors.append(cleanup)
+                    elif exit_state:
+                        errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
+                        if not termination_attempted:
+                            termination_attempted = True
+                            cleanup = self.termination.terminate()
+                            if cleanup is not None:
+                                errors.append(cleanup)
                 if self.termination is None or not self.termination.leader_reaped:
                     try:
                         if isinstance(self.termination, _ProcessTermination):
                             reap_error = self.termination._reap_leader()
                             if reap_error is not None:
-                                raise reap_error
+                                errors.append(reap_error)
+                                if not termination_attempted:
+                                    termination_attempted = True
+                                    cleanup = self.termination.terminate()
+                                    if cleanup is not None:
+                                        errors.append(cleanup)
                         else:
                             process.wait(timeout=1.0)
-                        if process.returncode != 0:
-                            errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
-                            if self.termination is not None and not termination_attempted:
-                                cleanup = self.termination.terminate()
-                                if cleanup is not None:
-                                    errors.append(cleanup)
-                        elif self.termination is not None:
-                            self.termination.leader_reaped = True
+                            if process.returncode != 0:
+                                errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
+                                if self.termination is not None and not termination_attempted:
+                                    cleanup = self.termination.terminate()
+                                    if cleanup is not None:
+                                        errors.append(cleanup)
+                            elif self.termination is not None:
+                                self.termination.leader_reaped = True
                     except (OSError, subprocess.TimeoutExpired):
                         if self.termination is not None:
                             error = self.termination.terminate()
@@ -3191,12 +3222,12 @@ class _GitRunner:
             self._persistent_terminal_error = terminal_error
             raise terminal_error from exc
 
-    def _close_persistent_reader(self) -> None:
+    def _close_persistent_reader(self, *, force_terminate: bool = False) -> None:
         reader = self._persistent_reader
         if reader is None:
             return
         self._persistent_reader = None
-        error = reader.close()
+        error = reader.close(force_terminate=force_terminate)
         if error is not None:
             raise error
 
@@ -4624,7 +4655,7 @@ def _handoff_active_pack_receipts_after_builder_seal(
         )
 
 
-def _capture_requested_closure(source: Path, root_oid: str, root_type: str, object_format: str, limits: GitScanLimits, deadline: float, packed_reader: Callable[[str, str], tuple[str, bytes]] | None = None, packed_reader_close: Callable[[], None] | None = None) -> _ClosureCapture:
+def _capture_requested_closure(source: Path, root_oid: str, root_type: str, object_format: str, limits: GitScanLimits, deadline: float, packed_reader: Callable[[str, str], tuple[str, bytes]] | None = None, packed_reader_close: Callable[..., None] | None = None) -> _ClosureCapture:
     """Read an exact closure from loose sources or a private, pinned pack bootstrap."""
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -4746,7 +4777,7 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
             cleanup_errors.append(cleanup)
         if packed_reader_close is not None:
             try:
-                packed_reader_close()
+                packed_reader_close(force_terminate=True)
             except BaseException as cleanup:
                 cleanup_errors.append(cleanup)
         cleanup_error = _aggregate_errors(cleanup_errors)
@@ -4756,8 +4787,11 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
     if packed_reader_close is not None:
         try:
             packed_reader_close()
-        except BaseException:
-            capture.close()
+        except BaseException as primary:
+            try:
+                capture.close()
+            except BaseException as cleanup:
+                raise GitAuthorityAggregateError(primary, cleanup) from primary
             raise
     assert capture is not None
     return capture
@@ -5267,6 +5301,30 @@ class _ProcessTermination:
                 return None
             if time.monotonic() >= deadline:
                 return GitAuthorityError("Git child reap was not confirmed after bounded cleanup")
+            time.sleep(min(0.01, deadline - time.monotonic()))
+
+    def _observe_leader_exit(self) -> bool | GitAuthorityError:
+        """Observe terminal status without giving up the owned PGID before cleanup."""
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                status = os.waitid(
+                    os.P_PID,
+                    self.process.pid,
+                    os.WEXITED | os.WNOWAIT | os.WNOHANG,
+                )
+            except (AttributeError, OSError) as exc:
+                error = GitAuthorityError(
+                    "Git child status could not be observed before exact reap"
+                )
+                error.__cause__ = exc
+                return error
+            if status is not None:
+                return status.si_code != os.CLD_EXITED or status.si_status != 0
+            if time.monotonic() >= deadline:
+                return GitAuthorityError(
+                    "Git child status was not observed before bounded cleanup"
+                )
             time.sleep(min(0.01, deadline - time.monotonic()))
 
     def terminate(self) -> GitAuthorityError | None:
