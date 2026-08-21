@@ -54,7 +54,7 @@ The removed `P1_U00_COMPLETE` verdict cannot be used.
 ## T through T8 narrow repair exception
 
 The Task 1 protected-path guard has one exact, reviewable exception for the
-repair sequence `T..T5`: only
+repair sequence `T..T6`: only
 `scripts/nautilus_pin_inventory/git_source.py`,
 `tests/governance/nautilus_pin_inventory/test_git_source.py`, and this overlay
 may differ from accepted base `f007624191077edd0ba01e42b421e8bff12cbbf0`.
@@ -69,13 +69,15 @@ escape, lost reader/capture double-fault aggregation, exact-reap cleanup
 bypass, clean-drain nonzero pre-reap group escape, and missing cross-bootstrap
 CPU receipt evidence. T4's exact reviews then rejected its real
 reader-close/capture-close double fault: a failed retained descriptor close
-lost externally reachable cleanup custody. T5 is a review candidate only. Its
-public `GitAuthorityCleanupPendingError` retains one private capture owner for
-bounded explicit retry under the cooperative-host model; it does not guarantee
-that a host which keeps denying `close(2)` will release the descriptor. Local
-behavior receipts do not verify T5, and no reader lifecycle, publication,
-retained-owner cleanup, or semantic-equivalence claim in this repair sequence
-is certified until fresh exact-T5 specification and authority reviews pass.
+lost externally reachable cleanup custody. T5's exact reviews then rejected
+duplicate pending ownership after a failed retry and self-cycling exception
+causes. T6 is a review candidate only. Its public
+`GitAuthorityCleanupPendingError` retains one private capture owner for bounded
+explicit retry under the cooperative-host model; it does not guarantee that a
+host which keeps denying `close(2)` will release the descriptor. Local behavior
+receipts do not verify T6, and no reader lifecycle, publication, retained-owner
+cleanup, or semantic-equivalence claim in this repair sequence is certified
+until fresh exact-T6 specification and authority reviews pass.
 
 The T2 production draft existed before its mandatory behavioral RED matrix.
 That ordering error is retained as disclosed recovery history: the draft was

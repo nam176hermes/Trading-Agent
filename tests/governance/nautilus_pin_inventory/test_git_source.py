@@ -8961,6 +8961,89 @@ def test_t8_nested_runner_and_snapshot_cleanup_keeps_public_retry_owner(
         _t8_release_captures(captures)
 
 
+def _t9_exception_graph(error: BaseException) -> tuple[BaseException, ...]:
+    pending = [error]
+    seen = set()
+    graph = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        graph.append(current)
+        for child in (current.__cause__, current.__context__):
+            if child is not None:
+                pending.append(child)
+        if isinstance(current, GitAuthorityError):
+            for child in (getattr(current, "primary", None), getattr(current, "cleanup", None)):
+                if isinstance(child, BaseException):
+                    pending.append(child)
+    return tuple(graph)
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t9_failed_then_successful_public_retry_has_exactly_one_then_no_pending_owner(
+    packed_git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """Break caught: retry publishes a second owner or leaves it stale after success."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    tree_oid = fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    blocked = [True]
+    captures, _attempts = _t8_reader_close_primary_with_blocked_capture_root(
+        monkeypatch, blocked=blocked
+    )
+    try:
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(fixture.root, tree_oid)
+        error = raised.value
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as retried:
+            error.retry_cleanup()
+        assert retried.value is error
+        assert [item for item in _t9_exception_graph(error) if getattr(item, "cleanup_pending", False)] == [error]
+        blocked[0] = False
+        error.retry_cleanup()
+        assert not [item for item in _t9_exception_graph(error) if getattr(item, "cleanup_pending", False)]
+        error.retry_cleanup()
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
+def test_t9_nested_public_pending_graph_is_acyclic(
+    packed_git_fixture, monkeypatch,
+) -> None:
+    """Break caught: an owner-preserving wrapper explicitly chains an error from itself."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    blocked = [True]
+    captures, _attempts = _t8_reader_close_primary_with_blocked_capture_root(
+        monkeypatch, blocked=blocked
+    )
+    real_runner_close = git_source._GitRunner.close
+
+    def close_then_fail(runner, *args, **kwargs):
+        real_runner_close(runner, *args, **kwargs)
+        raise GitAuthorityError("T9 injected snapshot cleanup")
+
+    monkeypatch.setattr(git_source._GitRunner, "close", close_then_fail)
+    try:
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as raised:
+            GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+        error = raised.value
+        assert error.__cause__ is not error
+        graph = _t9_exception_graph(error)
+        assert len({id(item) for item in graph}) == len(graph)
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
 def test_t7_i3_normal_reader_exact_reap_error_still_closes_all_real_owners(
     tmp_path: Path, monkeypatch,
 ) -> None:

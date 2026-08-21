@@ -89,7 +89,7 @@ class GitAuthorityCleanupPendingError(GitAuthorityAggregateError):
         if capture is None:
             return
         try:
-            capture.close()
+            capture._retry_close()
         except BaseException:
             raise self from None
         self._capture = None
@@ -300,6 +300,12 @@ class _ClosureCapture:
     _closed_descriptors: set[int] = field(default_factory=set, init=False, repr=False)
 
     def close(self) -> None:
+        self._close(pending=True)
+
+    def _retry_close(self) -> None:
+        self._close(pending=False)
+
+    def _close(self, *, pending: bool) -> None:
         if self.closed:
             return
         retained = [
@@ -320,7 +326,9 @@ class _ClosureCapture:
         if errors:
             aggregate = _aggregate_errors(errors)
             assert aggregate is not None
-            raise GitAuthorityCleanupPendingError._from_capture(self, aggregate)
+            if pending:
+                raise GitAuthorityCleanupPendingError._from_capture(self, aggregate)
+            raise aggregate
         self.closed = True
 
 
@@ -2922,7 +2930,10 @@ class GitTreeSnapshot:
             try:
                 runner.close()
             except BaseException as cleanup:
-                raise _combine_primary_and_cleanup(primary, cleanup) from primary
+                combined = _combine_primary_and_cleanup(primary, cleanup)
+                if combined is primary:
+                    raise primary
+                raise combined from primary
             raise
         else:
             runner.close()
@@ -2941,7 +2952,10 @@ class GitTreeSnapshot:
             try:
                 runner.close()
             except BaseException as cleanup:
-                raise _combine_primary_and_cleanup(primary, cleanup) from primary
+                combined = _combine_primary_and_cleanup(primary, cleanup)
+                if combined is primary:
+                    raise primary
+                raise combined from primary
             raise
         else:
             runner.close()
@@ -3189,7 +3203,10 @@ class _GitRunner:
                     cleanup_errors.append(exc)
             cleanup_error = _aggregate_errors(cleanup_errors)
             if cleanup_error is not None:
-                raise _combine_primary_and_cleanup(primary, cleanup_error) from primary
+                combined = _combine_primary_and_cleanup(primary, cleanup_error)
+                if combined is primary:
+                    raise primary
+                raise combined from primary
             raise
         self._object_store = store
         self._private_objects = (
@@ -4842,7 +4859,10 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
                 cleanup_errors.append(cleanup)
         cleanup_error = _aggregate_errors(cleanup_errors)
         if cleanup_error is not None:
-            raise _combine_primary_and_cleanup(primary, cleanup_error) from primary
+            combined = _combine_primary_and_cleanup(primary, cleanup_error)
+            if combined is primary:
+                raise primary
+            raise combined from primary
         raise
     if packed_reader_close is not None:
         try:
@@ -4851,7 +4871,10 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
             try:
                 capture.close()
             except BaseException as cleanup:
-                raise _combine_primary_and_cleanup(primary, cleanup) from primary
+                combined = _combine_primary_and_cleanup(primary, cleanup)
+                if combined is primary:
+                    raise primary
+                raise combined from primary
             raise
     assert capture is not None
     return capture
