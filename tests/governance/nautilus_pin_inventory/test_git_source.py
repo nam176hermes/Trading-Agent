@@ -9044,6 +9044,188 @@ def test_t9_nested_public_pending_graph_is_acyclic(
         _t8_release_captures(captures)
 
 
+def _t10_assert_single_pending_owner(error: BaseException) -> None:
+    graph = _t9_exception_graph(error)
+    assert [item for item in graph if getattr(item, "cleanup_pending", False)] == [error]
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def visit(current: BaseException) -> None:
+        assert current.__cause__ is not current
+        assert current.__context__ is not current
+        assert id(current) not in visiting
+        if id(current) in visited:
+            return
+        visiting.add(id(current))
+        children = [current.__cause__, current.__context__]
+        if isinstance(current, GitAuthorityError):
+            children.extend((getattr(current, "primary", None), getattr(current, "cleanup", None)))
+        for child in children:
+            if isinstance(child, BaseException):
+                visit(child)
+        visiting.remove(id(current))
+        visited.add(id(current))
+
+    visit(error)
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t10_partial_capture_cleanup_retains_one_public_owner(
+    git_fixture: GitFixture, monkeypatch, entrypoint: str,
+) -> None:
+    """A real retained partial-capture descriptor remains retry-owned publicly."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    commit_oid, _expected = git_fixture.commit_file("pin.md", b"partial capture\n")
+    tree_oid = git_fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    captures = []
+    blocked = [True]
+    failed_decode = [False]
+    real_close = os.close
+    real_decode = git_source._decode_loose_object
+    real_capture_close = git_source._ClosureCapture.close
+
+    def fail_decode(*args, **kwargs):
+        if not failed_decode[0]:
+            failed_decode[0] = True
+            raise GitAuthorityError("T10 injected partial-capture primary")
+        return real_decode(*args, **kwargs)
+
+    def record_capture_close(capture):
+        captures.append(capture)
+        return real_capture_close(capture)
+
+    def fail_retained_root_close(descriptor: int) -> None:
+        if blocked[0] and captures and descriptor == captures[-1].root_fd:
+            raise OSError(errno.EIO, "T10 injected retained root close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(git_source, "_decode_loose_object", fail_decode)
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source.os, "close", fail_retained_root_close)
+    try:
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(git_fixture.root, tree_oid)
+        error = raised.value
+        assert failed_decode[0] and len(captures) == 1
+        assert os.fstat(captures[0].root_fd).st_ino == captures[0].root_identity[1]
+        _t10_assert_single_pending_owner(error)
+        blocked[0] = False
+        error.retry_cleanup()
+        assert not [item for item in _t9_exception_graph(error) if getattr(item, "cleanup_pending", False)]
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t10_post_capture_seal_cleanup_retains_one_public_owner(
+    packed_git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """A post-capture sealing fault cannot drop its real retained descriptor owner."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    tree_oid = fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    captures = []
+    blocked = [True]
+    real_close = os.close
+    real_capture_close = git_source._ClosureCapture.close
+
+    def fail_copy(*_args, **_kwargs):
+        raise GitAuthorityError("T10 injected post-capture seal primary")
+
+    def record_capture_close(capture):
+        captures.append(capture)
+        return real_capture_close(capture)
+
+    def fail_retained_root_close(descriptor: int) -> None:
+        if blocked[0] and captures and descriptor == captures[-1].root_fd:
+            raise OSError(errno.EIO, "T10 injected retained root close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(git_source, "_copy_requested_closure", fail_copy)
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source.os, "close", fail_retained_root_close)
+    try:
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(fixture.root, tree_oid)
+        error = raised.value
+        assert len(captures) == 1
+        assert "post-capture seal primary" in str(error.primary)
+        _t10_assert_single_pending_owner(error)
+        blocked[0] = False
+        error.retry_cleanup()
+        assert not error.cleanup_pending
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t10_successful_snapshot_final_close_retains_one_public_owner(
+    packed_git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """A successful snapshot's final runner close keeps exactly one retry owner."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    tree_oid = fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    captures = []
+    runner_captures = []
+    blocked = [True]
+    attempts = []
+    real_close = os.close
+    real_capture_close = git_source._ClosureCapture.close
+    real_runner_close = git_source._GitRunner.close
+
+    def record_capture_close(capture):
+        captures.append(capture)
+        return real_capture_close(capture)
+
+    def record_runner_close(runner, *args, **kwargs):
+        runner_captures.append(runner._closure)
+        return real_runner_close(runner, *args, **kwargs)
+
+    def fail_retained_root_close(descriptor: int) -> None:
+        if blocked[0] and captures and descriptor == captures[-1].root_fd:
+            attempts.append(descriptor)
+            raise OSError(errno.EIO, "T10 injected final runner root close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source._GitRunner, "close", record_runner_close)
+    monkeypatch.setattr(git_source.os, "close", fail_retained_root_close)
+    try:
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(fixture.root, tree_oid)
+        error = raised.value
+        assert len(captures) == 1 and runner_captures == captures
+        _t10_assert_single_pending_owner(error)
+        with pytest.raises(git_source.GitAuthorityCleanupPendingError) as retried:
+            error.retry_cleanup()
+        assert retried.value is error
+        _t10_assert_single_pending_owner(error)
+        blocked[0] = False
+        error.retry_cleanup()
+        no_op_attempts = len(attempts)
+        error.retry_cleanup()
+        assert len(attempts) == no_op_attempts
+        assert not [item for item in _t9_exception_graph(error) if getattr(item, "cleanup_pending", False)]
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
 def test_t7_i3_normal_reader_exact_reap_error_still_closes_all_real_owners(
     tmp_path: Path, monkeypatch,
 ) -> None:

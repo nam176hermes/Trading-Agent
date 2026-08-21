@@ -71,13 +71,15 @@ CPU receipt evidence. T4's exact reviews then rejected its real
 reader-close/capture-close double fault: a failed retained descriptor close
 lost externally reachable cleanup custody. T5's exact reviews then rejected
 duplicate pending ownership after a failed retry and self-cycling exception
-causes. T6 is a review candidate only. Its public
+causes. T6 was an incomplete intermediate; T7 is the review candidate only.
+T7 adds binding public cleanup-route receipts for partial capture,
+post-capture sealing, and final runner close, but local receipts do not verify
+its behavior or authority. Its public
 `GitAuthorityCleanupPendingError` retains one private capture owner for bounded
 explicit retry under the cooperative-host model; it does not guarantee that a
-host which keeps denying `close(2)` will release the descriptor. Local behavior
-receipts do not verify T6, and no reader lifecycle, publication, retained-owner
+host which keeps denying `close(2)` will release the descriptor. No reader lifecycle, publication, retained-owner
 cleanup, or semantic-equivalence claim in this repair sequence is certified
-until fresh exact-T6 specification and authority reviews pass.
+until fresh exact-T7 specification and authority reviews pass.
 
 The T2 production draft existed before its mandatory behavioral RED matrix.
 That ordering error is retained as disclosed recovery history: the draft was
