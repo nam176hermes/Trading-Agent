@@ -51,10 +51,10 @@ The approved successor path is
 `U00R -> U01 -> U02 -> U03 -> U04 -> U05 -> U06 -> U07 -> U08 -> P1-00`.
 The removed `P1_U00_COMPLETE` verdict cannot be used.
 
-## T through T7 narrow repair exception
+## T through T8 narrow repair exception
 
 The Task 1 protected-path guard has one exact, reviewable exception for the
-repair sequence `T..T4`: only
+repair sequence `T..T5`: only
 `scripts/nautilus_pin_inventory/git_source.py`,
 `tests/governance/nautilus_pin_inventory/test_git_source.py`, and this overlay
 may differ from accepted base `f007624191077edd0ba01e42b421e8bff12cbbf0`.
@@ -67,10 +67,15 @@ T, T2, and T3 are rejected immutable history, not verified behavior
 boundaries. T3's exact reviews found capture-primary clean-EOF descendant
 escape, lost reader/capture double-fault aggregation, exact-reap cleanup
 bypass, clean-drain nonzero pre-reap group escape, and missing cross-bootstrap
-CPU receipt evidence. T4 is a review candidate only: local behavior receipts
-do not verify it, and no reader lifecycle, publication, retained-owner cleanup,
-or semantic-equivalence claim in this repair sequence is certified until fresh
-exact-T4 specification and authority reviews pass.
+CPU receipt evidence. T4's exact reviews then rejected its real
+reader-close/capture-close double fault: a failed retained descriptor close
+lost externally reachable cleanup custody. T5 is a review candidate only. Its
+public `GitAuthorityCleanupPendingError` retains one private capture owner for
+bounded explicit retry under the cooperative-host model; it does not guarantee
+that a host which keeps denying `close(2)` will release the descriptor. Local
+behavior receipts do not verify T5, and no reader lifecycle, publication,
+retained-owner cleanup, or semantic-equivalence claim in this repair sequence
+is certified until fresh exact-T5 specification and authority reviews pass.
 
 The T2 production draft existed before its mandatory behavioral RED matrix.
 That ordering error is retained as disclosed recovery history: the draft was

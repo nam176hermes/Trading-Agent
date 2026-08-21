@@ -3510,7 +3510,7 @@ def test_aggregate_error_preserves_real_primary_and_cleanup_failures(
     removed_source = source_root / removed_name
     removed_source.unlink()
     try:
-        with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+        with pytest.raises(GitAuthorityError) as raised:
             runner.close()
         error = raised.value
         assert error.primary is not error.cleanup
@@ -8738,6 +8738,227 @@ def test_t7_i2_public_capture_aggregates_reader_and_capture_close_failures(
         for descriptor, _identity in capture.prefixes.values():
             with pytest.raises(OSError):
                 os.fstat(descriptor)
+
+
+def _t8_reader_close_primary_with_blocked_capture_root(
+    monkeypatch,
+    *,
+    blocked: list[bool],
+):
+    """Drive the real packed-reader close through a real retained-root failure."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    captures = []
+    attempts = []
+    real_reader_close = git_source._BootstrapBatchReader.close
+    real_capture_close = git_source._ClosureCapture.close
+    real_close = os.close
+
+    def reader_close_then_fail(reader, *args, **kwargs):
+        real_reader_close(reader, *args, **kwargs)
+        raise GitAuthorityError("T8 injected reader-close primary")
+
+    def record_capture_close(capture):
+        captures.append(capture)
+        return real_capture_close(capture)
+
+    def fail_real_root_close(descriptor: int) -> None:
+        if blocked[0] and captures and descriptor == captures[-1].root_fd:
+            attempts.append(descriptor)
+            raise OSError(errno.EIO, "T8 injected real root close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(
+        git_source._BootstrapBatchReader, "close", reader_close_then_fail
+    )
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source.os, "close", fail_real_root_close)
+    return captures, attempts
+
+
+def _t8_release_captures(captures) -> None:
+    """Release exact-T4 diagnostics after their intentional terminal-error cache."""
+    for capture in captures:
+        errors = getattr(capture, "_descriptor_errors", None)
+        if errors is not None:
+            errors.clear()
+        if not capture.closed:
+            capture.close()
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t8_public_snapshot_retains_real_failed_capture_cleanup_owner(
+    packed_git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """Break caught: losing the pending owner after a real reader-close primary."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    tree_oid = fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    blocked = [True]
+    captures, attempts = _t8_reader_close_primary_with_blocked_capture_root(
+        monkeypatch, blocked=blocked
+    )
+    try:
+        with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(fixture.root, tree_oid)
+        error = raised.value
+        assert isinstance(error, git_source.GitAuthorityCleanupPendingError)
+        assert "reader-close primary" in str(error.primary)
+        assert attempts == [captures[-1].root_fd, captures[-1].root_fd]
+        assert os.fstat(captures[-1].root_fd).st_ino == captures[-1].root_identity[1]
+        assert error.cleanup_pending
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
+def test_t8_retry_cleanup_closes_the_real_retained_root_once_unblocked(
+    packed_git_fixture, monkeypatch,
+) -> None:
+    """Break caught: caching an unresolved descriptor as terminal instead of retrying it."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    blocked = [True]
+    captures, attempts = _t8_reader_close_primary_with_blocked_capture_root(
+        monkeypatch, blocked=blocked
+    )
+    try:
+        with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+            GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+        error = raised.value
+        assert isinstance(error, git_source.GitAuthorityCleanupPendingError)
+        assert error.cleanup_pending
+        blocked[0] = False
+        error.retry_cleanup()
+        assert not error.cleanup_pending
+        with pytest.raises(OSError) as root_closed:
+            os.fstat(captures[-1].root_fd)
+        assert root_closed.value.errno == errno.EBADF
+        retried_attempts = len(attempts)
+        error.retry_cleanup()
+        assert len(attempts) == retried_attempts
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
+def test_t8_retry_cleanup_preserves_the_same_pending_error_when_still_blocked(
+    packed_git_fixture, monkeypatch,
+) -> None:
+    """Break caught: replacing a pending cleanup owner after another bounded retry fails."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    blocked = [True]
+    captures, _attempts = _t8_reader_close_primary_with_blocked_capture_root(
+        monkeypatch, blocked=blocked
+    )
+    try:
+        with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+            GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+        error = raised.value
+        assert isinstance(error, git_source.GitAuthorityCleanupPendingError)
+        assert error.cleanup_pending
+        with pytest.raises(type(error)) as retried:
+            error.retry_cleanup()
+        assert retried.value is error
+        assert error.cleanup_pending
+        assert os.fstat(captures[-1].root_fd).st_ino == captures[-1].root_identity[1]
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t8_retry_skips_confirmed_prefix_descriptor_after_numeric_reuse(
+    git_fixture: GitFixture, monkeypatch, entrypoint: str,
+) -> None:
+    """Break caught: retrying a confirmed-closed descriptor after its number is reused."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    commit_oid, _expected = git_fixture.commit_file("pin.md", b"loose capture\n")
+    tree_oid = git_fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    captures = []
+    blocked = [True]
+    real_capture_close = git_source._ClosureCapture.close
+    real_close = os.close
+
+    def record_capture_close(capture):
+        captures.append(capture)
+        return real_capture_close(capture)
+
+    def fail_real_root_close(descriptor: int) -> None:
+        if blocked[0] and captures and descriptor == captures[-1].root_fd:
+            raise OSError(errno.EIO, "T8 injected real root close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source.os, "close", fail_real_root_close)
+    reused_fds = []
+    try:
+        with pytest.raises(GitAuthorityError) as raised:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(git_fixture.root, tree_oid)
+        error = raised.value
+        assert isinstance(error, git_source.GitAuthorityCleanupPendingError)
+        capture = captures[-1]
+        prefix_fd = next(iter(capture.prefixes.values()))[0]
+        with pytest.raises(OSError):
+            os.fstat(prefix_fd)
+        assert error.cleanup_pending
+        for _ in range(4):
+            reused_fds.append(
+                os.open(git_fixture.root, os.O_RDONLY | os.O_DIRECTORY)
+            )
+            if reused_fds[-1] == prefix_fd:
+                break
+        assert reused_fds[-1] == prefix_fd
+        blocked[0] = False
+        error.retry_cleanup()
+        assert os.fstat(reused_fds[-1]).st_ino == git_fixture.root.stat().st_ino
+    finally:
+        blocked[0] = False
+        for reused_fd in reversed(reused_fds):
+            real_close(reused_fd)
+        _t8_release_captures(captures)
+
+
+def test_t8_nested_runner_and_snapshot_cleanup_keeps_public_retry_owner(
+    packed_git_fixture, monkeypatch,
+) -> None:
+    """Break caught: wrapping the pending cleanup owner into an ordinary aggregate."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, _expected = packed_git_fixture
+    blocked = [True]
+    captures, _attempts = _t8_reader_close_primary_with_blocked_capture_root(
+        monkeypatch, blocked=blocked
+    )
+    real_runner_close = git_source._GitRunner.close
+
+    def close_then_fail(runner, *args, **kwargs):
+        real_runner_close(runner, *args, **kwargs)
+        raise GitAuthorityError("T8 injected snapshot cleanup")
+
+    monkeypatch.setattr(git_source._GitRunner, "close", close_then_fail)
+    try:
+        with pytest.raises(git_source.GitAuthorityAggregateError) as raised:
+            GitTreeSnapshot.from_commit(fixture.root, commit_oid)
+        error = raised.value
+        assert isinstance(error, git_source.GitAuthorityCleanupPendingError)
+        assert "reader-close primary" in str(error.primary)
+        assert "snapshot cleanup" in str(error.cleanup)
+        assert error.cleanup_pending
+    finally:
+        blocked[0] = False
+        _t8_release_captures(captures)
 
 
 def test_t7_i3_normal_reader_exact_reap_error_still_closes_all_real_owners(

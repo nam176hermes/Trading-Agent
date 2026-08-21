@@ -59,6 +59,65 @@ class GitAuthorityAggregateError(GitAuthorityError):
         super().__init__(f"Git authority failure: {primary}; required cleanup failure: {cleanup}")
 
 
+class GitAuthorityCleanupPendingError(GitAuthorityAggregateError):
+    """A bounded retained-capture cleanup retry remains the caller's authority."""
+
+    def __init__(
+        self,
+        primary: BaseException,
+        cleanup: BaseException,
+        capture: "_ClosureCapture",
+        *,
+        placeholder_primary: bool = False,
+    ) -> None:
+        super().__init__(primary, cleanup)
+        self._capture: _ClosureCapture | None = capture
+        self._placeholder_primary = placeholder_primary
+
+    @classmethod
+    def _from_capture(
+        cls, capture: "_ClosureCapture", cleanup: BaseException
+    ) -> "GitAuthorityCleanupPendingError":
+        return cls(cleanup, cleanup, capture, placeholder_primary=True)
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return self._capture is not None
+
+    def retry_cleanup(self) -> None:
+        capture = self._capture
+        if capture is None:
+            return
+        try:
+            capture.close()
+        except BaseException:
+            raise self from None
+        self._capture = None
+
+    def _adopt_primary(self, primary: BaseException) -> None:
+        if self._placeholder_primary:
+            self.primary = primary
+            self._placeholder_primary = False
+        else:
+            self.primary = GitAuthorityAggregateError(primary, self.primary)
+
+    def _append_cleanup(self, cleanup: BaseException) -> None:
+        if cleanup is self:
+            return
+        if isinstance(cleanup, GitAuthorityCleanupPendingError):
+            capture = cleanup._capture
+            if capture is not None:
+                if self._capture is None:
+                    self._capture = capture
+                elif self._capture is not capture:
+                    raise GitAuthorityError("multiple Git capture cleanups are pending")
+                cleanup._capture = None
+        self.cleanup = GitAuthorityAggregateError(self.cleanup, cleanup)
+
+    def __str__(self) -> str:
+        return f"Git authority failure: {self.primary}; required cleanup failure: {self.cleanup}"
+
+
 class _OwnedDescriptorCleanupError(GitAuthorityError):
     """An owned descriptor's terminal release could not be proved."""
 
@@ -68,6 +127,12 @@ def _combine_primary_and_cleanup(
     cleanup: BaseException | None,
 ) -> GitAuthorityError:
     if cleanup is not None:
+        if isinstance(primary, GitAuthorityCleanupPendingError):
+            primary._append_cleanup(cleanup)
+            return primary
+        if isinstance(cleanup, GitAuthorityCleanupPendingError):
+            cleanup._adopt_primary(primary)
+            return cleanup
         return GitAuthorityAggregateError(primary, cleanup)
     if isinstance(primary, GitAuthorityError):
         return primary
@@ -79,7 +144,7 @@ def _aggregate_errors(errors: list[BaseException]) -> BaseException | None:
         return None
     combined = errors[0]
     for error in errors[1:]:
-        combined = GitAuthorityAggregateError(combined, error)
+        combined = _combine_primary_and_cleanup(combined, error)
     return combined
 
 
@@ -233,9 +298,6 @@ class _ClosureCapture:
     pack_links_active: bool = False
     closed: bool = False
     _closed_descriptors: set[int] = field(default_factory=set, init=False, repr=False)
-    _descriptor_errors: dict[int, BaseException] = field(
-        default_factory=dict, init=False, repr=False
-    )
 
     def close(self) -> None:
         if self.closed:
@@ -249,21 +311,16 @@ class _ClosureCapture:
         for descriptor, identity, label in retained:
             if descriptor in self._closed_descriptors:
                 continue
-            previous_error = self._descriptor_errors.get(descriptor)
-            if previous_error is not None:
-                errors.append(previous_error)
-                continue
             try:
                 _close_retained_descriptor(descriptor, identity, label=label)
             except BaseException as exc:
-                self._descriptor_errors[descriptor] = exc
                 errors.append(exc)
             else:
                 self._closed_descriptors.add(descriptor)
         if errors:
             aggregate = _aggregate_errors(errors)
             assert aggregate is not None
-            raise aggregate
+            raise GitAuthorityCleanupPendingError._from_capture(self, aggregate)
         self.closed = True
 
 
@@ -2865,7 +2922,7 @@ class GitTreeSnapshot:
             try:
                 runner.close()
             except BaseException as cleanup:
-                raise GitAuthorityAggregateError(primary, cleanup) from primary
+                raise _combine_primary_and_cleanup(primary, cleanup) from primary
             raise
         else:
             runner.close()
@@ -2884,7 +2941,7 @@ class GitTreeSnapshot:
             try:
                 runner.close()
             except BaseException as cleanup:
-                raise GitAuthorityAggregateError(primary, cleanup) from primary
+                raise _combine_primary_and_cleanup(primary, cleanup) from primary
             raise
         else:
             runner.close()
@@ -3132,7 +3189,7 @@ class _GitRunner:
                     cleanup_errors.append(exc)
             cleanup_error = _aggregate_errors(cleanup_errors)
             if cleanup_error is not None:
-                raise GitAuthorityAggregateError(primary, cleanup_error) from primary
+                raise _combine_primary_and_cleanup(primary, cleanup_error) from primary
             raise
         self._object_store = store
         self._private_objects = (
@@ -3472,7 +3529,7 @@ class _GitRunner:
         authority_error = _aggregate_errors(authority_errors)
         cleanup_error = _aggregate_errors(cleanup_errors)
         if authority_error is not None and cleanup_error is not None:
-            terminal_error: BaseException | None = GitAuthorityAggregateError(
+            terminal_error: BaseException | None = _combine_primary_and_cleanup(
                 authority_error, cleanup_error
             )
         elif authority_error is not None:
@@ -4772,7 +4829,10 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
     except BaseException as primary:
         cleanup_errors: list[BaseException] = []
         try:
-            _ClosureCapture(source, root_identity, root_fd, prefixes, ()).close()
+            temporary_capture = _ClosureCapture(
+                source, root_identity, root_fd, prefixes, ()
+            )
+            temporary_capture.close()
         except BaseException as cleanup:
             cleanup_errors.append(cleanup)
         if packed_reader_close is not None:
@@ -4782,7 +4842,7 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
                 cleanup_errors.append(cleanup)
         cleanup_error = _aggregate_errors(cleanup_errors)
         if cleanup_error is not None:
-            raise GitAuthorityAggregateError(primary, cleanup_error) from primary
+            raise _combine_primary_and_cleanup(primary, cleanup_error) from primary
         raise
     if packed_reader_close is not None:
         try:
@@ -4791,7 +4851,7 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
             try:
                 capture.close()
             except BaseException as cleanup:
-                raise GitAuthorityAggregateError(primary, cleanup) from primary
+                raise _combine_primary_and_cleanup(primary, cleanup) from primary
             raise
     assert capture is not None
     return capture
