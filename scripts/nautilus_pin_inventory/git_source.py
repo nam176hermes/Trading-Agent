@@ -2544,6 +2544,60 @@ class _BootstrapBatchReader:
                 if cleanup is not None:
                     raise GitAuthorityAggregateError(primary, cleanup) from primary
 
+    def _drain_close_streams(self, process: subprocess.Popen[bytes]) -> BaseException | None:
+        """Consume both protocol pipes to EOF before accepting normal shutdown."""
+        if process.stdout is None or process.stderr is None:
+            return GitAuthorityError("persistent Git reader pipes are unavailable during cleanup")
+        selector: selectors.BaseSelector | None = None
+        stdout_bytes = 0
+        stderr_bytes = 0
+        errors: list[BaseException] = []
+        deadline = min(self._shared_deadline(), time.monotonic() + 1.0)
+        try:
+            selector = selectors.DefaultSelector()
+            selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+            selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    errors.append(GitAuthorityError("persistent Git reader stream drain timed out"))
+                    break
+                events = selector.select(remaining)
+                if not events:
+                    continue
+                for key, _event in events:
+                    try:
+                        chunk = os.read(key.fileobj.fileno(), 65_536)
+                    except OSError as exc:
+                        error = GitAuthorityError("persistent Git reader stream drain failed")
+                        error.__cause__ = exc
+                        errors.append(error)
+                        selector.unregister(key.fileobj)
+                        continue
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    if key.data == "stdout":
+                        stdout_bytes += len(chunk)
+                    else:
+                        stderr_bytes += len(chunk)
+                    if stdout_bytes + stderr_bytes > self.runner.limits.max_total_bytes:
+                        errors.append(GitAuthorityError("persistent Git reader cleanup stream budget exceeded"))
+                        break
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if selector is not None:
+                try:
+                    selector.close()
+                except BaseException as exc:
+                    errors.append(exc)
+        if stdout_bytes:
+            errors.append(GitAuthorityError("persistent Git reader wrote trailing stdout during cleanup"))
+        if stderr_bytes:
+            errors.append(GitAuthorityError("persistent Git reader wrote stderr during cleanup"))
+        return _aggregate_errors(errors)
+
     def close(self, *, suppress_primary: bool = False) -> BaseException | None:
         if self.closed:
             return None
@@ -2560,17 +2614,35 @@ class _BootstrapBatchReader:
                     process.stdin.close()
                 except OSError as exc:
                     errors.append(GitAuthorityError("persistent Git reader stdin cleanup failed"))
-            try:
-                process.wait(timeout=1.0)
-                if process.returncode != 0:
-                    errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
-                elif self.termination is not None:
-                    self.termination.leader_reaped = True
-            except (OSError, subprocess.TimeoutExpired):
+            if self.poisoned:
                 if self.termination is not None:
                     error = self.termination.terminate()
                     if error is not None:
                         errors.append(error)
+            else:
+                drain_error = self._drain_close_streams(process)
+                if drain_error is not None:
+                    errors.append(drain_error)
+                try:
+                    process.wait(timeout=1.0)
+                    if process.returncode != 0:
+                        errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
+                        if self.termination is not None:
+                            cleanup = self.termination.terminate()
+                            if cleanup is not None:
+                                errors.append(cleanup)
+                    elif self.termination is not None:
+                        self.termination.leader_reaped = True
+                except (OSError, subprocess.TimeoutExpired):
+                    if self.termination is not None:
+                        error = self.termination.terminate()
+                        if error is not None:
+                            errors.append(error)
+            if self.termination is not None and self.termination.leader_reaped:
+                try:
+                    self._assert_authority()
+                except BaseException as exc:
+                    errors.append(exc)
             stream_error = _close_process_streams(process)
             if stream_error is not None:
                 errors.append(stream_error)
@@ -2819,8 +2891,16 @@ class _GitRunner:
         try:
             self._pack_namespace = _freeze_pack_namespace(source, self.limits, deadline)
             packed_reader = lambda oid, expected: self._read_packed_source(source, oid, expected, object_format, deadline)
-            capture = _capture_requested_closure(source, root_oid, root_type, object_format, self.limits, deadline, packed_reader)
-            self._close_persistent_reader()
+            capture = _capture_requested_closure(
+                source,
+                root_oid,
+                root_type,
+                object_format,
+                self.limits,
+                deadline,
+                packed_reader,
+                self._close_persistent_reader,
+            )
             pack_sources: list[_ClosurePackSource] = []
             for bootstrap in self._pack_bootstraps:
                 _verify_pack_bootstrap(bootstrap, self.limits, deadline)
@@ -4481,121 +4561,7 @@ def _handoff_active_pack_receipts_after_builder_seal(
         )
 
 
-def _refresh_private_pack_receipts_after_bootstrap_release(
-    private: _PrivateClosureStore,
-) -> None:
-    """Accept only the known nlink transition caused by bootstrap release."""
-    ownership = private.ownership
-    ownership.require(_PrivateClosureOwnershipState.STORE)
-    refreshed: dict[str, _OwnedFileEntry] = {}
-    for name, entry in sorted(ownership.pack_entries.items()):
-        try:
-            actual = _private_file_identity(
-                os.stat(name, dir_fd=ownership.pack.descriptor, follow_symlinks=False),
-                label="private Git copied pack entry",
-            )
-        except OSError as exc:
-            raise GitAuthorityError(
-                "private Git copied pack entry is unavailable after bootstrap release"
-            ) from exc
-        if (
-            actual[:6] + actual[7:] != entry.identity[:6] + entry.identity[7:]
-            or actual[6] != entry.identity[6] - 1
-        ):
-            raise GitAuthorityError(
-                "private Git copied pack entry changed during bootstrap release"
-            )
-        refreshed[name] = _OwnedFileEntry(
-            name=entry.name,
-            identity=actual,
-            sha256=entry.sha256,
-            size=entry.size,
-            mode=entry.mode,
-        )
-    ownership.pack_entries = refreshed
-    refreshed_sources: dict[tuple[int, str], tuple[int, ...]] = {}
-    refreshed_baselines: dict[tuple[int, str], tuple[tuple[int, ...], int]] = {}
-    for key, (_initial, expected_nlink) in sorted(
-        ownership.source_nlinks.items(), key=lambda item: (item[0][1], item[0][0])
-    ):
-        source_fd, source_name = key
-        try:
-            actual = _store_identity(
-                os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
-            )
-        except OSError as exc:
-            raise GitAuthorityError(
-                "private Git copied pack source is unavailable after bootstrap release"
-            ) from exc
-        active = ownership.active_source_receipts.get(key)
-        if active is None or (
-            actual[:3] + actual[4:6] != active[:3] + active[4:6]
-            or actual[3] != expected_nlink
-        ):
-            raise GitAuthorityError(
-                "private Git copied pack source changed during bootstrap release"
-            )
-        baseline_nlink = expected_nlink - 1
-        if baseline_nlink < 1:
-            raise GitAuthorityError(
-                "private Git copied pack source hardlink baseline is invalid"
-            )
-        refreshed_sources[key] = actual
-        refreshed_baselines[key] = (
-            (
-                actual[0], actual[1], actual[2], baseline_nlink,
-                actual[4], actual[5], actual[6],
-            ),
-            baseline_nlink,
-        )
-    ownership.active_source_receipts = refreshed_sources
-    ownership.source_nlinks = refreshed_baselines
-
-
-def _rebase_capture_pack_receipts_after_bootstrap_release(
-    capture: _ClosureCapture,
-) -> None:
-    """Keep the copied-closure's one remaining source link as its receipt."""
-    rebased_sources: list[_ClosurePackSource] = []
-    for source in capture.pack_sources:
-        rebased_entries: list[_ClosurePackEntry] = []
-        for entry in source.entries:
-            try:
-                actual = _store_identity(
-                    os.stat(entry.name, dir_fd=source.directory_fd, follow_symlinks=False)
-                )
-            except OSError as exc:
-                raise GitAuthorityError(
-                    "requested Git pack/index pair is unavailable after bootstrap release"
-                ) from exc
-            if (
-                actual[:3] + actual[4:6] != entry.identity[:3] + entry.identity[4:6]
-                or actual[3] != entry.identity[3]
-                or actual[3] < 2
-            ):
-                raise GitAuthorityError(
-                    "requested Git pack/index pair changed during bootstrap release"
-                )
-            rebased_entries.append(
-                _ClosurePackEntry(
-                    entry.name,
-                    (
-                        actual[0], actual[1], actual[2], actual[3] - 1,
-                        actual[4], actual[5], actual[6],
-                    ),
-                )
-            )
-        rebased_sources.append(
-            _ClosurePackSource(
-                directory_fd=source.directory_fd,
-                directory_identity=source.directory_identity,
-                entries=tuple(rebased_entries),
-            )
-        )
-    capture.pack_sources = tuple(rebased_sources)
-
-
-def _capture_requested_closure(source: Path, root_oid: str, root_type: str, object_format: str, limits: GitScanLimits, deadline: float, packed_reader: Callable[[str, str], tuple[str, bytes]] | None = None) -> _ClosureCapture:
+def _capture_requested_closure(source: Path, root_oid: str, root_type: str, object_format: str, limits: GitScanLimits, deadline: float, packed_reader: Callable[[str, str], tuple[str, bytes]] | None = None, packed_reader_close: Callable[[], None] | None = None) -> _ClosureCapture:
     """Read an exact closure from loose sources or a private, pinned pack bootstrap."""
     flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -4700,6 +4666,7 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
             for child_oid, child_type in _tree_children(payload, object_format, limits, depth=depth):
                 schedule(child_oid, child_type, depth + 1)
 
+    capture: _ClosureCapture | None = None
     try:
         while pending:
             oid, expected_type, depth = pending.pop()
@@ -4707,10 +4674,23 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
             if depth > _MAX_TREE_DEPTH:
                 raise GitAuthorityError("Git tree depth limit exceeded")
             retain(oid, expected_type, depth)
-        return _ClosureCapture(source, root_identity, root_fd, prefixes, tuple(objects))
-    except BaseException:
+        capture = _ClosureCapture(source, root_identity, root_fd, prefixes, tuple(objects))
+    except BaseException as primary:
         _ClosureCapture(source, root_identity, root_fd, prefixes, ()).close()
+        if packed_reader_close is not None:
+            try:
+                packed_reader_close()
+            except BaseException as cleanup:
+                raise GitAuthorityAggregateError(primary, cleanup) from primary
         raise
+    if packed_reader_close is not None:
+        try:
+            packed_reader_close()
+        except BaseException:
+            capture.close()
+            raise
+    assert capture is not None
+    return capture
 
 
 def _read_limited_fd(descriptor: int, expected_size: int, limits: GitScanLimits, deadline: float) -> bytes:

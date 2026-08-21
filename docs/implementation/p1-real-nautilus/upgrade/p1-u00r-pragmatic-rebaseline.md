@@ -51,19 +51,19 @@ The approved successor path is
 `U00R -> U01 -> U02 -> U03 -> U04 -> U05 -> U06 -> U07 -> U08 -> P1-00`.
 The removed `P1_U00_COMPLETE` verdict cannot be used.
 
-## T through T4 narrow repair exception
+## T through T5 narrow repair exception
 
 The Task 1 protected-path guard has one exact, reviewable exception for the
-single repair commit `T`: only
+repair sequence `T..T2`: only
 `scripts/nautilus_pin_inventory/git_source.py`,
 `tests/governance/nautilus_pin_inventory/test_git_source.py`, and this overlay
 may differ from accepted base `f007624191077edd0ba01e42b421e8bff12cbbf0`.
-T2, T3, and T4 are successive reconciliation work inside that same exception,
-not separate authority or a general release of protected-path equality.  The
-four R3 paths remain excluded from `T` and retain their independent dirty-work
-status.
+T2 is the review correction inside that same exception; exact `T` was rejected
+and is superseded, not certified, by T2.  This is not separate authority or a
+general release of protected-path equality.  The four R3 paths remain excluded
+from both commits and retain their independent dirty-work status.
 
-The persistent batch reader and its bootstrap have deliberately different
+At the verified T2 boundary, the persistent batch reader and its bootstrap have deliberately different
 lifetimes.  The sole live reader closes, verifies, reaps, and releases its
 streams and mutation guard before copied-closure publication.  The immutable
 bootstrap then remains reader-free, never reopens, and retains only the
@@ -72,7 +72,7 @@ runner cleanup.  Copied-store cleanup releases its own link first and hands
 the resulting receipt to the retained bootstrap; bootstrap cleanup then
 releases its last link back to the operation-start baseline.
 
-T4 migrates accepted one-shot fixture assumptions to semantic equivalents for
+T2 migrates accepted one-shot fixture assumptions to semantic equivalents for
 the persistent protocol: request-bound mutation phases, exact selected-entry
 and private-inventory checks, header-first limits, reader reap, retained-owner
 cleanup, and distinct primary/cleanup aggregation.  A late canonical name that

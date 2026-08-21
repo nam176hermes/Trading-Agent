@@ -1536,15 +1536,15 @@ def test_pinned_pack_source_drift_is_rejected_but_late_unrelated_pack_is_ignored
         f"child = subprocess.Popen([{real_git!r}, *sys.argv[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=authority_fds)\n"
         "for request in sys.stdin.buffer:\n"
         "    child.stdin.write(request); child.stdin.flush()\n"
-        "    header = child.stdout.readline(); size = int(header.rstrip(b'\\n').rsplit(b' ', 1)[1]); body = child.stdout.read(size + 1)\n"
-        "    phase.write_text('post-body-pre-forward ' + str(child.pid), encoding='ascii')\n"
+        "    header = child.stdout.readline(); size = int(header.rstrip(b'\\n').rsplit(b' ', 1)[1]); body = child.stdout.read(size); delimiter = child.stdout.read(1)\n"
+        "    phase.write_text('post-body-pre-delimiter ' + str(child.pid), encoding='ascii')\n"
         "    if operation == 'replace':\n"
         "        replacement = pack.with_name('replacement.pack'); replacement.write_bytes(pack.read_bytes()); replacement.replace(pack)\n"
         "    elif operation == 'corrupt':\n"
         "        os.chmod(pack, 0o600); pack.write_bytes(b'corrupt')\n"
         "    else:\n"
         "        pack.with_name('late-unrelated.pack').write_bytes(b'unrelated')\n"
-        "    sys.stdout.buffer.write(header + body); sys.stdout.buffer.flush()\n"
+        "    sys.stdout.buffer.write(header + body + delimiter); sys.stdout.buffer.flush()\n"
         "child.stdin.close(); raise SystemExit(child.wait())",
     )
     import scripts.nautilus_pin_inventory.git_source as git_source
@@ -1553,7 +1553,7 @@ def test_pinned_pack_source_drift_is_rejected_but_late_unrelated_pack_is_ignored
     try:
         if operation == "late-unrelated":
             assert GitTreeSnapshot.from_commit(git_fixture.root, commit_oid).blob("pin.md").data == expected
-            assert phase.read_text(encoding="ascii").startswith("post-body-pre-forward ")
+            assert phase.read_text(encoding="ascii").startswith("post-body-pre-delimiter ")
         else:
             snapshot = None
             caught: BaseException | None = None
@@ -1567,7 +1567,7 @@ def test_pinned_pack_source_drift_is_rejected_but_late_unrelated_pack_is_ignored
             assert "Git pack namespace changed during source snapshot" in str(caught.primary)
             assert "private Git pack bootstrap entry changed during cleanup" in str(caught.cleanup)
             phase_text = phase.read_text(encoding="ascii")
-            assert phase_text.startswith("post-body-pre-forward ")
+            assert phase_text.startswith("post-body-pre-delimiter ")
             child_pid = int(phase_text.rsplit(" ", 1)[1])
             deadline = time.monotonic() + 2.0
             while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
@@ -3703,6 +3703,7 @@ def test_real_delta_compressed_pack_rejects_declared_blob_before_body_read(
     reader = target_readers[-1]
     assert reader._accounting().decoded_bytes == target_decoded_before_read[0]
     assert reader.poisoned and reader.closed
+    assert reader.process is not None and reader.process.poll() is not None
 
 
 def test_controlled_runner_combines_cache_deadline_and_stream_caps(
@@ -7981,3 +7982,101 @@ def test_t2_group_12_real_hardlink_receipts_handoff_and_restore(
         runner.close(suppress_terminal_error=True)
     after = {member.name: member.stat().st_nlink for member in members}
     assert after == before
+
+
+def test_t5_i1_capture_closes_persistent_reader_before_return(
+    packed_git_fixture, monkeypatch,
+) -> None:
+    """The closure boundary cannot return while its batch reader remains live."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    fixture, commit_oid, expected = packed_git_fixture
+    original_capture = git_source._capture_requested_closure
+    original_read = git_source._GitRunner._read_persistent_bootstrap_object
+    owners = []
+
+    def record_owner(self, *args, **kwargs):
+        owners.append(self)
+        return original_read(self, *args, **kwargs)
+
+    def capture_with_lifecycle_receipt(*args, **kwargs):
+        capture = original_capture(*args, **kwargs)
+        assert owners
+        reader = owners[-1]._persistent_reader
+        assert reader is None or reader.closed
+        return capture
+
+    monkeypatch.setattr(git_source._GitRunner, "_read_persistent_bootstrap_object", record_owner)
+    monkeypatch.setattr(git_source, "_capture_requested_closure", capture_with_lifecycle_receipt)
+    assert GitTreeSnapshot.from_commit(fixture.root, commit_oid).blob("pin.md").data == expected
+
+
+def test_t5_i2_close_rejects_trailing_stdout_and_stderr_after_valid_response() -> None:
+    """Normal EOF cleanup must consume both pipes before accepting a reader."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    class Process:
+        def __init__(self) -> None:
+            stdout_read, stdout_write = os.pipe()
+            stderr_read, stderr_write = os.pipe()
+            os.write(stdout_write, b"TRAILING")
+            os.write(stderr_write, b"unexpected stderr")
+            os.close(stdout_write)
+            os.close(stderr_write)
+            self.stdin = open(os.devnull, "wb")
+            self.stdout = os.fdopen(stdout_read, "rb", buffering=0)
+            self.stderr = os.fdopen(stderr_read, "rb", buffering=0)
+            self.returncode = None
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+    process = Process()
+    reader = object.__new__(git_source._BootstrapBatchReader)
+    reader.closed = False
+    reader.poisoned = False
+    reader.process = process
+    reader.guard = None
+    reader.runner = SimpleNamespace(limits=GitScanLimits())
+    reader._shared_deadline = lambda: time.monotonic() + 1.0
+    reader._assert_authority = lambda: None
+    reader.termination = SimpleNamespace(leader_reaped=False, terminate=lambda: None)
+    error = reader.close()
+    assert error is not None
+    assert "trailing stdout" in str(error)
+    assert "stderr" in str(error)
+    assert process.stdout.closed and process.stderr.closed
+
+
+def test_t5_i3_nonzero_reader_exit_terminates_the_owned_process_group() -> None:
+    """A nonzero leader is abnormal cleanup, not a successful reap receipt."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdin = open(os.devnull, "wb")
+            self.stdout = open(os.devnull, "rb")
+            self.stderr = open(os.devnull, "rb")
+            self.returncode = None
+
+        def wait(self, timeout=None):
+            self.returncode = 17
+            return 17
+
+    terminated: list[bool] = []
+    reader = object.__new__(git_source._BootstrapBatchReader)
+    reader.closed = False
+    reader.poisoned = False
+    reader.process = Process()
+    reader.guard = None
+    reader.runner = SimpleNamespace(limits=GitScanLimits())
+    reader._shared_deadline = lambda: time.monotonic() + 1.0
+    reader._assert_authority = lambda: None
+    reader.termination = SimpleNamespace(
+        leader_reaped=False,
+        terminate=lambda: terminated.append(True) or None,
+    )
+    error = reader.close()
+    assert error is not None
+    assert terminated == [True]
