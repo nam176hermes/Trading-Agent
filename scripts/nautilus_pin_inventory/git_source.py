@@ -59,16 +59,13 @@ class GitAuthorityAggregateError(GitAuthorityError):
         super().__init__(f"Git authority failure: {primary}; required cleanup failure: {cleanup}")
 
 
-_MAX_CLEANUP_CONTEXT_GRAPH_NODES: Final = 64
-
-
 def _detach_cleanup_context_back_edges(
     incoming: BaseException, owner: BaseException
 ) -> None:
     """Keep an attached cleanup subtree from implicitly pointing back to its owner."""
     pending = [incoming]
     visited: set[int] = set()
-    while pending and len(visited) < _MAX_CLEANUP_CONTEXT_GRAPH_NODES:
+    while pending:
         current = pending.pop()
         if id(current) in visited:
             continue

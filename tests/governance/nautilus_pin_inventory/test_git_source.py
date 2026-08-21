@@ -9253,6 +9253,98 @@ def _t11_assert_acyclic(error: BaseException, pending_owners: int) -> None:
     assert len(owners) == pending_owners
 
 
+def _t12_commit_with_distinct_loose_prefixes(
+    fixture: GitFixture, *, prefix_count: int = 24,
+) -> str:
+    """Build one real loose-object tree spanning many retained prefix descriptors."""
+    prefixes: set[str] = set()
+    ordinal = 0
+    commit_oid = ""
+    while len(prefixes) < prefix_count:
+        payload = f"T12 retained loose prefix {ordinal}\n".encode("ascii")
+        ordinal += 1
+        oid = fixture.blob_oid(payload)
+        if oid[:2] in prefixes:
+            continue
+        prefixes.add(oid[:2])
+        commit_oid = fixture.commit_index_entry(
+            f"t12-{len(prefixes):02d}.txt".encode("ascii"),
+            mode="100644",
+            object_oid=oid,
+        )
+    assert len(prefixes) == prefix_count
+    return commit_oid
+
+
+@pytest.mark.parametrize("entrypoint", ("commit", "tree"))
+def test_t12_complete_retry_detaches_all_real_high_cardinality_context_back_edges(
+    git_fixture, monkeypatch, entrypoint: str,
+) -> None:
+    """Every retained loose prefix is sanitized before its owner is re-raised."""
+    import scripts.nautilus_pin_inventory.git_source as git_source
+
+    commit_oid = _t12_commit_with_distinct_loose_prefixes(git_fixture)
+    tree_oid = git_fixture._git("rev-parse", f"{commit_oid}^{{tree}}").decode().strip()
+    captures = []
+    blocked_descriptors: set[int] = set()
+    attempts: list[int] = []
+    real_close = os.close
+    real_capture_close = git_source._ClosureCapture.close
+
+    def record_capture_close(capture):
+        if not captures:
+            captures.append(capture)
+            assert len(capture.prefixes) >= 24
+            blocked_descriptors.update(
+                descriptor for descriptor, _identity in capture.prefixes.values()
+            )
+            blocked_descriptors.add(capture.root_fd)
+        return real_capture_close(capture)
+
+    def fail_every_retained_close(descriptor: int) -> None:
+        if descriptor in blocked_descriptors:
+            attempts.append(descriptor)
+            raise OSError(errno.EIO, "T12 injected retained descriptor close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(git_source._ClosureCapture, "close", record_capture_close)
+    monkeypatch.setattr(git_source.os, "close", fail_every_retained_close)
+    try:
+        try:
+            if entrypoint == "commit":
+                GitTreeSnapshot.from_commit(git_fixture.root, commit_oid)
+            else:
+                GitTreeSnapshot.from_tree(git_fixture.root, tree_oid)
+        except git_source.GitAuthorityCleanupPendingError as error:
+            assert len(captures) == 1
+            assert len(_t9_exception_graph(error)) > 64
+            attempts_before_retry = {
+                descriptor: attempts.count(descriptor)
+                for descriptor in blocked_descriptors
+            }
+            with pytest.raises(git_source.GitAuthorityCleanupPendingError) as retried:
+                error.retry_cleanup()
+            assert retried.value is error
+            _t11_assert_acyclic(error, pending_owners=1)
+            assert all(node.__context__ is not error for node in _t9_exception_graph(error))
+            assert all(
+                attempts.count(descriptor) - attempts_before_retry[descriptor] == 2
+                for descriptor in blocked_descriptors
+            )
+            blocked_descriptors.clear()
+            error.retry_cleanup()
+            _t11_assert_acyclic(error, pending_owners=0)
+            assert all(node.__context__ is not error for node in _t9_exception_graph(error))
+            no_op_attempts = len(attempts)
+            error.retry_cleanup()
+            assert len(attempts) == no_op_attempts
+        else:
+            raise AssertionError("expected retained cleanup owner")
+    finally:
+        blocked_descriptors.clear()
+        _t8_release_captures(captures)
+
+
 @pytest.mark.parametrize("entrypoint", ("commit", "tree"))
 def test_t11_active_handler_failed_retry_detaches_real_cleanup_context_cycles(
     packed_git_fixture, monkeypatch, entrypoint: str,
