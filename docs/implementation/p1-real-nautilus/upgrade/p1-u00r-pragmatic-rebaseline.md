@@ -51,10 +51,10 @@ The approved successor path is
 `U00R -> U01 -> U02 -> U03 -> U04 -> U05 -> U06 -> U07 -> U08 -> P1-00`.
 The removed `P1_U00_COMPLETE` verdict cannot be used.
 
-## T through T5 narrow repair exception
+## T through T6 narrow repair exception
 
 The Task 1 protected-path guard has one exact, reviewable exception for the
-repair sequence `T..T2`: only
+repair sequence `T..T3`: only
 `scripts/nautilus_pin_inventory/git_source.py`,
 `tests/governance/nautilus_pin_inventory/test_git_source.py`, and this overlay
 may differ from accepted base `f007624191077edd0ba01e42b421e8bff12cbbf0`.
@@ -63,21 +63,14 @@ and is superseded, not certified, by T2.  This is not separate authority or a
 general release of protected-path equality.  The four R3 paths remain excluded
 from both commits and retain their independent dirty-work status.
 
-At the verified T2 boundary, the persistent batch reader and its bootstrap have deliberately different
-lifetimes.  The sole live reader closes, verifies, reaps, and releases its
-streams and mutation guard before copied-closure publication.  The immutable
-bootstrap then remains reader-free, never reopens, and retains only the
-descriptor, selected-entry, link, and cleanup receipts required until normal
-runner cleanup.  Copied-store cleanup releases its own link first and hands
-the resulting receipt to the retained bootstrap; bootstrap cleanup then
-releases its last link back to the operation-start baseline.
-
-T2 migrates accepted one-shot fixture assumptions to semantic equivalents for
-the persistent protocol: request-bound mutation phases, exact selected-entry
-and private-inventory checks, header-first limits, reader reap, retained-owner
-cleanup, and distinct primary/cleanup aggregation.  A late canonical name that
-was absent at freeze is never scanned or adopted; an unrelated such name is
-ignored, while a required late pair and every private addition remain terminal.
+T and T2 are rejected immutable history, not verified behavior boundaries. T2's exact
+reviews found missing capture-failure cleanup continuation, abnormal-drain
+descendant cleanup, snapshot-global CPU accounting, behavior-level persistent
+reader receipts, public migration boundaries, and independent hardlink-owner
+transitions. T3 is a review candidate only: local behavior receipts do not
+verify it, and no reader lifecycle, publication, retained-owner cleanup, or
+semantic-equivalence claim in this repair sequence is certified until exact-T3
+spec and authority reviews pass.
 
 The T2 production draft existed before its mandatory behavioral RED matrix.
 That ordering error is retained as disclosed recovery history: the draft was

@@ -1558,6 +1558,12 @@ def _cleanup_private_closure_ownership(
 
     aggregate = _aggregate_errors(errors)
     if aggregate is not None:
+        if not isinstance(aggregate, GitAuthorityError):
+            cleanup_error = GitAuthorityError(
+                "private Git object-store descriptor-relative cleanup failed"
+            )
+            cleanup_error.__cause__ = aggregate
+            aggregate = cleanup_error
         ownership.terminal_cleanup_error = aggregate
         raise aggregate
     ownership.cleanup_completed = True
@@ -2316,6 +2322,9 @@ class _PersistentReaderAccounting:
     request_count: int = 0
     object_count: int = 0
     stderr_bytes: int = 0
+    cpu_budget_seconds: float | None = None
+    cpu_used_seconds: float = 0.0
+    cpu_receipt_count: int = 0
 
 
 class _BootstrapBatchReader:
@@ -2335,6 +2344,7 @@ class _BootstrapBatchReader:
         self.in_flight = False
         self.requests = 0
         self.protocol_bytes = 0
+        self._cpu_receipted = False
         self._launch()
 
     def _assert_authority(self) -> None:
@@ -2363,6 +2373,35 @@ class _BootstrapBatchReader:
         assert deadline is not None
         return deadline
 
+    def _remaining_cpu_seconds(self) -> float:
+        accounting = self._accounting()
+        if accounting.cpu_budget_seconds is None:
+            envelope = _derive_child_resource_envelope(self.runner.limits)
+            accounting.cpu_budget_seconds = float(envelope.cpu_seconds[0])
+        remaining = accounting.cpu_budget_seconds - accounting.cpu_used_seconds
+        if not math.isfinite(remaining) or remaining <= 0:
+            raise GitAuthorityError("persistent Git reader snapshot CPU budget exceeded")
+        return remaining
+
+    def _record_cpu_receipt(self, usage: object) -> None:
+        if self._cpu_receipted:
+            raise GitAuthorityError("persistent Git reader CPU receipt was duplicated")
+        try:
+            used = float(usage.ru_utime) + float(usage.ru_stime)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise GitAuthorityError("persistent Git reader CPU receipt is unavailable") from exc
+        if not math.isfinite(used) or used < 0:
+            raise GitAuthorityError("persistent Git reader CPU receipt is inconsistent")
+        accounting = self._accounting()
+        budget = accounting.cpu_budget_seconds
+        if budget is None:
+            raise GitAuthorityError("persistent Git reader CPU budget is unavailable")
+        if accounting.cpu_used_seconds + used > budget:
+            raise GitAuthorityError("persistent Git reader snapshot CPU budget exceeded")
+        accounting.cpu_used_seconds += used
+        accounting.cpu_receipt_count += 1
+        self._cpu_receipted = True
+
     def _launch(self) -> None:
         _seal_deadline(self.deadline)
         authority = self.bootstrap.object_authority
@@ -2379,6 +2418,14 @@ class _BootstrapBatchReader:
                 "GIT_TERMINAL_PROMPT": "0",
             })
             envelope = _derive_child_resource_envelope(self.runner.limits)
+            remaining_cpu = self._remaining_cpu_seconds()
+            cpu_seconds = min(envelope.cpu_seconds[0], math.floor(remaining_cpu))
+            if cpu_seconds < 1:
+                raise GitAuthorityError("persistent Git reader snapshot CPU budget is exhausted")
+            envelope = _ChildResourceEnvelope(
+                address_space=envelope.address_space,
+                cpu_seconds=(cpu_seconds, cpu_seconds),
+            )
             process = subprocess.Popen(
                 (str(self.runner.executable), "--no-replace-objects", "cat-file", "--batch"),
                 cwd=self.runner.repo_root,
@@ -2395,7 +2442,11 @@ class _BootstrapBatchReader:
             os.set_blocking(process.stdout.fileno(), False)
             os.set_blocking(process.stderr.fileno(), False)
             self.process = process
-            self.termination = _ProcessTermination(process=process, pgid=process.pid)
+            self.termination = _ProcessTermination(
+                process=process,
+                pgid=process.pid,
+                on_reap=self._record_cpu_receipt,
+            )
             self._assert_authority()
         except BaseException as exc:
             self.poisoned = True
@@ -2494,7 +2545,7 @@ class _BootstrapBatchReader:
             header_size = len(header) + 1
             self.protocol_bytes += header_size
             accounting.header_bytes += header_size
-            if accounting.header_bytes > self.runner.limits.max_entries * self._HEADER_CAP:
+            if accounting.header_bytes > self.runner.limits.max_total_bytes:
                 raise GitAuthorityError("persistent Git reader protocol budget exceeded")
             try:
                 actual_raw, type_raw, size_raw = header.split(b" ")
@@ -2620,24 +2671,36 @@ class _BootstrapBatchReader:
                     if error is not None:
                         errors.append(error)
             else:
+                termination_attempted = False
                 drain_error = self._drain_close_streams(process)
                 if drain_error is not None:
                     errors.append(drain_error)
-                try:
-                    process.wait(timeout=1.0)
-                    if process.returncode != 0:
-                        errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
-                        if self.termination is not None:
-                            cleanup = self.termination.terminate()
-                            if cleanup is not None:
-                                errors.append(cleanup)
-                    elif self.termination is not None:
-                        self.termination.leader_reaped = True
-                except (OSError, subprocess.TimeoutExpired):
                     if self.termination is not None:
-                        error = self.termination.terminate()
-                        if error is not None:
-                            errors.append(error)
+                        termination_attempted = True
+                        cleanup = self.termination.terminate()
+                        if cleanup is not None:
+                            errors.append(cleanup)
+                if self.termination is None or not self.termination.leader_reaped:
+                    try:
+                        if isinstance(self.termination, _ProcessTermination):
+                            reap_error = self.termination._reap_leader()
+                            if reap_error is not None:
+                                raise reap_error
+                        else:
+                            process.wait(timeout=1.0)
+                        if process.returncode != 0:
+                            errors.append(GitAuthorityError("persistent Git reader exited nonzero"))
+                            if self.termination is not None and not termination_attempted:
+                                cleanup = self.termination.terminate()
+                                if cleanup is not None:
+                                    errors.append(cleanup)
+                        elif self.termination is not None:
+                            self.termination.leader_reaped = True
+                    except (OSError, subprocess.TimeoutExpired):
+                        if self.termination is not None:
+                            error = self.termination.terminate()
+                            if error is not None:
+                                errors.append(error)
             if self.termination is not None and self.termination.leader_reaped:
                 try:
                     self._assert_authority()
@@ -4676,12 +4739,19 @@ def _capture_requested_closure(source: Path, root_oid: str, root_type: str, obje
             retain(oid, expected_type, depth)
         capture = _ClosureCapture(source, root_identity, root_fd, prefixes, tuple(objects))
     except BaseException as primary:
-        _ClosureCapture(source, root_identity, root_fd, prefixes, ()).close()
+        cleanup_errors: list[BaseException] = []
+        try:
+            _ClosureCapture(source, root_identity, root_fd, prefixes, ()).close()
+        except BaseException as cleanup:
+            cleanup_errors.append(cleanup)
         if packed_reader_close is not None:
             try:
                 packed_reader_close()
             except BaseException as cleanup:
-                raise GitAuthorityAggregateError(primary, cleanup) from primary
+                cleanup_errors.append(cleanup)
+        cleanup_error = _aggregate_errors(cleanup_errors)
+        if cleanup_error is not None:
+            raise GitAuthorityAggregateError(primary, cleanup_error) from primary
         raise
     if packed_reader_close is not None:
         try:
@@ -5154,6 +5224,7 @@ class _ProcessTermination:
     group_signal_confirmed: bool = False
     group_absence_confirmed: bool = False
     leader_reaped: bool = False
+    on_reap: Callable[[object], None] | None = None
 
     def cleanup_receipt(self) -> _ProcessCleanupReceipt:
         return _ProcessCleanupReceipt(
@@ -5170,56 +5241,33 @@ class _ProcessTermination:
 
     def _reap_leader(self) -> GitAuthorityError | None:
         deadline = time.monotonic() + 1.0
-        observation_error: GitAuthorityError | None = None
-        waitid_available = all(
-            hasattr(os, name)
-            for name in ("waitid", "P_PID", "WEXITED", "WNOWAIT", "WNOHANG")
-        )
-        if waitid_available:
-            while True:
+        if not hasattr(os, "wait4"):
+            return GitAuthorityError("exact Git child CPU receipt is unavailable")
+        while True:
+            try:
+                pid, status, usage = os.wait4(self.process.pid, os.WNOHANG)
+            except ChildProcessError as exc:
+                error = GitAuthorityError("Git child exact reap receipt is unavailable")
+                error.__cause__ = exc
+                return error
+            except OSError as exc:
+                error = GitAuthorityError("Git child exact reap receipt is unavailable")
+                error.__cause__ = exc
+                return error
+            if pid == self.process.pid:
                 try:
-                    status = os.waitid(
-                        os.P_PID,
-                        self.process.pid,
-                        os.WEXITED | os.WNOWAIT | os.WNOHANG,
-                    )
-                except ChildProcessError:
-                    if self.process.returncode is not None:
-                        self.leader_reaped = True
-                        return None
-                    observation_error = GitAuthorityError(
-                        "Git child status could not be observed before reap"
-                    )
-                    break
-                except OSError as exc:
-                    observation_error = GitAuthorityError(
-                        "Git child status could not be observed before reap"
-                    )
-                    observation_error.__cause__ = exc
-                    break
-                if status is not None:
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                time.sleep(min(0.01, remaining))
-        try:
-            self.process.wait(timeout=max(0.0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            reap_error = GitAuthorityError(
-                "Git child reap was not confirmed after bounded cleanup"
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            reap_error = GitAuthorityError("Git child cleanup could not be confirmed")
-            reap_error.__cause__ = exc
-        else:
-            self.leader_reaped = True
-            reap_error = None
-        if observation_error is None:
-            return reap_error
-        if reap_error is None:
-            return observation_error
-        return _combine_primary_and_cleanup(observation_error, reap_error)
+                    self.process.returncode = os.waitstatus_to_exitcode(status)
+                    if self.on_reap is not None:
+                        self.on_reap(usage)
+                except BaseException as exc:
+                    error = GitAuthorityError("Git child exact reap receipt is inconsistent")
+                    error.__cause__ = exc
+                    return error
+                self.leader_reaped = True
+                return None
+            if time.monotonic() >= deadline:
+                return GitAuthorityError("Git child reap was not confirmed after bounded cleanup")
+            time.sleep(min(0.01, deadline - time.monotonic()))
 
     def terminate(self) -> GitAuthorityError | None:
         """Signal only while direct-child ownership pins the PGID, then reap boundedly."""
@@ -5252,11 +5300,32 @@ class _ProcessTermination:
             cleanup_error.__cause__ = signal_error
 
         reap_error = self._reap_leader()
-        if reap_error is None:
-            return cleanup_error
-        if cleanup_error is None:
-            return reap_error
-        return _combine_primary_and_cleanup(cleanup_error, reap_error)
+        absence_error: GitAuthorityError | None = None
+        if self.group_signal_confirmed:
+            deadline = time.monotonic() + 1.0
+            while True:
+                try:
+                    os.killpg(self.pgid, 0)
+                except ProcessLookupError:
+                    self.group_absence_confirmed = True
+                    break
+                except OSError as exc:
+                    absence_error = GitAuthorityError(
+                        "Git process-group absence could not be confirmed"
+                    )
+                    absence_error.__cause__ = exc
+                    break
+                if time.monotonic() >= deadline:
+                    absence_error = GitAuthorityError(
+                        "Git process-group absence was not confirmed after bounded cleanup"
+                    )
+                    break
+                time.sleep(min(0.01, deadline - time.monotonic()))
+        result: BaseException | None = cleanup_error
+        for error in (reap_error, absence_error):
+            if error is not None:
+                result = error if result is None else _combine_primary_and_cleanup(result, error)
+        return result if isinstance(result, GitAuthorityError) else result
 
 
 def _close_process_streams(process: subprocess.Popen[bytes]) -> GitAuthorityError | None:
