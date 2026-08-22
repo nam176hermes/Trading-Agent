@@ -642,13 +642,15 @@ def test_portable_mode_seals_introduction_but_allows_later_dashboard_component_e
     assert payload["components"]["dashboard"]["result"] == "PASS"
 
 
-def test_portable_flag_rejects_fully_available_authorities(tmp_path: Path) -> None:
+def test_explicit_portable_mode_ignores_fully_available_external_authorities(
+    tmp_path: Path,
+) -> None:
     repository = _valid_root(tmp_path)
 
-    result = _run(repository, "--portable")
+    result = _run(repository, "--portable", "--json")
 
-    assert result.returncode != 0
-    assert result.stderr.strip() == "E_AUTHORITY"
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["authority_mode"] == "portable"
 
 
 def test_audit_rejects_partial_external_authority_availability(tmp_path: Path) -> None:
@@ -661,16 +663,16 @@ def test_audit_rejects_partial_external_authority_availability(tmp_path: Path) -
     assert result.stderr.strip() == "E_AUTHORITY"
 
 
-def test_portable_audit_rejects_partial_external_authority_availability(
+def test_explicit_portable_mode_ignores_partial_external_authority_availability(
     tmp_path: Path,
 ) -> None:
     repository = _valid_root(tmp_path)
     _remove_authority_repositories(repository, keep="core")
 
-    result = _run(repository, "--portable")
+    result = _run(repository, "--portable", "--json")
 
-    assert result.returncode != 0
-    assert result.stderr.strip() == "E_AUTHORITY"
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["authority_mode"] == "portable"
 
 
 def test_portable_audit_rejects_tampered_backend_introduction_snapshot(

@@ -404,27 +404,20 @@ def _audit_authority(
     path: Path,
     *,
     portable_requested: bool,
-    allow_present_portable_authorities: bool = False,
 ) -> tuple[SourceAuthority, bool]:
     try:
         parsed = parse_source_authority(path)
     except AuthorityError:
         raise CliError("E_AUTHORITY") from None
+    if portable_requested:
+        return parsed, True
     available = _authority_availability(parsed)
-    if all(available):
-        if portable_requested:
-            if allow_present_portable_authorities:
-                return parsed, True
-            raise CliError("E_AUTHORITY")
-        try:
-            return load_source_authority(path), False
-        except AuthorityError:
-            raise CliError("E_AUTHORITY") from None
-    if any(available):
+    if not all(available):
         raise CliError("E_AUTHORITY")
-    if not portable_requested:
-        raise CliError("E_AUTHORITY")
-    return parsed, True
+    try:
+        return load_source_authority(path), False
+    except AuthorityError:
+        raise CliError("E_AUTHORITY") from None
 
 
 def _evidence_blob(root: Path, revision: str, relative: str, code: str) -> str:
@@ -500,7 +493,6 @@ def audit(
             portable_requested
             and (check_p0_baseline or not (root / ".git").is_file())
         ),
-        allow_present_portable_authorities=check_p0_baseline,
     )
     _scan_sources(root, paths)
     components: dict[str, object] = {
@@ -520,8 +512,6 @@ def audit(
         except CliError as error:
             raise error from None
         components[name] = {"introduction": introduction, "result": "PASS"}
-    if portable and not check_p0_baseline and any(_authority_availability(authority)):
-        raise CliError("E_AUTHORITY")
     _immutable_evidence(root, "ops/consolidation/source-authority.json", "E_AUTHORITY")
     for _, _, manifest_path in _COMPONENTS.values():
         _immutable_evidence(root, manifest_path, "E_MANIFEST")

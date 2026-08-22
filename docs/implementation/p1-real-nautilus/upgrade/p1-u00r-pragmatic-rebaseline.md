@@ -51,6 +51,28 @@ The approved successor path is
 `U00R -> U01 -> U02 -> U03 -> U04 -> U05 -> U06 -> U07 -> U08 -> P1-00`.
 The removed `P1_U00_COMPLETE` verdict cannot be used.
 
+## Exact-source portable authority recovery amendment
+
+For U00R R3--R7, an explicit `--portable` invocation in a fresh standalone
+clone with a real `.git` directory selects embedded source authority without
+consulting the ambient availability of the absolute external authority paths.
+External repositories that happen to exist on the host cannot silently switch
+or reject this explicit mode. Strict audit remains the only mode that resolves
+those repositories and still fails unless all declared repositories and exact
+Git objects are available and valid.
+
+This narrowly supersedes the T-G01 requirement that portable mode accept only
+when every external authority repository is absent. It does not alter the
+sealed authority document, component manifests, introduction checks, immutable
+evidence checks, Git-history requirements, or any tamper/schema failure. There
+is no strict-to-portable fallback and `--release --portable` remains invalid.
+
+No path masking, mount namespace, chroot, authority-root rename/removal, or
+alternate checkout boundary may be used to obtain the portable result. Source
+edits and commits remain normal Git operations in the approved source
+worktree; exact-source smoke, inventory generation and verification, reviews,
+and final gates use fresh standalone clones with real `.git` directories.
+
 ## T through T9 narrow repair exception
 
 The Task 1 protected-path guard has one exact, reviewable exception for the
