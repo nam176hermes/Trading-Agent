@@ -326,6 +326,50 @@ def test_python_reviewed_safe_callee_rebinding_fails_closed(replacement: str) ->
 
 
 @pytest.mark.parametrize(
+    ("path", "source", "changed"),
+    (
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            lambda text: text.replace(
+                "source_reader: Callable[[Path, str], bytes],",
+                "source_reader: Callable[[Path, str], bytes], _PROFILE_SPECS=untrusted,",
+                1,
+            ),
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            lambda text: text.replace("expected_profile: str,", "expected_profile: str, set=untrusted,", 1),
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            lambda text: text.replace("expected_profile: str,", "expected_profile: str, _blocked=untrusted,", 1),
+        ),
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            lambda text: text.replace(
+                "specification = _PROFILE_SPECS.get(str(profile))",
+                'specification = _PROFILE_SPECS.get(str(profile))\n    profile_spec = _PROFILE_SPECS["zero-order"]\n    profile_spec.update({})',
+                1,
+            ),
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            lambda text: text.replace("schema_version == 1 and set(closure_manifest)", "schema_version == 1 or  set(closure_manifest)", 1),
+        ),
+    ),
+)
+def test_python_structural_endpoint_authority_rejects_fix3_neighbors(path: str, source, changed) -> None:
+    """Break caught: a local authority rewrite retains a stale governed endpoint."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, changed(source()))
+
+
+@pytest.mark.parametrize(
     ("path", "source", "insertion", "root", "escape"),
     (
         ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'profile = policy.get("profile")', "policy", 'box = {"root": ROOT}\n    untrusted(**box)'),

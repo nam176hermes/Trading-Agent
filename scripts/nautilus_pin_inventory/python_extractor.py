@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hashlib
 import json
 import re
@@ -85,220 +86,24 @@ _ENDPOINTS = (
     ),
 )
 
-_REVIEWED_NON_GOVERNED_COMPARISONS = frozenset({
-    ('scripts/materialize_nautilus_runtime_closure.py', '_build_native_entry_guard@741', '016de145605a8b4e6e620b6c2aab552f7e10a8f044421214c8f65d1c2b1f5fc5'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_build_native_entry_guard@741', '154d1b51f9775171b1e4f1c35a687ca34d53b84c007299a38812ccf6540627ca'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_build_native_entry_guard@741', '7158633db0b161cb82b6bc9d352542fe240baa63009e1c0f2a0dc013d9b0cf9c'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_build_native_entry_guard@741', 'dda5a0d59abc1a5365829cd3cb56ef961f32574821d751a1e3f3e485ffef3a0e'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_build_native_entry_guard@741', 'e167c905bad8d07d62415818a89c7f7778641c2f702882d552e9fd61ae4d22b8'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_build_output_manifest@1049', '989df1fbb35e8fd0290df878d5ef104db9c9dd1233f903d0711004f1e4293eb0'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_copy_file@919', 'd3c181fd7d5085d97a6621d2effa638d5a2b1feccd52880d80bece2a6f9e78f4'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_load_local_tool@320', '7cc5b89beb61219049bbb48c790c6fb0a15bf54ad8e04de0cf6be199b7422332'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_load_local_tool@320', 'd6830491aaec14115a636d8aa67b31ca11fbcc8b6bc618f31009acd12782e3ba'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_publish_noreplace@975', '08bf0a2cfaf983653789ace7953d23aa831e083634327a5cc3bbea1ca35d7c7e'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_publish_noreplace@975', '7acd751419bbb0f6ca0e4c5aca706a16442a1ad9237147f16b13da5ffa79de49'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_publish_noreplace@975', '8087ffb4004feff8ed6ad4464f3e95abc109d2b9aac9755442be2ce38bda4bfd'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_publish_noreplace@975', 'ac42d7ef7e19d6f91b4edae17dea1029bccd002e537b5b03b720658c6a974b40'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_publish_noreplace@975', 'b08c4dc59c17c2f2c828a82af49e92fa3c96ad1ad3473dd2fd87a9a482691918'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_publish_noreplace@975', 'f30138856eeb719e3c813a4c106e9f8a9e170e1f7242b412dee54fe632885874'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_read_file@200', '0bd8096830fe425c2ab8da2c8242830badda884e8dd4599278dfbf78ad65e9ca'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_read_file@200', '3c462ae4456bee6afcb405b687ef92d44cfd64da91f071fb173e77f921e3ee87'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_read_file@200', '5e19ac7147e886624f9a1f386beb339eff430468682d89b74430bb5053d7db1b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_read_file@200', '6a07a8159e12a29ddb45bcf435dc7177bb94e6f4eda34ab6d976a2556c74fe01'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_read_private_build_output@233', 'bdc565d250867fa759c6ef5c7abec064afc93f15ae8af8f9b67401bd1cf971de'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_read_private_build_output@233', 'db289b8db78323a4c51619aca58b15fa1198ef15c3791085a1f5554dc1ec41e2'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_renameat2_noreplace@939', '1cf08fa3e2743af205c70caf4d9215c8bd579be1df355d2d8139f8f70578316f'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_require_sha256@296', '4e56c9faf300ead840db4248ff786d1f6d211da4ba51c4451255d69a29519a54'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_safe_relative@302', 'a866ae84b924cac381fd5ee194f9a7d0a565605d3d603ed8120dd0f3354d05d2'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_safe_target@311', '2dc438c49081d4a44eb1005a7210005314afcfa47658037dfca989d67ddfefaf'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_safe_target@311', '62cd82ba1395959897cc113a1a7ef402ab8afcf31b18dba941f01ba0c1847fc3'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_sealed_directory@277', '7228c37940db664afcedf7c607a0cc4249bdff1db18e43811d1622f188b2eb0a'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_sealed_directory@277', '8e6ca0160ae3150b3c7a7dab3debf6a6af85993376333f932a2baea6c515017b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_sealed_directory@277', 'ceb451275369517d2de059c8063b19438dc6c5707e30310a6628cfb9650a47a1'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_sealed_directory@277', 'e6a9de709c3d95152e5d6e4e3bd39de50258a01ac055fd427489039cc1ada46d'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '042939634f6eee124e3261bc8b2aa34dc73636aa36574ce082d2e0a0ff63d26f'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '114acb4f802a79aaa217afecfb4e3f444169cd1a7c1d9fefa2e1b5ebcdab62cd'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '17b9f93014bae0e0d9fe279699de218722e58388290fe7565d50df574eb73602'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '1ea2a93660a88e439c9dc07cd322981b5c4d1961080c8a0525fbc08c09e97b92'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '273a8c1e2bd130f99774fc00894408ddc567cf971fb7327e41531968141b289e'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '33572115312f0ddb78c0023ba49290bb6159db188232adcc0aaa16ab63a46307'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '5c4c91860c17a3d8cf1960ad444c8a8b5e827faad1efac4413914bd6e9e8e56c'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', '992dc7301231f0f7f471dd8106693c153f382424dad4cbfba37573cc32b1f70e'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', 'a38f27c8015b9f3d32f6319c2200fb1420c4aafd0cf3d9cb0765c163be94036d'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_artifact_bytes@656', 'b2bf44b27d265b0deee0843122dd1e88f18f264cbd0d1b7bb21e8e1d41c435e5'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '0e0ff16f3bd05aa64bfb4c4b21d2574e46a3f94ca8354392ba6e9dd6de65c78b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '1cf44efd076d3f7b4ce5dcf62a78c4c6dad387ff0f1fbc50002ceb1aad9a7c03'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '41f7650803773acae766cb73e1a61335b6056b5357ba51902f94bc7561d70391'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '4f8737f0c3b2088236e7eebd4c7a1e6766e9074a36957173809eca96151b93b5'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '63d9daa093a0312ad75947e962ac3c49b1ac357d73ffbde39261f5a347ffbaaf'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '6e5fe959e630f82fa6a19a3e161d1dac9bc4364b8f1364cc5f89da774b88a32b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '75c7404b1d613cf005df3250cca878a4eec7fc6c031c3ffe6b7a881df7f8516f'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '776ef37b4008c80521e2bc846c470f01a53bf6ed868558a01568c0bbd30b0141'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '882cd0bce288130227043fef0f519541501bfa0ae9c7a5cea74d9bb8300aba63'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '8c0015462a516604ff95951bf894cac10a5582eb93f6a81eef69481ddac50289'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', '901c2b1fc3a0e14c79950d7ddaede4ff7cad30304825129de2d82bef02c1e7bd'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', 'a7c40d71afe2de2ff961f100cf48dc176669e89a1aa2a5358605629beb6318ca'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', 'bcc57823f5d452cd0f0072eff7fb32b2dc084c6e490fcf35e574c481220843a6'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', 'cae9cbbcb495a77e8b20f42fffa34014dff1238cae7e810d48773696082a3c07'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', 'd1a556e9d82dd41eb3b15122dbd814680734d5b5242bc8fb5ade543402284cde'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', 'd8dbd702a73f775b3ad67a084cdea5e6f35471ab048ec3fa33750ab8751dcd97'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_bytes@566', 'e7bf2329c93ab69506ee6cb974974650ea720701049e3440be3343308eb69da6'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_path_inventory@546', 'd4b38afb0f7762e1148f8e708e453bd09cd0338898c31901433fb2a1137c5ddc'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_base_runtime_path_inventory@546', 'd6f5d0e921fef4db8ae0e824c0b1f8f6c298faa11941e7f114ffcce5d7a6e623'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '0da7e0a696af9b1c27c24653df796a066517922ef627b9e314ad17588e57562c'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '2e10b1de82aeb8f00dc50a4febcf9bb197ccef396f07d416473df65a6442676b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '41d0e50e8cdaf9838127898957c95a9e450a4546000c198bb444e0cacd413101'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '49575985a96ed03776ba1055b8654c332e84f04221d1f7679c41ea5e005cee95'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '5cd9925ae16b42dc15156a37a0ad6ea9bba60e95eb73596cf71a04e06b970fcc'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '5f615cb8b5f3045c7667ec82d352c572d7f0a0f03955d7aaa477277aaf6f1aa3'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '8f4b897e9d7bc9d9aff2c9e448d62183424ea1646b3ffb0ba44baff0b0cd3631'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', '9833350c53b937e65f4656ce430af82eba3e4a184bcf65906a84f2a593e93880'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', 'a5fbb89835d19feaa93ad1f8508ddd5be66ad62298dffd9b1dd5430bbc43686c'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', 'a8da4ec474a36e6bed054ee38547e2b497ef20024ca7f66c2d2e6fc676e98cdd'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', 'c9c39d8955f0f79f315e6e837a22b057b9e15e79fe9508cd2d9aa29127a58851'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', 'ea0c9b4516b6db0e6fa7874c16c90d1cd4ec400e847b6688ca8f9c6ff9372d57'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_native_guard_policy@356', 'ea1253a6d4d20d34a00f5a90903c7cd552eb21befa7ee0fa990c0ac7b449507c'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '0d805c024f9f9d4c6dc44adf984b5b3ec0b4939160d3e0983829684ca9d8372f'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '2071ab54393bd9fa47a39b50e12b547c4a8d1f2d482a1f5deb1129a57632879f'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '2b0b40f9164f63b807c600d035a35293dc1ad0daca2c82d54f7d6e94140c1122'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '3499c04e0c7db39cfef31b8cb75da0740d05db1ad86cee9555a78440f6679cb8'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '3963f68c4498f428c0bfba88e972c0fd5f91008d0d050e2fa0a8740eff440d8f'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '4c7e10291f59278c978a4660772782b43990a515561824df17db9189dba2e197'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '4d43aba6cf1a049d48741f9f87fc588d4301701b12bef63bc69f8c8d1d5a3c6f'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '4e10068e6c0c3b5e17238c864220155573bbe6853fb3d52153d310268c5829e6'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '5f14ed952db869a5e888b41d646d869cecf785464f4fdb5af3947c646cf5972b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '5f5f812ce09db05917283c4c3e9aca84743333f048a186822ea93a9c79d9b383'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '63b894100ce7e3ad7df0f41cf4dcfbfcd33e1507dd88af550d720d5ecdcbb72c'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '6d90f3e241b4cebadbae0034df4f62bcd4fe8ef21b6bebdde8ad2ab45af5ccda'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '960d8b181dfcfd21128a78bab0646059bd0aceda68da9dd3e8deb778c0511441'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', 'af7fccaee4245c8c65d4933e0aefc922d77a3e2cf2c6c6f2c121c7e8dbb3afea'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', 'b06b29c43b539d9e4ca193da2aa0aaccb711996bf8155d72abe0ad8a9b49afa2'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', 'b970839f87811c1196ecee595ef4684244029b9d6fbc056bd1fd744e52a080b7'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', 'c5b0068e6ac3c719ddbb2b558b86374b418ed72d54b3acf936abaaf1cea9bf5e'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', 'f43cf4032013cd081f844afbe369bfe3714baabc023a077a828989911b7821f3'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_verify_native_guard_toolchains@691', '442e80a56e856d49357696e57cf5b46d4d106bf70526de607cd28dd0ef4468f4'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_verify_native_guard_toolchains@691', 'cc21e12908f5feb0bfc2fdbfb2cd85c2058294215a657e6bd9e441d95ba1099d'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '1dd8bb35abbc2b39a41b7439f8e16af5e9e01fbb684baeecefd628e2ad1be910'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '2a6c2c1189f1f1f15b6349c42e9084198f994335fd97bb396155fb8d9bbe0fc1'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '2ba62d5d093566ded19df6a86fb35bff2527ee7c33d780030b0e55d27589f177'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '31e1d7e85aaede0e41f6bc73f9e5383a57a1b30eff341a357d233f2f2895931b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '325ad64f483219026aeccb4e275da1c37fe99c59d2ed9e0fc8d93c325515362b'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '43a9a6cb1eeb59f33bc2f9c4f91328ca74cd7f4af8e622b7d02dd0fb766dc6c8'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '5a2a509d15a2eec3fb9f2a2f249b2e6e032cf8040bcf0cc564768bc3985d0e89'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '5a7c147518ead342b5264605fc17586309c00198adb8c91c2723fdb8764f7df0'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '5d67cf19a81d67f34a9217978b4258a9242e6ae68ad48569df25e179813926c7'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '5dd90f2003d405eee719219e74c7e0495dde5b9d4fc1683dd0e01d0964b69345'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '645e94d993d63e74c89e4cd0c028ae8a7307ecf86ba3fd03fe48918b5bf2a5ad'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '75be71a8cfcfd2e5ae46f96baee2efeb112cf8420d443f7598c5c9a14af34796'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '7a7955220c0f92d2f8632faad00b5248257ec229cd944b7d5b582db353f6e836'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '947e4a76ede80486956d54f11d29ed8cdebafdd126b2e468421525883073823e'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', '9fa1dcad53c63a6436eec85689e41ac8b263201ccb7239867263faf1d586bf94'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', 'a46e45c48283df4f3b925bf8f4583c2c03a29d653aba4e81438e4c179c8efb49'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', 'a72d031fdb5f714654977e92f52724bfd0bfd2e385bcece74fd6a5757444b300'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', 'b12f9d0a24feac327644aa5a0d4e322e9973e0526f6506b730d240b237b45823'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', 'c19e5670bc7a15a3c970371826cf63ec7f965ad923a8e3d27766cea3d1cdcfa4'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', 'ccbe01ad560803f380eee9141e5f2c4141ac361c40dcdd86c042f96d07d76934'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', 'd0098081f5d7490e4ada5acb2490726330bbf46fd3b24caea723f017425a77ba'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'materialize_runtime_closure@1084', 'db68bec105cfdfcab20fe8c505e663543b05d412a233f3a37738cff09ed8c0a4'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'read_base_file@523', '0557c9bfb8133dd148ddb7c8f1a5faee4c63368aa0c42aca8d1f4b2befcc3b94'),
-    ('scripts/materialize_nautilus_runtime_closure.py', 'read_base_file@523', '266c806ff2fe90fe18dff30054f444b4cae35fbd464e84e64ffe250581315894'),
-    ('services/job_worker/nautilus_closure.py', '_closure_digest@343', '1a1458119bc72f026bbdd5d1bff23e85a48d96b2b8ce9220e6b6b271cc6a91de'),
-    ('services/job_worker/nautilus_closure.py', '_closure_digest@343', '41eb0ac4a9788ff395a796af0837c95dad84e6863b86b657298c2e71d7680400'),
-    ('services/job_worker/nautilus_closure.py', '_closure_digest@343', '72f121c8dfcc818d51a6089cef491d3306eba1c518ad34a033dd2cc5490c89cb'),
-    ('services/job_worker/nautilus_closure.py', '_closure_digest@343', '752470ef6fe9ac063996c5a705f061bd9f6e05ad65b6ea224bdd7d7d8d6c034a'),
-    ('services/job_worker/nautilus_closure.py', '_closure_digest@343', 'b5fce19a2eb1947d450a66384ec6c1e78d143c6271acc22a93d28926b53660a7'),
-    ('services/job_worker/nautilus_closure.py', '_ensure_external_private_directory@178', '1f9a685b4feeeffaa8cb5f48bd017b6978a23f02de64a6fa122e478592308987'),
-    ('services/job_worker/nautilus_closure.py', '_ensure_external_private_directory@178', '6b34faa18c710cb03de7885bdf61ad7a30d351e25f230b0842f66c70aeb0fedd'),
-    ('services/job_worker/nautilus_closure.py', '_ensure_external_private_directory@178', 'e30c4764b7801422f9e999203b050d001778d2d3028d04096b24bc74d0489b2f'),
-    ('services/job_worker/nautilus_closure.py', '_ensure_external_private_directory@178', 'f5ed503095f22e7646f7a81a367b6dd54a8711716169b085edea18da117902e6'),
-    ('services/job_worker/nautilus_closure.py', '_manifest_files@256', '0d73bd1a5c89c73f651f49b713598f241148ed5a56906f10bda25a85b1744a11'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '04e2515105866f80bcd8c39a0a26b7035db991f6825dd350fab7dbc84923d7a5'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '1cd1d58d3c25452cac575afde7125ed019cf42032cb1984241b32cbd9297e889'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '21d4f5967fe8a67d58a5e6551b7478ef1b0682872a3b820792c1240f9464e14f'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '2e4c7ca220e6b891d704e328a7705d07d07608057d9702265bcc6d12e7fa565b'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '30f5701b7bf96807ec2c8912d66286bcb5713c3c0b662b9116e0b0c19fc6a8ff'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '3c58521aaf2dbfa667834ff5c72224531872c918f3ffb30c5490bdaa968fb743'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '3f8d4330f724dd3e358de9d092339a44606035408894dfac74d338d9d21e1d5e'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '871c0613b25aa327cb0b816b7c8cd13b46b0e661e1b771e4adeaeda3acc864ea'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '913a55e6b5a6de702a29f75e769c9188cbffd5cc49f8871bae4d94645492dc65'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', '93ac44254fd3c1765ba7807fbe3e1418754a082151c4f0626aa033388a894fbb'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', 'a0dc46ed6d1611b442698e944977f6f96d68b952179f5cae6eaa1851421dc0e2'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', 'aa512faf28c23412cc781690684107e41c70f9d59933ca602132543b62276d1e'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', 'c4474ce5674a00bd8d9115ebb0ea969aff07c4a77c94bdf6b703248d2564b6b9'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', 'e5607eabaaf60ebc1ac15ff733b5fbdc0719a4582b7ae624ae43dc48942b63fd'),
-    ('services/job_worker/nautilus_closure.py', '_native_entry_guard@421', 'fd8e57221755e1fa0f85b21084ddcfcd730d5aef00cc049ba6e2c3f93ba855e3'),
-    ('services/job_worker/nautilus_closure.py', '_safe_relative@227', 'a19c1c9a81264e79ac7447e71bef5c470455f552bb441810c47a74d2163f54aa'),
-    ('services/job_worker/nautilus_closure.py', '_safe_target@236', '79b3bcaac565b275639a1dc5589aa495865bbc373fdadaec2eca5d696bf12a40'),
-    ('services/job_worker/nautilus_closure.py', '_sealed_file@200', '12de974b53aaa9cdc24c9a792737e025517bde7e92f153baf715c0040b4603e4'),
-    ('services/job_worker/nautilus_closure.py', '_sealed_file@200', 'f6778240d750b515ff5c510c8fedb5d9ebd5b191d75ed4a95c32b89a70f49cbb'),
-    ('services/job_worker/nautilus_closure.py', '_sha256_path@155', '51f9447b5aed7985e6a9116d32f6a80b85aef3205d43c4e51fbaffb284ea659b'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '093b0d92012c26307c5b858f8a3e862e87076b00cb36e028c83898ba77a9d34c'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '24a372111e25a2f9a678dfce86b1203ae9240a67e4a49608e30ad67df8f390a4'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '30505239bc4a52804f41a7dd6770f144e7b9f3fbe02c74628c1cb1a6b785c2e5'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '368aeeed24048c52cb449f9375309e38b86e156d00fa33d7bde8dbf3e44fac6a'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '3bfbc67611be4ff906cf274d3ffd49a408790ec78383f18570bc5be6ea1f3921'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '3ebfedf917d5ec81ecec134e4b4f4853503f3ef1ea9a63f280e22c3f1b6644ca'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '3ed904f9e5400c51da99a43cc349e3e02ac06e28884844ef38a9e997bab2add8'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '475c1f4de904b4f5c72a1de3649f921dee7116e13f77d753ffc7ece95008d1ae'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '52719ddc24598feb531f3b738792d290013dfdfb24c48a656f35a599b981cc68'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '59856bd44fb2350c3ea7589e5a4d450518b095775c6c0fd8d451d4cf5414cf35'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '5e066eef1a23056322591c6a1029a0f10eb9e4769ba4f763b86e19d71773c0d1'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '67cac3990027cffe0c595abb77aaaadec80ad01888881f827e7b567ac2920a88'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '6fc76b482136ffc17db11349e6bd68ea48b1fe1b5aa6321637ee5d3f0a3b8765'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '736962ec80e4b1ee501e813b708d7927dbb459fd6c1a2a3014adf04ed56a1164'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '75351155f98dd241f6d0221b4371227212f9f0f91b7e3aae4dd028717702bc19'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '7cf8dc0e0fe5a70917d218a8c0585f2b969ac9c67bed1c479bfa6feea23fde55'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '7ffc6b3703e6d356e02c7f2ef0335ce9b56928f5d97a2c0f63bdba77ee9959f4'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '83e89971512a38b8d1c18509d1eb07ec09cfb7bef4875b2f09bd4af65bd2f31a'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '84cf04de4e9ed23ffd2f2e89c77ad448e25dfbf91b6cac36533defcf7c797594'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '880486eb87e5f326159333b509f123885d0b40147e9bcf643176a8e8564f1016'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '8a2887d2d45c3d546f900094a055eda76d92a98b0e02157fabf442d3ff387a6a'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '8e5f21dbf06cdbe73aaa3886e8de109f26f13c31a03d2d7a7e35b4c0053160ef'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '9463864dc03e888074af91aefc49eddf07bda06353af627263af5bc9def0cc26'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', '9a7cedcbfbd6f160135929012253d97f5589b0f4a0498d03eba2f9fd8022e274'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'a0bc332b363a45d903962ccb42745e8b73c1588b9fe168cb0c4e667758d77b37'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'a33462293c7d4881a134ecc7e8d58690d70d67412660f0732704a3bb198a99a9'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'a51ce554395a0a728367101fdbc836ad5e480df06c9073bb8b543e86d9098123'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'afcb53545dc3fe966946a098e857925a89c6f6de9c40530a1adcd999a1c666da'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'bdfb2ce7ef53c4139f14fc6c22f6c00f6468b2949d99ae4a8561780222e4fb96'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'c039adc0f67edbd52f3786e1b6f2a3570f2f907f0679ba876b08569be625c829'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'c430805de839b08167aecabc6dcf58f1a4ddc382246a6d2f2763e289a749d98e'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'ca5861824ec7da09cd9ec7277496dd3470b5b1454361d0246fcc4b1ef21fd480'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'cb4b64c7e6901cecc8cdc4bbe3b95698c032e75a833d3193c56b13bf82e0f07b'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'cdfd4134aa847873b9581d026dedea45127e0d104b13d8210c52072c1ed8d171'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'ddf648adf78d59947d50387c4e558fae86142437e330b70ee8854990d069c783'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'de7ffdaed63459b58bd5c8da258988c3718fead09fe79b731de2a6f676053f56'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'ea3a63738ccf559ecccf3b791a683206390aa152f9d74e264c0762f28566e154'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'ebdad61ed937992d15c81a6d937387d9be5e8c725d280cd93f029c8d4aa23881'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'ec4f3b6c6fd1f9c74d05ff633773772fe6493a55208d8525bdeba40532b5441b'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'f36f4915b920b0ffbb380b5ecc12119ee91cc2741da7c92c40fea45e40ac262e'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'f3b27f08f5a8b054b4a7a30cd4d723fc07de5949bc986fa81492b0cf4c961c21'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'f64c845eeb882c6ac18798a41b8591006d8d34fe8c3347ff2cf6a5b69aa3f6d9'),
-})
-_REVIEWED_SAFE_GOVERNED_CALLS = frozenset({
-    ('scripts/materialize_nautilus_runtime_closure.py', '<module>@1', '_PROFILE_SPECS', 'f1548753b1c763d74a93c280e8a291dea1e5c75016f9e75366a8e1b85496d767', 'mapping:values'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', '_PROFILE_SPECS', 'a7a4b0a6713b0dacb5d0bcd0c797934660f9691cf9cb1ed172f030e3eed98cfd', 'mapping:get'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', 'policy', '029b5fc92e8685fb67bb6017c001e730ceaaa4d6c23ff7a4f8da56ca1c14f821', 'builtin:set'),
-    ('scripts/materialize_nautilus_runtime_closure.py', '_validate_policy_bytes@422', 'policy', '834878470b061543b78c924f1ba844ced7d5a0486a5701b1b2afbe828aaa11d9', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '06fe0af04294b39060dbefc2de73565316a04ee1c18d70baddb829e9cda22827', 'builtin:set'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '13b2898ed6f51f1807758fb02f4dc795ebe62a8688190cb45c8c4407b6ffe058', 'builtin:set'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '17bcbd15ce370a4f0a377ae73793e4001dd7f652ed9b08236c8befa472f3ae8b', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '2e6b675272a0ba4522d555129dc7a90560c873fb9a95d1d8e7f410cdc4ce4446', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '3c116172c290c937b12293dd334eec0a3068568761060d8e4266baa51ba4b568', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '3ef630d26c2948e81cd943f090f8f51260cbbb8612d64aa365f58b043dc6d495', 'builtin:set'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '55f3a791d3d56c6e676e0c196a0116876e9a860131dad0c53c9ec5b77ff4ec49', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '715dcb4ef6a264694771dda01e8c9d33d076c2bae40b3ee65a34c3eb98bdf8a7', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '7283f805633123e0e1e54ae8661f0ad88a84d8e148058582e85e097cbf373a93', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '82c53d0240395fe24ae5c910e945159599a7bd1e02c99ba29f6e5fc39c4ed588', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '8b7b78bdbc791281229cdb5d28f7ee52cb6d88bd56c06278d22672906cd5453a', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '8ec262a4fb8ca4faf988f7616725d91f7c93dbbda1fcd6d8dc301237a912282d', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '99ae1cbef8c6b4e8fbdaafe713722a34e335c229577fc385818ee432062cbcce', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', '9d75f6374cb09ca17fd388fe16e8a3a779bcba916edc0245732ce0a73ff0b95f', 'builtin:set'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', 'a496d491308ba6e43b5878a5b4ea49c0b5ff137ec8c2d0eb3956d30404d4816b', 'builtin:set'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', 'aa6f139f2bdee16d44891d7c98bce82b1b6461e90ca02cdd0d4ae8c69209970d', 'mapping:get'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', 'b08ca7c4daddb4d9d5866b640d3072d185ea2aed2d556041238b6459ec1bce03', 'direct:_closure_digest:485689d5aa06104eaba46d5057b3e0c4f3a17a2c7d443c936d44638632c4b172'),
-    ('services/job_worker/nautilus_closure.py', 'attest_nautilus_backtest_closure@515', 'closure_manifest', 'd3ff385a9e5bfe182f32c3acf44b8583d90c5124adeb0a2084de71c38117e744', 'builtin:set'),
-})
+_APPROVED_ENDPOINT_HASHES = {
+    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_base_runtime_bytes", 566): "a078704b0a34fab0d575c9c464deca04f11861e722f71a73311535837d837628",
+    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_artifact_bytes", 656): "301748498fc1ac4bb52eb73ae828e5470989cc2320ac1673cfa90b9134150e41",
+    ("scripts/materialize_nautilus_runtime_closure.py", "_build_native_entry_guard", 741): "cc36293680cc801e8d390307ec10ffe61f7b6531a89f0eaf8ca27f1201c4d0f8",
+    ("scripts/materialize_nautilus_runtime_closure.py", "_build_output_manifest", 1049): "b8a00c947ff201b4aa64981cda832f9e1f361ac2c9e31286caba4fe6f8ab8d5b",
+    ("scripts/materialize_nautilus_runtime_closure.py", "materialize_runtime_closure", 1084): "ce8af351d43bdf60b541167db75087ad03409edbb93ddff1e0a21391521392d2",
+    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_policy_bytes", 422): "2c0e2c883286485ac8deb80b77f219901e254c55e8ce47858e3513d97680d266",
+    ("services/job_worker/nautilus_closure.py", "_closure_digest", 343): "94cb3024725f382c9043a65bad8c069c00714a1b8e54ca7a97dbef65bada9ff4",
+    ("services/job_worker/nautilus_closure.py", "attest_nautilus_backtest_closure", 515): "53794a8f8e0932b44b6fd4b96d4cc50174a281dfa58c6a86156aeba78361eddb",
+}
+_APPROVED_MODULE_CHILD_HASHES = {
+    ("scripts/materialize_nautilus_runtime_closure.py", "_PROFILE_SPECS", 143): "4d30ed9f0db35441006c9d88a7734f67c2a046aec944ea54780e40a1234c10c3",
+    ("scripts/materialize_nautilus_runtime_closure.py", "_json_object", 267): "2f8b56257df665e2328b2bca01e91579574639b8ae38e17767f52576115c11ee",
+    ("services/job_worker/nautilus_closure.py", "_PROFILES", 47): "cb3ed07358edc79a3226c42930c1882bdb4bdb9c37a1805e21b0b69a71003293",
+    ("services/job_worker/nautilus_closure.py", "_blocked", 151): "5860bb7abb423390463c82b929a24bbe7781e992055d758cb300a9ca601c4873",
+    ("services/job_worker/nautilus_closure.py", "_read_json", 216): "fd1d05b14169fde6122e3bb4e7edad9053edb8e20be2c0720191894e6c9b4943",
+    ("services/job_worker/nautilus_closure.py", "_closure_digest", 343): "94cb3024725f382c9043a65bad8c069c00714a1b8e54ca7a97dbef65bada9ff4",
+}
 
 class PythonExtractionError(ValueError):
     """A governed Python expression cannot be given an exact, safe citation."""
@@ -573,6 +378,7 @@ class PythonExtractor:
             tree = ast.parse(text, filename=path)
         except SyntaxError:
             raise _invalid() from None
+        self._proved_endpoint_authority(path, tree)
         tokens = _string_tokens(text)
         bindings, invalid_names, invalid_governed_names = self._bindings(tree, tokens, text)
         observations = set(self._literal_observations(path, text, tokens, tree))
@@ -589,7 +395,12 @@ class PythonExtractor:
                     if relation is not None:
                         governed_relations.add(relation)
                     continue
-                if self._reviewed_non_governed_comparison(path, tree, node, parents):
+                if self._inside_approved_endpoint(path, tree, node):
+                    continue
+                if path in {candidate.path for candidate in _ENDPOINTS} and not any(
+                    _governed_like(candidate) or isinstance(candidate, ast.Name) and candidate.id in _OBJECTS
+                    for candidate in ast.walk(node)
+                ):
                     continue
                 observations.update(self._comparison_observations(path, text, node, tokens, bindings, invalid_names, invalid_governed_names))
         return PythonExtractionResult(
@@ -605,6 +416,107 @@ class PythonExtractor:
     @classmethod
     def _fingerprint(cls, value: object) -> str:
         return hashlib.sha256(cls._canonical(value)).hexdigest()
+
+    @staticmethod
+    def _module_child_name(node: ast.AST) -> str | None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return node.name
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            target = node.target if isinstance(node, ast.AnnAssign) else node.targets[0] if len(node.targets) == 1 else None
+            return target.id if isinstance(target, ast.Name) else None
+        return None
+
+    @staticmethod
+    def _direct_governed_comparison(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == len(node.comparators) == 1
+            and isinstance(node.ops[0], (ast.Eq, ast.NotEq))
+            and PythonExtractor._direct_access(node.left) is not None
+            and PythonExtractor._direct_access(node.comparators[0]) is not None
+        )
+
+    @classmethod
+    def _structural_hash(cls, node: ast.AST, *, normalize: bool) -> str:
+        value = copy.deepcopy(node)
+        if normalize:
+            for item in ast.walk(value):
+                if cls._direct_governed_comparison(item):
+                    item.ops[0] = ast.Eq()
+        return cls._fingerprint(ast.dump(value, annotate_fields=True, include_attributes=True))
+
+    @classmethod
+    def _proved_endpoint_authority(cls, path: str, tree: ast.Module) -> None:
+        expected_endpoints = {
+            (name, line): fingerprint
+            for (candidate_path, name, line), fingerprint in _APPROVED_ENDPOINT_HASHES.items()
+            if candidate_path == path
+        }
+        if not expected_endpoints:
+            return
+        expected_children = {
+            (name, line): fingerprint
+            for (candidate_path, name, line), fingerprint in _APPROVED_MODULE_CHILD_HASHES.items()
+            if candidate_path == path
+        }
+        children = {(cls._module_child_name(node), getattr(node, "lineno", 0)): node for node in tree.body}
+        if set(children).isdisjoint(expected_endpoints) or any(
+            key not in children or cls._structural_hash(children[key], normalize=True) != fingerprint
+            for key, fingerprint in expected_endpoints.items()
+        ):
+            raise _invalid()
+        if any(
+            key not in children or cls._structural_hash(children[key], normalize=False) != fingerprint
+            for key, fingerprint in expected_children.items()
+        ):
+            raise _invalid()
+        endpoint_roots = {endpoint.root for endpoint in _ENDPOINTS if endpoint.path == path}
+        protected = {name for name, _ in expected_children} | {"set"}
+        if any(sum(name == child_name for child_name, _ in children) != 1 for name in protected - {"set"}):
+            raise _invalid()
+        allowed = {
+            (name, id(candidate))
+            for (name, _), node in children.items()
+            if name in protected
+            for candidate in ast.walk(node)
+            if isinstance(candidate, ast.Name) and candidate.id == name and isinstance(candidate.ctx, ast.Store)
+        } | {
+            (name, id(node))
+            for (name, _), node in children.items()
+            if name in protected and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg) and node.arg in protected:
+                raise _invalid()
+            if isinstance(node, ast.ExceptHandler) and node.name in protected:
+                raise _invalid()
+            if isinstance(node, ast.Name) and node.id in protected and isinstance(node.ctx, (ast.Store, ast.Del)):
+                if (node.id, id(node)) not in allowed:
+                    raise _invalid()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in protected:
+                if (node.name, id(node)) not in allowed:
+                    raise _invalid()
+            if isinstance(node, (ast.Import, ast.ImportFrom)) and any((alias.asname or alias.name.split(".")[0]) in protected for alias in node.names):
+                raise _invalid()
+            if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name) and node.target.id in endpoint_roots and cls._scope(tree, node) is tree:
+                raise _invalid()
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and cls._scope(tree, node) is tree:
+                targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+                if any(isinstance(target, ast.Name) and target.id in endpoint_roots for target in targets):
+                    raise _invalid()
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"append", "clear", "extend", "pop", "remove", "update"}:
+                receiver = node.func.value
+                if isinstance(receiver, ast.Name) and receiver.id in {name for name, _ in expected_children}:
+                    raise _invalid()
+
+    @staticmethod
+    def _inside_approved_endpoint(path: str, tree: ast.Module, node: ast.AST) -> bool:
+        return any(
+            isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and (path, candidate.name, candidate.lineno) in _APPROVED_ENDPOINT_HASHES
+            and candidate.lineno <= node.lineno <= candidate.end_lineno
+            for candidate in tree.body
+        )
 
     @staticmethod
     def _scope(tree: ast.Module, node: ast.AST) -> ast.AST:
@@ -703,192 +615,6 @@ class PythonExtractor:
         return f"{getattr(scope, 'name', '<module>')}@{getattr(scope, 'lineno', 1)}"
 
     @classmethod
-    def _receipt_fingerprint(cls, node: ast.AST, parents: dict[int, ast.AST], scope: ast.AST) -> str:
-        ancestors: list[tuple[object, ...]] = []
-        current = node
-        while current is not scope:
-            parent = parents.get(id(current))
-            if parent is None:
-                return ""
-            ancestors.append((type(parent).__name__, getattr(parent, "lineno", 0), getattr(parent, "col_offset", 0), getattr(parent, "end_lineno", 0), getattr(parent, "end_col_offset", 0)))
-            current = parent
-        payload = (
-            ast.dump(node, annotate_fields=True, include_attributes=False),
-            getattr(node, "lineno", 0), getattr(node, "col_offset", 0), getattr(node, "end_lineno", 0), getattr(node, "end_col_offset", 0),
-            tuple(ancestors),
-        )
-        return hashlib.sha256(cls._canonical(payload)).hexdigest()
-
-    @classmethod
-    def _reviewed_non_governed_comparison(cls, path: str, tree: ast.Module, node: ast.Compare, parents: dict[int, ast.AST]) -> bool:
-        scope = cls._scope(tree, node)
-        return (path, cls._qualified_scope(scope), cls._receipt_fingerprint(node, parents, scope)) in _REVIEWED_NON_GOVERNED_COMPARISONS
-
-    @staticmethod
-    def _target_base(target: ast.AST) -> ast.Name | None:
-        while isinstance(target, (ast.Attribute, ast.Subscript)):
-            target = target.value
-        return target if isinstance(target, ast.Name) else None
-
-    @classmethod
-    def _scope_binding_is_proved(cls, path: str, tree: ast.Module, scope: ast.AST, root: str, value: ast.AST) -> bool:
-        parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-
-        def target_names(node: ast.AST) -> tuple[str, ...]:
-            if isinstance(node, ast.Name):
-                return (node.id,)
-            if isinstance(node, (ast.Tuple, ast.List)):
-                return tuple(name for item in node.elts for name in target_names(item))
-            if isinstance(node, ast.Starred):
-                return target_names(node.value)
-            return ()
-
-        aliases = {root}
-
-        def module_nodes(node: ast.AST):
-            yield node
-            for child in ast.iter_child_nodes(node):
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-                    continue
-                yield from module_nodes(child)
-
-        alias_nodes = tuple(module_nodes(tree)) if scope is tree else tuple(ast.walk(scope))
-        proof_nodes = alias_nodes
-
-        def exposes_root(node: ast.AST) -> bool:
-            if isinstance(node, ast.Name):
-                return node.id in aliases
-            if isinstance(node, ast.Subscript):
-                return False
-            if isinstance(node, ast.Call):
-                return False
-            return any(exposes_root(child) for child in ast.iter_child_nodes(node))
-
-        for _ in range(len(alias_nodes) + 1):
-            before = len(aliases)
-            for candidate in alias_nodes:
-                if isinstance(candidate, ast.Assign) and exposes_root(candidate.value):
-                    for target in candidate.targets:
-                        aliases.update(target_names(target))
-                elif isinstance(candidate, ast.AnnAssign) and candidate.value is not None and exposes_root(candidate.value):
-                    aliases.update(target_names(candidate.target))
-                elif isinstance(candidate, ast.NamedExpr) and exposes_root(candidate.value):
-                    aliases.update(target_names(candidate.target))
-            if len(aliases) == before:
-                break
-
-        def governed_origin(node: ast.AST) -> bool:
-            if isinstance(node, ast.Name):
-                return node.id in aliases
-            if isinstance(node, ast.Call):
-                return isinstance(node.func, ast.Attribute) and governed_origin(node.func.value)
-            return any(governed_origin(child) for child in ast.iter_child_nodes(node))
-
-        def callee_authority(node: ast.Call) -> str | None:
-            if isinstance(node.func, ast.Name) and node.func.id == "set":
-                if any(isinstance(candidate, ast.Name) and candidate.id == "set" and isinstance(candidate.ctx, (ast.Store, ast.Del)) for candidate in ast.walk(tree)):
-                    return None
-                return "builtin:set"
-            if isinstance(node.func, ast.Name) and node.func.id == "_closure_digest":
-                definitions = [
-                    candidate for candidate in tree.body
-                    if isinstance(candidate, ast.FunctionDef) and candidate.name == "_closure_digest"
-                ]
-                if len(definitions) != 1 or any(
-                    isinstance(candidate, ast.Name) and candidate.id == "_closure_digest" and isinstance(candidate.ctx, (ast.Store, ast.Del))
-                    for candidate in ast.walk(tree)
-                ):
-                    return None
-                return "direct:_closure_digest:" + hashlib.sha256(
-                    ast.dump(definitions[0], annotate_fields=True, include_attributes=False).encode("utf-8")
-                ).hexdigest()
-            if isinstance(node.func, ast.Attribute) and node.func.attr in {"get", "values"} and governed_origin(node.func.value):
-                return f"mapping:{node.func.attr}"
-            return None
-
-        def safe_call(node: ast.Call) -> bool:
-            authority = callee_authority(node)
-            if authority is None:
-                return False
-            call_scope = cls._scope(tree, node)
-            return (
-                path,
-                cls._qualified_scope(call_scope),
-                root,
-                cls._receipt_fingerprint(node, parents, call_scope),
-                authority,
-            ) in _REVIEWED_SAFE_GOVERNED_CALLS
-
-        def unsafe_receiver_or_escape(node: ast.AST) -> bool:
-            if isinstance(node, ast.Attribute) and governed_origin(node.value):
-                parent = parents.get(id(node))
-                return not (isinstance(parent, ast.Call) and parent.func is node and safe_call(parent))
-            return isinstance(node, ast.Call) and any(
-                exposes_root(argument) for argument in (*node.args, *(keyword.value for keyword in node.keywords))
-            ) and not safe_call(node)
-
-        approved_target: ast.Name | None = None
-        for node in proof_nodes:
-            if isinstance(node, ast.Assign) and node.value is value and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == root:
-                approved_target = node.targets[0]
-                break
-            if isinstance(node, ast.AnnAssign) and node.value is value and isinstance(node.target, ast.Name) and node.target.id == root:
-                approved_target = node.target
-                break
-        if approved_target is None:
-            return False
-        for node in ast.walk(scope):
-            if isinstance(node, ast.Name) and node.id == root and isinstance(node.ctx, (ast.Store, ast.Del)) and node is not approved_target:
-                return False
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                target = node.target if not isinstance(node, ast.Assign) else node.targets[0] if len(node.targets) == 1 else None
-                base = cls._target_base(target) if target is not None else None
-                if base is not None and base.id == root and target is not approved_target:
-                    return False
-                if isinstance(node.value, ast.Name) and node.value.id == root and target is not approved_target:
-                    return False
-            if unsafe_receiver_or_escape(node):
-                return False
-            if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-                if any(item.id == root for item in ast.walk(node.target) if isinstance(item, ast.Name)):
-                    return False
-            if isinstance(node, (ast.With, ast.AsyncWith)):
-                if any(item.optional_vars is not None and any(name.id == root for name in ast.walk(item.optional_vars) if isinstance(name, ast.Name)) for item in node.items):
-                    return False
-            if isinstance(node, ast.ExceptHandler) and node.name == root:
-                return False
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any((alias.asname or alias.name.split(".")[0]) == root for alias in node.names):
-                return False
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == root:
-                return False
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-                arguments = node.args
-                if any(argument.arg == root for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)):
-                    return False
-                if (arguments.vararg is not None and arguments.vararg.arg == root) or (arguments.kwarg is not None and arguments.kwarg.arg == root):
-                    return False
-        approved_module_target = approved_target if scope is tree else None
-        for node in module_nodes(tree):
-            if isinstance(node, ast.Name) and node.id == root and isinstance(node.ctx, (ast.Store, ast.Del)) and node is not approved_module_target:
-                return False
-            if unsafe_receiver_or_escape(node):
-                return False
-        return True
-
-    @classmethod
-    def _mapping_origin_is_proved(cls, path: str, tree: ast.Module, name: str) -> bool:
-        matches = [
-            statement
-            for statement in tree.body
-            if isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-            and statement.targets[0].id == name
-            and isinstance(statement.value, ast.Dict)
-        ]
-        return len(matches) == 1 and cls._scope_binding_is_proved(path, tree, tree, name, matches[0].value)
-
-    @classmethod
     def _binding_fingerprint(
         cls,
         path: str,
@@ -911,20 +637,12 @@ class PythonExtractor:
         if candidates and scope not in tree.body:
             raise _invalid()
         if not candidates:
-            bindings = self._scope_bindings(scope)
-            value = bindings.get(root)
-            if value is not None and self._binding_kind(root, value) is not None and any(endpoint.path == path and endpoint.root == root for endpoint in _ENDPOINTS):
-                raise _invalid()
             return None
         bindings = self._scope_bindings(scope)
         value = bindings.get(root)
         binding_kind = self._binding_kind(root, value) if value is not None else None
         endpoint = next((item for item in candidates if item.binding_kind == binding_kind), None)
-        if endpoint is None or value is None or not self._scope_binding_is_proved(path, tree, scope, root, value):
-            raise _invalid()
-        if root == "specification" and not self._mapping_origin_is_proved(path, tree, "_PROFILE_SPECS"):
-            raise _invalid()
-        if root == "expected_identity" and not self._mapping_origin_is_proved(path, tree, "_PROFILES"):
+        if endpoint is None or value is None:
             raise _invalid()
         family = _DOCUMENT_FIELDS[endpoint.document_kind].get(field)
         if family is None:
@@ -937,20 +655,6 @@ class PythonExtractor:
         start = _ast_offset(text, starts, node.lineno, node.col_offset)
         end = _ast_offset(text, starts, node.end_lineno, node.end_col_offset)
         return _span(path, text, (_Origin(start, end),))
-
-    @staticmethod
-    def _terminal_failure(node: ast.Compare, parents: dict[int, ast.AST]) -> bool:
-        current: ast.AST = node
-        while id(current) in parents:
-            current = parents[id(current)]
-            if isinstance(current, ast.If):
-                return any(
-                    isinstance(statement, ast.Raise)
-                    or (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
-                        and isinstance(statement.value.func, ast.Name) and statement.value.func.id == "_blocked")
-                    for statement in current.body
-                )
-        return False
 
     def _governed_evidence(
         self,
@@ -986,15 +690,10 @@ class PythonExtractor:
                 DynamicGovernedCheck(path, left[0], left[2], operator, right[0], right[2], syntax_fingerprint, span),
                 None,
             )
-        # A raw equality inside a terminal invalidity predicate represents the
-        # accepted cross-family inequality relation, as approved for this baseline.
-        relation_operator = "!=" if operator == "==" and self._terminal_failure(node, parents) else operator
-        if relation_operator != "!=":
-            return None
         return (
             None,
             GovernedRelation(
-                path, left[0], left[1], left[2], left[3], relation_operator,
+                path, left[0], left[1], left[2], left[3], "!=",
                 right[0], right[1], right[2], right[3], "cross_family_consistency_guard",
                 binding_fingerprint, syntax_fingerprint, span,
             ),
