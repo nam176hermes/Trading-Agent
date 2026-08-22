@@ -136,6 +136,11 @@ class Registry:
         """The registered family definitions in deterministic registration order."""
         return tuple(self._family_specs.values())
 
+    @property
+    def allowed_identities(self) -> tuple[AllowedIdentity, ...]:
+        """Read-only exact identity inventory for deterministic completeness checks."""
+        return tuple(self._allowed.values())
+
     def detect(self, family: str, text: str, *, path: str, carrier: Carrier, syntax: str) -> tuple[Observation, ...]:
         if type(family) is not str:
             raise ValueError("identity family must be a string")

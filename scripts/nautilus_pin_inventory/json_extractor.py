@@ -39,6 +39,11 @@ _PATH_FAMILIES = {
     ("engines/nautilus/runtime-closure-policy.json", ("native_entry_guard", "source_sha256")): "selected_source",
 }
 
+# Public routing authority: these exact policy paths have structured Nautilus
+# field mappings. Other JSON files remain ordinary data unless generic text
+# contains an independently governed literal.
+GOVERNED_JSON_PATHS = frozenset(path for path, _parts in _PATH_FAMILIES)
+
 
 class JsonExtractionError(ValueError):
     """The JSON source cannot be safely flattened into inventory observations."""
