@@ -13,7 +13,7 @@ from tempfile import TemporaryDirectory
 from hypothesis import given, settings, strategies as st
 import pytest
 
-from conftest import required_identities
+from tests.governance.nautilus_pin_inventory import required_identities
 from scripts.nautilus_pin_inventory.model import AllowedIdentity, Carrier, Observation, SourceSpan
 from scripts.nautilus_pin_inventory.registry import DEFAULT_REGISTRY, FamilySpec, Registry
 from scripts.nautilus_pin_inventory.text_extractor import TextAndPathExtractor
