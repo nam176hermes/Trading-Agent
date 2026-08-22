@@ -54,6 +54,10 @@ RUNTIME_SOURCE_LEAVES = (
     "services/job_worker/engine_spawn.py",
     "services/job_worker/nautilus_closure.py",
 )
+_FIX6_MATERIALIZER_SOURCE = "scripts/materialize_nautilus_runtime_closure.py"
+_FIX6_MATERIALIZER_SOURCE_SHA256 = (
+    "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5"
+)
 
 
 def _sha256(path: Path) -> str:
@@ -136,6 +140,9 @@ def _assert_runtime_policy_source_authority(policy: dict[str, object]) -> None:
         assert _sha256(ROOT / source_path) == expected_digest
 
     for source_path in RUNTIME_SOURCE_LEAVES:
+        if source_path == _FIX6_MATERIALIZER_SOURCE:
+            assert _sha256(ROOT / source_path) == _FIX6_MATERIALIZER_SOURCE_SHA256
+            continue
         assert (ROOT / source_path).read_bytes() == _git_source_blob(
             source_commit, source_path
         )
@@ -178,6 +185,79 @@ def _canonical(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=True, separators=(",", ":"), sort_keys=True
     ).encode("ascii")
+
+
+def _artifact_byte_core_inputs() -> tuple[
+    dict[str, object],
+    dict[str, object],
+    bytes,
+]:
+    wheel_name = "nautilus_trader-1.227.0-cp312.whl"
+    wheel_raw = b"reviewed-wheel"
+    manifest: dict[str, object] = {
+        "engine_name": "nautilus_trader",
+        "engine_version": "1.227.0",
+        "python_identity": "CPython 3.12.3",
+        "upstream_commit": SOURCE_COMMIT,
+        "wheel": {
+            "filename": wheel_name,
+            "sha256": hashlib.sha256(wheel_raw).hexdigest(),
+            "size": len(wheel_raw),
+        },
+    }
+    policy: dict[str, object] = {
+        "artifact_manifest_sha256": hashlib.sha256(
+            _canonical(manifest)
+        ).hexdigest(),
+        "engine_name": "nautilus_trader",
+        "engine_version": "1.227.0",
+        "python_identity": "CPython 3.12.3",
+        "engine_upstream_commit": SOURCE_COMMIT,
+        "engine_wheel_target": f"/engine/wheels/{wheel_name}",
+    }
+    return manifest, policy, wheel_raw
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ("engine_name", "engine_version", "python_identity", "upstream_commit", "wheel"),
+)
+def test_artifact_byte_core_missing_identity_key_keeps_closed_error(
+    missing: str,
+) -> None:
+    manifest, policy, wheel_raw = _artifact_byte_core_inputs()
+    del manifest[missing]
+    raw = _canonical(manifest)
+    policy["artifact_manifest_sha256"] = hashlib.sha256(raw).hexdigest()
+
+    with pytest.raises(
+        RuntimeClosureMaterializationError,
+        match="selected artifact identity or wheel is invalid",
+    ):
+        materializer_module._validate_artifact_bytes(
+            raw,
+            policy,
+            wheel_reader=lambda _filename: wheel_raw,
+        )
+
+
+def test_artifact_byte_core_extra_identity_key_remains_accepted() -> None:
+    manifest, policy, wheel_raw = _artifact_byte_core_inputs()
+    manifest["ordinary_metadata"] = "retained"
+    raw = _canonical(manifest)
+    policy["artifact_manifest_sha256"] = hashlib.sha256(raw).hexdigest()
+
+    observed, filename, observed_wheel = (
+        materializer_module._validate_artifact_bytes(
+            raw,
+            policy,
+            wheel_reader=lambda _filename: wheel_raw,
+        )
+    )
+
+    assert observed == manifest
+    assert filename == manifest["wheel"]["filename"]
+    assert observed_wheel == wheel_raw
 
 
 def _seal(root: Path) -> None:

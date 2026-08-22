@@ -100,28 +100,13 @@ _ENDPOINTS = (
     ),
 )
 
-_APPROVED_ENDPOINT_HASHES = {
-    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_base_runtime_bytes", 566): "a078704b0a34fab0d575c9c464deca04f11861e722f71a73311535837d837628",
-    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_artifact_bytes", 656): "301748498fc1ac4bb52eb73ae828e5470989cc2320ac1673cfa90b9134150e41",
-    ("scripts/materialize_nautilus_runtime_closure.py", "_build_native_entry_guard", 741): "cc36293680cc801e8d390307ec10ffe61f7b6531a89f0eaf8ca27f1201c4d0f8",
-    ("scripts/materialize_nautilus_runtime_closure.py", "_build_output_manifest", 1049): "b8a00c947ff201b4aa64981cda832f9e1f361ac2c9e31286caba4fe6f8ab8d5b",
-    ("scripts/materialize_nautilus_runtime_closure.py", "materialize_runtime_closure", 1084): "ce8af351d43bdf60b541167db75087ad03409edbb93ddff1e0a21391521392d2",
-    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_policy_bytes", 422): "2c0e2c883286485ac8deb80b77f219901e254c55e8ce47858e3513d97680d266",
-    ("scripts/materialize_nautilus_runtime_closure.py", "_load_policy", 501): "1d1ca401e940576c38bcdf42066d584b076743c8c2d10fb4b2763ec9b1aec3b8",
-    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_base_runtime", 513): "50167e5e33c2d3a9b660e9e89117ca1b5027ba2f2dd74cdcc9cab2d9613a1b5e",
-    ("services/job_worker/nautilus_closure.py", "_closure_digest", 343): "94cb3024725f382c9043a65bad8c069c00714a1b8e54ca7a97dbef65bada9ff4",
-    ("services/job_worker/nautilus_closure.py", "attest_nautilus_backtest_closure", 515): "53794a8f8e0932b44b6fd4b96d4cc50174a281dfa58c6a86156aeba78361eddb",
-}
-_APPROVED_MODULE_CHILD_HASHES = {
-    ("scripts/materialize_nautilus_runtime_closure.py", "_PROFILE_SPECS", 143): "4d30ed9f0db35441006c9d88a7734f67c2a046aec944ea54780e40a1234c10c3",
-    ("scripts/materialize_nautilus_runtime_closure.py", "_json_object", 267): "2f8b56257df665e2328b2bca01e91579574639b8ae38e17767f52576115c11ee",
-    ("services/job_worker/nautilus_closure.py", "_PROFILES", 47): "cb3ed07358edc79a3226c42930c1882bdb4bdb9c37a1805e21b0b69a71003293",
-    ("services/job_worker/nautilus_closure.py", "_blocked", 151): "5860bb7abb423390463c82b929a24bbe7781e992055d758cb300a9ca601c4873",
-    ("services/job_worker/nautilus_closure.py", "_read_json", 216): "fd1d05b14169fde6122e3bb4e7edad9053edb8e20be2c0720191894e6c9b4943",
-    ("services/job_worker/nautilus_closure.py", "_closure_digest", 343): "94cb3024725f382c9043a65bad8c069c00714a1b8e54ca7a97dbef65bada9ff4",
-}
-_APPROVED_ROOT_MAP_READERS = {
-    ("scripts/materialize_nautilus_runtime_closure.py", "_REPOSITORY_LAUNCHER_SOURCES", 171): "84148bdb6160537c70a2da068b069c697792b604f752feedbb5745cdfbc1c8fa",
+_GOVERNED_MODULE_HASHES = {
+    "scripts/materialize_nautilus_runtime_closure.py": (
+        "5ad9f2e21423ae7f3328df00239961ebab5576de79595b79e1141ef4fbb9e9f9"
+    ),
+    "services/job_worker/nautilus_closure.py": (
+        "01085b9e448675996078742f5dc501963bd15ad022cc6b8fdfa1ef34006914f2"
+    ),
 }
 
 class PythonExtractionError(ValueError):
@@ -397,8 +382,12 @@ class PythonExtractor:
             tree = ast.parse(text, filename=path)
         except SyntaxError:
             raise _invalid() from None
-        if self._requires_endpoint_authority(path, tree):
-            self._proved_endpoint_authority(path, tree)
+        expected_module_hash = _GOVERNED_MODULE_HASHES.get(path)
+        if (
+            expected_module_hash is not None
+            and self._normalized_module_hash(tree) != expected_module_hash
+        ):
+            raise _invalid()
         tokens = _string_tokens(text)
         bindings, invalid_names, invalid_governed_names = self._bindings(tree, tokens, text)
         observations = set(self._literal_observations(path, text, tokens, tree))
@@ -406,23 +395,31 @@ class PythonExtractor:
         governed_relations: set[GovernedRelation] = set()
         parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
         for node in ast.walk(tree):
-            if isinstance(node, ast.Compare):
-                evidence = self._governed_evidence(path, text, tree, node, parents)
-                if evidence is not None:
-                    guard, relation = evidence
-                    if guard is not None:
-                        dynamic_guards.add(guard)
-                    if relation is not None:
-                        governed_relations.add(relation)
-                    continue
-                if self._inside_approved_endpoint(path, tree, node):
-                    continue
-                if path in {candidate.path for candidate in _ENDPOINTS} and not any(
-                    _governed_like(candidate) or isinstance(candidate, ast.Name) and candidate.id in _GOVERNED_ROOTS
-                    for candidate in ast.walk(node)
-                ):
-                    continue
-                observations.update(self._comparison_observations(path, text, node, tokens, bindings, invalid_names, invalid_governed_names))
+            if not isinstance(node, ast.Compare):
+                continue
+            evidence = self._governed_evidence(path, text, tree, node, parents)
+            if evidence is not None:
+                guard, relation = evidence
+                if guard is not None:
+                    dynamic_guards.add(guard)
+                if relation is not None:
+                    governed_relations.add(relation)
+                continue
+            if expected_module_hash is not None:
+                if self._direct_governed_comparison(node):
+                    raise _invalid()
+                continue
+            observations.update(
+                self._comparison_observations(
+                    path,
+                    text,
+                    node,
+                    tokens,
+                    bindings,
+                    invalid_names,
+                    invalid_governed_names,
+                )
+            )
         return PythonExtractionResult(
             tuple(sorted(observations, key=self._sort_key)),
             tuple(sorted(dynamic_guards, key=self._dynamic_sort_key)),
@@ -438,15 +435,6 @@ class PythonExtractor:
         return hashlib.sha256(cls._canonical(value)).hexdigest()
 
     @staticmethod
-    def _module_child_name(node: ast.AST) -> str | None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            return node.name
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            target = node.target if isinstance(node, ast.AnnAssign) else node.targets[0] if len(node.targets) == 1 else None
-            return target.id if isinstance(target, ast.Name) else None
-        return None
-
-    @staticmethod
     def _direct_governed_comparison(node: ast.AST) -> bool:
         return (
             isinstance(node, ast.Compare)
@@ -456,147 +444,18 @@ class PythonExtractor:
             and PythonExtractor._direct_access(node.comparators[0]) is not None
         )
 
-    @staticmethod
-    def _requires_endpoint_authority(path: str, tree: ast.Module) -> bool:
-        return path in {endpoint.path for endpoint in _ENDPOINTS} and any(
-            _governed_like(node) for node in ast.walk(tree)
-        )
-
     @classmethod
-    def _structural_hash(cls, node: ast.AST, *, normalize: bool) -> str:
-        value = copy.deepcopy(node)
-        if normalize:
-            for item in ast.walk(value):
-                if cls._direct_governed_comparison(item):
-                    item.ops[0] = ast.Eq()
-        return cls._fingerprint(ast.dump(value, annotate_fields=True, include_attributes=True))
-
-    @classmethod
-    def _proved_endpoint_authority(cls, path: str, tree: ast.Module) -> None:
-        expected_endpoints = {
-            (name, line): fingerprint
-            for (candidate_path, name, line), fingerprint in _APPROVED_ENDPOINT_HASHES.items()
-            if candidate_path == path
-        }
-        if not expected_endpoints:
-            return
-        expected_children = {
-            (name, line): fingerprint
-            for (candidate_path, name, line), fingerprint in _APPROVED_MODULE_CHILD_HASHES.items()
-            if candidate_path == path
-        }
-        expected_root_map_readers = {
-            (name, line): fingerprint
-            for (candidate_path, name, line), fingerprint in _APPROVED_ROOT_MAP_READERS.items()
-            if candidate_path == path
-        }
-        children = {(cls._module_child_name(node), getattr(node, "lineno", 0)): node for node in tree.body}
-        if set(children).isdisjoint(expected_endpoints) or any(
-            key not in children or cls._structural_hash(children[key], normalize=True) != fingerprint
-            for key, fingerprint in expected_endpoints.items()
-        ):
-            raise _invalid()
-        if any(
-            key not in children or cls._structural_hash(children[key], normalize=False) != fingerprint
-            for key, fingerprint in expected_children.items()
-        ):
-            raise _invalid()
-        if any(
-            key not in children or cls._structural_hash(children[key], normalize=False) != fingerprint
-            for key, fingerprint in expected_root_map_readers.items()
-        ):
-            raise _invalid()
-        endpoint_roots = {endpoint.root for endpoint in _ENDPOINTS if endpoint.path == path}
-        root_maps = {
-            name
-            for (name, line), node in children.items()
-            if (name, line) in expected_children and isinstance(node, (ast.Assign, ast.AnnAssign))
-        }
-        protected = {name for name, _ in expected_children} | {name for name, _ in expected_endpoints} | {"set"}
-        if any(sum(name == child_name for child_name, _ in children) != 1 for name in protected - {"set"}):
-            raise _invalid()
-        allowed = {
-            (name, id(candidate))
-            for (name, _), node in children.items()
-            if name in protected
-            for candidate in ast.walk(node)
-            if isinstance(candidate, ast.Name) and candidate.id == name and isinstance(candidate.ctx, ast.Store)
-        } | {
-            (name, id(node))
-            for (name, _), node in children.items()
-            if name in protected and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        }
-        root_map_scopes = {
-            id(node)
-            for (name, _), node in children.items()
-            if name in root_maps or (name, _) in expected_root_map_readers or (name, _) in expected_endpoints
-        }
-        sole_callers = {
-            "_validate_policy_bytes": "_load_policy",
-            "_load_policy": "materialize_runtime_closure",
-            "_validate_base_runtime": "materialize_runtime_closure",
-            "_validate_base_runtime_bytes": "_validate_base_runtime",
-        }
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
-                raise _invalid()
-            if isinstance(node, ast.Import) and any(alias.name == "builtins" for alias in node.names):
-                raise _invalid()
-            if isinstance(node, (ast.Global, ast.Nonlocal)) and any(name in protected for name in node.names):
-                raise _invalid()
-            if isinstance(node, ast.arg) and node.arg in protected:
-                raise _invalid()
-            if isinstance(node, ast.ExceptHandler) and node.name in protected:
-                raise _invalid()
-            if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name in protected:
-                raise _invalid()
-            if isinstance(node, ast.MatchMapping) and node.rest in protected:
-                raise _invalid()
-            if isinstance(node, ast.Name) and node.id in protected and isinstance(node.ctx, (ast.Store, ast.Del)):
-                if (node.id, id(node)) not in allowed:
-                    raise _invalid()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in protected:
-                if (node.name, id(node)) not in allowed:
-                    raise _invalid()
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any((alias.asname or alias.name.split(".")[0]) in protected for alias in node.names):
-                raise _invalid()
-            if isinstance(node, ast.Name) and node.id in root_maps:
-                owners = [owner for owner in tree.body if owner is node or node in ast.walk(owner)]
-                if len(owners) != 1 or id(owners[0]) not in root_map_scopes:
-                    raise _invalid()
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in sole_callers:
-                owners = [owner for owner in tree.body if node in ast.walk(owner)]
-                if len(owners) != 1 or cls._module_child_name(owners[0]) != sole_callers[node.id]:
-                    raise _invalid()
-            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) and isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
-                raise _invalid()
-            if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)) and node.attr == "set" and isinstance(node.value, ast.Name) and node.value.id in {"builtins", "__builtins__"}:
-                raise _invalid()
-            if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name) and node.target.id in endpoint_roots and cls._scope(tree, node) is tree:
-                raise _invalid()
-            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and cls._scope(tree, node) is tree:
-                targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
-                if any(isinstance(target, ast.Name) and target.id in endpoint_roots for target in targets):
-                    raise _invalid()
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"append", "clear", "extend", "pop", "remove", "update"}:
-                if any(isinstance(item, ast.Name) and item.id in root_maps for item in ast.walk(node.func.value)):
-                    raise _invalid()
-            if isinstance(node, ast.Call) and any(
-                isinstance(item, ast.Name) and item.id in root_maps
-                for value in (*node.args, *(keyword.value for keyword in node.keywords))
-                for item in ast.walk(value)
-            ):
-                raise _invalid()
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"globals", "locals", "vars", "setattr", "delattr"}:
-                raise _invalid()
-
-    @staticmethod
-    def _inside_approved_endpoint(path: str, tree: ast.Module, node: ast.AST) -> bool:
-        return any(
-            isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and (path, candidate.name, candidate.lineno) in _APPROVED_ENDPOINT_HASHES
-            and candidate.lineno <= node.lineno <= candidate.end_lineno
-            for candidate in tree.body
+    def _normalized_module_hash(cls, tree: ast.Module) -> str:
+        value = copy.deepcopy(tree)
+        for node in ast.walk(value):
+            if cls._direct_governed_comparison(node):
+                node.ops[0] = ast.Eq()
+        return cls._fingerprint(
+            ast.dump(
+                value,
+                annotate_fields=True,
+                include_attributes=True,
+            )
         )
 
     @staticmethod
@@ -709,33 +568,6 @@ class PythonExtractor:
     def _qualified_scope(scope: ast.AST) -> str:
         return f"{getattr(scope, 'name', '<module>')}@{getattr(scope, 'lineno', 1)}"
 
-    @staticmethod
-    def _base_runtime_policy_chain(tree: ast.Module) -> bool:
-        """Prove the sole reviewed policy flow into the base-runtime check."""
-        children = {
-            node.name: node
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        loader = children.get("_load_policy")
-        validator = children.get("_validate_base_runtime")
-        publisher = children.get("materialize_runtime_closure")
-        if loader is None or validator is None or publisher is None:
-            return False
-        def call_named(node: ast.AST, name: str, arguments: tuple[str, ...]) -> bool:
-            return (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == name
-                and tuple(argument.id for argument in node.args if isinstance(argument, ast.Name)) == arguments
-            )
-        return (
-            any(call_named(node, "_validate_policy_bytes", ("raw",)) for node in ast.walk(loader))
-            and any(call_named(node, "_validate_base_runtime_bytes", ("manifest_raw", "policy")) for node in ast.walk(validator))
-            and any(call_named(node, "_load_policy", ("policy_path",)) for node in ast.walk(publisher))
-            and any(call_named(node, "_validate_base_runtime", ("base_runtime", "policy")) for node in ast.walk(publisher))
-        )
-
     @classmethod
     def _binding_fingerprint(
         cls,
@@ -751,7 +583,7 @@ class PythonExtractor:
         tree: ast.Module,
         node: ast.AST,
         access: tuple[str, str],
-    ) -> tuple[str, str, str, str, str, str] | None:
+    ) -> tuple[str, str, str, str | None, str, str] | None:
         root, field = access
         scope = self._scope(tree, node)
         qualified_scope = self._qualified_scope(scope)
@@ -769,7 +601,6 @@ class PythonExtractor:
             and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
             and scope.name == "_validate_base_runtime_bytes"
             and any(argument.arg == "policy" for argument in (*scope.args.posonlyargs, *scope.args.args))
-            and self._base_runtime_policy_chain(tree)
         ):
             binding_kind = "base_runtime_policy_parameter"
             value = ast.Name(id="policy")
@@ -777,8 +608,6 @@ class PythonExtractor:
         if endpoint is None or value is None:
             raise _invalid()
         family = _DOCUMENT_FIELDS[endpoint.document_kind].get(field)
-        if family is None:
-            return None
         return root, endpoint.document_kind, field, family, endpoint.binding_kind, ast.dump(value, annotate_fields=True, include_attributes=False)
 
     @staticmethod
@@ -809,6 +638,8 @@ class PythonExtractor:
         right = self._endpoint(path, tree, node, right_access)
         if left is None or right is None:
             return None
+        if left[3] is None or right[3] is None:
+            return None, None
         scope = self._scope(tree, node)
         binding_fingerprint = self._binding_fingerprint(
             path,

@@ -434,14 +434,92 @@ def test_python_reviewed_comparison_must_remain_in_its_enforcing_predicate() -> 
         PythonExtractor(DEFAULT_REGISTRY).extract("services/job_worker/nautilus_closure.py", source)
 
 
-def test_python_ordinary_literal_outside_proved_governed_scope_remains_an_observation() -> None:
-    """Break caught: one proved scope makes unrelated literal pin extraction disappear module-wide."""
+def test_python_generic_path_still_extracts_an_ordinary_candidate_literal() -> None:
+    """Break caught: exact admission unnecessarily closes generic-path literal extraction."""
     result = PythonExtractor(DEFAULT_REGISTRY).extract(
-        "scripts/materialize_nautilus_runtime_closure.py",
-        _runtime_policy_source() + '\nif unrelated == "1.231.0":\n    pass\n',
+        "notes/ordinary.py",
+        'ORDINARY_NOTE = "1.231.0"\n',
     )
 
-    assert any(item.family == "engine_version" and item.value == "1.231.0" for item in result.observations)
+    assert any(
+        observation.family == "engine_version"
+        and observation.value == "1.231.0"
+        for observation in result.observations
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "statement"),
+    (
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            '__builtins__.update({"set": untrusted})',
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            '_blocked.__globals__["_PROFILES"] = untrusted',
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            'exec("set = untrusted")',
+        ),
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            'getattr(__import__(__name__), "_validate_base_runtime_bytes")('
+            'b"{}", untrusted, file_reader=untrusted)',
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            'from builtins import __dict__ as builtin_map\n'
+            'builtin_map["set"] = untrusted',
+        ),
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            'from sys import modules\n'
+            'modules[__name__].__dict__["_PROFILE_SPECS"].clear()',
+        ),
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            'from sys import modules\n'
+            'modules[__name__].__dict__["_validate_policy_bytes"] = object',
+        ),
+    ),
+)
+def test_python_exact_governed_module_rejects_any_reflective_source_drift(
+    path: str,
+    source,
+    statement: str,
+) -> None:
+    """Break caught: a source-level reflective mutation bypasses partial authority checks."""
+    _assert_authority_rejects(path, source() + "\n" + statement + "\n")
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    (
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+        ),
+    ),
+)
+def test_python_exact_governed_module_rejects_ordinary_source_addition(
+    path: str,
+    source,
+) -> None:
+    """Break caught: unrelated module additions silently retain stale authority."""
+    _assert_authority_rejects(path, source() + '\nORDINARY_NOTE = "unchanged"\n')
 
 
 def test_python_relation_fingerprints_bind_document_kind_and_raw_operator() -> None:
@@ -466,6 +544,45 @@ def test_python_relation_fingerprints_bind_document_kind_and_raw_operator() -> N
 
     assert baseline[0].syntax_fingerprint != raw_inequality[0].syntax_fingerprint
     assert baseline_kind != changed_kind
+
+
+def test_python_governed_module_fingerprints_match_reviewed_fix6_sources() -> None:
+    """Break caught: a governed source changes without a reviewed whole-module fingerprint."""
+    root = Path(__file__).resolve().parents[3]
+    extractor = PythonExtractor(DEFAULT_REGISTRY)
+    runtime_path = "scripts/materialize_nautilus_runtime_closure.py"
+    closure_path = "services/job_worker/nautilus_closure.py"
+
+    runtime = extractor.extract(
+        runtime_path,
+        (root / runtime_path).read_text(encoding="utf-8"),
+    )
+    closure = extractor.extract(
+        closure_path,
+        (root / closure_path).read_text(encoding="utf-8"),
+    )
+
+    assert (
+        len(runtime.observations),
+        len(runtime.dynamic_guards),
+        len(runtime.governed_relations),
+    ) == (15, 4, 1)
+    assert (
+        len(closure.observations),
+        len(closure.dynamic_guards),
+        len(closure.governed_relations),
+    ) == (19, 1, 1)
+
+
+def test_python_governed_module_rejects_neighbor_field_drift() -> None:
+    """Break caught: a governed field changes while preserving comparison shape."""
+    path = "scripts/materialize_nautilus_runtime_closure.py"
+    source = _runtime_policy_source().replace(
+        'policy["engine_version"]',
+        'policy["semantic_profile"]',
+        1,
+    )
+    _assert_authority_rejects(path, source)
 
 
 @pytest.mark.parametrize(
@@ -741,10 +858,30 @@ def test_python_unicode_escape_uses_the_physical_escape_extent() -> None:
     assert expected in _extract(source)
 
 
-@pytest.mark.parametrize("relative", ("scripts/prepare_nautilus_llvm_toolchain.py", "scripts/materialize_nautilus_runtime_closure.py", "services/job_worker/nautilus_closure.py"))
-def test_python_ordinary_static_policy_fields_are_ignored_on_every_path(relative: str) -> None:
-    """Break caught: ignoring ordinary fields depends on a path allowlist."""
-    assert PythonExtractor(DEFAULT_REGISTRY).extract(relative, 'if policy["ordinary_metadata"] != source: pass\n').observations == ()
+def test_python_ordinary_static_policy_field_is_ignored_on_generic_path() -> None:
+    """Break caught: generic ordinary comparisons become pin observations."""
+    result = PythonExtractor(DEFAULT_REGISTRY).extract(
+        "scripts/prepare_nautilus_llvm_toolchain.py",
+        'if policy["ordinary_metadata"] != source: pass\n',
+    )
+    assert result.observations == ()
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "services/job_worker/nautilus_closure.py",
+    ),
+)
+def test_python_governed_module_path_requires_exact_reviewed_module(
+    path: str,
+) -> None:
+    """Break caught: governed paths permit incomplete non-reviewed modules."""
+    _assert_authority_rejects(
+        path,
+        'if policy["ordinary_metadata"] != source: pass\n',
+    )
 
 
 def test_python_real_root_parameter_invalidates_the_closed_comparison_globally() -> None:

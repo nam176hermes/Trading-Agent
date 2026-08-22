@@ -661,13 +661,29 @@ def _validate_artifact_bytes(
 ) -> tuple[dict[str, object], str, bytes]:
     if _sha256_bytes(manifest_raw) != policy["artifact_manifest_sha256"]:
         raise RuntimeClosureMaterializationError("selected artifact manifest digest drifted")
-    manifest = _json_object(manifest_raw, label="selected artifact manifest")
-    wheel = manifest.get("wheel")
+    artifact_manifest = _json_object(
+        manifest_raw, label="selected artifact manifest"
+    )
+    if not all(
+        field in artifact_manifest
+        for field in (
+            "engine_name",
+            "engine_version",
+            "python_identity",
+            "upstream_commit",
+            "wheel",
+        )
+    ):
+        raise RuntimeClosureMaterializationError(
+            "selected artifact identity or wheel is invalid"
+        )
+    wheel = artifact_manifest["wheel"]
     if (
-        manifest.get("engine_name") != policy["engine_name"]
-        or manifest.get("engine_version") != policy["engine_version"]
-        or manifest.get("python_identity") != policy["python_identity"]
-        or manifest.get("upstream_commit") != policy["engine_upstream_commit"]
+        artifact_manifest["engine_name"] != policy["engine_name"]
+        or artifact_manifest["engine_version"] != policy["engine_version"]
+        or artifact_manifest["python_identity"] != policy["python_identity"]
+        or artifact_manifest["upstream_commit"]
+        != policy["engine_upstream_commit"]
         or not isinstance(wheel, dict)
         or set(wheel) != {"filename", "sha256", "size"}
         or not isinstance(wheel.get("filename"), str)
@@ -685,7 +701,7 @@ def _validate_artifact_bytes(
         or wheel.get("sha256") != _sha256_bytes(wheel_raw)
     ):
         raise RuntimeClosureMaterializationError("selected engine wheel digest drifted")
-    return manifest, wheel_filename, wheel_raw
+    return artifact_manifest, wheel_filename, wheel_raw
 
 
 def _verify_native_guard_toolchains(

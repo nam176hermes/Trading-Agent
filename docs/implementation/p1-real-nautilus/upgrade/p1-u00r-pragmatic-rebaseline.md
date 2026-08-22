@@ -130,3 +130,53 @@ Aliases, calls, attributes, computed keys, chains, and similar derived forms
 can never create pin occurrences; only proven single-assignment relation
 evidence may retain them. One-ended derived/format predicates are outside the
 relation inventory.
+
+## Fix6 exact-module authority amendment
+
+Fix6 is one direct child of rejected Fix5
+`94ac5ba2647f1a418e786741b8fc340b05406b63`. It may change only this
+overlay, `scripts/materialize_nautilus_runtime_closure.py`,
+`scripts/nautilus_pin_inventory/python_extractor.py`,
+`tests/foundation/test_nautilus_runtime_closure.py`, and
+`tests/governance/nautilus_pin_inventory/test_python.py`. Every earlier
+candidate remains immutable rejected history.
+
+The governed production modules are exactly
+`scripts/materialize_nautilus_runtime_closure.py` and
+`services/job_worker/nautilus_closure.py`. Their binding, caller, helper,
+origin-map, control-flow, and namespace authority is the normalized full-module
+AST fingerprint of the exact reviewed source. A finite reflection blacklist is
+not authority. Any AST structure or coordinate change outside an approved
+direct governed comparison's raw `==`/`!=` operator fails closed and requires
+a new reviewed module fingerprint. Raw-only source drift which leaves that AST
+fingerprint unchanged remains inventory-stale through the schema-v4 source blob
+OID and SHA-256 fields.
+
+Normalization replaces only the raw operator node of a direct two-subscript
+governed comparison with `Eq` before hashing. It does not normalize roots,
+fields, families, document kinds, bindings, occurrence count, control flow,
+call routes, source positions, or spans. The emitted guard or relation retains
+the raw operator syntax fingerprint and exact source span, so operator drift
+changes inventory bytes even when structural admission remains valid.
+
+The selected-artifact manifest is ordinary structural data, not a governed
+root. Fix6 may rename its local `manifest` binding to `artifact_manifest`,
+prove the five previously optional identity keys are present, and replace the
+corresponding `.get(...)` comparisons with direct subscripts. Missing keys must
+still raise `RuntimeClosureMaterializationError` with the existing message,
+extra keys must remain accepted, and valid inputs must return byte-identical
+results.
+
+The rollback policy and source commit remain unchanged. The sole working-source
+exception is `scripts/materialize_nautilus_runtime_closure.py`; it is bound by
+the exact Fix6 commit, the literal Fix6 source SHA-256, the normalized AST
+fingerprint, and later schema-v4 source blob OID and SHA-256 fields.
+
+Ordinary additions to either governed production module are not admitted by
+Fix6 merely because they do not mention a governed root. They require a new
+exact fingerprint and review. This restriction applies only to the two named
+modules; generic Python extraction remains available for every other path.
+
+Fix6 does not modify Task 1, R3, inventory, the integration ref, rollback
+authority, Nautilus 1.231 status, runtime qualification, or any live/production
+boundary. Only dual fresh exact PASS may resume R3.
