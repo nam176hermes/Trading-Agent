@@ -180,3 +180,17 @@ modules; generic Python extraction remains available for every other path.
 Fix6 does not modify Task 1, R3, inventory, the integration ref, rollback
 authority, Nautilus 1.231 status, runtime qualification, or any live/production
 boundary. Only dual fresh exact PASS may resume R3.
+
+## Fix7 operator-normalization amendment
+
+Fix7 is one operator-authorized direct child of rejected Fix6
+`26402d1bf14a448f56fa41fe152f4f786065114d`. It may change only this overlay,
+`scripts/nautilus_pin_inventory/python_extractor.py`, and
+`tests/governance/nautilus_pin_inventory/test_python.py`.
+
+Normalization may exempt a direct comparison's raw operator only when both
+fields map to governed identity families and the comparison can emit typed
+guard or relation evidence. Unsupported identity fields, including
+`engine_name` and `python_identity`, remain exact-module-bound; their operator
+drift requires a new exact module fingerprint and fails closed. Dual fresh
+exact review remains required before R3 may resume.

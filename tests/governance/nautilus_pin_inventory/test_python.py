@@ -585,6 +585,20 @@ def test_python_governed_module_rejects_neighbor_field_drift() -> None:
     _assert_authority_rejects(path, source)
 
 
+@pytest.mark.parametrize("field", ("engine_name", "python_identity"))
+def test_python_governed_module_rejects_unemitted_identity_operator_drift(
+    field: str,
+) -> None:
+    """Break caught: an unsupported identity check inverts under normalization."""
+    path = "scripts/materialize_nautilus_runtime_closure.py"
+    source = _runtime_policy_source().replace(
+        f'manifest["{field}"] != policy["{field}"]',
+        f'manifest["{field}"] == policy["{field}"]',
+        1,
+    )
+    _assert_authority_rejects(path, source)
+
+
 @pytest.mark.parametrize(
     ("path", "source", "rogue"),
     (

@@ -102,7 +102,7 @@ _ENDPOINTS = (
 
 _GOVERNED_MODULE_HASHES = {
     "scripts/materialize_nautilus_runtime_closure.py": (
-        "5ad9f2e21423ae7f3328df00239961ebab5576de79595b79e1141ef4fbb9e9f9"
+        "7e9ccaac6d0c52cbc958242524a093ba614fa9d746053c9b21a6825075ef50df"
     ),
     "services/job_worker/nautilus_closure.py": (
         "01085b9e448675996078742f5dc501963bd15ad022cc6b8fdfa1ef34006914f2"
@@ -449,7 +449,12 @@ class PythonExtractor:
         value = copy.deepcopy(tree)
         for node in ast.walk(value):
             if cls._direct_governed_comparison(node):
-                node.ops[0] = ast.Eq()
+                left = cls._direct_access(node.left)
+                right = cls._direct_access(node.comparators[0])
+                if left is not None and right is not None and {
+                    left[1], right[1]
+                }.issubset(_FIELDS):
+                    node.ops[0] = ast.Eq()
         return cls._fingerprint(
             ast.dump(
                 value,
