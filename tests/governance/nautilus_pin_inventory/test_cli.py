@@ -116,6 +116,24 @@ def test_cli_inventory_path_is_fixed_before_git_or_filesystem_work(tmp_path: Pat
     assert run_cli(repo, "generate", "--source-commit", source, "--output", INVENTORY_PATH).returncode == 0
 
 
+def test_generate_rejects_intermediate_output_parent_symlink_before_git_access(tmp_path: Path) -> None:
+    """Break caught: a fixed lexical inventory path follows a worktree directory link outside root."""
+    repo = InventoryRepo(tmp_path / "repo", object_format="sha1")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    parent = (repo.root / INVENTORY_PATH).parent
+    parent.rmdir()
+    parent.symlink_to(outside, target_is_directory=True)
+    before = _custody(repo)
+
+    result = run_cli(repo, "generate", "--source-commit", "not-a-commit", "--output", INVENTORY_PATH)
+
+    assert result.returncode == 2
+    assert "output parent is not a regular directory" in result.stderr
+    assert not (outside / "pin-inventory.json").exists()
+    assert _custody(repo) == before
+
+
 @pytest.mark.parametrize(
     ("command", "arguments"),
     (

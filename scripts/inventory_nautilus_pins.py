@@ -7,6 +7,7 @@ import argparse
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+import stat
 import subprocess
 import sys
 
@@ -84,11 +85,17 @@ def _required_inventory_path(value: str) -> str:
     return path
 
 
-def _output_path(value: Path) -> Path:
-    try:
-        return value.parent.resolve(strict=True) / value.name
-    except (OSError, RuntimeError) as exc:
-        raise _UsageError("output path is inaccessible") from exc
+def _output_parent(root: Path, path: str) -> Path:
+    parent = root
+    for part in path.split("/")[:-1]:
+        parent = parent / part
+        try:
+            mode = os.lstat(parent).st_mode
+        except OSError as exc:
+            raise _UsageError("output parent is inaccessible") from exc
+        if not stat.S_ISDIR(mode):
+            raise _UsageError("output parent is not a regular directory")
+    return parent
 
 
 def _tree_entry(root: Path, commit: str, path: str) -> tuple[str, str, str] | None:
@@ -112,15 +119,14 @@ def _require_absent(root: Path, commit: str, path: str) -> None:
 
 def _generate(root: Path, source_commit: str, output: Path) -> int:
     path = _required_inventory_path(str(output))
+    requested_output = _output_parent(root, path) / path.rsplit("/", 1)[-1]
     source = _commit_oid(root, source_commit)
-    requested_output = root.joinpath(*path.split("/"))
     if os.path.lexists(requested_output):
         try:
             requested_output.resolve(strict=False)
         except RuntimeError as exc:
             raise _UsageError("output path is inaccessible") from exc
         raise _StaleError("output already exists")
-    output = _output_path(requested_output)
     _require_absent(root, source, INVENTORY_PATH)
     snapshot = GitTreeSnapshot.from_commit(root, source)
     try:
@@ -130,7 +136,7 @@ def _generate(root: Path, source_commit: str, output: Path) -> int:
             raise _StaleError(str(exc)) from exc
         raise
     try:
-        with output.open("xb") as stream:
+        with requested_output.open("xb") as stream:
             stream.write(payload)
     except OSError as exc:
         raise _UsageError("could not create requested output") from exc
