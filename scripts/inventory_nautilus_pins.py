@@ -77,6 +77,13 @@ def _inventory_path(value: str) -> str:
     return "/".join(parts)
 
 
+def _required_inventory_path(value: str) -> str:
+    path = _inventory_path(value)
+    if path != INVENTORY_PATH:
+        raise _UsageError("inventory path must be the required inventory path")
+    return path
+
+
 def _output_path(value: Path) -> Path:
     try:
         return value.parent.resolve(strict=True) / value.name
@@ -104,8 +111,9 @@ def _require_absent(root: Path, commit: str, path: str) -> None:
 
 
 def _generate(root: Path, source_commit: str, output: Path) -> int:
+    path = _required_inventory_path(str(output))
     source = _commit_oid(root, source_commit)
-    requested_output = output if output.is_absolute() else root / output
+    requested_output = root.joinpath(*path.split("/"))
     if os.path.lexists(requested_output):
         try:
             requested_output.resolve(strict=False)
@@ -130,9 +138,9 @@ def _generate(root: Path, source_commit: str, output: Path) -> int:
 
 
 def _verify(root: Path, source_commit: str, inventory_commit: str, inventory_path: str) -> int:
+    path = _required_inventory_path(inventory_path)
     source = _commit_oid(root, source_commit)
     inventory = _commit_oid(root, inventory_commit)
-    path = _inventory_path(inventory_path)
     parents = _git(root, "show", "-s", "--format=%P", inventory).strip().split()
     if parents != [source]:
         raise _StaleError("inventory commit must have exactly source as its sole parent")
@@ -174,6 +182,10 @@ def _parser() -> argparse.ArgumentParser:
 def main(arguments: list[str] | None = None) -> int:
     try:
         namespace = _parser().parse_args(arguments)
+        if namespace.command == "generate":
+            _required_inventory_path(str(namespace.output))
+        else:
+            _required_inventory_path(namespace.inventory_path)
         root = _root(namespace.root)
         if namespace.command == "generate":
             return _generate(root, namespace.source_commit, namespace.output)

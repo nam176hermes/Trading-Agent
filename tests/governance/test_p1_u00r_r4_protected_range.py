@@ -9,11 +9,13 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FIX7_R3 = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 ACCEPTED_A = "f15b1985215ef4d018f48c712221920502379a48"
-TASK1_PATHS = (
+REVIEWED_S = "5ec0c8d8a0b44f31e6ceebc2f16a302630c52168"
+TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
     "tests/governance/nautilus_pin_inventory/test_git_source.py",
-    "docs/implementation/p1-real-nautilus/upgrade/p1-u00r-pragmatic-rebaseline.md",
 )
+TASK1_ACCEPTED_PATHS = ("tests/governance/nautilus_pin_inventory/test_source_io.py",)
+OVERLAY_PATH = "docs/implementation/p1-real-nautilus/upgrade/p1-u00r-pragmatic-rebaseline.md"
 ACCEPTED_A_PATHS = (
     "engines/nautilus/README.md",
     "engines/nautilus/engine-build-policy.json",
@@ -40,8 +42,11 @@ def _entry(commit: str, path: str) -> str:
 def test_r4_retains_exact_protected_blob_modes() -> None:
     """Break caught: R4 changes reviewed Task 1 or runtime/input authority bytes."""
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip()
-    for path in TASK1_PATHS:
+    for path in TASK1_REPAIR_PATHS:
         assert _entry(head, path) == _entry(FIX7_R3, path)
+    for path in TASK1_ACCEPTED_PATHS:
+        assert _entry(head, path) == _entry(ACCEPTED_A, path)
+    assert _entry(head, OVERLAY_PATH) == _entry(REVIEWED_S, OVERLAY_PATH)
     for path in ACCEPTED_A_PATHS:
         assert _entry(head, path) == _entry(ACCEPTED_A, path)
     assert _entry(head, "scripts/materialize_nautilus_runtime_closure.py") == _entry(

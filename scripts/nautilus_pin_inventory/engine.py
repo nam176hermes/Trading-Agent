@@ -31,6 +31,13 @@ _GOVERNED_PYTHON_PATHS = frozenset({
     "scripts/materialize_nautilus_runtime_closure.py",
     "services/job_worker/nautilus_closure.py",
 })
+_TOP_LEVEL_FIELDS = frozenset({"schema", "threat_model", "source_tree_oid", "object_format", "entries", "dynamic_guards", "governed_relations"})
+_ENTRY_FIELDS = frozenset({"id", "path", "source_blob_oid", "source_blob_sha256", "carrier", "family", "value", "role", "syntax", "spans"})
+_GUARD_FIELDS = frozenset({"id", "path", "source_blob_oid", "source_blob_sha256", "left_root", "left_field", "operator", "right_root", "right_field", "syntax_fingerprint", "spans"})
+_RELATION_FIELDS = frozenset({"id", "path", "source_blob_oid", "source_blob_sha256", "left_root", "left_document_kind", "left_field", "left_family", "operator", "right_root", "right_document_kind", "right_field", "right_family", "relation_kind", "binding_fingerprint", "syntax_fingerprint", "spans"})
+_SPAN_FIELDS = frozenset({"path", "carrier", "start_line", "start_column", "end_line", "end_column"})
+_ID_PATTERN = re.compile(r"(?:PIN|GUARD|REL)-[0-9A-F]{20}\Z")
+_DOCUMENT_KINDS = frozenset({"nautilus_engine_build_policy", "nautilus_runtime_closure_policy", "nautilus_closure_manifest", "nautilus_base_runtime_manifest"})
 
 
 class PinInventoryError(ValueError):
@@ -473,11 +480,89 @@ class PinInventoryEngine:
             parsed = json.loads(inventory_bytes.decode("utf-8", errors="strict"), object_pairs_hook=self._no_duplicates)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise PinInventoryError("inventory schema is invalid") from exc
-        if not isinstance(parsed, dict):
+        if not self._valid_inventory_schema(parsed):
             raise PinInventoryError("inventory schema is invalid")
         expected = self.serialize(self.generate(snapshot))
         if inventory_bytes != expected:
             raise PinInventoryError("inventory bytes are stale or noncanonical")
+
+    @staticmethod
+    def _record_strings(record: dict[str, object], fields: Iterable[str]) -> bool:
+        return all(type(record[field]) is str and bool(record[field]) for field in fields)
+
+    @classmethod
+    def _valid_spans(cls, value: object, path: str) -> bool:
+        if type(value) is not list or not value:
+            return False
+        for span in value:
+            if type(span) is not dict or set(span) != _SPAN_FIELDS:
+                return False
+            if type(span["path"]) is not str or span["path"] != path or type(span["carrier"]) is not str:
+                return False
+            if any(type(span[name]) is not int for name in ("start_line", "start_column", "end_line", "end_column")):
+                return False
+            try:
+                SourceSpan(
+                    span["path"], Carrier(span["carrier"]), span["start_line"], span["start_column"],
+                    span["end_line"], span["end_column"],
+                )
+            except ValueError:
+                return False
+        return True
+
+    @classmethod
+    def _valid_records(cls, value: object, fields: frozenset[str], prefix: str, object_format: str) -> bool:
+        if type(value) is not list:
+            return False
+        ids: set[str] = set()
+        width = 40 if object_format == "sha1" else 64
+        for record in value:
+            if type(record) is not dict or set(record) != fields:
+                return False
+            if not cls._record_strings(record, fields - {"spans"}):
+                return False
+            identifier = record["id"]
+            if not _ID_PATTERN.fullmatch(identifier) or not identifier.startswith(prefix) or identifier in ids:
+                return False
+            ids.add(identifier)
+            if not _is_scannable_path(record["path"]) or not _is_oid(record["source_blob_oid"], width) or not _is_oid(record["source_blob_sha256"], 64):
+                return False
+            if not cls._valid_spans(record["spans"], record["path"]):
+                return False
+        return True
+
+    @classmethod
+    def _valid_inventory_schema(cls, value: object) -> bool:
+        if type(value) is not dict or set(value) != _TOP_LEVEL_FIELDS:
+            return False
+        if value["schema"] != "nautilus-pin-inventory/v4" or value["threat_model"] != "U00R_TRUSTED_HOST_COOPERATIVE_GIT_V1":
+            return False
+        if value["object_format"] not in ("sha1", "sha256"):
+            return False
+        width = 40 if value["object_format"] == "sha1" else 64
+        if not _is_oid(value["source_tree_oid"], width):
+            return False
+        if not cls._valid_records(value["entries"], _ENTRY_FIELDS, "PIN-", value["object_format"]):
+            return False
+        if not cls._valid_records(value["dynamic_guards"], _GUARD_FIELDS, "GUARD-", value["object_format"]):
+            return False
+        if not cls._valid_records(value["governed_relations"], _RELATION_FIELDS, "REL-", value["object_format"]):
+            return False
+        for entry in value["entries"]:
+            if entry["carrier"] not in ("CONTENT", "PATH") or entry["role"] not in ("ROLLBACK", "CANDIDATE_CONTEXT"):
+                return False
+        for guard in value["dynamic_guards"]:
+            if guard["operator"] not in ("==", "!="):
+                return False
+        for relation in value["governed_relations"]:
+            if (
+                relation["operator"] not in ("==", "!=")
+                or relation["relation_kind"] != "cross_family_consistency_guard"
+                or relation["left_document_kind"] not in _DOCUMENT_KINDS
+                or relation["right_document_kind"] not in _DOCUMENT_KINDS
+            ):
+                return False
+        return True
 
     @staticmethod
     def _no_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:

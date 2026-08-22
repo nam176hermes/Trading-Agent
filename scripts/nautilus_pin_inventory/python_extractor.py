@@ -622,6 +622,35 @@ class PythonExtractor:
         end = _ast_offset(text, starts, node.end_lineno, node.end_col_offset)
         return _span(path, text, (_Origin(start, end),))
 
+    @staticmethod
+    def _terminal_failure_predicate(
+        node: ast.Compare, parents: dict[int, ast.AST], tree: ast.Module,
+    ) -> bool:
+        """Accept only a comparison whose false state reaches the terminal reject path."""
+        predicate: ast.AST = node
+        while isinstance(parents.get(id(predicate)), ast.BoolOp):
+            predicate = parents[id(predicate)]
+        parent = parents.get(id(predicate))
+        if not isinstance(parent, ast.If) or parent.test is not predicate or parent.orelse or len(parent.body) != 1:
+            return False
+        terminal = parent.body[0]
+        if isinstance(terminal, ast.Raise):
+            return True
+        if not (
+            isinstance(terminal, ast.Expr)
+            and isinstance(terminal.value, ast.Call)
+            and isinstance(terminal.value.func, ast.Name)
+            and terminal.value.func.id == "_blocked"
+        ):
+            return False
+        return any(
+            isinstance(candidate, ast.FunctionDef)
+            and candidate.name == "_blocked"
+            and len(candidate.body) == 1
+            and isinstance(candidate.body[0], ast.Raise)
+            for candidate in tree.body
+        )
+
     def _governed_evidence(
         self,
         path: str,
@@ -658,10 +687,13 @@ class PythonExtractor:
                 DynamicGovernedCheck(path, left[0], left[2], operator, right[0], right[2], syntax_fingerprint, span),
                 None,
             )
+        accepted_operator = "!=" if operator == "==" else "=="
+        if accepted_operator != "!=" or not self._terminal_failure_predicate(node, parents, tree):
+            raise _invalid()
         return (
             None,
             GovernedRelation(
-                path, left[0], left[1], left[2], left[3], "!=",
+                path, left[0], left[1], left[2], left[3], accepted_operator,
                 right[0], right[1], right[2], right[3], "cross_family_consistency_guard",
                 binding_fingerprint, syntax_fingerprint, span,
             ),

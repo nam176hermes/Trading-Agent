@@ -521,15 +521,26 @@ def test_python_exact_governed_module_rejects_ordinary_source_addition(
     _assert_authority_rejects(path, source() + '\nORDINARY_NOTE = "unchanged"\n')
 
 
-def test_python_relation_fingerprints_bind_document_kind_and_raw_operator() -> None:
-    """Break caught: relation identity loses endpoint kind or normalizes raw equality to semantic inequality."""
+@pytest.mark.parametrize(
+    ("path", "source", "original"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'policy["source_commit"] == policy["engine_upstream_commit"]'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'closure_manifest["source_commit"]\n                == closure_manifest["engine_upstream_commit"]'),
+    ),
+)
+def test_python_cross_family_operator_reversal_fails_closed(
+    path: str, source, original: str,
+) -> None:
+    """Break caught: a terminal equality rejection is inverted but still emits semantic inequality."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, source().replace(original, original.replace("==", "!="), 1))
+
+
+def test_python_relation_fingerprints_bind_document_kind() -> None:
+    """Break caught: relation identity loses endpoint kind after terminal semantics are proved."""
     extractor = PythonExtractor(DEFAULT_REGISTRY)
     source = _runtime_policy_source()
     baseline = extractor.extract("scripts/materialize_nautilus_runtime_closure.py", source).governed_relations
-    raw_inequality = extractor.extract(
-        "scripts/materialize_nautilus_runtime_closure.py",
-        source.replace('policy["source_commit"] == policy["engine_upstream_commit"]', 'policy["source_commit"] != policy["engine_upstream_commit"]', 1),
-    ).governed_relations
     baseline_kind = extractor._binding_fingerprint(
         "scripts/materialize_nautilus_runtime_closure.py",
         "_validate_policy_bytes@422",
@@ -541,7 +552,7 @@ def test_python_relation_fingerprints_bind_document_kind_and_raw_operator() -> N
         (("policy", "nautilus_engine_build_policy", "runtime_policy_json_object", "Name(id='policy')"),),
     )
 
-    assert baseline[0].syntax_fingerprint != raw_inequality[0].syntax_fingerprint
+    assert baseline[0].operator == "!="
     assert baseline_kind != changed_kind
 
 
