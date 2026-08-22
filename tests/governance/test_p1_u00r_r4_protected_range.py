@@ -9,7 +9,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 FIX7_R3 = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 ACCEPTED_A = "f15b1985215ef4d018f48c712221920502379a48"
-REVIEWED_S = "5ec0c8d8a0b44f31e6ceebc2f16a302630c52168"
+REVIEWED_S = "8dbaa153276a0d44c2e3b0a6b0c3de4055133630"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
     "tests/governance/nautilus_pin_inventory/test_git_source.py",
