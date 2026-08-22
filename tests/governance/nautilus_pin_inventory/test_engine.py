@@ -657,3 +657,25 @@ def test_engine_excludes_all_generic_test_python_observations_from_authority() -
     missing = replace(without_identity, blobs=without_identity.blobs + (fixture,))
     with pytest.raises(PinInventoryError, match="required identity is missing: engine_version=1.231.0"):
         PinInventoryEngine().generate(missing)
+
+
+def test_engine_excludes_all_generic_audit_text_observations_from_authority() -> None:
+    """Break caught: a non-authority audit carrier supplies a pin or retains its mutation."""
+    source = _complete_snapshot()
+    registered = _blob("apps/dashboard/audit/only.txt", b"engine_version: 1.231.0\n")
+    document = PinInventoryEngine().generate(replace(source, blobs=source.blobs + (registered,)))
+    assert not any(entry.path == "apps/dashboard/audit/only.txt" for entry in document.entries)
+
+    evidence = b"".join(
+        f"Nautilus {identity.family}: {identity.value}\n".encode("utf-8")
+        for identity in DEFAULT_REGISTRY.allowed_identities
+        if (identity.family, identity.value) != ("engine_version", "1.231.0")
+    )
+    without_identity = _replace_blob(source, "evidence.txt", evidence)
+    missing = replace(without_identity, blobs=without_identity.blobs + (registered,))
+    with pytest.raises(PinInventoryError, match="required identity is missing: engine_version=1.231.0"):
+        PinInventoryEngine().generate(missing)
+
+    unknown = _blob("apps/dashboard/audit/mutation.txt", b"engine_version: 9.999.0\n")
+    document = PinInventoryEngine().generate(replace(source, blobs=source.blobs + (unknown,)))
+    assert not any(entry.path == "apps/dashboard/audit/mutation.txt" for entry in document.entries)

@@ -355,7 +355,7 @@ class PinInventoryEngine:
             for value in generic:
                 owner = owners.get(value.span)
                 if owner is None:
-                    if governs_generic or self._registry.classify(value).code != "UNREGISTERED_IDENTITY":
+                    if governs_generic:
                         retained.append(value)
                 elif (owner.family, owner.value) != (value.family, value.value):
                     raise PinInventoryError("conflicting specialized and generic observation ownership")
