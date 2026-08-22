@@ -72,6 +72,17 @@ def _runtime_policy_source() -> str:
     return (root / "scripts/materialize_nautilus_runtime_closure.py").read_text(encoding="utf-8")
 
 
+def _closure_manifest_source() -> str:
+    root = Path(__file__).resolve().parents[3]
+    return (root / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8")
+
+
+def _with_root_statement(source: str, insertion: str | None, root: str, statement: str) -> str:
+    if insertion is None:
+        return source + "\n" + statement + "\n"
+    return source.replace(insertion, f"{insertion}\n{textwrap.indent(statement, '    ')}", 1)
+
+
 @pytest.mark.parametrize(
     "replacement",
     (
@@ -207,6 +218,97 @@ def test_python_endpoint_must_be_a_direct_module_child() -> None:
     assert source[:start].endswith("\n\n")
     nested = "def wrapper():\n" + textwrap.indent(source[start:end], "    ")
     source = source[: start - 1] + nested + source[end:]
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "replacement"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'def rogue(manifest):\n    return manifest["source_commit"] == manifest["engine_upstream_commit"]\n'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'def rogue(policy):\n    return policy["source_commit"] == policy["engine_upstream_commit"]\n'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'def rogue(policy, manifest):\n    return policy["source_commit"] == manifest["engine_upstream_commit"]\n'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'def rogue(closure_manifest, policy):\n    return closure_manifest["source_commit"] == policy["engine_upstream_commit"]\n'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'def rogue(manifest):\n    return manifest["source_commit"] == candidate\n'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'def rogue(policy):\n    return policy["engine_upstream_commit"] == candidate\n'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'def rogue(policy):\n    return policy.get("source_commit") == policy.get("engine_upstream_commit")\n'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'def rogue(closure_manifest):\n    return closure_manifest.get("source_commit") == closure_manifest.get("engine_upstream_commit")\n'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'def rogue(policy):\n    return identity(policy)["source_commit"] == identity(policy)["engine_upstream_commit"]\n'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'def rogue(closure_manifest):\n    return identity(closure_manifest)["source_commit"] == identity(closure_manifest)["engine_upstream_commit"]\n'),
+    ),
+)
+def test_python_unproved_governed_root_shapes_never_suppress(path: str, source, replacement: str) -> None:
+    """Break caught: root spelling alone hides a rogue direct, mixed, one-sided, or get comparison."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, source() + "\n" + replacement)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "original", "replacement"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'policy["source_commit"] == policy["engine_upstream_commit"]', 'identity(policy["source_commit"]) == identity(policy["engine_upstream_commit"])'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'closure_manifest["source_commit"]\n                == closure_manifest["engine_upstream_commit"]', 'identity(closure_manifest["source_commit"])\n                == identity(closure_manifest["engine_upstream_commit"])'),
+    ),
+)
+def test_python_wrapped_approved_relation_fails_closed(path: str, source, original: str, replacement: str) -> None:
+    """Break caught: wrapping the approved relation removes its evidence without rejection."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, source().replace(original, replacement, 1))
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "original", "replacement"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'policy["source_commit"] == policy["engine_upstream_commit"]', 'identity(policy)["source_commit"] == identity(policy)["engine_upstream_commit"]'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'closure_manifest["source_commit"]\n                == closure_manifest["engine_upstream_commit"]', 'identity(closure_manifest)["source_commit"]\n                == identity(closure_manifest)["engine_upstream_commit"]'),
+    ),
+)
+def test_python_call_before_subscript_governed_relation_fails_closed(path: str, source, original: str, replacement: str) -> None:
+    """Break caught: a call may not conceal a governed receiver before its field access."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, source().replace(original, replacement, 1))
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "insertion", "root"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'profile = policy.get("profile")', "policy"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'specification = _PROFILE_SPECS.get(str(profile))', "specification"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, None, "_PROFILE_SPECS"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'schema_version = closure_manifest.get("schema_version")', "closure_manifest"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "expected_identity = _PROFILES[profile]", "expected_identity"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, None, "_PROFILES"),
+    ),
+)
+@pytest.mark.parametrize("escape", ("untrusted((ROOT,))", "untrusted(*[ROOT])", "untrusted([ROOT])", 'untrusted({"root": ROOT})'))
+def test_python_governed_container_escapes_fail_closed(path: str, source, insertion: str | None, root: str, escape: str) -> None:
+    """Break caught: a tuple, starred list, list, or dict launders a mutable governed receiver."""
+    text = _with_root_statement(source(), insertion, root, escape.replace("ROOT", root))
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, text)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "insertion", "root"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'profile = policy.get("profile")', "policy"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'specification = _PROFILE_SPECS.get(str(profile))', "specification"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, None, "_PROFILE_SPECS"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'schema_version = closure_manifest.get("schema_version")', "closure_manifest"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "expected_identity = _PROFILES[profile]", "expected_identity"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, None, "_PROFILES"),
+    ),
+)
+def test_python_governed_mutator_aliases_fail_closed(path: str, source, insertion: str | None, root: str) -> None:
+    """Break caught: binding a mutator first bypasses direct receiver checks."""
+    text = _with_root_statement(source(), insertion, root, f"mutate = {root}.update\n    mutate({{}})")
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, text)
+
+
+def test_python_origin_mapping_nested_receiver_mutation_fails_closed() -> None:
+    """Break caught: mutating a value reached from the proved origin map preserves stale provenance."""
+    source = _runtime_policy_source() + '\n_PROFILE_SPECS.get("zero-order").update({})\n'
     with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
         PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
 
