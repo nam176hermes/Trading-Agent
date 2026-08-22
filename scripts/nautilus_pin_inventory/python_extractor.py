@@ -375,15 +375,43 @@ class PythonExtractor:
                     if relation is not None:
                         governed_relations.add(relation)
                     continue
-                if self._known_governed_module_access(path, tree, node) or (
-                    self._has_endpoint_scope(path, tree)
-                    and any(
-                        isinstance(candidate, ast.Name)
-                        and (candidate.id in _OBJECTS or candidate.id in invalid_governed_names)
-                        for candidate in ast.walk(node)
-                    )
+                governed_accesses = tuple(
+                    access
+                    for candidate in ast.walk(node)
+                    if (access := self._direct_access(candidate)) is not None and access[1] in _FIELDS
+                )
+                if not governed_accesses and self._has_endpoint_scope(path, tree) and any(
+                    isinstance(candidate, ast.Name)
+                    and (candidate.id in _OBJECTS or candidate.id in invalid_governed_names)
+                    for candidate in ast.walk(node)
                 ):
                     continue
+                if governed_accesses:
+                    approved_scope = self._is_approved_endpoint_scope(path, tree, node)
+                    direct_pair = (
+                        self._direct_access(node.left),
+                        self._direct_access(node.comparators[0]) if len(node.comparators) == 1 else None,
+                    )
+                    one_sided_dynamic = (
+                        len(governed_accesses) == 1
+                        and governed_accesses[0][1] in {"source_commit", "engine_upstream_commit"}
+                        and (
+                        (direct_pair[0] is not None and isinstance(node.comparators[0], ast.Name))
+                        or (direct_pair[1] is not None and isinstance(node.left, ast.Name))
+                        )
+                    )
+                    if approved_scope and not (
+                        all(access is not None and access[1] in _FIELDS for access in direct_pair)
+                        or one_sided_dynamic
+                    ):
+                        continue
+                    if not approved_scope and self._has_endpoint_scope(path, tree) and any(
+                        isinstance(candidate, ast.Name)
+                        and candidate.id in _OBJECTS
+                        and not any(endpoint.path == path and endpoint.root == candidate.id for endpoint in _ENDPOINTS)
+                        for candidate in ast.walk(node)
+                    ):
+                        continue
                 observations.update(self._comparison_observations(path, text, node, tokens, bindings, invalid_names, invalid_governed_names))
         return PythonExtractionResult(
             tuple(sorted(observations, key=self._sort_key)),
@@ -495,6 +523,23 @@ class PythonExtractor:
     def _qualified_scope(scope: ast.AST) -> str:
         return f"{getattr(scope, 'name', '<module>')}@{getattr(scope, 'lineno', 1)}"
 
+    @classmethod
+    def _is_approved_endpoint_scope(cls, path: str, tree: ast.Module, node: ast.AST) -> bool:
+        scope = cls._scope(tree, node)
+        return scope in tree.body and any(
+            endpoint.path == path and endpoint.qualified_scope == cls._qualified_scope(scope)
+            for endpoint in _ENDPOINTS
+        )
+
+    @classmethod
+    def _has_endpoint_scope(cls, path: str, tree: ast.Module) -> bool:
+        return any(
+            scope in tree.body and endpoint.path == path and endpoint.qualified_scope == cls._qualified_scope(scope)
+            for endpoint in _ENDPOINTS
+            for scope in tree.body
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+
     @staticmethod
     def _target_base(target: ast.AST) -> ast.Name | None:
         while isinstance(target, (ast.Attribute, ast.Subscript)):
@@ -502,7 +547,7 @@ class PythonExtractor:
         return target if isinstance(target, ast.Name) else None
 
     @classmethod
-    def _scope_binding_is_proved(cls, scope: ast.AST, root: str, value: ast.AST) -> bool:
+    def _scope_binding_is_proved(cls, tree: ast.Module, scope: ast.AST, root: str, value: ast.AST) -> bool:
         approved_target: ast.Name | None = None
         for node in ast.walk(scope):
             if isinstance(node, ast.Assign) and node.value is value and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == root:
@@ -523,6 +568,17 @@ class PythonExtractor:
                     return False
                 if isinstance(node.value, ast.Name) and node.value.id == root and target is not approved_target:
                     return False
+            if isinstance(node, ast.Call):
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == root
+                    and node.func.attr not in {"get", "values"}
+                ):
+                    return False
+                if any(isinstance(argument, ast.Name) and argument.id == root for argument in (*node.args, *(keyword.value for keyword in node.keywords))):
+                    if not (isinstance(node.func, ast.Name) and node.func.id in {"set", "_closure_digest"}):
+                        return False
             if isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
                 if any(item.id == root for item in ast.walk(node.target) if isinstance(item, ast.Name)):
                     return False
@@ -541,6 +597,30 @@ class PythonExtractor:
                     return False
                 if (arguments.vararg is not None and arguments.vararg.arg == root) or (arguments.kwarg is not None and arguments.kwarg.arg == root):
                     return False
+        def module_nodes(node: ast.AST):
+            yield node
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                    continue
+                yield from module_nodes(child)
+
+        approved_module_target = approved_target if scope is tree else None
+        for node in module_nodes(tree):
+            if isinstance(node, ast.Name) and node.id == root and isinstance(node.ctx, (ast.Store, ast.Del)) and node is not approved_module_target:
+                return False
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == root
+                and node.func.attr not in {"get", "values"}
+            ):
+                return False
+            if isinstance(node, ast.Call) and any(
+                isinstance(argument, ast.Name) and argument.id == root
+                for argument in (*node.args, *(keyword.value for keyword in node.keywords))
+            ) and not (isinstance(node.func, ast.Name) and node.func.id == "set"):
+                return False
         return True
 
     @classmethod
@@ -554,7 +634,7 @@ class PythonExtractor:
             and statement.targets[0].id == name
             and isinstance(statement.value, ast.Dict)
         ]
-        return len(matches) == 1 and cls._scope_binding_is_proved(tree, name, matches[0].value)
+        return len(matches) == 1 and cls._scope_binding_is_proved(tree, tree, name, matches[0].value)
 
     @classmethod
     def _binding_fingerprint(
@@ -564,21 +644,6 @@ class PythonExtractor:
         bindings: Iterable[tuple[str, str, str, str]],
     ) -> str:
         return cls._fingerprint([path, qualified_scope, [list(binding) for binding in sorted(bindings)]])
-
-    @staticmethod
-    def _has_endpoint_scope(path: str, tree: ast.Module) -> bool:
-        return any(
-            endpoint.path == path and endpoint.qualified_scope == PythonExtractor._qualified_scope(scope)
-            for endpoint in _ENDPOINTS
-            for scope in ast.walk(tree)
-            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
-        )
-
-    @classmethod
-    def _known_governed_module_access(cls, path: str, tree: ast.Module, node: ast.Compare) -> bool:
-        return cls._has_endpoint_scope(path, tree) and any(
-            PythonExtractor._direct_access(candidate) is not None for candidate in ast.walk(node)
-        )
 
     def _endpoint(
         self,
@@ -591,6 +656,8 @@ class PythonExtractor:
         scope = self._scope(tree, node)
         qualified_scope = self._qualified_scope(scope)
         candidates = tuple(endpoint for endpoint in _ENDPOINTS if endpoint.path == path and endpoint.qualified_scope == qualified_scope and endpoint.root == root)
+        if candidates and scope not in tree.body:
+            raise _invalid()
         if not candidates:
             bindings = self._scope_bindings(scope)
             value = bindings.get(root)
@@ -601,7 +668,7 @@ class PythonExtractor:
         value = bindings.get(root)
         binding_kind = self._binding_kind(root, value) if value is not None else None
         endpoint = next((item for item in candidates if item.binding_kind == binding_kind), None)
-        if endpoint is None or value is None or not self._scope_binding_is_proved(scope, root, value):
+        if endpoint is None or value is None or not self._scope_binding_is_proved(tree, scope, root, value):
             raise _invalid()
         if root == "specification" and not self._mapping_origin_is_proved(tree, "_PROFILE_SPECS"):
             raise _invalid()

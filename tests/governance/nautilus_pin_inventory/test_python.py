@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import textwrap
 
 import pytest
 
@@ -102,6 +103,112 @@ def test_python_governed_endpoint_requires_exact_scope_and_path() -> None:
         PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
     with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
         PythonExtractor(DEFAULT_REGISTRY).extract("scripts/wrong.py", _runtime_policy_source())
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "rogue"),
+    (
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            'def rogue(policy):\n    return policy["source_commit"] == policy["engine_upstream_commit"]\n',
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            lambda: (Path(__file__).resolve().parents[3] / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8"),
+            'def rogue(closure_manifest):\n    return closure_manifest["source_commit"] == closure_manifest["engine_upstream_commit"]\n',
+        ),
+    ),
+)
+def test_python_governed_access_outside_its_exact_endpoint_fails_closed(path: str, source, rogue: str) -> None:
+    """Break caught: another approved endpoint suppresses a rogue or nested-sibling comparison."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, source() + "\n" + rogue)
+
+
+def test_python_one_proved_and_one_unproved_endpoint_fails_closed() -> None:
+    """Break caught: an approved endpoint silently drops an unproved governed peer."""
+    source = _runtime_policy_source().replace(
+        'policy["source_commit"] == policy["engine_upstream_commit"]',
+        'policy["source_commit"] == manifest["engine_upstream_commit"]',
+        1,
+    )
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
+
+
+def test_python_one_sided_governed_access_fails_closed() -> None:
+    """Break caught: an approved root compared with an unproved dynamic value is silently ignored."""
+    source = _runtime_policy_source().replace(
+        'policy["source_commit"] == policy["engine_upstream_commit"]',
+        'policy["source_commit"] == candidate',
+        1,
+    )
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "root"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "policy"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "specification"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "_PROFILE_SPECS"),
+        ("services/job_worker/nautilus_closure.py", lambda: (Path(__file__).resolve().parents[3] / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8"), "closure_manifest"),
+        ("services/job_worker/nautilus_closure.py", lambda: (Path(__file__).resolve().parents[3] / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8"), "expected_identity"),
+        ("services/job_worker/nautilus_closure.py", lambda: (Path(__file__).resolve().parents[3] / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8"), "_PROFILES"),
+    ),
+)
+def test_python_governed_roots_and_origins_reject_whole_module_rebinding(path: str, source, root: str) -> None:
+    """Break caught: a root or origin mapping is rebound outside its approved endpoint."""
+    text = source() + f"\nif ({root} := replacement):\n    pass\n"
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, text)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "insertion", "root"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'profile = policy.get("profile")', "policy"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'specification = _PROFILE_SPECS.get(str(profile))', "specification"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, None, "_PROFILE_SPECS"),
+        ("services/job_worker/nautilus_closure.py", lambda: (Path(__file__).resolve().parents[3] / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8"), 'schema_version = closure_manifest.get("schema_version")', "closure_manifest"),
+        ("services/job_worker/nautilus_closure.py", lambda: (Path(__file__).resolve().parents[3] / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8"), "expected_identity = _PROFILES[profile]", "expected_identity"),
+        ("services/job_worker/nautilus_closure.py", lambda: (Path(__file__).resolve().parents[3] / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8"), None, "_PROFILES"),
+    ),
+)
+def test_python_governed_roots_and_origins_reject_receiver_update(path: str, source, insertion: str | None, root: str) -> None:
+    """Break caught: a root or origin mapping may be mutated while retaining its old provenance."""
+    text = source()
+    if insertion is None:
+        text += f"\n{root}.update({{}})\n"
+    else:
+        text = text.replace(insertion, f"{insertion}\n    {root}.update({{}})", 1)
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, text)
+
+
+def test_python_governed_receiver_escape_fails_closed() -> None:
+    """Break caught: an unproved call can mutate a proved endpoint root by reference."""
+    source = _runtime_policy_source().replace(
+        'profile = policy.get("profile")',
+        'profile = policy.get("profile")\n    untrusted(policy)',
+        1,
+    )
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
+
+
+def test_python_endpoint_must_be_a_direct_module_child() -> None:
+    """Break caught: a nested same-name, same-line function reuses an approved endpoint fingerprint."""
+    source = _runtime_policy_source()
+    start = source.index("def _validate_policy_bytes(")
+    end = source.index("\ndef _load_policy(", start)
+    assert source[:start].endswith("\n\n")
+    nested = "def wrapper():\n" + textwrap.indent(source[start:end], "    ")
+    source = source[: start - 1] + nested + source[end:]
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
 
 
 def test_python_ordinary_literal_outside_proved_governed_scope_remains_an_observation() -> None:
