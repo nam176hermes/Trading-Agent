@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 import hashlib
 from io import StringIO
@@ -24,7 +25,7 @@ _TEXT_SUFFIXES = frozenset({
     ".md", ".py", ".rs", ".sh", ".toml", ".ts", ".tsv", ".tsx", ".txt", ".yaml", ".yml",
 })
 _TEXT_NAMES = frozenset({"Makefile", "Dockerfile"})
-_GOVERNING_TEXT_SUFFIXES = frozenset({".cfg", ".ini", ".lock", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"})
+_INTRINSIC_GOVERNING_SUFFIXES = frozenset({".cfg", ".ini", ".lock", ".py", ".sh", ".toml", ".yaml", ".yml"})
 _POLICY_REFERENCE = re.compile(r"(?P<name>[A-Za-z0-9_.-]+-policy\.json)")
 _GOVERNED_PYTHON_PATHS = frozenset({
     "scripts/materialize_nautilus_runtime_closure.py",
@@ -75,6 +76,61 @@ def _python_payload_spans(path: str, text: str) -> tuple[SourceSpan, ...]:
         )
     except (tokenize.TokenError, IndentationError) as exc:
         raise PinInventoryError("Python text extraction is invalid") from exc
+
+
+def _python_ast_span(path: str, text: str, node: ast.AST) -> SourceSpan:
+    if not isinstance(node, ast.expr) or node.end_lineno is None or node.end_col_offset is None:
+        raise PinInventoryError("Python metadata position is invalid")
+    lines = text.splitlines()
+
+    def column(line_number: int, byte_offset: int) -> int:
+        try:
+            return len(lines[line_number - 1].encode("utf-8")[:byte_offset].decode("utf-8")) + 1
+        except (IndexError, UnicodeDecodeError) as exc:
+            raise PinInventoryError("Python metadata position is invalid") from exc
+
+    return SourceSpan.content(
+        path,
+        node.lineno,
+        column(node.lineno, node.col_offset),
+        node.end_lineno,
+        column(node.end_lineno, node.end_col_offset),
+    )
+
+
+def _python_mapping_value_spans(path: str, text: str) -> tuple[SourceSpan, ...]:
+    """Return literal mapping values, which are code metadata rather than pin declarations."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ()
+    spans: list[SourceSpan] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            spans.extend(
+                _python_ast_span(path, text, value)
+                for value in node.values
+                if isinstance(value, ast.Constant) and type(value.value) is str
+            )
+    return tuple(spans)
+
+
+def _markdown_prose_spans(path: str, text: str) -> tuple[SourceSpan, ...]:
+    """Return Markdown prose lines; fenced examples are non-authoritative data."""
+    spans: list[SourceSpan] = []
+    fence: str | None = None
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if marker in ("```", "~~~"):
+            if fence is None:
+                fence = marker
+            elif marker == fence:
+                fence = None
+            continue
+        if fence is None and line:
+            spans.append(SourceSpan.content(path, line_number, 1, line_number, len(line) + 1))
+    return tuple(spans)
 
 
 def _contains(container: SourceSpan, value: SourceSpan) -> bool:
@@ -181,14 +237,16 @@ class PinInventoryEngine:
         leaf = path.rsplit("/", 1)[-1]
         return leaf in _TEXT_NAMES or any(leaf.endswith(suffix) for suffix in _TEXT_SUFFIXES)
 
-    @staticmethod
-    def _governing_text_path(path: str) -> bool:
-        if path in GOVERNED_JSON_PATHS or path in _GOVERNED_PYTHON_PATHS:
+    def _governs_generic_content(self, path: str, values: tuple[Observation, ...]) -> bool:
+        """Identify a carrier that can establish generic inventory authority."""
+        if path in GOVERNED_JSON_PATHS:
             return True
-        if "/" in path:
-            return False
         leaf = path.rsplit("/", 1)[-1]
-        return leaf in _TEXT_NAMES or any(leaf.endswith(suffix) for suffix in _GOVERNING_TEXT_SUFFIXES)
+        if leaf in _TEXT_NAMES or any(leaf.endswith(suffix) for suffix in _INTRINSIC_GOVERNING_SUFFIXES):
+            return not path.startswith("tests/")
+        if "/" not in path and leaf.endswith((".md", ".txt")):
+            return True
+        return any(self._registry.classify(value).code != "UNREGISTERED_IDENTITY" for value in values)
 
     def _validate_snapshot(self, snapshot: GitTreeSnapshot) -> dict[str, GitBlobSnapshot]:
         if type(snapshot) is not GitTreeSnapshot:
@@ -275,14 +333,27 @@ class PinInventoryEngine:
             generic = self._text.extract_content(path, text)
             if path.endswith(".py"):
                 payloads = _python_payload_spans(path, text)
-                generic = tuple(value for value in generic if any(_contains(payload, value.span) for payload in payloads))
+                metadata = _python_mapping_value_spans(path, text)
+                generic = tuple(
+                    value for value in generic
+                    if any(_contains(payload, value.span) for payload in payloads)
+                    and not any(_contains(mapping, value.span) for mapping in metadata)
+                )
                 if path.startswith("tests/"):
                     generic = tuple(value for value in generic if self._registry.classify(value).code != "UNREGISTERED_IDENTITY")
+            elif path.endswith(".md"):
+                prose = _markdown_prose_spans(path, text)
+                generic = tuple(value for value in generic if any(_contains(line, value.span) for line in prose))
+                if path.startswith("docs/"):
+                    generic = ()
+            elif path.endswith(".json") and path not in GOVERNED_JSON_PATHS:
+                generic = ()
+            governs_generic = self._governs_generic_content(path, generic)
             retained: list[Observation] = list(owners.values())
             for value in generic:
                 owner = owners.get(value.span)
                 if owner is None:
-                    if self._registry.classify(value).code != "UNREGISTERED_IDENTITY" or self._governing_text_path(path):
+                    if governs_generic or self._registry.classify(value).code != "UNREGISTERED_IDENTITY":
                         retained.append(value)
                 elif (owner.family, owner.value) != (value.family, value.value):
                     raise PinInventoryError("conflicting specialized and generic observation ownership")

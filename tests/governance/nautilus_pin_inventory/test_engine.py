@@ -521,3 +521,109 @@ def test_engine_bytes_are_identical_across_python_hash_seeds() -> None:
         )
         outputs.append(completed.stdout)
     assert outputs[0] == outputs[1]
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    (
+        (
+            "services/pins.py",
+            b'known = "engine_version: 1.227.0"\nvalue = "engine_version: 9.999.0"\n',
+        ),
+        (
+            "services/pins.py",
+            b'# engine_version: 1.227.0\n# engine_version: 9.999.0\n',
+        ),
+        (
+            "config/pins.toml",
+            b"engine_version = '1.227.0'\nengine_version = '9.999.0'\n",
+        ),
+        (
+            "notes.md",
+            b"engine_version: 1.227.0\nengine_version: 9.999.0\n",
+        ),
+    ),
+)
+def test_engine_rejects_unknown_mutations_on_production_governing_carriers(path: str, data: bytes) -> None:
+    """Break caught: a production carrier records a known pin but drops its unknown mutation."""
+    snapshot = replace(_complete_snapshot(), blobs=_complete_snapshot().blobs + (_blob(path, data),))
+
+    with pytest.raises(PinInventoryError, match="unregistered governed identity"):
+        PinInventoryEngine().generate(snapshot)
+
+
+def test_engine_ignores_python_code_tokens_but_bounds_test_fixture_exemption_to_tests_prefix() -> None:
+    """Break caught: code identifiers govern pins, or a test-only exemption leaks into production."""
+    ordinary_code = replace(
+        _complete_snapshot(),
+        blobs=_complete_snapshot().blobs + (_blob("services/pins.py", b"engine_version = dynamic_value\n"),),
+    )
+    PinInventoryEngine().generate(ordinary_code)
+
+    fixture = replace(
+        _complete_snapshot(),
+        blobs=_complete_snapshot().blobs + (_blob("tests/mutation_fixture.py", b'value = "engine_version: 9.999.0"\n'),),
+    )
+    PinInventoryEngine().generate(fixture)
+
+    production = replace(
+        _complete_snapshot(),
+        blobs=_complete_snapshot().blobs + (_blob("services/mutation_fixture.py", b'value = "engine_version: 9.999.0"\n'),),
+    )
+    with pytest.raises(PinInventoryError, match="unregistered governed identity"):
+        PinInventoryEngine().generate(production)
+
+
+def test_engine_verify_rejects_semantically_exact_minified_inventory_bytes() -> None:
+    """Break caught: verify accepts the exact document after formatting-only canonical-byte drift."""
+    engine = PinInventoryEngine()
+    snapshot = _complete_snapshot()
+    canonical = engine.serialize(engine.generate(snapshot))
+    minified = json.dumps(json.loads(canonical), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    assert minified != canonical
+
+    with pytest.raises(PinInventoryError, match="noncanonical"):
+        engine.verify(snapshot, minified)
+
+
+def test_engine_groups_guard_and_relation_spans_in_sorted_deduplicated_records() -> None:
+    """Break caught: GUARD or REL records preserve duplicate or input-ordered source spans."""
+    engine = PinInventoryEngine()
+    guard_blob = _blob("guard.py", b"x\ny\n")
+    relation_blob = _blob("relation.py", b"x\ny\n")
+    guard_one = DynamicGovernedCheck(
+        "guard.py", "policy", "source_commit", "==", "policy", "engine_upstream_commit",
+        "syntax", SourceSpan.content("guard.py", 2, 1, 2, 2),
+    )
+    guard_two = replace(guard_one, span=SourceSpan.content("guard.py", 1, 1, 1, 2))
+    relation_one = GovernedRelation(
+        "relation.py", "policy", "nautilus_runtime_closure_policy", "source_commit", "selected_source",
+        "!=", "policy", "nautilus_runtime_closure_policy", "engine_upstream_commit", "upstream_commit",
+        "cross_family_consistency_guard", "binding", "syntax", SourceSpan.content("relation.py", 2, 1, 2, 2),
+    )
+    relation_two = replace(relation_one, span=SourceSpan.content("relation.py", 1, 1, 1, 2))
+
+    guards = engine._guard_records(((guard_blob, guard_one), (guard_blob, guard_two), (guard_blob, guard_two)))
+    relations = engine._relation_records(((relation_blob, relation_one), (relation_blob, relation_two), (relation_blob, relation_two)))
+
+    assert guards[0].spans == (
+        SourceSpan.content("guard.py", 1, 1, 1, 2), SourceSpan.content("guard.py", 2, 1, 2, 2),
+    )
+    assert relations[0].spans == (
+        SourceSpan.content("relation.py", 1, 1, 1, 2), SourceSpan.content("relation.py", 2, 1, 2, 2),
+    )
+
+
+def test_engine_treats_python_mapping_literal_values_as_non_governing_metadata() -> None:
+    """Break caught: an ordinary Python schema mapping is mistaken for a pin declaration."""
+    snapshot = replace(
+        _complete_snapshot(),
+        blobs=_complete_snapshot().blobs + (_blob(
+            "packages/schema.py",
+            b'schema = {"validator": "packages.deployment_evidence.DeploymentEvidence"}\n',
+        ),),
+    )
+
+    document = PinInventoryEngine().generate(snapshot)
+
+    assert not any(entry.path == "packages/schema.py" for entry in document.entries)
