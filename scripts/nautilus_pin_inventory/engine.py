@@ -24,6 +24,7 @@ _TEXT_SUFFIXES = frozenset({
     ".md", ".py", ".rs", ".sh", ".toml", ".ts", ".tsv", ".tsx", ".txt", ".yaml", ".yml",
 })
 _TEXT_NAMES = frozenset({"Makefile", "Dockerfile"})
+_GOVERNING_TEXT_SUFFIXES = frozenset({".cfg", ".ini", ".lock", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml"})
 _POLICY_REFERENCE = re.compile(r"(?P<name>[A-Za-z0-9_.-]+-policy\.json)")
 _GOVERNED_PYTHON_PATHS = frozenset({
     "scripts/materialize_nautilus_runtime_closure.py",
@@ -65,12 +66,12 @@ def _is_scannable_path(path: object) -> bool:
     return all(part and part not in (".", "..") for part in path.split("/"))
 
 
-def _python_comment_spans(path: str, text: str) -> tuple[SourceSpan, ...]:
+def _python_payload_spans(path: str, text: str) -> tuple[SourceSpan, ...]:
     try:
         tokens = tokenize.generate_tokens(StringIO(text).readline)
         return tuple(
             SourceSpan.content(path, token.start[0], token.start[1] + 1, token.end[0], token.end[1] + 1)
-            for token in tokens if token.type == tokenize.COMMENT
+            for token in tokens if token.type in (tokenize.COMMENT, tokenize.STRING)
         )
     except (tokenize.TokenError, IndentationError) as exc:
         raise PinInventoryError("Python text extraction is invalid") from exc
@@ -82,18 +83,6 @@ def _contains(container: SourceSpan, value: SourceSpan) -> bool:
         and container.carrier is value.carrier
         and (container.start_line, container.start_column) <= (value.start_line, value.start_column)
         and (value.end_line, value.end_column) <= (container.end_line, container.end_column)
-    )
-
-
-def _is_governed_context(path: str, text: str, observation: Observation) -> bool:
-    if path in GOVERNED_JSON_PATHS:
-        return True
-    if path.startswith("tests/"):
-        return False
-    lines = text.splitlines()
-    return (
-        observation.span.start_line <= len(lines)
-        and f"nautilus {observation.family}" in lines[observation.span.start_line - 1].casefold()
     )
 
 
@@ -192,6 +181,15 @@ class PinInventoryEngine:
         leaf = path.rsplit("/", 1)[-1]
         return leaf in _TEXT_NAMES or any(leaf.endswith(suffix) for suffix in _TEXT_SUFFIXES)
 
+    @staticmethod
+    def _governing_text_path(path: str) -> bool:
+        if path in GOVERNED_JSON_PATHS or path in _GOVERNED_PYTHON_PATHS:
+            return True
+        if "/" in path:
+            return False
+        leaf = path.rsplit("/", 1)[-1]
+        return leaf in _TEXT_NAMES or any(leaf.endswith(suffix) for suffix in _GOVERNING_TEXT_SUFFIXES)
+
     def _validate_snapshot(self, snapshot: GitTreeSnapshot) -> dict[str, GitBlobSnapshot]:
         if type(snapshot) is not GitTreeSnapshot:
             raise PinInventoryError("inventory generation requires a GitTreeSnapshot")
@@ -275,15 +273,16 @@ class PinInventoryEngine:
                     raise PinInventoryError("conflicting specialized observation ownership")
                 owners[observation.span] = observation
             generic = self._text.extract_content(path, text)
-            if path in _GOVERNED_PYTHON_PATHS:
-                comments = _python_comment_spans(path, text)
-                generic = tuple(value for value in generic if any(_contains(comment, value.span) for comment in comments))
+            if path.endswith(".py"):
+                payloads = _python_payload_spans(path, text)
+                generic = tuple(value for value in generic if any(_contains(payload, value.span) for payload in payloads))
+                if path.startswith("tests/"):
+                    generic = tuple(value for value in generic if self._registry.classify(value).code != "UNREGISTERED_IDENTITY")
             retained: list[Observation] = list(owners.values())
             for value in generic:
                 owner = owners.get(value.span)
                 if owner is None:
-                    decision = self._registry.classify(value)
-                    if decision.code != "UNREGISTERED_IDENTITY" or _is_governed_context(path, text, value):
+                    if self._registry.classify(value).code != "UNREGISTERED_IDENTITY" or self._governing_text_path(path):
                         retained.append(value)
                 elif (owner.family, owner.value) != (value.family, value.value):
                     raise PinInventoryError("conflicting specialized and generic observation ownership")
