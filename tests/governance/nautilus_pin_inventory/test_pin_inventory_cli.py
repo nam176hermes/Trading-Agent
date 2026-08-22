@@ -1,4 +1,4 @@
-"""Exact-commit command-line inventory controls using disposable Git repos."""
+"""Nautilus exact-commit inventory CLI controls using disposable Git repos."""
 
 from __future__ import annotations
 
