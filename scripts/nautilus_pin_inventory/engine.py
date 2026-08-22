@@ -237,16 +237,18 @@ class PinInventoryEngine:
         leaf = path.rsplit("/", 1)[-1]
         return leaf in _TEXT_NAMES or any(leaf.endswith(suffix) for suffix in _TEXT_SUFFIXES)
 
-    def _governs_generic_content(self, path: str, values: tuple[Observation, ...]) -> bool:
+    def _governs_generic_content(self, path: str) -> bool:
         """Identify a carrier that can establish generic inventory authority."""
         if path in GOVERNED_JSON_PATHS:
             return True
         leaf = path.rsplit("/", 1)[-1]
         if leaf in _TEXT_NAMES or any(leaf.endswith(suffix) for suffix in _INTRINSIC_GOVERNING_SUFFIXES):
             return not path.startswith("tests/")
+        if path.startswith("config/") and leaf.endswith(".txt"):
+            return True
         if "/" not in path and leaf.endswith((".md", ".txt")):
             return True
-        return any(self._registry.classify(value).code != "UNREGISTERED_IDENTITY" for value in values)
+        return False
 
     def _validate_snapshot(self, snapshot: GitTreeSnapshot) -> dict[str, GitBlobSnapshot]:
         if type(snapshot) is not GitTreeSnapshot:
@@ -340,7 +342,7 @@ class PinInventoryEngine:
                     and not any(_contains(mapping, value.span) for mapping in metadata)
                 )
                 if path.startswith("tests/"):
-                    generic = tuple(value for value in generic if self._registry.classify(value).code != "UNREGISTERED_IDENTITY")
+                    generic = ()
             elif path.endswith(".md"):
                 prose = _markdown_prose_spans(path, text)
                 generic = tuple(value for value in generic if any(_contains(line, value.span) for line in prose))
@@ -348,7 +350,7 @@ class PinInventoryEngine:
                     generic = ()
             elif path.endswith(".json") and path not in GOVERNED_JSON_PATHS:
                 generic = ()
-            governs_generic = self._governs_generic_content(path, generic)
+            governs_generic = self._governs_generic_content(path)
             retained: list[Observation] = list(owners.values())
             for value in generic:
                 owner = owners.get(value.span)
