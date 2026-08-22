@@ -58,6 +58,20 @@ class _Endpoint:
 _ENDPOINTS = (
     _Endpoint(
         "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_base_runtime_bytes@566",
+        "manifest",
+        "base_runtime_manifest_json_object",
+        "nautilus_base_runtime_manifest",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_base_runtime_bytes@566",
+        "policy",
+        "base_runtime_policy_parameter",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
         "_validate_policy_bytes@422",
         "policy",
         "runtime_policy_json_object",
@@ -93,6 +107,8 @@ _APPROVED_ENDPOINT_HASHES = {
     ("scripts/materialize_nautilus_runtime_closure.py", "_build_output_manifest", 1049): "b8a00c947ff201b4aa64981cda832f9e1f361ac2c9e31286caba4fe6f8ab8d5b",
     ("scripts/materialize_nautilus_runtime_closure.py", "materialize_runtime_closure", 1084): "ce8af351d43bdf60b541167db75087ad03409edbb93ddff1e0a21391521392d2",
     ("scripts/materialize_nautilus_runtime_closure.py", "_validate_policy_bytes", 422): "2c0e2c883286485ac8deb80b77f219901e254c55e8ce47858e3513d97680d266",
+    ("scripts/materialize_nautilus_runtime_closure.py", "_load_policy", 501): "1d1ca401e940576c38bcdf42066d584b076743c8c2d10fb4b2763ec9b1aec3b8",
+    ("scripts/materialize_nautilus_runtime_closure.py", "_validate_base_runtime", 513): "50167e5e33c2d3a9b660e9e89117ca1b5027ba2f2dd74cdcc9cab2d9613a1b5e",
     ("services/job_worker/nautilus_closure.py", "_closure_digest", 343): "94cb3024725f382c9043a65bad8c069c00714a1b8e54ca7a97dbef65bada9ff4",
     ("services/job_worker/nautilus_closure.py", "attest_nautilus_backtest_closure", 515): "53794a8f8e0932b44b6fd4b96d4cc50174a281dfa58c6a86156aeba78361eddb",
 }
@@ -103,6 +119,9 @@ _APPROVED_MODULE_CHILD_HASHES = {
     ("services/job_worker/nautilus_closure.py", "_blocked", 151): "5860bb7abb423390463c82b929a24bbe7781e992055d758cb300a9ca601c4873",
     ("services/job_worker/nautilus_closure.py", "_read_json", 216): "fd1d05b14169fde6122e3bb4e7edad9053edb8e20be2c0720191894e6c9b4943",
     ("services/job_worker/nautilus_closure.py", "_closure_digest", 343): "94cb3024725f382c9043a65bad8c069c00714a1b8e54ca7a97dbef65bada9ff4",
+}
+_APPROVED_ROOT_MAP_READERS = {
+    ("scripts/materialize_nautilus_runtime_closure.py", "_REPOSITORY_LAUNCHER_SOURCES", 171): "84148bdb6160537c70a2da068b069c697792b604f752feedbb5745cdfbc1c8fa",
 }
 
 class PythonExtractionError(ValueError):
@@ -354,9 +373,9 @@ def _raw_access(node: ast.AST) -> str | None:
 
 def _governed_like(node: ast.AST) -> bool:
     """Recognize every attempted governed access, including dynamic keys we reject."""
-    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in _OBJECTS:
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in _GOVERNED_ROOTS:
         return not (isinstance(node.slice, ast.Constant) and type(node.slice.value) is str and node.slice.value not in _FIELDS)
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and isinstance(node.func.value, ast.Name) and node.func.value.id in _OBJECTS:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" and isinstance(node.func.value, ast.Name) and node.func.value.id in _GOVERNED_ROOTS:
         return not (node.args and isinstance(node.args[0], ast.Constant) and type(node.args[0].value) is str and node.args[0].value not in _FIELDS)
     return _raw_access(node) is not None
 
@@ -399,7 +418,7 @@ class PythonExtractor:
                 if self._inside_approved_endpoint(path, tree, node):
                     continue
                 if path in {candidate.path for candidate in _ENDPOINTS} and not any(
-                    _governed_like(candidate) or isinstance(candidate, ast.Name) and candidate.id in _OBJECTS
+                    _governed_like(candidate) or isinstance(candidate, ast.Name) and candidate.id in _GOVERNED_ROOTS
                     for candidate in ast.walk(node)
                 ):
                     continue
@@ -466,6 +485,11 @@ class PythonExtractor:
             for (candidate_path, name, line), fingerprint in _APPROVED_MODULE_CHILD_HASHES.items()
             if candidate_path == path
         }
+        expected_root_map_readers = {
+            (name, line): fingerprint
+            for (candidate_path, name, line), fingerprint in _APPROVED_ROOT_MAP_READERS.items()
+            if candidate_path == path
+        }
         children = {(cls._module_child_name(node), getattr(node, "lineno", 0)): node for node in tree.body}
         if set(children).isdisjoint(expected_endpoints) or any(
             key not in children or cls._structural_hash(children[key], normalize=True) != fingerprint
@@ -477,13 +501,18 @@ class PythonExtractor:
             for key, fingerprint in expected_children.items()
         ):
             raise _invalid()
+        if any(
+            key not in children or cls._structural_hash(children[key], normalize=False) != fingerprint
+            for key, fingerprint in expected_root_map_readers.items()
+        ):
+            raise _invalid()
         endpoint_roots = {endpoint.root for endpoint in _ENDPOINTS if endpoint.path == path}
         root_maps = {
             name
             for (name, line), node in children.items()
             if (name, line) in expected_children and isinstance(node, (ast.Assign, ast.AnnAssign))
         }
-        protected = {name for name, _ in expected_children} | {"set"}
+        protected = {name for name, _ in expected_children} | {name for name, _ in expected_endpoints} | {"set"}
         if any(sum(name == child_name for child_name, _ in children) != 1 for name in protected - {"set"}):
             raise _invalid()
         allowed = {
@@ -497,10 +526,31 @@ class PythonExtractor:
             for (name, _), node in children.items()
             if name in protected and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         }
+        root_map_scopes = {
+            id(node)
+            for (name, _), node in children.items()
+            if name in root_maps or (name, _) in expected_root_map_readers or (name, _) in expected_endpoints
+        }
+        sole_callers = {
+            "_validate_policy_bytes": "_load_policy",
+            "_load_policy": "materialize_runtime_closure",
+            "_validate_base_runtime": "materialize_runtime_closure",
+            "_validate_base_runtime_bytes": "_validate_base_runtime",
+        }
         for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+                raise _invalid()
+            if isinstance(node, ast.Import) and any(alias.name == "builtins" for alias in node.names):
+                raise _invalid()
+            if isinstance(node, (ast.Global, ast.Nonlocal)) and any(name in protected for name in node.names):
+                raise _invalid()
             if isinstance(node, ast.arg) and node.arg in protected:
                 raise _invalid()
             if isinstance(node, ast.ExceptHandler) and node.name in protected:
+                raise _invalid()
+            if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name in protected:
+                raise _invalid()
+            if isinstance(node, ast.MatchMapping) and node.rest in protected:
                 raise _invalid()
             if isinstance(node, ast.Name) and node.id in protected and isinstance(node.ctx, (ast.Store, ast.Del)):
                 if (node.id, id(node)) not in allowed:
@@ -509,6 +559,18 @@ class PythonExtractor:
                 if (node.name, id(node)) not in allowed:
                     raise _invalid()
             if isinstance(node, (ast.Import, ast.ImportFrom)) and any((alias.asname or alias.name.split(".")[0]) in protected for alias in node.names):
+                raise _invalid()
+            if isinstance(node, ast.Name) and node.id in root_maps:
+                owners = [owner for owner in tree.body if owner is node or node in ast.walk(owner)]
+                if len(owners) != 1 or id(owners[0]) not in root_map_scopes:
+                    raise _invalid()
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in sole_callers:
+                owners = [owner for owner in tree.body if node in ast.walk(owner)]
+                if len(owners) != 1 or cls._module_child_name(owners[0]) != sole_callers[node.id]:
+                    raise _invalid()
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) and isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
+                raise _invalid()
+            if isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)) and node.attr == "set" and isinstance(node.value, ast.Name) and node.value.id in {"builtins", "__builtins__"}:
                 raise _invalid()
             if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name) and node.target.id in endpoint_roots and cls._scope(tree, node) is tree:
                 raise _invalid()
@@ -524,6 +586,8 @@ class PythonExtractor:
                 for value in (*node.args, *(keyword.value for keyword in node.keywords))
                 for item in ast.walk(value)
             ):
+                raise _invalid()
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {"globals", "locals", "vars", "setattr", "delattr"}:
                 raise _invalid()
 
     @staticmethod
@@ -564,6 +628,20 @@ class PythonExtractor:
 
     @staticmethod
     def _binding_kind(root: str, value: ast.AST) -> str | None:
+        if (
+            root == "manifest"
+            and isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "_json_object"
+            and len(value.args) == 1
+            and isinstance(value.args[0], ast.Name)
+            and value.args[0].id == "manifest_raw"
+            and len(value.keywords) == 1
+            and value.keywords[0].arg == "label"
+            and isinstance(value.keywords[0].value, ast.Constant)
+            and value.keywords[0].value.value == "base runtime manifest"
+        ):
+            return "base_runtime_manifest_json_object"
         if (
             root == "policy"
             and isinstance(value, ast.Call)
@@ -631,6 +709,33 @@ class PythonExtractor:
     def _qualified_scope(scope: ast.AST) -> str:
         return f"{getattr(scope, 'name', '<module>')}@{getattr(scope, 'lineno', 1)}"
 
+    @staticmethod
+    def _base_runtime_policy_chain(tree: ast.Module) -> bool:
+        """Prove the sole reviewed policy flow into the base-runtime check."""
+        children = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        loader = children.get("_load_policy")
+        validator = children.get("_validate_base_runtime")
+        publisher = children.get("materialize_runtime_closure")
+        if loader is None or validator is None or publisher is None:
+            return False
+        def call_named(node: ast.AST, name: str, arguments: tuple[str, ...]) -> bool:
+            return (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == name
+                and tuple(argument.id for argument in node.args if isinstance(argument, ast.Name)) == arguments
+            )
+        return (
+            any(call_named(node, "_validate_policy_bytes", ("raw",)) for node in ast.walk(loader))
+            and any(call_named(node, "_validate_base_runtime_bytes", ("manifest_raw", "policy")) for node in ast.walk(validator))
+            and any(call_named(node, "_load_policy", ("policy_path",)) for node in ast.walk(publisher))
+            and any(call_named(node, "_validate_base_runtime", ("base_runtime", "policy")) for node in ast.walk(publisher))
+        )
+
     @classmethod
     def _binding_fingerprint(
         cls,
@@ -658,6 +763,16 @@ class PythonExtractor:
         bindings = self._scope_bindings(scope)
         value = bindings.get(root)
         binding_kind = self._binding_kind(root, value) if value is not None else None
+        if (
+            value is None
+            and root == "policy"
+            and isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and scope.name == "_validate_base_runtime_bytes"
+            and any(argument.arg == "policy" for argument in (*scope.args.posonlyargs, *scope.args.args))
+            and self._base_runtime_policy_chain(tree)
+        ):
+            binding_kind = "base_runtime_policy_parameter"
+            value = ast.Name(id="policy")
         endpoint = next((item for item in candidates if item.binding_kind == binding_kind), None)
         if endpoint is None or value is None:
             raise _invalid()
@@ -945,7 +1060,7 @@ class PythonExtractor:
 
     def _comparison_observations(self, path: str, text: str, node: ast.Compare, tokens: tuple[_StringToken, ...], bindings: dict[str, _Binding], invalid: set[str], invalid_governed: set[str]) -> tuple[Observation, ...]:
         def carries_provenance(value: ast.AST) -> bool:
-            return any(isinstance(item, ast.Name) and (item.id in _GOVERNED_ROOTS or item.id in invalid_governed) for item in ast.walk(value))
+            return any(isinstance(item, ast.Name) and (item.id in _OBJECTS or item.id in invalid_governed - _CONDITIONAL_ROOTS) for item in ast.walk(value))
 
         def attempted_access(value: ast.AST) -> bool:
             if _governed_like(value):
@@ -966,14 +1081,14 @@ class PythonExtractor:
 
         if not any(
             attempted_access(candidate)
-            or (isinstance(candidate, ast.Subscript) and isinstance(candidate.value, ast.Name) and candidate.value.id in invalid_governed)
-            or (isinstance(candidate, ast.Name) and ((candidate.id in bindings and bindings[candidate.id].kind == "alias") or candidate.id in invalid_governed))
+            or (isinstance(candidate, ast.Subscript) and isinstance(candidate.value, ast.Name) and candidate.value.id in invalid_governed - _CONDITIONAL_ROOTS)
+            or (isinstance(candidate, ast.Name) and ((candidate.id in bindings and bindings[candidate.id].kind == "alias") or candidate.id in invalid_governed - _CONDITIONAL_ROOTS))
             for candidate in ast.walk(node)
         ):
             return ()
         if len(node.ops) != 1 or len(node.comparators) != 1:
             raise _invalid()
-        if any(isinstance(candidate, ast.Name) and candidate.id in invalid_governed and candidate.id not in bindings for candidate in ast.walk(node)):
+        if any(isinstance(candidate, ast.Name) and candidate.id in invalid_governed - _CONDITIONAL_ROOTS and candidate.id not in bindings for candidate in ast.walk(node)):
             raise _invalid()
         if any(isinstance(candidate, ast.Name) and candidate.id in _OBJECTS and candidate.id in invalid for candidate in ast.walk(node)):
             raise _invalid()

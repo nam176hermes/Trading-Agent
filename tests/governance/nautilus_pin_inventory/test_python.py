@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import textwrap
 
@@ -81,6 +82,13 @@ def _with_root_statement(source: str, insertion: str | None, root: str, statemen
     if insertion is None:
         return source + "\n" + statement + "\n"
     return source.replace(insertion, f"{insertion}\n{textwrap.indent(statement, '    ')}", 1)
+
+
+def _assert_authority_rejects(path: str, source: str) -> None:
+    """Keep authority regressions parse-valid: the extractor, not syntax, rejects them."""
+    ast.parse(source, filename=path)
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, source)
 
 
 @pytest.mark.parametrize(
@@ -458,6 +466,139 @@ def test_python_relation_fingerprints_bind_document_kind_and_raw_operator() -> N
 
     assert baseline[0].syntax_fingerprint != raw_inequality[0].syntax_fingerprint
     assert baseline_kind != changed_kind
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "rogue"),
+    (
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            'def rogue(specification):\n    return specification["result_validator_id"] == specification["result_validator_id"]\n',
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            'def rogue(expected_identity):\n    return expected_identity["result_validator_id"] == expected_identity["result_validator_id"]\n',
+        ),
+    ),
+)
+def test_python_conditional_governed_root_outside_proved_endpoint_fails_closed(path: str, source, rogue: str) -> None:
+    """Break caught: a conditional root spelling outside its proved origin silently vanishes."""
+    _assert_authority_rejects(path, source() + "\n" + rogue)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "statement"),
+    (
+        (
+            "scripts/materialize_nautilus_runtime_closure.py",
+            _runtime_policy_source,
+            "def _validate_policy_bytes(*args, **kwargs):\n    return {}",
+        ),
+        (
+            "services/job_worker/nautilus_closure.py",
+            _closure_manifest_source,
+            "attest_nautilus_backtest_closure = untrusted",
+        ),
+    ),
+)
+def test_python_later_endpoint_binding_fails_closed(path: str, source, statement: str) -> None:
+    """Break caught: a later endpoint definition or assignment replaces reviewed behavior."""
+    _assert_authority_rejects(path, source() + "\n" + statement + "\n")
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "statement"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "match untrusted:\n    case _PROFILE_SPECS:\n        pass"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "match untrusted:\n    case _blocked:\n        pass"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "from untrusted import *"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'globals()["_blocked"] = untrusted'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'del globals()["_blocked"]'),
+    ),
+)
+def test_python_indirect_module_binding_of_protected_authority_fails_closed(path: str, source, statement: str) -> None:
+    """Break caught: indirect module binders replace a proved helper or origin map."""
+    _assert_authority_rejects(path, source() + "\n" + statement + "\n")
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "statement"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "import builtins\nbuiltins.set = untrusted"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, '__builtins__["set"] = untrusted'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'setattr(__import__("builtins"), "set", untrusted)'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'delattr(__import__("builtins"), "set")'),
+    ),
+)
+def test_python_builtin_set_mutation_fails_closed(path: str, source, statement: str) -> None:
+    """Break caught: a reviewed builtin call survives monkeypatching its module authority."""
+    _assert_authority_rejects(path, source() + "\n" + statement + "\n")
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "root", "statement"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "_PROFILE_SPECS", '_PROFILE_SPECS["zero-order"] = untrusted'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "_PROFILE_SPECS", 'del _PROFILE_SPECS["zero-order"]'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "_PROFILE_SPECS", '_PROFILE_SPECS.setdefault("forged", {})'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "_PROFILE_SPECS", "alias = _PROFILE_SPECS\nalias.clear()"),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "_PROFILE_SPECS", 'alias = _PROFILE_SPECS["zero-order"]\nalias.update({})'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, "_PROFILE_SPECS", "mutate = _PROFILE_SPECS.update\nmutate({})"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "_PROFILES", '_PROFILES["zero-order"] = untrusted'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "_PROFILES", 'del _PROFILES["zero-order"]'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "_PROFILES", '_PROFILES.setdefault("forged", {})'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "_PROFILES", "alias = _PROFILES\nalias.clear()"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "_PROFILES", 'alias = _PROFILES["zero-order"]\nalias.update({})'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, "_PROFILES", "mutate = _PROFILES.update\nmutate({})"),
+    ),
+)
+def test_python_independent_origin_map_transition_fails_closed(path: str, source, root: str, statement: str) -> None:
+    """Break caught: an origin-map mutation through direct or indirect forms keeps stale provenance."""
+    _assert_authority_rejects(path, source() + "\n" + statement + "\n")
+
+
+def test_python_base_runtime_same_family_guards_are_emitted_with_raw_operator_fingerprints() -> None:
+    """Break caught: reviewed base-runtime comparisons are structurally admitted but not inventoried."""
+    path = "scripts/materialize_nautilus_runtime_closure.py"
+    source = _runtime_policy_source()
+    result = PythonExtractor(DEFAULT_REGISTRY).extract(path, source)
+    pairs = {
+        (guard.left_root, guard.left_field, guard.operator, guard.right_root, guard.right_field): guard.syntax_fingerprint
+        for guard in result.dynamic_guards
+    }
+    assert ("manifest", "engine_version", "!=", "policy", "engine_version") in pairs
+    assert ("manifest", "source_commit", "!=", "policy", "engine_upstream_commit") in pairs
+    changed = PythonExtractor(DEFAULT_REGISTRY).extract(
+        path,
+        source.replace('manifest["engine_version"] != policy["engine_version"]', 'manifest["engine_version"] == policy["engine_version"]', 1),
+    )
+    changed_pairs = {
+        (guard.left_root, guard.left_field, guard.operator, guard.right_root, guard.right_field): guard.syntax_fingerprint
+        for guard in changed.dynamic_guards
+    }
+    assert pairs[("manifest", "engine_version", "!=", "policy", "engine_version")] != changed_pairs[("manifest", "engine_version", "==", "policy", "engine_version")]
+
+
+def test_python_base_runtime_policy_parameter_requires_the_exact_caller_chain() -> None:
+    """Break caught: a signature-compatible base check accepts policy flow after its unique caller changes."""
+    path = "scripts/materialize_nautilus_runtime_closure.py"
+    source = _runtime_policy_source().replace("return manifest, files", "return {}, files", 1)
+    _assert_authority_rejects(path, source)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "def rogue():\n    return _validate_base_runtime_bytes(untrusted, {}, file_reader=untrusted)",
+        "base_alias = _validate_base_runtime_bytes",
+    ),
+)
+def test_python_base_runtime_policy_chain_rejects_extra_call_or_alias(statement: str) -> None:
+    """Break caught: an extra base-runtime callee use forges signature-only policy provenance."""
+    path = "scripts/materialize_nautilus_runtime_closure.py"
+    _assert_authority_rejects(path, _runtime_policy_source() + "\n" + statement + "\n")
 
 
 @pytest.mark.parametrize("invalid_kind", ("", "unknown", 1, None))
