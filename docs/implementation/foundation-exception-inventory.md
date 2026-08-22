@@ -509,7 +509,7 @@ packages/runtime_release/v2.py|2593|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2631|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2667|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2756|Exception|PRODUCTION_CRITICAL|RETURN
-scripts/audit_canonical_repo.py|589|BaseException|TOOLING_MIGRATION|RETURN
+scripts/audit_canonical_repo.py|579|BaseException|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
