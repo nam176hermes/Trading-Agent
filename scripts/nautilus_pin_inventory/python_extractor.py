@@ -378,7 +378,8 @@ class PythonExtractor:
             tree = ast.parse(text, filename=path)
         except SyntaxError:
             raise _invalid() from None
-        self._proved_endpoint_authority(path, tree)
+        if self._requires_endpoint_authority(path, tree):
+            self._proved_endpoint_authority(path, tree)
         tokens = _string_tokens(text)
         bindings, invalid_names, invalid_governed_names = self._bindings(tree, tokens, text)
         observations = set(self._literal_observations(path, text, tokens, tree))
@@ -436,6 +437,12 @@ class PythonExtractor:
             and PythonExtractor._direct_access(node.comparators[0]) is not None
         )
 
+    @staticmethod
+    def _requires_endpoint_authority(path: str, tree: ast.Module) -> bool:
+        return path in {endpoint.path for endpoint in _ENDPOINTS} and any(
+            _governed_like(node) for node in ast.walk(tree)
+        )
+
     @classmethod
     def _structural_hash(cls, node: ast.AST, *, normalize: bool) -> str:
         value = copy.deepcopy(node)
@@ -471,6 +478,11 @@ class PythonExtractor:
         ):
             raise _invalid()
         endpoint_roots = {endpoint.root for endpoint in _ENDPOINTS if endpoint.path == path}
+        root_maps = {
+            name
+            for (name, line), node in children.items()
+            if (name, line) in expected_children and isinstance(node, (ast.Assign, ast.AnnAssign))
+        }
         protected = {name for name, _ in expected_children} | {"set"}
         if any(sum(name == child_name for child_name, _ in children) != 1 for name in protected - {"set"}):
             raise _invalid()
@@ -505,9 +517,14 @@ class PythonExtractor:
                 if any(isinstance(target, ast.Name) and target.id in endpoint_roots for target in targets):
                     raise _invalid()
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"append", "clear", "extend", "pop", "remove", "update"}:
-                receiver = node.func.value
-                if isinstance(receiver, ast.Name) and receiver.id in {name for name, _ in expected_children}:
+                if any(isinstance(item, ast.Name) and item.id in root_maps for item in ast.walk(node.func.value)):
                     raise _invalid()
+            if isinstance(node, ast.Call) and any(
+                isinstance(item, ast.Name) and item.id in root_maps
+                for value in (*node.args, *(keyword.value for keyword in node.keywords))
+                for item in ast.walk(value)
+            ):
+                raise _invalid()
 
     @staticmethod
     def _inside_approved_endpoint(path: str, tree: ast.Module, node: ast.AST) -> bool:
