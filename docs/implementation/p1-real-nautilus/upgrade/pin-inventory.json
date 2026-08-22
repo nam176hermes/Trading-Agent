@@ -1,0 +1,4214 @@
+{
+  "dynamic_guards": [
+    {
+      "id": "GUARD-7193A664769FC4D14394",
+      "left_field": "engine_version",
+      "left_root": "manifest",
+      "operator": "!=",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "right_field": "engine_version",
+      "right_root": "policy",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 66,
+          "end_line": 579,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 12,
+          "start_line": 579
+        }
+      ],
+      "syntax_fingerprint": "b908800599f7ca627bbd78d09405ffac76d2dbf811ec8463456600040f347f25"
+    },
+    {
+      "id": "GUARD-35619534584B8F9E8EB9",
+      "left_field": "source_commit",
+      "left_root": "manifest",
+      "operator": "!=",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "right_field": "engine_upstream_commit",
+      "right_root": "policy",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 73,
+          "end_line": 581,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 12,
+          "start_line": 581
+        }
+      ],
+      "syntax_fingerprint": "eca6f7ec146d50df74e10f9cc617db75b6a47f8b7cc76c185f23257e556c9453"
+    },
+    {
+      "id": "GUARD-0FA85A1153CE4E9C08B9",
+      "left_field": "result_validator_id",
+      "left_root": "policy",
+      "operator": "!=",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "right_field": "result_validator_id",
+      "right_root": "specification",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 81,
+          "end_line": 446,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 12,
+          "start_line": 446
+        }
+      ],
+      "syntax_fingerprint": "6abb63cae9b11da14c08b68785f0f0041f5a06a2c2850aa899370e3d741fdb23"
+    },
+    {
+      "id": "GUARD-28704972F9FDBEFF1626",
+      "left_field": "semantic_profile",
+      "left_root": "policy",
+      "operator": "!=",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "right_field": "semantic_profile",
+      "right_root": "specification",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 75,
+          "end_line": 447,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 12,
+          "start_line": 447
+        }
+      ],
+      "syntax_fingerprint": "56ad4420ce4cf6c2d8d802f9df38f7951512d3a488dc640b7d16286422578343"
+    },
+    {
+      "id": "GUARD-1A03459FB54E4F9067C4",
+      "left_field": "result_validator_id",
+      "left_root": "closure_manifest",
+      "operator": "!=",
+      "path": "services/job_worker/nautilus_closure.py",
+      "right_field": "result_validator_id",
+      "right_root": "expected_identity",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 52,
+          "end_line": 593,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 12,
+          "start_line": 592
+        }
+      ],
+      "syntax_fingerprint": "6d93948d1ab14e10ea0e793c0577750622126da78686438c0ded5d4a73e2a4ea"
+    }
+  ],
+  "entries": [
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-00CE0A09F369B154E736",
+      "path": "alembic/versions/0005_job_plane_role_split.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "adda6cc61a40b9b11ccf83391ce74f048a953e77",
+      "source_blob_sha256": "7b77d9abe0b5cfe84bf69ea60e47441179c99bcb533a6776f629cab103698f4e",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 17,
+          "end_line": 1049,
+          "path": "alembic/versions/0005_job_plane_role_split.py",
+          "start_column": 16,
+          "start_line": 1049
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-FD7617AC8972E9D13B83",
+      "path": "alembic/versions/0008_trading_domain_ledger.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "3e1217930b85489a3bfcabf5963f1de3ffec14d2",
+      "source_blob_sha256": "63a38cbbb531dfee6a4a7f5c6231428e96ee9ad7b45b16007730ad8f17a06d4b",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 68,
+          "end_line": 544,
+          "path": "alembic/versions/0008_trading_domain_ledger.py",
+          "start_column": 67,
+          "start_line": 544
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 126,
+          "end_line": 546,
+          "path": "alembic/versions/0008_trading_domain_ledger.py",
+          "start_column": 125,
+          "start_line": 546
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-98CFCF20DEE49A78CAC7",
+      "path": "alembic/versions/0009_canonical_market_data.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "bdf0fb8fd5f56669531a13980c38bc66c761e4ff",
+      "source_blob_sha256": "65b7bb7b1eef4e77653df519b9d335772b83b6bcc5f6f65b60eccbbae4ca4b40",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 106,
+          "end_line": 128,
+          "path": "alembic/versions/0009_canonical_market_data.py",
+          "start_column": 105,
+          "start_line": 128
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 170,
+          "path": "alembic/versions/0009_canonical_market_data.py",
+          "start_column": 25,
+          "start_line": 170
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 42,
+          "end_line": 170,
+          "path": "alembic/versions/0009_canonical_market_data.py",
+          "start_column": 41,
+          "start_line": 170
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-68573179E34A5358294A",
+      "path": "alembic/versions/0011_engine_backtest_worker_authority.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "cb21a0564d480b424d5f8484267b391fdd06c528",
+      "source_blob_sha256": "d4a817a131fc723a696d5b808a290fbf64c594e0b8846638938693ee7b6e48e0",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 127,
+          "end_line": 112,
+          "path": "alembic/versions/0011_engine_backtest_worker_authority.py",
+          "start_column": 126,
+          "start_line": 112
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 127,
+          "end_line": 114,
+          "path": "alembic/versions/0011_engine_backtest_worker_authority.py",
+          "start_column": 126,
+          "start_line": 114
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 56,
+          "end_line": 325,
+          "path": "alembic/versions/0011_engine_backtest_worker_authority.py",
+          "start_column": 55,
+          "start_line": 325
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 63,
+          "end_line": 325,
+          "path": "alembic/versions/0011_engine_backtest_worker_authority.py",
+          "start_column": 62,
+          "start_line": 325
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 46,
+          "end_line": 599,
+          "path": "alembic/versions/0011_engine_backtest_worker_authority.py",
+          "start_column": 45,
+          "start_line": 599
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 23,
+          "end_line": 612,
+          "path": "alembic/versions/0011_engine_backtest_worker_authority.py",
+          "start_column": 22,
+          "start_line": 612
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-667B67A623585C5B93DC",
+      "path": "apps/dashboard/tests/dashboard-security.integration.sh",
+      "role": "ROLLBACK",
+      "source_blob_oid": "cc88bd14f538b9c8098b06a516260b1b1bc13c9f",
+      "source_blob_sha256": "699b1b857eeab2fa723c1a1c2b8394398c3cf1975c93e95016a05c4ef5856ce6",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 38,
+          "end_line": 122,
+          "path": "apps/dashboard/tests/dashboard-security.integration.sh",
+          "start_column": 37,
+          "start_line": 122
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 92,
+          "end_line": 122,
+          "path": "apps/dashboard/tests/dashboard-security.integration.sh",
+          "start_column": 91,
+          "start_line": 122
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 25,
+          "end_line": 157,
+          "path": "apps/dashboard/tests/dashboard-security.integration.sh",
+          "start_column": 24,
+          "start_line": 157
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "cython",
+      "id": "PIN-F2C65248A758DD5DE616",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 21,
+          "end_line": 17,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 16,
+          "start_line": 17
+        }
+      ],
+      "syntax": "json",
+      "value": "3.2.4"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-2CF8DB166336879020EE",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 29,
+          "end_line": 4,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 22,
+          "start_line": 4
+        }
+      ],
+      "syntax": "json",
+      "value": "1.227.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-F8ACE5AA3B42CF5464DB",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 28,
+          "end_line": 9,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 20,
+          "start_line": 9
+        }
+      ],
+      "syntax": "json",
+      "value": "v1.227.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-2CAB55CBCAB742F3211E",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 89,
+          "end_line": 13,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 25,
+          "start_line": 13
+        }
+      ],
+      "syntax": "json",
+      "value": "083652294183947a352d1443ed0245311bf7ee5a716b66ccc21e814be25851ed"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-C7C32908E205E2A1FF25",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 85,
+          "end_line": 12,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 21,
+          "start_line": 12
+        }
+      ],
+      "syntax": "json",
+      "value": "a00d3ab0c5b2ba1e4a4ac4c9af70f5b3fe30717d9b42a328e51696e3894a45e2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-C95D51EF1E03A17B11B8",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 88,
+          "end_line": 14,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 24,
+          "start_line": 14
+        }
+      ],
+      "syntax": "json",
+      "value": "f707cbe27b183ba598c31f1b3b6ec67e36f36e878c4228d3fef80741efb81b28"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rust",
+      "id": "PIN-F323D28DFBE28100B0EF",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 35,
+          "end_line": 15,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 29,
+          "start_line": 15
+        }
+      ],
+      "syntax": "json",
+      "value": "1.95.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "tag_object",
+      "id": "PIN-B478E739FA0CC40B27F4",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 67,
+          "end_line": 10,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 27,
+          "start_line": 10
+        }
+      ],
+      "syntax": "json",
+      "value": "0ccb5b55879c072a6e07fc7cbe5297c53c378107"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "upstream_commit",
+      "id": "PIN-705B6185D7861B184F80",
+      "path": "engines/nautilus/engine-build-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac",
+      "source_blob_sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 63,
+          "end_line": 11,
+          "path": "engines/nautilus/engine-build-policy.json",
+          "start_column": 23,
+          "start_line": 11
+        }
+      ],
+      "syntax": "json",
+      "value": "280ae1762df51a492a4ce71506a40b5c8706def5"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-B6F3274AAFB1946EB721",
+      "path": "engines/nautilus/launcher/nautilus_backtest.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "f27836302c7ab4ecfa1a4d869a18260534ad5088",
+      "source_blob_sha256": "0a309bf9abafe24f414516259c922574d2db87b037b417439d57be9d23686f38",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 42,
+          "end_line": 608,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 22,
+          "start_line": 608
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 40,
+          "end_line": 622,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 20,
+          "start_line": 622
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 41,
+          "end_line": 701,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 21,
+          "start_line": 701
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 44,
+          "end_line": 728,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 24,
+          "start_line": 728
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 2518,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 41,
+          "start_line": 2518
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 2583,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 42,
+          "start_line": 2583
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 40,
+          "end_line": 2584,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 20,
+          "start_line": 2584
+        }
+      ],
+      "syntax": "text",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-1EBF991A8098DEDB553B",
+      "path": "engines/nautilus/launcher/nautilus_backtest.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "f27836302c7ab4ecfa1a4d869a18260534ad5088",
+      "source_blob_sha256": "0a309bf9abafe24f414516259c922574d2db87b037b417439d57be9d23686f38",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 582,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 51,
+          "start_line": 582
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 30,
+          "end_line": 604,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 20,
+          "start_line": 604
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 643,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 21,
+          "start_line": 643
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 679,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 21,
+          "start_line": 679
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 30,
+          "end_line": 698,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 20,
+          "start_line": 698
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 64,
+          "end_line": 722,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 54,
+          "start_line": 722
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 34,
+          "end_line": 726,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 24,
+          "start_line": 726
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 75,
+          "end_line": 871,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 65,
+          "start_line": 871
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 30,
+          "end_line": 2581,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 20,
+          "start_line": 2581
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 34,
+          "end_line": 2593,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 24,
+          "start_line": 2593
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 45,
+          "end_line": 2595,
+          "path": "engines/nautilus/launcher/nautilus_backtest.py",
+          "start_column": 35,
+          "start_line": 2595
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-1EE0A756DA6029BDE0BC",
+      "path": "engines/nautilus/launcher/nautilus_paper_compat.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "4e2a3f5c3ee04c9d8db419c910d306c1cab15369",
+      "source_blob_sha256": "85bea7b3ee03b3bd4f70ac436f9b3829cf919ca974a29e8977ce385b79076d4c",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 41,
+          "end_line": 246,
+          "path": "engines/nautilus/launcher/nautilus_paper_compat.py",
+          "start_column": 22,
+          "start_line": 246
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 59,
+          "end_line": 394,
+          "path": "engines/nautilus/launcher/nautilus_paper_compat.py",
+          "start_column": 40,
+          "start_line": 394
+        }
+      ],
+      "syntax": "text",
+      "value": "paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-A0102C82E24E84AA1CF4",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 39,
+          "end_line": 53,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 38,
+          "start_line": 53
+        }
+      ],
+      "syntax": "json",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-FAFA27A3B5F0538B288B",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 29,
+          "end_line": 17,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 22,
+          "start_line": 17
+        }
+      ],
+      "syntax": "json",
+      "value": "1.227.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-AC841B835EE2A95C2D92",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 35,
+          "end_line": 52,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 15,
+          "start_line": 52
+        }
+      ],
+      "syntax": "json",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-79E2E5EACC2D3B34C33B",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 8,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 6,
+          "start_line": 8
+        }
+      ],
+      "syntax": "text",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-EFFBA7CDC5C3068964FB",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 96,
+          "end_line": 10,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 32,
+          "start_line": 10
+        }
+      ],
+      "syntax": "json",
+      "value": "105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-82C71EC47A209314EB5F",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 87,
+          "end_line": 36,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 23,
+          "start_line": 36
+        }
+      ],
+      "syntax": "json",
+      "value": "151b1570623253295ae36ea4b0933ad1f051fa56277ac9d1f54edcedc2c60c9a"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-1E86F726C270BD120808",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 100,
+          "end_line": 13,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 36,
+          "start_line": 13
+        }
+      ],
+      "syntax": "json",
+      "value": "69cb87568361ccd6324550fb3823956c64e073b4cf09e674d7eb0883f844c044"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rust",
+      "id": "PIN-4D38D4CE6E2BF8377312",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 36,
+          "end_line": 38,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 30,
+          "start_line": 38
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 36,
+          "end_line": 46,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 30,
+          "start_line": 46
+        }
+      ],
+      "syntax": "text",
+      "value": "1.95.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "selected_source",
+      "id": "PIN-A56171C44BB2F0AC9669",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 58,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 21,
+          "start_line": 58
+        }
+      ],
+      "syntax": "json",
+      "value": "1683f1324826b78a715f017a7749fe3d1f7b37f4"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "selected_source",
+      "id": "PIN-C1AB281E293BB3A1FFC5",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 87,
+          "end_line": 48,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 23,
+          "start_line": 48
+        }
+      ],
+      "syntax": "json",
+      "value": "a25053355abcfece9b7d5c524f4a3d3c06ce727aec8224012ef9b683240fd880"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-5356F1F6E323271D7DC2",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 56,
+          "end_line": 57,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 24,
+          "start_line": 57
+        }
+      ],
+      "syntax": "json",
+      "value": "nautilus-execution-simulation-v2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "upstream_commit",
+      "id": "PIN-426107DED6B955FE5AA6",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 70,
+          "end_line": 16,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 30,
+          "start_line": 16
+        }
+      ],
+      "syntax": "json",
+      "value": "280ae1762df51a492a4ce71506a40b5c8706def5"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-DAFD982EFAB59DF661C0",
+      "path": "engines/nautilus/runtime-closure-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7322abca7dcc9e15aff4b23944386358e62d8f08",
+      "source_blob_sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 65,
+          "end_line": 55,
+          "path": "engines/nautilus/runtime-closure-policy.json",
+          "start_column": 27,
+          "start_line": 55
+        }
+      ],
+      "syntax": "json",
+      "value": "nautilus-backtest-simulation-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "cython",
+      "id": "PIN-54960613A981963414F7",
+      "path": "engines/nautilus/wheel-cache-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "23962fe686d0690bbeefea659fa9d8f5328c570f",
+      "source_blob_sha256": "f975ff7093ead955ad4667876cd66d768bd68b332e17fb74307135a6b87677f5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 21,
+          "end_line": 8,
+          "path": "engines/nautilus/wheel-cache-policy.json",
+          "start_column": 16,
+          "start_line": 8
+        }
+      ],
+      "syntax": "text",
+      "value": "3.2.4"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "setuptools",
+      "id": "PIN-2AA38A32C013C4FB7E32",
+      "path": "engines/nautilus/wheel-cache-policy.json",
+      "role": "ROLLBACK",
+      "source_blob_oid": "23962fe686d0690bbeefea659fa9d8f5328c570f",
+      "source_blob_sha256": "f975ff7093ead955ad4667876cd66d768bd68b332e17fb74307135a6b87677f5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 13,
+          "path": "engines/nautilus/wheel-cache-policy.json",
+          "start_column": 20,
+          "start_line": 13
+        }
+      ],
+      "syntax": "text",
+      "value": "82.0.1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-F8DF1ACA8DE455B1E54B",
+      "path": "legacy/research-backend/allocation_engine.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "36f187bd7b8e547bbab462a35e34194ae594ed58",
+      "source_blob_sha256": "051839dee5a03b77ed7cb20ad147e4e9359cadba17a13509982288c12212e6d6",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 8,
+          "end_line": 395,
+          "path": "legacy/research-backend/allocation_engine.py",
+          "start_column": 7,
+          "start_line": 395
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 47,
+          "end_line": 422,
+          "path": "legacy/research-backend/allocation_engine.py",
+          "start_column": 46,
+          "start_line": 422
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-1134C789A0F66A218DF4",
+      "path": "legacy/research-backend/assembly.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "5937cd913611e5e40a31fcd1fa5a79c1ce053288",
+      "source_blob_sha256": "ec4589fb29cbfdc55c4d63f532bf27e0ee302d6ebeff4fa4546b22661f08a7a7",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 17,
+          "end_line": 560,
+          "path": "legacy/research-backend/assembly.py",
+          "start_column": 16,
+          "start_line": 560
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-830E71B16CB0D297FD58",
+      "path": "legacy/research-backend/audit_lookahead.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "18b6a2d6e8d091b5fb6a67442629ca2f9b2f502b",
+      "source_blob_sha256": "1d2d2732d2c634cbf3932475dadd4207625b3db682b1a558dd456fb1b689ff42",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 33,
+          "end_line": 76,
+          "path": "legacy/research-backend/audit_lookahead.py",
+          "start_column": 32,
+          "start_line": 76
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-FB67897BFF18513E5CCB",
+      "path": "legacy/research-backend/backtest_analyzer.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "8016cefdfb25ca61cc1e777a8e63e8256390e5df",
+      "source_blob_sha256": "a6d863a6ac061c1fd9586ef9f3813e49f2c17172b7309c7a46750651c8ec8cd5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 52,
+          "end_line": 398,
+          "path": "legacy/research-backend/backtest_analyzer.py",
+          "start_column": 51,
+          "start_line": 398
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-1D1AB5B2C94DAA3415FD",
+      "path": "legacy/research-backend/candlestick_patterns.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "11215800bd4db82774cc71cfec84152520d689c4",
+      "source_blob_sha256": "0e0e7689f3a8bf893876418f171b9b55d9fadb31467fd0eb427d55213bfe6c2d",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 4,
+          "end_line": 13,
+          "path": "legacy/research-backend/candlestick_patterns.py",
+          "start_column": 3,
+          "start_line": 13
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 4,
+          "end_line": 219,
+          "path": "legacy/research-backend/candlestick_patterns.py",
+          "start_column": 3,
+          "start_line": 219
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "setuptools",
+      "id": "PIN-D0BCA5353019A4C24BF3",
+      "path": "legacy/research-backend/candlestick_patterns.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "11215800bd4db82774cc71cfec84152520d689c4",
+      "source_blob_sha256": "0e0e7689f3a8bf893876418f171b9b55d9fadb31467fd0eb427d55213bfe6c2d",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 618,
+          "path": "legacy/research-backend/candlestick_patterns.py",
+          "start_column": 29,
+          "start_line": 618
+        }
+      ],
+      "syntax": "text",
+      "value": "82"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-D2E8BF412AA141806A11",
+      "path": "legacy/research-backend/exchange/executor.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ba5d9e34a1e6d714643d44f2ce4f502927213dba",
+      "source_blob_sha256": "8a89ee562b09d5f6cd88af392ac36c55c67cd97671d91d6871e1486d497b7966",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 10,
+          "end_line": 69,
+          "path": "legacy/research-backend/exchange/executor.py",
+          "start_column": 9,
+          "start_line": 69
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 12,
+          "end_line": 160,
+          "path": "legacy/research-backend/exchange/executor.py",
+          "start_column": 11,
+          "start_line": 160
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-4B6F66DFCC4DC60785E7",
+      "path": "legacy/research-backend/main.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7d978a7b96a2f86df007626055b2c680e7db0c2e",
+      "source_blob_sha256": "632f1301f9125b2cba42bda65b0b09a9cdb7aa12227ed66b0cbc420fbe779e42",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 36,
+          "end_line": 2591,
+          "path": "legacy/research-backend/main.py",
+          "start_column": 35,
+          "start_line": 2591
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 48,
+          "end_line": 2591,
+          "path": "legacy/research-backend/main.py",
+          "start_column": 47,
+          "start_line": 2591
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-FBFF76953C9A6D737FCB",
+      "path": "legacy/research-backend/ml_toolkit.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "d55ca3bca9ea497c7c498a94ff39128a1defe62d",
+      "source_blob_sha256": "7c3383968a45335fe0890ec482f95fea29865faa4a3a691d223cec3cda222228",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 48,
+          "end_line": 362,
+          "path": "legacy/research-backend/ml_toolkit.py",
+          "start_column": 47,
+          "start_line": 362
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-100F7EFB6F3118AD0F8F",
+      "path": "legacy/research-backend/risk_engine.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "1fe2ceec35c83f8f92a125d547c4f43a1f9504cb",
+      "source_blob_sha256": "c8da8cbb7d8a74ac1cbbfec0436f72486ba7038266dab792d68891408ffe0be1",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 47,
+          "end_line": 21,
+          "path": "legacy/research-backend/risk_engine.py",
+          "start_column": 46,
+          "start_line": 21
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-1B960BC7DADEA00060C3",
+      "path": "legacy/research-backend/risk_validation.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "50e4363c5569aadc09bb61ad0293f4461bdc5c1d",
+      "source_blob_sha256": "de243aa977925205c497eff8a017e5a84901cd3dd772a8c460eb23be3ad523c9",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 4,
+          "end_line": 12,
+          "path": "legacy/research-backend/risk_validation.py",
+          "start_column": 3,
+          "start_line": 12
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 13,
+          "end_line": 337,
+          "path": "legacy/research-backend/risk_validation.py",
+          "start_column": 12,
+          "start_line": 337
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-DF6E19446E05A66CCD3A",
+      "path": "legacy/research-backend/strategy_optimizer.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "8ec00b405c395357f3a31f560a5e2fe61a55835d",
+      "source_blob_sha256": "c4023972bb261ab65d76f272cf95063d78add7a5684dd7fc626f4ce022ec3e07",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 2,
+          "end_line": 112,
+          "path": "legacy/research-backend/strategy_optimizer.py",
+          "start_column": 1,
+          "start_line": 112
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-C463C2F2CFC51AC2FDE6",
+      "path": "legacy/research-backend/tests/test_integration.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "8c7ada07690f4ab40278e7a51d342b3f3a9d5654",
+      "source_blob_sha256": "fc3d7c1c56e801fd229b3402d4c1a307de058944c7abaa0beb06d9fdd1755629",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 11,
+          "end_line": 112,
+          "path": "legacy/research-backend/tests/test_integration.py",
+          "start_column": 10,
+          "start_line": 112
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-C6AA2230EDFCA55E6CFE",
+      "path": "legacy/research-backend/tests/test_paper_trader.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "82c84b9de83cba6b9d0170c2c54e1238a08ca246",
+      "source_blob_sha256": "e6e8e8e48c56da3d0bca2cdd214ac27fb353dca5f07e868e7ad2505ff57acfab",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 18,
+          "end_line": 138,
+          "path": "legacy/research-backend/tests/test_paper_trader.py",
+          "start_column": 17,
+          "start_line": 138
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 21,
+          "end_line": 156,
+          "path": "legacy/research-backend/tests/test_paper_trader.py",
+          "start_column": 20,
+          "start_line": 156
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-7781768E8481A484E83D",
+      "path": "legacy/research-backend/trading_agent.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ede0aaf2098e01c40ae7769bffdf5129d039a0d9",
+      "source_blob_sha256": "88fe605c45a58e0c2860a9cc44e7d87fd971988ea3135617d844b7c76569b135",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 12,
+          "end_line": 327,
+          "path": "legacy/research-backend/trading_agent.py",
+          "start_column": 11,
+          "start_line": 327
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "setuptools",
+      "id": "PIN-178817CF55ECB6CDF9D6",
+      "path": "legacy/research-backend/uv.lock",
+      "role": "ROLLBACK",
+      "source_blob_oid": "630f29031d2470726ca4fbf237b082274ca6a9e3",
+      "source_blob_sha256": "27790f75a54120b48a8b27da915c4f55a1cb6621e02586b11139f28784e61c5d",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 60,
+          "end_line": 1071,
+          "path": "legacy/research-backend/uv.lock",
+          "start_column": 58,
+          "start_line": 1071
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 56,
+          "end_line": 1127,
+          "path": "legacy/research-backend/uv.lock",
+          "start_column": 54,
+          "start_line": 1127
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 59,
+          "end_line": 1422,
+          "path": "legacy/research-backend/uv.lock",
+          "start_column": 57,
+          "start_line": 1422
+        }
+      ],
+      "syntax": "text",
+      "value": "82"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-01EAC5682C004C9B24C2",
+      "path": "ops/phase4b/provision-root.sh",
+      "role": "ROLLBACK",
+      "source_blob_oid": "066ad95d183fc64cfca0e5726c899db929b17de5",
+      "source_blob_sha256": "d3551fb6ba819c914082a07a3e9dc21bf10a842c5e633b1f0f440bfbf4b7c3ae",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 76,
+          "end_line": 300,
+          "path": "ops/phase4b/provision-root.sh",
+          "start_column": 75,
+          "start_line": 300
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-0D6E442D1D873D04CB69",
+      "path": "packages/engine_contracts/serialization.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "5f14903bb84101f3a7e4a4d8347fb55ef789bd37",
+      "source_blob_sha256": "1c27c4eda3df997d4421d892a7e703f99204320d0b73f5929c18ef67015c4b54",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 54,
+          "end_line": 22,
+          "path": "packages/engine_contracts/serialization.py",
+          "start_column": 53,
+          "start_line": 22
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-95AC36596A81814DDAEC",
+      "path": "packages/job_contracts/payloads.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ef7d9d2c17fcd16e0dfbef424999e23c9cc0a913",
+      "source_blob_sha256": "aa7236ace5349d833e14e587a42141af63841d9189ff279206edb46440175825",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 193,
+          "path": "packages/job_contracts/payloads.py",
+          "start_column": 52,
+          "start_line": 193
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-10FF6D1C25D802804E68",
+      "path": "packages/nautilus_backtest/paper_compat.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "6fc12b94a92bf9175a7d89280b92ab92f7f56a24",
+      "source_blob_sha256": "ecf2477eb160cc08e358d85414e335ed08daef5735aaea42005cc2db90291ee9",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 60,
+          "end_line": 1,
+          "path": "packages/nautilus_backtest/paper_compat.py",
+          "start_column": 41,
+          "start_line": 1
+        }
+      ],
+      "syntax": "text",
+      "value": "paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-68862D3521D948B5B7BA",
+      "path": "packages/nautilus_backtest/paper_compat.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "6fc12b94a92bf9175a7d89280b92ab92f7f56a24",
+      "source_blob_sha256": "ecf2477eb160cc08e358d85414e335ed08daef5735aaea42005cc2db90291ee9",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 68,
+          "end_line": 20,
+          "path": "packages/nautilus_backtest/paper_compat.py",
+          "start_column": 30,
+          "start_line": 20
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-paper-compatibility-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-8FB6AA756BC34A8F6652",
+      "path": "packages/nautilus_backtest/result.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "52311d2d7c43d8eead025bdd1c8848b3a3af40bf",
+      "source_blob_sha256": "06cafb6207f2729a4dbef2cd81dbdea3a0554e7de548c505761bcc2e700581ad",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 41,
+          "path": "packages/nautilus_backtest/result.py",
+          "start_column": 52,
+          "start_line": 41
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 48,
+          "end_line": 104,
+          "path": "packages/nautilus_backtest/result.py",
+          "start_column": 38,
+          "start_line": 104
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-67FFAF9DE4CE597D5072",
+      "path": "packages/runtime_release/config.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "7369783c5b73ae784dd578714f1780c390370fd6",
+      "source_blob_sha256": "c1f7597c1ffa27175481eb7334bc052c61ea9220957fe07648130f7fe24acc0c",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 34,
+          "end_line": 171,
+          "path": "packages/runtime_release/config.py",
+          "start_column": 33,
+          "start_line": 171
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-F5CCFB7B28A8898CAC9C",
+      "path": "packages/runtime_release/paper_application/environment.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "df27bfee7c44e1d16d3c7ce30282d1cb10416440",
+      "source_blob_sha256": "abb68187cb420a50d929caa76c71c9fdcc8b061326ff389c1ac314b5e5f3d912",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 27,
+          "end_line": 205,
+          "path": "packages/runtime_release/paper_application/environment.py",
+          "start_column": 26,
+          "start_line": 205
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 251,
+          "path": "packages/runtime_release/paper_application/environment.py",
+          "start_column": 30,
+          "start_line": 251
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 260,
+          "path": "packages/runtime_release/paper_application/environment.py",
+          "start_column": 30,
+          "start_line": 260
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 272,
+          "path": "packages/runtime_release/paper_application/environment.py",
+          "start_column": 30,
+          "start_line": 272
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 23,
+          "end_line": 322,
+          "path": "packages/runtime_release/paper_application/environment.py",
+          "start_column": 22,
+          "start_line": 322
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-077D553517B7C6DF8F1B",
+      "path": "packages/runtime_release/paper_application/runtime_release_config.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "32541d078dbdfebd73edaaad0cf9b0ce4804d70f",
+      "source_blob_sha256": "51dc48b0f7c606d8b1b12ca01944613aa3cd97eacb53cb91525e6cb1520734f7",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 34,
+          "end_line": 113,
+          "path": "packages/runtime_release/paper_application/runtime_release_config.py",
+          "start_column": 33,
+          "start_line": 113
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "setuptools",
+      "id": "PIN-B676013B28DFD78ECA08",
+      "path": "packages/runtime_release/paper_application/uv.lock",
+      "role": "ROLLBACK",
+      "source_blob_oid": "fab975857f738a68963a833d7932c386f7d8a21b",
+      "source_blob_sha256": "a4fac2d6f0587c534555e6d8c3ca9c22460ba18b09e5eb684c7b38409ce2d759",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 59,
+          "end_line": 120,
+          "path": "packages/runtime_release/paper_application/uv.lock",
+          "start_column": 57,
+          "start_line": 120
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 63,
+          "end_line": 140,
+          "path": "packages/runtime_release/paper_application/uv.lock",
+          "start_column": 61,
+          "start_line": 140
+        }
+      ],
+      "syntax": "text",
+      "value": "82"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-E21A5C85D48DAFEF8E2D",
+      "path": "packages/runtime_release/paper_backend/job_attribution.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "61f3ce7441fe1d3f083d3420cd3b5cd056b8bf69",
+      "source_blob_sha256": "023e85c24d6d18e98829b0a69ace726a303d5a5fa4d8b6d75b9b2be11b4a6fa8",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 64,
+          "end_line": 1,
+          "path": "packages/runtime_release/paper_backend/job_attribution.py",
+          "start_column": 63,
+          "start_line": 1
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 132,
+          "path": "packages/runtime_release/paper_backend/job_attribution.py",
+          "start_column": 61,
+          "start_line": 132
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-960DC1421C6438509C9B",
+      "path": "packages/runtime_release/paper_backend/paper_main.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "40226ed190cf574e322a6c2ff31b57b61b3e99d1",
+      "source_blob_sha256": "de7be19da0887530b87b420b7e46dacc4246428a5997d651b79d0fc773da7d13",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 133,
+          "path": "packages/runtime_release/paper_backend/paper_main.py",
+          "start_column": 60,
+          "start_line": 133
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 141,
+          "path": "packages/runtime_release/paper_backend/paper_main.py",
+          "start_column": 60,
+          "start_line": 141
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-A916E9243447C34C2B25",
+      "path": "packages/runtime_release/paper_backend/provider_free_fixture.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "436104145789f7442ea44edb01e28773b778f945",
+      "source_blob_sha256": "13ff241058863f7bd20c7f79419ed81e6dda010526e4dcc54c82e8de764b6c50",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 27,
+          "end_line": 43,
+          "path": "packages/runtime_release/paper_backend/provider_free_fixture.py",
+          "start_column": 26,
+          "start_line": 43
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 34,
+          "end_line": 117,
+          "path": "packages/runtime_release/paper_backend/provider_free_fixture.py",
+          "start_column": 33,
+          "start_line": 117
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-6CEA5850FAB28E681633",
+      "path": "packages/runtime_release/staging_v2.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "0f62ee73647fc09688456ca1662dc507be9c6163",
+      "source_blob_sha256": "7c34898620106afdd8be07147a9d6f1562d7fa1096a11522de21e1ba89ac1385",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 40,
+          "end_line": 5,
+          "path": "packages/runtime_release/staging_v2.py",
+          "start_column": 39,
+          "start_line": 5
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rust",
+      "id": "PIN-E1763158F68D9DBF33F7",
+      "path": "scripts/build_nautilus_engine.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "193c20272ef8eff4ccc9660069b9f523c4105f54",
+      "source_blob_sha256": "1ef609bb0554be1639789171f8c9245720c9cfe04194f8e5ce600b84e470ea65",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 59,
+          "end_line": 367,
+          "path": "scripts/build_nautilus_engine.py",
+          "start_column": 53,
+          "start_line": 367
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 96,
+          "end_line": 367,
+          "path": "scripts/build_nautilus_engine.py",
+          "start_column": 90,
+          "start_line": 367
+        }
+      ],
+      "syntax": "text",
+      "value": "1.95.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-48D75345DC51805E05AA",
+      "path": "scripts/check_test_governance.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "24b763eb2196a28214aaabbc1eaf36e5a7b305aa",
+      "source_blob_sha256": "c6ae8e5764345397f139a65ccdc51bfc7c6082cb2f00014380d4700a21543b86",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 28,
+          "end_line": 1099,
+          "path": "scripts/check_test_governance.py",
+          "start_column": 27,
+          "start_line": 1099
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-3280BB8E73A841F2C130",
+      "path": "scripts/diagnose_nautilus_v12_runtime_failure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "91b8dddb670db51327314b48c11345bda42ededd",
+      "source_blob_sha256": "30a50fc6a839a53d158420cb52cb614f58f6ad305ce60d36a3b9357be4987c4e",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 53,
+          "end_line": 597,
+          "path": "scripts/diagnose_nautilus_v12_runtime_failure.py",
+          "start_column": 52,
+          "start_line": 597
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-EB6CC23CB1A817977A09",
+      "path": "scripts/diagnose_nautilus_v12_runtime_failure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "91b8dddb670db51327314b48c11345bda42ededd",
+      "source_blob_sha256": "30a50fc6a839a53d158420cb52cb614f58f6ad305ce60d36a3b9357be4987c4e",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 51,
+          "end_line": 590,
+          "path": "scripts/diagnose_nautilus_v12_runtime_failure.py",
+          "start_column": 31,
+          "start_line": 590
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 55,
+          "end_line": 603,
+          "path": "scripts/diagnose_nautilus_v12_runtime_failure.py",
+          "start_column": 35,
+          "start_line": 603
+        }
+      ],
+      "syntax": "text",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-F8F5CCB65C60F4E59A0B",
+      "path": "scripts/diagnose_nautilus_v12_runtime_failure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "91b8dddb670db51327314b48c11345bda42ededd",
+      "source_blob_sha256": "30a50fc6a839a53d158420cb52cb614f58f6ad305ce60d36a3b9357be4987c4e",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 41,
+          "end_line": 579,
+          "path": "scripts/diagnose_nautilus_v12_runtime_failure.py",
+          "start_column": 31,
+          "start_line": 579
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-F8BED6ED4C8D6A382952",
+      "path": "scripts/finalize_package6_controller_evidence.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "2164ea21c2ee5eaf3c2f80d83a73e737ae6912d0",
+      "source_blob_sha256": "84d0a3544aa0fbd28fe5df3861f0c8112d97ec4e9e59a985432c98f12c1a61d6",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 49,
+          "end_line": 2,
+          "path": "scripts/finalize_package6_controller_evidence.py",
+          "start_column": 48,
+          "start_line": 2
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-E69B4C7C3484C5AB951B",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 48,
+          "end_line": 451,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 41,
+          "start_line": 451
+        }
+      ],
+      "syntax": "python",
+      "value": "1.227.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-9ECEB88248CD20C9D797",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 144,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 6,
+          "start_line": 144
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 34,
+          "end_line": 151,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 14,
+          "start_line": 151
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 74,
+          "end_line": 1318,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 54,
+          "start_line": 1318
+        }
+      ],
+      "syntax": "python",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-FB3FF512758FB56F9811",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 25,
+          "end_line": 157,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 6,
+          "start_line": 157
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 33,
+          "end_line": 164,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 14,
+          "start_line": 164
+        }
+      ],
+      "syntax": "python",
+      "value": "paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rust",
+      "id": "PIN-DBC0C25C14AAE3D989F9",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 41,
+          "end_line": 141,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 35,
+          "start_line": 141
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 41,
+          "end_line": 142,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 35,
+          "start_line": 142
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 27,
+          "end_line": 738,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 21,
+          "start_line": 738
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 46,
+          "end_line": 741,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 40,
+          "start_line": 741
+        }
+      ],
+      "syntax": "python",
+      "value": "1.95.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-3246234792F26C6B214F",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 155,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 30,
+          "start_line": 155
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-execution-simulation-v2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-B594C449979CAA376504",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 168,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 30,
+          "start_line": 168
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-paper-compatibility-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-4BA9120CED36074BCAA0",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 75,
+          "end_line": 585,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 48,
+          "start_line": 585
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-backtest-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-797ECE721A2B48DEBEE6",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 71,
+          "end_line": 154,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 33,
+          "start_line": 154
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-backtest-simulation-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-261EC50D6600D0CD8514",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 71,
+          "end_line": 167,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 33,
+          "start_line": 167
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-paper-compatibility-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rust",
+      "id": "PIN-C98E6140016B98788A15",
+      "path": "scripts/materialize_sealed_uv_exec.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "44e5c1722277742472c29d24ae1c5f891c92ef87",
+      "source_blob_sha256": "1f9f55a56b1efebb42ea9f450afd1b11bc55860589553753704e9ce740449d19",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 57,
+          "end_line": 577,
+          "path": "scripts/materialize_sealed_uv_exec.py",
+          "start_column": 51,
+          "start_line": 577
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 76,
+          "end_line": 578,
+          "path": "scripts/materialize_sealed_uv_exec.py",
+          "start_column": 70,
+          "start_line": 578
+        }
+      ],
+      "syntax": "text",
+      "value": "1.95.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-65BBDE128EC44FFFE714",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 101,
+          "end_line": 200,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 100,
+          "start_line": 200
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "cython",
+      "id": "PIN-7B3E04F69B9F78DEA7D1",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 43,
+          "end_line": 200,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 38,
+          "start_line": 200
+        }
+      ],
+      "syntax": "text",
+      "value": "3.2.4"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-6777E7743EABD3981077",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 32,
+          "end_line": 197,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 25,
+          "start_line": 197
+        }
+      ],
+      "syntax": "text",
+      "value": "1.227.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-FE9689FB598169B094AA",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "CANDIDATE_CONTEXT",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 32,
+          "end_line": 209,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 25,
+          "start_line": 209
+        }
+      ],
+      "syntax": "text",
+      "value": "1.231.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-DCD5F2B71049EA1B3611",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 44,
+          "end_line": 197,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 36,
+          "start_line": 197
+        }
+      ],
+      "syntax": "text",
+      "value": "v1.227.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-B2E2343DBE331A783B12",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "CANDIDATE_CONTEXT",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 44,
+          "end_line": 209,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 36,
+          "start_line": 209
+        }
+      ],
+      "syntax": "text",
+      "value": "v1.231.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "generation",
+      "id": "PIN-1C0451E5AA898238AFD6",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 73,
+          "end_line": 202,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 21,
+          "start_line": 202
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "generation",
+      "id": "PIN-43D1FE31B7E87168DEE0",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 111,
+          "end_line": 202,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 77,
+          "start_line": 202
+        }
+      ],
+      "syntax": "text",
+      "value": "runtime-closure-v12-r12-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "generation",
+      "id": "PIN-BB8B960FC509C0B7ABEA",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 154,
+          "end_line": 202,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 115,
+          "start_line": 202
+        }
+      ],
+      "syntax": "text",
+      "value": "runtime-closure-v13-paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-1E86EAAD6B4547FC7467",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 52,
+          "end_line": 203,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 32,
+          "start_line": 203
+        }
+      ],
+      "syntax": "text",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-6D01684590064F15F5F7",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 75,
+          "end_line": 203,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 56,
+          "start_line": 203
+        }
+      ],
+      "syntax": "text",
+      "value": "paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-B25619838EDE9DC002C9",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 28,
+          "end_line": 203,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 18,
+          "start_line": 203
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-ABEDD1A5CB8B2E4A47CF",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 158,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 94,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "083652294183947a352d1443ed0245311bf7ee5a716b66ccc21e814be25851ed"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-A572C2AC8417652A0009",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 430,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 366,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "0a7693f27a384925698dde2818abd70b894524bae341a62de0ef8f17500d108b"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-DA05813756147DFE277F",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 294,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 230,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-9160B2E97AA21EBFEA77",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 702,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 638,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "14d4fd990dccfdbb8b6dfe964a04ae9e80fefb30914cf433de1bc503b8ad03fa"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-3219B78FF7DAB09E27A0",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 906,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 842,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "151b1570623253295ae36ea4b0933ad1f051fa56277ac9d1f54edcedc2c60c9a"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-EB7598C32AB715687674",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 634,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 570,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "18c9ba4af073ae953e0115f577423348b6d454c158da59cbcbd3c9e34a22856f"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-D4A0FA16C6FA9575E6BD",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 1178,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 1114,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "2b17f496472473b746e9ac2cf96971b8999e7c94f796580b17c32310372f61a3"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-E9CF70634621AB209338",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 566,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 502,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "69cb87568361ccd6324550fb3823956c64e073b4cf09e674d7eb0883f844c044"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-30CFAD31C60C0FD2A5A6",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 838,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 774,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-A335D119377FCB5385B6",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 1042,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 978,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "78af5dc64867adbe81b8b825230aabbac2d25b289971ad301dc3998f09f5abe3"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-760CD1121A815A69D6F2",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 498,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 434,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "7d3cc69b340536ee6c0e74f4c6954c8a6ed19121df1836a1fab0aad4e43c4f79"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-BCA794011F17CB2EBF13",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 90,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 26,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "a00d3ab0c5b2ba1e4a4ac4c9af70f5b3fe30717d9b42a328e51696e3894a45e2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-70885F48FE6E5709DE34",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 1110,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 1046,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "ab04b77042fb351a541764054e2bac7259097c749f6ff930c3fc68ef631d592c"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-ABF436CE5566F469311C",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 770,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 706,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "b143564cf3ad63b4ca01afb9a27e7496c9b1c6ff1f3c46cf10b6c4a047545d20"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-8EA404CC45CC3768F50A",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 974,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 910,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "c78158a9539332fec665b019236c7d61e530cd2a343c5f6a9f60cde55d297d18"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-0D5A08BE1381C1942BBF",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 226,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 162,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "f707cbe27b183ba598c31f1b3b6ec67e36f36e878c4228d3fef80741efb81b28"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-806CB727C88B58650509",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 362,
+          "end_line": 201,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 298,
+          "start_line": 201
+        }
+      ],
+      "syntax": "text",
+      "value": "ff2e7753974c7b163bd890f9913dbfbb630f80195708ab67d537d72939e0c56b"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rust",
+      "id": "PIN-7C09AB3AA1D1CCB67FA8",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 21,
+          "end_line": 200,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 15,
+          "start_line": 200
+        }
+      ],
+      "syntax": "text",
+      "value": "1.95.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "sdist_sha256",
+      "id": "PIN-5B62EC1639A4CACBEBC2",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "CANDIDATE_CONTEXT",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 87,
+          "end_line": 211,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 23,
+          "start_line": 211
+        }
+      ],
+      "syntax": "text",
+      "value": "142dde40e77339745aa5fe6bcbb3de5624cee087f526879da00f127df077530f"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "selected_source",
+      "id": "PIN-74DC2ADE4F612754E04F",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 66,
+          "end_line": 206,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 26,
+          "start_line": 206
+        }
+      ],
+      "syntax": "text",
+      "value": "1683f1324826b78a715f017a7749fe3d1f7b37f4"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "selected_source",
+      "id": "PIN-D146A3EE9133737700B6",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 134,
+          "end_line": 206,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 70,
+          "start_line": 206
+        }
+      ],
+      "syntax": "text",
+      "value": "a25053355abcfece9b7d5c524f4a3d3c06ce727aec8224012ef9b683240fd880"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-500CD29BACC3C4EC50BD",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 59,
+          "end_line": 204,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 27,
+          "start_line": 204
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-execution-simulation-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-FE3C0415305B2D04BE79",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 95,
+          "end_line": 204,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 63,
+          "start_line": 204
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-execution-simulation-v2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-D34D13666A40E8074478",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 130,
+          "end_line": 204,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 99,
+          "start_line": 204
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-paper-compatibility-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "setuptools",
+      "id": "PIN-91AAD4EC420643EC56E0",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 66,
+          "end_line": 200,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 64,
+          "start_line": 200
+        }
+      ],
+      "syntax": "text",
+      "value": "82"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "setuptools",
+      "id": "PIN-51ED56A93CA8B4A2B7E3",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 76,
+          "end_line": 200,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 70,
+          "start_line": 200
+        }
+      ],
+      "syntax": "text",
+      "value": "82.0.1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "tag_object",
+      "id": "PIN-85C4AD3F4D064BE4F5AA",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 199,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 21,
+          "start_line": 199
+        }
+      ],
+      "syntax": "text",
+      "value": "0ccb5b55879c072a6e07fc7cbe5297c53c378107"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "tag_object",
+      "id": "PIN-CBEF272502B0E5FB6D8C",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "CANDIDATE_CONTEXT",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 61,
+          "end_line": 210,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 21,
+          "start_line": 210
+        }
+      ],
+      "syntax": "text",
+      "value": "d3e1685e979925d7b0ffacd1b3f442547686e18f"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "upstream_commit",
+      "id": "PIN-7D1CD22BD68E9DFEE446",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "CANDIDATE_CONTEXT",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 109,
+          "end_line": 209,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 69,
+          "start_line": 209
+        }
+      ],
+      "syntax": "text",
+      "value": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "upstream_commit",
+      "id": "PIN-FF46916D969407BE2268",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 66,
+          "end_line": 198,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 26,
+          "start_line": 198
+        }
+      ],
+      "syntax": "text",
+      "value": "280ae1762df51a492a4ce71506a40b5c8706def5"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-3DFB3ABAA49D5DA39DAC",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 47,
+          "end_line": 205,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 20,
+          "start_line": 205
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-backtest-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-FE80653BAAF7BEDE71AE",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 89,
+          "end_line": 205,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 51,
+          "start_line": 205
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-backtest-simulation-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-D645311416DB3E870519",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 131,
+          "end_line": 205,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 93,
+          "start_line": 205
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-paper-compatibility-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "wheel_sha256",
+      "id": "PIN-6DED6F99C76F2491F568",
+      "path": "scripts/nautilus_pin_inventory/registry.py",
+      "role": "CANDIDATE_CONTEXT",
+      "source_blob_oid": "08bd31376873683bcbbe6da3937e2578bb8484bd",
+      "source_blob_sha256": "df88804b1f55b9a1700f3932d84575a37bd7116a80d5d1cb3907e0e4ad690779",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 87,
+          "end_line": 212,
+          "path": "scripts/nautilus_pin_inventory/registry.py",
+          "start_column": 23,
+          "start_line": 212
+        }
+      ],
+      "syntax": "text",
+      "value": "8c438e95c275a13df0c0ddb7012c462708b5e99ff3612e36a1b7bd49ab39c216"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-9305A2C5567E9341FD92",
+      "path": "scripts/t_g03_capability_topology.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "c41f8868ade28094e103d88a27f5a9355eaee85c",
+      "source_blob_sha256": "90a505273ef343c4078d62e5b2509938efac56e6268ae7385b3be281492123ee",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 63,
+          "end_line": 7851,
+          "path": "scripts/t_g03_capability_topology.py",
+          "start_column": 62,
+          "start_line": 7851
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 116,
+          "end_line": 7873,
+          "path": "scripts/t_g03_capability_topology.py",
+          "start_column": 115,
+          "start_line": 7873
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 67,
+          "end_line": 7907,
+          "path": "scripts/t_g03_capability_topology.py",
+          "start_column": 66,
+          "start_line": 7907
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 68,
+          "end_line": 7909,
+          "path": "scripts/t_g03_capability_topology.py",
+          "start_column": 67,
+          "start_line": 7909
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "generation",
+      "id": "PIN-80E76142FBEF21DD35FA",
+      "path": "scripts/t_g03_capability_topology.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "c41f8868ade28094e103d88a27f5a9355eaee85c",
+      "source_blob_sha256": "90a505273ef343c4078d62e5b2509938efac56e6268ae7385b3be281492123ee",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 58,
+          "end_line": 796,
+          "path": "scripts/t_g03_capability_topology.py",
+          "start_column": 6,
+          "start_line": 796
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "rollback_sha256",
+      "id": "PIN-56084336724F6F512C7F",
+      "path": "scripts/t_g03_capability_topology.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "c41f8868ade28094e103d88a27f5a9355eaee85c",
+      "source_blob_sha256": "90a505273ef343c4078d62e5b2509938efac56e6268ae7385b3be281492123ee",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 85,
+          "end_line": 4123,
+          "path": "scripts/t_g03_capability_topology.py",
+          "start_column": 21,
+          "start_line": 4123
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 77,
+          "end_line": 7086,
+          "path": "scripts/t_g03_capability_topology.py",
+          "start_column": 13,
+          "start_line": 7086
+        }
+      ],
+      "syntax": "text",
+      "value": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-045E6E4F215A5CFC54A9",
+      "path": "scripts/validate_package6_runtime_approval.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "c12f5f91fcfe7d990e89d06c1c2b0b3d77e78812",
+      "source_blob_sha256": "25fa65ce42434d46ddb6e6c0fdd69bf0f480dd6dd8e7939dca970e33036734fd",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 59,
+          "end_line": 2,
+          "path": "scripts/validate_package6_runtime_approval.py",
+          "start_column": 58,
+          "start_line": 2
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 41,
+          "end_line": 729,
+          "path": "scripts/validate_package6_runtime_approval.py",
+          "start_column": 40,
+          "start_line": 729
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 899,
+          "path": "scripts/validate_package6_runtime_approval.py",
+          "start_column": 61,
+          "start_line": 899
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-BBA694E32DB9CE6C973D",
+      "path": "scripts/verify_nautilus_paper_compatibility.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "4fbfbb49ba311079ceb1778539124784332fc090",
+      "source_blob_sha256": "55a8de9cb97068fdf392dbe5fc3ce7c297c196dca3cde2b918b24347ca1c84da",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 38,
+          "end_line": 2,
+          "path": "scripts/verify_nautilus_paper_compatibility.py",
+          "start_column": 19,
+          "start_line": 2
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 58,
+          "end_line": 623,
+          "path": "scripts/verify_nautilus_paper_compatibility.py",
+          "start_column": 39,
+          "start_line": 623
+        }
+      ],
+      "syntax": "text",
+      "value": "paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-5ABF2DE27D1C758B5CDC",
+      "path": "scripts/verify_nautilus_v12_r3_parity.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "a3020d1e8c49e7ba44f4ebb16420c81a525902b5",
+      "source_blob_sha256": "5bd3b229e4526bede6391a50cf105a3630cf799a1810d235a447063af00e8c48",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 75,
+          "end_line": 2286,
+          "path": "scripts/verify_nautilus_v12_r3_parity.py",
+          "start_column": 74,
+          "start_line": 2286
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 58,
+          "end_line": 2289,
+          "path": "scripts/verify_nautilus_v12_r3_parity.py",
+          "start_column": 57,
+          "start_line": 2289
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-DB793F649C305991E41D",
+      "path": "scripts/verify_nautilus_v12_r3_parity.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "a3020d1e8c49e7ba44f4ebb16420c81a525902b5",
+      "source_blob_sha256": "5bd3b229e4526bede6391a50cf105a3630cf799a1810d235a447063af00e8c48",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 47,
+          "end_line": 2278,
+          "path": "scripts/verify_nautilus_v12_r3_parity.py",
+          "start_column": 27,
+          "start_line": 2278
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 51,
+          "end_line": 2294,
+          "path": "scripts/verify_nautilus_v12_r3_parity.py",
+          "start_column": 31,
+          "start_line": 2294
+        }
+      ],
+      "syntax": "text",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-E72BC7407E09E16EEB52",
+      "path": "scripts/verify_nautilus_v12_r3_parity.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "a3020d1e8c49e7ba44f4ebb16420c81a525902b5",
+      "source_blob_sha256": "5bd3b229e4526bede6391a50cf105a3630cf799a1810d235a447063af00e8c48",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 37,
+          "end_line": 2265,
+          "path": "scripts/verify_nautilus_v12_r3_parity.py",
+          "start_column": 27,
+          "start_line": 2265
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-FB8B5F82BEC617920CDA",
+      "path": "services/job_store/engine_event_repository.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "290fee12c2cdf540b39c3a7e276b904f71de334a",
+      "source_blob_sha256": "29cf3c1c8404c4a85abac279de4c79e52ebdc0bc8880dd2ba526f4cfe8c21adf",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 60,
+          "end_line": 45,
+          "path": "services/job_store/engine_event_repository.py",
+          "start_column": 33,
+          "start_line": 45
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-backtest-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-F7934E88B79D9B8745AF",
+      "path": "services/job_worker/engine_results.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "fac9b4e0e7e91ef568130145b8dc25c583d678e4",
+      "source_blob_sha256": "5b572ab1942e3bcaa4d140270c1e4c9d0df1e3f3d464a5b36c528d9b6142144e",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 79,
+          "end_line": 169,
+          "path": "services/job_worker/engine_results.py",
+          "start_column": 69,
+          "start_line": 169
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-4781A2DB05EA229FC802",
+      "path": "services/job_worker/engine_results.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "fac9b4e0e7e91ef568130145b8dc25c583d678e4",
+      "source_blob_sha256": "5b572ab1942e3bcaa4d140270c1e4c9d0df1e3f3d464a5b36c528d9b6142144e",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 60,
+          "end_line": 45,
+          "path": "services/job_worker/engine_results.py",
+          "start_column": 33,
+          "start_line": 45
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-backtest-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-8B5C938DEE28E9CF5A4B",
+      "path": "services/job_worker/engine_results.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "fac9b4e0e7e91ef568130145b8dc25c583d678e4",
+      "source_blob_sha256": "5b572ab1942e3bcaa4d140270c1e4c9d0df1e3f3d464a5b36c528d9b6142144e",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 73,
+          "end_line": 46,
+          "path": "services/job_worker/engine_results.py",
+          "start_column": 35,
+          "start_line": 46
+        }
+      ],
+      "syntax": "text",
+      "value": "nautilus-backtest-simulation-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-6F1B6201708FB7CFC12E",
+      "path": "services/job_worker/engine_spawn.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "3c4b58e25d966f2547dd98d0f0fe8e7148fd75a2",
+      "source_blob_sha256": "84ce00d88a0587d9788b9b87a8845beb8ad86cc740bd21871f7bed766920bb37",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 50,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 6,
+          "start_line": 50
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 30,
+          "end_line": 56,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 10,
+          "start_line": 56
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 68,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 6,
+          "start_line": 68
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 52,
+          "end_line": 670,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 32,
+          "start_line": 670
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 39,
+          "end_line": 1085,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 19,
+          "start_line": 1085
+        }
+      ],
+      "syntax": "text",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-DC126A3395FCCAD3404F",
+      "path": "services/job_worker/engine_spawn.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "3c4b58e25d966f2547dd98d0f0fe8e7148fd75a2",
+      "source_blob_sha256": "84ce00d88a0587d9788b9b87a8845beb8ad86cc740bd21871f7bed766920bb37",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 25,
+          "end_line": 58,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 6,
+          "start_line": 58
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 29,
+          "end_line": 64,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 10,
+          "start_line": 64
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 25,
+          "end_line": 69,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 6,
+          "start_line": 69
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 75,
+          "end_line": 670,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 56,
+          "start_line": 670
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 38,
+          "end_line": 1087,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 19,
+          "start_line": 1087
+        }
+      ],
+      "syntax": "text",
+      "value": "paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-DE2E942CAB9D963C0C10",
+      "path": "services/job_worker/engine_spawn.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "3c4b58e25d966f2547dd98d0f0fe8e7148fd75a2",
+      "source_blob_sha256": "84ce00d88a0587d9788b9b87a8845beb8ad86cc740bd21871f7bed766920bb37",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 28,
+          "end_line": 670,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 18,
+          "start_line": 670
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 47,
+          "end_line": 680,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 37,
+          "start_line": 680
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 24,
+          "end_line": 1083,
+          "path": "services/job_worker/engine_spawn.py",
+          "start_column": 14,
+          "start_line": 1083
+        }
+      ],
+      "syntax": "text",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-FDA103E71A12ECE65DD9",
+      "path": "services/job_worker/environment.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "25a2209a8e88ed59303a14ef4d4eac7a5a40d866",
+      "source_blob_sha256": "78784102b60e6116261696a345dcf66463458af999a9e46f2b2fbf6f29ffbb70",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 27,
+          "end_line": 220,
+          "path": "services/job_worker/environment.py",
+          "start_column": 26,
+          "start_line": 220
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 272,
+          "path": "services/job_worker/environment.py",
+          "start_column": 30,
+          "start_line": 272
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 281,
+          "path": "services/job_worker/environment.py",
+          "start_column": 30,
+          "start_line": 281
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 31,
+          "end_line": 293,
+          "path": "services/job_worker/environment.py",
+          "start_column": 30,
+          "start_line": 293
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 23,
+          "end_line": 347,
+          "path": "services/job_worker/environment.py",
+          "start_column": 22,
+          "start_line": 347
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "engine_version",
+      "id": "PIN-9C656B8A87E20C7E9F1D",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 36,
+          "end_line": 46,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 29,
+          "start_line": 46
+        }
+      ],
+      "syntax": "python",
+      "value": "1.227.0"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-2C28736C56E83015E597",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 52,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 6,
+          "start_line": 52
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 34,
+          "end_line": 58,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 14,
+          "start_line": 58
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 114,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 6,
+          "start_line": 114
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 30,
+          "end_line": 120,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 10,
+          "start_line": 120
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 26,
+          "end_line": 134,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 6,
+          "start_line": 134
+        }
+      ],
+      "syntax": "python",
+      "value": "execution-simulation"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-3BCE02C3735A4FB1DB63",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 25,
+          "end_line": 62,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 6,
+          "start_line": 62
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 33,
+          "end_line": 68,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 14,
+          "start_line": 68
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 25,
+          "end_line": 122,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 6,
+          "start_line": 122
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 29,
+          "end_line": 128,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 10,
+          "start_line": 128
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 25,
+          "end_line": 135,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 6,
+          "start_line": 135
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 39,
+          "end_line": 563,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 20,
+          "start_line": 563
+        }
+      ],
+      "syntax": "python",
+      "value": "paper-compatibility"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "profile",
+      "id": "PIN-2D161975B440581AAD3D",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 16,
+          "end_line": 48,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 6,
+          "start_line": 48
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 30,
+          "end_line": 542,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 20,
+          "start_line": 542
+        }
+      ],
+      "syntax": "python",
+      "value": "zero-order"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-BCF6A73D0D0887895732",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 134,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 30,
+          "start_line": 134
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-execution-simulation-v2"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "semantic_profile",
+      "id": "PIN-51F09A2314F595DB80C9",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 60,
+          "end_line": 135,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 29,
+          "start_line": 135
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-paper-compatibility-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-3F685F42ECFD47C60402",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 60,
+          "end_line": 50,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 33,
+          "start_line": 50
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-backtest-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-E3A409EE5998067DEB71",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 71,
+          "end_line": 60,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 33,
+          "start_line": 60
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-backtest-simulation-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "validator",
+      "id": "PIN-708DA64B14EF127D7085",
+      "path": "services/job_worker/nautilus_closure.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 71,
+          "end_line": 70,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 33,
+          "start_line": 70
+        }
+      ],
+      "syntax": "python",
+      "value": "nautilus-paper-compatibility-result-v1"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-9F35B2FE0C505754B48B",
+      "path": "services/paper_runtime/__init__.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "fbcd3b1640fa73f974e17b7cb6b0cd5d0f5924ed",
+      "source_blob_sha256": "d4d2cfa896bb58396558fb4f23d32ed9f6bb81bdc2ebdfa4491d34ff7489f1ac",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 33,
+          "end_line": 1,
+          "path": "services/paper_runtime/__init__.py",
+          "start_column": 32,
+          "start_line": 1
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-D618FB7A274EE653FCFE",
+      "path": "services/paper_runtime/controller.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "699657583d738a9f437ebcf71c5fc1ccc002e50a",
+      "source_blob_sha256": "75496fc6eb4c0059166f0ef86af98acf1b1f10bcbfff2ff5e2bd59da89dd2050",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 24,
+          "end_line": 1,
+          "path": "services/paper_runtime/controller.py",
+          "start_column": 23,
+          "start_line": 1
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 45,
+          "end_line": 320,
+          "path": "services/paper_runtime/controller.py",
+          "start_column": 44,
+          "start_line": 320
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 32,
+          "end_line": 530,
+          "path": "services/paper_runtime/controller.py",
+          "start_column": 31,
+          "start_line": 530
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 49,
+          "end_line": 541,
+          "path": "services/paper_runtime/controller.py",
+          "start_column": 48,
+          "start_line": 541
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-3B57F462100124B3245F",
+      "path": "services/paper_runtime/custodian_client.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "55a14ea20501e27916e13b0f9b9d13e071b9caba",
+      "source_blob_sha256": "a49c21a1996b4d1175cac5847010f478ee07a9e17761e2606ff292432943f59a",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 29,
+          "end_line": 1,
+          "path": "services/paper_runtime/custodian_client.py",
+          "start_column": 28,
+          "start_line": 1
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-61B9772C0704144E2A99",
+      "path": "services/paper_runtime/evidence.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "6aa7ad22e86edb4b38bacbb86e0bafcdc02ef282",
+      "source_blob_sha256": "130c3377b91785735cb5a6e3042b38ef8f1effdd2a89040e0fc1765cd2674c6c",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 29,
+          "end_line": 1,
+          "path": "services/paper_runtime/evidence.py",
+          "start_column": 28,
+          "start_line": 1
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 45,
+          "end_line": 935,
+          "path": "services/paper_runtime/evidence.py",
+          "start_column": 44,
+          "start_line": 935
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 45,
+          "end_line": 984,
+          "path": "services/paper_runtime/evidence.py",
+          "start_column": 44,
+          "start_line": 984
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 57,
+          "end_line": 3827,
+          "path": "services/paper_runtime/evidence.py",
+          "start_column": 56,
+          "start_line": 3827
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-40C6808793E5E2BDD94C",
+      "path": "services/paper_runtime/integration.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "e11eb0087ecac900e4ac8582027b5ad1103c33c4",
+      "source_blob_sha256": "0380c16cd79afd47d405bf328c2fe956cd645443cc5eca3dc97c3abb5db283eb",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 22,
+          "end_line": 1,
+          "path": "services/paper_runtime/integration.py",
+          "start_column": 21,
+          "start_line": 1
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 45,
+          "end_line": 342,
+          "path": "services/paper_runtime/integration.py",
+          "start_column": 44,
+          "start_line": 342
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "closure_schema",
+      "id": "PIN-99418AB7B809BC463776",
+      "path": "services/semantic_input_refresher/main.py",
+      "role": "ROLLBACK",
+      "source_blob_oid": "50834cc4e005a1a558a5812fc150ac79247b8847",
+      "source_blob_sha256": "049c3ec24b884ca300dc3b6e0d3f7219912d44ee1b96da42e7b1e76aae1e94d8",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 74,
+          "end_line": 39,
+          "path": "services/semantic_input_refresher/main.py",
+          "start_column": 73,
+          "start_line": 39
+        }
+      ],
+      "syntax": "text",
+      "value": "6"
+    },
+    {
+      "carrier": "CONTENT",
+      "family": "setuptools",
+      "id": "PIN-5CEDF5ED230EFA66B71C",
+      "path": "uv.lock",
+      "role": "ROLLBACK",
+      "source_blob_oid": "e9bb10dfb8066f0e92ab1caf5afae5d073e11bc6",
+      "source_blob_sha256": "a8534b462e397a5f121ddb2b5938e10d6649047a4195f8a6defa02257aecd07a",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 59,
+          "end_line": 280,
+          "path": "uv.lock",
+          "start_column": 57,
+          "start_line": 280
+        },
+        {
+          "carrier": "CONTENT",
+          "end_column": 63,
+          "end_line": 300,
+          "path": "uv.lock",
+          "start_column": 61,
+          "start_line": 300
+        }
+      ],
+      "syntax": "text",
+      "value": "82"
+    }
+  ],
+  "governed_relations": [
+    {
+      "binding_fingerprint": "6c1fb7cd52f31f44ed72984d0373bdaa47fe0bc9adbd6bb1e17f5495555e12d6",
+      "id": "REL-4062C53AFC3BA92FCCA5",
+      "left_document_kind": "nautilus_runtime_closure_policy",
+      "left_family": "selected_source",
+      "left_field": "source_commit",
+      "left_root": "policy",
+      "operator": "!=",
+      "path": "scripts/materialize_nautilus_runtime_closure.py",
+      "relation_kind": "cross_family_consistency_guard",
+      "right_document_kind": "nautilus_runtime_closure_policy",
+      "right_family": "upstream_commit",
+      "right_field": "engine_upstream_commit",
+      "right_root": "policy",
+      "source_blob_oid": "62dc37dcf76c520c8ae24cf47526ff93842267a3",
+      "source_blob_sha256": "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 71,
+          "end_line": 458,
+          "path": "scripts/materialize_nautilus_runtime_closure.py",
+          "start_column": 12,
+          "start_line": 458
+        }
+      ],
+      "syntax_fingerprint": "472c7a964c88336eaa8a7656b9d2e9defa32e1dbb4bcfe71f8ce2550e2f2d28a"
+    },
+    {
+      "binding_fingerprint": "12627b990c6c94f304bd11e224a4c61d189624cb9697cd83d1fc544b2005228e",
+      "id": "REL-E64CFCD7797A2A1ED422",
+      "left_document_kind": "nautilus_closure_manifest",
+      "left_family": "selected_source",
+      "left_field": "source_commit",
+      "left_root": "closure_manifest",
+      "operator": "!=",
+      "path": "services/job_worker/nautilus_closure.py",
+      "relation_kind": "cross_family_consistency_guard",
+      "right_document_kind": "nautilus_closure_manifest",
+      "right_family": "upstream_commit",
+      "right_field": "engine_upstream_commit",
+      "right_root": "closure_manifest",
+      "source_blob_oid": "ec78f9e4324453dda6f21190e63aafc93e1ecc2b",
+      "source_blob_sha256": "d7a67c023a96344ce53b1d4ed001822eaccf70fba4ba554b2885570f6758df89",
+      "spans": [
+        {
+          "carrier": "CONTENT",
+          "end_column": 62,
+          "end_line": 589,
+          "path": "services/job_worker/nautilus_closure.py",
+          "start_column": 20,
+          "start_line": 588
+        }
+      ],
+      "syntax_fingerprint": "c33c5608d68332d548433a5033f5ebf758f25a712c48eef9e47b3b0452b1984f"
+    }
+  ],
+  "object_format": "sha1",
+  "schema": "nautilus-pin-inventory/v4",
+  "source_tree_oid": "2e83bc2e811adf5d51a2a67a448d3efbadae3982",
+  "threat_model": "U00R_TRUSTED_HOST_COOPERATIVE_GIT_V1"
+}
