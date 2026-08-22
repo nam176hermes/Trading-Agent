@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+import builtins
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
 from scripts.nautilus_pin_inventory.engine import PinInventoryEngine, PinInventoryError
 from scripts.nautilus_pin_inventory.git_source import GitBlobSnapshot, GitTreeSnapshot
+from scripts.nautilus_pin_inventory.json_extractor import GOVERNED_JSON_PATHS
 from scripts.nautilus_pin_inventory.model import (
     DynamicGovernedCheck,
     GovernedRelation,
     Observation,
     SourceSpan,
 )
-from scripts.nautilus_pin_inventory.registry import DEFAULT_REGISTRY
+from scripts.nautilus_pin_inventory.registry import DEFAULT_REGISTRY, Registry
 
 
 def _blob(path: str, data: bytes) -> GitBlobSnapshot:
@@ -28,6 +32,26 @@ def _blob(path: str, data: bytes) -> GitBlobSnapshot:
 def _sha256_blob(path: str, data: bytes) -> GitBlobSnapshot:
     oid = hashlib.sha256(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
     return GitBlobSnapshot(path, 0o100644, oid, hashlib.sha256(data).hexdigest(), data)
+
+
+def _complete_snapshot(*extra: GitBlobSnapshot) -> GitTreeSnapshot:
+    """A hand-built complete receipt, intentionally independent of the worktree."""
+    evidence = "".join(
+        f"Nautilus {identity.family}: {identity.value}\n"
+        for identity in DEFAULT_REGISTRY.allowed_identities
+    ).encode("utf-8")
+    policies = (
+        _blob("engines/nautilus/README.md", b"engine-build-policy.json llvm-toolchain-policy.json wheel-cache-policy.json runtime-closure-policy.json\n"),
+        _blob("engines/nautilus/engine-build-policy.json", b"{}\n"),
+        _blob("engines/nautilus/runtime-closure-policy.json", b"{}\n"),
+        _blob("engines/nautilus/llvm-toolchain-policy.json", b"{}\n"),
+        _blob("engines/nautilus/wheel-cache-policy.json", b"{}\n"),
+    )
+    return GitTreeSnapshot("a" * 40, "b" * 40, "sha1", policies + (_blob("evidence.txt", evidence),) + extra)
+
+
+def _replace_blob(snapshot: GitTreeSnapshot, path: str, data: bytes) -> GitTreeSnapshot:
+    return replace(snapshot, blobs=tuple(_blob(path, data) if blob.path == path else blob for blob in snapshot.blobs))
 
 
 def test_engine_serializes_a_canonical_v4_document_from_snapshot_only() -> None:
@@ -44,6 +68,8 @@ def test_engine_serializes_a_canonical_v4_document_from_snapshot_only() -> None:
             _blob("notes.txt", text),
             _blob("engines/nautilus/engine-build-policy.json", b"{}"),
             _blob("engines/nautilus/runtime-closure-policy.json", b"{}"),
+            _blob("engines/nautilus/llvm-toolchain-policy.json", b"{}"),
+            _blob("engines/nautilus/wheel-cache-policy.json", b"{}"),
         ),
     )
 
@@ -67,6 +93,8 @@ def _snapshot_for_relations() -> GitTreeSnapshot:
     paths = (
         "engines/nautilus/engine-build-policy.json",
         "engines/nautilus/runtime-closure-policy.json",
+        "engines/nautilus/llvm-toolchain-policy.json",
+        "engines/nautilus/wheel-cache-policy.json",
         "scripts/materialize_nautilus_runtime_closure.py",
         "services/job_worker/nautilus_closure.py",
     )
@@ -169,3 +197,175 @@ def test_engine_accepts_sha256_snapshots_and_rejects_tampered_blob_data() -> Non
     tampered = replace(snapshot, blobs=(replace(snapshot.blobs[0], data=b"tampered\n"),) + snapshot.blobs[1:])
     with pytest.raises(PinInventoryError, match="blob OID is inconsistent"):
         engine.generate(tampered)
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    (
+        ("unknown.py", b"# Nautilus engine_version: 9.999.0\n"),
+        ("engines/nautilus/engine-build-policy.json", b'{"note":"Nautilus engine_version: 9.999.0"}\n'),
+    ),
+)
+def test_engine_rejects_unregistered_identity_outside_specialized_ownership(path: str, data: bytes) -> None:
+    """Break caught: specialized extraction erases an unrelated unknown literal."""
+    snapshot = _replace_blob(_complete_snapshot(), path, data) if path.endswith("policy.json") else replace(
+        _complete_snapshot(), blobs=_complete_snapshot().blobs + (_blob(path, data),)
+    )
+
+    with pytest.raises(PinInventoryError, match="unregistered governed identity"):
+        PinInventoryEngine().generate(snapshot)
+
+
+def test_engine_requires_every_readme_policy_to_have_the_explicit_scan_route() -> None:
+    """Break caught: an existing README policy is accepted without an auditable scan route."""
+    assert GOVERNED_JSON_PATHS == frozenset({
+        "engines/nautilus/engine-build-policy.json",
+        "engines/nautilus/runtime-closure-policy.json",
+        "engines/nautilus/llvm-toolchain-policy.json",
+        "engines/nautilus/wheel-cache-policy.json",
+    })
+    source = _complete_snapshot()
+    snapshot = replace(
+        source,
+        blobs=tuple(
+            _blob(blob.path, b"extra-policy.json\n") if blob.path.endswith("README.md") else blob
+            for blob in source.blobs
+        ) + (_blob("engines/nautilus/extra-policy.json", b"{}\n"),),
+    )
+
+    with pytest.raises(PinInventoryError, match="policy is not scanned"):
+        PinInventoryEngine().generate(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "reason"),
+    (
+        (lambda: GitTreeSnapshot("a" * 40, "b" * 40, "sha1", list(_complete_snapshot().blobs)), "tuple"),
+        (lambda: replace(_complete_snapshot(), blobs=_complete_snapshot().blobs + (_blob("../escape.bin", b"x"),)), "path"),
+        (lambda: replace(_complete_snapshot(), blobs=_complete_snapshot().blobs + (_blob("évil.txt", b"Nautilus engine_version: 9.999.0\n"),)), "path"),
+    ),
+)
+def test_engine_rejects_nonimmutable_or_unscannable_snapshot_paths(snapshot, reason: str) -> None:
+    """Break caught: a snapshot path/container bypasses the extractor's path universe."""
+    with pytest.raises(PinInventoryError, match=reason):
+        PinInventoryEngine().generate(snapshot())
+
+
+def test_engine_rejects_unscanned_policy_and_eligible_decode_failure_but_keeps_binary_path_only() -> None:
+    """Break caught: policy parsing or eligible UTF-8 validation is skipped for a blob."""
+    bad_policy = _replace_blob(_complete_snapshot(), "engines/nautilus/llvm-toolchain-policy.json", b"{duplicate:}\n")
+    with pytest.raises(Exception):
+        PinInventoryEngine().generate(bad_policy)
+
+    bad_text = replace(_complete_snapshot(), blobs=_complete_snapshot().blobs + (_blob("bad.md", b"\xff"),))
+    with pytest.raises(PinInventoryError, match="strict UTF-8"):
+        PinInventoryEngine().generate(bad_text)
+
+    binary = replace(_complete_snapshot(), blobs=_complete_snapshot().blobs + (_blob("engines/nautilus/v1.231.0/image.bin", b"\xff"),))
+    document = PinInventoryEngine().generate(binary)
+    assert any(entry.path.endswith("image.bin") and entry.carrier == "PATH" for entry in document.entries)
+
+
+@pytest.mark.parametrize("bad_bytes", (
+    b"[]\n",
+    b'{"schema":"nautilus-pin-inventory/v4","schema":"nautilus-pin-inventory/v4"}\n',
+    b'\xef\xbb\xbf{}\n',
+    b'\xff',
+    b'{"unknown":null}\n',
+    b'{ "schema": null }\n',
+))
+def test_engine_verify_rejects_schema_and_canonical_byte_violations(bad_bytes: bytes) -> None:
+    """Break caught: parseable but malformed/noncanonical inventory bytes are accepted."""
+    with pytest.raises(PinInventoryError):
+        PinInventoryEngine().verify(_complete_snapshot(), bad_bytes)
+
+
+@pytest.mark.parametrize("removed", DEFAULT_REGISTRY.allowed_identities)
+def test_engine_requires_each_registered_identity_as_a_literal(removed) -> None:
+    """Break caught: one registered identity can disappear without failing generation."""
+    evidence = "".join(
+        f"Nautilus {identity.family}: {identity.value}\n"
+        for identity in DEFAULT_REGISTRY.allowed_identities if identity != removed
+    ).encode("utf-8")
+    source = _complete_snapshot()
+    snapshot = _replace_blob(source, "evidence.txt", evidence)
+
+    with pytest.raises(PinInventoryError, match="required identity is missing"):
+        PinInventoryEngine().generate(snapshot)
+
+
+def test_engine_is_repeatable_under_reordered_registry_input_and_never_reads_the_host(monkeypatch) -> None:
+    """Break caught: input ordering or post-receipt host access changes inventory bytes."""
+    snapshot = _complete_snapshot()
+    reordered = Registry(
+        family_specs=tuple(reversed(DEFAULT_REGISTRY.family_specs)),
+        allowed_identities=tuple(reversed(DEFAULT_REGISTRY.allowed_identities)),
+    )
+    expected = PinInventoryEngine().serialize(PinInventoryEngine().generate(snapshot))
+    assert PinInventoryEngine(reordered).serialize(PinInventoryEngine(reordered).generate(snapshot)) == expected
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("engine accessed the host after receiving a snapshot")
+
+    monkeypatch.setattr(builtins, "open", forbidden)
+    monkeypatch.setattr(Path, "read_bytes", forbidden)
+    monkeypatch.setattr(os, "getenv", forbidden)
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    engine = PinInventoryEngine()
+    document = engine.generate(snapshot)
+    engine.verify(snapshot, engine.serialize(document))
+
+
+def test_engine_generates_from_the_exact_current_commit_source() -> None:
+    """Break caught: the exact reviewed source tree cannot be inventoried end-to-end."""
+    root = Path(__file__).resolve().parents[3]
+    snapshot = GitTreeSnapshot.from_commit(root, "b614454a7d039508b6c92e8e0938250c2c90414d")
+
+    document = PinInventoryEngine().generate(snapshot)
+    PinInventoryEngine().verify(snapshot, PinInventoryEngine().serialize(document))
+
+
+def test_engine_emits_exact_entry_and_guard_field_sets_with_sorted_deduplicated_spans() -> None:
+    """Break caught: a v4 record drops a field or emits duplicate/unstable evidence spans."""
+    document = PinInventoryEngine().generate(_snapshot_for_relations())
+    parsed = json.loads(PinInventoryEngine().serialize(document))
+    assert set(parsed["entries"][0]) == {
+        "id", "path", "source_blob_oid", "source_blob_sha256", "carrier", "family",
+        "value", "role", "syntax", "spans",
+    }
+    assert set(parsed["dynamic_guards"][0]) == {
+        "id", "path", "source_blob_oid", "source_blob_sha256", "left_root", "left_field",
+        "operator", "right_root", "right_field", "syntax_fingerprint", "spans",
+    }
+    entry = PinInventoryEngine()._entries((
+        (_blob("pins.md", b"x"), Observation("engine_version", "1.227.0", SourceSpan.content("pins.md", 2, 1, 2, 8), "text")),
+        (_blob("pins.md", b"x"), Observation("engine_version", "1.227.0", SourceSpan.content("pins.md", 1, 1, 1, 8), "text")),
+        (_blob("pins.md", b"x"), Observation("engine_version", "1.227.0", SourceSpan.content("pins.md", 1, 1, 1, 8), "text")),
+    ))
+    assert len(entry) == 1
+    assert entry[0].spans == (
+        SourceSpan.content("pins.md", 1, 1, 1, 8), SourceSpan.content("pins.md", 2, 1, 2, 8),
+    )
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "reason"),
+    (
+        (lambda: replace(_complete_snapshot(), object_format="sha512"), "object format"),
+        (lambda: replace(_complete_snapshot(), tree_oid="z" * 40), "tree OID"),
+        (lambda: replace(_complete_snapshot(), blobs=_complete_snapshot().blobs + (_complete_snapshot().blobs[0],)), "duplicated"),
+        (lambda: replace(_complete_snapshot(), blobs=(replace(_complete_snapshot().blobs[0], mode=0o120000),) + _complete_snapshot().blobs[1:]), "non-regular"),
+    ),
+)
+def test_engine_rejects_invalid_snapshot_receipt_shapes(snapshot, reason: str) -> None:
+    """Break caught: invalid snapshot metadata/tree/blob receipts reach extraction."""
+    with pytest.raises(PinInventoryError, match=reason):
+        PinInventoryEngine().generate(snapshot())
+
+
+def test_engine_rejects_a_missing_mapped_policy() -> None:
+    """Break caught: a required governed policy can disappear without detection."""
+    snapshot = _complete_snapshot()
+    without_llvm = replace(snapshot, blobs=tuple(blob for blob in snapshot.blobs if blob.path != "engines/nautilus/llvm-toolchain-policy.json"))
+    with pytest.raises(PinInventoryError, match="governed policy is absent"):
+        PinInventoryEngine().generate(without_llvm)

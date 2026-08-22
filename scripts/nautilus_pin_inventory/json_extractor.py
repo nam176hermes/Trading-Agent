@@ -39,10 +39,15 @@ _PATH_FAMILIES = {
     ("engines/nautilus/runtime-closure-policy.json", ("native_entry_guard", "source_sha256")): "selected_source",
 }
 
-# Public routing authority: these exact policy paths have structured Nautilus
-# field mappings. Other JSON files remain ordinary data unless generic text
-# contains an independently governed literal.
-GOVERNED_JSON_PATHS = frozenset(path for path, _parts in _PATH_FAMILIES)
+# Public scanning authority for every immediate Nautilus README policy. The
+# llvm/wheel policies deliberately have no identity-field mapping, but remain
+# strict-JSON scan routes rather than inert files.
+GOVERNED_JSON_PATHS = frozenset({
+    "engines/nautilus/engine-build-policy.json",
+    "engines/nautilus/runtime-closure-policy.json",
+    "engines/nautilus/llvm-toolchain-policy.json",
+    "engines/nautilus/wheel-cache-policy.json",
+})
 
 
 class JsonExtractionError(ValueError):

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from io import StringIO
 import json
 import re
+import tokenize
 from typing import Iterable
 
 from .git_source import GitBlobSnapshot, GitTreeSnapshot
@@ -23,6 +25,10 @@ _TEXT_SUFFIXES = frozenset({
 })
 _TEXT_NAMES = frozenset({"Makefile", "Dockerfile"})
 _POLICY_REFERENCE = re.compile(r"(?P<name>[A-Za-z0-9_.-]+-policy\.json)")
+_GOVERNED_PYTHON_PATHS = frozenset({
+    "scripts/materialize_nautilus_runtime_closure.py",
+    "services/job_worker/nautilus_closure.py",
+})
 
 
 class PinInventoryError(ValueError):
@@ -49,6 +55,46 @@ def _git_oid(data: bytes, object_format: str) -> str:
 
 def _is_oid(value: object, width: int) -> bool:
     return type(value) is str and len(value) == width and all(character in "0123456789abcdef" for character in value)
+
+
+def _is_scannable_path(path: object) -> bool:
+    if type(path) is not str or not path or not path.isascii() or len(path.encode("utf-8")) > 4_096:
+        return False
+    if path.startswith("/") or "\\" in path or any(ord(character) < 0x20 or ord(character) == 0x7f for character in path):
+        return False
+    return all(part and part not in (".", "..") for part in path.split("/"))
+
+
+def _python_comment_spans(path: str, text: str) -> tuple[SourceSpan, ...]:
+    try:
+        tokens = tokenize.generate_tokens(StringIO(text).readline)
+        return tuple(
+            SourceSpan.content(path, token.start[0], token.start[1] + 1, token.end[0], token.end[1] + 1)
+            for token in tokens if token.type == tokenize.COMMENT
+        )
+    except (tokenize.TokenError, IndentationError) as exc:
+        raise PinInventoryError("Python text extraction is invalid") from exc
+
+
+def _contains(container: SourceSpan, value: SourceSpan) -> bool:
+    return (
+        container.path == value.path
+        and container.carrier is value.carrier
+        and (container.start_line, container.start_column) <= (value.start_line, value.start_column)
+        and (value.end_line, value.end_column) <= (container.end_line, container.end_column)
+    )
+
+
+def _is_governed_context(path: str, text: str, observation: Observation) -> bool:
+    if path in GOVERNED_JSON_PATHS:
+        return True
+    if path.startswith("tests/"):
+        return False
+    lines = text.splitlines()
+    return (
+        observation.span.start_line <= len(lines)
+        and f"nautilus {observation.family}" in lines[observation.span.start_line - 1].casefold()
+    )
 
 
 @dataclass(frozen=True)
@@ -156,15 +202,21 @@ class PinInventoryEngine:
             raise PinInventoryError("snapshot tree OID is invalid")
         if snapshot.commit_oid is not None and not _is_oid(snapshot.commit_oid, width):
             raise PinInventoryError("snapshot commit OID is invalid")
+        if type(snapshot.blobs) is not tuple:
+            raise PinInventoryError("snapshot blobs must be an immutable tuple")
         blobs: dict[str, GitBlobSnapshot] = {}
         for blob in snapshot.blobs:
-            if type(blob) is not GitBlobSnapshot or blob.path in blobs:
-                raise PinInventoryError("snapshot blobs are invalid or duplicated")
-            if blob.mode not in (0o100644, 0o100755):
+            if type(blob) is not GitBlobSnapshot:
+                raise PinInventoryError("snapshot blob is invalid")
+            if not _is_scannable_path(blob.path):
+                raise PinInventoryError("snapshot blob path is invalid or unscannable")
+            if blob.path in blobs:
+                raise PinInventoryError("snapshot blobs are duplicated")
+            if type(blob.mode) is not int or blob.mode not in (0o100644, 0o100755):
                 raise PinInventoryError("snapshot contains a non-regular file")
-            if not _is_oid(blob.blob_oid, width) or _git_oid(blob.data, snapshot.object_format) != blob.blob_oid:
+            if type(blob.data) is not bytes or not _is_oid(blob.blob_oid, width) or _git_oid(blob.data, snapshot.object_format) != blob.blob_oid:
                 raise PinInventoryError("snapshot blob OID is inconsistent")
-            if _sha256(blob.data) != blob.sha256:
+            if not _is_oid(blob.sha256, 64) or _sha256(blob.data) != blob.sha256:
                 raise PinInventoryError("snapshot blob SHA-256 is inconsistent")
             blobs[blob.path] = blob
         if INVENTORY_PATH in blobs:
@@ -179,8 +231,11 @@ class PinInventoryEngine:
             except UnicodeDecodeError as exc:
                 raise PinInventoryError("Nautilus README is not strict UTF-8") from exc
             for name in _POLICY_REFERENCE.findall(readme_text):
-                if f"engines/nautilus/{name}" not in blobs:
+                path = f"engines/nautilus/{name}"
+                if path not in blobs:
                     raise PinInventoryError(f"README-referenced policy is absent: {name}")
+                if path not in GOVERNED_JSON_PATHS:
+                    raise PinInventoryError(f"README-referenced policy is not scanned: {name}")
         return blobs
 
     def _classify(self, observations: Iterable[Observation]) -> tuple[Observation, ...]:
@@ -206,11 +261,9 @@ class PinInventoryEngine:
             except UnicodeDecodeError as exc:
                 raise PinInventoryError(f"eligible text blob is not strict UTF-8: {path}") from exc
             specialized: tuple[Observation, ...] = ()
-            if path.endswith(".json"):
-                # Parse every text JSON document so duplicate keys never become
-                # invisible, but only mapped policy paths own observations.
+            if path in GOVERNED_JSON_PATHS:
                 specialized = self._json.extract(path, text)
-            if path.endswith(".py"):
+            if path in _GOVERNED_PYTHON_PATHS:
                 result = self._python.extract(path, text)
                 specialized += result.observations
                 guards.extend((blob, guard) for guard in result.dynamic_guards)
@@ -222,9 +275,19 @@ class PinInventoryEngine:
                     raise PinInventoryError("conflicting specialized observation ownership")
                 owners[observation.span] = observation
             generic = self._text.extract_content(path, text)
-            if path.endswith(".py") or path in GOVERNED_JSON_PATHS:
-                generic = tuple(value for value in generic if self._registry.classify(value).code != "UNREGISTERED_IDENTITY")
-            combined = tuple(owners.values()) + tuple(value for value in generic if value.span not in owners)
+            if path in _GOVERNED_PYTHON_PATHS:
+                comments = _python_comment_spans(path, text)
+                generic = tuple(value for value in generic if any(_contains(comment, value.span) for comment in comments))
+            retained: list[Observation] = list(owners.values())
+            for value in generic:
+                owner = owners.get(value.span)
+                if owner is None:
+                    decision = self._registry.classify(value)
+                    if decision.code != "UNREGISTERED_IDENTITY" or _is_governed_context(path, text, value):
+                        retained.append(value)
+                elif (owner.family, owner.value) != (value.family, value.value):
+                    raise PinInventoryError("conflicting specialized and generic observation ownership")
+            combined = tuple(retained)
             all_observations.extend((blob, value) for value in self._classify(combined))
 
         entries = self._entries(all_observations)
