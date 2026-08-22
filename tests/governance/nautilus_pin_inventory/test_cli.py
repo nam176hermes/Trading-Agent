@@ -131,7 +131,7 @@ def test_cli_rejects_refs_tags_trees_wrong_objects_and_widths_for_both_formats(t
         repo.git("tag", "source-tag", source)
         blob = repo.git("rev-parse", f"{source}:evidence.txt")
         tree = repo.git("rev-parse", f"{source}^{{tree}}")
-        for selector in ("HEAD", "source-ref", "source-tag", source[:8], source.upper(), blob, tree, "a" * (width - 1), "a" * (width + 1)):
+        for selector in ("HEAD", "source-ref", "source-tag", source[:8], source.upper(), blob, tree, "a" * width, "a" * (width - 1), "a" * (width + 1)):
             result = run_cli(repo, "generate", "--source-commit", selector, "--output", str(repo.root / "out.json"))
             assert result.returncode == 2
             assert "PIN_INVENTORY_USAGE" in result.stderr
@@ -181,6 +181,26 @@ def test_generate_rejects_source_inventory_and_output_collision(tmp_path: Path) 
     with_inventory = repo.commit("source inventory")
     result = run_cli(repo, "generate", "--source-commit", with_inventory, "--output", str(repo.root / "new.json"))
     assert result.returncode == 1
+
+
+def test_generate_rejects_dangling_and_looped_output_symlinks_without_writes(tmp_path: Path) -> None:
+    """Break caught: resolving an existing output link bypasses collision or leaks a traceback."""
+    repo = InventoryRepo(tmp_path / "repo", object_format="sha1")
+    source = repo.head
+    target = repo.root / "unexpected-target.json"
+    dangling = repo.root / "dangling.json"
+    dangling.symlink_to(target)
+    result = run_cli(repo, "generate", "--source-commit", source, "--output", str(dangling))
+    assert result.returncode == 1
+    assert dangling.is_symlink()
+    assert not target.exists()
+
+    loop = repo.root / "loop.json"
+    loop.symlink_to(loop.name)
+    result = run_cli(repo, "generate", "--source-commit", source, "--output", str(loop))
+    assert result.returncode == 2
+    assert "PIN_INVENTORY_USAGE" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_verify_classifies_schema_and_stale_bytes_separately(tmp_path: Path) -> None:

@@ -77,11 +77,10 @@ def _inventory_path(value: str) -> str:
     return "/".join(parts)
 
 
-def _output_path(root: Path, value: Path) -> Path:
-    candidate = value if value.is_absolute() else root / value
+def _output_path(value: Path) -> Path:
     try:
-        return candidate.resolve(strict=False)
-    except OSError as exc:
+        return value.parent.resolve(strict=True) / value.name
+    except (OSError, RuntimeError) as exc:
         raise _UsageError("output path is inaccessible") from exc
 
 
@@ -106,9 +105,14 @@ def _require_absent(root: Path, commit: str, path: str) -> None:
 
 def _generate(root: Path, source_commit: str, output: Path) -> int:
     source = _commit_oid(root, source_commit)
-    output = _output_path(root, output)
-    if os.path.lexists(output):
+    requested_output = output if output.is_absolute() else root / output
+    if os.path.lexists(requested_output):
+        try:
+            requested_output.resolve(strict=False)
+        except RuntimeError as exc:
+            raise _UsageError("output path is inaccessible") from exc
         raise _StaleError("output already exists")
+    output = _output_path(requested_output)
     _require_absent(root, source, INVENTORY_PATH)
     snapshot = GitTreeSnapshot.from_commit(root, source)
     try:
