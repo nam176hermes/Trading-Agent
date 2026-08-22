@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
 import subprocess
 import sys
 
@@ -64,13 +65,24 @@ def _commit_oid(root: Path, value: str) -> str:
     return value
 
 
-def _relative_path(root: Path, value: str) -> str:
-    path = Path(value)
-    candidate = (root / path).resolve() if not path.is_absolute() else path.resolve()
+def _inventory_path(value: str) -> str:
+    if not value or "\\" in value or "\x00" in value:
+        raise _UsageError("inventory path is invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or any(part == ".." for part in path.parts):
+        raise _UsageError("inventory path must be a relative POSIX Git path")
+    parts = tuple(part for part in path.parts if part != ".")
+    if not parts:
+        raise _UsageError("inventory path is invalid")
+    return "/".join(parts)
+
+
+def _output_path(root: Path, value: Path) -> Path:
+    candidate = value if value.is_absolute() else root / value
     try:
-        return candidate.relative_to(root).as_posix()
-    except ValueError as exc:
-        raise _UsageError("inventory path must be below repository root") from exc
+        return candidate.resolve(strict=False)
+    except OSError as exc:
+        raise _UsageError("output path is inaccessible") from exc
 
 
 def _tree_entry(root: Path, commit: str, path: str) -> tuple[str, str, str] | None:
@@ -94,19 +106,17 @@ def _require_absent(root: Path, commit: str, path: str) -> None:
 
 def _generate(root: Path, source_commit: str, output: Path) -> int:
     source = _commit_oid(root, source_commit)
-    if not output.is_absolute():
-        output = root / output
+    output = _output_path(root, output)
     if os.path.lexists(output):
         raise _StaleError("output already exists")
     _require_absent(root, source, INVENTORY_PATH)
-    try:
-        relative_output = _relative_path(root, str(output))
-    except _UsageError:
-        relative_output = None
-    if relative_output is not None:
-        _require_absent(root, source, relative_output)
     snapshot = GitTreeSnapshot.from_commit(root, source)
-    payload = PinInventoryEngine().serialize(PinInventoryEngine().generate(snapshot))
+    try:
+        payload = PinInventoryEngine().serialize(PinInventoryEngine().generate(snapshot))
+    except PinInventoryError as exc:
+        if str(exc).startswith(("unregistered governed identity:", "required identity is missing:")):
+            raise _StaleError(str(exc)) from exc
+        raise
     try:
         with output.open("xb") as stream:
             stream.write(payload)
@@ -118,7 +128,7 @@ def _generate(root: Path, source_commit: str, output: Path) -> int:
 def _verify(root: Path, source_commit: str, inventory_commit: str, inventory_path: str) -> int:
     source = _commit_oid(root, source_commit)
     inventory = _commit_oid(root, inventory_commit)
-    path = _relative_path(root, inventory_path)
+    path = _inventory_path(inventory_path)
     parents = _git(root, "show", "-s", "--format=%P", inventory).strip().split()
     if parents != [source]:
         raise _StaleError("inventory commit must have exactly source as its sole parent")
@@ -144,12 +154,13 @@ def _verify(root: Path, source_commit: str, inventory_commit: str, inventory_pat
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="inventory_nautilus_pins.py")
-    parser.add_argument("--root", required=True)
     commands = parser.add_subparsers(dest="command", required=True)
     generate = commands.add_parser("generate")
+    generate.add_argument("--root", required=True)
     generate.add_argument("--source-commit", required=True)
     generate.add_argument("--output", required=True, type=Path)
     verify = commands.add_parser("verify")
+    verify.add_argument("--root", required=True)
     verify.add_argument("--source-commit", required=True)
     verify.add_argument("--inventory-commit", required=True)
     verify.add_argument("--inventory-path", required=True)
