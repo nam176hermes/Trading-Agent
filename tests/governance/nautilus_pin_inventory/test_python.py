@@ -313,6 +313,75 @@ def test_python_origin_mapping_nested_receiver_mutation_fails_closed() -> None:
         PythonExtractor(DEFAULT_REGISTRY).extract("scripts/materialize_nautilus_runtime_closure.py", source)
 
 
+@pytest.mark.parametrize("replacement", ("set = untrusted", "_closure_digest = untrusted"))
+def test_python_reviewed_safe_callee_rebinding_fails_closed(replacement: str) -> None:
+    """Break caught: a reviewed receiver call cannot survive rebinding its callee."""
+    source = _closure_manifest_source().replace(
+        'schema_version = closure_manifest.get("schema_version")',
+        f'schema_version = closure_manifest.get("schema_version")\n    {replacement}',
+        1,
+    )
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("services/job_worker/nautilus_closure.py", source)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "insertion", "root", "escape"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, 'profile = policy.get("profile")', "policy", 'box = {"root": ROOT}\n    untrusted(**box)'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'schema_version = closure_manifest.get("schema_version")', "closure_manifest", 'box = {"root": ROOT}\n    untrusted(**box)'),
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, None, "_PROFILE_SPECS", 'box = {"root": ROOT}\n    untrusted(**box)'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, None, "_PROFILES", 'box = {"root": ROOT}\n    untrusted(**box)'),
+    ),
+)
+def test_python_governed_container_alias_escapes_fail_closed(path: str, source, insertion: str | None, root: str, escape: str) -> None:
+    """Break caught: a container alias cannot launder a governed receiver across statements."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, _with_root_statement(source(), insertion, root, escape.replace("ROOT", root)))
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "insertion", "root", "escape"),
+    (
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'schema_version = closure_manifest.get("schema_version")', "closure_manifest", "untrusted(ROOT if ready else {})"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'schema_version = closure_manifest.get("schema_version")', "closure_manifest", "untrusted(lambda: ROOT)"),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'schema_version = closure_manifest.get("schema_version")', "closure_manifest", "untrusted(*(ROOT for _ in (0,)))"),
+    ),
+)
+def test_python_recursive_receiver_escape_forms_fail_closed(path: str, source, insertion: str, root: str, escape: str) -> None:
+    """Break caught: arbitrary nested AST children cannot conceal a governed receiver."""
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, _with_root_statement(source(), insertion, root, escape.replace("ROOT", root)))
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "statement"),
+    (
+        ("scripts/materialize_nautilus_runtime_closure.py", _runtime_policy_source, '_PROFILE_SPECS["zero-order"].update({})'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, '_PROFILES["zero-order"].update({})'),
+        ("services/job_worker/nautilus_closure.py", _closure_manifest_source, 'closure_manifest.get("argv_prefix", ()).append("evil")'),
+    ),
+)
+def test_python_nested_governed_result_mutation_fails_closed(path: str, source, statement: str) -> None:
+    """Break caught: a governed subscript or safe-call result cannot become a mutator receiver."""
+    text = _with_root_statement(source(), 'schema_version = closure_manifest.get("schema_version")' if "closure_manifest" in statement else None, "closure_manifest" if "closure_manifest" in statement else "_PROFILE_SPECS", statement)
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract(path, text)
+
+
+def test_python_reviewed_comparison_must_remain_in_its_enforcing_predicate() -> None:
+    """Break caught: a reviewed comparison moved to an unused assignment ceases to enforce validation."""
+    source = _closure_manifest_source()
+    original = 'closure_manifest["engine_version"] != _EXPECTED_ENGINE_VERSION'
+    source = source.replace(original, "False", 1).replace(
+        'schema_version = closure_manifest.get("schema_version")',
+        f'schema_version = closure_manifest.get("schema_version")\n    ignored = {original}',
+        1,
+    )
+    with pytest.raises(PythonExtractionError, match="invalid governed Python expression"):
+        PythonExtractor(DEFAULT_REGISTRY).extract("services/job_worker/nautilus_closure.py", source)
+
+
 def test_python_ordinary_literal_outside_proved_governed_scope_remains_an_observation() -> None:
     """Break caught: one proved scope makes unrelated literal pin extraction disappear module-wide."""
     result = PythonExtractor(DEFAULT_REGISTRY).extract(
