@@ -1,0 +1,1031 @@
+{
+  "activation_status": "CANDIDATE_ONLY_NOT_ACTIVATED",
+  "attestation_disposition": {
+    "git_tag_embedded_signature": "ABSENT",
+    "intoto_statement_verification": "NOT_PERFORMED",
+    "legacy_pypi_gpg_signatures": "ABSENT",
+    "pep740_publish_attestations": "PRESENT_NOT_CRYPTOGRAPHICALLY_VERIFIED",
+    "pep740_role": "NON_AUTHORITATIVE_NOT_ADMITTED_TO_OFFLINE_CACHE",
+    "sigstore_bundle_verification": "NOT_PERFORMED"
+  },
+  "build_input_manifest": {
+    "omitted_from_sdist_count": 5,
+    "record_count": 62,
+    "record_schema": [
+      "blob_oid",
+      "git_mode",
+      "path",
+      "sdist_cross_check",
+      "sha256",
+      "size"
+    ],
+    "records": [
+      {
+        "blob_oid": "c79b7d9741f9905c03f8e9c66937a0161a67963f",
+        "git_mode": "100644",
+        "path": ".cargo/config.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "b04930609aeb1b49fd261c898b4b7d59f1c6c530ab9ba3f78fc1ce72f67a2f6b",
+        "size": 849
+      },
+      {
+        "blob_oid": "f7d75b1710fc90de3007fee21fae8b14e3a5a9c3",
+        "git_mode": "100644",
+        "path": "Cargo.lock",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "a03c8e7e800b08505a654bd5163f812e582d604814b27499e36e67aed566be66",
+        "size": 259271
+      },
+      {
+        "blob_oid": "ed4e5d0cefe12d50fd2270d6d6d07d2b8e5a39e5",
+        "git_mode": "100644",
+        "path": "Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "da1388074cb7b48f714899a8acb4215ff55bb026b4ee4d7bf0e7695b36b6ce9b",
+        "size": 22944
+      },
+      {
+        "blob_oid": "519f10aa58d50d4d27869931d20139682cd5709a",
+        "git_mode": "100644",
+        "path": "build.py",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "8a8e46de9c58b83bbfdb3b7415538d2444f9dd126d61c66a8a63416606e9bc40",
+        "size": 24158
+      },
+      {
+        "blob_oid": "6b9fde8f8ac5d126aa9ce69dc5c0392f4c38df45",
+        "git_mode": "100644",
+        "path": "crates/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "fc4677c4fe314deaf400462a69191402ceafe79f6a7fc6dd9d763e046533b4ba",
+        "size": 748
+      },
+      {
+        "blob_oid": "429df5e527df13f5b2c45045ca5986e6ec7ea211",
+        "git_mode": "100644",
+        "path": "crates/adapters/architect_ax/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "680b12ca18404f34402a42c8c2ad5ec231a4b423017b81b42b9937effc01010b",
+        "size": 4221
+      },
+      {
+        "blob_oid": "96c36e8d8c1be917d119fa921ad853c7830293b3",
+        "git_mode": "100644",
+        "path": "crates/adapters/betfair/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "eaed172192b2958f9ea5f80eabe8216dce3b619dda3e0107b8edb65f8490a9b4",
+        "size": 4003
+      },
+      {
+        "blob_oid": "8a026825a81f9916f5cf21b913d8c68bd6ab263d",
+        "git_mode": "100644",
+        "path": "crates/adapters/binance/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "3468d70e5e225a9914e929aacd2da85a6105897acdc5562ecf63046759f758cc",
+        "size": 4958
+      },
+      {
+        "blob_oid": "461317d800d141e65460a94b769d7eebf0345284",
+        "git_mode": "100644",
+        "path": "crates/adapters/bitmex/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "f57543c0cea55d7601c92a3a8448f92a76b8b69eecd782aa5eec6a4cc98a19c3",
+        "size": 3869
+      },
+      {
+        "blob_oid": "44f1f1ff4ff20a6ccedcae5bacb883b739dd673f",
+        "git_mode": "100644",
+        "path": "crates/adapters/blockchain/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "d652e98f02a4bcc69a54a2b85356cc4c5a2e377a58a4a50d164654d922d8ae10",
+        "size": 3025
+      },
+      {
+        "blob_oid": "29d2634550223afa50779eacd241c4bc2b5c9c2a",
+        "git_mode": "100644",
+        "path": "crates/adapters/bybit/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "00743032640616d44d1d91c4f168174cb14d0e89fe7b47b466048692c4708c4a",
+        "size": 4744
+      },
+      {
+        "blob_oid": "8c63a542b58ebd0ee6a67932138e713759edd5ad",
+        "git_mode": "100644",
+        "path": "crates/adapters/coinbase/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "a03b879508c1b305d7761fc808a4b2b7a18334d15c69fc84bbe8cb063fc805cb",
+        "size": 3552
+      },
+      {
+        "blob_oid": "d1f6738b3dfd0b34e79b4607eed2dda0a639c085",
+        "git_mode": "100644",
+        "path": "crates/adapters/databento/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "cdfc591876f11db92f7b88ce47b8dddf1cc2150e2bb82b4dd39d28146444b9bf",
+        "size": 3537
+      },
+      {
+        "blob_oid": "fdb728d2beb1506d86b4f67c5eee3516b707301f",
+        "git_mode": "100644",
+        "path": "crates/adapters/deribit/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "454507b7807100001ecfc8c3f5f969cbcc0c073ac42a2c00e784b6b7898f3da4",
+        "size": 4735
+      },
+      {
+        "blob_oid": "08b961b03d2d7d1c9ac7fd62be79abcbd3ba260e",
+        "git_mode": "100644",
+        "path": "crates/adapters/derive/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "e6da88fcf1496596353f73e4127cefc96578837cffc4d2dcb148ab50ccea3a29",
+        "size": 4885
+      },
+      {
+        "blob_oid": "e1d2cebbfde819463a95ab4a7c4b264d74c8e1a7",
+        "git_mode": "100644",
+        "path": "crates/adapters/dydx/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "a3d43c7853c70104cf3ff6532523205ef264e5fd28d24091534cd5382473d99a",
+        "size": 4094
+      },
+      {
+        "blob_oid": "37b85825f1582b488d488c804358ab155f375081",
+        "git_mode": "100644",
+        "path": "crates/adapters/hyperliquid/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "2920def69f1a545677c307c7804ca6a6221ef8c9c95417ad751777126840e723",
+        "size": 5744
+      },
+      {
+        "blob_oid": "be1e228184444089bae5129ad5688e4493a599f6",
+        "git_mode": "100644",
+        "path": "crates/adapters/interactive_brokers/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "395a500762d365d6ef803939736962efba2cf3d365853bc0e9e4e86567ccd0fa",
+        "size": 3983
+      },
+      {
+        "blob_oid": "7cc1331017d0298d4e26eeb306032ef180a64a05",
+        "git_mode": "100644",
+        "path": "crates/adapters/kraken/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "6334be88695f7bd4338b5ba768d8cb0902bf1291edcc7ad786beaa6b6fc7f83c",
+        "size": 4616
+      },
+      {
+        "blob_oid": "fed35d7a1cf29a401da7091626797299e2c82cfc",
+        "git_mode": "100644",
+        "path": "crates/adapters/lighter/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "d16f94d6b2bec72b0840c408a908359bb88acf423eb3e5befd56eab7be121af7",
+        "size": 5934
+      },
+      {
+        "blob_oid": "49c359590ef5b2f1900d05778578c94177b62b7b",
+        "git_mode": "100644",
+        "path": "crates/adapters/lighter/fuzz/pornin/Cargo.lock",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "e3c2b93bb51c92865bd8053849360add972656e7cf7562d2f5c6f859fe8dbe40",
+        "size": 82349
+      },
+      {
+        "blob_oid": "766a28df209652290481a3bce984d0348a8480a5",
+        "git_mode": "100644",
+        "path": "crates/adapters/lighter/fuzz/pornin/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "3b7436d7702ada606e7f091336002f669c89c16c6cbcc7b0c8a82b7d1c8add5d",
+        "size": 1129
+      },
+      {
+        "blob_oid": "11dc81c0f48148f4c64f33c67acbe0ed5ce72a71",
+        "git_mode": "100644",
+        "path": "crates/adapters/okx/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "df257f5acace102e5f02949080a73b93513ebe018bc73f5da7acd0d0044e9d2e",
+        "size": 4624
+      },
+      {
+        "blob_oid": "c7e1dab110b5e3ab7d5384005eb6f64f0883afba",
+        "git_mode": "100644",
+        "path": "crates/adapters/polymarket/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "0a9434586394ab789a91225fb545ff541c64953409cfba941f0e74df57663505",
+        "size": 4817
+      },
+      {
+        "blob_oid": "7fcd217932dc39d8f1bedf07395dcdf6f79cde54",
+        "git_mode": "100644",
+        "path": "crates/adapters/sandbox/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "df95e5ef359c320d6dea2a33b0c9e933758b74373ed73257a6ef68e038127ad1",
+        "size": 2567
+      },
+      {
+        "blob_oid": "23d6406395d3126d230addf0b6b9c72512974072",
+        "git_mode": "100644",
+        "path": "crates/adapters/tardis/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "878eebc93618f2b607b091b9305646506ea94dabfc56a1ce31f281d68a090b03",
+        "size": 3839
+      },
+      {
+        "blob_oid": "d89c72f833a9040df92fe72fac43073f9c24e288",
+        "git_mode": "100644",
+        "path": "crates/analysis/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "0ccfd945d1eebf774808bf48b24dabaf3678d167be6aeb45ec38138769749a9b",
+        "size": 1301
+      },
+      {
+        "blob_oid": "d63ff703f4c8f3503ab3a96b34024a665054802d",
+        "git_mode": "100644",
+        "path": "crates/backtest/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "6de67c4ffa5a1ef6841128df8535b43c0c43007e9826814296944a5bd3e5841f",
+        "size": 4138
+      },
+      {
+        "blob_oid": "5b44f03b416dff3eb3b1d2761d510a714480c0fd",
+        "git_mode": "100644",
+        "path": "crates/backtest/build.rs",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "bab79369cc496eef1203edb60991395c69e67f4aa9a404e20046ad2cc62f4c54",
+        "size": 3055
+      },
+      {
+        "blob_oid": "f70a8b8c74660d50a04a251d2bd714031d232053",
+        "git_mode": "100644",
+        "path": "crates/cli/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "df1e30b7415997625cecb09b79b7c4c1e84c5a00c44c7193bd54bd62b36163c9",
+        "size": 1279
+      },
+      {
+        "blob_oid": "05893fdc91cca0f59cc3c22f7a31fcac431c4ca6",
+        "git_mode": "100644",
+        "path": "crates/common/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "7aeb01e254c58e2d813a6af984239d8bf06eb3ac59180c30d1a961dc912d3e98",
+        "size": 4802
+      },
+      {
+        "blob_oid": "0ed09139ed3355167c7a1bb13721df32fdec7c89",
+        "git_mode": "100644",
+        "path": "crates/common/build.rs",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "0aea58a41bc11bfe272e3826e1401501e4723e124ac95a7291dcce1ec8be4849",
+        "size": 4058
+      },
+      {
+        "blob_oid": "5dd73ca37132a587ed61618fa19bf78cb269156c",
+        "git_mode": "100644",
+        "path": "crates/core/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "51221bab94af20e156d01f91951c53df073178e106284eeca85568cea8167fe2",
+        "size": 3047
+      },
+      {
+        "blob_oid": "278997a6b2a9bd0df6c3783380d21d12ec2eeb5f",
+        "git_mode": "100644",
+        "path": "crates/core/build.rs",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "34bbbe8ade033678cd33d116d7a3382e8e5b238fddf4971f7fba60df8ccfd96b",
+        "size": 6287
+      },
+      {
+        "blob_oid": "67fd9cd056685a55eeba53a1d6599ad46248b82b",
+        "git_mode": "100644",
+        "path": "crates/cryptography/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "b1923eda79a87e78cf3a244206f79a67ab9323faaff7d205f799de8556536a27",
+        "size": 1303
+      },
+      {
+        "blob_oid": "cc4445f83be4f06475047ec38d7875dc1f979793",
+        "git_mode": "100644",
+        "path": "crates/data/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "922e4dec2176c4acd3bcb5997499f2693f3a8fd16da39d4a8e39795b8436287b",
+        "size": 2558
+      },
+      {
+        "blob_oid": "c8262371215540cf0d7d4561e8dd61a34da03457",
+        "git_mode": "100644",
+        "path": "crates/event_store/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "d52e1e501fa8cc1bdbe5df3d8699801b3dd71c08feb97234b9208e691917be8e",
+        "size": 1794
+      },
+      {
+        "blob_oid": "3dca4a744cedce8aaa9824057946e5604e190813",
+        "git_mode": "100644",
+        "path": "crates/execution/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "9d7d5155ca7ad293d1bab2a98ef98c8d2d7d998b19da6209ebdf78d3d2350921",
+        "size": 2284
+      },
+      {
+        "blob_oid": "a4c932adf4dec84e992eb3d68fdf20eaf94872cf",
+        "git_mode": "100644",
+        "path": "crates/indicators/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "aeb21431a2f27e6fecbee4fd26ddf583df45717d94db177f0c6aa8913e256628",
+        "size": 1288
+      },
+      {
+        "blob_oid": "0ad5d06672b7940b5fd8be22bfa12bb1c28bc5b1",
+        "git_mode": "100644",
+        "path": "crates/infrastructure/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "262fa578e044cc4403b7b22cc9776bcb42269da78396c525bc7bfe800f3a84af",
+        "size": 2405
+      },
+      {
+        "blob_oid": "d0f05f794d02aa6ac4a548e99f6117ad9b647d90",
+        "git_mode": "100644",
+        "path": "crates/live/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "acafd050712fbb8f3be349e2fc6857e669860edaca73b605f190a5482637663b",
+        "size": 4056
+      },
+      {
+        "blob_oid": "9c5cb15bd3fe4c1e0d4d6b616e671600e0db3893",
+        "git_mode": "100644",
+        "path": "crates/model/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "f41d1d1f959354f51e98bac5b086e9596332c4a820de9589648cfe97d8419263",
+        "size": 3559
+      },
+      {
+        "blob_oid": "8cec3f0e09eec2dd61e8f726879edc3c660efccd",
+        "git_mode": "100644",
+        "path": "crates/model/build.rs",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "d98e3ff7207e4bce43624dbc05861784e74efa7c6142620898c488a5115fb358",
+        "size": 5900
+      },
+      {
+        "blob_oid": "0a1c253a612f4d9c0bb5504f5b199fa366025f46",
+        "git_mode": "100644",
+        "path": "crates/network/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "60302050cfe63bc0bd7054454a0fb051a5cf90ef0ac34a859bc53370d50eaae2",
+        "size": 3351
+      },
+      {
+        "blob_oid": "89093c61ee42cb5323ef1f0f39c8f6f71dc27ebf",
+        "git_mode": "100644",
+        "path": "crates/persistence/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "56415a98e9263ff2de5e81059f4f7fb874538403d30a6fb220647ad4b473f306",
+        "size": 3035
+      },
+      {
+        "blob_oid": "577b3ba1a0ae068d5c38f2ad5427d8f9a21b491d",
+        "git_mode": "100644",
+        "path": "crates/persistence/macros/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "286a32aaaeca4baf8aaeefce20522cb69ec0dbb9eb8116ddc8c313c04cb12dd3",
+        "size": 603
+      },
+      {
+        "blob_oid": "a3a87f1d42d13deba543f1f51ecb5a2e7a255308",
+        "git_mode": "100644",
+        "path": "crates/plugin/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "26d427a00f9b4d636fcc0251c6a71fe6409bde191d91d87782e1de8c1685a237",
+        "size": 795
+      },
+      {
+        "blob_oid": "f07d744e2a33cd37fe74f74d797ca6a49a71665e",
+        "git_mode": "100644",
+        "path": "crates/plugin/build.rs",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "8cc1ece0aed3ac88a70b6d75cb0f94338ce3bc17cfc7dfd1500214d7715a4fea",
+        "size": 1815
+      },
+      {
+        "blob_oid": "8bb6cdbab487707abc2444a1e993370550407ed6",
+        "git_mode": "100644",
+        "path": "crates/portfolio/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "fe6b0bf43e1e76bb8e6564a0b99b570246733ee6b99dc33f33d366de3ee30c86",
+        "size": 1543
+      },
+      {
+        "blob_oid": "676b09642ef54afaf28ccc4d9a8abfa931affdb8",
+        "git_mode": "100644",
+        "path": "crates/pyo3/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "4d8b6177f1d6244eb72f333a4eabbc4a49b13a77eba2946c07dcd7412495df9b",
+        "size": 6425
+      },
+      {
+        "blob_oid": "15957a58040d20df667de162c2f8d80d6291c69f",
+        "git_mode": "100644",
+        "path": "crates/risk/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "4fabe87d2f35b68a586a6e03fee044a2025e01ef414ff8b40640466793bdc296",
+        "size": 1523
+      },
+      {
+        "blob_oid": "f9fe3a8bca1d0b8842e780a9143919005a72ab7e",
+        "git_mode": "100644",
+        "path": "crates/serialization/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "9f5a8a2d9d5790222a5f74ca039507bd745e7c9a72a7df850f71f1bf20d0fa57",
+        "size": 2827
+      },
+      {
+        "blob_oid": "6dec4676979de321bd5f62157e051ed6c4bb598d",
+        "git_mode": "100644",
+        "path": "crates/serialization/build.rs",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "ec97574f36ccf5b53b121fa4b5eae7061b56935cf467d8728141899acd6e4bfb",
+        "size": 2729
+      },
+      {
+        "blob_oid": "a8a46b3e8de39c6ca9223a552aef5b23d561ac72",
+        "git_mode": "100644",
+        "path": "crates/system/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "2defe5efcf511727c5945c5fa2c4ee5fd7e9e55c1b7500d03299fb0a96a5eba2",
+        "size": 2338
+      },
+      {
+        "blob_oid": "586692579ea407fa271aee0730fd776a08e2566c",
+        "git_mode": "100644",
+        "path": "crates/testkit/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "f4d7fc0a4b18f5b1d3f2273a7074e0f802275b342aca201a74f917312479967b",
+        "size": 3669
+      },
+      {
+        "blob_oid": "2b686f270d6a5d897e023ba31500b91351006cfe",
+        "git_mode": "100644",
+        "path": "crates/trading/Cargo.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "88f5069cc0285f77073cf37910198ffae8899f6d2966fc808627cd431f76900a",
+        "size": 2195
+      },
+      {
+        "blob_oid": "ada48efc9c730f6aaa562997bc452238614c0091",
+        "git_mode": "100644",
+        "path": "examples/quickstarts/lighter-rust-data-client/Cargo.toml",
+        "sdist_cross_check": "OMITTED_FROM_SDIST",
+        "sha256": "0e119d6c48a3d18622c237334f871134dbc8622dbe69d2b71efa4d40a098b4cf",
+        "size": 918
+      },
+      {
+        "blob_oid": "7b60e150afcf9ac2ce828203a191cfeb62c86114",
+        "git_mode": "100644",
+        "path": "examples/tutorials/Cargo.toml",
+        "sdist_cross_check": "OMITTED_FROM_SDIST",
+        "sha256": "24f240baf88a3b984884fd5b3c160b4f4427e86b010b529ce60847ca5e781d07",
+        "size": 1448
+      },
+      {
+        "blob_oid": "5ed6bca269a94d7531573ac987663fd85554bbad",
+        "git_mode": "100644",
+        "path": "patches/pyo3-stub-gen/Cargo.toml",
+        "sdist_cross_check": "OMITTED_FROM_SDIST",
+        "sha256": "78b616cf0beeef4ff0f068465b23660e504099854fe18cbac67b89a81987d58e",
+        "size": 1996
+      },
+      {
+        "blob_oid": "351fe55f9ff35d66ae0eca016bbd4654b56ef3f6",
+        "git_mode": "100644",
+        "path": "pyproject.toml",
+        "sdist_cross_check": "BYTE_IDENTICAL",
+        "sha256": "5dbc4591408bd65f7b35c2274348a7a02ff7b034a15f46d5f8628d3c8fbafa36",
+        "size": 15841
+      },
+      {
+        "blob_oid": "504838882d6e2ce849f161dd12f4889fe6336762",
+        "git_mode": "100644",
+        "path": "python/pyproject.toml",
+        "sdist_cross_check": "OMITTED_FROM_SDIST",
+        "sha256": "1cd80c8a96bbe83c1a64e7ec5290e6e06c20793cce01e21d88441d3f31d241a7",
+        "size": 8022
+      },
+      {
+        "blob_oid": "72436043232cab49f40222d2f746f91c4f8185fd",
+        "git_mode": "100644",
+        "path": "rust-toolchain.toml",
+        "sdist_cross_check": "OMITTED_FROM_SDIST",
+        "sha256": "5d959dfcc98b53886ee772ba216c4f9a1b31f093b46b5b263c0d084af54e821d",
+        "size": 31
+      }
+    ],
+    "sha256": "6d85720d9df4cd8f6f1454fafc4353baa4495e8de3d796d914107e228a05136c",
+    "shared_with_sdist_count": 57
+  },
+  "cache_layout": {
+    "entries": [
+      "nautilus_trader-1.231.0-cp312-cp312-manylinux_2_35_x86_64.whl",
+      "nautilus_trader-1.231.0.tar.gz",
+      "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317-materialized.tar.gz",
+      "upstream.git"
+    ],
+    "git_directory": "upstream.git"
+  },
+  "cache_trust_model": {
+    "host_authority": "COOPERATIVE_OWNER_CONTROLLED_HOST",
+    "inspection_preconditions": [
+      "TASK_UID_OWNERSHIP",
+      "DIRECTORIES_MODE_0500",
+      "FILES_MODE_0400_SINGLE_LINK",
+      "NO_SYMLINKED_ANCESTORS"
+    ],
+    "out_of_scope": [
+      "CONCURRENT_SAME_UID_MUTATION",
+      "ROOT_ADVERSARY",
+      "PTRACE_ADVERSARY",
+      "KERNEL_ADVERSARY",
+      "RENAME_RACE",
+      "CHMOD_RACE",
+      "TOCTOU"
+    ],
+    "security_claim": "PRE_VERIFICATION_INSPECTION_AND_REPRODUCIBILITY_NOT_CONCURRENT_MUTATION_RESISTANCE"
+  },
+  "candidate_closure_schema": 7,
+  "engine_name": "nautilus_trader",
+  "engine_version": "1.231.0",
+  "release_assets": {
+    "cpython312_linux_wheel": {
+      "file_count": 765,
+      "filename": "nautilus_trader-1.231.0-cp312-cp312-manylinux_2_35_x86_64.whl",
+      "member_count": 765,
+      "name_layout_sha256": "4af6ec4f4ca430029902c317e9c7c1406d4c18680c0f144bc164cc32d32475be",
+      "native_member_count": 111,
+      "role": "DIGEST_VERIFIED_ARTIFACT_ONLY",
+      "sha256": "8c438e95c275a13df0c0ddb7012c462708b5e99ff3612e36a1b7bd49ab39c216",
+      "size": 189045623,
+      "top_level_roots": [
+        "nautilus_trader",
+        "nautilus_trader-1.231.0.dist-info"
+      ],
+      "wheel_tag": "cp312-cp312-manylinux_2_35_x86_64"
+    }
+  },
+  "runtime_family": "cython-v1",
+  "schema_version": 7,
+  "source_authority": {
+    "cross_check": {
+      "directory_count": 0,
+      "file_count": 4130,
+      "filename": "nautilus_trader-1.231.0.tar.gz",
+      "kind": "OFFICIAL_PYPI_SDIST",
+      "layout_sha256": "c9cb5f98e1394d97e0cfb1350fa145f76477138506d50dcb10c9a6f08cc5bce3",
+      "member_count": 4130,
+      "relationship": "57_SHARED_BUILD_INPUTS_BYTE_IDENTICAL_5_EXACT_COMMIT_INPUTS_OMITTED",
+      "role": "INDEPENDENT_CROSS_CHECK_ONLY",
+      "sha256": "142dde40e77339745aa5fe6bcbb3de5624cee087f526879da00f127df077530f",
+      "size": 10333295,
+      "top_level_root": "nautilus_trader-1.231.0"
+    },
+    "primary": {
+      "authority": "EXACT_TAG_BOUND_GIT_OBJECT_TREE",
+      "entry_count": 5976,
+      "filename": "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317-materialized.tar.gz",
+      "kind": "DETERMINISTIC_REGULAR_FILE_GIT_TREE_MATERIALIZATION",
+      "materialization_algorithm": "python-stdlib-regular-files-pax-gzip-mtime-zero-v1",
+      "materialization_manifest_sha256": "b0a5fbe54706e3014974d1b4715091603c517acd11d00c5687b744f82cf1797a",
+      "member_count": 5976,
+      "role": "PRIMARY_BUILD_SOURCE",
+      "sha256": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441",
+      "size": 29718457,
+      "symlink_count": 42,
+      "symlink_records": [
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/architect_ax/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/betfair/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/binance/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/bitmex/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/blockchain/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/bybit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/coinbase/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/databento/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/deribit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/dydx/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/hyperliquid/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/interactive_brokers/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/kraken/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/lighter/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/okx/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/polymarket/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/sandbox/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/tardis/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/analysis/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/backtest/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/cli/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/common/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/core/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/cryptography/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/data/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/event_store/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/execution/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/indicators/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/infrastructure/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/live/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/model/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/network/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/persistence/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/plugin/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/portfolio/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/pyo3/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/risk/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/serialization/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/system/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/testkit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/trading/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "a39bba7a25d165001b30348a276241ea2ff04ab94660de01d895e94be463ce7a",
+          "path": "tests/integration_tests/infrastructure/README.md",
+          "resolved_blob": "cab5e2624ddc35632bc1e939dd0843ba4ce99c59",
+          "resolved_path": "crates/infrastructure/TESTS.md",
+          "size": 2948,
+          "source_blob": "cc423abd9b61be578c288b2070388ca89e122c16",
+          "source_mode": "120000"
+        }
+      ],
+      "top_level_root": "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+    }
+  },
+  "upstream": {
+    "git_object_format": "sha1",
+    "peeled_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    "repository": "https://github.com/nautechsystems/nautilus_trader.git",
+    "tag": "v1.231.0",
+    "tag_object": "d3e1685e979925d7b0ffacd1b3f442547686e18f"
+  }
+}
