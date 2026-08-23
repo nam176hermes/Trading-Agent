@@ -328,33 +328,53 @@ def test_engine_is_repeatable_under_reordered_registry_input_and_never_reads_the
 def test_engine_generates_from_the_exact_current_commit_source() -> None:
     """Break caught: the exact reviewed source tree cannot be inventoried end-to-end."""
     root = Path(__file__).resolve().parents[3]
+    source_commit = "3257fb0c9dbff689212ca0a0b011704596477426"
+    inventory_commit = "c174ba9de21c91dcda53ebcb825fdd1597e8800c"
     head = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"], cwd=root, text=True, capture_output=True, check=True,
     ).stdout.strip()
-    source_commit = head
-    if subprocess.run(
-        ["git", "ls-tree", "-r", "--full-tree", "HEAD", "--", INVENTORY_PATH],
+
+    for commit in (source_commit, inventory_commit):
+        resolved = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{commit}^{{commit}}"],
+            cwd=root, text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        assert resolved == commit
+
+    parents = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", inventory_commit],
         cwd=root, text=True, capture_output=True, check=True,
-    ).stdout:
-        parents = subprocess.run(
-            ["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd=root, text=True, capture_output=True, check=True,
-        ).stdout.split()
-        assert len(parents) == 2
-        assert parents[0] == head
-        source_commit = parents[1]
-        assert not subprocess.run(
-            ["git", "ls-tree", "-r", "--full-tree", source_commit, "--", INVENTORY_PATH],
-            cwd=root, text=True, capture_output=True, check=True,
-        ).stdout
-        change = subprocess.run(
-            ["git", "diff-tree", "--no-commit-id", "--raw", "-r", source_commit, head],
-            cwd=root, text=True, capture_output=True, check=True,
-        ).stdout.splitlines()
-        assert len(change) == 1
-        metadata, path = change[0].split("\t")
-        assert path == INVENTORY_PATH
-        assert metadata.split()[0:2] == [":000000", "100644"]
-        assert metadata.split()[-1] == "A"
+    ).stdout.split()
+    assert parents == [inventory_commit, source_commit]
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", inventory_commit, head],
+        cwd=root, text=True, capture_output=True, check=False,
+    ).returncode == 0
+
+    change = subprocess.run(
+        ["git", "diff-tree", "--no-commit-id", "--raw", "-r", source_commit, inventory_commit],
+        cwd=root, text=True, capture_output=True, check=True,
+    ).stdout.splitlines()
+    assert len(change) == 1
+    metadata, path = change[0].split("\t")
+    assert path == INVENTORY_PATH
+    assert metadata.split()[0:2] == [":000000", "100644"]
+    assert metadata.split()[-1] == "A"
+
+    inventory_path_change = subprocess.run(
+        ["git", "diff", "--name-only", inventory_commit, head, "--", INVENTORY_PATH],
+        cwd=root, text=True, capture_output=True, check=True,
+    ).stdout
+    assert not inventory_path_change
+    inventory_blob = subprocess.run(
+        ["git", "rev-parse", f"{inventory_commit}:{INVENTORY_PATH}"],
+        cwd=root, text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    head_blob = subprocess.run(
+        ["git", "rev-parse", f"{head}:{INVENTORY_PATH}"],
+        cwd=root, text=True, capture_output=True, check=True,
+    ).stdout.strip()
+    assert head_blob == inventory_blob
 
     snapshot = GitTreeSnapshot.from_commit(root, source_commit)
 

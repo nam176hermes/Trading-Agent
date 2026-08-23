@@ -37,7 +37,9 @@ The exact I tree passed:
 - `make check-secrets`
 - focused U00R governance: `1318 passed`
 - standalone `make ci-portable NONINTERACTIVE=1`: root `7549 passed`; final
-  governance `8344 passed, 2 skipped, 17 approval-blocked, 0 failed/not-run`;
+  governance `8344 passed, 2 skipped, 29 deselected, 17 approval-blocked, 0
+  failed/not-run`; the 29 governed deselections are 17 `runtime_postgres` and
+  12 `host_coupled`;
   critical coverage `1361 passed, 44 skipped, 5 deselected`; artifact
   publication passed
 
