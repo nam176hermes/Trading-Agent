@@ -361,11 +361,11 @@ def test_engine_generates_from_the_exact_current_commit_source() -> None:
     assert metadata.split()[0:2] == [":000000", "100644"]
     assert metadata.split()[-1] == "A"
 
-    inventory_path_change = subprocess.run(
-        ["git", "diff", "--name-only", inventory_commit, head, "--", INVENTORY_PATH],
+    inventory_path_commits = subprocess.run(
+        ["git", "log", "--format=%H", f"{inventory_commit}..{head}", "--", INVENTORY_PATH],
         cwd=root, text=True, capture_output=True, check=True,
-    ).stdout
-    assert not inventory_path_change
+    ).stdout.splitlines()
+    assert not inventory_path_commits
     inventory_blob = subprocess.run(
         ["git", "rev-parse", f"{inventory_commit}:{INVENTORY_PATH}"],
         cwd=root, text=True, capture_output=True, check=True,
