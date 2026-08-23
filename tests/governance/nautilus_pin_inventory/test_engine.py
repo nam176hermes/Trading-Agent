@@ -362,7 +362,7 @@ def test_engine_generates_from_the_exact_current_commit_source() -> None:
     assert metadata.split()[-1] == "A"
 
     inventory_path_commits = subprocess.run(
-        ["git", "log", "--format=%H", f"{inventory_commit}..{head}", "--", INVENTORY_PATH],
+        ["git", "log", "--full-history", "--format=%H", f"{inventory_commit}..{head}", "--", INVENTORY_PATH],
         cwd=root, text=True, capture_output=True, check=True,
     ).stdout.splitlines()
     assert not inventory_path_commits
