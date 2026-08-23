@@ -1,0 +1,574 @@
+{
+  "cache_layout": {
+    "directories": [
+      "cargo-registry",
+      "rust-inputs",
+      "source-inputs",
+      "wheels"
+    ],
+    "directory_mode": "0500",
+    "file_mode": "0400",
+    "root_role": "FRESH_CANDIDATE_ONLY_EXTERNAL_CACHE"
+  },
+  "cache_trust_model": {
+    "host_authority": "COOPERATIVE_OWNER_CONTROLLED_HOST",
+    "inspection_preconditions": [
+      "TASK_UID_OWNERSHIP",
+      "DIRECTORIES_MODE_0500",
+      "FILES_MODE_0400_SINGLE_LINK",
+      "NO_SYMLINKS"
+    ],
+    "out_of_scope": [
+      "CONCURRENT_SAME_UID_MUTATION",
+      "ROOT_ADVERSARY",
+      "PTRACE_ADVERSARY",
+      "KERNEL_ADVERSARY",
+      "RENAME_RACE",
+      "CHMOD_RACE",
+      "TOCTOU"
+    ]
+  },
+  "candidate": {
+    "engine_name": "nautilus_trader",
+    "release": "1.231.0",
+    "repository": "https://github.com/nautechsystems/nautilus_trader.git",
+    "tag_object": "d3e1685e979925d7b0ffacd1b3f442547686e18f",
+    "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    "upstream_tag": "v1.231.0"
+  },
+  "provenance_authority": {
+    "policy_path": "engines/nautilus/v1.231-provenance-policy.json",
+    "policy_sha256": "f921b50ab5af8a9e518fd599ebcb2425cd7d2f8130263875d46dd34c3e40af8a",
+    "verifier_path": "scripts/verify_nautilus_release_provenance.py",
+    "verifier_sha256": "25017aeb00e34dbd96898d958af4593b7d3742cbd302dd38c0d11754c46b9b4b"
+  },
+  "rust": {
+    "cargo_lock": {
+      "checksum_count": 862,
+      "lock_version": 4,
+      "package_count": 908,
+      "sha256": "a03c8e7e800b08505a654bd5163f812e582d604814b27499e36e67aed566be66"
+    },
+    "channel_manifest": {
+      "date": "2026-07-16",
+      "filename": "channel-rust-1.97.1.toml",
+      "mode": "0400",
+      "sha256": "03569b1886ceb5c05276b50c8431ab111de944cd6140fe1fa7d821dd8e0f29cf",
+      "size": 845916,
+      "url": "https://static.rust-lang.org/dist/channel-rust-1.97.1.toml"
+    },
+    "components": [
+      {
+        "filename": "cargo-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+        "mode": "0400",
+        "name": "cargo",
+        "sha256": "e1be5f5ff7f7f80ca506fb65770b759edbdc6d303781ed71c5de8ec8a8394779",
+        "size": 11150208,
+        "url": "https://static.rust-lang.org/dist/2026-07-16/cargo-1.97.1-x86_64-unknown-linux-gnu.tar.xz"
+      },
+      {
+        "filename": "rust-std-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+        "mode": "0400",
+        "name": "rust-std",
+        "sha256": "1c1e704ae80126b7de34f72ea2825f7fd01736dec20732faed47374b95282fba",
+        "size": 30108400,
+        "url": "https://static.rust-lang.org/dist/2026-07-16/rust-std-1.97.1-x86_64-unknown-linux-gnu.tar.xz"
+      },
+      {
+        "filename": "rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+        "mode": "0400",
+        "name": "rustc",
+        "sha256": "9819d0a32d56bd339585319c80260e332779f5541fd66838ab7e016d6c814819",
+        "size": 81050916,
+        "url": "https://static.rust-lang.org/dist/2026-07-16/rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz"
+      }
+    ],
+    "target": "x86_64-unknown-linux-gnu",
+    "version": "1.97.1"
+  },
+  "schema_version": 1,
+  "source": {
+    "artifact": {
+      "authority": "EXACT_TAG_BOUND_GIT_OBJECT_TREE",
+      "entry_count": 5976,
+      "filename": "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317-materialized.tar.gz",
+      "kind": "DETERMINISTIC_REGULAR_FILE_GIT_TREE_MATERIALIZATION",
+      "materialization_algorithm": "python-stdlib-regular-files-pax-gzip-mtime-zero-v1",
+      "materialization_manifest_sha256": "b0a5fbe54706e3014974d1b4715091603c517acd11d00c5687b744f82cf1797a",
+      "member_count": 5976,
+      "role": "PRIMARY_BUILD_SOURCE",
+      "sha256": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441",
+      "size": 29718457,
+      "symlink_count": 42,
+      "symlink_records": [
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/architect_ax/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/betfair/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/binance/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/bitmex/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/blockchain/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/bybit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/coinbase/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/databento/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/deribit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/dydx/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/hyperliquid/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/interactive_brokers/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/kraken/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/lighter/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/okx/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/polymarket/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/sandbox/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/tardis/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/analysis/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/backtest/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/cli/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/common/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/core/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/cryptography/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/data/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/event_store/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/execution/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/indicators/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/infrastructure/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/live/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/model/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/network/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/persistence/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/plugin/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/portfolio/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/pyo3/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/risk/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/serialization/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/system/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/testkit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/trading/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "a39bba7a25d165001b30348a276241ea2ff04ab94660de01d895e94be463ce7a",
+          "path": "tests/integration_tests/infrastructure/README.md",
+          "resolved_blob": "cab5e2624ddc35632bc1e939dd0843ba4ce99c59",
+          "resolved_path": "crates/infrastructure/TESTS.md",
+          "size": 2948,
+          "source_blob": "cc423abd9b61be578c288b2070388ca89e122c16",
+          "source_mode": "120000"
+        }
+      ],
+      "top_level_root": "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+    },
+    "build_inputs": [
+      {
+        "path": ".cargo/config.toml",
+        "sha256": "b04930609aeb1b49fd261c898b4b7d59f1c6c530ab9ba3f78fc1ce72f67a2f6b",
+        "size": 849
+      },
+      {
+        "path": "Cargo.lock",
+        "sha256": "a03c8e7e800b08505a654bd5163f812e582d604814b27499e36e67aed566be66",
+        "size": 259271
+      },
+      {
+        "path": "Cargo.toml",
+        "sha256": "da1388074cb7b48f714899a8acb4215ff55bb026b4ee4d7bf0e7695b36b6ce9b",
+        "size": 22944
+      },
+      {
+        "path": "build.py",
+        "sha256": "8a8e46de9c58b83bbfdb3b7415538d2444f9dd126d61c66a8a63416606e9bc40",
+        "size": 24158
+      },
+      {
+        "path": "pyproject.toml",
+        "sha256": "5dbc4591408bd65f7b35c2274348a7a02ff7b034a15f46d5f8628d3c8fbafa36",
+        "size": 15841
+      },
+      {
+        "path": "rust-toolchain.toml",
+        "sha256": "5d959dfcc98b53886ee772ba216c4f9a1b31f093b46b5b263c0d084af54e821d",
+        "size": 31
+      },
+      {
+        "path": "uv.lock",
+        "sha256": "2d211f03a65be3f2f45f683114162f9746053f989c702a3d39b8abaf0f58ef08",
+        "size": 583627
+      }
+    ],
+    "u02_cache_layout": {
+      "entries": [
+        "nautilus_trader-1.231.0-cp312-cp312-manylinux_2_35_x86_64.whl",
+        "nautilus_trader-1.231.0.tar.gz",
+        "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317-materialized.tar.gz",
+        "upstream.git"
+      ],
+      "git_directory": "upstream.git"
+    }
+  }
+}

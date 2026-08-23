@@ -1,0 +1,757 @@
+{
+  "activation_status": "POLICY_ONLY_NOT_ACTIVATED",
+  "build_execution": {
+    "allow_index_resolution": false,
+    "allow_network": false,
+    "allow_sdist_fallback": false,
+    "cargo_entrypoint": "SEALED_COMMAND_ROUTER_WRAPPER",
+    "cargo_locked": true,
+    "cargo_offline": true,
+    "wheel_install_mode": "EXACT_LOCAL_FILENAMES_ONLY"
+  },
+  "candidate": {
+    "release": "1.231.0",
+    "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    "upstream_tag": "v1.231.0"
+  },
+  "command_router": {
+    "authority": "EXACT_SEALED_COMMAND_ROUTER_V1",
+    "directory_mode": "0500",
+    "directory_set": [
+      ".",
+      "bin"
+    ],
+    "entries": [
+      {
+        "contents": "#!/usr/bin/python3.12 -IS\nimport os\nimport sys\n\nBUILD_ROOT = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work'\nCARGO = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/cargo'\nSTATIC = {'ANNOTATION_MODE': '', 'AR': '/usr/bin/ar', 'AWS_LC_SYS_CMAKE_BUILDER': '0', 'AWS_LC_SYS_USE_SYSTEM': '0', 'BUILD_MODE': 'release', 'CARGO_BUILD_JOBS': '1', 'CARGO_BUILD_TARGET': 'x86_64-unknown-linux-gnu', 'CARGO_CACHE_RUSTC_INFO': '0', 'CARGO_HOME': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home', 'CARGO_INCREMENTAL': '0', 'CARGO_NET_OFFLINE': 'true', 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER': 'clang', 'CARGO_TERM_COLOR': 'never', 'COPY_TO_SOURCE': 'true', 'DRY_RUN': '', 'FORCE_STRIP': 'false', 'HIGH_PRECISION': 'true', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'PARALLEL_BUILD': 'false', 'PATH': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin', 'PIP_DISABLE_PIP_VERSION_CHECK': '1', 'PIP_FIND_LINKS': '/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels', 'PIP_NO_CACHE_DIR': '1', 'PIP_NO_INDEX': '1', 'PIP_ONLY_BINARY': ':all:', 'PROFILE_MODE': '', 'PYO3_ONLY': '', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONHASHSEED': '0', 'PYTHONNOUSERSITE': '1', 'RUSTC': 'rustc', 'RUSTFLAGS': '-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,norelro -C relocation-model=pic', 'RUSTUP_TOOLCHAIN': 'stable', 'SKIP_RUST_DYLIB_COPY': '', 'SOURCE_DATE_EPOCH': '0', 'TZ': 'UTC'}\nDERIVED = {'CARGO_TARGET_DIR': '/cargo-target', 'HOME': '/home', 'P1_U04_ARTIFACTS_ROOT': '/artifacts', 'P1_U04_DIST_ROOT': '/dist', 'P1_U04_SOURCE_ROOT': '/source', 'P1_U04_STAGING_ROOT': '', 'P1_U04_VENV_ROOT': '/venv', 'PWD': '/source', 'PYO3_PYTHON': '/venv/bin/python', 'TEMP': '/tmp', 'TMP': '/tmp', 'TMPDIR': '/tmp', 'VIRTUAL_ENV': '/venv'}\nDYNAMIC = ('P1_U04_SOURCE_ST_DEV', 'P1_U04_SOURCE_ST_INO')\nOVERRIDES = {'CC': 'clang', 'CXX': 'clang++', 'LDSHARED': 'clang -shared'}\nRUSTFLAGS_APPEND = ' -C link-arg=-s'\n\nstage = os.environ.get('P1_U04_STAGING_ROOT', '')\nprefix = BUILD_ROOT + '/stage-'\ntoken = stage[len(prefix):] if stage.startswith(prefix) else ''\nif len(token) != 16 or any(c not in '0123456789abcdef' for c in token):\n    raise SystemExit('cargo wrapper environment is not exact')\nexpected = dict(STATIC)\nexpected.update({name: stage + suffix for name, suffix in DERIVED.items()})\ndynamic = {}\nfor name in DYNAMIC:\n    value = os.environ.get(name, '')\n    if not value or value[0] == '0' or not value.isascii() or not value.isdecimal():\n        raise SystemExit('cargo wrapper source identity is not exact')\n    dynamic[name] = value\nexpected.update(dynamic)\nexpected.update(OVERRIDES)\nexpected['RUSTFLAGS'] += RUSTFLAGS_APPEND\nif dict(os.environ) != expected:\n    raise SystemExit('cargo wrapper environment is not exact')\nif len(sys.argv) < 2 or sys.argv[1] != 'build':\n    raise SystemExit('cargo wrapper only permits build')\nif os.getcwd() != expected['PWD']:\n    raise SystemExit('cargo wrapper working directory is not exact')\nsource = os.stat('.')\nif (str(source.st_dev), str(source.st_ino)) != (\n    dynamic['P1_U04_SOURCE_ST_DEV'], dynamic['P1_U04_SOURCE_ST_INO']\n):\n    raise SystemExit('cargo wrapper source identity is not exact')\nos.execve(CARGO, [CARGO, 'build', '--locked', '--offline', *sys.argv[2:]], expected)\n",
+        "exec_target": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/cargo",
+          "sha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+          "size": 42839824,
+          "source_authority": {
+            "archive_filename": "cargo-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+            "archive_member": "cargo-1.97.1-x86_64-unknown-linux-gnu/cargo/bin/cargo",
+            "archive_sha256": "e1be5f5ff7f7f80ca506fb65770b759edbdc6d303781ed71c5de8ec8a8394779",
+            "archive_size": 11150208,
+            "authority": "SEALED_RUST_COMPONENT_ARCHIVE_MEMBER"
+          },
+          "type": "file"
+        },
+        "interpreter": {
+          "kernel_shebang": "#!/usr/bin/python3.12 -IS",
+          "mode": "0755",
+          "path": "/usr/bin/python3.12",
+          "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+          "size": 8020928,
+          "startup_argv": [
+            "/usr/bin/python3.12",
+            "-IS",
+            "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin/cargo"
+          ],
+          "startup_flags": [
+            "-I",
+            "-S"
+          ]
+        },
+        "mode": "0500",
+        "name": "cargo",
+        "path": "bin/cargo",
+        "sha256": "95bda0849851f51d8f3d2e06398c474e82f90529c7b5d00211f74c08c3efdf15",
+        "size": 3399,
+        "source_authority": "INLINE_HASH_BOUND_STDLIB_CPYTHON_WRAPPER",
+        "type": "file"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang",
+        "mode": "0777",
+        "name": "clang",
+        "path": "bin/clang",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang",
+          "sha256": "05148feea3de2d50a7a1a7c51aedddb2cde03da93038f0d6b13f49422c6d744f",
+          "size": 271521920,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/clang",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang++",
+        "mode": "0777",
+        "name": "clang++",
+        "path": "bin/clang++",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang++",
+          "sha256": "05148feea3de2d50a7a1a7c51aedddb2cde03da93038f0d6b13f49422c6d744f",
+          "size": 271521920,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/clang++",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+        "mode": "0777",
+        "name": "ld.lld",
+        "path": "bin/ld.lld",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+          "sha256": "879d47621106d726c18f0d25f25bf73167d4109521b147341e40139181e3db05",
+          "size": 200223320,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/ld.lld",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/rustc",
+        "mode": "0777",
+        "name": "rustc",
+        "path": "bin/rustc",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/rustc",
+          "sha256": "d3a664c970a9fd8361b64194861bebc1ae37b9054e5ee3400dc1c9e691797eea",
+          "size": 645000,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_filename": "rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+          "archive_member": "rustc-1.97.1-x86_64-unknown-linux-gnu/rustc/bin/rustc",
+          "archive_sha256": "9819d0a32d56bd339585319c80260e332779f5541fd66838ab7e016d6c814819",
+          "archive_size": 81050916,
+          "authority": "SEALED_RUST_COMPONENT_ARCHIVE_MEMBER"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/usr/bin/strip",
+        "mode": "0777",
+        "name": "strip",
+        "path": "bin/strip",
+        "resolved": {
+          "mode": "0755",
+          "path": "/usr/bin/x86_64-linux-gnu-strip",
+          "sha256": "0d980587ada7ab12193f39271f060d5663aa2f289b0e80d2a0274ce7306e4e42",
+          "size": 166568,
+          "type": "file"
+        },
+        "source_authority": {
+          "authority": "NATIVE_BUILD_SYSTEM_TOOL_CHAIN",
+          "link_path": "/usr/bin/strip",
+          "resolved_path": "/usr/bin/x86_64-linux-gnu-strip"
+        },
+        "type": "symlink"
+      }
+    ],
+    "file_set": [
+      "bin/cargo",
+      "bin/clang",
+      "bin/clang++",
+      "bin/ld.lld",
+      "bin/rustc",
+      "bin/strip"
+    ],
+    "root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain"
+  },
+  "external_cache_isolation": {
+    "candidate_namespace": "nautilus-v1.231-toolchain",
+    "directory_mode": "0500",
+    "external_roots": {
+      "candidate_build_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work",
+      "candidate_cargo_home_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+      "candidate_input_root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs",
+      "candidate_llvm_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain",
+      "candidate_runtime_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-runtime",
+      "candidate_rust_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain",
+      "candidate_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain",
+      "candidate_vendor_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-vendor",
+      "rollback_root": "/home/thenam176/.cache/trading-agent/nautilus"
+    },
+    "file_mode": "0400",
+    "rollback_namespace": "nautilus-v1.227-active",
+    "root_access": {
+      "candidate_build_root": "WRITABLE_PARENT_FOR_ONE_FRESH_STAGING_CHILD",
+      "candidate_cargo_home_root": "SEALED_READ_ONLY",
+      "candidate_input_root": "SEALED_READ_ONLY",
+      "candidate_llvm_toolchain_root": "SEALED_READ_ONLY",
+      "candidate_runtime_root": "ABSENT_THEN_SEALED_READ_ONLY",
+      "candidate_rust_toolchain_root": "SEALED_READ_ONLY",
+      "candidate_toolchain_root": "SEALED_READ_ONLY_COMMAND_ROUTER",
+      "candidate_vendor_root": "SEALED_READ_ONLY",
+      "rollback_root": "EXISTING_SEALED_READ_ONLY"
+    },
+    "shared_writable_paths": "PROHIBITED",
+    "writable_build_namespace": "nautilus-v1.231-build-work"
+  },
+  "llvm_toolchain": {
+    "candidate_materialization": "SEPARATE_ROOT_REQUIRED",
+    "consumption": "IMMUTABLE_READ_ONLY_POLICY_REFERENCE",
+    "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+    "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
+    "shared_writable_cache": "PROHIBITED",
+    "validator_path": "scripts/prepare_nautilus_llvm_toolchain.py",
+    "validator_sha256": "71f794bb1c5f70ec427ff33c21f27debd066fcf76567d07241170da5527a41c2",
+    "version": "22.1.3"
+  },
+  "native_build_authority": {
+    "authority": "EXACT_REVIEWED_SYSTEM_HEADERS_LINKER_AND_RUNTIME_INPUTS",
+    "directory_inventories": [
+      {
+        "directory_count": 717,
+        "file_count": 5256,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/include",
+        "record_count": 5973,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 0,
+        "tree_sha256": "268ef63660c38d450f2c6e12270c1d8fb3ab616c561e60cb17f5f8515538b01a"
+      },
+      {
+        "directory_count": 3,
+        "file_count": 172,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/13",
+        "record_count": 192,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 17,
+        "tree_sha256": "a50ba0879474aed59ee44f8874c02464082e5d1d03f013d51a3af01c5c0fabde"
+      },
+      {
+        "directory_count": 331,
+        "file_count": 2380,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/lib/x86_64-linux-gnu",
+        "record_count": 3239,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 528,
+        "tree_sha256": "0ae47028eb1b5818d5c1054c8a75ee40d8851634f77196308d157f3366387b11"
+      },
+      {
+        "directory_count": 0,
+        "file_count": 7,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/libexec/gcc/x86_64-linux-gnu/13",
+        "record_count": 7,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 0,
+        "tree_sha256": "36b7d0196933e2219a97371e8406a1106f4ba465445829bd2938f18edc0c7742"
+      },
+      {
+        "directory_count": 0,
+        "file_count": 0,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/local/include",
+        "record_count": 0,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 0,
+        "tree_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    ],
+    "external_symlink_targets": {
+      "admitted_target_roots": [
+        "/usr/lib/python3.12",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/libexec/gcc/x86_64-linux-gnu/13"
+      ],
+      "authority": "BOUND_BY_EXACT_DIRECTORY_INVENTORIES",
+      "source_roots": [
+        "/usr/lib/gcc/x86_64-linux-gnu/13",
+        "/usr/lib/x86_64-linux-gnu"
+      ]
+    },
+    "llvm_authority": "IMMUTABLE_LLVM_POLICY_REFERENCE",
+    "required_paths": [
+      "/usr/bin/ar",
+      "/usr/bin/ld",
+      "/usr/bin/strip",
+      "/usr/bin/x86_64-linux-gnu-ar",
+      "/usr/include/python3.12",
+      "/usr/lib/gcc/x86_64-linux-gnu/13",
+      "/usr/lib/x86_64-linux-gnu",
+      "/usr/libexec/gcc/x86_64-linux-gnu/13",
+      "/usr/local/include"
+    ],
+    "system_tools": [
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/ar",
+        "size": 19,
+        "target": "x86_64-linux-gnu-ar",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/ld",
+        "size": 19,
+        "target": "x86_64-linux-gnu-ld",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/strip",
+        "size": 22,
+        "target": "x86_64-linux-gnu-strip",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0755",
+        "path": "/usr/bin/x86_64-linux-gnu-ar",
+        "sha256": "6452af2eea333b8c65e1adb92964fc8f97863ab003fa13f9d12bff5345cd7dbe",
+        "size": 55792,
+        "type": "file",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/x86_64-linux-gnu-ld",
+        "size": 23,
+        "target": "x86_64-linux-gnu-ld.bfd",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0755",
+        "path": "/usr/bin/x86_64-linux-gnu-ld.bfd",
+        "sha256": "e9ceb054c12207970f2726dfc07e9a66b411602748628baf27399f02a9bbb31b",
+        "size": 1359128,
+        "type": "file",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0755",
+        "path": "/usr/bin/x86_64-linux-gnu-strip",
+        "sha256": "0d980587ada7ab12193f39271f060d5663aa2f289b0e80d2a0274ce7306e4e42",
+        "size": 166568,
+        "type": "file",
+        "uid": 0
+      }
+    ],
+    "usage": "U04_OFFLINE_BUILD_ONLY"
+  },
+  "native_build_environment": {
+    "builder_derived_environment": {
+      "P1_U04_SOURCE_ST_DEV": "VERIFIED_SOURCE_FD_FSTAT_ST_DEV_CANONICAL_BASE10_POSITIVE",
+      "P1_U04_SOURCE_ST_INO": "VERIFIED_SOURCE_FD_FSTAT_ST_INO_CANONICAL_BASE10_POSITIVE"
+    },
+    "construction": "EMPTY_THEN_SET_EXACT_VALUES",
+    "derived_environment": {
+      "CARGO_TARGET_DIR": "/cargo-target",
+      "HOME": "/home",
+      "P1_U04_ARTIFACTS_ROOT": "/artifacts",
+      "P1_U04_DIST_ROOT": "/dist",
+      "P1_U04_SOURCE_ROOT": "/source",
+      "P1_U04_STAGING_ROOT": "",
+      "P1_U04_VENV_ROOT": "/venv",
+      "PWD": "/source",
+      "PYO3_PYTHON": "/venv/bin/python",
+      "TEMP": "/tmp",
+      "TMP": "/tmp",
+      "TMPDIR": "/tmp",
+      "VIRTUAL_ENV": "/venv"
+    },
+    "derived_paths": {
+      "artifacts": "/artifacts",
+      "cargo_target": "/cargo-target",
+      "dist": "/dist",
+      "home": "/home",
+      "source": "/source",
+      "staging": "",
+      "tmp": "/tmp",
+      "venv": "/venv"
+    },
+    "effective_source_overrides": {
+      "CC": "clang",
+      "CXX": "clang++",
+      "LDSHARED": "clang -shared",
+      "RUSTFLAGS": "-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,norelro -C relocation-model=pic -C link-arg=-s"
+    },
+    "inherited_allowlist": [],
+    "prohibited_source_environment": [
+      "CFLAGS",
+      "LDFLAGS",
+      "LD_LIBRARY_PATH",
+      "PYTHONHOME",
+      "PYTHON_LIB_DIR",
+      "RUSTC_WRAPPER"
+    ],
+    "route": "AWS_LC_SOURCE_DIRECT_CC",
+    "sealed_source_trace": {
+      "archive_finalization": "AR_S_NO_RANLIB_PROCESS",
+      "aws-lc-sys": {
+        "route_source": "builder/main.rs:get_builder",
+        "sha256": "43103168cc76fe62678a375e722fc9cb3a0146159ac5828bc4f0dfd755c2224c",
+        "version": "0.43.0"
+      },
+      "build.py": {
+        "bare_subprocess_executables": [
+          "cargo",
+          "clang",
+          "rustc",
+          "strip"
+        ],
+        "environment_deletes": [
+          "CC",
+          "CXX"
+        ],
+        "environment_reads": [
+          "ANNOTATION_MODE",
+          "BUILD_MODE",
+          "CARGO_BUILD_TARGET",
+          "CARGO_INCREMENTAL",
+          "CARGO_TARGET_DIR",
+          "CC",
+          "CFLAGS",
+          "COPY_TO_SOURCE",
+          "CXX",
+          "DRY_RUN",
+          "FORCE_STRIP",
+          "HIGH_PRECISION",
+          "LDFLAGS",
+          "LDSHARED",
+          "LD_LIBRARY_PATH",
+          "PARALLEL_BUILD",
+          "PROFILE_MODE",
+          "PYO3_ONLY",
+          "PYO3_PYTHON",
+          "PYTHONHOME",
+          "PYTHON_LIB_DIR",
+          "RUSTC_WRAPPER",
+          "RUSTFLAGS",
+          "RUSTUP_TOOLCHAIN",
+          "SKIP_RUST_DYLIB_COPY",
+          "VIRTUAL_ENV"
+        ],
+        "environment_writes": [
+          {
+            "name": "HIGH_PRECISION",
+            "value_source": "\"true\" if HIGH_PRECISION else \"false\""
+          },
+          {
+            "name": "RUSTC_WRAPPER",
+            "value_source": "\"sccache\""
+          },
+          {
+            "name": "CARGO_INCREMENTAL",
+            "value_source": "\"0\""
+          },
+          {
+            "name": "CC",
+            "value_source": "\"sccache clang\" if USE_SCCACHE else \"clang\""
+          },
+          {
+            "name": "CXX",
+            "value_source": "\"sccache clang++\" if USE_SCCACHE else \"clang++\""
+          },
+          {
+            "name": "LDSHARED",
+            "value_source": "\"clang -shared\""
+          },
+          {
+            "name": "ARCHFLAGS",
+            "value_source": "\"-arch arm64\""
+          },
+          {
+            "name": "CFLAGS",
+            "value_source": "f\"{os.environ.get('CFLAGS', '')} -arch arm64\""
+          },
+          {
+            "name": "LDFLAGS",
+            "value_source": "f\"{os.environ.get('LDFLAGS', '')} -arch arm64 -w\""
+          },
+          {
+            "name": "CFLAGS",
+            "value_source": "f\"{os.environ.get('CFLAGS', '')} -fPIC\""
+          },
+          {
+            "name": "LDFLAGS",
+            "value_source": "f\"{os.environ.get('LDFLAGS', '')} -fPIC\""
+          },
+          {
+            "name": "RUSTFLAGS",
+            "value_source": "rustflags"
+          },
+          {
+            "name": "RUSTFLAGS",
+            "value_source": "f\"{existing_rustflags} -C link-arg=-s\""
+          }
+        ],
+        "subprocess_calls": [
+          {
+            "argument_source": "cmd_args",
+            "argv_prefixes": [
+              [
+                "cargo",
+                "build",
+                "--lib"
+              ]
+            ]
+          },
+          {
+            "argument_source": "[\"clang\", \"--version\"]",
+            "argv_prefixes": [
+              [
+                "clang",
+                "--version"
+              ]
+            ]
+          },
+          {
+            "argument_source": "[\"rustc\", \"--version\"]",
+            "argv_prefixes": [
+              [
+                "rustc",
+                "--version"
+              ]
+            ]
+          },
+          {
+            "argument_source": "strip_cmd",
+            "argv_prefixes": [
+              [
+                "strip",
+                "--strip-all",
+                "-R",
+                ".comment",
+                "-R",
+                ".note"
+              ],
+              [
+                "strip",
+                "-x"
+              ]
+            ]
+          }
+        ]
+      },
+      "cc": {
+        "archive_source": "src/lib.rs:compile",
+        "sha256": "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9",
+        "version": "1.4.0"
+      },
+      "selection": "USE_SYSTEM_FALSE_THEN_CMAKE_BUILDER_FALSE"
+    },
+    "source_identity_handoff": {
+      "authority": "U04_BUILDER_INTERNAL_VERIFIED_SOURCE_IDENTITY_V1",
+      "caller_supplied_identity": "PROHIBITED",
+      "derivation_order": [
+        "VERIFY_EXACT_U02_ARCHIVE",
+        "SAFE_EXTRACT_TO_FRESH_STAGE",
+        "VERIFY_FULL_EXTRACTED_TREE_SET_TYPE_MODE_SIZE_SHA256",
+        "OPEN_STAGE_SOURCE_O_PATH_O_DIRECTORY_O_NOFOLLOW",
+        "FSTAT_SOURCE_DIRECTORY",
+        "DERIVE_EXACT_BUILD_ENVIRONMENT"
+      ],
+      "sandbox_mount": {
+        "bubblewrap_option": "--bind-fd",
+        "mount_count": 1,
+        "mount_destination": "EXACT_STAGING_ROOT_ONLY",
+        "mount_source": "PREOPENED_VERIFIED_STAGE_ROOT_FD",
+        "nested_destinations_at_or_below_source": "PROHIBITED",
+        "pass_fds": "EXACT_STAGE_ROOT_FD_ONLY",
+        "stage_disposition": "SCRATCH_DISCARD_AFTER_BUILD"
+      },
+      "source_fd": {
+        "open_call": "os.open(stage/source, O_PATH|O_DIRECTORY|O_NOFOLLOW)",
+        "source_symlink": "FAIL",
+        "stat_call": "os.fstat(source_fd)"
+      },
+      "threat_model": "COOPERATIVE_HOST; CONCURRENT_SAME_UID_ROOT_PTRACE_KERNEL_MUTATION_OUT_OF_SCOPE"
+    },
+    "staging": {
+      "child_name_pattern": "stage-[0-9a-f]{16}",
+      "derived_path_suffixes": {
+        "artifacts": "/artifacts",
+        "cargo_target": "/cargo-target",
+        "dist": "/dist",
+        "home": "/home",
+        "source": "/source",
+        "staging": "",
+        "tmp": "/tmp",
+        "venv": "/venv"
+      },
+      "materialized_directory_mode": "0700",
+      "parent_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work",
+      "required_initial_state": "ABSENT",
+      "writable_scope": "DERIVED_PATHS_ONLY"
+    },
+    "static_exact_values": {
+      "ANNOTATION_MODE": "",
+      "AR": "/usr/bin/ar",
+      "AWS_LC_SYS_CMAKE_BUILDER": "0",
+      "AWS_LC_SYS_USE_SYSTEM": "0",
+      "BUILD_MODE": "release",
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
+      "CARGO_CACHE_RUSTC_INFO": "0",
+      "CARGO_HOME": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_NET_OFFLINE": "true",
+      "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "clang",
+      "CARGO_TERM_COLOR": "never",
+      "COPY_TO_SOURCE": "true",
+      "DRY_RUN": "",
+      "FORCE_STRIP": "false",
+      "HIGH_PRECISION": "true",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PARALLEL_BUILD": "false",
+      "PATH": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin",
+      "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+      "PIP_FIND_LINKS": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels",
+      "PIP_NO_CACHE_DIR": "1",
+      "PIP_NO_INDEX": "1",
+      "PIP_ONLY_BINARY": ":all:",
+      "PROFILE_MODE": "",
+      "PYO3_ONLY": "",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHASHSEED": "0",
+      "PYTHONNOUSERSITE": "1",
+      "RUSTC": "rustc",
+      "RUSTFLAGS": "-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,norelro -C relocation-model=pic",
+      "RUSTUP_TOOLCHAIN": "stable",
+      "SKIP_RUST_DYLIB_COPY": "",
+      "SOURCE_DATE_EPOCH": "0",
+      "TZ": "UTC"
+    },
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "native_entry_guard": {
+    "cargo_lock": "engines/nautilus/native_entry_guard/Cargo.lock",
+    "cargo_lock_sha256": "ce3f0c6900a6ad4c4f8cb04b2624d76bde6a3424f1a22e19aecf62d1347e12a7",
+    "cargo_manifest": "engines/nautilus/native_entry_guard/Cargo.toml",
+    "cargo_manifest_sha256": "85f5df996a40d673f2a86e4f1e1c0248c1627dfaca06b0979c648b1fe26961bf",
+    "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
+    "rust_toolchain_policy": "engines/nautilus/toolchain-inputs.json",
+    "rust_toolchain_policy_sha256": "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe",
+    "source": "engines/nautilus/native_entry_guard/src/main.rs",
+    "source_sha256": "a25053355abcfece9b7d5c524f4a3d3c06ce727aec8224012ef9b683240fd880",
+    "status": "UNCHANGED_SEPARATE_REVIEWED_V1_227_TOOLCHAIN"
+  },
+  "python": {
+    "abi": "cp312",
+    "admitted_sys_path": [
+      "/usr/lib/python312.zip",
+      "/usr/lib/python3.12",
+      "/usr/lib/python3.12/lib-dynload"
+    ],
+    "authority": "REVIEWED_SYSTEM_BINARY_AND_STDLIB_INVENTORY",
+    "excluded_startup_paths": [
+      "/etc/python3.12/sitecustomize.py",
+      "/usr/lib/python3/dist-packages",
+      "/usr/lib/python3.12/site-packages",
+      "/usr/local/lib/python3.12/dist-packages",
+      "/usr/local/lib/python3.12/site-packages"
+    ],
+    "executable": "/usr/bin/python3.12",
+    "executable_gid": 0,
+    "executable_mode": "0755",
+    "executable_sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+    "executable_size": 8020928,
+    "executable_uid": 0,
+    "explicit_build_path_admission": {
+      "authority": "EXACT_WHEEL_CACHE_POLICY_FILENAMES_ONLY",
+      "environment_pythonpath": "PROHIBITED",
+      "injection": "EXPLICIT_SYS_PATH_PREPEND_BEFORE_IMPORT",
+      "root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels"
+    },
+    "identity": "CPython 3.12.3",
+    "implementation": "CPython",
+    "libpython": {
+      "gid": 0,
+      "mode": "0644",
+      "path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
+      "sha256": "a4c35494d197a92f08a9d0a94975d9558e7a50880c42947484f01b720b68d423",
+      "size": 9061000,
+      "uid": 0
+    },
+    "minor_version": "3.12",
+    "platform": "linux_x86_64",
+    "selection_basis": "APPROVED_PLAN_AND_UPSTREAM_SUPPORTED_BASELINE",
+    "shared_writable_state": "PROHIBITED",
+    "startup_argv": [
+      "/usr/bin/python3.12",
+      "-I",
+      "-S"
+    ],
+    "stdlib_external_symlinks": [
+      {
+        "disposition": "BOUND_BY_LIBPYTHON_RECORD",
+        "path": "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.so",
+        "resolved_path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
+        "target": "../../x86_64-linux-gnu/libpython3.12.so.1"
+      },
+      {
+        "disposition": "EXCLUDED_BY_ISOLATED_NO_SITE_STARTUP",
+        "path": "/usr/lib/python3.12/sitecustomize.py",
+        "resolved_path": "/etc/python3.12/sitecustomize.py",
+        "target": "/etc/python3.12/sitecustomize.py"
+      }
+    ],
+    "stdlib_inventory": {
+      "directory_count": 92,
+      "file_count": 1213,
+      "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+      "path": "/usr/lib/python3.12",
+      "record_count": 1308,
+      "root_gid": 0,
+      "root_mode": "0755",
+      "root_uid": 0,
+      "symlink_count": 3,
+      "tree_sha256": "0c17594ac603d6ba61b6b25c25f7f4e748fecb3362741bf191e717f36a39522e"
+    }
+  },
+  "rust": {
+    "cargo_identity": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "cargo_version": "1.97.1",
+    "rustc_identity": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "rustc_version": "1.97.1",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "safety": {
+    "broker_or_exchange_access": "PROHIBITED",
+    "live_trading": "PROHIBITED",
+    "runtime_execution": "PROHIBITED",
+    "scope": "BUILD_INPUT_POLICY_ONLY"
+  },
+  "schema_version": 1
+}

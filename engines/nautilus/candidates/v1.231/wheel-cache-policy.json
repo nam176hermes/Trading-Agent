@@ -1,0 +1,407 @@
+{
+  "bootstrap_exception": {
+    "package": "pip",
+    "reason": "U04_REQUIRES_AN_EXACT_LOCAL_INSTALLER_BEFORE_BUILD_BACKEND_SETUP",
+    "source_classification": "SEPARATELY_REVIEWED_LOCAL_BUILD_BOOTSTRAP_NOT_UV_LOCK_AUTHORITY",
+    "version": "26.1"
+  },
+  "build_closure": [
+    "cython",
+    "numpy",
+    "packaging",
+    "pip",
+    "poetry-core",
+    "setuptools"
+  ],
+  "candidate": {
+    "python_abi": "cp312",
+    "python_minor": "3.12",
+    "release": "1.231.0",
+    "target": "x86_64-unknown-linux-gnu",
+    "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+  },
+  "resolution": {
+    "allow_duplicate_files": false,
+    "allow_extra_files": false,
+    "allow_index_fallback": false,
+    "allow_sdist_fallback": false,
+    "installer_mode": "EXACT_LOCAL_FILENAMES_ONLY"
+  },
+  "runtime_direct": [
+    "click",
+    "fsspec",
+    "msgspec",
+    "numpy",
+    "pandas",
+    "portion",
+    "pyarrow",
+    "pytz",
+    "tqdm",
+    "tzdata",
+    "uvloop"
+  ],
+  "runtime_transitive": [
+    "python-dateutil",
+    "six",
+    "sortedcontainers"
+  ],
+  "schema_version": 1,
+  "wheel_artifacts": [
+    {
+      "active_dependencies": [],
+      "filename": "click-8.4.2-py3-none-any.whl",
+      "mode": "0400",
+      "package": "click",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76",
+      "size": 119243,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/fb/e2/79c688af8b210d232694e31e59da9f6ec747bae31c3f5946e4e9b98860d5/click-8.4.2-py3-none-any.whl",
+      "version": "8.4.2"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "cython-3.2.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "cython",
+      "roles": [
+        "build"
+      ],
+      "sha256": "23e80bc885c599e72072e18d0746df82d394b73100c1e153cda7359e6e59fe09",
+      "size": 3354811,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_AND_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_17_x86_64",
+        "cp312-cp312-manylinux2014_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/56/1b/c04520ac7f3157aa12a69b632c16261170dac9fab6c48608cc004b8f1b17/cython-3.2.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "3.2.9"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "fsspec-2026.2.0-py3-none-any.whl",
+      "mode": "0400",
+      "package": "fsspec",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "98de475b5cb3bd66bedd5c4679e87b4fdfe1a3bf4d707b151b3c07e58c9a2437",
+      "size": 202505,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/e6/ab/fb21f4c939bb440104cc2b396d3be1d9b7a9fd3c6c2a53d98c45b3d7c954/fsspec-2026.2.0-py3-none-any.whl",
+      "version": "2026.2.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "msgspec-0.21.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "msgspec",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "21995e74b5c598c2e004110ad66ec7f1b8c20bf2bcf3b2de8fd9a3094422d3ff",
+      "size": 225025,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_17_x86_64",
+        "cp312-cp312-manylinux2014_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/b5/d1/d4cd9fe89c7d400d7a18f86ccc94daa3f0927f53558846fcb60791dce5d6/msgspec-0.21.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.21.1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "numpy",
+      "roles": [
+        "build",
+        "runtime"
+      ],
+      "sha256": "59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca",
+      "size": 16672469,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_AND_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_27_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/b8/a9/6e73d68500f80773f65f0654ea932019d6694329a0eb0ed0533de38df376/numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "2.5.1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "packaging-26.2-py3-none-any.whl",
+      "mode": "0400",
+      "package": "packaging",
+      "roles": [
+        "build"
+      ],
+      "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+      "size": 100195,
+      "source_classification": "UPSTREAM_BUILD_SCRIPT_IMPORT_AND_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl",
+      "version": "26.2"
+    },
+    {
+      "active_dependencies": [
+        {
+          "package": "numpy",
+          "version": "2.5.1"
+        },
+        {
+          "package": "python-dateutil",
+          "version": "2.9.0.post0"
+        }
+      ],
+      "filename": "pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "pandas",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "d373ce03ffd84010ed9839fa73672a9c8256990532e158440c0085db7d914b34",
+      "size": 10998091,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_24_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/12/98/e976540c1addf70442be7842a18cf70884a964abbf69442504f4d2939989/pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "3.0.5"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "pip-26.1-py3-none-any.whl",
+      "mode": "0400",
+      "package": "pip",
+      "roles": [
+        "build"
+      ],
+      "sha256": "4e8486d821d814b77319acb7b9e8bf5a4ee7590a643e7cb21029f209be8573c1",
+      "size": 1812804,
+      "source_classification": "SEPARATELY_REVIEWED_LOCAL_BUILD_BOOTSTRAP_NOT_UV_LOCK_AUTHORITY",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/70/7a/be4bd8bcbb24ea475856dd68159d78b03b2bb53dae369f69c9606b8888f5/pip-26.1-py3-none-any.whl",
+      "version": "26.1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "poetry_core-2.3.1-py3-none-any.whl",
+      "mode": "0400",
+      "package": "poetry-core",
+      "roles": [
+        "build"
+      ],
+      "sha256": "db1cf63b782570deb38bfba61e2304a553eef0740dc17959a50cc0f5115ee634",
+      "size": 340949,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_EXACT_PIN",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/01/10/c9f7ca739ab0956f8dc8737e6318b9812745589ed1e3f6fdfb6a5d64f58a/poetry_core-2.3.1-py3-none-any.whl",
+      "version": "2.3.1"
+    },
+    {
+      "active_dependencies": [
+        {
+          "package": "sortedcontainers",
+          "version": "2.4.0"
+        }
+      ],
+      "filename": "portion-2.6.2-py3-none-any.whl",
+      "mode": "0400",
+      "package": "portion",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "86be115afafa776174dc5eac82afb6496c9fa3684f5b3a844c3139535c51085e",
+      "size": 28218,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/6a/26/669f1f68c5741bce383c3bb6afd1dda3495813118024a6a0a27d47b9d284/portion-2.6.2-py3-none-any.whl",
+      "version": "2.6.2"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "pyarrow-25.0.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "pyarrow",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "5d1dbf24e151042f2fa3c129563f65d66674128868496fb008c4272b16bdf778",
+      "size": 50088993,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/55/0e/cd705c042bc4fe7022478db577fcab4abdcfabb9bc37ab7a75556b3fcb2b/pyarrow-25.0.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "version": "25.0.0"
+    },
+    {
+      "active_dependencies": [
+        {
+          "package": "six",
+          "version": "1.17.0"
+        }
+      ],
+      "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "python-dateutil",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "size": 229892,
+      "source_classification": "UPSTREAM_UV_LOCK_TRANSITIVE",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "version": "2.9.0.post0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "pytz-2026.3.post1-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "pytz",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815",
+      "size": 508283,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/0f/7b/39c34ca613b0b198cb866466651b26b045e2009864c5183c979a3b83f383/pytz-2026.3.post1-py2.py3-none-any.whl",
+      "version": "2026.3.post1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "setuptools-83.0.0-py3-none-any.whl",
+      "mode": "0400",
+      "package": "setuptools",
+      "roles": [
+        "build"
+      ],
+      "sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3",
+      "size": 1008090,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_AND_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl",
+      "version": "83.0.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "six",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "size": 11050,
+      "source_classification": "UPSTREAM_UV_LOCK_TRANSITIVE",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "version": "1.17.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "sortedcontainers-2.4.0-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "sortedcontainers",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0",
+      "size": 29575,
+      "source_classification": "UPSTREAM_UV_LOCK_TRANSITIVE",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl",
+      "version": "2.4.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "tqdm-4.70.0-py3-none-any.whl",
+      "mode": "0400",
+      "package": "tqdm",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953",
+      "size": 80184,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl",
+      "version": "4.70.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "tzdata-2026.3-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "tzdata",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931",
+      "size": 348168,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/e5/6d/b53b99a9f2766d095985947a5782f1702cabb129a34f7a802d7197af832f/tzdata-2026.3-py2.py3-none-any.whl",
+      "version": "2026.3"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "uvloop-0.22.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "uvloop",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "7b5b1ac819a3f946d3b2ee07f09149578ae76066d70b44df3fa990add49a82e4",
+      "size": 4426307,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_17_x86_64",
+        "cp312-cp312-manylinux2014_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/5f/6f/e62b4dfc7ad6518e7eff2516f680d02a0f6eb62c0c212e152ca708a0085e/uvloop-0.22.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.22.1"
+    }
+  ]
+}

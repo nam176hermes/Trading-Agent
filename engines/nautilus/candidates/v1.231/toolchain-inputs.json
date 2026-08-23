@@ -1,0 +1,1697 @@
+{
+  "build_wheels": [
+    {
+      "active_dependencies": [],
+      "filename": "cython-3.2.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "cython",
+      "roles": [
+        "build"
+      ],
+      "sha256": "23e80bc885c599e72072e18d0746df82d394b73100c1e153cda7359e6e59fe09",
+      "size": 3354811,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_AND_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_17_x86_64",
+        "cp312-cp312-manylinux2014_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/56/1b/c04520ac7f3157aa12a69b632c16261170dac9fab6c48608cc004b8f1b17/cython-3.2.9-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "3.2.9"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "numpy",
+      "roles": [
+        "build",
+        "runtime"
+      ],
+      "sha256": "59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca",
+      "size": 16672469,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_AND_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_27_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/b8/a9/6e73d68500f80773f65f0654ea932019d6694329a0eb0ed0533de38df376/numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "2.5.1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "packaging-26.2-py3-none-any.whl",
+      "mode": "0400",
+      "package": "packaging",
+      "roles": [
+        "build"
+      ],
+      "sha256": "5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e",
+      "size": 100195,
+      "source_classification": "UPSTREAM_BUILD_SCRIPT_IMPORT_AND_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl",
+      "version": "26.2"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "pip-26.1-py3-none-any.whl",
+      "mode": "0400",
+      "package": "pip",
+      "roles": [
+        "build"
+      ],
+      "sha256": "4e8486d821d814b77319acb7b9e8bf5a4ee7590a643e7cb21029f209be8573c1",
+      "size": 1812804,
+      "source_classification": "SEPARATELY_REVIEWED_LOCAL_BUILD_BOOTSTRAP_NOT_UV_LOCK_AUTHORITY",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/70/7a/be4bd8bcbb24ea475856dd68159d78b03b2bb53dae369f69c9606b8888f5/pip-26.1-py3-none-any.whl",
+      "version": "26.1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "poetry_core-2.3.1-py3-none-any.whl",
+      "mode": "0400",
+      "package": "poetry-core",
+      "roles": [
+        "build"
+      ],
+      "sha256": "db1cf63b782570deb38bfba61e2304a553eef0740dc17959a50cc0f5115ee634",
+      "size": 340949,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_EXACT_PIN",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/01/10/c9f7ca739ab0956f8dc8737e6318b9812745589ed1e3f6fdfb6a5d64f58a/poetry_core-2.3.1-py3-none-any.whl",
+      "version": "2.3.1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "setuptools-83.0.0-py3-none-any.whl",
+      "mode": "0400",
+      "package": "setuptools",
+      "roles": [
+        "build"
+      ],
+      "sha256": "29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3",
+      "size": 1008090,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_AND_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl",
+      "version": "83.0.0"
+    }
+  ],
+  "cache_tree_sha256": "019d5d4a4e8a1ed45ff7e22902fe1692ba8f33647b22a9fe18bae1a78490e112",
+  "candidate": {
+    "release": "1.231.0",
+    "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    "upstream_tag": "v1.231.0"
+  },
+  "cargo_registry": {
+    "cache_directory": "cargo-registry",
+    "offline_cargo_config": {
+      "cargo_home_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+      "config_relative_path": "config.toml",
+      "contents": "[net]\noffline = true\n\n[source.crates-io]\nreplace-with = \"candidate-vendor\"\n\n[source.candidate-vendor]\ndirectory = \"/home/thenam176/.cache/trading-agent/nautilus-v1.231-vendor\"\n",
+      "mode": "0400",
+      "sha256": "b54f157d4d5fd19cab80fe1227859ee413a41538a5948b8bd85bd55b6c99f0c9",
+      "vendor_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-vendor"
+    },
+    "package_count": 862,
+    "registry_source": "registry+https://github.com/rust-lang/crates.io-index",
+    "vendor_materialization": {
+      "archive_format": "CRATES_IO_DOT_CRATE_TAR_GZIP",
+      "checksum_file": ".cargo-checksum.json",
+      "checksum_file_algorithm": "SORTED_RELATIVE_FILE_SHA256_WITH_LOCK_PACKAGE_CHECKSUM_V1",
+      "directory_name_pattern": "{name}-{version}",
+      "expected_directory_count": 862,
+      "network": "PROHIBITED",
+      "source": "EXACT_SEALED_CRATE_ARCHIVES_ONLY"
+    }
+  },
+  "command_router": {
+    "authority": "EXACT_SEALED_COMMAND_ROUTER_V1",
+    "directory_mode": "0500",
+    "directory_set": [
+      ".",
+      "bin"
+    ],
+    "entries": [
+      {
+        "contents": "#!/usr/bin/python3.12 -IS\nimport os\nimport sys\n\nBUILD_ROOT = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work'\nCARGO = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/cargo'\nSTATIC = {'ANNOTATION_MODE': '', 'AR': '/usr/bin/ar', 'AWS_LC_SYS_CMAKE_BUILDER': '0', 'AWS_LC_SYS_USE_SYSTEM': '0', 'BUILD_MODE': 'release', 'CARGO_BUILD_JOBS': '1', 'CARGO_BUILD_TARGET': 'x86_64-unknown-linux-gnu', 'CARGO_CACHE_RUSTC_INFO': '0', 'CARGO_HOME': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home', 'CARGO_INCREMENTAL': '0', 'CARGO_NET_OFFLINE': 'true', 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER': 'clang', 'CARGO_TERM_COLOR': 'never', 'COPY_TO_SOURCE': 'true', 'DRY_RUN': '', 'FORCE_STRIP': 'false', 'HIGH_PRECISION': 'true', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'PARALLEL_BUILD': 'false', 'PATH': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin', 'PIP_DISABLE_PIP_VERSION_CHECK': '1', 'PIP_FIND_LINKS': '/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels', 'PIP_NO_CACHE_DIR': '1', 'PIP_NO_INDEX': '1', 'PIP_ONLY_BINARY': ':all:', 'PROFILE_MODE': '', 'PYO3_ONLY': '', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONHASHSEED': '0', 'PYTHONNOUSERSITE': '1', 'RUSTC': 'rustc', 'RUSTFLAGS': '-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,norelro -C relocation-model=pic', 'RUSTUP_TOOLCHAIN': 'stable', 'SKIP_RUST_DYLIB_COPY': '', 'SOURCE_DATE_EPOCH': '0', 'TZ': 'UTC'}\nDERIVED = {'CARGO_TARGET_DIR': '/cargo-target', 'HOME': '/home', 'P1_U04_ARTIFACTS_ROOT': '/artifacts', 'P1_U04_DIST_ROOT': '/dist', 'P1_U04_SOURCE_ROOT': '/source', 'P1_U04_STAGING_ROOT': '', 'P1_U04_VENV_ROOT': '/venv', 'PWD': '/source', 'PYO3_PYTHON': '/venv/bin/python', 'TEMP': '/tmp', 'TMP': '/tmp', 'TMPDIR': '/tmp', 'VIRTUAL_ENV': '/venv'}\nDYNAMIC = ('P1_U04_SOURCE_ST_DEV', 'P1_U04_SOURCE_ST_INO')\nOVERRIDES = {'CC': 'clang', 'CXX': 'clang++', 'LDSHARED': 'clang -shared'}\nRUSTFLAGS_APPEND = ' -C link-arg=-s'\n\nstage = os.environ.get('P1_U04_STAGING_ROOT', '')\nprefix = BUILD_ROOT + '/stage-'\ntoken = stage[len(prefix):] if stage.startswith(prefix) else ''\nif len(token) != 16 or any(c not in '0123456789abcdef' for c in token):\n    raise SystemExit('cargo wrapper environment is not exact')\nexpected = dict(STATIC)\nexpected.update({name: stage + suffix for name, suffix in DERIVED.items()})\ndynamic = {}\nfor name in DYNAMIC:\n    value = os.environ.get(name, '')\n    if not value or value[0] == '0' or not value.isascii() or not value.isdecimal():\n        raise SystemExit('cargo wrapper source identity is not exact')\n    dynamic[name] = value\nexpected.update(dynamic)\nexpected.update(OVERRIDES)\nexpected['RUSTFLAGS'] += RUSTFLAGS_APPEND\nif dict(os.environ) != expected:\n    raise SystemExit('cargo wrapper environment is not exact')\nif len(sys.argv) < 2 or sys.argv[1] != 'build':\n    raise SystemExit('cargo wrapper only permits build')\nif os.getcwd() != expected['PWD']:\n    raise SystemExit('cargo wrapper working directory is not exact')\nsource = os.stat('.')\nif (str(source.st_dev), str(source.st_ino)) != (\n    dynamic['P1_U04_SOURCE_ST_DEV'], dynamic['P1_U04_SOURCE_ST_INO']\n):\n    raise SystemExit('cargo wrapper source identity is not exact')\nos.execve(CARGO, [CARGO, 'build', '--locked', '--offline', *sys.argv[2:]], expected)\n",
+        "exec_target": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/cargo",
+          "sha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953",
+          "size": 42839824,
+          "source_authority": {
+            "archive_filename": "cargo-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+            "archive_member": "cargo-1.97.1-x86_64-unknown-linux-gnu/cargo/bin/cargo",
+            "archive_sha256": "e1be5f5ff7f7f80ca506fb65770b759edbdc6d303781ed71c5de8ec8a8394779",
+            "archive_size": 11150208,
+            "authority": "SEALED_RUST_COMPONENT_ARCHIVE_MEMBER"
+          },
+          "type": "file"
+        },
+        "interpreter": {
+          "kernel_shebang": "#!/usr/bin/python3.12 -IS",
+          "mode": "0755",
+          "path": "/usr/bin/python3.12",
+          "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+          "size": 8020928,
+          "startup_argv": [
+            "/usr/bin/python3.12",
+            "-IS",
+            "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin/cargo"
+          ],
+          "startup_flags": [
+            "-I",
+            "-S"
+          ]
+        },
+        "mode": "0500",
+        "name": "cargo",
+        "path": "bin/cargo",
+        "sha256": "95bda0849851f51d8f3d2e06398c474e82f90529c7b5d00211f74c08c3efdf15",
+        "size": 3399,
+        "source_authority": "INLINE_HASH_BOUND_STDLIB_CPYTHON_WRAPPER",
+        "type": "file"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang",
+        "mode": "0777",
+        "name": "clang",
+        "path": "bin/clang",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang",
+          "sha256": "05148feea3de2d50a7a1a7c51aedddb2cde03da93038f0d6b13f49422c6d744f",
+          "size": 271521920,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/clang",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang++",
+        "mode": "0777",
+        "name": "clang++",
+        "path": "bin/clang++",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/clang++",
+          "sha256": "05148feea3de2d50a7a1a7c51aedddb2cde03da93038f0d6b13f49422c6d744f",
+          "size": 271521920,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/clang++",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+        "mode": "0777",
+        "name": "ld.lld",
+        "path": "bin/ld.lld",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+          "sha256": "879d47621106d726c18f0d25f25bf73167d4109521b147341e40139181e3db05",
+          "size": 200223320,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/ld.lld",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/rustc",
+        "mode": "0777",
+        "name": "rustc",
+        "path": "bin/rustc",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/rustc",
+          "sha256": "d3a664c970a9fd8361b64194861bebc1ae37b9054e5ee3400dc1c9e691797eea",
+          "size": 645000,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_filename": "rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+          "archive_member": "rustc-1.97.1-x86_64-unknown-linux-gnu/rustc/bin/rustc",
+          "archive_sha256": "9819d0a32d56bd339585319c80260e332779f5541fd66838ab7e016d6c814819",
+          "archive_size": 81050916,
+          "authority": "SEALED_RUST_COMPONENT_ARCHIVE_MEMBER"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/usr/bin/strip",
+        "mode": "0777",
+        "name": "strip",
+        "path": "bin/strip",
+        "resolved": {
+          "mode": "0755",
+          "path": "/usr/bin/x86_64-linux-gnu-strip",
+          "sha256": "0d980587ada7ab12193f39271f060d5663aa2f289b0e80d2a0274ce7306e4e42",
+          "size": 166568,
+          "type": "file"
+        },
+        "source_authority": {
+          "authority": "NATIVE_BUILD_SYSTEM_TOOL_CHAIN",
+          "link_path": "/usr/bin/strip",
+          "resolved_path": "/usr/bin/x86_64-linux-gnu-strip"
+        },
+        "type": "symlink"
+      }
+    ],
+    "file_set": [
+      "bin/cargo",
+      "bin/clang",
+      "bin/clang++",
+      "bin/ld.lld",
+      "bin/rustc",
+      "bin/strip"
+    ],
+    "root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain"
+  },
+  "derivation": {
+    "cargo_lock_package_count": 908,
+    "cargo_registry_package_count": 862,
+    "cargo_registry_tree_sha256": "3a95309dcac027f46190f603950d2f809d792f0e2665f74e377944acc7f8ba5c",
+    "runtime_dependency_edges": {
+      "click": [],
+      "fsspec": [],
+      "msgspec": [],
+      "numpy": [],
+      "pandas": [
+        "numpy",
+        "python-dateutil"
+      ],
+      "portion": [
+        "sortedcontainers"
+      ],
+      "pyarrow": [],
+      "python-dateutil": [
+        "six"
+      ],
+      "pytz": [],
+      "six": [],
+      "sortedcontainers": [],
+      "tqdm": [],
+      "tzdata": [],
+      "uvloop": []
+    },
+    "uv_lock_package_count": 143,
+    "uv_lock_revision": 3
+  },
+  "external_cache_isolation": {
+    "candidate_namespace": "nautilus-v1.231-toolchain",
+    "directory_mode": "0500",
+    "external_roots": {
+      "candidate_build_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work",
+      "candidate_cargo_home_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+      "candidate_input_root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs",
+      "candidate_llvm_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain",
+      "candidate_runtime_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-runtime",
+      "candidate_rust_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain",
+      "candidate_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain",
+      "candidate_vendor_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-vendor",
+      "rollback_root": "/home/thenam176/.cache/trading-agent/nautilus"
+    },
+    "file_mode": "0400",
+    "rollback_namespace": "nautilus-v1.227-active",
+    "root_access": {
+      "candidate_build_root": "WRITABLE_PARENT_FOR_ONE_FRESH_STAGING_CHILD",
+      "candidate_cargo_home_root": "SEALED_READ_ONLY",
+      "candidate_input_root": "SEALED_READ_ONLY",
+      "candidate_llvm_toolchain_root": "SEALED_READ_ONLY",
+      "candidate_runtime_root": "ABSENT_THEN_SEALED_READ_ONLY",
+      "candidate_rust_toolchain_root": "SEALED_READ_ONLY",
+      "candidate_toolchain_root": "SEALED_READ_ONLY_COMMAND_ROUTER",
+      "candidate_vendor_root": "SEALED_READ_ONLY",
+      "rollback_root": "EXISTING_SEALED_READ_ONLY"
+    },
+    "shared_writable_paths": "PROHIBITED",
+    "writable_build_namespace": "nautilus-v1.231-build-work"
+  },
+  "manifest_kind": "NAUTILUS_V1_231_DETERMINISTIC_TOOLCHAIN_INPUTS",
+  "native_build_authority": {
+    "authority": "EXACT_REVIEWED_SYSTEM_HEADERS_LINKER_AND_RUNTIME_INPUTS",
+    "directory_inventories": [
+      {
+        "directory_count": 717,
+        "file_count": 5256,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/include",
+        "record_count": 5973,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 0,
+        "tree_sha256": "268ef63660c38d450f2c6e12270c1d8fb3ab616c561e60cb17f5f8515538b01a"
+      },
+      {
+        "directory_count": 3,
+        "file_count": 172,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/lib/gcc/x86_64-linux-gnu/13",
+        "record_count": 192,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 17,
+        "tree_sha256": "a50ba0879474aed59ee44f8874c02464082e5d1d03f013d51a3af01c5c0fabde"
+      },
+      {
+        "directory_count": 331,
+        "file_count": 2380,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/lib/x86_64-linux-gnu",
+        "record_count": 3239,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 528,
+        "tree_sha256": "0ae47028eb1b5818d5c1054c8a75ee40d8851634f77196308d157f3366387b11"
+      },
+      {
+        "directory_count": 0,
+        "file_count": 7,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/libexec/gcc/x86_64-linux-gnu/13",
+        "record_count": 7,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 0,
+        "tree_sha256": "36b7d0196933e2219a97371e8406a1106f4ba465445829bd2938f18edc0c7742"
+      },
+      {
+        "directory_count": 0,
+        "file_count": 0,
+        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+        "path": "/usr/local/include",
+        "record_count": 0,
+        "root_gid": 0,
+        "root_mode": "0755",
+        "root_uid": 0,
+        "symlink_count": 0,
+        "tree_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    ],
+    "external_symlink_targets": {
+      "admitted_target_roots": [
+        "/usr/lib/python3.12",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/libexec/gcc/x86_64-linux-gnu/13"
+      ],
+      "authority": "BOUND_BY_EXACT_DIRECTORY_INVENTORIES",
+      "source_roots": [
+        "/usr/lib/gcc/x86_64-linux-gnu/13",
+        "/usr/lib/x86_64-linux-gnu"
+      ]
+    },
+    "llvm_authority": "IMMUTABLE_LLVM_POLICY_REFERENCE",
+    "required_paths": [
+      "/usr/bin/ar",
+      "/usr/bin/ld",
+      "/usr/bin/strip",
+      "/usr/bin/x86_64-linux-gnu-ar",
+      "/usr/include/python3.12",
+      "/usr/lib/gcc/x86_64-linux-gnu/13",
+      "/usr/lib/x86_64-linux-gnu",
+      "/usr/libexec/gcc/x86_64-linux-gnu/13",
+      "/usr/local/include"
+    ],
+    "system_tools": [
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/ar",
+        "size": 19,
+        "target": "x86_64-linux-gnu-ar",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/ld",
+        "size": 19,
+        "target": "x86_64-linux-gnu-ld",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/strip",
+        "size": 22,
+        "target": "x86_64-linux-gnu-strip",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0755",
+        "path": "/usr/bin/x86_64-linux-gnu-ar",
+        "sha256": "6452af2eea333b8c65e1adb92964fc8f97863ab003fa13f9d12bff5345cd7dbe",
+        "size": 55792,
+        "type": "file",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0777",
+        "path": "/usr/bin/x86_64-linux-gnu-ld",
+        "size": 23,
+        "target": "x86_64-linux-gnu-ld.bfd",
+        "type": "symlink",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0755",
+        "path": "/usr/bin/x86_64-linux-gnu-ld.bfd",
+        "sha256": "e9ceb054c12207970f2726dfc07e9a66b411602748628baf27399f02a9bbb31b",
+        "size": 1359128,
+        "type": "file",
+        "uid": 0
+      },
+      {
+        "gid": 0,
+        "mode": "0755",
+        "path": "/usr/bin/x86_64-linux-gnu-strip",
+        "sha256": "0d980587ada7ab12193f39271f060d5663aa2f289b0e80d2a0274ce7306e4e42",
+        "size": 166568,
+        "type": "file",
+        "uid": 0
+      }
+    ],
+    "usage": "U04_OFFLINE_BUILD_ONLY"
+  },
+  "native_build_environment": {
+    "builder_derived_environment": {
+      "P1_U04_SOURCE_ST_DEV": "VERIFIED_SOURCE_FD_FSTAT_ST_DEV_CANONICAL_BASE10_POSITIVE",
+      "P1_U04_SOURCE_ST_INO": "VERIFIED_SOURCE_FD_FSTAT_ST_INO_CANONICAL_BASE10_POSITIVE"
+    },
+    "construction": "EMPTY_THEN_SET_EXACT_VALUES",
+    "derived_environment": {
+      "CARGO_TARGET_DIR": "/cargo-target",
+      "HOME": "/home",
+      "P1_U04_ARTIFACTS_ROOT": "/artifacts",
+      "P1_U04_DIST_ROOT": "/dist",
+      "P1_U04_SOURCE_ROOT": "/source",
+      "P1_U04_STAGING_ROOT": "",
+      "P1_U04_VENV_ROOT": "/venv",
+      "PWD": "/source",
+      "PYO3_PYTHON": "/venv/bin/python",
+      "TEMP": "/tmp",
+      "TMP": "/tmp",
+      "TMPDIR": "/tmp",
+      "VIRTUAL_ENV": "/venv"
+    },
+    "derived_paths": {
+      "artifacts": "/artifacts",
+      "cargo_target": "/cargo-target",
+      "dist": "/dist",
+      "home": "/home",
+      "source": "/source",
+      "staging": "",
+      "tmp": "/tmp",
+      "venv": "/venv"
+    },
+    "effective_source_overrides": {
+      "CC": "clang",
+      "CXX": "clang++",
+      "LDSHARED": "clang -shared",
+      "RUSTFLAGS": "-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,norelro -C relocation-model=pic -C link-arg=-s"
+    },
+    "inherited_allowlist": [],
+    "prohibited_source_environment": [
+      "CFLAGS",
+      "LDFLAGS",
+      "LD_LIBRARY_PATH",
+      "PYTHONHOME",
+      "PYTHON_LIB_DIR",
+      "RUSTC_WRAPPER"
+    ],
+    "route": "AWS_LC_SOURCE_DIRECT_CC",
+    "sealed_source_trace": {
+      "archive_finalization": "AR_S_NO_RANLIB_PROCESS",
+      "aws-lc-sys": {
+        "route_source": "builder/main.rs:get_builder",
+        "sha256": "43103168cc76fe62678a375e722fc9cb3a0146159ac5828bc4f0dfd755c2224c",
+        "version": "0.43.0"
+      },
+      "build.py": {
+        "bare_subprocess_executables": [
+          "cargo",
+          "clang",
+          "rustc",
+          "strip"
+        ],
+        "environment_deletes": [
+          "CC",
+          "CXX"
+        ],
+        "environment_reads": [
+          "ANNOTATION_MODE",
+          "BUILD_MODE",
+          "CARGO_BUILD_TARGET",
+          "CARGO_INCREMENTAL",
+          "CARGO_TARGET_DIR",
+          "CC",
+          "CFLAGS",
+          "COPY_TO_SOURCE",
+          "CXX",
+          "DRY_RUN",
+          "FORCE_STRIP",
+          "HIGH_PRECISION",
+          "LDFLAGS",
+          "LDSHARED",
+          "LD_LIBRARY_PATH",
+          "PARALLEL_BUILD",
+          "PROFILE_MODE",
+          "PYO3_ONLY",
+          "PYO3_PYTHON",
+          "PYTHONHOME",
+          "PYTHON_LIB_DIR",
+          "RUSTC_WRAPPER",
+          "RUSTFLAGS",
+          "RUSTUP_TOOLCHAIN",
+          "SKIP_RUST_DYLIB_COPY",
+          "VIRTUAL_ENV"
+        ],
+        "environment_writes": [
+          {
+            "name": "HIGH_PRECISION",
+            "value_source": "\"true\" if HIGH_PRECISION else \"false\""
+          },
+          {
+            "name": "RUSTC_WRAPPER",
+            "value_source": "\"sccache\""
+          },
+          {
+            "name": "CARGO_INCREMENTAL",
+            "value_source": "\"0\""
+          },
+          {
+            "name": "CC",
+            "value_source": "\"sccache clang\" if USE_SCCACHE else \"clang\""
+          },
+          {
+            "name": "CXX",
+            "value_source": "\"sccache clang++\" if USE_SCCACHE else \"clang++\""
+          },
+          {
+            "name": "LDSHARED",
+            "value_source": "\"clang -shared\""
+          },
+          {
+            "name": "ARCHFLAGS",
+            "value_source": "\"-arch arm64\""
+          },
+          {
+            "name": "CFLAGS",
+            "value_source": "f\"{os.environ.get('CFLAGS', '')} -arch arm64\""
+          },
+          {
+            "name": "LDFLAGS",
+            "value_source": "f\"{os.environ.get('LDFLAGS', '')} -arch arm64 -w\""
+          },
+          {
+            "name": "CFLAGS",
+            "value_source": "f\"{os.environ.get('CFLAGS', '')} -fPIC\""
+          },
+          {
+            "name": "LDFLAGS",
+            "value_source": "f\"{os.environ.get('LDFLAGS', '')} -fPIC\""
+          },
+          {
+            "name": "RUSTFLAGS",
+            "value_source": "rustflags"
+          },
+          {
+            "name": "RUSTFLAGS",
+            "value_source": "f\"{existing_rustflags} -C link-arg=-s\""
+          }
+        ],
+        "subprocess_calls": [
+          {
+            "argument_source": "cmd_args",
+            "argv_prefixes": [
+              [
+                "cargo",
+                "build",
+                "--lib"
+              ]
+            ]
+          },
+          {
+            "argument_source": "[\"clang\", \"--version\"]",
+            "argv_prefixes": [
+              [
+                "clang",
+                "--version"
+              ]
+            ]
+          },
+          {
+            "argument_source": "[\"rustc\", \"--version\"]",
+            "argv_prefixes": [
+              [
+                "rustc",
+                "--version"
+              ]
+            ]
+          },
+          {
+            "argument_source": "strip_cmd",
+            "argv_prefixes": [
+              [
+                "strip",
+                "--strip-all",
+                "-R",
+                ".comment",
+                "-R",
+                ".note"
+              ],
+              [
+                "strip",
+                "-x"
+              ]
+            ]
+          }
+        ]
+      },
+      "cc": {
+        "archive_source": "src/lib.rs:compile",
+        "sha256": "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9",
+        "version": "1.4.0"
+      },
+      "selection": "USE_SYSTEM_FALSE_THEN_CMAKE_BUILDER_FALSE"
+    },
+    "source_identity_handoff": {
+      "authority": "U04_BUILDER_INTERNAL_VERIFIED_SOURCE_IDENTITY_V1",
+      "caller_supplied_identity": "PROHIBITED",
+      "derivation_order": [
+        "VERIFY_EXACT_U02_ARCHIVE",
+        "SAFE_EXTRACT_TO_FRESH_STAGE",
+        "VERIFY_FULL_EXTRACTED_TREE_SET_TYPE_MODE_SIZE_SHA256",
+        "OPEN_STAGE_SOURCE_O_PATH_O_DIRECTORY_O_NOFOLLOW",
+        "FSTAT_SOURCE_DIRECTORY",
+        "DERIVE_EXACT_BUILD_ENVIRONMENT"
+      ],
+      "sandbox_mount": {
+        "bubblewrap_option": "--bind-fd",
+        "mount_count": 1,
+        "mount_destination": "EXACT_STAGING_ROOT_ONLY",
+        "mount_source": "PREOPENED_VERIFIED_STAGE_ROOT_FD",
+        "nested_destinations_at_or_below_source": "PROHIBITED",
+        "pass_fds": "EXACT_STAGE_ROOT_FD_ONLY",
+        "stage_disposition": "SCRATCH_DISCARD_AFTER_BUILD"
+      },
+      "source_fd": {
+        "open_call": "os.open(stage/source, O_PATH|O_DIRECTORY|O_NOFOLLOW)",
+        "source_symlink": "FAIL",
+        "stat_call": "os.fstat(source_fd)"
+      },
+      "threat_model": "COOPERATIVE_HOST; CONCURRENT_SAME_UID_ROOT_PTRACE_KERNEL_MUTATION_OUT_OF_SCOPE"
+    },
+    "staging": {
+      "child_name_pattern": "stage-[0-9a-f]{16}",
+      "derived_path_suffixes": {
+        "artifacts": "/artifacts",
+        "cargo_target": "/cargo-target",
+        "dist": "/dist",
+        "home": "/home",
+        "source": "/source",
+        "staging": "",
+        "tmp": "/tmp",
+        "venv": "/venv"
+      },
+      "materialized_directory_mode": "0700",
+      "parent_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work",
+      "required_initial_state": "ABSENT",
+      "writable_scope": "DERIVED_PATHS_ONLY"
+    },
+    "static_exact_values": {
+      "ANNOTATION_MODE": "",
+      "AR": "/usr/bin/ar",
+      "AWS_LC_SYS_CMAKE_BUILDER": "0",
+      "AWS_LC_SYS_USE_SYSTEM": "0",
+      "BUILD_MODE": "release",
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_BUILD_TARGET": "x86_64-unknown-linux-gnu",
+      "CARGO_CACHE_RUSTC_INFO": "0",
+      "CARGO_HOME": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_NET_OFFLINE": "true",
+      "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "clang",
+      "CARGO_TERM_COLOR": "never",
+      "COPY_TO_SOURCE": "true",
+      "DRY_RUN": "",
+      "FORCE_STRIP": "false",
+      "HIGH_PRECISION": "true",
+      "LANG": "C.UTF-8",
+      "LC_ALL": "C.UTF-8",
+      "PARALLEL_BUILD": "false",
+      "PATH": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin",
+      "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+      "PIP_FIND_LINKS": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels",
+      "PIP_NO_CACHE_DIR": "1",
+      "PIP_NO_INDEX": "1",
+      "PIP_ONLY_BINARY": ":all:",
+      "PROFILE_MODE": "",
+      "PYO3_ONLY": "",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHASHSEED": "0",
+      "PYTHONNOUSERSITE": "1",
+      "RUSTC": "rustc",
+      "RUSTFLAGS": "-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,norelro -C relocation-model=pic",
+      "RUSTUP_TOOLCHAIN": "stable",
+      "SKIP_RUST_DYLIB_COPY": "",
+      "SOURCE_DATE_EPOCH": "0",
+      "TZ": "UTC"
+    },
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "native_entry_guard": {
+    "cargo_lock": "engines/nautilus/native_entry_guard/Cargo.lock",
+    "cargo_lock_sha256": "ce3f0c6900a6ad4c4f8cb04b2624d76bde6a3424f1a22e19aecf62d1347e12a7",
+    "cargo_manifest": "engines/nautilus/native_entry_guard/Cargo.toml",
+    "cargo_manifest_sha256": "85f5df996a40d673f2a86e4f1e1c0248c1627dfaca06b0979c648b1fe26961bf",
+    "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
+    "rust_toolchain_policy": "engines/nautilus/toolchain-inputs.json",
+    "rust_toolchain_policy_sha256": "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe",
+    "source": "engines/nautilus/native_entry_guard/src/main.rs",
+    "source_sha256": "a25053355abcfece9b7d5c524f4a3d3c06ce727aec8224012ef9b683240fd880",
+    "status": "UNCHANGED_SEPARATE_REVIEWED_V1_227_TOOLCHAIN"
+  },
+  "network": "DISABLED_BY_CONSTRUCTION",
+  "policy_hashes": {
+    "cargo_registry_policy_sha256": "ba2332d0a134a557aae7b8959e02ade94fd5d31ca70ce23fe8f48f839367b8ad",
+    "engine_build_policy_sha256": "6fdfbf3f0def71e0b9da2111160ef087af773b6f4bbe71591010d5322095a145",
+    "generator_sha256": "7c55a0df5d52928ba60679baa44b598fc6662be6fa58829bb764718ca587e655",
+    "input_cache_policy_sha256": "f8b073c177c24d4a95df916610e4be5bf20e66fc50bd9fa138897f51bce862fa",
+    "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
+    "llvm_toolchain_validator_sha256": "71f794bb1c5f70ec427ff33c21f27debd066fcf76567d07241170da5527a41c2",
+    "release_provenance_policy_sha256": "f921b50ab5af8a9e518fd599ebcb2425cd7d2f8130263875d46dd34c3e40af8a",
+    "release_provenance_verifier_sha256": "25017aeb00e34dbd96898d958af4593b7d3742cbd302dd38c0d11754c46b9b4b",
+    "wheel_cache_policy_sha256": "099e4957b821df51f89f822e4500d9decfadb3163b6e5a213a58011746ad4f40"
+  },
+  "python": {
+    "abi": "cp312",
+    "admitted_sys_path": [
+      "/usr/lib/python312.zip",
+      "/usr/lib/python3.12",
+      "/usr/lib/python3.12/lib-dynload"
+    ],
+    "authority": "REVIEWED_SYSTEM_BINARY_AND_STDLIB_INVENTORY",
+    "excluded_startup_paths": [
+      "/etc/python3.12/sitecustomize.py",
+      "/usr/lib/python3/dist-packages",
+      "/usr/lib/python3.12/site-packages",
+      "/usr/local/lib/python3.12/dist-packages",
+      "/usr/local/lib/python3.12/site-packages"
+    ],
+    "executable": "/usr/bin/python3.12",
+    "executable_gid": 0,
+    "executable_mode": "0755",
+    "executable_sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118",
+    "executable_size": 8020928,
+    "executable_uid": 0,
+    "explicit_build_path_admission": {
+      "authority": "EXACT_WHEEL_CACHE_POLICY_FILENAMES_ONLY",
+      "environment_pythonpath": "PROHIBITED",
+      "injection": "EXPLICIT_SYS_PATH_PREPEND_BEFORE_IMPORT",
+      "root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels"
+    },
+    "identity": "CPython 3.12.3",
+    "implementation": "CPython",
+    "libpython": {
+      "gid": 0,
+      "mode": "0644",
+      "path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
+      "sha256": "a4c35494d197a92f08a9d0a94975d9558e7a50880c42947484f01b720b68d423",
+      "size": 9061000,
+      "uid": 0
+    },
+    "minor_version": "3.12",
+    "platform": "linux_x86_64",
+    "selection_basis": "APPROVED_PLAN_AND_UPSTREAM_SUPPORTED_BASELINE",
+    "shared_writable_state": "PROHIBITED",
+    "startup_argv": [
+      "/usr/bin/python3.12",
+      "-I",
+      "-S"
+    ],
+    "stdlib_external_symlinks": [
+      {
+        "disposition": "BOUND_BY_LIBPYTHON_RECORD",
+        "path": "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.so",
+        "resolved_path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
+        "target": "../../x86_64-linux-gnu/libpython3.12.so.1"
+      },
+      {
+        "disposition": "EXCLUDED_BY_ISOLATED_NO_SITE_STARTUP",
+        "path": "/usr/lib/python3.12/sitecustomize.py",
+        "resolved_path": "/etc/python3.12/sitecustomize.py",
+        "target": "/etc/python3.12/sitecustomize.py"
+      }
+    ],
+    "stdlib_inventory": {
+      "directory_count": 92,
+      "file_count": 1213,
+      "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+      "path": "/usr/lib/python3.12",
+      "record_count": 1308,
+      "root_gid": 0,
+      "root_mode": "0755",
+      "root_uid": 0,
+      "symlink_count": 3,
+      "tree_sha256": "0c17594ac603d6ba61b6b25c25f7f4e748fecb3362741bf191e717f36a39522e"
+    }
+  },
+  "runtime_wheels": [
+    {
+      "active_dependencies": [],
+      "filename": "click-8.4.2-py3-none-any.whl",
+      "mode": "0400",
+      "package": "click",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76",
+      "size": 119243,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/fb/e2/79c688af8b210d232694e31e59da9f6ec747bae31c3f5946e4e9b98860d5/click-8.4.2-py3-none-any.whl",
+      "version": "8.4.2"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "fsspec-2026.2.0-py3-none-any.whl",
+      "mode": "0400",
+      "package": "fsspec",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "98de475b5cb3bd66bedd5c4679e87b4fdfe1a3bf4d707b151b3c07e58c9a2437",
+      "size": 202505,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/e6/ab/fb21f4c939bb440104cc2b396d3be1d9b7a9fd3c6c2a53d98c45b3d7c954/fsspec-2026.2.0-py3-none-any.whl",
+      "version": "2026.2.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "msgspec-0.21.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "msgspec",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "21995e74b5c598c2e004110ad66ec7f1b8c20bf2bcf3b2de8fd9a3094422d3ff",
+      "size": 225025,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_17_x86_64",
+        "cp312-cp312-manylinux2014_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/b5/d1/d4cd9fe89c7d400d7a18f86ccc94daa3f0927f53558846fcb60791dce5d6/msgspec-0.21.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.21.1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "numpy",
+      "roles": [
+        "build",
+        "runtime"
+      ],
+      "sha256": "59fda5e192b570217ec2580c96f00e9a7e12ef6866a900eb089b62c1a32545ca",
+      "size": 16672469,
+      "source_classification": "UPSTREAM_BUILD_SYSTEM_AND_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_27_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/b8/a9/6e73d68500f80773f65f0654ea932019d6694329a0eb0ed0533de38df376/numpy-2.5.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "2.5.1"
+    },
+    {
+      "active_dependencies": [
+        {
+          "package": "numpy",
+          "version": "2.5.1"
+        },
+        {
+          "package": "python-dateutil",
+          "version": "2.9.0.post0"
+        }
+      ],
+      "filename": "pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "pandas",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "d373ce03ffd84010ed9839fa73672a9c8256990532e158440c0085db7d914b34",
+      "size": 10998091,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_24_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/12/98/e976540c1addf70442be7842a18cf70884a964abbf69442504f4d2939989/pandas-3.0.5-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "3.0.5"
+    },
+    {
+      "active_dependencies": [
+        {
+          "package": "sortedcontainers",
+          "version": "2.4.0"
+        }
+      ],
+      "filename": "portion-2.6.2-py3-none-any.whl",
+      "mode": "0400",
+      "package": "portion",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "86be115afafa776174dc5eac82afb6496c9fa3684f5b3a844c3139535c51085e",
+      "size": 28218,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/6a/26/669f1f68c5741bce383c3bb6afd1dda3495813118024a6a0a27d47b9d284/portion-2.6.2-py3-none-any.whl",
+      "version": "2.6.2"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "pyarrow-25.0.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "pyarrow",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "5d1dbf24e151042f2fa3c129563f65d66674128868496fb008c4272b16bdf778",
+      "size": 50088993,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/55/0e/cd705c042bc4fe7022478db577fcab4abdcfabb9bc37ab7a75556b3fcb2b/pyarrow-25.0.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "version": "25.0.0"
+    },
+    {
+      "active_dependencies": [
+        {
+          "package": "six",
+          "version": "1.17.0"
+        }
+      ],
+      "filename": "python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "python-dateutil",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427",
+      "size": 229892,
+      "source_classification": "UPSTREAM_UV_LOCK_TRANSITIVE",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
+      "version": "2.9.0.post0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "pytz-2026.3.post1-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "pytz",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815",
+      "size": 508283,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/0f/7b/39c34ca613b0b198cb866466651b26b045e2009864c5183c979a3b83f383/pytz-2026.3.post1-py2.py3-none-any.whl",
+      "version": "2026.3.post1"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "six-1.17.0-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "six",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274",
+      "size": 11050,
+      "source_classification": "UPSTREAM_UV_LOCK_TRANSITIVE",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl",
+      "version": "1.17.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "sortedcontainers-2.4.0-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "sortedcontainers",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0",
+      "size": 29575,
+      "source_classification": "UPSTREAM_UV_LOCK_TRANSITIVE",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl",
+      "version": "2.4.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "tqdm-4.70.0-py3-none-any.whl",
+      "mode": "0400",
+      "package": "tqdm",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953",
+      "size": 80184,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/f9/1c/01bfd571a64e7f270e6bab5e33777debe0edc56759233ce84f27dec92d14/tqdm-4.70.0-py3-none-any.whl",
+      "version": "4.70.0"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "tzdata-2026.3-py2.py3-none-any.whl",
+      "mode": "0400",
+      "package": "tzdata",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931",
+      "size": 348168,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "py2-none-any",
+        "py3-none-any"
+      ],
+      "url": "https://files.pythonhosted.org/packages/e5/6d/b53b99a9f2766d095985947a5782f1702cabb129a34f7a802d7197af832f/tzdata-2026.3-py2.py3-none-any.whl",
+      "version": "2026.3"
+    },
+    {
+      "active_dependencies": [],
+      "filename": "uvloop-0.22.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "mode": "0400",
+      "package": "uvloop",
+      "roles": [
+        "runtime"
+      ],
+      "sha256": "7b5b1ac819a3f946d3b2ee07f09149578ae76066d70b44df3fa990add49a82e4",
+      "size": 4426307,
+      "source_classification": "UPSTREAM_UV_LOCK",
+      "tags": [
+        "cp312-cp312-manylinux_2_17_x86_64",
+        "cp312-cp312-manylinux2014_x86_64",
+        "cp312-cp312-manylinux_2_28_x86_64"
+      ],
+      "url": "https://files.pythonhosted.org/packages/5f/6f/e62b4dfc7ad6518e7eff2516f680d02a0f6eb62c0c212e152ca708a0085e/uvloop-0.22.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "version": "0.22.1"
+    }
+  ],
+  "rust": {
+    "cargo_lock": {
+      "checksum_count": 862,
+      "lock_version": 4,
+      "package_count": 908,
+      "sha256": "a03c8e7e800b08505a654bd5163f812e582d604814b27499e36e67aed566be66"
+    },
+    "channel_manifest": {
+      "date": "2026-07-16",
+      "filename": "channel-rust-1.97.1.toml",
+      "mode": "0400",
+      "sha256": "03569b1886ceb5c05276b50c8431ab111de944cd6140fe1fa7d821dd8e0f29cf",
+      "size": 845916,
+      "url": "https://static.rust-lang.org/dist/channel-rust-1.97.1.toml"
+    },
+    "components": [
+      {
+        "filename": "cargo-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+        "mode": "0400",
+        "name": "cargo",
+        "sha256": "e1be5f5ff7f7f80ca506fb65770b759edbdc6d303781ed71c5de8ec8a8394779",
+        "size": 11150208,
+        "url": "https://static.rust-lang.org/dist/2026-07-16/cargo-1.97.1-x86_64-unknown-linux-gnu.tar.xz"
+      },
+      {
+        "filename": "rust-std-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+        "mode": "0400",
+        "name": "rust-std",
+        "sha256": "1c1e704ae80126b7de34f72ea2825f7fd01736dec20732faed47374b95282fba",
+        "size": 30108400,
+        "url": "https://static.rust-lang.org/dist/2026-07-16/rust-std-1.97.1-x86_64-unknown-linux-gnu.tar.xz"
+      },
+      {
+        "filename": "rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz",
+        "mode": "0400",
+        "name": "rustc",
+        "sha256": "9819d0a32d56bd339585319c80260e332779f5541fd66838ab7e016d6c814819",
+        "size": 81050916,
+        "url": "https://static.rust-lang.org/dist/2026-07-16/rustc-1.97.1-x86_64-unknown-linux-gnu.tar.xz"
+      }
+    ],
+    "target": "x86_64-unknown-linux-gnu",
+    "version": "1.97.1"
+  },
+  "schema_version": 1,
+  "source": {
+    "artifact": {
+      "authority": "EXACT_TAG_BOUND_GIT_OBJECT_TREE",
+      "entry_count": 5976,
+      "filename": "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317-materialized.tar.gz",
+      "kind": "DETERMINISTIC_REGULAR_FILE_GIT_TREE_MATERIALIZATION",
+      "materialization_algorithm": "python-stdlib-regular-files-pax-gzip-mtime-zero-v1",
+      "materialization_manifest_sha256": "b0a5fbe54706e3014974d1b4715091603c517acd11d00c5687b744f82cf1797a",
+      "member_count": 5976,
+      "role": "PRIMARY_BUILD_SOURCE",
+      "sha256": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441",
+      "size": 29718457,
+      "symlink_count": 42,
+      "symlink_records": [
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/architect_ax/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/betfair/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/binance/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/bitmex/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/blockchain/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/bybit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/coinbase/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/databento/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/deribit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/dydx/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/hyperliquid/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/interactive_brokers/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/kraken/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/lighter/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/okx/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/polymarket/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/sandbox/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/adapters/tardis/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "5853aaea53bc07801e8ee3af2e700849e30fb6a0",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/analysis/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/backtest/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/cli/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/common/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/core/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/cryptography/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/data/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/event_store/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/execution/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/indicators/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/infrastructure/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/live/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/model/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/network/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/persistence/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/plugin/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/portfolio/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/pyo3/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/risk/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/serialization/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/system/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/testkit/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "ee907919ec88c9c017b1f8b608db20960b6598aefcc4fe58820bde955d65ed3c",
+          "path": "crates/trading/LICENSE",
+          "resolved_blob": "5550e2db15f239ea8d3cf54bfa3b035eab8d3174",
+          "resolved_path": "LICENSE",
+          "size": 7651,
+          "source_blob": "30cff7403da04711c46979a06f6bf8eb10ee088a",
+          "source_mode": "120000"
+        },
+        {
+          "output_mode": "0644",
+          "output_sha256": "a39bba7a25d165001b30348a276241ea2ff04ab94660de01d895e94be463ce7a",
+          "path": "tests/integration_tests/infrastructure/README.md",
+          "resolved_blob": "cab5e2624ddc35632bc1e939dd0843ba4ce99c59",
+          "resolved_path": "crates/infrastructure/TESTS.md",
+          "size": 2948,
+          "source_blob": "cc423abd9b61be578c288b2070388ca89e122c16",
+          "source_mode": "120000"
+        }
+      ],
+      "top_level_root": "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+    },
+    "build_inputs": [
+      {
+        "path": ".cargo/config.toml",
+        "sha256": "b04930609aeb1b49fd261c898b4b7d59f1c6c530ab9ba3f78fc1ce72f67a2f6b",
+        "size": 849
+      },
+      {
+        "path": "Cargo.lock",
+        "sha256": "a03c8e7e800b08505a654bd5163f812e582d604814b27499e36e67aed566be66",
+        "size": 259271
+      },
+      {
+        "path": "Cargo.toml",
+        "sha256": "da1388074cb7b48f714899a8acb4215ff55bb026b4ee4d7bf0e7695b36b6ce9b",
+        "size": 22944
+      },
+      {
+        "path": "build.py",
+        "sha256": "8a8e46de9c58b83bbfdb3b7415538d2444f9dd126d61c66a8a63416606e9bc40",
+        "size": 24158
+      },
+      {
+        "path": "pyproject.toml",
+        "sha256": "5dbc4591408bd65f7b35c2274348a7a02ff7b034a15f46d5f8628d3c8fbafa36",
+        "size": 15841
+      },
+      {
+        "path": "rust-toolchain.toml",
+        "sha256": "5d959dfcc98b53886ee772ba216c4f9a1b31f093b46b5b263c0d084af54e821d",
+        "size": 31
+      },
+      {
+        "path": "uv.lock",
+        "sha256": "2d211f03a65be3f2f45f683114162f9746053f989c702a3d39b8abaf0f58ef08",
+        "size": 583627
+      }
+    ],
+    "u02_cache_layout": {
+      "entries": [
+        "nautilus_trader-1.231.0-cp312-cp312-manylinux_2_35_x86_64.whl",
+        "nautilus_trader-1.231.0.tar.gz",
+        "nautilus_trader-27a8e54e7ac3c57d6cbf8891f0283dfbaee97317-materialized.tar.gz",
+        "upstream.git"
+      ],
+      "git_directory": "upstream.git"
+    }
+  }
+}
