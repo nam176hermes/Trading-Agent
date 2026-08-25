@@ -1,0 +1,342 @@
+{
+  "schema": "p1-u04-root-cause-ledger-v1",
+  "packet": "X0",
+  "frozen_at": "2026-08-25",
+  "lineage": {
+    "u03_parent": {
+      "commit": "17d892a547f43aec35952d4ffa1fea0ab3d16f9a",
+      "tree": "edca2285e4f4309d05e73e0932740a18e7b28fa8"
+    },
+    "u04_implementation": {
+      "commit": "ce3185a68631c7a2c179770304e236602215e978",
+      "tree": "24a1c9f9414584c599eb150b8292959aea5104ab",
+      "parent": "17d892a547f43aec35952d4ffa1fea0ab3d16f9a"
+    },
+    "review_refresh": {
+      "commit": "5f587730e208562ae50e65314c7ef22deb801485",
+      "tree": "50e60c952322038aa0a86a287268d94ebf85416a",
+      "parent": "ce3185a68631c7a2c179770304e236602215e978"
+    }
+  },
+  "ci": {
+    "workflow": "Foundation",
+    "run": 32837396803,
+    "job": 97769217940,
+    "head": "5f587730e208562ae50e65314c7ef22deb801485",
+    "command": "make ci-portable NONINTERACTIVE=1",
+    "result": "FAIL",
+    "summary": {
+      "failed": 15,
+      "passed": 7929,
+      "skipped": 5
+    },
+    "failure_class_counts": {
+      "OPERATOR_PATH_OR_CACHE_LEAKAGE": 6,
+      "REAL_BUBBLEWRAP_REQUIRED_IN_PORTABLE_RUNNER": 5,
+      "INJECTED_FAILURE_MASKED_BY_PRIOR_INVENTORY_DRIFT": 4,
+      "UNCLASSIFIED": 0
+    },
+    "local_reproduction": {
+      "head": "5f587730e208562ae50e65314c7ef22deb801485",
+      "environment": "read-only network-disabled Bubblewrap namespace with empty private authority and a non-executable /usr/bin/bwrap overlay",
+      "selected_nodes": 15,
+      "failed_nodes": 15,
+      "note": "The exact CI log is classification authority. The local replay reproduced the same node set; three injected-error nodes stopped at missing exact CPython identity before /usr/include, while the canonical CI run stopped at /usr/include."
+    }
+  },
+  "findings": [
+    {
+      "finding_id": "U04-X0-001",
+      "subsystem": "candidate artifact fixture",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_candidate_artifact_validator_recomputes_and_binds_every_authority reads the operator source archive and fails candidate primary source inventory",
+      "invariant": "portable source tests materialize all required source bytes under tmp_path",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_candidate_closure.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-002",
+      "subsystem": "candidate wheel fixture",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_candidate_attestor_routes_engine_identity_only_to_the_engine_wheel reads click-8.4.2 from /home/thenam176/.cache",
+      "invariant": "portable source tests do not dereference operator wheel caches",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_candidate_closure.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-003",
+      "subsystem": "candidate source-symbol fixture",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_candidate_binds_exact_upstream_build_and_pyproject_symbols opens the operator deterministic source archive",
+      "invariant": "portable symbol tests use hash-bound synthetic source bytes",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_candidate_closure.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-004",
+      "subsystem": "poetry-core fixture",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_candidate_package_preamble_accepts_poetry_vendored_import_path reads poetry_core-2.3.1 from /home/thenam176/.cache",
+      "invariant": "portable package-preamble tests materialize exact fixture bytes under tmp_path",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_candidate_closure.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-005",
+      "subsystem": "direct candidate attestation fixture",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_direct_candidate_attestation_never_mutates_host_filesystem reads the operator source archive before exercising the claimed invariant",
+      "invariant": "portable attestation tests are self-contained and cannot touch host authority",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_candidate_closure.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-006",
+      "subsystem": "real candidate Bubblewrap fixture",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_real_candidate_bwrap_clang_default_host_link_uses_sealed_ld_alias requires /home/thenam176 before its real-sandbox exercise",
+      "invariant": "operator-rooted real-sandbox tests are excluded from portable collection and owned by the host-authority lane",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_candidate_closure.py",
+        "tests/nautilus_upgrade/host_authority/",
+        "scripts/verify_p1_u04_host_authority.py",
+        "Makefile"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-007",
+      "subsystem": "real candidate Bubblewrap runtime surface",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_real_candidate_bwrap_has_only_u03_admitted_runtime_surface fails because /usr/bin/bwrap is absent",
+      "invariant": "portable collection never requires real Bubblewrap",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_candidate_closure.py",
+        "tests/nautilus_upgrade/host_authority/",
+        "scripts/verify_p1_u04_host_authority.py",
+        "Makefile"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-008",
+      "subsystem": "toolchain failure injection",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "archiver injection expected system tool set but canonical CI first reported native build /usr/include inventory drifted",
+      "invariant": "each injected-error test satisfies every earlier verifier precondition",
+      "owner": "X2",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-009",
+      "subsystem": "toolchain failure injection",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "environment drift injection expected build environment but canonical CI first reported native build /usr/include inventory drifted",
+      "invariant": "each injected-error test satisfies every earlier verifier precondition",
+      "owner": "X2",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-010",
+      "subsystem": "toolchain failure injection",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "missing environment injection expected build environment but canonical CI first reported native build /usr/include inventory drifted",
+      "invariant": "each injected-error test satisfies every earlier verifier precondition",
+      "owner": "X2",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-011",
+      "subsystem": "native tool identity injection",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "tool identity injection expected identity drifted but canonical CI first reported native build /usr/include inventory drifted",
+      "invariant": "the injection target is reached only after a valid synthetic host inventory is established",
+      "owner": "X2",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-012",
+      "subsystem": "real Bubblewrap cargo routing",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_real_bwrap_injected_pwd_reaches_only_exact_fake_cargo fails because /usr/bin/bwrap is absent",
+      "invariant": "real-sandbox routing is host-authority evidence, never portable pytest authority",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py",
+        "tests/nautilus_upgrade/host_authority/",
+        "scripts/verify_p1_u04_host_authority.py",
+        "Makefile"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-013",
+      "subsystem": "real Bubblewrap foreign direct-source bind",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "direct-source parameter of test_real_bwrap_rejects_foreign_bind_mount_before_cargo fails because /usr/bin/bwrap is absent",
+      "invariant": "real-sandbox bind rejection is host-authority evidence",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py",
+        "tests/nautilus_upgrade/host_authority/",
+        "scripts/verify_p1_u04_host_authority.py",
+        "Makefile"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-014",
+      "subsystem": "real Bubblewrap foreign whole-stage bind",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "whole-stage parameter of test_real_bwrap_rejects_foreign_bind_mount_before_cargo fails because /usr/bin/bwrap is absent",
+      "invariant": "real-sandbox bind rejection is host-authority evidence",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py",
+        "tests/nautilus_upgrade/host_authority/",
+        "scripts/verify_p1_u04_host_authority.py",
+        "Makefile"
+      ]
+    },
+    {
+      "finding_id": "U04-X0-015",
+      "subsystem": "real Bubblewrap physical cwd rejection",
+      "first_seen_round": "R61_CI",
+      "reproduced_on_HEAD": true,
+      "evidence": "test_real_bwrap_rejects_source_symlink_to_foreign_physical_cwd fails because /usr/bin/bwrap is absent",
+      "invariant": "real-sandbox physical-cwd rejection is host-authority evidence",
+      "owner": "X1",
+      "status": "OPEN_FROZEN",
+      "allowed_files": [
+        "tests/nautilus_upgrade/test_v1231_toolchain_policy.py",
+        "tests/nautilus_upgrade/host_authority/",
+        "scripts/verify_p1_u04_host_authority.py",
+        "Makefile"
+      ]
+    }
+  ],
+  "review_changed_files": [
+    {"status": "M", "path": "docs/implementation/foundation-exception-inventory.md"},
+    {"status": "M", "path": "engines/nautilus/candidates/v1.231/engine-build-policy.json"},
+    {"status": "M", "path": "engines/nautilus/candidates/v1.231/toolchain-inputs.json"},
+    {"status": "M", "path": "scripts/build_nautilus_engine.py"},
+    {"status": "M", "path": "scripts/materialize_nautilus_runtime_closure.py"},
+    {"status": "M", "path": "scripts/nautilus_pin_inventory/python_extractor.py"},
+    {"status": "M", "path": "scripts/write_nautilus_toolchain_inputs.py"},
+    {"status": "M", "path": "tests/foundation/test_nautilus_runtime_closure.py"},
+    {"status": "M", "path": "tests/governance/nautilus_pin_inventory/test_python.py"},
+    {"status": "M", "path": "tests/governance/test_p1_u00r_r4_protected_range.py"},
+    {"status": "A", "path": "tests/nautilus_upgrade/test_v1231_candidate_closure.py"},
+    {"status": "M", "path": "tests/nautilus_upgrade/test_v1231_toolchain_policy.py"}
+  ],
+  "source_freeze": {
+    "commit": "5f587730e208562ae50e65314c7ef22deb801485",
+    "tree": "50e60c952322038aa0a86a287268d94ebf85416a",
+    "verdict": "PASS",
+    "files": [
+      {"path": "docs/implementation/foundation-exception-inventory.md", "git_blob": "f918d4f295cc88afcef2828745015c1f44db1c56", "sha256": "113b2718881f1f794cede8cb43f64e98968e04c4a2cd6802565b4f4d309bcdae"},
+      {"path": "engines/nautilus/candidates/v1.231/engine-build-policy.json", "git_blob": "0692fa7fdebd569ccc7d7b5602cfd4e7925f6560", "sha256": "1a18e65e2347822715f662b547d3a8447e19df37bb30a8a631cb1211daa5002b"},
+      {"path": "engines/nautilus/candidates/v1.231/toolchain-inputs.json", "git_blob": "f458e7e582182ded664b7bd2d5bfe24ee6023d71", "sha256": "c643e04fc48f8461b0bb87b680252ee873384feacf9306fde344faf5cca7ad93"},
+      {"path": "scripts/build_nautilus_engine.py", "git_blob": "00e443f485bab6deb2bfc2c260949e1e856879fd", "sha256": "2480c6d8f359c6221133888602d2901ae4a861769d6c930df5f53967050fbf47"},
+      {"path": "scripts/materialize_nautilus_runtime_closure.py", "git_blob": "326f55ec6d4c7e8565528f2f20f90847e264943a", "sha256": "a4d9c7ee244712547580bff40c39b0116812942e3c11b0b68441548244adaf7e"},
+      {"path": "scripts/nautilus_pin_inventory/python_extractor.py", "git_blob": "07731c85abd1e11a9a1b2dcfb70f0887ceb3835c", "sha256": "381fbbf8fa33a3df04c8ca81f0b01d8f8b48496ff3a675c7d670589abec23753"},
+      {"path": "scripts/write_nautilus_toolchain_inputs.py", "git_blob": "50428058a2b7942e33d436ed09654eb4a61ded05", "sha256": "e5e6e9c3b6b6dc2fedf9d514938d03588983095dc0fd3aa1de20408d2b1e3d6b"},
+      {"path": "tests/foundation/test_nautilus_runtime_closure.py", "git_blob": "b035bc304769b1183742b5284069d20f75318673", "sha256": "eb655077c68ffb7645079c3febb7851b4a1e9bf6c8618f05e17edec7ea6f4b47"},
+      {"path": "tests/governance/nautilus_pin_inventory/test_python.py", "git_blob": "52ae2dec09b484dbb25e181109fd373638e9b1a8", "sha256": "32efb664732327e447077ea39c1777791255a511faf893bf81726644ed0d4012"},
+      {"path": "tests/governance/test_p1_u00r_r4_protected_range.py", "git_blob": "eca3f37a8464b224fe9260c356cd5e225df23475", "sha256": "b57174621392bee223b72b606d5a741761bb52d2b92f2626a1ba79251549b417"},
+      {"path": "tests/nautilus_upgrade/test_v1231_candidate_closure.py", "git_blob": "8637ab93d8ee058634ed90879d6984c0fc7057e7", "sha256": "cf009053c9fc23c8a8bf064673650d97922348dd309bd0922d21164e6cc37e3f"},
+      {"path": "tests/nautilus_upgrade/test_v1231_toolchain_policy.py", "git_blob": "941eed81f3e9a3583e9d3c28f4dcc949abbb10f5", "sha256": "29da62c6ccb091684fd9fe5abcf7572395c8f149f46bbd30d4556e96e345590c"}
+    ]
+  },
+  "candidate_policy_freeze": [
+    {"path": "engines/nautilus/candidates/v1.231/cargo-registry-policy.json", "git_blob": "0a924d83cc370a77ec87ea71715516f57a31434a", "sha256": "ba2332d0a134a557aae7b8959e02ade94fd5d31ca70ce23fe8f48f839367b8ad"},
+    {"path": "engines/nautilus/candidates/v1.231/engine-build-policy.json", "git_blob": "0692fa7fdebd569ccc7d7b5602cfd4e7925f6560", "sha256": "1a18e65e2347822715f662b547d3a8447e19df37bb30a8a631cb1211daa5002b"},
+    {"path": "engines/nautilus/candidates/v1.231/input-cache-policy.json", "git_blob": "25a7abb1f573f4b6729d634e5fa1903c92e93298", "sha256": "f8b073c177c24d4a95df916610e4be5bf20e66fc50bd9fa138897f51bce862fa"},
+    {"path": "engines/nautilus/candidates/v1.231/toolchain-inputs.json", "git_blob": "f458e7e582182ded664b7bd2d5bfe24ee6023d71", "sha256": "c643e04fc48f8461b0bb87b680252ee873384feacf9306fde344faf5cca7ad93"},
+    {"path": "engines/nautilus/candidates/v1.231/wheel-cache-policy.json", "git_blob": "46c4ad39371ee91e5d6791ccbc99bc23ce9e971f", "sha256": "099e4957b821df51f89f822e4500d9decfadb3163b6e5a213a58011746ad4f40"}
+  ],
+  "active_rollback_policy_freeze": [
+    {"path": "engines/nautilus/engine-build-policy.json", "git_blob": "1b4f8f4c50d156829e9ce984298f61f3cacf39ac", "sha256": "e1a9292997b9b4ac821b1292f8e340d92aeffd49422a7b379f7d76dce443b0dd"},
+    {"path": "engines/nautilus/input-cache-policy.json", "git_blob": "4f8ba06f0facf3592b2e1eb1cd5b2cfdf85b723e", "sha256": "0e12e7d42093e24f4a1e1668242ef594e7fb717b842b1903d94272eb1486255e"},
+    {"path": "engines/nautilus/llvm-toolchain-policy.json", "git_blob": "1cc9559c945505b3aaa97ad6fb7fa1f0ef7a9625", "sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"},
+    {"path": "engines/nautilus/paper-compatibility-runtime-closure-policy.json", "git_blob": "abd1a1cb75a2027b3ae52057581925745bb3486d", "sha256": "ab04b77042fb351a541764054e2bac7259097c749f6ff930c3fc68ef631d592c"},
+    {"path": "engines/nautilus/runtime-closure-policy.json", "git_blob": "7322abca7dcc9e15aff4b23944386358e62d8f08", "sha256": "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2"},
+    {"path": "engines/nautilus/sealed-uv-exec-policy.json", "git_blob": "3ab4bcf162dc44435055918bf3c3699129b6612a", "sha256": "02366c24787531e112fe7ffe342065b499b07e586badc381e72f731e1467304e"},
+    {"path": "engines/nautilus/toolchain-inputs.json", "git_blob": "4ac695e967bfb59f940a2f78b3915c8c4254ab72", "sha256": "bdd7a635f936a46414947e9ffcbb12bd3cf549326adda0ace184f93f0cfbafbe"},
+    {"path": "engines/nautilus/v1.231-provenance-policy.json", "git_blob": "652378cc0e37be322bfe21d8f38b7da8af99bde9", "sha256": "f921b50ab5af8a9e518fd599ebcb2425cd7d2f8130263875d46dd34c3e40af8a"},
+    {"path": "engines/nautilus/wheel-cache-policy.json", "git_blob": "23962fe686d0690bbeefea659fa9d8f5328c570f", "sha256": "f975ff7093ead955ad4667876cd66d768bd68b332e17fb74307135a6b87677f5"}
+  ],
+  "r1_r61_external_artifact_claims": [
+    {"claim": "Build A source-built wheel SHA256 and size", "status": "NOT_PROVIDED"},
+    {"claim": "Build A artifact manifest and direct validator receipt", "status": "NOT_PROVIDED"},
+    {"claim": "Build B source-built wheel SHA256 and size", "status": "NOT_PROVIDED"},
+    {"claim": "Build B artifact manifest and direct validator receipt", "status": "NOT_PROVIDED"},
+    {"claim": "Build A versus Build B raw and semantic reproducibility receipt", "status": "NOT_PROVIDED"},
+    {"claim": "schema-7 candidate closure digest", "status": "NOT_PROVIDED"},
+    {"claim": "CPython 3.12 sealed import receipt", "status": "NOT_PROVIDED"},
+    {"claim": "native dependency inventory receipt", "status": "NOT_PROVIDED"},
+    {"claim": "1.227 rollback verification before candidate qualification", "status": "NOT_PROVIDED"},
+    {"claim": "1.227 rollback verification after candidate qualification", "status": "NOT_PROVIDED"},
+    {"claim": "shared writable state count of zero", "status": "NOT_PROVIDED"}
+  ],
+  "task_status": {
+    "P1-U01": "IMPLEMENTED_UNACCEPTED",
+    "P1-U02": "IMPLEMENTED_UNACCEPTED",
+    "P1-U03": "IMPLEMENTED_UNACCEPTED",
+    "P1-U04": "BLOCKED",
+    "P1-U05": "NOT_STARTED",
+    "P1-U06": "NOT_STARTED",
+    "P1-U07": "NOT_STARTED",
+    "P1-U08": "NOT_STARTED"
+  },
+  "x0_acceptance": {
+    "CI_FAILURE_COUNT": 15,
+    "UNCLASSIFIED_FAILURES": 0,
+    "UNTRACEABLE_R1_R61_CLAIMS": "EXPLICITLY_LISTED_AS_NOT_PROVIDED",
+    "SOURCE_FREEZE": "PASS"
+  }
+}
