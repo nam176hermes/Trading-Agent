@@ -370,6 +370,53 @@ def test_path_extractor_finds_registered_tokens_but_limits_unknowns_to_governed_
     assert extractor.extract_path("docs/releases/v9.9.9/README.md") == ()
 
 
+@pytest.mark.parametrize(
+    ("path", "value", "start", "end"),
+    (
+        ("engines/nautilus/candidates/v1.231/cargo-registry-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/engine-build-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/input-cache-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/toolchain-inputs.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/wheel-cache-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/v1.231-provenance-policy.json", "v1.231-provenance-policy.json", 17, 46),
+    ),
+)
+def test_exact_candidate_path_aliases_classify_through_real_extraction(
+    path: str, value: str, start: int, end: int
+) -> None:
+    """Break caught: an approved exact path alias remains unregistered during inventory extraction."""
+    observations = _extractor().extract_path(path)
+
+    assert observations == (
+        Observation("engine_version", value, SourceSpan.path_span(path, start, end), "path"),
+    )
+    decision = DEFAULT_REGISTRY.classify(observations[0])
+    assert decision.code == "CANDIDATE_CONTEXT"
+
+
+def test_candidate_path_aliases_do_not_authorize_nearby_observations() -> None:
+    """Break caught: alias authority escapes its exact family, carrier, syntax, path, or source span."""
+    exact_path = "engines/nautilus/candidates/v1.231/cargo-registry-policy.json"
+    unexpected_path = "engines/nautilus/candidates/v1.231/extra-policy.json"
+    renamed_path = "engines/nautilus/candidates/v1.231/cargo-registry-policy-renamed.json"
+    moved_path = "engines/nautilus/archive/v1.231/cargo-registry-policy.json"
+    observations = (
+        Observation("engine_version", "v1.231", SourceSpan.content(exact_path, 1, 1, 1, 7), "text"),
+        Observation("engine_version", "v1.231", SourceSpan.path_span(unexpected_path, 28, 34), "path"),
+        Observation("engine_version", "v1.231", SourceSpan.path_span(renamed_path, 28, 34), "path"),
+        Observation("engine_version", "v1.231", SourceSpan.path_span(moved_path, 25, 31), "path"),
+        Observation("rust", "v1.231", SourceSpan.path_span(exact_path, 28, 34), "path"),
+        Observation("engine_version", "v1.231", SourceSpan.path_span(exact_path, 28, 34), "text"),
+        Observation("engine_version", "v1.231", SourceSpan.path_span(exact_path, 28, 33), "path"),
+    )
+
+    assert all(DEFAULT_REGISTRY.classify(observation).code == "UNREGISTERED_IDENTITY" for observation in observations)
+    assert all(
+        DEFAULT_REGISTRY.classify(observation).code == "UNREGISTERED_IDENTITY"
+        for observation in _extractor().extract_content(exact_path, "Nautilus engine version: v1.231\n")
+    )
+
+
 def test_injected_family_specs_use_their_actual_content_and_path_grammars() -> None:
     """Break caught: extraction fabricates a family-name anchor instead of using the injected grammar."""
     registry = Registry(

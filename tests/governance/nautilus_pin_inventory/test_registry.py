@@ -109,6 +109,25 @@ def _observation(model, family: str, value: str):
     )
 
 
+def _identity_alias(registry, model, **changes):
+    alias_type = getattr(registry, "IdentityAlias", None)
+    assert alias_type is not None, "IdentityAlias is not implemented"
+    values = {
+        "family": "engine_version",
+        "observed_value": "v1.231",
+        "path": "engines/nautilus/candidates/v1.231/cargo-registry-policy.json",
+        "canonical_family": "engine_version",
+        "canonical_value": "v1.231.0",
+        "span": model.SourceSpan.path_span(
+            "engines/nautilus/candidates/v1.231/cargo-registry-policy.json", 28, 34
+        ),
+        "carrier": model.Carrier.PATH,
+        "syntax": "path",
+    }
+    values.update(changes)
+    return alias_type(**values)
+
+
 @pytest.mark.parametrize(
     ("role", "identities"),
     (("ROLLBACK", ROLLBACK_IDENTITIES), ("CANDIDATE_CONTEXT", CANDIDATE_CONTEXT_IDENTITIES)),
@@ -332,6 +351,144 @@ def test_models_are_immutable_and_registry_rejects_conflicting_registration() ->
                 model.AllowedIdentity("engine_version", "1.227.0", "CANDIDATE_CONTEXT"),
             ),
         )
+
+
+def test_default_aliases_bind_exact_context_to_an_existing_canonical_identity() -> None:
+    """Break caught: contextual aliases widen the global identity set or duplicate canonical role authority."""
+    model, registry = _registry_api()
+    expected = (
+        ("engines/nautilus/candidates/v1.231/cargo-registry-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/engine-build-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/input-cache-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/toolchain-inputs.json", "v1.231", 28, 34),
+        ("engines/nautilus/candidates/v1.231/wheel-cache-policy.json", "v1.231", 28, 34),
+        ("engines/nautilus/v1.231-provenance-policy.json", "v1.231-provenance-policy.json", 17, 46),
+    )
+
+    assert tuple(
+        (alias.path, alias.observed_value, alias.span.start_column, alias.span.end_column)
+        for alias in registry.DEFAULT_REGISTRY.aliases
+    ) == expected
+    assert all(alias.family == alias.canonical_family == "engine_version" for alias in registry.DEFAULT_REGISTRY.aliases)
+    assert all(alias.canonical_value == "v1.231.0" for alias in registry.DEFAULT_REGISTRY.aliases)
+    assert all(alias.carrier is model.Carrier.PATH and alias.syntax == "path" for alias in registry.DEFAULT_REGISTRY.aliases)
+    globally_allowed = {
+        (identity.family, identity.value): identity for identity in registry.DEFAULT_REGISTRY.allowed_identities
+    }
+    assert ("engine_version", "v1.231") not in globally_allowed
+    assert ("engine_version", "v1.231-provenance-policy.json") not in globally_allowed
+    assert globally_allowed[("engine_version", "v1.231.0")].role == "CANDIDATE_CONTEXT"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"family": "missing"},
+        {"canonical_family": "rust", "canonical_value": "1.95.0"},
+        {"canonical_value": "v9.9.9"},
+        {"carrier": "PATH"},
+        {"carrier": None},
+        {"carrier": True},
+        {"syntax": "text"},
+        {"syntax": True},
+        {"path": "../engines/nautilus/candidates/v1.231/cargo-registry-policy.json"},
+        {"span": None},
+        {"span": True},
+        {"span": "engines/nautilus/candidates/v1.231/cargo-registry-policy.json"},
+        {
+            "span": None,
+            "path": "engines/nautilus/candidates/v1.231/cargo-registry-policy-renamed.json",
+        },
+    ),
+)
+def test_registry_rejects_malformed_or_unknown_canonical_alias_configuration(changes: dict[str, object]) -> None:
+    """Break caught: malformed context or an unregistered canonical identity creates alias authority."""
+    model, registry = _registry_api()
+    if changes == {
+        "span": None,
+        "path": "engines/nautilus/candidates/v1.231/cargo-registry-policy-renamed.json",
+    }:
+        changes = {
+            "path": changes["path"],
+            "span": model.SourceSpan.path_span(
+                "engines/nautilus/candidates/v1.231/cargo-registry-policy.json", 28, 34
+            ),
+        }
+
+    with pytest.raises(ValueError):
+        alias = _identity_alias(registry, model, **changes)
+        registry.Registry(
+            family_specs=registry.DEFAULT_FAMILY_SPECS,
+            allowed_identities=registry.DEFAULT_REGISTRY.allowed_identities,
+            aliases=(alias,),
+        )
+
+
+def test_registry_rejects_alias_duplicates_conflicts_and_global_shadowing() -> None:
+    """Break caught: overlapping contextual authority or a global identity makes classification ambiguous."""
+    model, registry = _registry_api()
+    alias = _identity_alias(registry, model)
+    conflicting = _identity_alias(registry, model, canonical_value="1.231.0")
+    shadow_path = "engines/nautilus/candidates/v1.231.0/cargo-registry-policy.json"
+    shadowing = _identity_alias(
+        registry,
+        model,
+        observed_value="v1.231.0",
+        path=shadow_path,
+        span=model.SourceSpan.path_span(shadow_path, 28, 36),
+    )
+
+    for aliases in ((alias, alias), (alias, conflicting), (shadowing,)):
+        with pytest.raises(ValueError):
+            registry.Registry(
+                family_specs=registry.DEFAULT_FAMILY_SPECS,
+                allowed_identities=registry.DEFAULT_REGISTRY.allowed_identities,
+                aliases=aliases,
+            )
+
+
+def test_registry_alias_input_requires_an_exact_tuple() -> None:
+    """Break caught: a mutable or spoofed collection can change alias authority after construction."""
+    model, registry = _registry_api()
+    alias = _identity_alias(registry, model)
+
+    with pytest.raises(ValueError):
+        registry.Registry(
+            family_specs=registry.DEFAULT_FAMILY_SPECS,
+            allowed_identities=registry.DEFAULT_REGISTRY.allowed_identities,
+            aliases=[alias],
+        )
+
+
+def test_injected_registry_aliases_default_empty_and_explicit_aliases_are_immutable_sorted() -> None:
+    """Break caught: custom registries gain ambient aliases or callers mutate/order classification authority."""
+    model, registry_module = _registry_api()
+    custom = registry_module.Registry(
+        family_specs=registry_module.DEFAULT_FAMILY_SPECS,
+        allowed_identities=registry_module.DEFAULT_REGISTRY.allowed_identities,
+    )
+    cargo = _identity_alias(registry_module, model)
+    engine_path = "engines/nautilus/candidates/v1.231/engine-build-policy.json"
+    engine = _identity_alias(
+        registry_module,
+        model,
+        path=engine_path,
+        span=model.SourceSpan.path_span(engine_path, 28, 34),
+    )
+    configured = registry_module.Registry(
+        family_specs=registry_module.DEFAULT_FAMILY_SPECS,
+        allowed_identities=registry_module.DEFAULT_REGISTRY.allowed_identities,
+        aliases=(engine, cargo),
+    )
+
+    assert custom.aliases == ()
+    assert configured.aliases == (cargo, engine)
+    with pytest.raises(FrozenInstanceError):
+        cargo.path = engine_path  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        configured.aliases += (cargo,)
+    with pytest.raises(AttributeError):
+        configured._aliases = {}  # type: ignore[attr-defined]
 
 
 def test_registry_retains_no_mutable_or_reassignable_classification_state() -> None:

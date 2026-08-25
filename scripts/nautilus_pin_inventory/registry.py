@@ -83,6 +83,51 @@ class FamilySpec:
         return tuple(observations)
 
 
+@dataclass(frozen=True)
+class IdentityAlias:
+    """One exact path observation deriving authority from a canonical identity."""
+
+    family: str
+    observed_value: str
+    path: str
+    canonical_family: str
+    canonical_value: str
+    span: SourceSpan
+    carrier: Carrier = Carrier.PATH
+    syntax: str = "path"
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("alias family", self.family),
+            ("alias observed value", self.observed_value),
+            ("alias path", self.path),
+            ("alias canonical family", self.canonical_family),
+            ("alias canonical value", self.canonical_value),
+            ("alias syntax", self.syntax),
+        ):
+            if type(value) is not str or not value:
+                raise ValueError(f"{name} must be a non-empty string")
+        parts = self.path.split("/")
+        if (
+            not self.path.isascii()
+            or self.path.startswith("/")
+            or "\\" in self.path
+            or (len(self.path) >= 2 and self.path[0].isalpha() and self.path[1] == ":")
+            or any(not part or part in (".", "..") for part in parts)
+        ):
+            raise ValueError("alias path must be an exact repository-relative Git path")
+        if type(self.carrier) is not Carrier or self.carrier is not Carrier.PATH:
+            raise ValueError("alias carrier must be PATH")
+        if self.syntax != "path":
+            raise ValueError("alias syntax must be path")
+        if type(self.span) is not SourceSpan:
+            raise ValueError("alias span must be a SourceSpan")
+        if self.span.path != self.path or self.span.carrier is not self.carrier:
+            raise ValueError("alias span must bind the exact path carrier")
+        if self.path[self.span.start_column:self.span.end_column] != self.observed_value:
+            raise ValueError("alias span bytes must equal the observed value")
+
+
 def _span_for_match(path: str, carrier: Carrier, text: str, start: int, end: int) -> SourceSpan:
     if carrier is Carrier.PATH:
         return SourceSpan.path_span(path, start, end)
@@ -96,17 +141,25 @@ def _span_for_match(path: str, carrier: Carrier, text: str, start: int, end: int
 class Registry:
     """Immutable family grammar and exact registration lookup."""
 
-    __slots__ = ("_family_specs", "_allowed", "_sealed")
+    __slots__ = ("_family_specs", "_allowed", "_aliases", "_sealed")
 
-    def __init__(self, *, family_specs: tuple[FamilySpec, ...], allowed_identities: tuple[AllowedIdentity, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        family_specs: tuple[FamilySpec, ...],
+        allowed_identities: tuple[AllowedIdentity, ...],
+        aliases: tuple[IdentityAlias, ...] = (),
+    ) -> None:
         if getattr(self, "_sealed", False):
             raise ValueError("Registry is already initialized")
-        if type(family_specs) is not tuple or type(allowed_identities) is not tuple:
+        if type(family_specs) is not tuple or type(allowed_identities) is not tuple or type(aliases) is not tuple:
             raise ValueError("registry inputs must be tuples")
         if any(type(spec) is not FamilySpec for spec in family_specs):
             raise ValueError("registry family specifications must be FamilySpec values")
         if any(type(identity) is not AllowedIdentity for identity in allowed_identities):
             raise ValueError("registry allowed identities must be AllowedIdentity values")
+        if any(type(alias) is not IdentityAlias for alias in aliases):
+            raise ValueError("registry aliases must be IdentityAlias values")
         specs = {spec.family: spec for spec in family_specs}
         if len(specs) != len(family_specs):
             raise ValueError("family specifications must be unique")
@@ -119,8 +172,41 @@ class Registry:
             if prior is not None and prior != identity:
                 raise ValueError("conflicting registration for identity")
             allowed[key] = identity
+        alias_bindings: dict[Observation, tuple[IdentityAlias, AllowedIdentity]] = {}
+        alias_contexts: set[tuple[str, str, str]] = set()
+        alias_spans: set[tuple[str, Carrier, str, SourceSpan]] = set()
+        for alias in sorted(
+            aliases,
+            key=lambda value: (
+                value.path,
+                value.span.start_column,
+                value.span.end_column,
+                value.family,
+                value.observed_value,
+                value.canonical_family,
+                value.canonical_value,
+            ),
+        ):
+            if alias.family not in specs:
+                raise ValueError("alias identity has no family specification")
+            if alias.family != alias.canonical_family:
+                raise ValueError("alias and canonical identity families must match")
+            canonical = allowed.get((alias.canonical_family, alias.canonical_value))
+            if canonical is None:
+                raise ValueError("alias canonical identity is not registered")
+            if (alias.family, alias.observed_value) in allowed:
+                raise ValueError("alias must not shadow a globally allowed identity")
+            observation = Observation(alias.family, alias.observed_value, alias.span, alias.syntax)
+            context = (alias.family, alias.observed_value, alias.path)
+            span = (alias.path, alias.carrier, alias.syntax, alias.span)
+            if observation in alias_bindings or context in alias_contexts or span in alias_spans:
+                raise ValueError("duplicate or conflicting alias registration")
+            alias_bindings[observation] = (alias, canonical)
+            alias_contexts.add(context)
+            alias_spans.add(span)
         object.__setattr__(self, "_family_specs", MappingProxyType(specs))
         object.__setattr__(self, "_allowed", MappingProxyType(allowed))
+        object.__setattr__(self, "_aliases", MappingProxyType(alias_bindings))
         object.__setattr__(self, "_sealed", True)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -141,6 +227,11 @@ class Registry:
         """Read-only exact identity inventory for deterministic completeness checks."""
         return tuple(self._allowed.values())
 
+    @property
+    def aliases(self) -> tuple[IdentityAlias, ...]:
+        """Exact contextual aliases in deterministic path order."""
+        return tuple(alias for alias, _ in self._aliases.values())
+
     def detect(self, family: str, text: str, *, path: str, carrier: Carrier, syntax: str) -> tuple[Observation, ...]:
         if type(family) is not str:
             raise ValueError("identity family must be a string")
@@ -155,7 +246,11 @@ class Registry:
             raise ValueError("classification input must be an Observation")
         allowed = self._allowed.get((observation.family, observation.value))
         if allowed is None:
-            return InventoryDiagnostic("UNREGISTERED_IDENTITY", observation)
+            binding = self._aliases.get(observation)
+            if binding is None:
+                return InventoryDiagnostic("UNREGISTERED_IDENTITY", observation)
+            alias, canonical = binding
+            allowed = AllowedIdentity(alias.family, alias.observed_value, canonical.role)
         return InventoryDiagnostic(allowed.role, observation, allowed)
 
 
@@ -215,4 +310,22 @@ _CANDIDATE_VALUES = {
 DEFAULT_REGISTRY = Registry(
     family_specs=DEFAULT_FAMILY_SPECS,
     allowed_identities=_identities("ROLLBACK", _ROLLBACK_VALUES) + _identities("CANDIDATE_CONTEXT", _CANDIDATE_VALUES),
+    aliases=tuple(
+        IdentityAlias(
+            "engine_version",
+            value,
+            path,
+            "engine_version",
+            "v1.231.0",
+            SourceSpan.path_span(path, start, end),
+        )
+        for path, value, start, end in (
+            ("engines/nautilus/candidates/v1.231/cargo-registry-policy.json", "v1.231", 28, 34),
+            ("engines/nautilus/candidates/v1.231/engine-build-policy.json", "v1.231", 28, 34),
+            ("engines/nautilus/candidates/v1.231/input-cache-policy.json", "v1.231", 28, 34),
+            ("engines/nautilus/candidates/v1.231/toolchain-inputs.json", "v1.231", 28, 34),
+            ("engines/nautilus/candidates/v1.231/wheel-cache-policy.json", "v1.231", 28, 34),
+            ("engines/nautilus/v1.231-provenance-policy.json", "v1.231-provenance-policy.json", 17, 46),
+        )
+    ),
 )
