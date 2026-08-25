@@ -2,7 +2,7 @@
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
-	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host verify-p1-u04-host-authority test-runtime-postgres \
+	test-runtime-release prepare-runtime-release-wheelhouse test-runtime-release-host test-runtime-postgres \
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
@@ -26,7 +26,6 @@ NAUTILUS_IMPORT_BASE_RUNTIME ?=
 NAUTILUS_IMPORT_ARTIFACT_DIRECTORY ?=
 NAUTILUS_IMPORT_SANDBOX ?= $(NAUTILUS_ENGINE_SANDBOX)
 NAUTILUS_IMPORT_RECEIPT ?=
-P1_U04_HOST_EVIDENCE_CACHE ?=
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
@@ -186,10 +185,6 @@ prepare-runtime-release-wheelhouse:
 test-runtime-release-host:
 	TRADING_RUNTIME_RELEASE_WHEELHOUSE="$(RUNTIME_RELEASE_WHEELHOUSE)" \
 		uv run pytest -q -m "host_coupled" tests/runtime_release
-
-verify-p1-u04-host-authority:
-	uv run python scripts/verify_p1_u04_host_authority.py \
-		$(if $(P1_U04_HOST_EVIDENCE_CACHE),--evidence-cache "$(P1_U04_HOST_EVIDENCE_CACHE)")
 
 test-runtime-postgres:
 	@set -eu; \
