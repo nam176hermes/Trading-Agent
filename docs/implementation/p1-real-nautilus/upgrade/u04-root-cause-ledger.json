@@ -380,10 +380,12 @@
       "status": "PASS"
     },
     "reviews": {
-      "alias": "PASS/PASS_NO_IMPORTANT",
+      "alias_spec": "PASS",
+      "alias_security": "APPROVED_WITH_MINOR",
+      "alias_security_minor": "IdentityAlias constructor accepts ASCII control-character paths, but the inventory engine rejects controls before extraction; no authority widening was observed",
       "round2_spec": "PASS",
       "security_replay": "APPROVED",
-      "findings": "NONE"
+      "critical_or_important_findings": 0
     },
     "focused_validation": {
       "registry_suite": {
@@ -446,7 +448,7 @@
         "existing_skips": 2,
         "recovery_skips_or_xfails": 0
       },
-      "topology_sublanes_passed": [49, 18, 10, 22, 8, 3, 2],
+      "topology_sublanes_passed": [49, 18, 10, 22, 8, 3, 2, 3],
       "remaining_make_gates": "PASS",
       "artifact_publication": "PASS"
     },
