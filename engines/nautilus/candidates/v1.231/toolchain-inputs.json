@@ -226,6 +226,26 @@
       {
         "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
         "mode": "0777",
+        "name": "ld",
+        "path": "bin/ld",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+          "sha256": "879d47621106d726c18f0d25f25bf73167d4109521b147341e40139181e3db05",
+          "size": 200223320,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/ld.lld",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+        "mode": "0777",
         "name": "ld.lld",
         "path": "bin/ld.lld",
         "resolved": {
@@ -288,6 +308,7 @@
       "bin/cargo",
       "bin/clang",
       "bin/clang++",
+      "bin/ld",
       "bin/ld.lld",
       "bin/rustc",
       "bin/strip"
@@ -330,6 +351,7 @@
     "external_roots": {
       "candidate_build_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work",
       "candidate_cargo_home_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+      "candidate_forensic_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-reproducibility-evidence",
       "candidate_input_root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs",
       "candidate_llvm_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain",
       "candidate_runtime_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-runtime",
@@ -343,6 +365,7 @@
     "root_access": {
       "candidate_build_root": "WRITABLE_PARENT_FOR_ONE_FRESH_STAGING_CHILD",
       "candidate_cargo_home_root": "SEALED_READ_ONLY",
+      "candidate_forensic_root": "ABSENT_THEN_SEALED_READ_ONLY_FORENSIC_EVIDENCE",
       "candidate_input_root": "SEALED_READ_ONLY",
       "candidate_llvm_toolchain_root": "SEALED_READ_ONLY",
       "candidate_runtime_root": "ABSENT_THEN_SEALED_READ_ONLY",
@@ -812,8 +835,8 @@
   "network": "DISABLED_BY_CONSTRUCTION",
   "policy_hashes": {
     "cargo_registry_policy_sha256": "ba2332d0a134a557aae7b8959e02ade94fd5d31ca70ce23fe8f48f839367b8ad",
-    "engine_build_policy_sha256": "6fdfbf3f0def71e0b9da2111160ef087af773b6f4bbe71591010d5322095a145",
-    "generator_sha256": "7c55a0df5d52928ba60679baa44b598fc6662be6fa58829bb764718ca587e655",
+    "engine_build_policy_sha256": "1a18e65e2347822715f662b547d3a8447e19df37bb30a8a631cb1211daa5002b",
+    "generator_sha256": "e5e6e9c3b6b6dc2fedf9d514938d03588983095dc0fd3aa1de20408d2b1e3d6b",
     "input_cache_policy_sha256": "f8b073c177c24d4a95df916610e4be5bf20e66fc50bd9fa138897f51bce862fa",
     "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
     "llvm_toolchain_validator_sha256": "71f794bb1c5f70ec427ff33c21f27debd066fcf76567d07241170da5527a41c2",

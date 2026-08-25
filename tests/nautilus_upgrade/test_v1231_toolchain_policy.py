@@ -467,6 +467,10 @@ def test_ambient_native_build_override_fails_closed(
 def test_u04_command_router_policy_closes_the_exact_bare_executable_set() -> None:
     engine = toolchain.load_json(ENGINE_POLICY)
     roots = engine["external_cache_isolation"]["external_roots"]
+    assert roots["candidate_forensic_root"] == (
+        "/home/thenam176/.cache/trading-agent/"
+        "nautilus-v1.231-reproducibility-evidence"
+    )
     assert {
         "candidate_llvm_toolchain_root",
         "candidate_rust_toolchain_root",
@@ -475,7 +479,15 @@ def test_u04_command_router_policy_closes_the_exact_bare_executable_set() -> Non
     toolchain._verify_command_router_policy(engine["command_router"], engine)
     assert [
         entry["name"] for entry in engine["command_router"]["entries"]
-    ] == ["cargo", "clang", "clang++", "ld.lld", "rustc", "strip"]
+    ] == ["cargo", "clang", "clang++", "ld", "ld.lld", "rustc", "strip"]
+    entries = {
+        entry["name"]: entry for entry in engine["command_router"]["entries"]
+    }
+    assert entries["ld"] == {
+        **entries["ld.lld"],
+        "name": "ld",
+        "path": "bin/ld",
+    }
     cargo = engine["command_router"]["entries"][0]
     assert cargo["interpreter"] == {
         "kernel_shebang": "#!/usr/bin/python3.12 -IS",
@@ -493,6 +505,7 @@ def test_u04_command_router_policy_closes_the_exact_bare_executable_set() -> Non
     assert engine["external_cache_isolation"]["root_access"] == {
         "candidate_build_root": "WRITABLE_PARENT_FOR_ONE_FRESH_STAGING_CHILD",
         "candidate_cargo_home_root": "SEALED_READ_ONLY",
+        "candidate_forensic_root": "ABSENT_THEN_SEALED_READ_ONLY_FORENSIC_EVIDENCE",
         "candidate_input_root": "SEALED_READ_ONLY",
         "candidate_llvm_toolchain_root": "SEALED_READ_ONLY",
         "candidate_runtime_root": "ABSENT_THEN_SEALED_READ_ONLY",
@@ -1641,6 +1654,31 @@ def _write_wheel(
             archive.writestr(info, b"")
 
 
+def _verify_wheel_requirement(
+    tmp_path: Path,
+    requirement: str,
+    active_dependencies: list[dict[str, str]],
+) -> None:
+    wheels_dir = tmp_path / "wheels"
+    wheels_dir.mkdir(exist_ok=True)
+    filename = "demo-1.0-py3-none-any.whl"
+    _write_wheel(wheels_dir / filename, requirement=requirement)
+    toolchain._verify_wheel_metadata(
+        tmp_path,
+        {
+            "wheel_artifacts": [
+                {
+                    "active_dependencies": active_dependencies,
+                    "filename": filename,
+                    "package": "demo",
+                    "tags": ["py3-none-any"],
+                    "version": "1.0",
+                }
+            ]
+        },
+    )
+
+
 def test_wrong_python_or_platform_wheel_tag_fails_closed(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     wheels_dir = cache / "wheels"
@@ -1848,6 +1886,197 @@ def test_strict_numeric_version_comparison_preserves_sealed_constraints() -> Non
     ):
         with pytest.raises(toolchain.VerificationError, match="unsupported version"):
             toolchain._satisfies(version, "==2.3.1")
+
+
+@pytest.mark.parametrize("specifier", (",>=1", ">=1,,<2", ">=1,"))
+def test_strict_constraint_parser_rejects_empty_comma_clauses(
+    specifier: str,
+) -> None:
+    with pytest.raises(toolchain.VerificationError, match="version constraint"):
+        toolchain._satisfies("1.5", specifier)
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        "foreign (>=1,,<2); extra == 'dev'",
+        "foreign (>=1); extra == 'dev' trailing",
+    ),
+)
+def test_inactive_extra_requirement_is_fully_validated(
+    tmp_path: Path, requirement: str,
+) -> None:
+    wheels_dir = tmp_path / "wheels"
+    wheels_dir.mkdir()
+    filename = "demo-1.0-py3-none-any.whl"
+    _write_wheel(
+        wheels_dir / filename,
+        requirement=requirement,
+    )
+    policy = {
+        "wheel_artifacts": [
+            {
+                "active_dependencies": [],
+                "filename": filename,
+                "package": "demo",
+                "tags": ["py3-none-any"],
+                "version": "1.0",
+            }
+        ]
+    }
+
+    with pytest.raises(
+        toolchain.VerificationError,
+        match="version constraint|unsupported active wheel marker",
+    ):
+        toolchain._verify_wheel_metadata(tmp_path, policy)
+
+
+def test_parenthesized_pep508_constraint_is_normalized_without_losing_context() -> None:
+    assert toolchain._parse_requirement(
+        'click[plugins, fast-mode] (>=8.4.1,<9.0.0) ; python_version < "3.14"'
+    ) == (
+        "click",
+        ">=8.4.1,<9.0.0",
+        ' python_version < "3.14"',
+    )
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        'simplejson (>=1evil) ; extra == "visualization"',
+        'simplejson (>=) ; extra == "visualization"',
+        'simplejson (==*) ; extra == "visualization"',
+        'simplejson (> =8.4.1) ; extra == "visualization"',
+    ),
+    ids=("invalid-version", "missing-operand", "wildcard", "token-whitespace"),
+)
+def test_inactive_wheel_requirement_operands_are_strictly_parsed(
+    tmp_path: Path,
+    requirement: str,
+) -> None:
+    with pytest.raises(toolchain.VerificationError, match="requirement|constraint"):
+        toolchain._parse_requirement(requirement)
+
+    with pytest.raises(toolchain.VerificationError, match="requirement|constraint"):
+        _verify_wheel_requirement(tmp_path, requirement, [])
+
+
+def test_canonical_prerelease_operand_is_admitted_only_for_inactive_metadata(
+    tmp_path: Path,
+) -> None:
+    requirement = 'aiohttp!=4.0.0a0,!=4.0.0a1; extra == "full"'
+    assert toolchain._parse_requirement(requirement) == (
+        "aiohttp",
+        "!=4.0.0a0,!=4.0.0a1",
+        ' extra == "full"',
+    )
+    assert not toolchain._metadata_marker_active(' extra == "full"')
+
+    _verify_wheel_requirement(tmp_path, requirement, [])
+
+    with pytest.raises(toolchain.VerificationError, match="unsupported version"):
+        _verify_wheel_requirement(
+            tmp_path,
+            "aiohttp!=4.0.0a0",
+            [{"package": "aiohttp", "version": "3.13.3"}],
+        )
+
+
+def test_canonical_prefix_wildcard_is_admitted_only_for_inactive_metadata(
+    tmp_path: Path,
+) -> None:
+    requirement = 'pytest!=8.1.*,>=6; extra == "test"'
+    assert toolchain._parse_requirement(requirement) == (
+        "pytest",
+        "!=8.1.*,>=6",
+        ' extra == "test"',
+    )
+
+    _verify_wheel_requirement(tmp_path, requirement, [])
+
+    with pytest.raises(toolchain.VerificationError, match="unsupported version"):
+        _verify_wheel_requirement(
+            tmp_path,
+            "pytest!=8.1.*",
+            [{"package": "pytest", "version": "8.0.0"}],
+        )
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        "click[bad extra] (>=8.4.1,<9.0.0)",
+        'click (>=8.4.1,<9.0.0) ; sys_platform != "win32\'',
+    ),
+    ids=("invalid-extra", "mismatched-marker-quotes"),
+)
+def test_wheel_requirement_grammar_rejects_malformed_extras_and_quotes(
+    tmp_path: Path,
+    requirement: str,
+) -> None:
+    wheels_dir = tmp_path / "wheels"
+    wheels_dir.mkdir()
+    filename = "demo-1.0-py3-none-any.whl"
+    _write_wheel(wheels_dir / filename, requirement=requirement)
+    policy = {
+        "wheel_artifacts": [
+            {
+                "active_dependencies": [{"package": "click", "version": "8.4.2"}],
+                "filename": filename,
+                "package": "demo",
+                "tags": ["py3-none-any"],
+                "version": "1.0",
+            }
+        ]
+    }
+
+    with pytest.raises(toolchain.VerificationError):
+        toolchain._verify_wheel_metadata(tmp_path, policy)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        'sys_platform != "win32\'',
+        "sys_platform != 'win32\"",
+    ),
+)
+def test_runtime_marker_grammar_preserves_quote_delimiters(marker: str) -> None:
+    with pytest.raises(toolchain.VerificationError, match="marker"):
+        toolchain._marker_active(marker)
+    with pytest.raises(toolchain.VerificationError, match="marker"):
+        toolchain._metadata_marker_active(marker)
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        "click (>=8.4.1,<9.0.0",
+        "click >=8.4.1,<9.0.0)",
+        "click ()",
+        "click ((>=8.4.1,<9.0.0))",
+        "click (>=8.4.1,<9.0.0) trailing",
+        "-click (>=8.4.1)",
+        "click- (>=8.4.1)",
+        "click[bad extra] (>=8.4.1)",
+        "click[,plugins] (>=8.4.1)",
+        "click[plugins,] (>=8.4.1)",
+        "click[plugins,,fast] (>=8.4.1)",
+    ),
+)
+def test_invalid_parenthesized_pep508_constraint_fails_closed(
+    requirement: str,
+) -> None:
+    with pytest.raises(toolchain.VerificationError, match="source requirement"):
+        toolchain._parse_requirement(requirement)
+
+
+def test_wheel_sys_platform_not_win32_marker_is_exactly_allowlisted() -> None:
+    assert toolchain._metadata_marker_active('sys_platform != "win32"')
+    with pytest.raises(toolchain.VerificationError, match="unsupported active wheel marker"):
+        toolchain._metadata_marker_active("sys_platform != 'linux'")
 
 
 def _cargo_fixture(tmp_path: Path, attack: str | None = None) -> tuple[Path, dict[str, Any], dict[str, Any]]:

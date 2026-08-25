@@ -79,6 +79,34 @@ _ENDPOINTS = (
     ),
     _Endpoint(
         "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_base_runtime_bytes@698",
+        "manifest",
+        "base_runtime_manifest_json_object",
+        "nautilus_base_runtime_manifest",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_base_runtime_bytes@698",
+        "policy",
+        "base_runtime_policy_parameter",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@554",
+        "policy",
+        "runtime_policy_json_object",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        "_validate_policy_bytes@554",
+        "specification",
+        "profile_specification_lookup",
+        "nautilus_runtime_closure_policy",
+    ),
+    _Endpoint(
+        "scripts/materialize_nautilus_runtime_closure.py",
         "_validate_policy_bytes@422",
         "specification",
         "profile_specification_lookup",
@@ -101,8 +129,11 @@ _ENDPOINTS = (
 )
 
 _GOVERNED_MODULE_HASHES = {
-    "scripts/materialize_nautilus_runtime_closure.py": (
-        "7e9ccaac6d0c52cbc958242524a093ba614fa9d746053c9b21a6825075ef50df"
+    "scripts/materialize_nautilus_runtime_closure.py": frozenset(
+        {
+            "7e9ccaac6d0c52cbc958242524a093ba614fa9d746053c9b21a6825075ef50df",
+            "2ec3a73f40d21d32e190b9be7ac36d5d99457803a17c02000f8a3ee96b06fa1e",
+        }
     ),
     "services/job_worker/nautilus_closure.py": (
         "01085b9e448675996078742f5dc501963bd15ad022cc6b8fdfa1ef34006914f2"
@@ -383,11 +414,14 @@ class PythonExtractor:
         except SyntaxError:
             raise _invalid() from None
         expected_module_hash = _GOVERNED_MODULE_HASHES.get(path)
-        if (
-            expected_module_hash is not None
-            and self._normalized_module_hash(tree) != expected_module_hash
-        ):
-            raise _invalid()
+        if expected_module_hash is not None:
+            observed_module_hash = self._normalized_module_hash(tree)
+            if observed_module_hash not in (
+                expected_module_hash
+                if isinstance(expected_module_hash, frozenset)
+                else frozenset({expected_module_hash})
+            ):
+                raise _invalid()
         tokens = _string_tokens(text)
         bindings, invalid_names, invalid_governed_names = self._bindings(tree, tokens, text)
         observations = set(self._literal_observations(path, text, tokens, tree))

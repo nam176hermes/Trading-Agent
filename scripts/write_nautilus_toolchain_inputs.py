@@ -32,7 +32,10 @@ WHEEL_POLICY = CANDIDATE / "wheel-cache-policy.json"
 CARGO_POLICY = CANDIDATE / "cargo-registry-policy.json"
 U02_POLICY = ROOT / "engines/nautilus/v1.231-provenance-policy.json"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_REQUIREMENT = re.compile(r"^([A-Za-z0-9_.-]+)(?:\[[^]]+\])?([^;]*)(?:;(.*))?$")
+_REQUIREMENT_TOKEN = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+_REQUIREMENT = re.compile(
+    rf"^({_REQUIREMENT_TOKEN})(?:\[{_REQUIREMENT_TOKEN}(?:\s*,\s*{_REQUIREMENT_TOKEN})*\])?([^;]*)(?:;(.*))?$"
+)
 _MAX_ARCHIVE_MEMBERS = 20_000
 _MAX_MEMBER_BYTES = 512 * 1024 * 1024
 _MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
@@ -41,6 +44,7 @@ _TARGET = "x86_64-unknown-linux-gnu"
 _EXTERNAL_ROOTS = {
     "candidate_build_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work",
     "candidate_cargo_home_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+    "candidate_forensic_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-reproducibility-evidence",
     "candidate_input_root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs",
     "candidate_llvm_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain",
     "candidate_runtime_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-runtime",
@@ -52,6 +56,7 @@ _EXTERNAL_ROOTS = {
 _ROOT_ACCESS = {
     "candidate_build_root": "WRITABLE_PARENT_FOR_ONE_FRESH_STAGING_CHILD",
     "candidate_cargo_home_root": "SEALED_READ_ONLY",
+    "candidate_forensic_root": "ABSENT_THEN_SEALED_READ_ONLY_FORENSIC_EVIDENCE",
     "candidate_input_root": "SEALED_READ_ONLY",
     "candidate_llvm_toolchain_root": "SEALED_READ_ONLY",
     "candidate_runtime_root": "ABSENT_THEN_SEALED_READ_ONLY",
@@ -191,6 +196,12 @@ _POSITIVE_DECIMAL = re.compile(r"[1-9][0-9]*")
 _STRICT_VERSION = re.compile(
     r"(?P<release>(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))*)"
     r"(?:\.post(?P<post>0|[1-9][0-9]*))?"
+)
+_CANONICAL_ALPHA_REQUIREMENT_OPERAND = re.compile(
+    r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))*a(?:0|[1-9][0-9]*)"
+)
+_CANONICAL_PREFIX_WILDCARD_REQUIREMENT_OPERAND = re.compile(
+    r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))*\.\*"
 )
 
 
@@ -490,11 +501,16 @@ def _expected_command_router(engine: dict[str, Any]) -> dict[str, Any]:
             "type": "file",
         }
     ]
-    for name in ("clang", "clang++", "ld.lld"):
-        tool = llvm["tools"][name]
+    for name, tool_name in (
+        ("clang", "clang"),
+        ("clang++", "clang++"),
+        ("ld", "ld.lld"),
+        ("ld.lld", "ld.lld"),
+    ):
+        tool = llvm["tools"][tool_name]
         resolved = {
             "mode": "0500",
-            "path": f'{_EXTERNAL_ROOTS["candidate_llvm_toolchain_root"]}/bin/{name}',
+            "path": f'{_EXTERNAL_ROOTS["candidate_llvm_toolchain_root"]}/bin/{tool_name}',
             "sha256": tool["sha256"],
             "size": tool["size"],
             "type": "file",
@@ -1304,6 +1320,7 @@ def _validate_external_roots(
     expected_roots = {
         "candidate_build_root",
         "candidate_cargo_home_root",
+        "candidate_forensic_root",
         "candidate_input_root",
         "candidate_llvm_toolchain_root",
         "candidate_runtime_root",
@@ -1388,6 +1405,7 @@ def _verify_policies(
             "activation_status",
             "build_execution",
             "candidate",
+            "candidate_wheel_metadata",
             "command_router",
             "external_cache_isolation",
             "llvm_toolchain",
@@ -1549,6 +1567,19 @@ def _verify_policies(
     }
     if candidate_identity != {("1.231.0", "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317")}:
         raise VerificationError("candidate identity drifted")
+    requirements = _candidate_wheel_requires_dist(engine)
+    active_names = []
+    for requirement in requirements:
+        name, _specifier, marker = _parse_requirement(requirement)
+        if _metadata_marker_active(marker):
+            active_names.append(name)
+    if (
+        len(active_names) != 11
+        or len(requirements) - len(active_names) != 9
+        or set(active_names) != set(wheels["runtime_direct"])
+        or len(active_names) != len(set(active_names))
+    ):
+        raise VerificationError("candidate wheel metadata dependency partition drifted")
     _validate_external_roots(engine["external_cache_isolation"], require_exact=True)
     build = engine["build_execution"]
     _require_keys(
@@ -1799,7 +1830,19 @@ def _parse_requirement(value: str) -> tuple[str, str, str | None]:
     match = _REQUIREMENT.fullmatch(value.strip())
     if match is None:
         raise VerificationError(f"unsupported source requirement: {value}")
-    return _normalize(match.group(1)), match.group(2).replace(" ", ""), match.group(3)
+    specifier = match.group(2).strip()
+    if "(" in specifier or ")" in specifier:
+        if (
+            not specifier.startswith("(")
+            or not specifier.endswith(")")
+            or len(specifier) == 2
+            or "(" in specifier[1:-1]
+            or ")" in specifier[1:-1]
+        ):
+            raise VerificationError(f"unsupported source requirement: {value}")
+        specifier = specifier[1:-1]
+    _parse_specifier(specifier)
+    return _normalize(match.group(1)), specifier, match.group(3)
 
 
 def _parse_version(value: str) -> tuple[tuple[int, ...], int | None]:
@@ -1827,16 +1870,49 @@ def _compare_versions(
     return (left_post_key > right_post_key) - (left_post_key < right_post_key)
 
 
-def _satisfies(version: str, specifier: str) -> bool:
-    selected = _parse_version(version)
-    for clause in filter(None, specifier.split(",")):
+def _parse_specifier(
+    specifier: str,
+) -> tuple[tuple[str, str], ...]:
+    if not specifier:
+        return ()
+    clauses = specifier.split(",")
+    if any(not clause for clause in clauses):
+        raise VerificationError(
+            f"unsupported source version constraint: {specifier}"
+        )
+    parsed = []
+    for clause in clauses:
         match = re.fullmatch(r"(==|!=|~=|>=|<=|>|<)([^,]+)", clause)
         if match is None:
             raise VerificationError(f"unsupported source version constraint: {clause}")
         expected_value = match.group(2)
+        try:
+            _parse_version(expected_value)
+        except VerificationError as exc:
+            canonical_alpha = (
+                _CANONICAL_ALPHA_REQUIREMENT_OPERAND.fullmatch(expected_value)
+                is not None
+            )
+            canonical_prefix_wildcard = (
+                match.group(1) in {"==", "!="}
+                and _CANONICAL_PREFIX_WILDCARD_REQUIREMENT_OPERAND.fullmatch(
+                    expected_value
+                )
+                is not None
+            )
+            if not canonical_alpha and not canonical_prefix_wildcard:
+                raise VerificationError(
+                    f"unsupported source version constraint: {clause}"
+                ) from exc
+        parsed.append((match.group(1), expected_value))
+    return tuple(parsed)
+
+
+def _satisfies(version: str, specifier: str) -> bool:
+    selected = _parse_version(version)
+    for operator, expected_value in _parse_specifier(specifier):
         expected = _parse_version(expected_value)
         comparison = _compare_versions(selected, expected)
-        operator = match.group(1)
         outcomes = {
             "==": version == expected_value,
             "!=": version != expected_value,
@@ -1865,13 +1941,13 @@ def _satisfies(version: str, specifier: str) -> bool:
 def _marker_active(marker: str | None) -> bool:
     if marker is None:
         return True
-    normalized = marker.replace('"', "'").strip()
-    if normalized == "sys_platform != 'win32'":
+    normalized = _normalized_marker(marker)
+    if normalized in _marker_quote_variants("sys_platform != 'win32'"):
         return True
-    if normalized in {
+    if normalized in _marker_quote_variants(
         "sys_platform == 'win32'",
         "sys_platform == 'emscripten' or sys_platform == 'win32'",
-    }:
+    ):
         return False
     raise VerificationError(f"unsupported locked runtime marker: {marker}")
 
@@ -2314,28 +2390,121 @@ def _wheel_filename_identity(
     return tags, expected_prefix + ".dist-info"
 
 
+def _marker_quote_variants(*markers: str) -> set[str]:
+    return {
+        variant
+        for marker in markers
+        for variant in (marker, marker.replace("'", '"'))
+    }
+
+
+def _normalized_marker(marker: str) -> str:
+    normalized = re.sub(r"\s+", " ", marker.strip())
+    if "'" in normalized and '"' in normalized:
+        raise VerificationError(f"unsupported marker quote delimiters: {marker}")
+    return normalized
+
+
+def _extra_marker(marker: str, operator: str) -> bool:
+    return re.fullmatch(
+        rf"extra\s*{re.escape(operator)}\s*(?:'{_REQUIREMENT_TOKEN}'|\"{_REQUIREMENT_TOKEN}\")",
+        marker,
+    ) is not None
+
+
 def _metadata_marker_active(marker: str | None) -> bool:
     if marker is None:
         return True
-    normalized = re.sub(r"\s+", " ", marker.replace('"', "'").strip())
+    normalized = _normalized_marker(marker)
     if re.search(r"\bextra\b", normalized):
-        if " or " not in normalized and re.search(
-            r"\bextra\s*==\s*'[^']+'", normalized
+        inactive_extra = _extra_marker(normalized, "==")
+        prefix, separator, extra = normalized.rpartition(" and ")
+        admitted_prefixes = _marker_quote_variants(
+            "(python_version < '3.10')",
+            "(python_version < '3.14')",
+            "(python_version >= '3.9' and sys_platform != 'cygwin')",
+            "(sys_platform != 'cygwin')",
+            "platform_python_implementation != 'PyPy'",
+            "platform_python_implementation == 'PyPy'",
+            "python_version < '3.10'",
+            "python_version < '3.11'",
+            "sys_platform != 'cygwin'",
+        )
+        if inactive_extra or (
+            separator
+            and prefix in admitted_prefixes
+            and _extra_marker(extra, "==")
         ):
             return False
-        if re.fullmatch(r"extra\s*!=\s*'[^']+'", normalized):
+        if _extra_marker(normalized, "!="):
             return True
         raise VerificationError(f"unsupported active wheel marker: {marker}")
     outcomes = {
-        "platform_system == 'Windows'": False,
-        "python_version < '3.14'": True,
-        "python_version >= '3.14'": False,
-        "sys_platform == 'win32'": False,
-        "sys_platform == 'emscripten'": False,
+        variant: outcome
+        for marker, outcome in (
+            ("platform_system == 'Windows'", False),
+            ("python_version < '3.14'", True),
+            ("python_version >= '3.14'", False),
+            ("sys_platform != 'win32'", True),
+            ("sys_platform == 'win32'", False),
+            ("sys_platform == 'emscripten'", False),
+        )
+        for variant in _marker_quote_variants(marker)
     }
     if normalized in outcomes:
         return outcomes[normalized]
     raise VerificationError(f"unsupported active wheel marker: {marker}")
+
+
+def _candidate_wheel_requires_dist(engine: dict[str, Any]) -> tuple[str, ...]:
+    authority = engine.get("candidate_wheel_metadata")
+    if not isinstance(authority, dict):
+        raise VerificationError("candidate wheel metadata authority is invalid")
+    _require_keys(
+        authority,
+        {"authority", "requires_dist", "source_correspondence"},
+        "candidate wheel metadata authority",
+    )
+    source = authority["source_correspondence"]
+    if not isinstance(source, dict):
+        raise VerificationError("candidate wheel metadata source authority is invalid")
+    _require_keys(
+        source,
+        {
+            "generator",
+            "generator_module_path",
+            "generator_module_sha256",
+            "project_path",
+            "project_sha256",
+            "upstream_commit",
+        },
+        "candidate wheel metadata source authority",
+    )
+    requirements = authority["requires_dist"]
+    if (
+        authority["authority"] != "EXACT_ORDERED_REQUIRES_DIST_V1"
+        or source["generator"] != "poetry-core 2.3.1"
+        or source["generator_module_path"] != "poetry/core/masonry/metadata.py"
+        or source["project_path"] != "pyproject.toml"
+        or source["upstream_commit"]
+        != "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+        or not isinstance(requirements, list)
+        or len(requirements) != 20
+        or not all(
+            isinstance(value, str)
+            and value
+            and "[" not in value
+            and "]" not in value
+            for value in requirements
+        )
+        or len(set(requirements)) != 20
+    ):
+        raise VerificationError("candidate wheel metadata authority is invalid")
+    _require_sha256(source["generator_module_sha256"], "metadata generator module")
+    _require_sha256(source["project_sha256"], "metadata project source")
+    for requirement in requirements:
+        _parse_requirement(requirement)
+    return tuple(requirements)
 
 
 def _verify_wheel_record(

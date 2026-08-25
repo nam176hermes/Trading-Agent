@@ -55,6 +55,7 @@ RUNTIME_SOURCE_LEAVES = (
     "services/job_worker/nautilus_closure.py",
 )
 _FIX6_MATERIALIZER_SOURCE = "scripts/materialize_nautilus_runtime_closure.py"
+_FIX6_MATERIALIZER_COMMIT = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 _FIX6_MATERIALIZER_SOURCE_SHA256 = (
     "03b87b57ca257b06734e9cad0b3e97e0a8e74350c8a6f37c1ab3cb577658b5b5"
 )
@@ -141,7 +142,12 @@ def _assert_runtime_policy_source_authority(policy: dict[str, object]) -> None:
 
     for source_path in RUNTIME_SOURCE_LEAVES:
         if source_path == _FIX6_MATERIALIZER_SOURCE:
-            assert _sha256(ROOT / source_path) == _FIX6_MATERIALIZER_SOURCE_SHA256
+            historical = _git_source_blob(
+                _FIX6_MATERIALIZER_COMMIT, source_path
+            )
+            assert hashlib.sha256(historical).hexdigest() == (
+                _FIX6_MATERIALIZER_SOURCE_SHA256
+            )
             continue
         assert (ROOT / source_path).read_bytes() == _git_source_blob(
             source_commit, source_path

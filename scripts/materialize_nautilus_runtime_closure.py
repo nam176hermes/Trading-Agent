@@ -23,10 +23,14 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from pathlib import Path, PurePosixPath
+from dataclasses import fields, is_dataclass
+from pathlib import Path, PurePath, PurePosixPath
 from typing import NoReturn, Sequence
+
+sys.dont_write_bytecode = True
 
 # Direct execution puts ``scripts/`` first on sys.path. Bootstrap the checkout
 # root before importing the controller attestor; no ambient installation is
@@ -177,6 +181,108 @@ _DEPENDENCY_IMPORT_POLICY = (
     "native-guarded-stdlib-first-sealed-wheel-path-v1"
 )
 _RENAME_NOREPLACE = 1
+_CANDIDATE_BASE_POLICY = _ROOT / "engines/nautilus/runtime-closure-policy.json"
+_CANDIDATE_BUILDER = _ROOT / "scripts/build_nautilus_engine.py"
+_CANDIDATE_SANDBOX = Path("/usr/bin/bwrap")
+_SELECTED_RUNTIME_GENERATION = "runtime-closure-v12-r12-simulation"
+_SELECTED_ARTIFACT_GENERATION = (
+    "artifacts/nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c"
+)
+_SELECTED_POLICY_SHA256 = (
+    "746df241937f6e791f30d66f2b70d50c88c451d6e6575fd903a46ea63e6c3ae2"
+)
+_SELECTED_MANIFEST_SHA256 = (
+    "b143564cf3ad63b4ca01afb9a27e7496c9b1c6ff1f3c46cf10b6c4a047545d20"
+)
+_SELECTED_CLOSURE_SHA256 = (
+    "14d4fd990dccfdbb8b6dfe964a04ae9e80fefb30914cf433de1bc503b8ad03fa"
+)
+_SELECTED_ARTIFACT_MANIFEST_SHA256 = (
+    "105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2"
+)
+_CANDIDATE_IMPORT_SCRIPT = (
+    "import pathlib,sys,tempfile,zipfile; "
+    "wheel_root=pathlib.Path('/engine/wheels'); target=pathlib.Path(tempfile.mkdtemp(dir='/tmp')); "
+    "roots=[]; "
+    "[(lambda d,w:(d.mkdir(),zipfile.ZipFile(w).extractall(d),roots.append(str(d))))(target/str(i),w) for i,w in enumerate(sorted(wheel_root.glob('*.whl')))]; "
+    "sys.path[:0]=roots; import nautilus_trader; "
+    "assert nautilus_trader.__version__=='1.231.0'; print(nautilus_trader.__version__)"
+)
+_CANDIDATE_ARTIFACT_FIELDS = {
+    "activation_status",
+    "engine",
+    "manifest_kind",
+    "native_libraries",
+    "network",
+    "policy_hashes",
+    "python",
+    "reproducible_build",
+    "runtime_wheels",
+    "schema_version",
+    "source",
+    "toolchain",
+    "wheel",
+}
+_CANDIDATE_ENGINE_FIELDS = {"name", "upstream_commit", "upstream_tag", "version"}
+_CANDIDATE_PYTHON_FIELDS = {
+    "abi",
+    "executable_sha256",
+    "identity",
+    "stdlib_tree_sha256",
+}
+_CANDIDATE_TOOLCHAIN_FIELDS = {
+    "cargo_identity",
+    "command_router_authority",
+    "llvm_version",
+    "rustc_identity",
+}
+_CANDIDATE_WHEEL_FIELDS = {"filename", "sha256", "size"}
+_CANDIDATE_REPRODUCIBILITY_FIELDS = {
+    "authoritative_manifest_equality",
+    "build_count",
+    "fresh_physical_stages",
+    "logical_stages_absent_after_build",
+    "native_inventory_equality",
+    "raw_wheel_equality",
+    "source_fd_identities",
+    "wheel_sha256",
+}
+_CANDIDATE_SOURCE_FD_FIELDS = {
+    "P1_U04_SOURCE_ST_DEV",
+    "P1_U04_SOURCE_ST_INO",
+}
+_CANDIDATE_CLOSURE_FIELDS = {
+    "activation_status",
+    "artifact_manifest_sha256",
+    "base_runtime",
+    "engine",
+    "file_inventory_sha256",
+    "files",
+    "loader_assumptions",
+    "manifest_kind",
+    "native_inventory_sha256",
+    "native_libraries",
+    "network",
+    "policy_hashes",
+    "python",
+    "qualification",
+    "runtime_wheels",
+    "schema_version",
+    "source",
+    "toolchain",
+}
+_CANDIDATE_BASE_HISTORICAL_FIELDS = {
+    "engine_name",
+    "engine_version",
+    "file_count",
+    "file_inventory_sha256",
+    "manifest_sha256",
+    "non_engine_file_count",
+    "non_engine_file_inventory_sha256",
+    "python_identity",
+    "schema_version",
+    "source_commit",
+}
 
 
 class RuntimeClosureMaterializationError(ValueError):
@@ -291,6 +397,32 @@ def _sealed_directory(path: Path, *, label: str) -> None:
         raise RuntimeClosureMaterializationError(
             f"{label} is not a sealed private directory"
         )
+
+
+def _authority_directory_identity(path: Path, *, label: str) -> tuple[int, int]:
+    if not path.is_absolute() or path == Path("/") or ".." in path.parts:
+        raise RuntimeClosureMaterializationError(f"{label} path is unsafe")
+    current = path
+    while True:
+        try:
+            observed = current.lstat()
+        except OSError as exc:
+            raise RuntimeClosureMaterializationError(
+                f"{label} has a missing ancestor"
+            ) from exc
+        if stat.S_ISLNK(observed.st_mode):
+            raise RuntimeClosureMaterializationError(
+                f"{label} has a symlinked ancestor"
+            )
+        if not stat.S_ISDIR(observed.st_mode):
+            raise RuntimeClosureMaterializationError(
+                f"{label} has a non-directory ancestor"
+            )
+        if current == path:
+            identity = (observed.st_dev, observed.st_ino)
+        if current == current.parent:
+            return identity
+        current = current.parent
 
 
 def _require_sha256(value: object, *, label: str) -> str:
@@ -993,6 +1125,9 @@ def _publish_noreplace(
     destination: Path,
     *,
     parent_identity: tuple[int, int],
+    staging_identity: tuple[int, int],
+    completed_close_is_success: bool = False,
+    publication_committed: Callable[[], None] | None = None,
 ) -> Iterator[None]:
     if (
         staging.parent != destination.parent
@@ -1003,6 +1138,7 @@ def _publish_noreplace(
             "atomic no-clobber publication paths are invalid"
         )
     parent_fd = -1
+    renamed = False
     try:
         try:
             parent_fd = os.open(
@@ -1023,11 +1159,29 @@ def _publish_noreplace(
                     "destination parent identity changed before atomic publish"
                 )
             try:
+                staged = os.stat(
+                    staging.name, dir_fd=parent_fd, follow_symlinks=False
+                )
+            except OSError as exc:
+                raise RuntimeClosureMaterializationError(
+                    "staging identity changed before atomic publish"
+                ) from exc
+            if (
+                not stat.S_ISDIR(staged.st_mode)
+                or (staged.st_dev, staged.st_ino) != staging_identity
+            ):
+                raise RuntimeClosureMaterializationError(
+                    "staging identity changed before atomic publish"
+                )
+            try:
                 _renameat2_noreplace(
                     parent_fd,
                     os.fsencode(staging.name),
                     os.fsencode(destination.name),
                 )
+                renamed = True
+                if publication_committed is not None:
+                    publication_committed()
             except OSError as exc:
                 if exc.errno == errno.EEXIST:
                     raise RuntimeClosureMaterializationError(
@@ -1044,6 +1198,23 @@ def _publish_noreplace(
                 raise RuntimeClosureMaterializationError(
                     "atomic no-clobber publish failed"
                 ) from exc
+            try:
+                published = os.stat(
+                    destination.name, dir_fd=parent_fd, follow_symlinks=False
+                )
+            except OSError as exc:
+                raise RuntimeClosureMaterializationError(
+                    "published closure identity changed during atomic rename"
+                ) from exc
+            if (
+                not stat.S_ISDIR(published.st_mode)
+                or (published.st_dev, published.st_ino) != staging_identity
+                or published.st_uid != os.geteuid()
+                or stat.S_IMODE(published.st_mode) != 0o500
+            ):
+                raise RuntimeClosureMaterializationError(
+                    "published closure identity changed during atomic rename"
+                )
         except RuntimeClosureMaterializationError:
             raise
         except OSError as exc:
@@ -1059,7 +1230,11 @@ def _publish_noreplace(
         if parent_fd >= 0:
             descriptor = parent_fd
             parent_fd = -1
-            os.close(descriptor)
+            try:
+                os.close(descriptor)
+            except OSError:
+                if not renamed or not completed_close_is_success:
+                    raise
 
 
 def _build_output_manifest(
@@ -1254,6 +1429,7 @@ def materialize_runtime_closure(
             staging,
             destination,
             parent_identity=(parent.st_dev, parent.st_ino),
+            staging_identity=staged_identity,
         ):
             published = True
             observed = destination.lstat()
@@ -1313,17 +1489,1159 @@ def materialize_runtime_closure(
             _unseal_and_remove(staging)
 
 
+def _candidate_builder_tool():
+    return _load_local_tool(_CANDIDATE_BUILDER, "build_nautilus_engine_candidate")
+
+
+def _candidate_authority() -> tuple[object, dict[str, object], dict[str, object], dict[str, Path]]:
+    builder = _candidate_builder_tool()
+    engine, inputs = builder._verify_candidate_authority()
+    roots = builder._candidate_roots(engine)
+    if roots["candidate_runtime_root"].exists() or roots["candidate_runtime_root"].is_symlink():
+        raise RuntimeClosureMaterializationError("candidate runtime destination is not absent")
+    return builder, engine, inputs, roots
+
+
+def _validate_candidate_artifact(
+    builder: object,
+    engine: dict[str, object],
+    inputs: dict[str, object],
+    roots: dict[str, Path],
+) -> tuple[Path, dict[str, object], bytes]:
+    directory = roots["candidate_build_root"] / "artifacts"
+    manifest_path = directory / _ARTIFACT_MANIFEST
+    _sealed_directory(directory, label="candidate artifact directory")
+    raw = _read_file(manifest_path, label="candidate artifact manifest", sealed=True)
+    try:
+        document = builder._candidate_json(manifest_path)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeClosureMaterializationError("candidate artifact manifest is invalid") from exc
+    if raw != (json.dumps(document, sort_keys=True, indent=2) + "\n").encode("ascii"):
+        raise RuntimeClosureMaterializationError(
+            "candidate artifact manifest is not exact canonical JSON"
+        )
+    candidate = engine.get("candidate")
+    input_python = inputs.get("python")
+    input_source = inputs.get("source")
+    source_artifact = input_source.get("artifact") if isinstance(input_source, dict) else None
+    runtime_wheels = inputs.get("runtime_wheels")
+    if (
+        set(document) != _CANDIDATE_ARTIFACT_FIELDS
+        or not isinstance(candidate, dict)
+        or not isinstance(input_python, dict)
+        or not isinstance(source_artifact, dict)
+        or not isinstance(runtime_wheels, list)
+        or not all(isinstance(record, dict) for record in runtime_wheels)
+    ):
+        raise RuntimeClosureMaterializationError("candidate artifact field set is invalid")
+    stdlib = input_python.get("stdlib_inventory")
+    rust = engine.get("rust")
+    llvm = engine.get("llvm_toolchain")
+    router = inputs.get("command_router")
+    expected_engine = {
+        "name": "nautilus_trader",
+        "version": candidate.get("release"),
+        "upstream_tag": candidate.get("upstream_tag"),
+        "upstream_commit": candidate.get("upstream_commit"),
+    }
+    expected_python = {
+        "identity": input_python.get("identity"),
+        "abi": input_python.get("abi"),
+        "executable_sha256": input_python.get("executable_sha256"),
+        "stdlib_tree_sha256": stdlib.get("tree_sha256") if isinstance(stdlib, dict) else None,
+    }
+    expected_toolchain = {
+        "rustc_identity": rust.get("rustc_identity") if isinstance(rust, dict) else None,
+        "cargo_identity": rust.get("cargo_identity") if isinstance(rust, dict) else None,
+        "llvm_version": llvm.get("version") if isinstance(llvm, dict) else None,
+        "command_router_authority": router.get("authority") if isinstance(router, dict) else None,
+    }
+    engine_record = document.get("engine")
+    python_record = document.get("python")
+    toolchain_record = document.get("toolchain")
+    if (
+        document.get("schema_version") != 7
+        or document.get("manifest_kind") != "NAUTILUS_V1_231_CANDIDATE_ARTIFACT"
+        or document.get("activation_status") != "CANDIDATE_ONLY_NOT_ACTIVATED"
+        or not isinstance(engine_record, dict)
+        or set(engine_record) != _CANDIDATE_ENGINE_FIELDS
+        or engine_record != expected_engine
+        or not isinstance(python_record, dict)
+        or set(python_record) != _CANDIDATE_PYTHON_FIELDS
+        or python_record != expected_python
+        or document.get("policy_hashes") != inputs.get("policy_hashes")
+        or not isinstance(toolchain_record, dict)
+        or set(toolchain_record) != _CANDIDATE_TOOLCHAIN_FIELDS
+        or toolchain_record != expected_toolchain
+        or document.get("network") != "DISABLED_BY_BUBBLEWRAP_UNSHARE_ALL"
+    ):
+        raise RuntimeClosureMaterializationError("candidate artifact authority drifted")
+    source_record = document.get("source")
+    if (
+        not isinstance(source_record, dict)
+        or set(source_record) != {*source_artifact, "verified_extracted_tree_sha256"}
+        or {key: source_record.get(key) for key in source_artifact} != source_artifact
+    ):
+        raise RuntimeClosureMaterializationError("candidate artifact source authority drifted")
+    wheel_record = document.get("wheel")
+    if (
+        not isinstance(wheel_record, dict)
+        or set(wheel_record) != _CANDIDATE_WHEEL_FIELDS
+        or wheel_record.get("filename") != builder._CANDIDATE_WHEEL_FILENAME
+    ):
+        raise RuntimeClosureMaterializationError("candidate artifact wheel record is invalid")
+    wheel = directory / str(wheel_record["filename"])
+    wheel_raw = _read_file(wheel, label="candidate engine wheel", sealed=True)
+    if len(wheel_raw) != wheel_record.get("size") or _sha256_bytes(wheel_raw) != wheel_record.get("sha256"):
+        raise RuntimeClosureMaterializationError("candidate artifact engine wheel bytes drifted")
+    if set(directory.iterdir()) != {manifest_path, wheel}:
+        raise RuntimeClosureMaterializationError("candidate artifact directory file set drifted")
+    try:
+        builder._verify_candidate_wheel_archive(wheel)
+        native = builder._candidate_native_inventory(wheel)
+        source_archive = roots["candidate_input_root"] / "source-inputs" / str(source_artifact["filename"])
+        _source_inventory, source_tree_sha256 = (
+            builder._candidate_source_archive_inventory(
+                source_archive, source_artifact
+            )
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeClosureMaterializationError(
+            "candidate artifact derived authority verification failed"
+        ) from exc
+    if (
+        source_record.get("verified_extracted_tree_sha256") != source_tree_sha256
+        or document.get("native_libraries") != native
+    ):
+        raise RuntimeClosureMaterializationError("candidate artifact derived authority drifted")
+    runtime_projection = [
+        {
+            key: record[key]
+            for key in ("filename", "package", "version", "mode", "size", "sha256")
+        }
+        for record in runtime_wheels
+    ]
+    if document.get("runtime_wheels") != runtime_projection:
+        raise RuntimeClosureMaterializationError(
+            "candidate artifact runtime wheel authority drifted"
+        )
+    receipt = document.get("reproducible_build")
+    identities = receipt.get("source_fd_identities") if isinstance(receipt, dict) else None
+    required_true = (
+        "fresh_physical_stages",
+        "logical_stages_absent_after_build",
+        "raw_wheel_equality",
+        "native_inventory_equality",
+        "authoritative_manifest_equality",
+    )
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != _CANDIDATE_REPRODUCIBILITY_FIELDS
+        or receipt.get("build_count") != 2
+        or any(receipt.get(field) is not True for field in required_true)
+        or receipt.get("wheel_sha256") != wheel_record["sha256"]
+        or not isinstance(identities, list)
+        or len(identities) != 2
+        or identities[0] == identities[1]
+        or any(
+            not isinstance(identity, dict)
+            or set(identity) != _CANDIDATE_SOURCE_FD_FIELDS
+            or any(
+                not isinstance(value, str)
+                or not value.isascii()
+                or not value.isdecimal()
+                or value.startswith("0")
+                for value in identity.values()
+            )
+            for identity in identities
+        )
+    ):
+        raise RuntimeClosureMaterializationError(
+            "candidate artifact reproducibility authority drifted"
+        )
+    return wheel, document, raw
+
+
+def _candidate_native_inventory(
+    builder: object,
+    staging: Path,
+    wheel_sources: list[tuple[Path, str]],
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    records: list[dict[str, object]] = []
+
+    def normalized_origin(path: str, value: str | None) -> list[str]:
+        if value is None:
+            return []
+        if "!" in path:
+            prefix, member = path.split("!", 1)
+            base = list(PurePosixPath(member).parent.parts)
+            floor = 0
+            rendered_prefix = prefix + "!"
+        else:
+            base = list(PurePosixPath(path).parent.parts[1:])
+            floor = 1
+            rendered_prefix = "/"
+        roots: list[str] = []
+        for component in value.split(":"):
+            if component == "$ORIGIN":
+                suffix: tuple[str, ...] = ()
+            elif component.startswith("$ORIGIN/"):
+                suffix = PurePosixPath(component[len("$ORIGIN/") :]).parts
+            else:
+                raise RuntimeClosureMaterializationError(
+                    "candidate native RPATH is not relative to ORIGIN"
+                )
+            resolved = list(base)
+            for part in suffix:
+                if part in ("", "."):
+                    continue
+                if part == "..":
+                    if len(resolved) <= floor:
+                        raise RuntimeClosureMaterializationError(
+                            "candidate native RPATH escapes its sealed root"
+                        )
+                    resolved.pop()
+                else:
+                    resolved.append(part)
+            roots.append(rendered_prefix + "/".join(resolved))
+        return roots
+
+    def add_record(path: str, mode: str, payload: bytes) -> None:
+        metadata = builder._elf_metadata(payload, path)
+        record = {
+            "path": path,
+            "mode": mode,
+            "size": len(payload),
+            "sha256": _sha256_bytes(payload),
+            "elf": metadata,
+        }
+        records.append(record)
+
+    engine_target = f"/engine/wheels/{builder._CANDIDATE_WHEEL_FILENAME}"
+    if sum(target == engine_target for _source, target in wheel_sources) != 1:
+        raise RuntimeClosureMaterializationError(
+            "candidate runtime closure engine wheel target is not exact"
+        )
+    for source, target in wheel_sources:
+        try:
+            if target == engine_target:
+                builder._verify_candidate_wheel_archive(source)
+            with zipfile.ZipFile(source) as archive:
+                for member in sorted(archive.infolist(), key=lambda item: item.filename):
+                    if member.is_dir() or not re.search(r"(?:\.so(?:\.\d+)*|\.pyd|\.dylib|\.dll)$", member.filename, re.IGNORECASE):
+                        continue
+                    add_record(
+                        f"{target}!{member.filename}",
+                        f"{(member.external_attr >> 16) & 0o777:04o}",
+                        archive.read(member),
+                    )
+        except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
+            raise RuntimeClosureMaterializationError("candidate runtime wheel native inventory failed") from exc
+
+    files_root = staging / "files"
+    for path in sorted(files_root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        payload = path.read_bytes()
+        if payload[:4] != b"\x7fELF":
+            continue
+        add_record(
+            "/" + path.relative_to(files_root).as_posix(),
+            f"{stat.S_IMODE(path.stat().st_mode):04o}",
+            payload,
+        )
+    by_path: dict[str, dict[str, object]] = {}
+    for record in records:
+        path = str(record["path"])
+        if path in by_path:
+            raise RuntimeClosureMaterializationError(
+                f"ambiguous candidate native path: {path}"
+            )
+        by_path[path] = record
+
+    def aliases(record: dict[str, object]) -> tuple[str, ...]:
+        path = str(record["path"])
+        basename = PurePosixPath(path.split("!", 1)[-1]).name
+        metadata = record["elf"]
+        assert isinstance(metadata, dict)
+        soname = metadata.get("soname")
+        if soname is not None and (
+            not isinstance(soname, str)
+            or not soname
+            or "/" in soname
+            or PurePosixPath(soname).name != soname
+        ):
+            raise RuntimeClosureMaterializationError(
+                f"candidate native SONAME is unsafe: {path}"
+            )
+        return tuple(dict.fromkeys((basename, *(() if soname is None else (soname,)))))
+
+    soname_aliases = {
+        str(metadata["soname"])
+        for record in records
+        if isinstance((metadata := record["elf"]), dict)
+        and metadata.get("soname") is not None
+    }
+    for alias in soname_aliases:
+        digests = {
+            str(record["sha256"])
+            for record in records
+            if alias in aliases(record)
+        }
+        if len(digests) != 1:
+            raise RuntimeClosureMaterializationError(
+                f"candidate native alias collision is divergent: {alias}"
+            )
+
+    default_roots = (
+        "/lib/x86_64-linux-gnu",
+        "/usr/lib/x86_64-linux-gnu",
+        "/lib",
+        "/usr/lib",
+    )
+    for record in records:
+        metadata = record["elf"]
+        assert isinstance(metadata, dict)
+        if metadata["interpreter"] not in (None, "/lib64/ld-linux-x86-64.so.2"):
+            raise RuntimeClosureMaterializationError(
+                f"candidate native PT_INTERP is not exact: {record['path']}"
+            )
+        normalized_rpath = normalized_origin(
+            str(record["path"]),
+            None if metadata["rpath"] is None else str(metadata["rpath"]),
+        )
+        normalized_runpath = normalized_origin(
+            str(record["path"]),
+            None if metadata["runpath"] is None else str(metadata["runpath"]),
+        )
+        record["normalized_rpath"] = normalized_rpath
+        record["normalized_runpath"] = normalized_runpath
+    loader_path = staging / "files/lib64/ld-linux-x86-64.so.2"
+    loader = loader_path.read_bytes()
+    loader_record = by_path.get("/lib64/ld-linux-x86-64.so.2")
+    if loader_record is None:
+        raise RuntimeClosureMaterializationError(
+            "candidate preloaded interpreter record is absent"
+        )
+    loader_metadata = loader_record["elf"]
+    assert isinstance(loader_metadata, dict)
+    if (
+        loader_record["size"] != len(loader)
+        or loader_record["sha256"] != _sha256_bytes(loader)
+        or loader_metadata.get("soname") != "ld-linux-x86-64.so.2"
+        or loader_metadata.get("interpreter") is not None
+    ):
+        raise RuntimeClosureMaterializationError(
+            "candidate preloaded interpreter identity drifted"
+        )
+
+    def load_from(
+        root_record: dict[str, object],
+        *,
+        inherited_rpath: tuple[str, ...] = (),
+        loaded: dict[str, dict[str, object]],
+        active: set[str],
+    ) -> dict[str, object]:
+        path = str(root_record["path"])
+        existing_records = [
+            loaded[name] for name in aliases(root_record) if name in loaded
+        ]
+        if any(
+            record["sha256"] != root_record["sha256"]
+            for record in existing_records
+        ):
+            raise RuntimeClosureMaterializationError(
+                f"candidate native loaded-object alias collision is divergent: {path}"
+            )
+        existing = next(iter(existing_records), None)
+        if existing is not None:
+            return existing
+        for name in aliases(root_record):
+            loaded[name] = root_record
+        if path in active:
+            return root_record
+        active.add(path)
+        runpath = tuple(str(value) for value in root_record["normalized_runpath"])  # type: ignore[union-attr]
+        rpath = tuple(str(value) for value in root_record["normalized_rpath"])  # type: ignore[union-attr]
+        search_roots = runpath or (*rpath, *inherited_rpath)
+        child_rpath = () if runpath else tuple(dict.fromkeys((*rpath, *inherited_rpath)))
+        metadata = root_record["elf"]
+        assert isinstance(metadata, dict)
+        resolutions: list[dict[str, str]] = []
+        for needed in metadata["needed"]:
+            name = str(needed)
+            if not name or "/" in name:
+                raise RuntimeClosureMaterializationError(
+                    f"candidate native DT_NEEDED is unsafe: {path} -> {name}"
+                )
+            resolved_record = loaded.get(name)
+            if resolved_record is None:
+                resolved_path = next(
+                    (
+                        candidate
+                        for search_root in (*search_roots, *default_roots)
+                        if (
+                            candidate := search_root
+                            + ("" if search_root.endswith("!") else "/")
+                            + name
+                        )
+                        in by_path
+                    ),
+                    None,
+                )
+                if resolved_path is None:
+                    raise RuntimeClosureMaterializationError(
+                        f"candidate native DT_NEEDED closure is incomplete: {path} -> {needed}"
+                    )
+                resolved_record = load_from(
+                    by_path[resolved_path],
+                    inherited_rpath=child_rpath,
+                    loaded=loaded,
+                    active=active,
+                )
+            else:
+                shadow_path = next(
+                    (
+                        candidate
+                        for search_root in (*search_roots, *default_roots)
+                        if (
+                            candidate := search_root
+                            + ("" if search_root.endswith("!") else "/")
+                            + name
+                        )
+                        in by_path
+                    ),
+                    None,
+                )
+                if (
+                    shadow_path is not None
+                    and by_path[shadow_path]["sha256"] != resolved_record["sha256"]
+                ):
+                    raise RuntimeClosureMaterializationError(
+                        f"candidate native loaded-object alias collision is divergent: {path} -> {name}"
+                    )
+            resolutions.append(
+                {"name": name, "resolved_path": str(resolved_record["path"])}
+            )
+        active.remove(path)
+        previous = root_record.get("needed_resolution")
+        if previous is not None and previous != resolutions:
+            raise RuntimeClosureMaterializationError(
+                f"candidate native resolution is context-ambiguous: {path}"
+            )
+        root_record["needed_resolution"] = resolutions
+        return root_record
+
+    for record in records:
+        loaded = {name: loader_record for name in aliases(loader_record)}
+        if record is loader_record:
+            record["needed_resolution"] = []
+            continue
+        load_from(record, loaded=loaded, active=set())
+
+    loader_assumptions = {
+        "path": "/lib64/ld-linux-x86-64.so.2",
+        "mode": f"{stat.S_IMODE(loader_path.stat().st_mode):04o}",
+        "size": len(loader),
+        "sha256": _sha256_bytes(loader),
+        "native_record_count": len(records),
+        "resolution": "ELF_LOADER_SEARCH_ORDER_V2",
+    }
+    return records, loader_assumptions
+
+
+def _candidate_base_binding(
+    base_runtime: Path,
+    base_policy: dict[str, object],
+    base_manifest: dict[str, object],
+    base_records: list[dict[str, object]],
+) -> dict[str, object]:
+    non_engine = sorted(
+        (
+            record
+            for record in base_records
+            if not str(record["target"]).startswith("/engine/")
+        ),
+        key=lambda record: str(record["path"]),
+    )
+    historical = {
+        "schema_version": base_manifest["schema_version"],
+        "manifest_sha256": base_policy["base_runtime_manifest_sha256"],
+        "engine_name": base_manifest["engine_name"],
+        "engine_version": base_manifest["engine_version"],
+        "python_identity": base_manifest["python_identity"],
+        "source_commit": base_manifest["source_commit"],
+        "file_count": len(base_records),
+        "file_inventory_sha256": _sha256_bytes(_canonical_json_bytes(base_records)),
+        "non_engine_file_count": len(non_engine),
+        "non_engine_file_inventory_sha256": _sha256_bytes(
+            _canonical_json_bytes(non_engine)
+        ),
+    }
+    if (
+        set(historical) != _CANDIDATE_BASE_HISTORICAL_FIELDS
+        or historical["schema_version"] != 1
+    ):
+        raise RuntimeClosureMaterializationError(
+            "candidate closure base-runtime authority is invalid"
+        )
+    return {
+        "selected_authority": _selected_base_authority(
+            base_runtime.parent,
+            base_policy=base_policy,
+            historical_manifest=base_manifest,
+            historical_records=base_records,
+        ),
+        "historical_manifest": historical,
+    }
+
+
+def _project_attestation(value: object) -> object:
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _project_attestation(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, PurePath):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_project_attestation(item) for item in value]
+    return value
+
+
+def _selected_base_authority(
+    rollback_root: Path,
+    *,
+    base_policy: dict[str, object],
+    historical_manifest: dict[str, object],
+    historical_records: list[dict[str, object]],
+) -> dict[str, object]:
+    selected_root = rollback_root / _SELECTED_RUNTIME_GENERATION
+    selected_artifact = rollback_root / _SELECTED_ARTIFACT_GENERATION
+    authority_directories = (
+        (rollback_root, "rollback root"),
+        (selected_root, "selected schema-6 runtime"),
+        (selected_artifact, "selected schema-6 artifact"),
+    )
+    directory_identities = {
+        path: _authority_directory_identity(path, label=label)
+        for path, label in authority_directories
+    }
+    policy_raw = _read_file(
+        _CANDIDATE_BASE_POLICY,
+        label="selected schema-6 policy",
+        sealed=False,
+    )
+    policy = _json_object(policy_raw, label="selected schema-6 policy")
+    if (
+        _sha256_bytes(policy_raw) != _SELECTED_POLICY_SHA256
+        or set(policy) != _POLICY_FIELDS
+        or policy != base_policy
+    ):
+        raise RuntimeClosureMaterializationError(
+            "selected schema-6 policy bytes or fields drifted"
+        )
+    _sealed_directory(selected_root, label="selected schema-6 runtime")
+    manifest_path = selected_root / _CLOSURE_MANIFEST
+    manifest_raw = _read_file(
+        manifest_path,
+        label="selected schema-6 manifest",
+        sealed=True,
+    )
+    manifest_stat = manifest_path.stat(follow_symlinks=False)
+    if (
+        _sha256_bytes(manifest_raw) != _SELECTED_MANIFEST_SHA256
+        or stat.S_IMODE(manifest_stat.st_mode) != 0o400
+    ):
+        raise RuntimeClosureMaterializationError(
+            "selected schema-6 manifest bytes, hash, or mode drifted"
+        )
+    manifest = _json_object(manifest_raw, label="selected schema-6 manifest")
+    _validate_artifact(selected_artifact, base_policy)
+    artifact_raw = _read_file(
+        selected_artifact / _ARTIFACT_MANIFEST,
+        label="selected schema-6 artifact manifest",
+        sealed=True,
+    )
+    if (
+        _sha256_bytes(artifact_raw) != _SELECTED_ARTIFACT_MANIFEST_SHA256
+        or base_policy["artifact_manifest_sha256"]
+        != _SELECTED_ARTIFACT_MANIFEST_SHA256
+    ):
+        raise RuntimeClosureMaterializationError(
+            "selected schema-6 artifact manifest hash drifted"
+        )
+    attestation = attest_nautilus_backtest_closure(
+        NautilusClosureConfig(
+            runtime_root=selected_root,
+            artifact_directory=selected_artifact,
+            sandbox_executable=_CANDIDATE_SANDBOX,
+        ),
+        expected_profile="execution-simulation",
+    )
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise RuntimeClosureMaterializationError(
+            "selected schema-6 manifest inventory is invalid"
+        )
+    expected_mounts: list[tuple[Path, PurePosixPath, tuple[int, int], int, int, str]] = []
+    for record in files:
+        if not isinstance(record, dict) or set(record) != _FILE_FIELDS:
+            raise RuntimeClosureMaterializationError(
+                "selected schema-6 manifest inventory is invalid"
+            )
+        relative = _safe_relative(record["path"], label="selected schema-6 file")
+        source = selected_root.joinpath(*relative.parts)
+        try:
+            observed = source.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise RuntimeClosureMaterializationError(
+                "selected schema-6 manifest path is unavailable"
+            ) from exc
+        expected_mounts.append(
+            (
+                source,
+                _safe_target(record["target"], label="selected schema-6 target"),
+                (observed.st_dev, observed.st_ino),
+                int(record["size"]),
+                int(str(record["mode"]), 8),
+                str(record["sha256"]),
+            )
+        )
+    observed_mounts = [
+        (
+            mount.source,
+            mount.target,
+            mount.identity,
+            mount.size,
+            mount.mode,
+            mount.sha256,
+        )
+        for mount in attestation.mounts
+    ]
+    sidecar = attestation.closure_manifest
+    guard = attestation.native_entry_guard
+    if (
+        attestation.manifest_schema_version != 6
+        or attestation.profile != base_policy["profile"]
+        or attestation.source_commit != base_policy["source_commit"]
+        or attestation.closure_sha256 != _SELECTED_CLOSURE_SHA256
+        or observed_mounts != expected_mounts
+        or attestation.entrypoint
+        != PurePosixPath(str(base_policy["entrypoint"]))
+        or attestation.argv_prefix
+        != tuple(str(value) for value in base_policy["argv_prefix"])
+        or attestation.timeout_seconds != base_policy["timeout_seconds"]
+        or attestation.result_validator_id != base_policy["result_validator_id"]
+        or attestation.semantic_profile != base_policy["semantic_profile"]
+        or attestation.dependency_import_policy
+        != base_policy["dependency_import_policy"]
+        or sidecar is None
+        or sidecar.source != manifest_path
+        or sidecar.identity != (manifest_stat.st_dev, manifest_stat.st_ino)
+        or sidecar.size != len(manifest_raw)
+        or sidecar.mode != 0o400
+        or sidecar.sha256 != _SELECTED_MANIFEST_SHA256
+        or guard is None
+        or guard.target
+        != PurePosixPath(str(base_policy["native_entry_guard"]["target"]))  # type: ignore[index]
+        or guard.guarded_executable
+        != PurePosixPath(str(base_policy["argv_prefix"][0]))
+        or attestation.sandbox.executable != _CANDIDATE_SANDBOX
+    ):
+        raise RuntimeClosureMaterializationError(
+            "selected schema-6 attestation authority drifted"
+        )
+    selected_non_engine = sorted(
+        (
+            record
+            for record in files
+            if not str(record["target"]).startswith("/engine/")
+        ),
+        key=lambda record: str(record["path"]),
+    )
+    historical_non_engine = sorted(
+        (
+            record
+            for record in historical_records
+            if not str(record["target"]).startswith("/engine/")
+        ),
+        key=lambda record: str(record["path"]),
+    )
+    if selected_non_engine != historical_non_engine:
+        raise RuntimeClosureMaterializationError(
+            "selected and historical non-engine projections diverged"
+        )
+    if (
+        historical_manifest.get("schema_version") != 1
+        or historical_manifest.get("files") != historical_records
+    ):
+        raise RuntimeClosureMaterializationError(
+            "historical schema-1 base receipt drifted"
+        )
+    for path, label in authority_directories:
+        if _authority_directory_identity(path, label=label) != directory_identities[path]:
+            raise RuntimeClosureMaterializationError(
+                f"{label} identity changed during physical attestation"
+            )
+    return {
+        "generation": _SELECTED_RUNTIME_GENERATION,
+        "artifact_generation": _SELECTED_ARTIFACT_GENERATION,
+        "policy": base_policy,
+        "policy_sha256": _sha256_bytes(policy_raw),
+        "manifest": manifest,
+        "manifest_sha256": _sha256_bytes(manifest_raw),
+        "manifest_size": len(manifest_raw),
+        "manifest_mode": f"{stat.S_IMODE(manifest_stat.st_mode):04o}",
+        "artifact_manifest_sha256": _sha256_bytes(artifact_raw),
+        "closure_sha256": attestation.closure_sha256,
+        "non_engine_file_count": len(selected_non_engine),
+        "non_engine_file_inventory_sha256": _sha256_bytes(
+            _canonical_json_bytes(selected_non_engine)
+        ),
+        "attestation": _project_attestation(attestation),
+    }
+
+
+def _candidate_manifest(
+    *,
+    artifact: dict[str, object],
+    artifact_sha256: str,
+    base_runtime: Path,
+    base_policy: dict[str, object],
+    base_manifest: dict[str, object],
+    base_records: list[dict[str, object]],
+    output_records: list[dict[str, object]],
+    native_inventory: list[dict[str, object]],
+    loader_assumptions: dict[str, object],
+    qualification_sha256: str,
+) -> dict[str, object]:
+    inventory_sha256 = _sha256_bytes(_canonical_json_bytes(output_records))
+    native_sha256 = _sha256_bytes(_canonical_json_bytes(native_inventory))
+    return {
+        "schema_version": 7,
+        "manifest_kind": "NAUTILUS_V1_231_CANDIDATE_RUNTIME_CLOSURE",
+        "activation_status": "CANDIDATE_ONLY_NOT_ACTIVATED",
+        "engine": artifact["engine"],
+        "source": artifact["source"],
+        "python": artifact["python"],
+        "policy_hashes": artifact["policy_hashes"],
+        "toolchain": artifact["toolchain"],
+        "network": artifact["network"],
+        "runtime_wheels": artifact["runtime_wheels"],
+        "qualification": {
+            "argv": ["/usr/bin/python3.12", "-I", "-S"],
+            "script_sha256": qualification_sha256,
+            "status": "PASS",
+        },
+        "artifact_manifest_sha256": artifact_sha256,
+        "base_runtime": _candidate_base_binding(
+            base_runtime, base_policy, base_manifest, base_records
+        ),
+        "file_inventory_sha256": inventory_sha256,
+        "native_inventory_sha256": native_sha256,
+        "files": output_records,
+        "native_libraries": native_inventory,
+        "loader_assumptions": loader_assumptions,
+    }
+
+
+def _attest_candidate_closure(
+    root: Path,
+    *,
+    artifact: dict[str, object],
+    artifact_sha256: str,
+    inputs: dict[str, object],
+    base_runtime: Path,
+    base_policy: dict[str, object],
+) -> dict[str, object]:
+    _sealed_directory(root, label="candidate runtime closure")
+    raw = _read_file(root / _CLOSURE_MANIFEST, label="candidate closure manifest", sealed=True)
+    builder = _candidate_builder_tool()
+    try:
+        manifest = builder._candidate_json(root / _CLOSURE_MANIFEST)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeClosureMaterializationError("candidate closure manifest is invalid") from exc
+    if raw != _canonical_json_bytes(manifest) + b"\n":
+        raise RuntimeClosureMaterializationError(
+            "candidate closure manifest is not canonical duplicate-key-safe JSON"
+        )
+    base_manifest, base_records = _validate_base_runtime(base_runtime, base_policy)
+    input_python = inputs.get("python")
+    input_source = inputs.get("source")
+    source_artifact = input_source.get("artifact") if isinstance(input_source, dict) else None
+    runtime_wheels = inputs.get("runtime_wheels")
+    artifact_source = artifact.get("source")
+    artifact_python = artifact.get("python")
+    if (
+        set(manifest) != _CANDIDATE_CLOSURE_FIELDS
+        or manifest.get("schema_version") != 7
+        or manifest.get("manifest_kind") != "NAUTILUS_V1_231_CANDIDATE_RUNTIME_CLOSURE"
+        or manifest.get("activation_status") != "CANDIDATE_ONLY_NOT_ACTIVATED"
+        or manifest.get("engine") != artifact.get("engine")
+        or manifest.get("source") != artifact_source
+        or manifest.get("python") != artifact_python
+        or manifest.get("policy_hashes") != artifact.get("policy_hashes")
+        or manifest.get("toolchain") != artifact.get("toolchain")
+        or manifest.get("network") != artifact.get("network")
+        or manifest.get("runtime_wheels") != artifact.get("runtime_wheels")
+        or manifest.get("artifact_manifest_sha256") != artifact_sha256
+        or manifest.get("base_runtime")
+        != _candidate_base_binding(
+            base_runtime, base_policy, base_manifest, base_records
+        )
+        or manifest.get("qualification")
+        != {
+            "argv": ["/usr/bin/python3.12", "-I", "-S"],
+            "script_sha256": _sha256_bytes(_CANDIDATE_IMPORT_SCRIPT.encode("ascii")),
+            "status": "PASS",
+        }
+        or artifact.get("policy_hashes") != inputs.get("policy_hashes")
+        or not isinstance(input_python, dict)
+        or not isinstance(artifact_python, dict)
+        or artifact_python.get("identity") != input_python.get("identity")
+        or artifact_python.get("abi") != input_python.get("abi")
+        or artifact_python.get("executable_sha256") != input_python.get("executable_sha256")
+        or not isinstance(input_python.get("stdlib_inventory"), dict)
+        or artifact_python.get("stdlib_tree_sha256")
+        != input_python["stdlib_inventory"].get("tree_sha256")
+        or not isinstance(source_artifact, dict)
+        or not isinstance(artifact_source, dict)
+        or {key: artifact_source.get(key) for key in source_artifact} != source_artifact
+        or not isinstance(runtime_wheels, list)
+        or not all(isinstance(record, dict) for record in runtime_wheels)
+    ):
+        raise RuntimeClosureMaterializationError("candidate closure authority is invalid")
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise RuntimeClosureMaterializationError("candidate closure file inventory is invalid")
+    artifact_wheel = artifact.get("wheel")
+    if not isinstance(artifact_wheel, dict):
+        raise RuntimeClosureMaterializationError("candidate closure engine wheel is invalid")
+    expected_files = sorted(
+        (
+            *(
+                record
+                for record in base_records
+                if not str(record["target"]).startswith("/engine/")
+            ),
+            *(
+                {
+                    "mode": "0400",
+                    "path": f"files/engine/wheels/{record['filename']}",
+                    "sha256": record["sha256"],
+                    "size": record["size"],
+                    "target": f"/engine/wheels/{record['filename']}",
+                }
+                for record in (*runtime_wheels, artifact_wheel)
+            ),
+        ),
+        key=lambda record: str(record["path"]),
+    )
+    if files != expected_files:
+        raise RuntimeClosureMaterializationError(
+            "candidate closure complete base or wheel projection drifted"
+        )
+    if _sha256_bytes(_canonical_json_bytes(files)) != manifest.get("file_inventory_sha256"):
+        raise RuntimeClosureMaterializationError("candidate closure inventory digest drifted")
+    native = manifest.get("native_libraries")
+    if not isinstance(native, list) or _sha256_bytes(_canonical_json_bytes(native)) != manifest.get("native_inventory_sha256"):
+        raise RuntimeClosureMaterializationError("candidate closure native inventory digest drifted")
+    expected: set[PurePosixPath] = set()
+    for record in files:
+        if not isinstance(record, dict) or set(record) != _FILE_FIELDS:
+            raise RuntimeClosureMaterializationError("candidate closure file record is invalid")
+        relative = _safe_relative(record["path"], label="candidate closure file")
+        path = root.joinpath(*relative.parts)
+        payload = _read_file(path, label="candidate closure file", sealed=True)
+        if (
+            len(payload) != record["size"]
+            or _sha256_bytes(payload) != record["sha256"]
+            or f"{stat.S_IMODE(path.stat().st_mode):04o}" != record["mode"]
+        ):
+            raise RuntimeClosureMaterializationError("candidate closure file bytes or mode drifted")
+        expected.add(relative)
+    observed = {
+        PurePosixPath(path.relative_to(root).as_posix())
+        for path in root.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    expected.add(PurePosixPath(_CLOSURE_MANIFEST))
+    if observed != expected:
+        raise RuntimeClosureMaterializationError("candidate closure exact file set drifted")
+    expected_directories = {PurePosixPath(".")}
+    for relative in expected:
+        parent = relative.parent
+        while parent != PurePosixPath("."):
+            expected_directories.add(parent)
+            parent = parent.parent
+    observed_directories = {PurePosixPath(".")} | {
+        PurePosixPath(path.relative_to(root).as_posix())
+        for path in root.rglob("*")
+        if path.is_dir()
+    }
+    if observed_directories != expected_directories:
+        raise RuntimeClosureMaterializationError(
+            "candidate closure exact directory set drifted"
+        )
+    for relative in observed_directories:
+        directory = root if relative == PurePosixPath(".") else root.joinpath(*relative.parts)
+        observed_mode = directory.lstat()
+        if stat.S_ISLNK(observed_mode.st_mode) or stat.S_IMODE(observed_mode.st_mode) != 0o500:
+            raise RuntimeClosureMaterializationError(
+                "candidate closure directory mode drifted"
+            )
+    wheel_sources = [
+        (
+            root / f"files/engine/wheels/{record['filename']}",
+            f"/engine/wheels/{record['filename']}",
+        )
+        for record in (*runtime_wheels, artifact_wheel)
+    ]
+    observed_native, observed_loader = _candidate_native_inventory(
+        builder, root, wheel_sources
+    )
+    observed_native.sort(key=lambda record: str(record["path"]))
+    if observed_native != native or observed_loader != manifest.get("loader_assumptions"):
+        raise RuntimeClosureMaterializationError(
+            "candidate closure native metadata does not match exact closure bytes"
+        )
+    return manifest
+
+
+def _qualify_candidate_import(root: Path) -> str:
+    command = [
+        str(_CANDIDATE_SANDBOX),
+        "--die-with-parent",
+        "--unshare-all",
+        "--new-session",
+        "--tmpfs",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--dir",
+        "/engine",
+        "--ro-bind",
+        str(root / "files/engine/wheels"),
+        "/engine/wheels",
+        "--ro-bind",
+        str(root / "files/usr"),
+        "/usr",
+        "--ro-bind",
+        str(root / "files/lib"),
+        "/lib",
+        "--ro-bind",
+        str(root / "files/lib64"),
+        "/lib64",
+        "--tmpfs",
+        "/tmp",
+        "--clearenv",
+        "--setenv",
+        "PYTHONDONTWRITEBYTECODE",
+        "1",
+        "--",
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        "-c",
+        _CANDIDATE_IMPORT_SCRIPT,
+    ]
+    try:
+        result = subprocess.run(command, env={}, capture_output=True, text=True, check=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeClosureMaterializationError("sealed candidate CPython import qualification failed") from exc
+    if result.stdout != "1.231.0\n" or result.stderr:
+        raise RuntimeClosureMaterializationError("candidate import qualification output drifted")
+    return _sha256_bytes(_CANDIDATE_IMPORT_SCRIPT.encode("ascii"))
+
+
+def materialize_candidate_runtime_closure() -> Path:
+    builder, _engine, inputs, roots = _candidate_authority()
+    artifact_wheel, artifact, artifact_raw = _validate_candidate_artifact(
+        builder, _engine, inputs, roots
+    )
+    artifact_sha256 = _sha256_bytes(artifact_raw)
+    base_runtime = roots["rollback_root"] / "runtime-closure-v3"
+    base_policy = _load_policy(_CANDIDATE_BASE_POLICY)
+    base_manifest, base_records = _validate_base_runtime(base_runtime, base_policy)
+    destination = roots["candidate_runtime_root"]
+    parent = destination.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or stat.S_ISLNK(parent.st_mode) or parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) & 0o077:
+        raise RuntimeClosureMaterializationError("candidate runtime parent is not private")
+    staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.staging-", dir=destination.parent))
+    published = False
+    identity: tuple[int, int] | None = None
+
+    def publication_committed() -> None:
+        nonlocal published
+        published = True
+
+    parent_identity = (parent.st_dev, parent.st_ino)
+    try:
+        output_records: list[dict[str, object]] = []
+        for record in base_records:
+            target = str(record["target"])
+            if target.startswith("/engine/"):
+                continue
+            relative = _safe_relative(record["path"], label="candidate base file")
+            copied = _copy_file(
+                base_runtime.joinpath(*relative.parts),
+                staging.joinpath(*relative.parts),
+                mode=int(str(record["mode"]), 8),
+            )
+            output_records.append({"path": relative.as_posix(), "target": target, **copied})
+        runtime_records = inputs.get("runtime_wheels")
+        if not isinstance(runtime_records, list):
+            raise RuntimeClosureMaterializationError("candidate runtime wheel authority is invalid")
+        wheel_sources: list[tuple[Path, str]] = []
+        input_wheels = roots["candidate_input_root"] / "wheels"
+        for record in runtime_records:
+            if not isinstance(record, dict):
+                raise RuntimeClosureMaterializationError("candidate runtime wheel record is invalid")
+            source = input_wheels / str(record["filename"])
+            raw = _read_file(source, label="candidate runtime wheel", sealed=True)
+            if len(raw) != record["size"] or _sha256_bytes(raw) != record["sha256"]:
+                raise RuntimeClosureMaterializationError("candidate runtime wheel bytes drifted")
+            target = f"/engine/wheels/{source.name}"
+            relative = PurePosixPath("files", *PurePosixPath(target).parts[1:])
+            copied = _copy_file(source, staging.joinpath(*relative.parts), mode=0o400)
+            output_records.append({"path": relative.as_posix(), "target": target, **copied})
+            wheel_sources.append((source, target))
+        engine_target = f"/engine/wheels/{artifact_wheel.name}"
+        engine_relative = PurePosixPath("files", *PurePosixPath(engine_target).parts[1:])
+        copied = _copy_file(artifact_wheel, staging.joinpath(*engine_relative.parts), mode=0o400)
+        output_records.append({"path": engine_relative.as_posix(), "target": engine_target, **copied})
+        wheel_sources.append((artifact_wheel, engine_target))
+        output_records.sort(key=lambda record: str(record["path"]))
+        native, loader = _candidate_native_inventory(builder, staging, wheel_sources)
+        native.sort(key=lambda record: str(record["path"]))
+        manifest = _candidate_manifest(
+            artifact=artifact,
+            artifact_sha256=artifact_sha256,
+            base_runtime=base_runtime,
+            base_policy=base_policy,
+            base_manifest=base_manifest,
+            base_records=base_records,
+            output_records=output_records,
+            native_inventory=native,
+            loader_assumptions=loader,
+            qualification_sha256=_sha256_bytes(
+                _CANDIDATE_IMPORT_SCRIPT.encode("ascii")
+            ),
+        )
+        manifest_path = staging / _CLOSURE_MANIFEST
+        manifest_path.write_bytes(_canonical_json_bytes(manifest) + b"\n")
+        manifest_path.chmod(0o400)
+        _seal_tree(staging)
+        before = staging.lstat()
+        identity = (before.st_dev, before.st_ino)
+        _attest_candidate_closure(
+            staging,
+            artifact=artifact,
+            artifact_sha256=artifact_sha256,
+            inputs=inputs,
+            base_runtime=base_runtime,
+            base_policy=base_policy,
+        )
+        after_attestation = staging.lstat()
+        if (after_attestation.st_dev, after_attestation.st_ino) != identity:
+            raise RuntimeClosureMaterializationError(
+                "candidate runtime staging identity changed during attestation"
+            )
+        qualification_sha256 = _qualify_candidate_import(staging)
+        if qualification_sha256 != manifest["qualification"]["script_sha256"]:  # type: ignore[index]
+            raise RuntimeClosureMaterializationError(
+                "candidate import qualification receipt drifted"
+            )
+        after_qualification = staging.lstat()
+        if (after_qualification.st_dev, after_qualification.st_ino) != identity:
+            raise RuntimeClosureMaterializationError(
+                "candidate runtime staging identity changed during import qualification"
+            )
+        with _publish_noreplace(
+            staging,
+            destination,
+            parent_identity=parent_identity,
+            staging_identity=identity,
+            completed_close_is_success=True,
+            publication_committed=publication_committed,
+        ):
+            pass
+        return destination
+    finally:
+        if not published and identity is None:
+            _unseal_and_remove(staging)
+
+
+def attest_candidate_runtime_closure() -> dict[str, object]:
+    builder = _candidate_builder_tool()
+    engine, inputs = builder._verify_candidate_authority()
+    roots = builder._candidate_roots(engine)
+    _artifact_wheel, artifact, artifact_raw = _validate_candidate_artifact(
+        builder, engine, inputs, roots
+    )
+    artifact_sha256 = _sha256_bytes(artifact_raw)
+    root = roots["candidate_runtime_root"]
+    base_runtime = roots["rollback_root"] / "runtime-closure-v3"
+    base_policy = _load_policy(_CANDIDATE_BASE_POLICY)
+    manifest = _attest_candidate_closure(
+        root,
+        artifact=artifact,
+        artifact_sha256=artifact_sha256,
+        inputs=inputs,
+        base_runtime=base_runtime,
+        base_policy=base_policy,
+    )
+    qualification_sha256 = _qualify_candidate_import(root)
+    qualification = manifest.get("qualification")
+    if (
+        not isinstance(qualification, dict)
+        or qualification_sha256 != qualification.get("script_sha256")
+        or qualification.get("status") != "PASS"
+    ):
+        raise RuntimeClosureMaterializationError(
+            "candidate import qualification receipt drifted"
+        )
+    closure_raw = _read_file(
+        root / _CLOSURE_MANIFEST, label="candidate closure manifest", sealed=True
+    )
+    return {
+        "schema_version": 1,
+        "manifest_kind": "NAUTILUS_V1_231_CANDIDATE_CLOSURE_ATTESTATION",
+        "activation_status": "CANDIDATE_ONLY_NOT_ACTIVATED",
+        "closure_schema_version": manifest["schema_version"],
+        "engine": manifest["engine"],
+        "source": manifest["source"],
+        "python": manifest["python"],
+        "policy_hashes": manifest["policy_hashes"],
+        "toolchain": manifest["toolchain"],
+        "network": manifest["network"],
+        "runtime_wheels": manifest["runtime_wheels"],
+        "base_runtime": manifest["base_runtime"],
+        "artifact_manifest_sha256": artifact_sha256,
+        "closure_manifest_sha256": _sha256_bytes(closure_raw),
+        "file_inventory_sha256": manifest["file_inventory_sha256"],
+        "native_inventory_sha256": manifest["native_inventory_sha256"],
+        "qualification": qualification,
+    }
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Materialize one sealed Nautilus execution-simulation closure"
     )
-    parser.add_argument("--policy", type=Path, required=True)
-    parser.add_argument("--base-runtime", type=Path, required=True)
-    parser.add_argument("--artifact-directory", type=Path, required=True)
-    parser.add_argument("--destination", type=Path, required=True)
-    parser.add_argument("--sandbox", type=Path, required=True)
-    parser.add_argument("--cargo", type=Path, required=True)
-    parser.add_argument("--llvm-toolchain", type=Path, required=True)
+    candidate = parser.add_mutually_exclusive_group()
+    candidate.add_argument("--materialize-candidate", action="store_true")
+    candidate.add_argument("--attest-candidate", action="store_true")
+    parser.add_argument("--policy", type=Path)
+    parser.add_argument("--base-runtime", type=Path)
+    parser.add_argument("--artifact-directory", type=Path)
+    parser.add_argument("--destination", type=Path)
+    parser.add_argument("--sandbox", type=Path)
+    parser.add_argument("--cargo", type=Path)
+    parser.add_argument("--llvm-toolchain", type=Path)
     return parser
 
 
@@ -1334,6 +2652,37 @@ def _fail(message: str) -> NoReturn:
 def main(argv: Sequence[str] | None = None) -> None:
     arguments = _parser().parse_args(argv)
     try:
+        supplied = (
+            arguments.policy,
+            arguments.base_runtime,
+            arguments.artifact_directory,
+            arguments.destination,
+            arguments.sandbox,
+            arguments.cargo,
+            arguments.llvm_toolchain,
+        )
+        if arguments.materialize_candidate:
+            if any(value is not None for value in supplied):
+                raise RuntimeClosureMaterializationError(
+                    "candidate materialization accepts no caller-supplied authority"
+                )
+            materialize_candidate_runtime_closure()
+            return
+        if arguments.attest_candidate:
+            if any(value is not None for value in supplied):
+                raise RuntimeClosureMaterializationError(
+                    "candidate attestation accepts no caller-supplied authority"
+                )
+            print(
+                _canonical_json_bytes(attest_candidate_runtime_closure()).decode(
+                    "ascii"
+                )
+            )
+            return
+        if any(value is None for value in supplied):
+            raise RuntimeClosureMaterializationError(
+                "legacy materialization requires all explicit authority paths"
+            )
         destination = materialize_runtime_closure(
             policy_path=arguments.policy,
             base_runtime=arguments.base_runtime,

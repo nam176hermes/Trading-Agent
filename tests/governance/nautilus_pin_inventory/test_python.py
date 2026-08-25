@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import subprocess
 import textwrap
 
 import pytest
@@ -70,6 +71,22 @@ def test_python_real_closure_manifest_captures_conditional_expected_identity_and
 def _runtime_policy_source() -> str:
     root = Path(__file__).resolve().parents[3]
     return (root / "scripts/materialize_nautilus_runtime_closure.py").read_text(encoding="utf-8")
+
+
+def _historical_runtime_policy_source() -> str:
+    root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [
+            "git",
+            "show",
+            "a33c3a2dbe4432da6eeec672067db6ffe065747e:scripts/materialize_nautilus_runtime_closure.py",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
 
 
 def _closure_manifest_source() -> str:
@@ -543,17 +560,35 @@ def test_python_relation_fingerprints_bind_document_kind() -> None:
     baseline = extractor.extract("scripts/materialize_nautilus_runtime_closure.py", source).governed_relations
     baseline_kind = extractor._binding_fingerprint(
         "scripts/materialize_nautilus_runtime_closure.py",
-        "_validate_policy_bytes@422",
+        "_validate_policy_bytes@554",
         (("policy", "nautilus_runtime_closure_policy", "runtime_policy_json_object", "Name(id='policy')"),),
     )
     changed_kind = extractor._binding_fingerprint(
         "scripts/materialize_nautilus_runtime_closure.py",
-        "_validate_policy_bytes@422",
+        "_validate_policy_bytes@554",
         (("policy", "nautilus_engine_build_policy", "runtime_policy_json_object", "Name(id='policy')"),),
     )
 
     assert baseline[0].operator == "!="
     assert baseline_kind != changed_kind
+
+
+def test_python_ungoverned_module_skips_normalized_module_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        PythonExtractor,
+        "_normalized_module_hash",
+        classmethod(
+            lambda _cls, _tree: pytest.fail(
+                "ungoverned module computed governed normalized hash"
+            )
+        ),
+    )
+    result = PythonExtractor(DEFAULT_REGISTRY).extract(
+        "nautilus_consumer.py", 'VERSION = "1.2.3"\n'
+    )
+    assert result.governed_relations == ()
 
 
 def test_python_governed_module_fingerprints_match_reviewed_fix6_sources() -> None:
@@ -576,12 +611,48 @@ def test_python_governed_module_fingerprints_match_reviewed_fix6_sources() -> No
         len(runtime.observations),
         len(runtime.dynamic_guards),
         len(runtime.governed_relations),
-    ) == (15, 4, 1)
+    ) == (24, 4, 1)
     assert (
         len(closure.observations),
         len(closure.dynamic_guards),
         len(closure.governed_relations),
     ) == (19, 1, 1)
+
+
+def test_python_governed_materializer_accepts_exact_historical_and_current_profiles() -> None:
+    """Break caught: the current amendment displaces the immutable rollback profile."""
+    extractor = PythonExtractor(DEFAULT_REGISTRY)
+
+    historical = extractor.extract(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        _historical_runtime_policy_source(),
+    )
+    current = extractor.extract(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        _runtime_policy_source(),
+    )
+
+    assert (
+        len(historical.observations),
+        len(historical.dynamic_guards),
+        len(historical.governed_relations),
+    ) == (15, 4, 1)
+    assert (
+        len(current.observations),
+        len(current.dynamic_guards),
+        len(current.governed_relations),
+    ) == (24, 4, 1)
+
+
+def test_python_governed_materializer_rejects_third_profile_one_byte_tamper() -> None:
+    """Break caught: dual-profile authority becomes open-ended source acceptance."""
+    source = _runtime_policy_source()
+    tampered = source.replace('policy["engine_wheel_mode"] != "0400"', 'policy["engine_wheel_mode"] != "0401"', 1)
+    assert len(tampered.encode("utf-8")) == len(source.encode("utf-8"))
+    _assert_authority_rejects(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        tampered,
+    )
 
 
 def test_python_governed_module_rejects_neighbor_field_drift() -> None:
