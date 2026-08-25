@@ -510,6 +510,14 @@ packages/runtime_release/v2.py|2631|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2667|Exception|PRODUCTION_CRITICAL|RAISE
 packages/runtime_release/v2.py|2756|Exception|PRODUCTION_CRITICAL|RETURN
 scripts/audit_canonical_repo.py|579|BaseException|TOOLING_MIGRATION|RETURN
+scripts/build_nautilus_engine.py|1916|BaseException|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|1997|BaseException|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|2817|BaseException|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|2886|BaseException|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|3769|Exception|TOOLING_MIGRATION|OTHER
+scripts/build_nautilus_engine.py|3807|Exception|TOOLING_MIGRATION|RETURN
+scripts/build_nautilus_engine.py|3864|Exception|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|3882|BaseException|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
@@ -659,6 +667,9 @@ scripts/t_g03_capability_topology.py|7640|Exception|TOOLING_MIGRATION|RAISE
 scripts/validate_package6_runtime_approval.py|1071|Exception|TOOLING_MIGRATION|OTHER
 scripts/verify_component_snapshot.py|337|BaseException|TOOLING_MIGRATION|RETURN
 scripts/verify_job_plane_authority.py|47|Exception|TOOLING_MIGRATION|RAISE
+scripts/verify_nautilus_release_provenance.py|687|BaseException|TOOLING_MIGRATION|RAISE
+scripts/verify_nautilus_release_provenance.py|690|BaseException|TOOLING_MIGRATION|PASS
+scripts/verify_nautilus_release_provenance.py|716|BaseException|TOOLING_MIGRATION|RAISE
 scripts/verify_nautilus_v12_r3_parity.py|528|BaseException|TOOLING_MIGRATION|OTHER
 scripts/verify_nautilus_v12_r3_parity.py|672|BaseException|TOOLING_MIGRATION|OTHER
 scripts/verify_nautilus_v12_r3_parity.py|896|BaseException|TOOLING_MIGRATION|OTHER
@@ -798,6 +809,8 @@ tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
+tests/nautilus_upgrade/test_v1231_candidate_closure.py|3065|BaseException|TESTS|OTHER
+tests/nautilus_upgrade/test_v1231_candidate_closure.py|3495|BaseException|TESTS|OTHER
 tests/research_validation/test_producers.py|159|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->
