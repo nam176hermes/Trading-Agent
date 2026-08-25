@@ -323,11 +323,75 @@
     {"claim": "1.227 rollback verification after candidate qualification", "status": "NOT_PROVIDED"},
     {"claim": "shared writable state count of zero", "status": "NOT_PROVIDED"}
   ],
+  "x1_x2_resolution": {
+    "X1": {
+      "commit": "7f31038a3b3d19a972e22831efa8c6101d6627b6",
+      "tree": "e83a7510ede5655fd72feccf4f5cdacde528a89c",
+      "finding_ids": [
+        "U04-X0-001",
+        "U04-X0-002",
+        "U04-X0-003",
+        "U04-X0-004",
+        "U04-X0-005",
+        "U04-X0-006",
+        "U04-X0-007",
+        "U04-X0-012",
+        "U04-X0-013",
+        "U04-X0-014",
+        "U04-X0-015"
+      ],
+      "status": "RESOLVED_AND_REVIEWED"
+    },
+    "X2": {
+      "commit": "e3c59a06186fc5d8495fdeb0494378c340923995",
+      "tree": "bfbf7da4ff7af8405e66c9f1c27c8944d7abc522",
+      "finding_ids": [
+        "U04-X0-008",
+        "U04-X0-009",
+        "U04-X0-010",
+        "U04-X0-011"
+      ],
+      "status": "RESOLVED_AND_REVIEWED"
+    }
+  },
+  "x3_integration": {
+    "controlled_replay": {
+      "commit": "e338f39d7b81c8e51e98c7f5d2c6063d1de80fd5",
+      "tree": "d2b726583320722283dad7fc8e5547c2dd73fd95",
+      "parent": "d6ac71bf8bf413446e533c0d022a1b0a4ebe9afc",
+      "reviewed_tip": "e3c59a06186fc5d8495fdeb0494378c340923995",
+      "file_count": 15,
+      "status": "EXACT_BLOB_REPLAY_PASS"
+    },
+    "u00r_baseline_inventory": {
+      "source_commit": "3257fb0c9dbff689212ca0a0b011704596477426",
+      "inventory_commit": "c174ba9de21c91dcda53ebcb825fdd1597e8800c",
+      "status": "PASS"
+    },
+    "promotion_candidate_inventory": {
+      "source_commit": "f45df4336c156a7f411d0561bb60de70b2292e48",
+      "source_tree": "be95b9409861c3a887fe9895aa69cf168fdd7479",
+      "baseline_inventory_disposition": "REMOVED_ONLY_IN_DISPOSABLE_STANDALONE_GENERATION_CLONE",
+      "status": "PIN_INVENTORY_STALE",
+      "inventory_created": false,
+      "unclassified_pin_deltas": 6,
+      "unregistered_observations": [
+        {"path": "engines/nautilus/candidates/v1.231/cargo-registry-policy.json", "family": "engine_version", "value": "v1.231", "carrier": "PATH"},
+        {"path": "engines/nautilus/candidates/v1.231/engine-build-policy.json", "family": "engine_version", "value": "v1.231", "carrier": "PATH"},
+        {"path": "engines/nautilus/candidates/v1.231/input-cache-policy.json", "family": "engine_version", "value": "v1.231", "carrier": "PATH"},
+        {"path": "engines/nautilus/candidates/v1.231/toolchain-inputs.json", "family": "engine_version", "value": "v1.231", "carrier": "PATH"},
+        {"path": "engines/nautilus/candidates/v1.231/wheel-cache-policy.json", "family": "engine_version", "value": "v1.231", "carrier": "PATH"},
+        {"path": "engines/nautilus/v1.231-provenance-policy.json", "family": "engine_version", "value": "v1.231-provenance-policy.json", "carrier": "PATH"}
+      ]
+    },
+    "review_status": "NOT_SUBMITTED_CIRCUIT_BREAKER",
+    "verdict": "P1_U04_ARCHITECTURE_ESCALATION_REQUIRED"
+  },
   "task_status": {
     "P1-U01": "IMPLEMENTED_UNACCEPTED",
     "P1-U02": "IMPLEMENTED_UNACCEPTED",
     "P1-U03": "IMPLEMENTED_UNACCEPTED",
-    "P1-U04": "BLOCKED",
+    "P1-U04": "P1_U04_ARCHITECTURE_ESCALATION_REQUIRED",
     "P1-U05": "NOT_STARTED",
     "P1-U06": "NOT_STARTED",
     "P1-U07": "NOT_STARTED",

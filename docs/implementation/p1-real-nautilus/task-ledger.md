@@ -10,7 +10,7 @@ promotion, production, network-trading, or live authority.
 | P1-U01 | P1-G0 | IMPLEMENTED_UNACCEPTED | Re-accept the committed release/API/semantic delta on the exact U04 recovery tree. |
 | P1-U02 | P1-U01 | IMPLEMENTED_UNACCEPTED | Re-accept the committed immutable v1.231 release/source provenance on the exact U04 recovery tree. |
 | P1-U03 | P1-U02 | IMPLEMENTED_UNACCEPTED | Re-accept the committed candidate-only toolchain and dependency policies on the exact U04 recovery tree. |
-| P1-U04 | P1-U03 | BLOCKED | Build and attest a sealed v1.231 candidate beside the unchanged rollback. |
+| P1-U04 | P1-U03 | P1_U04_ARCHITECTURE_ESCALATION_REQUIRED | Classify the six unregistered candidate-path pin observations, regenerate the promotion-candidate inventory, and repeat X3 source review. |
 | P1-U05 | P1-U04 | NOT_STARTED | Pass generated direct-API and native callback compatibility probes. |
 | P1-U06 | P1-U05 | NOT_STARTED | Pass the release-regression and exact execution/accounting semantics campaign. |
 | P1-U07 | P1-U06 | NOT_STARTED | Produce three deterministic candidate runs and zero unexplained semantic drift. |
