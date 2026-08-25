@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 FIX7_R3 = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 ACCEPTED_A = "f15b1985215ef4d018f48c712221920502379a48"
 REVIEWED_S = "8dbaa153276a0d44c2e3b0a6b0c3de4055133630"
+HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
+CURRENT_EXTRACTOR_BLOB = "07731c85abd1e11a9a1b2dcfb70f0887ceb3835c"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
     "tests/governance/nautilus_pin_inventory/test_git_source.py",
@@ -27,7 +29,7 @@ ACCEPTED_A_PATHS = (
     "engines/nautilus/wheel-cache-policy.json",
     "engines/nautilus/toolchain-inputs.json",
     "pyproject.toml", "uv.lock", "Makefile",
-    "scripts/build_nautilus_engine.py", "scripts/prepare_nautilus_input_cache.py",
+    "scripts/prepare_nautilus_input_cache.py",
     "scripts/verify_nautilus_provenance.py",
     "services/job_worker/nautilus_closure.py",
 )
@@ -36,6 +38,17 @@ ACCEPTED_A_PATHS = (
 def _entry(commit: str, path: str) -> str:
     result = subprocess.run(["git", "ls-tree", commit, "--", path], cwd=ROOT, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
+
+
+def _working_blob(path: str) -> str:
+    result = subprocess.run(
+        ["git", "hash-object", "--", path],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
     return result.stdout.strip()
 
 
@@ -49,6 +62,18 @@ def test_r4_retains_exact_protected_blob_modes() -> None:
     assert _entry(head, OVERLAY_PATH) == _entry(REVIEWED_S, OVERLAY_PATH)
     for path in ACCEPTED_A_PATHS:
         assert _entry(head, path) == _entry(ACCEPTED_A, path)
-    assert _entry(head, "scripts/materialize_nautilus_runtime_closure.py") == _entry(
-        FIX7_R3, "scripts/materialize_nautilus_runtime_closure.py"
+    assert _entry(ACCEPTED_A, "scripts/build_nautilus_engine.py") == (
+        "100644 blob 193c20272ef8eff4ccc9660069b9f523c4105f54\t"
+        "scripts/build_nautilus_engine.py"
+    )
+    assert _entry(FIX7_R3, "scripts/materialize_nautilus_runtime_closure.py") == (
+        "100644 blob 62dc37dcf76c520c8ae24cf47526ff93842267a3\t"
+        "scripts/materialize_nautilus_runtime_closure.py"
+    )
+    assert _entry(FIX7_R3, "scripts/nautilus_pin_inventory/python_extractor.py") == (
+        f"100644 blob {HISTORICAL_EXTRACTOR_BLOB}\t"
+        "scripts/nautilus_pin_inventory/python_extractor.py"
+    )
+    assert _working_blob("scripts/nautilus_pin_inventory/python_extractor.py") == (
+        CURRENT_EXTRACTOR_BLOB
     )

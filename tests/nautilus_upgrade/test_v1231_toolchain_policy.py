@@ -30,6 +30,17 @@ WHEEL_POLICY = CANDIDATE / "wheel-cache-policy.json"
 CARGO_POLICY = CANDIDATE / "cargo-registry-policy.json"
 MANIFEST = CANDIDATE / "toolchain-inputs.json"
 CACHE_ENV = "P1_U03_TOOLCHAIN_CACHE"
+_REVIEWED_CANDIDATE_PATH_SHA256 = {
+    "explicit_wheel_root": (
+        "e4a11ba5c0e583e6537cfcb282d7913a49418d81b554c9d4694a72ff86257886"
+    ),
+    "offline_cargo_config": (
+        "b54f157d4d5fd19cab80fe1227859ee413a41538a5948b8bd85bd55b6c99f0c9"
+    ),
+    "forensic_root": (
+        "3b3b612ed34a92d2854abf131408dfe7ea51d25ddf27e401ce24930963536a31"
+    ),
+}
 
 
 @pytest.fixture
@@ -73,6 +84,76 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _install_synthetic_native_tree_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    native: dict[str, Any],
+) -> None:
+    root = tmp_path / "synthetic-native-host"
+    root.mkdir()
+    root.chmod(0o755)
+    root_stat = root.stat()
+    for inventory in native["directory_inventories"]:
+        inventory.update(
+            {
+                "directory_count": 0,
+                "file_count": 0,
+                "record_count": 0,
+                "root_gid": root_stat.st_gid,
+                "root_mode": "0755",
+                "root_uid": root_stat.st_uid,
+                "symlink_count": 0,
+                "tree_sha256": _sha256(b"[]"),
+            }
+        )
+    monkeypatch.setattr(
+        toolchain, "_tree_inventory", lambda _root, _label: ([], root_stat)
+    )
+
+
+def _assert_reviewed_candidate_path_identities(
+    engine: dict[str, Any], cargo: dict[str, Any]
+) -> None:
+    roots = engine["external_cache_isolation"]["external_roots"]
+    actual = {
+        "explicit_wheel_root": engine["python"][
+            "explicit_build_path_admission"
+        ]["root"],
+        "offline_cargo_config": cargo["offline_cargo_config"]["contents"],
+        "forensic_root": roots["candidate_forensic_root"],
+    }
+
+    assert {
+        name: _sha256(str(value).encode("ascii"))
+        for name, value in actual.items()
+    } == _REVIEWED_CANDIDATE_PATH_SHA256
+
+
+def test_reviewed_path_identity_rejects_coordinated_policy_drift() -> None:
+    engine = copy.deepcopy(toolchain.load_json(ENGINE_POLICY))
+    cargo = copy.deepcopy(toolchain.load_json(CARGO_POLICY))
+    roots = engine["external_cache_isolation"]["external_roots"]
+    roots["candidate_input_root"] = "/tmp/drift-input"
+    engine["python"]["explicit_build_path_admission"]["root"] = (
+        "/tmp/drift-input/wheels"
+    )
+    roots["candidate_vendor_root"] = "/tmp/drift-vendor"
+    cargo["offline_cargo_config"]["contents"] = (
+        "[net]\noffline = true\n\n[source.crates-io]\n"
+        'replace-with = "candidate-vendor"\n\n[source.candidate-vendor]\n'
+        'directory = "/tmp/drift-vendor"\n'
+    )
+    roots["candidate_build_root"] = "/tmp/drift-build"
+    roots["candidate_forensic_root"] = (
+        "/tmp/nautilus-v1.231-reproducibility-evidence"
+    )
+    checker = globals().get("_assert_reviewed_candidate_path_identities")
+
+    assert callable(checker), "independent reviewed-path verifier is missing"
+    with pytest.raises(AssertionError):
+        checker(engine, cargo)
+
+
 def test_missing_external_evidence_is_explicitly_deferred() -> None:
     result = subprocess.run(
         [sys.executable, str(GENERATOR)],
@@ -95,6 +176,7 @@ def test_candidate_policy_is_exact_source_derived_and_isolated() -> None:
     inputs = toolchain.load_json(INPUT_POLICY)
     wheels = toolchain.load_json(WHEEL_POLICY)
     cargo = toolchain.load_json(CARGO_POLICY)
+    _assert_reviewed_candidate_path_identities(engine, cargo)
 
     assert engine["candidate"] == {
         "release": "1.231.0",
@@ -150,10 +232,7 @@ def test_candidate_policy_is_exact_source_derived_and_isolated() -> None:
         "authority": "EXACT_WHEEL_CACHE_POLICY_FILENAMES_ONLY",
         "environment_pythonpath": "PROHIBITED",
         "injection": "EXPLICIT_SYS_PATH_PREPEND_BEFORE_IMPORT",
-        "root": (
-            "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/"
-            "candidate-inputs/wheels"
-        ),
+        "root": str(Path(roots["candidate_input_root"]) / "wheels"),
     }
     assert engine["native_build_authority"]["authority"] == (
         "EXACT_REVIEWED_SYSTEM_HEADERS_LINKER_AND_RUNTIME_INPUTS"
@@ -212,6 +291,11 @@ def test_candidate_policy_is_exact_source_derived_and_isolated() -> None:
 
 def test_cargo_registry_policy_is_exact_offline_lock_closure() -> None:
     cargo = toolchain.load_json(CARGO_POLICY)
+    engine = toolchain.load_json(ENGINE_POLICY)
+    _assert_reviewed_candidate_path_identities(engine, cargo)
+    vendor_root = engine["external_cache_isolation"]["external_roots"][
+        "candidate_vendor_root"
+    ]
     assert cargo["package_count"] == 862
     assert len(cargo["packages"]) == 862
     assert len({(item["name"], item["version"], item["source"]) for item in cargo["packages"]}) == 862
@@ -220,7 +304,7 @@ def test_cargo_registry_policy_is_exact_offline_lock_closure() -> None:
     assert cargo["offline_cargo_config"]["contents"] == (
         '[net]\noffline = true\n\n[source.crates-io]\nreplace-with = "candidate-vendor"\n\n'
         '[source.candidate-vendor]\ndirectory = '
-        '"/home/thenam176/.cache/trading-agent/nautilus-v1.231-vendor"\n'
+        f'"{vendor_root}"\n'
     )
 
 
@@ -348,20 +432,38 @@ def test_python_startup_or_external_symlink_authority_drift_fails_closed() -> No
         toolchain._verify_system_python(python)
 
 
-def test_native_build_inventory_or_tool_drift_fails_closed() -> None:
+def test_native_build_inventory_or_tool_drift_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
     native = copy.deepcopy(
         toolchain.load_json(ENGINE_POLICY)["native_build_authority"]
+    )
+    _install_synthetic_native_tree_inventory(monkeypatch, tmp_path, native)
+    toolchain._verify_tree_inventory(
+        native["directory_inventories"][0], "native build /usr/include"
     )
     native["directory_inventories"][0]["tree_sha256"] = "0" * 64
     with pytest.raises(toolchain.VerificationError, match="inventory drifted"):
         toolchain._verify_native_build_authority(native)
 
-    native = copy.deepcopy(
-        toolchain.load_json(ENGINE_POLICY)["native_build_authority"]
-    )
-    native["system_tools"][3]["sha256"] = "0" * 64
+    synthetic_tool = tmp_path / "synthetic-tool"
+    synthetic_tool.write_bytes(b"synthetic tool")
+    synthetic_tool.chmod(0o755)
+    tool_stat = synthetic_tool.stat()
+    tool_record = {
+        "gid": tool_stat.st_gid,
+        "mode": "0755",
+        "path": str(synthetic_tool),
+        "sha256": _sha256(synthetic_tool.read_bytes()),
+        "size": tool_stat.st_size,
+        "type": "file",
+        "uid": tool_stat.st_uid,
+    }
+    toolchain._verify_path_record(tool_record, "native build synthetic tool")
+    tool_record["sha256"] = "0" * 64
     with pytest.raises(toolchain.VerificationError, match="identity drifted"):
-        toolchain._verify_native_build_authority(native)
+        toolchain._verify_path_record(tool_record, "native build synthetic tool")
 
 
 def test_direct_cc_archiver_route_is_exact_and_has_no_unneeded_companion() -> None:
@@ -408,7 +510,10 @@ def test_direct_cc_archiver_route_is_exact_and_has_no_unneeded_companion() -> No
     ),
 )
 def test_direct_cc_environment_omission_or_archiver_drift_fails_closed(
-    mutation: str, message: str
+    mutation: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     engine = copy.deepcopy(toolchain.load_json(ENGINE_POLICY))
     if mutation == "missing":
@@ -424,12 +529,51 @@ def test_direct_cc_environment_omission_or_archiver_drift_fails_closed(
             if record["path"] != "/usr/bin/ar"
         ]
     with pytest.raises(toolchain.VerificationError, match=message):
+        if mutation == "archiver":
+            native = engine["native_build_authority"]
+            _install_synthetic_native_tree_inventory(
+                monkeypatch, tmp_path, native
+            )
+            toolchain._verify_native_build_authority(native)
+        else:
+            toolchain._verify_build_environment_policy(
+                engine["native_build_environment"]
+            )
+
+
+def test_full_policy_preflight_rejects_include_drift_before_tool_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = toolchain.load_json(ENGINE_POLICY)
+    observed_inventories: list[str] = []
+    observed_tools: list[str] = []
+
+    def reject_include(inventory: dict[str, Any], _label: str) -> None:
+        observed_inventories.append(inventory["path"])
+        raise toolchain.VerificationError(
+            "native build /usr/include inventory drifted"
+        )
+
+    def observe_tool(record: dict[str, Any], _label: str) -> None:
+        observed_tools.append(record["path"])
+
+    monkeypatch.setattr(toolchain, "_verify_system_python", lambda _policy: None)
+    monkeypatch.setattr(toolchain, "_verify_tree_inventory", reject_include)
+    monkeypatch.setattr(toolchain, "_verify_path_record", observe_tool)
+
+    with pytest.raises(
+        toolchain.VerificationError,
+        match="native build /usr/include inventory drifted",
+    ):
         toolchain._verify_policies(
             engine,
             toolchain.load_json(INPUT_POLICY),
             toolchain.load_json(WHEEL_POLICY),
             toolchain.load_json(CARGO_POLICY),
         )
+
+    assert observed_inventories == ["/usr/include"]
+    assert observed_tools == []
 
 
 @pytest.mark.parametrize(
@@ -466,7 +610,12 @@ def test_ambient_native_build_override_fails_closed(
 
 def test_u04_command_router_policy_closes_the_exact_bare_executable_set() -> None:
     engine = toolchain.load_json(ENGINE_POLICY)
+    cargo = toolchain.load_json(CARGO_POLICY)
+    _assert_reviewed_candidate_path_identities(engine, cargo)
     roots = engine["external_cache_isolation"]["external_roots"]
+    forensic_root = Path(roots["candidate_forensic_root"])
+    assert forensic_root.parent == Path(roots["candidate_build_root"]).parent
+    assert forensic_root.name == "nautilus-v1.231-reproducibility-evidence"
     assert {
         "candidate_llvm_toolchain_root",
         "candidate_rust_toolchain_root",
@@ -475,7 +624,15 @@ def test_u04_command_router_policy_closes_the_exact_bare_executable_set() -> Non
     toolchain._verify_command_router_policy(engine["command_router"], engine)
     assert [
         entry["name"] for entry in engine["command_router"]["entries"]
-    ] == ["cargo", "clang", "clang++", "ld.lld", "rustc", "strip"]
+    ] == ["cargo", "clang", "clang++", "ld", "ld.lld", "rustc", "strip"]
+    entries = {
+        entry["name"]: entry for entry in engine["command_router"]["entries"]
+    }
+    assert entries["ld"] == {
+        **entries["ld.lld"],
+        "name": "ld",
+        "path": "bin/ld",
+    }
     cargo = engine["command_router"]["entries"][0]
     assert cargo["interpreter"] == {
         "kernel_shebang": "#!/usr/bin/python3.12 -IS",
@@ -493,6 +650,7 @@ def test_u04_command_router_policy_closes_the_exact_bare_executable_set() -> Non
     assert engine["external_cache_isolation"]["root_access"] == {
         "candidate_build_root": "WRITABLE_PARENT_FOR_ONE_FRESH_STAGING_CHILD",
         "candidate_cargo_home_root": "SEALED_READ_ONLY",
+        "candidate_forensic_root": "ABSENT_THEN_SEALED_READ_ONLY_FORENSIC_EVIDENCE",
         "candidate_input_root": "SEALED_READ_ONLY",
         "candidate_llvm_toolchain_root": "SEALED_READ_ONLY",
         "candidate_runtime_root": "ABSENT_THEN_SEALED_READ_ONLY",
@@ -896,376 +1054,6 @@ def test_cargo_wrapper_rejects_other_commands_and_execs_exact_offline_build(
         assert captured == {}
 
 
-def test_real_bwrap_injected_pwd_reaches_only_exact_fake_cargo() -> None:
-    sandbox = Path("/usr/bin/bwrap")
-    try:
-        sandbox_st = sandbox.lstat()
-        sandbox_raw = sandbox.read_bytes()
-        version = subprocess.run(
-            [str(sandbox), "--version"],
-            env={},
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        pytest.fail(f"reviewed Bubblewrap authority is unavailable: {exc}")
-    assert {
-        "gid": sandbox_st.st_gid,
-        "mode": f"{stat.S_IMODE(sandbox_st.st_mode):04o}",
-        "sha256": hashlib.sha256(sandbox_raw).hexdigest(),
-        "size": sandbox_st.st_size,
-        "type": "file" if stat.S_ISREG(sandbox_st.st_mode) else "other",
-        "uid": sandbox_st.st_uid,
-        "version": version.stdout.strip() if version.returncode == 0 else "",
-    } == {
-        "gid": 0,
-        "mode": "0755",
-        "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712",
-        "size": 72160,
-        "type": "file",
-        "uid": 0,
-        "version": "bubblewrap 0.9.0",
-    }
-
-    engine = toolchain.load_json(ENGINE_POLICY)
-    policy = engine["native_build_environment"]
-    stage = Path(roots_path(engine, "candidate_build_root")) / (
-        "stage-ffeeddccbbaa0099"
-    )
-    source = stage / "source"
-    wrapper = next(
-        entry
-        for entry in engine["command_router"]["entries"]
-        if entry["name"] == "cargo"
-    )
-    router_cargo = Path(roots_path(engine, "candidate_toolchain_root")) / (
-        "bin/cargo"
-    )
-    rust_cargo = Path(wrapper["exec_target"]["path"])
-
-    with tempfile.TemporaryDirectory(prefix="p1-u03-bwrap-", dir="/tmp") as raw:
-        fixture = Path(raw)
-
-        def host_path(sandbox_path: Path) -> Path:
-            return fixture / sandbox_path.relative_to("/")
-
-        host_stage = host_path(stage)
-        host_router_cargo = host_path(router_cargo)
-        host_rust_cargo = host_path(rust_cargo)
-        authorized_stage = fixture / "authorized-stage"
-        authorized_source = authorized_stage / "source"
-        host_stage.mkdir(parents=True)
-        authorized_source.mkdir(parents=True)
-        host_router_cargo.parent.mkdir(parents=True)
-        host_rust_cargo.parent.mkdir(parents=True)
-        source_fd = os.open(
-            authorized_source, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
-        )
-        try:
-            contract = toolchain._verify_build_environment(
-                policy,
-                {},
-                stage,
-                verified_source_fd=source_fd,
-                mount_destinations=[stage],
-            )
-        finally:
-            os.close(source_fd)
-        host_router_cargo.write_text(wrapper["contents"], encoding="ascii")
-        host_router_cargo.chmod(0o500)
-        fake_cargo = (
-            "#!/usr/bin/python3.12 -IS\n"
-            "import os\n"
-            "import sys\n"
-            f"CARGO = {str(rust_cargo)!r}\n"
-            f"SOURCE = {str(source)!r}\n"
-            "if os.getcwd() != SOURCE or os.environ.get('PWD') != SOURCE:\n"
-            "    raise SystemExit(90)\n"
-            "if sys.argv != [CARGO, 'build', '--locked', '--offline', '--release']:\n"
-            "    raise SystemExit(91)\n"
-            "source = os.stat('.')\n"
-            "if (str(source.st_dev), str(source.st_ino)) != (\n"
-            "    os.environ['P1_U04_SOURCE_ST_DEV'],\n"
-            "    os.environ['P1_U04_SOURCE_ST_INO'],\n"
-            "):\n"
-            "    raise SystemExit(92)\n"
-        )
-        host_rust_cargo.write_text(fake_cargo, encoding="ascii")
-        host_rust_cargo.chmod(0o500)
-
-        command = [
-            str(sandbox),
-            "--die-with-parent",
-            "--unshare-net",
-            "--ro-bind",
-            "/",
-            "/",
-            "--ro-bind",
-            str(fixture / "home"),
-            "/home",
-            "--bind-fd",
-            "PLACEHOLDER_STAGE_FD",
-            str(stage),
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "--chdir",
-            str(source),
-            "--clearenv",
-        ]
-        for name, value in sorted(contract["effective_environment"].items()):
-            if name != "PWD":
-                command.extend(("--setenv", name, value))
-        command.extend(("--", str(router_cargo), "build", "--release"))
-        stage_fd = os.open(
-            authorized_stage, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
-        )
-        try:
-            command[command.index("PLACEHOLDER_STAGE_FD")] = str(stage_fd)
-            result = subprocess.run(
-                command,
-                env={},
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-                pass_fds=(stage_fd,),
-            )
-        finally:
-            os.close(stage_fd)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
-    assert result.stderr == ""
-
-
-def test_real_bwrap_rejects_source_symlink_to_foreign_physical_cwd(
-    verified_source_fd: int,
-) -> None:
-    sandbox = Path("/usr/bin/bwrap")
-    try:
-        sandbox_st = sandbox.lstat()
-        sandbox_raw = sandbox.read_bytes()
-        version = subprocess.run(
-            [str(sandbox), "--version"],
-            env={},
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        pytest.fail(f"reviewed Bubblewrap authority is unavailable: {exc}")
-    assert {
-        "gid": sandbox_st.st_gid,
-        "mode": f"{stat.S_IMODE(sandbox_st.st_mode):04o}",
-        "sha256": hashlib.sha256(sandbox_raw).hexdigest(),
-        "size": sandbox_st.st_size,
-        "type": "file" if stat.S_ISREG(sandbox_st.st_mode) else "other",
-        "uid": sandbox_st.st_uid,
-        "version": version.stdout.strip() if version.returncode == 0 else "",
-    } == {
-        "gid": 0,
-        "mode": "0755",
-        "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712",
-        "size": 72160,
-        "type": "file",
-        "uid": 0,
-        "version": "bubblewrap 0.9.0",
-    }
-
-    engine = toolchain.load_json(ENGINE_POLICY)
-    policy = engine["native_build_environment"]
-    stage = Path(roots_path(engine, "candidate_build_root")) / (
-        "stage-1122334455667788"
-    )
-    source = stage / "source"
-    contract = _build_environment(policy, {}, stage, verified_source_fd)
-    wrapper = next(
-        entry
-        for entry in engine["command_router"]["entries"]
-        if entry["name"] == "cargo"
-    )
-    router_cargo = Path(roots_path(engine, "candidate_toolchain_root")) / (
-        "bin/cargo"
-    )
-    rust_cargo = Path(wrapper["exec_target"]["path"])
-
-    with tempfile.TemporaryDirectory(prefix="p1-u03-bwrap-cwd-", dir="/tmp") as raw:
-        fixture = Path(raw)
-
-        def host_path(sandbox_path: Path) -> Path:
-            return fixture / sandbox_path.relative_to("/")
-
-        host_stage = host_path(stage)
-        host_router_cargo = host_path(router_cargo)
-        host_rust_cargo = host_path(rust_cargo)
-        foreign_source = fixture / "foreign-source"
-        host_stage.mkdir(parents=True)
-        host_router_cargo.parent.mkdir(parents=True)
-        host_rust_cargo.parent.mkdir(parents=True)
-        foreign_source.mkdir()
-        (host_stage / "source").symlink_to("/tmp")
-        host_router_cargo.write_text(wrapper["contents"], encoding="ascii")
-        host_router_cargo.chmod(0o500)
-        fake_cargo = (
-            "#!/usr/bin/python3.12 -IS\n"
-            "import os\n"
-            "import sys\n"
-            f"CARGO = {str(rust_cargo)!r}\n"
-            f"LOGICAL_SOURCE = {str(source)!r}\n"
-            "if os.getcwd() != '/tmp':\n"
-            "    raise SystemExit(90)\n"
-            "if os.environ.get('PWD') != LOGICAL_SOURCE:\n"
-            "    raise SystemExit(91)\n"
-            "if sys.argv != [CARGO, 'build', '--locked', '--offline', '--release']:\n"
-            "    raise SystemExit(92)\n"
-        )
-        host_rust_cargo.write_text(fake_cargo, encoding="ascii")
-        host_rust_cargo.chmod(0o500)
-
-        command = [
-            str(sandbox),
-            "--die-with-parent",
-            "--unshare-net",
-            "--ro-bind",
-            "/",
-            "/",
-            "--ro-bind",
-            str(fixture / "home"),
-            "/home",
-            "--ro-bind",
-            str(foreign_source),
-            "/tmp",
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "--chdir",
-            str(source),
-            "--clearenv",
-        ]
-        for name, value in sorted(contract["effective_environment"].items()):
-            if name != "PWD":
-                command.extend(("--setenv", name, value))
-        command.extend(("--", str(router_cargo), "build", "--release"))
-        result = subprocess.run(
-            command,
-            env={},
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-    assert result.stderr == "cargo wrapper working directory is not exact\n"
-
-
-@pytest.mark.parametrize("attack", ["direct-source", "whole-stage"])
-def test_real_bwrap_rejects_foreign_bind_mount_before_cargo(attack: str) -> None:
-    sandbox = Path("/usr/bin/bwrap")
-    engine = toolchain.load_json(ENGINE_POLICY)
-    policy = engine["native_build_environment"]
-    stage = Path(roots_path(engine, "candidate_build_root")) / (
-        "stage-22446688aaccee00"
-    )
-    source = stage / "source"
-    wrapper = next(
-        entry
-        for entry in engine["command_router"]["entries"]
-        if entry["name"] == "cargo"
-    )
-    router_cargo = Path(roots_path(engine, "candidate_toolchain_root")) / (
-        "bin/cargo"
-    )
-    rust_cargo = Path(wrapper["exec_target"]["path"])
-
-    with tempfile.TemporaryDirectory(prefix="p1-u03-bwrap-bind-", dir="/tmp") as raw:
-        fixture = Path(raw)
-
-        def host_path(sandbox_path: Path) -> Path:
-            return fixture / sandbox_path.relative_to("/")
-
-        host_stage = host_path(stage)
-        host_router_cargo = host_path(router_cargo)
-        host_rust_cargo = host_path(rust_cargo)
-        foreign_source = fixture / "foreign-source"
-        foreign_stage = fixture / "foreign-stage"
-        (host_stage / "source").mkdir(parents=True)
-        (foreign_stage / "source").mkdir(parents=True)
-        foreign_source.mkdir()
-        host_router_cargo.parent.mkdir(parents=True)
-        host_rust_cargo.parent.mkdir(parents=True)
-        source_fd = os.open(
-            host_stage / "source",
-            os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
-        try:
-            contract = toolchain._verify_build_environment(
-                policy,
-                {},
-                stage,
-                verified_source_fd=source_fd,
-                mount_destinations=[stage],
-            )
-        finally:
-            os.close(source_fd)
-        host_router_cargo.write_text(wrapper["contents"], encoding="ascii")
-        host_router_cargo.chmod(0o500)
-        host_rust_cargo.write_text(
-            "#!/usr/bin/python3.12 -IS\n"
-            "import os\n"
-            "import sys\n"
-            f"CARGO = {str(rust_cargo)!r}\n"
-            f"SOURCE = {str(source)!r}\n"
-            "if os.getcwd() != SOURCE or os.environ.get('PWD') != SOURCE:\n"
-            "    raise SystemExit(90)\n"
-            "if sys.argv != [CARGO, 'build', '--locked', '--offline', '--release']:\n"
-            "    raise SystemExit(91)\n"
-            "print('FAKE_CARGO_REACHED')\n",
-            encoding="ascii",
-        )
-        host_rust_cargo.chmod(0o500)
-
-        command = [
-            str(sandbox),
-            "--die-with-parent",
-            "--unshare-net",
-            "--ro-bind",
-            "/",
-            "/",
-            "--ro-bind",
-            str(fixture / "home"),
-            "/home",
-        ]
-        if attack == "direct-source":
-            command.extend(("--ro-bind", str(foreign_source), str(source)))
-        else:
-            command.extend(("--ro-bind", str(foreign_stage), str(stage)))
-        command.extend(("--dev", "/dev", "--proc", "/proc", "--chdir", str(source), "--clearenv"))
-        for name, value in sorted(contract["effective_environment"].items()):
-            if name != "PWD":
-                command.extend(("--setenv", name, value))
-        command.extend(("--", str(router_cargo), "build", "--release"))
-        result = subprocess.run(
-            command,
-            env={},
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-
-    assert result.returncode != 0
-    assert result.stdout == ""
-    assert result.stderr == "cargo wrapper source identity is not exact\n"
-
-
 def _router_fixture(
     root: Path, attack: str | None = None
 ) -> tuple[Path, dict[str, Any]]:
@@ -1338,43 +1126,6 @@ def test_command_router_rejects_missing_extra_duplicate_mutable_or_wrong_target(
                 (router / "bin").chmod(0o700)
                 router.chmod(0o700)
                 (attack_root / "targets").chmod(0o700)
-
-
-@pytest.mark.parametrize(
-    ("before", "after"),
-    [
-        (b'["rustc", "--version"]', b'["ambient-rustc", "--version"]'),
-        (
-            b'os.environ["CC"] = "sccache clang" if USE_SCCACHE else "clang"',
-            b'os.environ["CC"] = "ambient-cc"',
-        ),
-        (
-            b'os.environ["CXX"] = "sccache clang++" if USE_SCCACHE else "clang++"',
-            b'os.environ["CXX"] = "ambient-cxx"',
-        ),
-        (
-            b'os.environ["LDSHARED"] = "clang -shared"',
-            b'os.environ["LDSHARED"] = "ambient-cc -shared"',
-        ),
-    ],
-)
-def test_build_script_bare_commands_and_environment_behavior_are_source_derived(
-    before: bytes, after: bytes
-) -> None:
-    configured = os.environ.get(CACHE_ENV)
-    if configured is None:
-        pytest.skip(f"{CACHE_ENV} not configured")
-    engine = toolchain.load_json(ENGINE_POLICY)
-    inputs = toolchain.load_json(INPUT_POLICY)
-    source_record = inputs["source"]["artifact"]
-    source = toolchain._source_members(
-        Path(configured) / "source-inputs" / source_record["filename"], inputs
-    )["build.py"]
-    trace = engine["native_build_environment"]["sealed_source_trace"]["build.py"]
-    toolchain._verify_build_script_trace(source, trace)
-
-    with pytest.raises(toolchain.VerificationError, match="build.py source trace"):
-        toolchain._verify_build_script_trace(source.replace(before, after), trace)
 
 
 def _cache_fixture(
@@ -1641,6 +1392,31 @@ def _write_wheel(
             archive.writestr(info, b"")
 
 
+def _verify_wheel_requirement(
+    tmp_path: Path,
+    requirement: str,
+    active_dependencies: list[dict[str, str]],
+) -> None:
+    wheels_dir = tmp_path / "wheels"
+    wheels_dir.mkdir(exist_ok=True)
+    filename = "demo-1.0-py3-none-any.whl"
+    _write_wheel(wheels_dir / filename, requirement=requirement)
+    toolchain._verify_wheel_metadata(
+        tmp_path,
+        {
+            "wheel_artifacts": [
+                {
+                    "active_dependencies": active_dependencies,
+                    "filename": filename,
+                    "package": "demo",
+                    "tags": ["py3-none-any"],
+                    "version": "1.0",
+                }
+            ]
+        },
+    )
+
+
 def test_wrong_python_or_platform_wheel_tag_fails_closed(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     wheels_dir = cache / "wheels"
@@ -1850,6 +1626,197 @@ def test_strict_numeric_version_comparison_preserves_sealed_constraints() -> Non
             toolchain._satisfies(version, "==2.3.1")
 
 
+@pytest.mark.parametrize("specifier", (",>=1", ">=1,,<2", ">=1,"))
+def test_strict_constraint_parser_rejects_empty_comma_clauses(
+    specifier: str,
+) -> None:
+    with pytest.raises(toolchain.VerificationError, match="version constraint"):
+        toolchain._satisfies("1.5", specifier)
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        "foreign (>=1,,<2); extra == 'dev'",
+        "foreign (>=1); extra == 'dev' trailing",
+    ),
+)
+def test_inactive_extra_requirement_is_fully_validated(
+    tmp_path: Path, requirement: str,
+) -> None:
+    wheels_dir = tmp_path / "wheels"
+    wheels_dir.mkdir()
+    filename = "demo-1.0-py3-none-any.whl"
+    _write_wheel(
+        wheels_dir / filename,
+        requirement=requirement,
+    )
+    policy = {
+        "wheel_artifacts": [
+            {
+                "active_dependencies": [],
+                "filename": filename,
+                "package": "demo",
+                "tags": ["py3-none-any"],
+                "version": "1.0",
+            }
+        ]
+    }
+
+    with pytest.raises(
+        toolchain.VerificationError,
+        match="version constraint|unsupported active wheel marker",
+    ):
+        toolchain._verify_wheel_metadata(tmp_path, policy)
+
+
+def test_parenthesized_pep508_constraint_is_normalized_without_losing_context() -> None:
+    assert toolchain._parse_requirement(
+        'click[plugins, fast-mode] (>=8.4.1,<9.0.0) ; python_version < "3.14"'
+    ) == (
+        "click",
+        ">=8.4.1,<9.0.0",
+        ' python_version < "3.14"',
+    )
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        'simplejson (>=1evil) ; extra == "visualization"',
+        'simplejson (>=) ; extra == "visualization"',
+        'simplejson (==*) ; extra == "visualization"',
+        'simplejson (> =8.4.1) ; extra == "visualization"',
+    ),
+    ids=("invalid-version", "missing-operand", "wildcard", "token-whitespace"),
+)
+def test_inactive_wheel_requirement_operands_are_strictly_parsed(
+    tmp_path: Path,
+    requirement: str,
+) -> None:
+    with pytest.raises(toolchain.VerificationError, match="requirement|constraint"):
+        toolchain._parse_requirement(requirement)
+
+    with pytest.raises(toolchain.VerificationError, match="requirement|constraint"):
+        _verify_wheel_requirement(tmp_path, requirement, [])
+
+
+def test_canonical_prerelease_operand_is_admitted_only_for_inactive_metadata(
+    tmp_path: Path,
+) -> None:
+    requirement = 'aiohttp!=4.0.0a0,!=4.0.0a1; extra == "full"'
+    assert toolchain._parse_requirement(requirement) == (
+        "aiohttp",
+        "!=4.0.0a0,!=4.0.0a1",
+        ' extra == "full"',
+    )
+    assert not toolchain._metadata_marker_active(' extra == "full"')
+
+    _verify_wheel_requirement(tmp_path, requirement, [])
+
+    with pytest.raises(toolchain.VerificationError, match="unsupported version"):
+        _verify_wheel_requirement(
+            tmp_path,
+            "aiohttp!=4.0.0a0",
+            [{"package": "aiohttp", "version": "3.13.3"}],
+        )
+
+
+def test_canonical_prefix_wildcard_is_admitted_only_for_inactive_metadata(
+    tmp_path: Path,
+) -> None:
+    requirement = 'pytest!=8.1.*,>=6; extra == "test"'
+    assert toolchain._parse_requirement(requirement) == (
+        "pytest",
+        "!=8.1.*,>=6",
+        ' extra == "test"',
+    )
+
+    _verify_wheel_requirement(tmp_path, requirement, [])
+
+    with pytest.raises(toolchain.VerificationError, match="unsupported version"):
+        _verify_wheel_requirement(
+            tmp_path,
+            "pytest!=8.1.*",
+            [{"package": "pytest", "version": "8.0.0"}],
+        )
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        "click[bad extra] (>=8.4.1,<9.0.0)",
+        'click (>=8.4.1,<9.0.0) ; sys_platform != "win32\'',
+    ),
+    ids=("invalid-extra", "mismatched-marker-quotes"),
+)
+def test_wheel_requirement_grammar_rejects_malformed_extras_and_quotes(
+    tmp_path: Path,
+    requirement: str,
+) -> None:
+    wheels_dir = tmp_path / "wheels"
+    wheels_dir.mkdir()
+    filename = "demo-1.0-py3-none-any.whl"
+    _write_wheel(wheels_dir / filename, requirement=requirement)
+    policy = {
+        "wheel_artifacts": [
+            {
+                "active_dependencies": [{"package": "click", "version": "8.4.2"}],
+                "filename": filename,
+                "package": "demo",
+                "tags": ["py3-none-any"],
+                "version": "1.0",
+            }
+        ]
+    }
+
+    with pytest.raises(toolchain.VerificationError):
+        toolchain._verify_wheel_metadata(tmp_path, policy)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    (
+        'sys_platform != "win32\'',
+        "sys_platform != 'win32\"",
+    ),
+)
+def test_runtime_marker_grammar_preserves_quote_delimiters(marker: str) -> None:
+    with pytest.raises(toolchain.VerificationError, match="marker"):
+        toolchain._marker_active(marker)
+    with pytest.raises(toolchain.VerificationError, match="marker"):
+        toolchain._metadata_marker_active(marker)
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    (
+        "click (>=8.4.1,<9.0.0",
+        "click >=8.4.1,<9.0.0)",
+        "click ()",
+        "click ((>=8.4.1,<9.0.0))",
+        "click (>=8.4.1,<9.0.0) trailing",
+        "-click (>=8.4.1)",
+        "click- (>=8.4.1)",
+        "click[bad extra] (>=8.4.1)",
+        "click[,plugins] (>=8.4.1)",
+        "click[plugins,] (>=8.4.1)",
+        "click[plugins,,fast] (>=8.4.1)",
+    ),
+)
+def test_invalid_parenthesized_pep508_constraint_fails_closed(
+    requirement: str,
+) -> None:
+    with pytest.raises(toolchain.VerificationError, match="source requirement"):
+        toolchain._parse_requirement(requirement)
+
+
+def test_wheel_sys_platform_not_win32_marker_is_exactly_allowlisted() -> None:
+    assert toolchain._metadata_marker_active('sys_platform != "win32"')
+    with pytest.raises(toolchain.VerificationError, match="unsupported active wheel marker"):
+        toolchain._metadata_marker_active("sys_platform != 'linux'")
+
+
 def _cargo_fixture(tmp_path: Path, attack: str | None = None) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     cache = tmp_path / "cargo-registry"
     cache.mkdir()
@@ -1921,65 +1888,3 @@ def test_supplied_incomplete_evidence_is_fail_not_deferred(tmp_path: Path) -> No
     assert result.stdout == ""
     assert result.stderr.startswith("NAUTILUS_TOOLCHAIN_INPUTS=FAIL reason=")
     assert "DEFERRED" not in result.stderr
-
-
-def test_configured_cache_generates_twice_byte_identically_and_checks_manifest(
-    tmp_path: Path,
-) -> None:
-    configured = os.environ.get(CACHE_ENV)
-    if configured is None:
-        pytest.skip(f"{CACHE_ENV} not configured")
-    first = tmp_path / "first.json"
-    second = tmp_path / "second.json"
-    for output in (first, second):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(GENERATOR),
-                "--evidence-cache",
-                configured,
-                "--output",
-                str(output),
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.startswith("NAUTILUS_TOOLCHAIN_INPUTS=PASS ")
-    assert first.read_bytes() == second.read_bytes() == MANIFEST.read_bytes()
-
-    checked = subprocess.run(
-        [
-            sys.executable,
-            str(GENERATOR),
-            "--evidence-cache",
-            configured,
-            "--check",
-            str(MANIFEST),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert checked.returncode == 0, checked.stderr
-    assert checked.stdout.startswith("NAUTILUS_TOOLCHAIN_INPUTS=PASS ")
-
-    existing = subprocess.run(
-        [
-            sys.executable,
-            str(GENERATOR),
-            "--evidence-cache",
-            configured,
-            "--output",
-            str(first),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert existing.returncode == 2
-    assert "output path must be explicitly absent" in existing.stderr

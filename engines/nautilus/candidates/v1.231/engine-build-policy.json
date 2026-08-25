@@ -14,6 +14,39 @@
     "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
     "upstream_tag": "v1.231.0"
   },
+  "candidate_wheel_metadata": {
+    "authority": "EXACT_ORDERED_REQUIRES_DIST_V1",
+    "requires_dist": [
+      "betfair-parser (==0.19.1) ; extra == \"betfair\"",
+      "click (>=8.4.1,<9.0.0)",
+      "defusedxml (>=0.7.1,<1.0.0) ; extra == \"ib\"",
+      "docker (>=7.2.0,<8.0.0) ; extra == \"docker\"",
+      "fsspec (==2026.2.0)",
+      "kaleido (>=1.3.0,<2.0.0) ; extra == \"visualization\"",
+      "msgspec (>=0.21.1,<1.0.0)",
+      "nautilus-ibapi (==10.45.1) ; extra == \"ib\"",
+      "numpy (>=1.26.4)",
+      "pandas (>=2.3.3,<4.0.0)",
+      "plotly (>=6.9.0,<7.0.0) ; extra == \"visualization\"",
+      "portion (>=2.6.1)",
+      "protobuf (==5.29.6) ; extra == \"ib\"",
+      "py-clob-client-v2 (>=1.0.2,<2.0.0) ; extra == \"polymarket\"",
+      "pyarrow (>=25.0.0)",
+      "pytz (>=2026.2)",
+      "simplejson (==3.20.2) ; extra == \"visualization\"",
+      "tqdm (>=4.68.4,<5.0.0)",
+      "tzdata (>=2026.3)",
+      "uvloop (==0.22.1) ; sys_platform != \"win32\""
+    ],
+    "source_correspondence": {
+      "generator": "poetry-core 2.3.1",
+      "generator_module_path": "poetry/core/masonry/metadata.py",
+      "generator_module_sha256": "27e852770d523f8e0d3bf3847a9a662f2c67725d2506dd83d6ef5bb67d9945a0",
+      "project_path": "pyproject.toml",
+      "project_sha256": "5dbc4591408bd65f7b35c2274348a7a02ff7b034a15f46d5f8628d3c8fbafa36",
+      "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+    }
+  },
   "command_router": {
     "authority": "EXACT_SEALED_COMMAND_ROUTER_V1",
     "directory_mode": "0500",
@@ -105,6 +138,26 @@
       {
         "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
         "mode": "0777",
+        "name": "ld",
+        "path": "bin/ld",
+        "resolved": {
+          "mode": "0500",
+          "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+          "sha256": "879d47621106d726c18f0d25f25bf73167d4109521b147341e40139181e3db05",
+          "size": 200223320,
+          "type": "file"
+        },
+        "source_authority": {
+          "archive_path": "bin/ld.lld",
+          "authority": "IMMUTABLE_LLVM_POLICY_TOOL",
+          "policy_path": "engines/nautilus/llvm-toolchain-policy.json",
+          "policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f"
+        },
+        "type": "symlink"
+      },
+      {
+        "link_target": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain/bin/ld.lld",
+        "mode": "0777",
         "name": "ld.lld",
         "path": "bin/ld.lld",
         "resolved": {
@@ -167,6 +220,7 @@
       "bin/cargo",
       "bin/clang",
       "bin/clang++",
+      "bin/ld",
       "bin/ld.lld",
       "bin/rustc",
       "bin/strip"
@@ -179,6 +233,7 @@
     "external_roots": {
       "candidate_build_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work",
       "candidate_cargo_home_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home",
+      "candidate_forensic_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-reproducibility-evidence",
       "candidate_input_root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs",
       "candidate_llvm_toolchain_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-llvm-toolchain",
       "candidate_runtime_root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-runtime",
@@ -192,6 +247,7 @@
     "root_access": {
       "candidate_build_root": "WRITABLE_PARENT_FOR_ONE_FRESH_STAGING_CHILD",
       "candidate_cargo_home_root": "SEALED_READ_ONLY",
+      "candidate_forensic_root": "ABSENT_THEN_SEALED_READ_ONLY_FORENSIC_EVIDENCE",
       "candidate_input_root": "SEALED_READ_ONLY",
       "candidate_llvm_toolchain_root": "SEALED_READ_ONLY",
       "candidate_runtime_root": "ABSENT_THEN_SEALED_READ_ONLY",
