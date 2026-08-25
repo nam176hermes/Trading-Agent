@@ -434,10 +434,22 @@
       "exact_verify": "PASS"
     },
     "portable_ci": {
+      "execution_kind": "LOCAL_STANDALONE_REPLAY",
+      "receipt_id": "LOCAL-STANDALONE-8906104-03F2B509",
       "command": "make ci-portable NONINTERACTIVE=1",
-      "github_run_id": 32837396803,
-      "attempt": 1,
-      "status": "PASS",
+      "source_commit": "8906104e5b065b6ac9f9c52838a8fcfc584484b1",
+      "source_tree": "78d22275454a694783f3d476ef16947cdbbd1054",
+      "log_sha256": "03f2b5090fa187f6cd5ec5f117ec244cd101b9bcde3eac87740c66b49fcdbd8f",
+      "log_bytes": 1214981,
+      "wrapper_exit_code": 0,
+      "hosted_workflow_run_claim": "NONE",
+      "local_artifact_namespace_inputs": {
+        "GITHUB_RUN_ID": "32837396803",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "authority": "LOCAL_MAKE_NAMESPACE_ONLY_NOT_HOSTED_RUN_AUTHORITY"
+      },
+      "status": "PASS_LOCAL_REPLAY",
+      "authority_scope": "PORTABLE_SOURCE_GATE_ONLY",
       "root": {
         "passed": 7971,
         "seconds": 1423.05,
