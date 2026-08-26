@@ -6,10 +6,11 @@ until fresh X3 and X4 reviews PASS.
 1. Freeze exact HEAD/tree, current task-owned diff, and the three reviewed
    external symlink path-target pairs.
 2. Add RED portable tests for exact three-link admission, rejection of a fourth
-   external link, final `--remount-ro /` ordering, and the exact negative and
-   positive write probes.
+   external link, empty structural `/etc` parents, final `--remount-ro /`
+   ordering, exact-target `EROFS` failures, and the positive stage write probe.
 3. Make the minimum implementation change: admit only the three reviewed dead
-   links, add all three target probes, prove stage writability, and place final
+   links, precreate only their empty parent directories, require all three
+   target creates to fail with `EROFS`, prove stage writability, and place final
    non-recursive `--remount-ro /` after the stage bind.
 4. Run focused GREEN tests, adjacent sandbox/authority tests, and complete
    governed X3 portable acceptance.

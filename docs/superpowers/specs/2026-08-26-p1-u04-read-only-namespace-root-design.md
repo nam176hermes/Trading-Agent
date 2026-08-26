@@ -17,26 +17,32 @@ pair `--remount-ro /`. Bubblewrap documents this operation as non-recursive;
 therefore the root mount becomes read-only while the separately bound build
 stage remains writable.
 
-The host/native policy probe must prove both sides of that boundary in the real
-Bubblewrap namespace:
+Bubblewrap creates empty `/etc/python3.12` and `/etc/alternatives` structural
+directories before the final remount; none is a mount or an authority source.
+The host/native policy probe must then prove both sides of the boundary in the
+real Bubblewrap namespace:
 
-- creation of each exact target below fails:
+- parent creation with `exist_ok=True` succeeds only because the empty parents
+  already exist, and creation of each exact target below fails with `EROFS`:
   - `/etc/python3.12/sitecustomize.py`
   - `/etc/alternatives/libblas.so.3-x86_64-linux-gnu`
   - `/etc/alternatives/liblapack.so.3-x86_64-linux-gnu`
 - a fresh file can be created, read, and removed under the bound build stage.
 
-The snapshot symlink validator admits exactly the corresponding three
+This exact `EROFS` oracle distinguishes a read-only root from a writable empty
+root where a missing parent could otherwise cause a misleading `ENOENT`. The
+snapshot symlink validator admits exactly the corresponding three
 path-target pairs and rejects every fourth external link. No `/etc` mount,
 recursive remount, live `/usr` fallback, or additional writable mount is
 allowed.
 
 ## Ordering and evidence
 
-`--remount-ro /` is the final namespace mutation. It appears after the
-build-stage `--bind-fd` and before `--chdir`, environment construction, and the
-candidate command. Portable tests assert exact invocation ordering and exact
-three-link policy. Host/native qualification runs the negative and positive
+`--remount-ro /` is the final namespace mutation. It appears after all
+structural directories, the build-stage `--bind-fd`, and every other mount, but
+before `--chdir`, environment construction, and the candidate command.
+Portable tests assert exact invocation ordering, exact three-link policy, and
+the `EROFS` oracle. Host/native qualification runs the negative and positive
 write probes through the real `/usr/bin/bwrap`; synthetic authority cannot
 satisfy that qualification.
 
