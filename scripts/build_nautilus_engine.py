@@ -2951,11 +2951,14 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
     loads: list[tuple[int, int, int]] = []
     dynamics: list[tuple[int, int]] = []
     interpreters: list[str] = []
+    gnu_relro_segments = 0
+    gnu_stack_flags: list[int] = []
     interpreter: str | None = None
     for index in range(phnum):
         values = struct.unpack_from("<IIQQQQQQ", data, phoff + index * phentsize)
-        kind, offset, vaddr, filesz, memsz = (
+        kind, flags, offset, vaddr, filesz, memsz = (
             values[0],
+            values[1],
             values[2],
             values[3],
             values[5],
@@ -2975,10 +2978,20 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
                 interpreters.append(raw[:-1].decode("ascii"))
             except UnicodeDecodeError as exc:
                 raise VerificationError(f"candidate ELF interpreter is invalid: {label}") from exc
+        elif kind == 0x6474E551:
+            gnu_stack_flags.append(flags)
+        elif kind == 0x6474E552:
+            gnu_relro_segments += 1
     if not loads or len(dynamics) != 1:
         raise VerificationError(f"candidate ELF dynamic structure is not exact: {label}")
     if len(interpreters) > 1:
         raise VerificationError(f"candidate ELF interpreter structure is not exact: {label}")
+    if gnu_relro_segments != 1:
+        raise VerificationError(f"candidate ELF GNU_RELRO structure is not exact: {label}")
+    if len(gnu_stack_flags) != 1:
+        raise VerificationError(f"candidate ELF GNU_STACK structure is not exact: {label}")
+    if gnu_stack_flags[0] & 1:
+        raise VerificationError(f"candidate ELF has executable GNU_STACK: {label}")
     if interpreters:
         interpreter = interpreters[0]
     needed_indexes: list[int] = []
@@ -3038,6 +3051,8 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
         "abi_class": "ELF64",
         "abi_data": "little-endian",
         "machine": "EM_X86_64",
+        "gnu_relro": True,
+        "gnu_stack_executable": False,
         "interpreter": interpreter,
         "needed": [lookup(index) for index in needed_indexes],
         "rpath": lookup(singleton.get(15)),

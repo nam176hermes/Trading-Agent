@@ -262,6 +262,8 @@ def _elf64(
     terminate_dynamic: bool = True,
     strsz: int | None = None,
     terminate_interpreter: bool = True,
+    gnu_relro: bool = True,
+    gnu_stack_flags: int | None = 6,
 ) -> bytes:
     strings = bytearray(b"\0")
 
@@ -272,7 +274,13 @@ def _elf64(
 
     needed_offsets = [string_offset(value) for value in needed]
     soname_offset = None if soname is None else string_offset(soname)
-    phnum = 1 + int(dynamic) + int(interpreter is not None)
+    phnum = (
+        1
+        + int(dynamic)
+        + int(interpreter is not None)
+        + int(gnu_relro)
+        + int(gnu_stack_flags is not None)
+    )
     dynamic_offset = 64 + phnum * 56
     entries: list[tuple[int, int]] = [(1, offset) for offset in needed_offsets]
     if soname_offset is not None:
@@ -332,6 +340,16 @@ def _elf64(
                 len(dynamic_bytes),
                 len(dynamic_bytes),
                 8,
+            )
+        )
+    if gnu_relro:
+        program_headers.append(
+            struct.pack("<IIQQQQQQ", 0x6474E552, 4, 0, 0, 0, 0, 0, 1)
+        )
+    if gnu_stack_flags is not None:
+        program_headers.append(
+            struct.pack(
+                "<IIQQQQQQ", 0x6474E551, gnu_stack_flags, 0, 0, 0, 0, 0, 16
             )
         )
     if interpreter is not None:
@@ -3884,7 +3902,8 @@ def test_candidate_native_enters_upstream_build_with_initial_environment(
     base_rustflags = (
         "-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld "
         "-C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed "
-        "-C link-arg=-Wl,-z,norelro -C relocation-model=pic"
+        "-C link-arg=-Wl,-z,relro -C link-arg=-Wl,-z,now "
+        "-C relocation-model=pic"
     )
     effective_rustflags = base_rustflags + " -C link-arg=-s"
 
@@ -6509,6 +6528,9 @@ def _write_native_inventory_fixture(
     (
         (_elf64(elf_type=1), "type"),
         (_elf64(dynamic=False), "dynamic"),
+        (_elf64(gnu_relro=False), "GNU_RELRO"),
+        (_elf64(gnu_stack_flags=None), "GNU_STACK"),
+        (_elf64(gnu_stack_flags=7), "executable GNU_STACK"),
         (_elf64(needed=("libdep.so",), strsz=1), "string"),
         (_elf64(duplicate_soname=True), "singleton"),
         (
@@ -6536,6 +6558,8 @@ def test_candidate_elf_parser_preserves_dt_needed_order_and_validates_soname() -
 
     assert metadata["needed"] == ["libz.so", "liba.so"]
     assert metadata["soname"] == "ordered.so"
+    assert metadata["gnu_relro"] is True
+    assert metadata["gnu_stack_executable"] is False
 
     with pytest.raises(builder.VerificationError, match="SONAME"):
         builder._elf_metadata(_elf64(soname="../foreign.so"), "foreign.so")

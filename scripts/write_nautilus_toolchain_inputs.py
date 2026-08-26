@@ -80,7 +80,8 @@ _INITIAL_RUSTFLAGS = (
     "-C link-arg=-fuse-ld=lld "
     "-C link-arg=-Wl,--gc-sections "
     "-C link-arg=-Wl,--as-needed "
-    "-C link-arg=-Wl,-z,norelro "
+    "-C link-arg=-Wl,-z,relro "
+    "-C link-arg=-Wl,-z,now "
     "-C relocation-model=pic"
 )
 _RUSTFLAGS_RELEASE_APPEND = " -C link-arg=-s"
