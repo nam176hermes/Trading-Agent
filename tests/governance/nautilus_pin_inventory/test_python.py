@@ -89,6 +89,22 @@ def _historical_runtime_policy_source() -> str:
     return result.stdout
 
 
+def _reviewed_runtime_policy_source() -> str:
+    root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [
+            "git",
+            "show",
+            "e338f39d7b81c8e51e98c7f5d2c6063d1de80fd5:scripts/materialize_nautilus_runtime_closure.py",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
 def _closure_manifest_source() -> str:
     root = Path(__file__).resolve().parents[3]
     return (root / "services/job_worker/nautilus_closure.py").read_text(encoding="utf-8")
@@ -619,13 +635,17 @@ def test_python_governed_module_fingerprints_match_reviewed_fix6_sources() -> No
     ) == (19, 1, 1)
 
 
-def test_python_governed_materializer_accepts_exact_historical_and_current_profiles() -> None:
-    """Break caught: the current amendment displaces the immutable rollback profile."""
+def test_python_governed_materializer_accepts_exact_reviewed_profiles() -> None:
+    """Break caught: a current amendment displaces either preserved reviewed profile."""
     extractor = PythonExtractor(DEFAULT_REGISTRY)
 
     historical = extractor.extract(
         "scripts/materialize_nautilus_runtime_closure.py",
         _historical_runtime_policy_source(),
+    )
+    reviewed = extractor.extract(
+        "scripts/materialize_nautilus_runtime_closure.py",
+        _reviewed_runtime_policy_source(),
     )
     current = extractor.extract(
         "scripts/materialize_nautilus_runtime_closure.py",
@@ -638,14 +658,19 @@ def test_python_governed_materializer_accepts_exact_historical_and_current_profi
         len(historical.governed_relations),
     ) == (15, 4, 1)
     assert (
+        len(reviewed.observations),
+        len(reviewed.dynamic_guards),
+        len(reviewed.governed_relations),
+    ) == (24, 4, 1)
+    assert (
         len(current.observations),
         len(current.dynamic_guards),
         len(current.governed_relations),
     ) == (24, 4, 1)
 
 
-def test_python_governed_materializer_rejects_third_profile_one_byte_tamper() -> None:
-    """Break caught: dual-profile authority becomes open-ended source acceptance."""
+def test_python_governed_materializer_rejects_fourth_profile_one_byte_tamper() -> None:
+    """Break caught: finite three-profile authority becomes open-ended acceptance."""
     source = _runtime_policy_source()
     tampered = source.replace('policy["engine_wheel_mode"] != "0400"', 'policy["engine_wheel_mode"] != "0401"', 1)
     assert len(tampered.encode("utf-8")) == len(source.encode("utf-8"))
