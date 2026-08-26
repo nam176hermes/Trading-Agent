@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- Implementation base is exact commit `f31ecad47c7cf7de7d6d2c7c28037f61390bacb9` / tree `114b719669f3c93eca68e6b6f73a3eb8a390156a`.
+- Source/spec base is exact commit `f31ecad47c7cf7de7d6d2c7c28037f61390bacb9` / tree `114b719669f3c93eca68e6b6f73a3eb8a390156a`.
+- The integration lead records the post-plan commit/tree as `EXECUTION_BASE` in the SDD brief before dispatch; every implementation review package starts from that fixed value, never `HEAD~1`.
 - One implementation task, at most two implementation/review rounds for the packet.
 - Do not run `--build-candidate-a`, `--build-candidate-b`, X4 re-preflight, or any native build command during implementation.
 - Do not mutate external authority/output roots, active/rollback 1.227 authority, activation, promotion, X5/U05, broker/exchange state, or live trading.
@@ -354,8 +355,8 @@ git commit -m "fix(p1-u04): finalize X4 receipt bindings"
 ```
 
 Record exact commit/tree, RED/GREEN commands and counts, output-root absence,
-and that no native/candidate build ran. Generate the review package from fixed
-base `f31ecad47c7cf7de7d6d2c7c28037f61390bacb9`, never `HEAD~1`.
+and that no native/candidate build ran. Generate the review package from the
+fixed `EXECUTION_BASE` recorded in the SDD brief, never `HEAD~1`.
 
 - [ ] **Step 16: Fresh review gate**
 
