@@ -3444,6 +3444,15 @@ def test_candidate_build_keeps_pip_out_of_the_exact_cargo_environment() -> None:
         builder._candidate_command("wheel", logical_stage, inputs)
 
 
+def test_candidate_logical_stage_token_is_stable_and_policy_conforming() -> None:
+    expected = "stage-0000000000000000"
+
+    assert builder._candidate_stage_token() == expected
+    assert builder._candidate_stage_token() == expected
+    assert len(expected) == len("stage-") + 16
+    assert set(expected.removeprefix("stage-")) <= set("0123456789abcdef")
+
+
 def test_candidate_package_preamble_accepts_poetry_vendored_import_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

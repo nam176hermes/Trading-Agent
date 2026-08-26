@@ -3294,7 +3294,7 @@ def _candidate_artifact_core(
 
 
 def _candidate_stage_token() -> str:
-    return "stage-" + secrets.token_hex(8)
+    return "stage-0000000000000000"
 
 
 def _build_candidate_once(
