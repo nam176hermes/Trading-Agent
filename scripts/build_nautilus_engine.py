@@ -117,6 +117,9 @@ _CANDIDATE_CARGO_POLICY = _CANDIDATE_DIRECTORY / "cargo-registry-policy.json"
 _CANDIDATE_TOOLCHAIN_INPUTS = _CANDIDATE_DIRECTORY / "toolchain-inputs.json"
 _CANDIDATE_PROVENANCE = _ROOT / "engines/nautilus/v1.231-provenance-policy.json"
 _CANDIDATE_INPUT_GENERATOR = _ROOT / "scripts/write_nautilus_toolchain_inputs.py"
+_CANDIDATE_RUNTIME_CLOSURE_TOOL = (
+    _ROOT / "scripts/materialize_nautilus_runtime_closure.py"
+)
 _CANDIDATE_SANDBOX = Path("/usr/bin/bwrap")
 _CANDIDATE_COMMIT = "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
 _CANDIDATE_EXT_SUFFIX = ".cpython-312-x86_64-linux-gnu.so"
@@ -1136,6 +1139,52 @@ def _load_candidate_generator():
     return module
 
 
+def _load_candidate_runtime_closure_tool():
+    spec = importlib.util.spec_from_file_location(
+        "materialize_nautilus_runtime_closure_for_candidate_build",
+        _CANDIDATE_RUNTIME_CLOSURE_TOOL,
+    )
+    if spec is None or spec.loader is None:
+        raise VerificationError("candidate rollback authority verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise VerificationError(
+            "candidate rollback authority verifier is unavailable"
+        ) from exc
+    return module
+
+
+def _candidate_live_rollback_authority(rollback_root: Path) -> dict[str, object]:
+    materializer = _load_candidate_runtime_closure_tool()
+    try:
+        policy = materializer._load_policy(materializer._CANDIDATE_BASE_POLICY)
+        historical_manifest, historical_records = materializer._validate_base_runtime(
+            rollback_root / "runtime-closure-v3", policy
+        )
+        selected = materializer._selected_base_authority(
+            rollback_root,
+            base_policy=policy,
+            historical_manifest=historical_manifest,
+            historical_records=historical_records,
+        )
+        return {
+            "artifact_generation": selected["artifact_generation"],
+            "artifact_manifest_sha256": selected["artifact_manifest_sha256"],
+            "closure_sha256": selected["closure_sha256"],
+            "generation": selected["generation"],
+            "manifest_mode": selected["manifest_mode"],
+            "manifest_sha256": selected["manifest_sha256"],
+            "result": "PASS",
+            "schema": 6,
+        }
+    except Exception as exc:
+        raise VerificationError(
+            "X4 authority receipt live rollback authority is invalid"
+        ) from exc
+
+
 def _verify_candidate_authority() -> tuple[dict[str, object], dict[str, object]]:
     engine = _candidate_json(_CANDIDATE_ENGINE_POLICY)
     manifest = _candidate_json(_CANDIDATE_TOOLCHAIN_INPUTS)
@@ -1610,6 +1659,8 @@ def _validate_x4_authority_receipt(
         }
     ):
         raise VerificationError("X4 authority receipt checks are invalid")
+    if rollback != _candidate_live_rollback_authority(roots["rollback_root"]):
+        raise VerificationError("X4 authority receipt live rollback authority drifted")
     expected_names = {
         "A": set(),
         "B": {_BUILD_A_DIRECTORY},

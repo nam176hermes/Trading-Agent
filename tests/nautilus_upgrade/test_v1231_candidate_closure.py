@@ -665,6 +665,7 @@ def _write_x4_authority_receipt(
         "candidate_build_root": build_root,
         "candidate_forensic_root": tmp_path / "forensic",
         "candidate_runtime_root": tmp_path / "runtime",
+        "rollback_root": tmp_path / "rollback",
     }
     inputs = {
         "candidate": {
@@ -768,6 +769,14 @@ def _write_x4_authority_receipt(
         "schema": "p1-u04-x4-authority-preflight-v1",
         "verdict": "X4_READY_FOR_BUILD_A",
     }
+    monkeypatch.setattr(
+        builder,
+        "_candidate_live_rollback_authority",
+        lambda _rollback_root: copy.deepcopy(
+            receipt_document["checks"]["rollback_authority"]
+        ),
+        raising=False,
+    )
     expected_digest = "0" * 64 if mutation == "digest" else None
     if mutation == "schema":
         receipt_document["schema"] = "foreign"
@@ -1061,6 +1070,68 @@ def test_candidate_build_a_revalidates_exact_x4_bindings_before_publication(
         )
 
     assert validation_count == 2
+    assert not (roots["candidate_build_root"] / "build-a").exists()
+
+
+def test_candidate_build_a_rejects_live_rollback_drift_before_publication(
+    x4_posix_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        x4_posix_tmp_path, monkeypatch
+    )
+    recorded = copy.deepcopy(
+        json.loads(receipt.read_bytes())["checks"]["rollback_authority"]
+    )
+    calls = 0
+
+    def live_projection(_rollback_root: Path) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        observed = copy.deepcopy(recorded)
+        if calls == 2:
+            observed["closure_sha256"] = "9" * 64
+        return observed
+
+    monkeypatch.setattr(
+        builder, "_candidate_live_rollback_authority", live_projection, raising=False
+    )
+    descriptor = os.open(
+        x4_posix_tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
+    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: roots)
+    monkeypatch.setattr(
+        builder,
+        "_build_candidate_once",
+        lambda *_args: (
+            b"wheel-a",
+            _empty_candidate_preflight(),
+            {
+                "wheel": {
+                    "filename": WHEEL_FILENAME,
+                    "sha256": hashlib.sha256(b"wheel-a").hexdigest(),
+                    "size": 7,
+                }
+            },
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+            descriptor,
+        ),
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+    )
+    with pytest.raises(builder.VerificationError, match="live rollback authority drifted"):
+        builder.build_candidate_a(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        )
+    assert calls == 2
     assert not (roots["candidate_build_root"] / "build-a").exists()
 
 
