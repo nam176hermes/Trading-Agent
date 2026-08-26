@@ -1340,7 +1340,6 @@ def _candidate_policy_receipt(inputs: dict[str, object]) -> dict[str, str]:
         "wheel_cache": "wheel_cache_policy_sha256",
     }
     receipt = {name: hashes.get(source) for name, source in mapping.items()}
-    receipt["toolchain_inputs"] = _sha256(_CANDIDATE_TOOLCHAIN_INPUTS)
     if any(
         not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
         for value in receipt.values()
@@ -1538,12 +1537,15 @@ def _validate_x4_authority_receipt(
             "build_parent",
             "candidate_output_roots",
             "host_authority_lane",
+            "network_capability",
             "release_provenance",
             "rollback_authority",
             "roots_disjoint",
             "toolchain_inputs",
         }
         or checks.get("ambient_fallback_reachable") is not False
+        or checks.get("network_capability")
+        != "DISABLED_BY_BUBBLEWRAP_UNSHARE_ALL"
         or checks.get("roots_disjoint") is not True
         or not isinstance(build_parent_check, dict)
         or set(build_parent_check) != {"empty", "gid", "mode", "owner"}
@@ -3437,7 +3439,7 @@ def _load_candidate_build_result(
     roots: dict[str, Path],
     *,
     label: str,
-) -> tuple[bytes, dict[str, object], dict[str, object]]:
+) -> tuple[bytes, dict[str, object], dict[str, object], str]:
     if label not in {"A", "B"}:
         raise VerificationError("candidate build result label is invalid")
     directory = roots["candidate_build_root"] / (
@@ -3538,7 +3540,8 @@ def _load_candidate_build_result(
         is None
     ):
         raise VerificationError(f"Build {label} policy authority drifted")
-    return wheel_payload, artifact_core, receipt
+    receipt_sha256 = _sha256_bytes(receipt_raw)
+    return wheel_payload, artifact_core, receipt, receipt_sha256
 
 
 def _publish_candidate_artifacts(
@@ -4593,8 +4596,8 @@ def build_candidate_b(
         inputs,
         allowed_build_children=frozenset({_BUILD_A_DIRECTORY}),
     )
-    first_payload, first_core, first_receipt = _load_candidate_build_result(
-        roots, label="A"
+    first_payload, first_core, first_receipt, _first_digest = (
+        _load_candidate_build_result(roots, label="A")
     )
     process_identity = _candidate_process_identity()
     if first_receipt["x4_authority_receipt_sha256"] != authority_receipt_sha256:
@@ -4632,38 +4635,18 @@ def build_candidate_b(
         x4_authority=confirmed_x4,
         x4_receipt_sha256=authority_receipt_sha256,
     )
-    confirmed_first_payload, confirmed_first_core, confirmed_first_receipt = (
-        _load_candidate_build_result(roots, label="A")
-    )
-    confirmed_second_payload, confirmed_second_core, confirmed_second_receipt = (
-        _load_candidate_build_result(roots, label="B")
-    )
+    confirmed_a = _load_candidate_build_result(roots, label="A")
+    confirmed_b = _load_candidate_build_result(roots, label="B")
     if (
-        (confirmed_first_payload, confirmed_first_core, confirmed_first_receipt)
+        confirmed_a[:3]
         != (first_payload, first_core, first_receipt)
     ):
         raise VerificationError("Build A changed during Build B")
     if (
-        (confirmed_second_payload, confirmed_second_core, confirmed_second_receipt)
+        confirmed_b[:3]
         != (second_payload, second_core, second_receipt)
     ):
         raise VerificationError("Build B changed after publication")
-    build_a_receipt_sha256 = _sha256_bytes(
-        _read_x4_receipt_file(
-            roots["candidate_build_root"]
-            / _BUILD_A_DIRECTORY
-            / _CANDIDATE_BUILD_RECEIPT,
-            label="Build A receipt",
-        )
-    )
-    build_b_receipt_sha256 = _sha256_bytes(
-        _read_x4_receipt_file(
-            roots["candidate_build_root"]
-            / _BUILD_B_DIRECTORY
-            / _CANDIDATE_BUILD_RECEIPT,
-            label="Build B receipt",
-        )
-    )
     first_identity = first_receipt["source_identity"]
     if first_identity == second_identity:
         raise VerificationError("candidate builds require distinct source identities")
@@ -4696,24 +4679,6 @@ def build_candidate_b(
         raise VerificationError(
             "candidate native or authoritative manifest drifted across fresh builds"
         )
-    reproducibility: dict[str, object] = {
-        "authoritative_manifest_equality": True,
-        "build_a_receipt_sha256": build_a_receipt_sha256,
-        "build_b_receipt_sha256": build_b_receipt_sha256,
-        "build_count": 2,
-        "fresh_physical_stages": True,
-        "logical_stages_absent_after_build": True,
-        "native_inventory_equality": True,
-        "process_identities": [
-            first_receipt["process_identity"],
-            second_receipt["process_identity"],
-        ],
-        "raw_wheel_equality": True,
-        "source_fd_identities": [first_identity, second_identity],
-        "wheel_sha256": first_core["wheel"]["sha256"],  # type: ignore[index]
-        "x4_authority_receipt_sha256": authority_receipt_sha256,
-    }
-    manifest = {**first_core, "reproducible_build": reproducibility}
     final_x4 = _validate_x4_authority_receipt(
         authority_receipt,
         authority_receipt_sha256,
@@ -4721,8 +4686,38 @@ def build_candidate_b(
     )
     if final_x4 != validated_x4:
         raise VerificationError("validated X4 authority changed before final publication")
+    final_a = _load_candidate_build_result(roots, label="A")
+    final_b = _load_candidate_build_result(roots, label="B")
+    if final_a[:3] != confirmed_a[:3] or final_b[:3] != confirmed_b[:3]:
+        raise VerificationError("candidate build result changed before final publication")
+
+    final_a_payload, final_a_core, final_a_receipt, final_a_digest = final_a
+    final_b_payload, final_b_core, final_b_receipt, final_b_digest = final_b
+    if final_a_payload != final_b_payload or final_a_core != final_b_core:
+        raise VerificationError("candidate build result changed before final publication")
+    reproducibility: dict[str, object] = {
+        "authoritative_manifest_equality": True,
+        "build_a_receipt_sha256": final_a_digest,
+        "build_b_receipt_sha256": final_b_digest,
+        "build_count": 2,
+        "fresh_physical_stages": True,
+        "logical_stages_absent_after_build": True,
+        "native_inventory_equality": True,
+        "process_identities": [
+            final_a_receipt["process_identity"],
+            final_b_receipt["process_identity"],
+        ],
+        "raw_wheel_equality": True,
+        "source_fd_identities": [
+            final_a_receipt["source_identity"],
+            final_b_receipt["source_identity"],
+        ],
+        "wheel_sha256": final_a_core["wheel"]["sha256"],  # type: ignore[index]
+        "x4_authority_receipt_sha256": authority_receipt_sha256,
+    }
+    manifest = {**final_a_core, "reproducible_build": reproducibility}
     _publish_candidate_artifacts(
-        roots, first_payload, first_core, reproducibility
+        roots, final_a_payload, final_a_core, reproducibility
     )
     return manifest
 
