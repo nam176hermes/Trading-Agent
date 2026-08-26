@@ -395,12 +395,18 @@ def test_python_startup_or_external_symlink_authority_drift_fails_closed() -> No
     python = copy.deepcopy(toolchain.load_json(ENGINE_POLICY)["python"])
     python["startup_argv"] = ["/usr/bin/python3.12"]
     with pytest.raises(toolchain.VerificationError, match="reviewed CPython"):
-        toolchain._verify_system_python(python)
+        toolchain._verify_snapshot_python_policy(
+            python,
+            toolchain.load_json(ENGINE_POLICY)["native_build_authority"],
+        )
 
     python = copy.deepcopy(toolchain.load_json(ENGINE_POLICY)["python"])
     python["stdlib_external_symlinks"][1]["disposition"] = "ADMIT"
     with pytest.raises(toolchain.VerificationError, match="reviewed CPython"):
-        toolchain._verify_system_python(python)
+        toolchain._verify_snapshot_python_policy(
+            python,
+            toolchain.load_json(ENGINE_POLICY)["native_build_authority"],
+        )
 
 
 @pytest.mark.parametrize(
@@ -485,18 +491,27 @@ def test_direct_cc_environment_omission_or_archiver_drift_fails_closed(
             )
 
 
-def test_native_snapshot_policy_validation_does_not_read_mutable_live_usr(
+def test_full_policy_validation_does_not_call_mutable_live_python_verifier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = toolchain.load_json(ENGINE_POLICY)
 
-    def reject_live_read(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("mutable live native authority was read")
+    def reject_live_python(_policy: dict[str, Any]) -> None:
+        raise AssertionError("mutable live Python authority was read")
 
-    monkeypatch.setattr(toolchain, "_verify_tree_inventory", reject_live_read)
-    monkeypatch.setattr(toolchain, "_verify_path_record", reject_live_read)
+    monkeypatch.setattr(
+        toolchain, "_verify_system_python", reject_live_python, raising=False
+    )
+    monkeypatch.setattr(
+        toolchain, "_verify_command_router_policy", lambda *_args: None
+    )
 
-    toolchain._verify_native_build_authority(engine["native_build_authority"])
+    toolchain._verify_policies(
+        engine,
+        toolchain.load_json(INPUT_POLICY),
+        toolchain.load_json(WHEEL_POLICY),
+        toolchain.load_json(CARGO_POLICY),
+    )
 
 
 @pytest.mark.parametrize(

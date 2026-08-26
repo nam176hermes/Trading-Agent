@@ -683,7 +683,9 @@ def _verify_command_router_layout(root: Path, policy: dict[str, Any]) -> None:
             raise VerificationError(f"command router resolved target drifted: {path}")
 
 
-def _verify_system_python(policy: dict[str, Any]) -> None:
+def _verify_snapshot_python_policy(
+    policy: dict[str, Any], native_authority: dict[str, Any]
+) -> None:
     expected = {
         "abi",
         "admitted_sys_path",
@@ -756,61 +758,48 @@ def _verify_system_python(policy: dict[str, Any]) -> None:
     ):
         raise VerificationError("Python authority is not the reviewed CPython 3.12 input")
 
-    def verify_regular(path: Path, value: dict[str, Any], label: str) -> None:
-        try:
-            st = path.lstat()
-        except OSError as exc:
-            raise VerificationError(f"{label} unavailable: {exc}") from exc
-        if not stat.S_ISREG(st.st_mode) or path.is_symlink():
-            raise VerificationError(f"{label} must be a regular non-symlink file")
-        observed = {
-            "gid": st.st_gid,
-            "mode": _mode(st),
-            "sha256": _sha256_file(path),
-            "size": st.st_size,
-            "uid": st.st_uid,
+    if (
+        policy["executable"] != "/usr/bin/python3.12"
+        or policy["executable_gid"] != 0
+        or policy["executable_mode"] != "0755"
+        or policy["executable_sha256"]
+        != "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
+        or policy["executable_size"] != 8020928
+        or policy["executable_uid"] != 0
+        or policy["libpython"]
+        != {
+            "gid": 0,
+            "mode": "0644",
+            "path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
+            "sha256": "a4c35494d197a92f08a9d0a94975d9558e7a50880c42947484f01b720b68d423",
+            "size": 9061000,
+            "uid": 0,
         }
-        if observed != value:
-            raise VerificationError(f"{label} identity drifted")
-
-    executable = Path(policy["executable"])
-    verify_regular(
-        executable,
-        {
-            "gid": policy["executable_gid"],
-            "mode": policy["executable_mode"],
-            "sha256": policy["executable_sha256"],
-            "size": policy["executable_size"],
-            "uid": policy["executable_uid"],
-        },
-        "Python executable",
-    )
-    libpython = policy["libpython"]
-    _require_keys(libpython, {"gid", "mode", "path", "sha256", "size", "uid"}, "libpython")
-    verify_regular(Path(libpython["path"]), {k: libpython[k] for k in libpython if k != "path"}, "libpython")
-
-    _verify_tree_inventory(policy["stdlib_inventory"], "Python stdlib")
-    stdlib_root = Path(policy["stdlib_inventory"]["path"])
-    external_symlinks = []
-    dispositions = {
-        item["path"]: item for item in policy["stdlib_external_symlinks"]
+        or policy["stdlib_inventory"]
+        != {
+            "directory_count": 92,
+            "file_count": 1213,
+            "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+            "path": "/usr/lib/python3.12",
+            "record_count": 1308,
+            "root_gid": 0,
+            "root_mode": "0755",
+            "root_uid": 0,
+            "symlink_count": 3,
+            "tree_sha256": "0c17594ac603d6ba61b6b25c25f7f4e748fecb3362741bf191e717f36a39522e",
+        }
+    ):
+        raise VerificationError("Python authority is not the reviewed CPython 3.12 input")
+    _verify_native_build_authority(native_authority)
+    destinations = {
+        record["destination"] for record in native_authority["snapshot"]["mappings"]
     }
-    for path in sorted(stdlib_root.rglob("*"), key=str):
-        if not path.is_symlink():
-            continue
-        resolved = path.resolve(strict=True)
-        if resolved == stdlib_root or resolved.is_relative_to(stdlib_root):
-            continue
-        record = dispositions.get(str(path))
-        if (
-            record is None
-            or record["target"] != os.readlink(path)
-            or record["resolved_path"] != str(resolved)
-        ):
-            raise VerificationError(f"Python stdlib symlink target is unbound: {path}")
-        external_symlinks.append(record)
-    if external_symlinks != policy["stdlib_external_symlinks"]:
-        raise VerificationError("Python stdlib external symlink set drifted")
+    if not {
+        policy["executable"],
+        policy["stdlib_inventory"]["path"],
+        str(Path(policy["libpython"]["path"]).parent),
+    }.issubset(destinations):
+        raise VerificationError("Python policy is not covered by native snapshot mappings")
 
 
 def _verify_native_build_authority(policy: dict[str, Any]) -> None:
@@ -1661,8 +1650,9 @@ def _verify_policies(
     }:
         raise VerificationError("Cargo vendor materialization policy drifted")
     _verify_source_authority(inputs)
-    _verify_system_python(engine["python"])
-    _verify_native_build_authority(engine["native_build_authority"])
+    _verify_snapshot_python_policy(
+        engine["python"], engine["native_build_authority"]
+    )
     _verify_build_environment_policy(engine["native_build_environment"])
 
 
