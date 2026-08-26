@@ -1697,6 +1697,7 @@ def _validate_candidate_artifact(
             "candidate artifact reproducibility authority drifted"
         )
     try:
+        authority_identities = builder._candidate_external_identities(engine, inputs)
         build_a = builder._load_candidate_build_result(roots, label="A")
         build_b = builder._load_candidate_build_result(roots, label="B")
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -1723,7 +1724,9 @@ def _validate_candidate_artifact(
         and b_receipt["source_identity"] == identities[1]
         and a_receipt["candidate"] == b_receipt["candidate"]
         and a_receipt["policy_sha256"] == b_receipt["policy_sha256"]
-        and a_receipt["authority_identities"] == b_receipt["authority_identities"]
+        and a_receipt["authority_identities"]
+        == b_receipt["authority_identities"]
+        == authority_identities
         and a_receipt["sanitized_environment_sha256"]
         == b_receipt["sanitized_environment_sha256"]
         and a_core == b_core == final_core

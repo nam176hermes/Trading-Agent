@@ -2213,6 +2213,11 @@ def _write_candidate_artifact(
     artifact_directory.chmod(0o500)
     monkeypatch.setattr(builder, "_candidate_git_identity", lambda: candidate_identity)
     monkeypatch.setattr(builder, "_verify_candidate_authority", lambda: (engine, inputs))
+    monkeypatch.setattr(
+        builder,
+        "_candidate_external_identities",
+        lambda *_args: authority_identities,
+    )
     return engine, inputs, roots, document
 
 
@@ -4194,6 +4199,35 @@ def test_candidate_artifact_validator_rejects_minimal_build_receipt(
     document["reproducible_build"]["build_b_receipt_sha256"] = hashlib.sha256(
         build_b_receipt.read_bytes()
     ).hexdigest()
+    _replace_candidate_artifact_manifest(tmp_path, document)
+
+    with pytest.raises(
+        materializer.RuntimeClosureMaterializationError,
+        match="candidate artifact reproducibility authority drifted",
+    ):
+        materializer._validate_candidate_artifact(builder, engine, inputs, roots)
+
+
+def test_candidate_artifact_validator_rejects_shared_forged_authority_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, inputs, roots, document = _write_candidate_artifact(
+        tmp_path, monkeypatch
+    )
+    forged = {"fixture": {"sha256": "0" * 64}}
+    for label in ("a", "b"):
+        build_receipt = tmp_path / f"build-{label}" / "build-receipt.json"
+        build_receipt.chmod(0o600)
+        receipt_document = json.loads(build_receipt.read_bytes())
+        receipt_document["authority_identities"] = forged
+        build_receipt.write_text(
+            json.dumps(receipt_document, sort_keys=True, indent=2) + "\n",
+            encoding="ascii",
+        )
+        build_receipt.chmod(0o400)
+        document["reproducible_build"][
+            f"build_{label}_receipt_sha256"
+        ] = hashlib.sha256(build_receipt.read_bytes()).hexdigest()
     _replace_candidate_artifact_manifest(tmp_path, document)
 
     with pytest.raises(
@@ -6699,6 +6733,7 @@ def qualify(_root):
 
 builder._verify_candidate_authority = lambda: (engine, inputs)
 builder._candidate_git_identity = lambda: {{'head': 'a' * 40, 'tree': 'b' * 40}}
+builder._candidate_external_identities = lambda *_args: {{'fixture': {{'sha256': 'f' * 64}}}}
 builder._candidate_roots = lambda _engine: roots
 materializer._candidate_builder_tool = lambda: builder
 materializer._attest_candidate_closure = attest_closure
