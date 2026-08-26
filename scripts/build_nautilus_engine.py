@@ -1178,7 +1178,15 @@ def _verify_candidate_authority() -> tuple[dict[str, object], dict[str, object]]
 
 
 def _candidate_git_identity() -> dict[str, str]:
-    command = ["/usr/bin/git", "-C", str(_ROOT)]
+    command = [
+        "/usr/bin/git",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-C",
+        str(_ROOT),
+    ]
     environment = {"LC_ALL": "C", "LANG": "C"}
 
     def run(*arguments: str) -> str:
@@ -1396,7 +1404,7 @@ def _validate_x4_authority_receipt(
     *,
     phase: str,
 ) -> dict[str, object]:
-    if phase not in {"A", "B"}:
+    if phase not in {"A", "B", "FINAL"}:
         raise VerificationError("X4 authority receipt phase is invalid")
     if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
         raise VerificationError("X4 authority receipt digest is invalid")
@@ -1414,6 +1422,7 @@ def _validate_x4_authority_receipt(
         != {
             "build_a_authorized",
             "candidate",
+            "checks",
             "complete_authority_receipt",
             "identities",
             "policy_sha256",
@@ -1478,13 +1487,134 @@ def _validate_x4_authority_receipt(
         or stat.S_IMODE(build_parent.st_mode) != 0o700
     ):
         raise VerificationError("X4 authority receipt build parent is not private")
-    expected_names = set() if phase == "A" else {_BUILD_A_DIRECTORY}
+    checks = document.get("checks")
+    build_parent_check = checks.get("build_parent") if isinstance(checks, dict) else None
+    output_roots = (
+        checks.get("candidate_output_roots") if isinstance(checks, dict) else None
+    )
+    host_lane = checks.get("host_authority_lane") if isinstance(checks, dict) else None
+    release = checks.get("release_provenance") if isinstance(checks, dict) else None
+    rollback = checks.get("rollback_authority") if isinstance(checks, dict) else None
+    toolchain = checks.get("toolchain_inputs") if isinstance(checks, dict) else None
+    candidate_input = inputs.get("candidate")
+    source = inputs.get("source")
+    source_artifact = source.get("artifact") if isinstance(source, dict) else None
+    provenance = _candidate_json(_CANDIDATE_PROVENANCE)
+    provenance_upstream = provenance.get("upstream")
+    release_assets = provenance.get("release_assets")
+    cpython_wheel = (
+        release_assets.get("cpython312_linux_wheel")
+        if isinstance(release_assets, dict)
+        else None
+    )
+    expected_release_check = {
+        "exit_code": 0,
+        "network": "DISABLED_BY_CONSTRUCTION",
+        "peeled_commit": (
+            provenance_upstream.get("peeled_commit")
+            if isinstance(provenance_upstream, dict)
+            else None
+        ),
+        "primary_sha256": (
+            source_artifact.get("sha256")
+            if isinstance(source_artifact, dict)
+            else None
+        ),
+        "result": "PASS",
+        "tag_object": (
+            provenance_upstream.get("tag_object")
+            if isinstance(provenance_upstream, dict)
+            else None
+        ),
+        "wheel_sha256": (
+            cpython_wheel.get("sha256") if isinstance(cpython_wheel, dict) else None
+        ),
+    }
+    if (
+        not isinstance(checks, dict)
+        or set(checks)
+        != {
+            "ambient_fallback_reachable",
+            "build_parent",
+            "candidate_output_roots",
+            "host_authority_lane",
+            "release_provenance",
+            "rollback_authority",
+            "roots_disjoint",
+            "toolchain_inputs",
+        }
+        or checks.get("ambient_fallback_reachable") is not False
+        or checks.get("roots_disjoint") is not True
+        or not isinstance(build_parent_check, dict)
+        or set(build_parent_check) != {"empty", "gid", "mode", "owner"}
+        or build_parent_check
+        != {
+            "empty": True,
+            "gid": build_parent.st_gid,
+            "mode": "0700",
+            "owner": build_parent.st_uid,
+        }
+        or output_roots
+        != {
+            "artifact_root": "ABSENT",
+            "closure_root": "ABSENT",
+            "forensic_root": "ABSENT",
+        }
+        or host_lane
+        != {
+            "environment": {"TEMP": "/tmp", "TMP": "/tmp", "TMPDIR": "/tmp"},
+            "exit_code": 0,
+            "reason": "HOST_TESTS_PASSED",
+            "result": "PASS",
+        }
+        or release != expected_release_check
+        or not isinstance(candidate_input, dict)
+        or release.get("peeled_commit") != candidate_input.get("upstream_commit")
+        or not isinstance(source_artifact, dict)
+        or release.get("primary_sha256") != source_artifact.get("sha256")
+        or not isinstance(rollback, dict)
+        or set(rollback)
+        != {
+            "artifact_generation",
+            "artifact_manifest_sha256",
+            "closure_sha256",
+            "generation",
+            "manifest_mode",
+            "manifest_sha256",
+            "result",
+            "schema",
+        }
+        or rollback.get("result") != "PASS"
+        or rollback.get("schema") != 6
+        or rollback.get("manifest_mode") != "0400"
+        or any(
+            not isinstance(rollback.get(field), str) or not rollback[field]
+            for field in ("artifact_generation", "generation")
+        )
+        or any(
+            not isinstance(rollback.get(field), str)
+            or re.fullmatch(r"[0-9a-f]{64}", rollback[field]) is None
+            for field in (
+                "artifact_manifest_sha256",
+                "closure_sha256",
+                "manifest_sha256",
+            )
+        )
+        or toolchain
+        != {
+            "exit_code": 0,
+            "result": "PASS",
+            "sha256": _sha256(_CANDIDATE_TOOLCHAIN_INPUTS),
+        }
+    ):
+        raise VerificationError("X4 authority receipt checks are invalid")
+    expected_names = {
+        "A": set(),
+        "B": {_BUILD_A_DIRECTORY},
+        "FINAL": {_BUILD_A_DIRECTORY, _BUILD_B_DIRECTORY},
+    }[phase]
     if {entry.name for entry in build_root.iterdir()} != expected_names:
         raise VerificationError("X4 authority receipt candidate root state drifted")
-    for name in (_BUILD_B_DIRECTORY, "artifacts"):
-        candidate_path = build_root / name
-        if candidate_path.exists() or candidate_path.is_symlink():
-            raise VerificationError("X4 authority receipt candidate root state drifted")
     for name in ("candidate_forensic_root", "candidate_runtime_root"):
         candidate_path = roots.get(name)
         if candidate_path is not None and (
@@ -3181,6 +3311,7 @@ def _publish_candidate_build_result(
     artifact_core: dict[str, object],
     source_identity: dict[str, str],
     process_identity: dict[str, object],
+    x4_authority: dict[str, object],
     x4_receipt_sha256: str,
 ) -> dict[str, object]:
     if label not in {"A", "B"}:
@@ -3192,6 +3323,16 @@ def _publish_candidate_build_result(
     policy_sha256, sanitized_environment_sha256 = (
         _candidate_build_policy_binding()
     )
+    candidate = x4_authority.get("candidate")
+    authority_identities = x4_authority.get("identities")
+    if (
+        not isinstance(candidate, dict)
+        or candidate != _candidate_git_identity()
+        or x4_authority.get("policy_sha256") != policy_sha256
+        or not isinstance(authority_identities, dict)
+        or not authority_identities
+    ):
+        raise VerificationError("candidate build result X4 authority is invalid")
     destination = roots["candidate_build_root"] / (
         _BUILD_A_DIRECTORY if label == "A" else _BUILD_B_DIRECTORY
     )
@@ -3226,7 +3367,8 @@ def _publish_candidate_build_result(
             "sha256": _sha256_bytes(core_raw),
             "size": len(core_raw),
         },
-        "candidate": _candidate_git_identity(),
+        "authority_identities": authority_identities,
+        "candidate": candidate,
         "file_set": [
             _CANDIDATE_WHEEL_FILENAME,
             _CANDIDATE_ARTIFACT_CORE,
@@ -3348,6 +3490,7 @@ def _load_candidate_build_result(
         or set(receipt)
         != {
             "artifact_core",
+            "authority_identities",
             "candidate",
             "file_set",
             "kind",
@@ -3362,6 +3505,8 @@ def _load_candidate_build_result(
         }
         or receipt.get("schema") != _CANDIDATE_BUILD_RESULT_SCHEMA
         or receipt.get("candidate") != _candidate_git_identity()
+        or not isinstance(receipt.get("authority_identities"), dict)
+        or not receipt["authority_identities"]
         or receipt.get("kind") != f"P1_U04_BUILD_{label}"
         or receipt.get("label") != label
         or receipt.get("file_set")
@@ -4389,17 +4534,12 @@ def _close_candidate_source_descriptor(descriptor: int) -> None:
         raise VerificationError("candidate source descriptor close failed") from exc
 
 
-def _confirm_x4_receipt_digest(path: Path, expected_sha256: str) -> None:
-    if _sha256_bytes(_read_x4_receipt_file(path, label="file")) != expected_sha256:
-        raise VerificationError("X4 authority receipt changed during candidate build")
-
-
 def build_candidate_a(
     *,
     authority_receipt: Path,
     authority_receipt_sha256: str,
 ) -> dict[str, object]:
-    _validate_x4_authority_receipt(
+    validated_x4 = _validate_x4_authority_receipt(
         authority_receipt,
         authority_receipt_sha256,
         phase="A",
@@ -4411,7 +4551,13 @@ def build_candidate_a(
         engine, inputs, roots
     )
     _close_candidate_source_descriptor(source_fd)
-    _confirm_x4_receipt_digest(authority_receipt, authority_receipt_sha256)
+    confirmed_x4 = _validate_x4_authority_receipt(
+        authority_receipt,
+        authority_receipt_sha256,
+        phase="A",
+    )
+    if confirmed_x4 != validated_x4:
+        raise VerificationError("validated X4 authority changed before Build A publication")
     return _publish_candidate_build_result(
         roots,
         label="A",
@@ -4419,6 +4565,7 @@ def build_candidate_a(
         artifact_core=core,
         source_identity=source_identity,
         process_identity=process_identity,
+        x4_authority=confirmed_x4,
         x4_receipt_sha256=authority_receipt_sha256,
     )
 
@@ -4429,7 +4576,7 @@ def build_candidate_b(
     authority_receipt_sha256: str,
     retain_raw_wheel_pair: bool = False,
 ) -> dict[str, object]:
-    _validate_x4_authority_receipt(
+    validated_x4 = _validate_x4_authority_receipt(
         authority_receipt,
         authority_receipt_sha256,
         phase="B",
@@ -4452,6 +4599,15 @@ def build_candidate_b(
     process_identity = _candidate_process_identity()
     if first_receipt["x4_authority_receipt_sha256"] != authority_receipt_sha256:
         raise VerificationError("Build A X4 authority receipt differs from Build B")
+    if any(
+        first_receipt[receipt_field] != validated_x4[x4_field]
+        for receipt_field, x4_field in (
+            ("candidate", "candidate"),
+            ("policy_sha256", "policy_sha256"),
+            ("authority_identities", "identities"),
+        )
+    ):
+        raise VerificationError("Build A X4 authority binding drifted")
     if first_receipt["process_identity"] == process_identity:
         raise VerificationError("candidate builds require a distinct process identity")
 
@@ -4459,7 +4615,13 @@ def build_candidate_b(
         _build_candidate_once(engine, inputs, roots)
     )
     _close_candidate_source_descriptor(source_fd)
-    _confirm_x4_receipt_digest(authority_receipt, authority_receipt_sha256)
+    confirmed_x4 = _validate_x4_authority_receipt(
+        authority_receipt,
+        authority_receipt_sha256,
+        phase="B",
+    )
+    if confirmed_x4 != validated_x4:
+        raise VerificationError("validated X4 authority changed before Build B publication")
     second_receipt = _publish_candidate_build_result(
         roots,
         label="B",
@@ -4467,16 +4629,41 @@ def build_candidate_b(
         artifact_core=second_core,
         source_identity=second_identity,
         process_identity=process_identity,
+        x4_authority=confirmed_x4,
         x4_receipt_sha256=authority_receipt_sha256,
     )
     confirmed_first_payload, confirmed_first_core, confirmed_first_receipt = (
         _load_candidate_build_result(roots, label="A")
+    )
+    confirmed_second_payload, confirmed_second_core, confirmed_second_receipt = (
+        _load_candidate_build_result(roots, label="B")
     )
     if (
         (confirmed_first_payload, confirmed_first_core, confirmed_first_receipt)
         != (first_payload, first_core, first_receipt)
     ):
         raise VerificationError("Build A changed during Build B")
+    if (
+        (confirmed_second_payload, confirmed_second_core, confirmed_second_receipt)
+        != (second_payload, second_core, second_receipt)
+    ):
+        raise VerificationError("Build B changed after publication")
+    build_a_receipt_sha256 = _sha256_bytes(
+        _read_x4_receipt_file(
+            roots["candidate_build_root"]
+            / _BUILD_A_DIRECTORY
+            / _CANDIDATE_BUILD_RECEIPT,
+            label="Build A receipt",
+        )
+    )
+    build_b_receipt_sha256 = _sha256_bytes(
+        _read_x4_receipt_file(
+            roots["candidate_build_root"]
+            / _BUILD_B_DIRECTORY
+            / _CANDIDATE_BUILD_RECEIPT,
+            label="Build B receipt",
+        )
+    )
     first_identity = first_receipt["source_identity"]
     if first_identity == second_identity:
         raise VerificationError("candidate builds require distinct source identities")
@@ -4511,6 +4698,8 @@ def build_candidate_b(
         )
     reproducibility: dict[str, object] = {
         "authoritative_manifest_equality": True,
+        "build_a_receipt_sha256": build_a_receipt_sha256,
+        "build_b_receipt_sha256": build_b_receipt_sha256,
         "build_count": 2,
         "fresh_physical_stages": True,
         "logical_stages_absent_after_build": True,
@@ -4522,8 +4711,16 @@ def build_candidate_b(
         "raw_wheel_equality": True,
         "source_fd_identities": [first_identity, second_identity],
         "wheel_sha256": first_core["wheel"]["sha256"],  # type: ignore[index]
+        "x4_authority_receipt_sha256": authority_receipt_sha256,
     }
     manifest = {**first_core, "reproducible_build": reproducibility}
+    final_x4 = _validate_x4_authority_receipt(
+        authority_receipt,
+        authority_receipt_sha256,
+        phase="FINAL",
+    )
+    if final_x4 != validated_x4:
+        raise VerificationError("validated X4 authority changed before final publication")
     _publish_candidate_artifacts(
         roots, first_payload, first_core, reproducibility
     )

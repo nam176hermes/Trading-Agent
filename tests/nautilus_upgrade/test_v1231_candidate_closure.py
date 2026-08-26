@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import base64
+import copy
 import csv
 import errno
 from collections.abc import Callable, Iterator
@@ -666,6 +667,9 @@ def _write_x4_authority_receipt(
         "candidate_runtime_root": tmp_path / "runtime",
     }
     inputs = {
+        "candidate": {
+            "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+        },
         "native_build_environment": {"construction": "EMPTY_THEN_SET_EXACT_VALUES"},
         "policy_hashes": {
             "cargo_registry_policy_sha256": "1" * 64,
@@ -674,8 +678,16 @@ def _write_x4_authority_receipt(
             "release_provenance_policy_sha256": "4" * 64,
             "wheel_cache_policy_sha256": "5" * 64,
         },
+        "source": {
+            "artifact": {
+                "sha256": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441"
+            }
+        },
     }
     engine = {
+        "candidate": {
+            "upstream_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
+        },
         "external_cache_isolation": {
             "external_roots": {name: str(path) for name, path in roots.items()}
         }
@@ -690,6 +702,51 @@ def _write_x4_authority_receipt(
             "path": "task-4-receipt.json",
             "sha256": hashlib.sha256(b"{}\n").hexdigest(),
             "size": 3,
+        },
+        "checks": {
+            "ambient_fallback_reachable": False,
+            "build_parent": {
+                "empty": True,
+                "gid": os.getegid(),
+                "mode": "0700",
+                "owner": os.geteuid(),
+            },
+            "candidate_output_roots": {
+                "artifact_root": "ABSENT",
+                "closure_root": "ABSENT",
+                "forensic_root": "ABSENT",
+            },
+            "host_authority_lane": {
+                "environment": {"TEMP": "/tmp", "TMP": "/tmp", "TMPDIR": "/tmp"},
+                "exit_code": 0,
+                "reason": "HOST_TESTS_PASSED",
+                "result": "PASS",
+            },
+            "release_provenance": {
+                "exit_code": 0,
+                "network": "DISABLED_BY_CONSTRUCTION",
+                "peeled_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+                "primary_sha256": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441",
+                "result": "PASS",
+                "tag_object": "d3e1685e979925d7b0ffacd1b3f442547686e18f",
+                "wheel_sha256": "8c438e95c275a13df0c0ddb7012c462708b5e99ff3612e36a1b7bd49ab39c216",
+            },
+            "rollback_authority": {
+                "artifact_generation": "artifacts/fixture",
+                "artifact_manifest_sha256": "b" * 64,
+                "closure_sha256": "c" * 64,
+                "generation": "runtime-fixture",
+                "manifest_mode": "0400",
+                "manifest_sha256": "d" * 64,
+                "result": "PASS",
+                "schema": 6,
+            },
+            "roots_disjoint": True,
+            "toolchain_inputs": {
+                "exit_code": 0,
+                "result": "PASS",
+                "sha256": "6" * 64,
+            },
         },
         "identities": {
             "bubblewrap": {"version": "bubblewrap 0.9.0"},
@@ -720,6 +777,10 @@ def _write_x4_authority_receipt(
         receipt_document["candidate"]["head"] = "c" * 40  # type: ignore[index]
     elif mutation == "tree":
         receipt_document["candidate"]["tree"] = "d" * 40  # type: ignore[index]
+    elif mutation == "checks":
+        receipt_document["checks"]["roots_disjoint"] = False  # type: ignore[index]
+    elif mutation == "release_check":
+        receipt_document["checks"]["release_provenance"]["tag_object"] = "e" * 40  # type: ignore[index]
     receipt = tmp_path / "x4-receipt.json"
     raw = (json.dumps(receipt_document, sort_keys=True, indent=2) + "\n").encode(
         "ascii"
@@ -757,6 +818,103 @@ def _write_x4_authority_receipt(
         else real_sha256(path),
     )
     return receipt, expected_digest or hashlib.sha256(raw).hexdigest(), engine, inputs, roots
+
+
+def test_canonical_x4_authority_receipt_with_checks_is_accepted(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt, receipt_sha256, _engine, _inputs, _roots = _write_x4_authority_receipt(
+        x4_posix_tmp_path, monkeypatch
+    )
+
+    validated = builder._validate_x4_authority_receipt(
+        receipt, receipt_sha256, phase="A"
+    )
+
+    assert validated["schema"] == "p1-u04-x4-authority-preflight-v1"
+    assert validated["checks"] == {
+        "ambient_fallback_reachable": False,
+        "build_parent": {
+            "empty": True,
+            "gid": os.getegid(),
+            "mode": "0700",
+            "owner": os.geteuid(),
+        },
+        "candidate_output_roots": {
+            "artifact_root": "ABSENT",
+            "closure_root": "ABSENT",
+            "forensic_root": "ABSENT",
+        },
+        "host_authority_lane": {
+            "environment": {"TEMP": "/tmp", "TMP": "/tmp", "TMPDIR": "/tmp"},
+            "exit_code": 0,
+            "reason": "HOST_TESTS_PASSED",
+            "result": "PASS",
+        },
+        "release_provenance": {
+            "exit_code": 0,
+            "network": "DISABLED_BY_CONSTRUCTION",
+            "peeled_commit": "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+            "primary_sha256": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441",
+            "result": "PASS",
+            "tag_object": "d3e1685e979925d7b0ffacd1b3f442547686e18f",
+            "wheel_sha256": "8c438e95c275a13df0c0ddb7012c462708b5e99ff3612e36a1b7bd49ab39c216",
+        },
+        "rollback_authority": {
+            "artifact_generation": "artifacts/fixture",
+            "artifact_manifest_sha256": "b" * 64,
+            "closure_sha256": "c" * 64,
+            "generation": "runtime-fixture",
+            "manifest_mode": "0400",
+            "manifest_sha256": "d" * 64,
+            "result": "PASS",
+            "schema": 6,
+        },
+        "roots_disjoint": True,
+        "toolchain_inputs": {
+            "exit_code": 0,
+            "result": "PASS",
+            "sha256": "6" * 64,
+        },
+    }
+
+
+def test_candidate_git_identity_pins_fsmonitor_and_hooks_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, str]]] = []
+    outputs = iter(("", "a" * 40, "b" * 40))
+
+    def fake_run(command: list[str], **kwargs):
+        calls.append((command, kwargs["env"]))
+        return subprocess.CompletedProcess(command, 0, next(outputs), "")
+
+    monkeypatch.setattr(builder.subprocess, "run", fake_run)
+
+    assert builder._candidate_git_identity() == {
+        "head": "a" * 40,
+        "tree": "b" * 40,
+    }
+    assert calls == [
+        (
+            [
+                "/usr/bin/git",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-C",
+                str(builder._ROOT),
+                *arguments,
+            ],
+            {"LC_ALL": "C", "LANG": "C"},
+        )
+        for arguments in (
+            ("status", "--porcelain=v1", "--untracked-files=no"),
+            ("rev-parse", "HEAD"),
+            ("rev-parse", "HEAD^{tree}"),
+        )
+    ]
 
 
 def test_candidate_build_a_runs_one_build_and_never_publishes_final_artifacts(
@@ -799,9 +957,91 @@ def test_candidate_build_a_runs_one_build_and_never_publishes_final_artifacts(
 
     assert build_calls == ["A"]
     assert result["kind"] == "P1_U04_BUILD_A"
+    assert result["candidate"] == {"head": "a" * 40, "tree": "b" * 40}
+    assert result["policy_sha256"] == {
+        "cargo_registry": "1" * 64,
+        "engine_build": "2" * 64,
+        "input_cache": "3" * 64,
+        "release_provenance": "4" * 64,
+        "toolchain_inputs": "6" * 64,
+        "wheel_cache": "5" * 64,
+    }
+    assert result["authority_identities"] == {
+        "bubblewrap": {"version": "bubblewrap 0.9.0"},
+        "cargo": {"version": "cargo 1.97.1"},
+        "cpython": {"version": "CPython 3.12.3"},
+        "llvm": {"version": "clang 22.1.3"},
+        "rustc": {"version": "rustc 1.97.1"},
+    }
     assert (roots["candidate_build_root"] / "build-a").is_dir()
     assert not (roots["candidate_build_root"] / "build-b").exists()
     assert not (roots["candidate_build_root"] / "artifacts").exists()
+
+
+@pytest.mark.parametrize("drifted_binding", ("candidate", "policy_sha256", "identities"))
+def test_candidate_build_a_revalidates_exact_x4_bindings_before_publication(
+    x4_posix_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drifted_binding: str,
+) -> None:
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        x4_posix_tmp_path, monkeypatch
+    )
+    descriptor = os.open(x4_posix_tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: roots)
+    monkeypatch.setattr(
+        builder,
+        "_build_candidate_once",
+        lambda *_args: (
+            b"wheel-a",
+            _empty_candidate_preflight(),
+            {
+                "wheel": {
+                    "filename": WHEEL_FILENAME,
+                    "sha256": hashlib.sha256(b"wheel-a").hexdigest(),
+                    "size": 7,
+                }
+            },
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+            descriptor,
+        ),
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+    )
+    real_validate = builder._validate_x4_authority_receipt
+    validation_count = 0
+
+    def validate_with_drift(*args, **kwargs):
+        nonlocal validation_count
+        validated = real_validate(*args, **kwargs)
+        validation_count += 1
+        if validation_count == 2:
+            validated = copy.deepcopy(validated)
+            if drifted_binding == "candidate":
+                validated["candidate"]["head"] = "c" * 40
+            elif drifted_binding == "policy_sha256":
+                validated["policy_sha256"]["engine_build"] = "d" * 64
+            else:
+                validated["identities"]["cargo"]["version"] = "cargo drifted"
+        return validated
+
+    monkeypatch.setattr(builder, "_validate_x4_authority_receipt", validate_with_drift)
+
+    with pytest.raises(builder.VerificationError, match="validated X4"):
+        builder.build_candidate_a(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        )
+
+    assert validation_count == 2
+    assert not (roots["candidate_build_root"] / "build-a").exists()
 
 
 def test_candidate_build_b_requires_a_different_process_and_same_x4_receipt(
@@ -823,6 +1063,7 @@ def test_candidate_build_b_requires_a_different_process_and_same_x4_receipt(
         artifact_core={"wheel": {"filename": WHEEL_FILENAME, "sha256": hashlib.sha256(b"wheel-a").hexdigest(), "size": 7}},
         source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
         process_identity=process_identity,
+        x4_authority=json.loads(receipt.read_bytes()),
         x4_receipt_sha256=receipt_sha256,
     )
     monkeypatch.setattr(
@@ -861,6 +1102,7 @@ def test_candidate_build_b_rejects_modified_build_a_and_leaves_final_absent(
             "pid": 100,
             "start_time_ticks": 200,
         },
+        x4_authority=json.loads(receipt.read_bytes()),
         x4_receipt_sha256=receipt_sha256,
     )
     wheel = roots["candidate_build_root"] / "build-a" / WHEEL_FILENAME
@@ -872,6 +1114,60 @@ def test_candidate_build_b_rejects_modified_build_a_and_leaves_final_absent(
     )
 
     with pytest.raises(builder.VerificationError, match="Build A"):
+        builder.build_candidate_b(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        )
+
+    assert not (roots["candidate_build_root"] / "artifacts").exists()
+
+
+def test_candidate_build_b_rejects_build_a_x4_binding_drift_before_native_build(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        x4_posix_tmp_path, monkeypatch
+    )
+    builder._publish_candidate_build_result(
+        roots,
+        label="A",
+        wheel_payload=b"wheel-a",
+        artifact_core={
+            "wheel": {
+                "filename": WHEEL_FILENAME,
+                "sha256": hashlib.sha256(b"wheel-a").hexdigest(),
+                "size": 7,
+            }
+        },
+        source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+        process_identity={
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+        x4_authority=json.loads(receipt.read_bytes()),
+        x4_receipt_sha256=receipt_sha256,
+    )
+    build_a_receipt = (
+        roots["candidate_build_root"] / "build-a" / "build-receipt.json"
+    )
+    build_a_receipt.chmod(0o600)
+    drifted = json.loads(build_a_receipt.read_bytes())
+    drifted["authority_identities"]["cargo"]["version"] = "cargo drifted"
+    build_a_receipt.write_text(
+        json.dumps(drifted, sort_keys=True, indent=2) + "\n", encoding="ascii"
+    )
+    build_a_receipt.chmod(0o400)
+    monkeypatch.setattr(
+        builder, "_materialize_candidate_inputs", lambda *_args, **_kwargs: roots
+    )
+    monkeypatch.setattr(
+        builder,
+        "_build_candidate_once",
+        lambda *_args: pytest.fail("Build A X4 binding drift reached native build"),
+    )
+
+    with pytest.raises(builder.VerificationError, match="Build A X4"):
         builder.build_candidate_b(
             authority_receipt=receipt,
             authority_receipt_sha256=receipt_sha256,
@@ -906,6 +1202,7 @@ def test_candidate_build_b_runs_one_build_and_publishes_build_a_final_artifact(
             "pid": 100,
             "start_time_ticks": 200,
         },
+        x4_authority=json.loads(receipt.read_bytes()),
         x4_receipt_sha256=receipt_sha256,
     )
     descriptor = os.open(tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -941,8 +1238,20 @@ def test_candidate_build_b_runs_one_build_and_publishes_build_a_final_artifact(
     )
 
     assert build_calls == ["B"]
+    build_a_receipt = (
+        roots["candidate_build_root"] / "build-a" / "build-receipt.json"
+    )
+    build_b_receipt = (
+        roots["candidate_build_root"] / "build-b" / "build-receipt.json"
+    )
     assert manifest["reproducible_build"] == {
         "authoritative_manifest_equality": True,
+        "build_a_receipt_sha256": hashlib.sha256(
+            build_a_receipt.read_bytes()
+        ).hexdigest(),
+        "build_b_receipt_sha256": hashlib.sha256(
+            build_b_receipt.read_bytes()
+        ).hexdigest(),
         "build_count": 2,
         "fresh_physical_stages": True,
         "logical_stages_absent_after_build": True,
@@ -965,12 +1274,190 @@ def test_candidate_build_b_runs_one_build_and_publishes_build_a_final_artifact(
             {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
         ],
         "wheel_sha256": hashlib.sha256(payload).hexdigest(),
+        "x4_authority_receipt_sha256": receipt_sha256,
     }
     assert (roots["candidate_build_root"] / "artifacts" / WHEEL_FILENAME).read_bytes() == payload
 
 
+@pytest.mark.parametrize("publication", ("build-b", "final"))
+def test_candidate_build_b_revalidates_x4_before_each_publication(
+    x4_posix_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    publication: str,
+) -> None:
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        x4_posix_tmp_path, monkeypatch
+    )
+    payload = b"wheel-a"
+    core = {
+        "wheel": {
+            "filename": WHEEL_FILENAME,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+    }
+    builder._publish_candidate_build_result(
+        roots,
+        label="A",
+        wheel_payload=payload,
+        artifact_core=core,
+        source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+        process_identity={
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+        x4_authority=json.loads(receipt.read_bytes()),
+        x4_receipt_sha256=receipt_sha256,
+    )
+    descriptor = os.open(x4_posix_tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    monkeypatch.setattr(
+        builder, "_materialize_candidate_inputs", lambda *_args, **_kwargs: roots
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 101,
+            "start_time_ticks": 201,
+        },
+    )
+    monkeypatch.setattr(
+        builder,
+        "_build_candidate_once",
+        lambda *_args: (
+            payload,
+            _empty_candidate_preflight(),
+            core,
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
+            descriptor,
+        ),
+    )
+    real_validate = builder._validate_x4_authority_receipt
+    phase_calls: list[str] = []
+
+    def validate_with_drift(*args, **kwargs):
+        validated = real_validate(*args, **kwargs)
+        phase_calls.append(kwargs["phase"])
+        should_drift = (
+            publication == "build-b" and phase_calls == ["B", "B"]
+        ) or (publication == "final" and kwargs["phase"] == "FINAL")
+        if should_drift:
+            validated = copy.deepcopy(validated)
+            validated["candidate"]["head"] = "c" * 40
+        return validated
+
+    monkeypatch.setattr(builder, "_validate_x4_authority_receipt", validate_with_drift)
+
+    with pytest.raises(builder.VerificationError, match="validated X4"):
+        builder.build_candidate_b(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        )
+
+    assert not (roots["candidate_build_root"] / "artifacts").exists()
+    assert (roots["candidate_build_root"] / "build-b").exists() is (
+        publication == "final"
+    )
+
+
+def test_candidate_build_b_reloads_sealed_build_b_before_final_publication(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        x4_posix_tmp_path, monkeypatch
+    )
+    payload = b"wheel-a"
+    core = {
+        "wheel": {
+            "filename": WHEEL_FILENAME,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+    }
+    builder._publish_candidate_build_result(
+        roots,
+        label="A",
+        wheel_payload=payload,
+        artifact_core=core,
+        source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+        process_identity={
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+        x4_authority=json.loads(receipt.read_bytes()),
+        x4_receipt_sha256=receipt_sha256,
+    )
+    descriptor = os.open(x4_posix_tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    monkeypatch.setattr(
+        builder, "_materialize_candidate_inputs", lambda *_args, **_kwargs: roots
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 101,
+            "start_time_ticks": 201,
+        },
+    )
+    monkeypatch.setattr(
+        builder,
+        "_build_candidate_once",
+        lambda *_args: (
+            payload,
+            _empty_candidate_preflight(),
+            core,
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
+            descriptor,
+        ),
+    )
+    real_publish = builder._publish_candidate_build_result
+
+    def publish_then_mutate_build_b(*args, **kwargs):
+        published = real_publish(*args, **kwargs)
+        if kwargs["label"] == "B":
+            build_b_receipt = (
+                roots["candidate_build_root"] / "build-b" / "build-receipt.json"
+            )
+            build_b_receipt.chmod(0o600)
+            drifted = json.loads(build_b_receipt.read_bytes())
+            drifted["kind"] = "P1_U04_BUILD_DRIFTED"
+            build_b_receipt.write_text(
+                json.dumps(drifted, sort_keys=True, indent=2) + "\n",
+                encoding="ascii",
+            )
+            build_b_receipt.chmod(0o400)
+        return published
+
+    monkeypatch.setattr(
+        builder, "_publish_candidate_build_result", publish_then_mutate_build_b
+    )
+
+    with pytest.raises(builder.VerificationError, match="Build B"):
+        builder.build_candidate_b(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        )
+
+    assert not (roots["candidate_build_root"] / "artifacts").exists()
+
+
 @pytest.mark.parametrize(
-    "mutation", ("digest", "schema", "verdict", "head", "tree", "mode", "link")
+    "mutation",
+    (
+        "digest",
+        "schema",
+        "verdict",
+        "head",
+        "tree",
+        "checks",
+        "release_check",
+        "mode",
+        "link",
+    ),
 )
 def test_candidate_actions_reject_untrusted_x4_receipt(
     x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
@@ -1119,6 +1606,7 @@ def test_candidate_forensic_split_build_retains_sealed_pair_and_never_final(
         artifact_core=first_core,
         source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
         process_identity=first_process,
+        x4_authority=json.loads(receipt.read_bytes()),
         x4_receipt_sha256=receipt_sha256,
     )
     descriptor = os.open(tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -1447,7 +1935,29 @@ def _write_candidate_artifact(
             for record in runtime_wheels
         ],
     }
+    x4_receipt_sha256 = "e" * 64
+    build_receipt_sha256: dict[str, str] = {}
+    for label in ("a", "b"):
+        build_directory = tmp_path / f"build-{label}"
+        build_directory.mkdir()
+        build_receipt = build_directory / "build-receipt.json"
+        build_receipt.write_text(
+            json.dumps(
+                {"x4_authority_receipt_sha256": x4_receipt_sha256},
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n",
+            encoding="ascii",
+        )
+        build_receipt_sha256[label] = hashlib.sha256(
+            build_receipt.read_bytes()
+        ).hexdigest()
+        build_receipt.chmod(0o400)
+        build_directory.chmod(0o500)
     document["reproducible_build"] = {
+        "build_a_receipt_sha256": build_receipt_sha256["a"],
+        "build_b_receipt_sha256": build_receipt_sha256["b"],
         "build_count": 2,
         "fresh_physical_stages": True,
         "logical_stages_absent_after_build": True,
@@ -1471,6 +1981,7 @@ def _write_candidate_artifact(
             {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
             {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
         ],
+        "x4_authority_receipt_sha256": x4_receipt_sha256,
     }
     manifest = artifact_directory / "artifact-manifest.json"
     manifest.write_text(
@@ -3387,6 +3898,34 @@ def test_candidate_artifact_validator_recomputes_and_binds_every_authority(
             match="candidate artifact",
         ):
             validator(builder, engine, inputs, roots)
+
+
+@pytest.mark.parametrize("drift", ("contents", "mode"))
+def test_candidate_artifact_validator_binds_exact_build_and_x4_receipt_digests(
+    tmp_path: Path, drift: str
+) -> None:
+    engine, inputs, roots, _document = _write_candidate_artifact(tmp_path)
+    validator = materializer._validate_candidate_artifact
+
+    validator(builder, engine, inputs, roots)
+
+    build_b_receipt = tmp_path / "build-b" / "build-receipt.json"
+    if drift == "contents":
+        build_b_receipt.chmod(0o600)
+        drifted = json.loads(build_b_receipt.read_bytes())
+        drifted["x4_authority_receipt_sha256"] = "f" * 64
+        build_b_receipt.write_text(
+            json.dumps(drifted, sort_keys=True, indent=2) + "\n", encoding="ascii"
+        )
+        build_b_receipt.chmod(0o400)
+    else:
+        build_b_receipt.chmod(0o500)
+
+    with pytest.raises(
+        materializer.RuntimeClosureMaterializationError,
+        match="reproducibility authority",
+    ):
+        validator(builder, engine, inputs, roots)
 
 
 def test_candidate_materialization_and_attestation_share_artifact_validator(

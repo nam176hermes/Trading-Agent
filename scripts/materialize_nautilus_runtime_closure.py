@@ -239,6 +239,8 @@ _CANDIDATE_TOOLCHAIN_FIELDS = {
 _CANDIDATE_WHEEL_FIELDS = {"filename", "sha256", "size"}
 _CANDIDATE_REPRODUCIBILITY_FIELDS = {
     "authoritative_manifest_equality",
+    "build_a_receipt_sha256",
+    "build_b_receipt_sha256",
     "build_count",
     "fresh_physical_stages",
     "logical_stages_absent_after_build",
@@ -247,6 +249,7 @@ _CANDIDATE_REPRODUCIBILITY_FIELDS = {
     "process_identities",
     "source_fd_identities",
     "wheel_sha256",
+    "x4_authority_receipt_sha256",
 }
 _CANDIDATE_SOURCE_FD_FIELDS = {
     "P1_U04_SOURCE_ST_DEV",
@@ -1645,6 +1648,15 @@ def _validate_candidate_artifact(
         or receipt.get("build_count") != 2
         or any(receipt.get(field) is not True for field in required_true)
         or receipt.get("wheel_sha256") != wheel_record["sha256"]
+        or any(
+            not isinstance(receipt.get(field), str)
+            or _SHA256.fullmatch(receipt[field]) is None
+            for field in (
+                "build_a_receipt_sha256",
+                "build_b_receipt_sha256",
+                "x4_authority_receipt_sha256",
+            )
+        )
         or not isinstance(identities, list)
         or len(identities) != 2
         or identities[0] == identities[1]
@@ -1684,6 +1696,48 @@ def _validate_candidate_artifact(
         raise RuntimeClosureMaterializationError(
             "candidate artifact reproducibility authority drifted"
         )
+    try:
+        for label, digest_field in (
+            ("a", "build_a_receipt_sha256"),
+            ("b", "build_b_receipt_sha256"),
+        ):
+            build_directory = roots["candidate_build_root"] / f"build-{label}"
+            _sealed_directory(
+                build_directory, label=f"candidate Build {label.upper()} directory"
+            )
+            build_receipt_path = build_directory / "build-receipt.json"
+            if stat.S_IMODE(build_receipt_path.lstat().st_mode) != 0o400:
+                raise RuntimeClosureMaterializationError(
+                    "candidate artifact reproducibility authority drifted"
+                )
+            build_receipt_raw = _read_file(
+                build_receipt_path,
+                label=f"candidate Build {label.upper()} receipt",
+                sealed=True,
+            )
+            build_receipt = json.loads(build_receipt_raw)
+            if (
+                _sha256_bytes(build_receipt_raw) != receipt[digest_field]
+                or not isinstance(build_receipt, dict)
+                or build_receipt_raw
+                != (
+                    json.dumps(build_receipt, sort_keys=True, indent=2) + "\n"
+                ).encode("ascii")
+                or build_receipt.get("x4_authority_receipt_sha256")
+                != receipt["x4_authority_receipt_sha256"]
+            ):
+                raise RuntimeClosureMaterializationError(
+                    "candidate artifact reproducibility authority drifted"
+                )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        RuntimeClosureMaterializationError,
+    ) as exc:
+        raise RuntimeClosureMaterializationError(
+            "candidate artifact reproducibility authority drifted"
+        ) from exc
     return wheel, document, raw
 
 
