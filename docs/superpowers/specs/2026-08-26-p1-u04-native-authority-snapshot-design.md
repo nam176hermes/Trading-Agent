@@ -46,6 +46,11 @@ namespace-destination mapping, and installed libcurl package versions.
 - Snapshot directories are non-writable, regular files are single-link, and
   executable versus data modes are explicit. Symlinks are preserved and must
   remain within the admitted namespace mapping.
+- Publication requires canonical three-way equality over every mapped entry:
+  `source_before == destination-projected snapshot == source_after`. Equality
+  covers path, type, mode class, symlink target, regular-file size and SHA-256;
+  the projection accounts only for deliberate sealed-mode normalization. A
+  self-consistent snapshot that differs from either source inventory is invalid.
 - The verifier rejects extra, missing, special, multiply linked, writable, or
   identity-drifted entries and rejects receipt or policy digest drift.
 - Bubblewrap keeps `--unshare-all`, `--tmpfs /`, `--clearenv`, verified-FD source
@@ -60,15 +65,18 @@ namespace-destination mapping, and installed libcurl package versions.
 
 ## Execution and circuit breaker
 
-Round 1 uses TDD to add the snapshot materializer/verifier and mapped mounts,
-then materializes and seals the real snapshot, regenerates exact candidate
-policy, and runs portable plus host preflight. Fresh spec and security/replay
-reviews must PASS before the stale Build A is removed recoverably and X4 is
-re-preflighted.
+Round 1 uses TDD to add the snapshot materializer/verifier and mapped mounts.
+The RED set includes a destination-byte mismatch while source-before and
+source-after inventories match. It then materializes and seals the real
+snapshot, regenerates exact candidate policy, and reruns the complete governed
+X3 acceptance: focused/full U04 tests, pin-inventory and governance
+reconciliation, `make ci-portable NONINTERACTIVE=1`, and fresh exact-byte spec
+plus security/replay reviews. Only accepted X3 bytes may enter host preflight.
+Fresh host-authority reviews must PASS before the stale Build A is removed
+recoverably and X4 is re-preflighted.
 
 Round 2 is reserved only for a concrete binding, TOCTOU, or mount-isolation
 finding against round 1. It may tighten validation but may not change package
 versions, fetch bytes, weaken equality, or fall back to live `/usr`.
 
 If round 2 fails, stop with `P1_U04_ARCHITECTURE_ESCALATION_REQUIRED`.
-
