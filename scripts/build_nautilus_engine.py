@@ -1139,16 +1139,67 @@ def _load_candidate_generator():
     return module
 
 
-def _load_candidate_runtime_closure_tool():
-    spec = importlib.util.spec_from_file_location(
-        "materialize_nautilus_runtime_closure_for_candidate_build",
-        _CANDIDATE_RUNTIME_CLOSURE_TOOL,
+def _candidate_runtime_authority_module(name: str) -> bool:
+    return name in {"packages", "services"} or name.startswith(
+        ("packages.", "services.")
     )
-    if spec is None or spec.loader is None:
-        raise VerificationError("candidate rollback authority verifier is unavailable")
-    module = importlib.util.module_from_spec(spec)
+
+
+def _load_candidate_runtime_closure_tool():
     try:
-        spec.loader.exec_module(module)
+        root = _ROOT.resolve(strict=True)
+        _regular_file(
+            _CANDIDATE_RUNTIME_CLOSURE_TOOL,
+            "candidate rollback authority verifier",
+        )
+        tool = _CANDIDATE_RUNTIME_CLOSURE_TOOL.resolve(strict=True)
+        if not tool.is_relative_to(root) or tool.suffix != ".py":
+            raise VerificationError(
+                "candidate rollback authority verifier provenance is invalid"
+            )
+        if any(_candidate_runtime_authority_module(name) for name in sys.modules):
+            raise VerificationError(
+                "candidate rollback authority verifier has preloaded checkout imports"
+            )
+        spec = importlib.util.spec_from_file_location(
+            "materialize_nautilus_runtime_closure_for_candidate_build",
+            tool,
+        )
+        if spec is None or spec.loader is None:
+            raise VerificationError(
+                "candidate rollback authority verifier is unavailable"
+            )
+        module = importlib.util.module_from_spec(spec)
+        code = compile(tool.read_bytes(), str(tool), "exec", dont_inherit=True)
+        original_path = tuple(sys.path)
+        original_dont_write_bytecode = sys.dont_write_bytecode
+        original_pycache_prefix = sys.pycache_prefix
+        try:
+            sys.path[:] = [str(root), *(path for path in original_path if path != str(root))]
+            sys.dont_write_bytecode = True
+            sys.pycache_prefix = os.devnull
+            exec(code, module.__dict__)
+            for name, imported in tuple(sys.modules.items()):
+                if not _candidate_runtime_authority_module(name):
+                    continue
+                source = getattr(imported, "__file__", None)
+                if (
+                    not isinstance(source, str)
+                    or Path(source).resolve(strict=True).suffix != ".py"
+                    or not Path(source).resolve(strict=True).is_relative_to(root)
+                ):
+                    raise VerificationError(
+                        "candidate rollback authority verifier import provenance is invalid"
+                    )
+        finally:
+            for name in tuple(sys.modules):
+                if _candidate_runtime_authority_module(name):
+                    sys.modules.pop(name, None)
+            sys.path[:] = original_path
+            sys.dont_write_bytecode = original_dont_write_bytecode
+            sys.pycache_prefix = original_pycache_prefix
+    except VerificationError:
+        raise
     except Exception as exc:
         raise VerificationError(
             "candidate rollback authority verifier is unavailable"

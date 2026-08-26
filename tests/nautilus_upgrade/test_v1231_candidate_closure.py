@@ -13,6 +13,7 @@ import json
 import os
 import io
 from pathlib import Path, PurePosixPath
+import py_compile
 import shutil
 import struct
 import subprocess
@@ -831,6 +832,141 @@ def _write_x4_authority_receipt(
         else real_sha256(path),
     )
     return receipt, expected_digest or hashlib.sha256(raw).hexdigest(), engine, inputs, roots
+
+
+def _candidate_runtime_closure_loader_probe(
+    checkout: Path, tool: Path, probe: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "\n".join(
+                (
+                    "import sys",
+                    "from pathlib import Path",
+                    "import scripts.build_nautilus_engine as builder",
+                    "builder._ROOT = Path(sys.argv[1])",
+                    "builder._CANDIDATE_RUNTIME_CLOSURE_TOOL = Path(sys.argv[2])",
+                    probe,
+                )
+            ),
+            str(checkout),
+            str(tool),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def test_candidate_runtime_closure_loader_ignores_metadata_valid_bytecode(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    tool = checkout / "scripts/materialize_nautilus_runtime_closure.py"
+    authority = checkout / "services"
+    authority.mkdir(parents=True)
+    tool.parent.mkdir()
+    (authority / "__init__.py").write_bytes(b"")
+    (authority / "fake_authority.py").write_bytes(b'PROVENANCE = "reviewed"\n')
+    reviewed = b"from services.fake_authority import PROVENANCE\n"
+    poisoned = b'PROVENANCE = "poisoned"\n'.ljust(len(reviewed), b" ")
+    assert len(poisoned) == len(reviewed)
+    tool.write_bytes(poisoned)
+    timestamp = 2_000_000_000
+    os.utime(tool, (timestamp, timestamp))
+    cached = Path(
+        py_compile.compile(
+            str(tool),
+            doraise=True,
+            invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+        )
+    )
+    tool.write_bytes(reviewed)
+    os.utime(tool, (timestamp, timestamp))
+    assert struct.unpack("<LL", cached.read_bytes()[8:16]) == (
+        timestamp,
+        len(reviewed),
+    )
+
+    result = _candidate_runtime_closure_loader_probe(
+        checkout,
+        tool,
+        "print(builder._load_candidate_runtime_closure_tool().PROVENANCE)",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "reviewed\n"
+
+
+def test_candidate_runtime_closure_loader_rejects_preloaded_checkout_authority(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    tool = checkout / "scripts/materialize_nautilus_runtime_closure.py"
+    tool.parent.mkdir(parents=True)
+    tool.write_bytes(b"from services.fake_authority import PROVENANCE\n")
+    probe = "\n".join(
+        (
+            "import types",
+            'services = types.ModuleType("services")',
+            "services.__path__ = []",
+            'authority = types.ModuleType("services.fake_authority")',
+            'authority.PROVENANCE = "preloaded"',
+            'sys.modules["services"] = services',
+            'sys.modules["services.fake_authority"] = authority',
+            "try:",
+            "    builder._load_candidate_runtime_closure_tool()",
+            "except builder.VerificationError as exc:",
+            '    print(f"rejected:{exc}")',
+            "else:",
+            '    print("accepted")',
+        )
+    )
+
+    result = _candidate_runtime_closure_loader_probe(checkout, tool, probe)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("rejected:")
+    assert "preloaded" in result.stdout
+
+
+def test_candidate_runtime_closure_loader_rejects_authority_outside_checkout(
+    tmp_path: Path,
+) -> None:
+    checkout = tmp_path / "checkout"
+    tool = checkout / "scripts/materialize_nautilus_runtime_closure.py"
+    outside = tmp_path / "outside"
+    (outside / "services").mkdir(parents=True)
+    tool.parent.mkdir(parents=True)
+    (outside / "services/__init__.py").write_bytes(b"")
+    (outside / "services/fake_authority.py").write_bytes(
+        b'PROVENANCE = "outside"\n'
+    )
+    tool.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(outside)!r})\n"
+        "from services.fake_authority import PROVENANCE\n",
+        encoding="ascii",
+    )
+    probe = "\n".join(
+        (
+            "try:",
+            "    builder._load_candidate_runtime_closure_tool()",
+            "except builder.VerificationError as exc:",
+            '    print(f"rejected:{exc}")',
+            "else:",
+            '    print("accepted")',
+        )
+    )
+
+    result = _candidate_runtime_closure_loader_probe(checkout, tool, probe)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("rejected:")
+    assert "provenance" in result.stdout
 
 
 def test_canonical_x4_authority_receipt_with_checks_is_accepted(
