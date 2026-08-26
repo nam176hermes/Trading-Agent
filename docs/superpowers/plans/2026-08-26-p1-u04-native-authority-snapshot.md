@@ -8,15 +8,20 @@ Packet limit: two implementation/review rounds.
    canonicality, sealed-tree rules, path escape, and mapped Bubblewrap mounts.
    Include a RED case where source-before equals source-after but a projected
    snapshot file differs; three-way equality must reject it.
-3. Add the smallest materializer/verifier that copies only existing admitted
-   native authority to the fixed external root, publishes atomically, and
-   accepts no caller-supplied authority.
+3. Add the smallest descriptor-rooted/no-follow materializer and verifier that
+   copies only existing admitted native authority to the fixed external root,
+   proves stable per-entry pre/copy/post identity and canonical three-way
+   equality, publishes with verified-parent no-replace semantics, and accepts no
+   caller-supplied authority.
 4. Change candidate mount construction from same-path mounts to exact
-   source/destination pairs; use the sealed snapshot for CPython, stdlib,
-   headers, libraries, GCC support, and admitted binutils.
-5. Materialize the real-host snapshot offline, seal it, and bind its canonical
-   receipt/tree digests into candidate engine policy and generated toolchain
-   inputs.
+   source/destination pairs and hand the verified open snapshot root to
+   Bubblewrap by inherited FD; use it for CPython, stdlib, headers, libraries,
+   GCC support, and admitted binutils. Preserve only the reviewed dead
+   `sitecustomize.py` link and prove `/etc` stays absent.
+5. Materialize the real-host snapshot offline and seal it. Keep the canonical
+   receipt outside the payload digest, then bind receipt SHA-256, payload-tree
+   digest, fixed root, and mappings into candidate engine policy and generated
+   toolchain inputs without any receipt-policy self-reference.
 6. Rerun complete X3 acceptance on exact governed bytes: focused/full U04
    tests, pin-inventory and governance reconciliation, `make ci-portable
    NONINTERACTIVE=1`, U03 verifier, source/policy diff checks, and fresh

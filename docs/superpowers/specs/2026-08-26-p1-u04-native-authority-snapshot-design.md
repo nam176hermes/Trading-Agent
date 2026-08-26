@@ -34,8 +34,9 @@ The fixed external root is:
 It contains only the reviewed CPython executable/stdlib, native include and
 library directories, GCC support directories, and exact binutils paths already
 admitted by U03. No package is downloaded or installed. The receipt records the
-real-host source identities, the sealed snapshot identities, the source to
-namespace-destination mapping, and installed libcurl package versions.
+real-host source identities, the sealed snapshot identities, and the source to
+namespace-destination mapping. Installed libcurl package versions are diagnostic
+only and never authority.
 
 ## Security and reproducibility invariants
 
@@ -43,9 +44,23 @@ namespace-destination mapping, and installed libcurl package versions.
   nothing.
 - Staging is a fresh private sibling and publication is atomic to an absent
   fixed destination.
-- Snapshot directories are non-writable, regular files are single-link, and
-  executable versus data modes are explicit. Symlinks are preserved and must
-  remain within the admitted namespace mapping.
+- The threat model is `COOPERATIVE_HOST`. Hostile same-UID, root, ptrace,
+  kernel, and physical-storage mutation is out of scope. Within that model,
+  copying and verification are descriptor-rooted and no-follow; every source
+  entry has stable pre/copy/post identity; publication uses a verified parent
+  and no-replace rename; and Bubblewrap receives a verified open snapshot-root
+  FD rather than re-resolving an untrusted pathname.
+- Snapshot root/directories are task-owned mode `0500`; regular data files are
+  task-owned mode `0400`, executable files mode `0500`, and all regular files
+  are single-link. The source receipt separately preserves root-UID and
+  policy-bound source GID/modes, including legitimate nonzero source GIDs.
+  No special or writable nonsymlink entry is accepted.
+- Symlinks are preserved and must resolve within the admitted namespace mapping
+  except exactly `/usr/lib/python3.12/sitecustomize.py` pointing to
+  `/etc/python3.12/sitecustomize.py`. That reviewed link is preserved as a dead
+  link and the verifier proves `/etc` and its target remain unavailable inside
+  Bubblewrap. Every other escape, loop, broken link, or unapproved cross-map
+  target is rejected.
 - Publication requires canonical three-way equality over every mapped entry:
   `source_before == destination-projected snapshot == source_after`. Equality
   covers path, type, mode class, symlink target, regular-file size and SHA-256;
@@ -58,6 +73,13 @@ namespace-destination mapping, and installed libcurl package versions.
   destinations and build commands do not.
 - Host/native qualification uses the real sealed snapshot. Portable tests may
   use synthetic fixtures but never claim host authority.
+- Authority is a one-way, non-self-referential chain. A canonical snapshot
+  receipt hashes payload-only bytes and the exact mappings; the receipt file is
+  outside the payload tree and excluded from its digest. Committed candidate
+  policy binds the receipt SHA-256, payload-tree digest, fixed root, and exact
+  namespace destinations. X4 then binds exact HEAD/tree and policy, and Build
+  A/B bind X4. An existing root or the `3ceeb7a55c5d` locator suffix is never
+  accepted without this chain.
 - Build A and Build B still require separate processes, physical stages, source
   inodes, writable trees, and exact raw/native equality.
 - Active/rollback 1.227 remains untouched. Candidate 1.231 remains
