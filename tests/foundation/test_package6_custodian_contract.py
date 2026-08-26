@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import sysconfig
 import tempfile
 from pathlib import Path
@@ -372,6 +373,50 @@ def test_package6_protocol_v1_contract_is_executable_and_byte_exact() -> None:
                 "",
                 expected_invocation_error,
             )
+
+
+def test_package6_native_extension_uses_runtime_python_include_path(
+    tmp_path: Path,
+) -> None:
+    real_python = Path(sys.executable).resolve()
+    wrapper = tmp_path / "relocated-python"
+    missing_build_prefix = tmp_path / "missing-build-prefix"
+    wrapper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "import sys\n"
+        f"real_python = {str(real_python)!r}\n"
+        f"missing_include = {str(missing_build_prefix / 'include')!r}\n"
+        "code = sys.argv[2] if len(sys.argv) > 2 and sys.argv[1] == '-c' else ''\n"
+        "if \"get_config_var('INCLUDEPY')\" in code:\n"
+        "    print(missing_include)\n"
+        "else:\n"
+        "    os.execv(real_python, [real_python, *sys.argv[1:]])\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o700)
+    build_dir = tmp_path / "build"
+
+    completed = subprocess.run(
+        [
+            "make",
+            "--no-print-directory",
+            "-s",
+            "-C",
+            str(NATIVE_ROOT),
+            f"BUILD_DIR={build_dir}",
+            f"PYTHON={wrapper}",
+            "build",
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert len(tuple((build_dir / "python").glob("_package6_fd_custody*.so"))) == 1
 
 
 def test_package6_native_build_rejects_symlinked_output_into_repository(

@@ -29,7 +29,7 @@ SANITIZER_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
 
 PRODUCTION_BINARY := $(RESOLVED_BUILD_DIR)/package6-custodian
 PYTHON_BUILD_DIR := $(RESOLVED_BUILD_DIR)/python
-PYTHON_INCLUDE := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('INCLUDEPY'))")
+PYTHON_INCLUDE := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_paths()['include'])")
 PYTHON_EXT_SUFFIX := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
 PYTHON_CUSTODY_EXTENSION := $(PYTHON_BUILD_DIR)/_package6_fd_custody$(PYTHON_EXT_SUFFIX)
 TEST_PROTOCOL_BINARY := $(RESOLVED_BUILD_DIR)/test_protocol
