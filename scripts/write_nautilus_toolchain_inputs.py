@@ -717,6 +717,8 @@ def _verify_snapshot_python_policy(
         or policy["minor_version"] != "3.12"
         or policy["abi"] != "cp312"
         or policy["platform"] != "linux_x86_64"
+        or policy["selection_basis"]
+        != "APPROVED_PLAN_AND_UPSTREAM_SUPPORTED_BASELINE"
         or policy["shared_writable_state"] != "PROHIBITED"
         or policy["startup_argv"] != ["/usr/bin/python3.12", "-I", "-S"]
         or policy["admitted_sys_path"]
@@ -790,16 +792,25 @@ def _verify_snapshot_python_policy(
         }
     ):
         raise VerificationError("Python authority is not the reviewed CPython 3.12 input")
-    _verify_native_build_authority(native_authority)
-    destinations = {
-        record["destination"] for record in native_authority["snapshot"]["mappings"]
-    }
+    snapshot = (
+        native_authority.get("snapshot")
+        if isinstance(native_authority, dict)
+        else None
+    )
+    mappings = snapshot.get("mappings") if isinstance(snapshot, dict) else None
+    if not isinstance(mappings, list) or not all(
+        isinstance(record, dict) and isinstance(record.get("destination"), str)
+        for record in mappings
+    ):
+        raise VerificationError("Python policy is not covered by native snapshot mappings")
+    destinations = {record["destination"] for record in mappings}
     if not {
         policy["executable"],
         policy["stdlib_inventory"]["path"],
         str(Path(policy["libpython"]["path"]).parent),
     }.issubset(destinations):
         raise VerificationError("Python policy is not covered by native snapshot mappings")
+    _verify_native_build_authority(native_authority)
 
 
 def _verify_native_build_authority(policy: dict[str, Any]) -> None:

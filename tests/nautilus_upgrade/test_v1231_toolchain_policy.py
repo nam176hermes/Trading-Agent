@@ -409,6 +409,49 @@ def test_python_startup_or_external_symlink_authority_drift_fails_closed() -> No
         )
 
 
+def test_full_policy_validation_rejects_unreviewed_python_selection_basis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = copy.deepcopy(toolchain.load_json(ENGINE_POLICY))
+    engine["python"]["selection_basis"] = "UNREVIEWED"
+    monkeypatch.setattr(
+        toolchain, "_verify_command_router_policy", lambda *_args: None
+    )
+
+    with pytest.raises(toolchain.VerificationError, match="reviewed CPython"):
+        toolchain._verify_policies(
+            engine,
+            toolchain.load_json(INPUT_POLICY),
+            toolchain.load_json(WHEEL_POLICY),
+            toolchain.load_json(CARGO_POLICY),
+        )
+
+
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "/usr/bin/python3.12",
+        "/usr/lib/python3.12",
+        "/usr/lib/x86_64-linux-gnu",
+    ],
+)
+def test_python_snapshot_cross_binding_missing_destination_fails_closed(
+    destination: str,
+) -> None:
+    engine = copy.deepcopy(toolchain.load_json(ENGINE_POLICY))
+    snapshot = engine["native_build_authority"]["snapshot"]
+    snapshot["mappings"] = [
+        record
+        for record in snapshot["mappings"]
+        if record["destination"] != destination
+    ]
+
+    with pytest.raises(toolchain.VerificationError, match="covered by native snapshot"):
+        toolchain._verify_snapshot_python_policy(
+            engine["python"], engine["native_build_authority"]
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (
