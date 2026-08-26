@@ -322,6 +322,22 @@ def _require_keys(value: dict[str, Any], expected: set[str], label: str) -> None
         raise VerificationError(f"{label} fields do not match the reviewed schema")
 
 
+def _json_values_identical(observed: object, expected: object) -> bool:
+    if type(observed) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(observed) == set(expected) and all(
+            _json_values_identical(observed[key], value)
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(observed) == len(expected) and all(
+            _json_values_identical(observed_item, expected_item)
+            for observed_item, expected_item in zip(observed, expected, strict=True)
+        )
+    return observed == expected
+
+
 def _require_sha256(value: object, label: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise VerificationError(f"{label} is not an exact SHA-256")
@@ -720,76 +736,90 @@ def _verify_snapshot_python_policy(
         or policy["selection_basis"]
         != "APPROVED_PLAN_AND_UPSTREAM_SUPPORTED_BASELINE"
         or policy["shared_writable_state"] != "PROHIBITED"
-        or policy["startup_argv"] != ["/usr/bin/python3.12", "-I", "-S"]
-        or policy["admitted_sys_path"]
-        != [
-            "/usr/lib/python312.zip",
-            "/usr/lib/python3.12",
-            "/usr/lib/python3.12/lib-dynload",
-        ]
-        or policy["excluded_startup_paths"]
-        != [
-            "/etc/python3.12/sitecustomize.py",
-            "/usr/lib/python3/dist-packages",
-            "/usr/lib/python3.12/site-packages",
-            "/usr/local/lib/python3.12/dist-packages",
-            "/usr/local/lib/python3.12/site-packages",
-        ]
-        or policy["stdlib_external_symlinks"]
-        != [
+        or not _json_values_identical(
+            policy["startup_argv"], ["/usr/bin/python3.12", "-I", "-S"]
+        )
+        or not _json_values_identical(
+            policy["admitted_sys_path"],
+            [
+                "/usr/lib/python312.zip",
+                "/usr/lib/python3.12",
+                "/usr/lib/python3.12/lib-dynload",
+            ],
+        )
+        or not _json_values_identical(
+            policy["excluded_startup_paths"],
+            [
+                "/etc/python3.12/sitecustomize.py",
+                "/usr/lib/python3/dist-packages",
+                "/usr/lib/python3.12/site-packages",
+                "/usr/local/lib/python3.12/dist-packages",
+                "/usr/local/lib/python3.12/site-packages",
+            ],
+        )
+        or not _json_values_identical(
+            policy["stdlib_external_symlinks"],
+            [
+                {
+                    "disposition": "BOUND_BY_LIBPYTHON_RECORD",
+                    "path": "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.so",
+                    "resolved_path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
+                    "target": "../../x86_64-linux-gnu/libpython3.12.so.1",
+                },
+                {
+                    "disposition": "EXCLUDED_BY_ISOLATED_NO_SITE_STARTUP",
+                    "path": "/usr/lib/python3.12/sitecustomize.py",
+                    "resolved_path": "/etc/python3.12/sitecustomize.py",
+                    "target": "/etc/python3.12/sitecustomize.py",
+                },
+            ],
+        )
+        or not _json_values_identical(
+            policy["explicit_build_path_admission"],
             {
-                "disposition": "BOUND_BY_LIBPYTHON_RECORD",
-                "path": "/usr/lib/python3.12/config-3.12-x86_64-linux-gnu/libpython3.12.so",
-                "resolved_path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
-                "target": "../../x86_64-linux-gnu/libpython3.12.so.1",
+                "authority": "EXACT_WHEEL_CACHE_POLICY_FILENAMES_ONLY",
+                "environment_pythonpath": "PROHIBITED",
+                "injection": "EXPLICIT_SYS_PATH_PREPEND_BEFORE_IMPORT",
+                "root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels",
             },
-            {
-                "disposition": "EXCLUDED_BY_ISOLATED_NO_SITE_STARTUP",
-                "path": "/usr/lib/python3.12/sitecustomize.py",
-                "resolved_path": "/etc/python3.12/sitecustomize.py",
-                "target": "/etc/python3.12/sitecustomize.py",
-            },
-        ]
-        or policy["explicit_build_path_admission"]
-        != {
-            "authority": "EXACT_WHEEL_CACHE_POLICY_FILENAMES_ONLY",
-            "environment_pythonpath": "PROHIBITED",
-            "injection": "EXPLICIT_SYS_PATH_PREPEND_BEFORE_IMPORT",
-            "root": "/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels",
-        }
+        )
     ):
         raise VerificationError("Python authority is not the reviewed CPython 3.12 input")
 
     if (
         policy["executable"] != "/usr/bin/python3.12"
-        or policy["executable_gid"] != 0
+        or not _json_values_identical(policy["executable_gid"], 0)
         or policy["executable_mode"] != "0755"
         or policy["executable_sha256"]
         != "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
-        or policy["executable_size"] != 8020928
-        or policy["executable_uid"] != 0
-        or policy["libpython"]
-        != {
-            "gid": 0,
-            "mode": "0644",
-            "path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
-            "sha256": "a4c35494d197a92f08a9d0a94975d9558e7a50880c42947484f01b720b68d423",
-            "size": 9061000,
-            "uid": 0,
-        }
-        or policy["stdlib_inventory"]
-        != {
-            "directory_count": 92,
-            "file_count": 1213,
-            "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
-            "path": "/usr/lib/python3.12",
-            "record_count": 1308,
-            "root_gid": 0,
-            "root_mode": "0755",
-            "root_uid": 0,
-            "symlink_count": 3,
-            "tree_sha256": "0c17594ac603d6ba61b6b25c25f7f4e748fecb3362741bf191e717f36a39522e",
-        }
+        or not _json_values_identical(policy["executable_size"], 8020928)
+        or not _json_values_identical(policy["executable_uid"], 0)
+        or not _json_values_identical(
+            policy["libpython"],
+            {
+                "gid": 0,
+                "mode": "0644",
+                "path": "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0",
+                "sha256": "a4c35494d197a92f08a9d0a94975d9558e7a50880c42947484f01b720b68d423",
+                "size": 9061000,
+                "uid": 0,
+            },
+        )
+        or not _json_values_identical(
+            policy["stdlib_inventory"],
+            {
+                "directory_count": 92,
+                "file_count": 1213,
+                "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
+                "path": "/usr/lib/python3.12",
+                "record_count": 1308,
+                "root_gid": 0,
+                "root_mode": "0755",
+                "root_uid": 0,
+                "symlink_count": 3,
+                "tree_sha256": "0c17594ac603d6ba61b6b25c25f7f4e748fecb3362741bf191e717f36a39522e",
+            },
+        )
     ):
         raise VerificationError("Python authority is not the reviewed CPython 3.12 input")
     snapshot = (
@@ -854,17 +884,17 @@ def _verify_native_build_authority(policy: dict[str, Any]) -> None:
         {"destination": destination, "source": source}
         for source, destination in snapshot_authority.SOURCE_DESTINATION_MAPPINGS
     ]
-    if (
-        binding["authority"]
-        != "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1"
-        or binding["schema_version"] != 1
-        or binding["threat_model"] != "COOPERATIVE_HOST"
-        or binding["root"] != str(snapshot_authority.SNAPSHOT_ROOT)
-        or binding["receipt_path"] != str(snapshot_authority.RECEIPT_PATH)
-        or binding["mappings"] != expected_mappings
-        or binding["payload_tree_sha256"] != _NATIVE_SNAPSHOT_PAYLOAD_SHA256
-        or binding["receipt_sha256"] != _NATIVE_SNAPSHOT_RECEIPT_SHA256
-    ):
+    expected_binding = {
+        "authority": "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1",
+        "mappings": expected_mappings,
+        "payload_tree_sha256": _NATIVE_SNAPSHOT_PAYLOAD_SHA256,
+        "receipt_path": str(snapshot_authority.RECEIPT_PATH),
+        "receipt_sha256": _NATIVE_SNAPSHOT_RECEIPT_SHA256,
+        "root": str(snapshot_authority.SNAPSHOT_ROOT),
+        "schema_version": 1,
+        "threat_model": "COOPERATIVE_HOST",
+    }
+    if not _json_values_identical(binding, expected_binding):
         raise VerificationError("native snapshot policy binding drifted")
     _require_sha256(binding["payload_tree_sha256"], "native snapshot payload tree")
     _require_sha256(binding["receipt_sha256"], "native snapshot receipt")

@@ -428,6 +428,61 @@ def test_full_policy_validation_rejects_unreviewed_python_selection_basis(
 
 
 @pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        (None, "executable_gid", False),
+        (None, "executable_gid", 0.0),
+        (None, "executable_size", 8020928.0),
+        (None, "executable_uid", False),
+        (None, "executable_uid", 0.0),
+        ("libpython", "gid", False),
+        ("libpython", "gid", 0.0),
+        ("libpython", "size", 9061000.0),
+        ("libpython", "uid", False),
+        ("libpython", "uid", 0.0),
+        ("stdlib_inventory", "directory_count", 92.0),
+        ("stdlib_inventory", "file_count", 1213.0),
+        ("stdlib_inventory", "record_count", 1308.0),
+        ("stdlib_inventory", "root_gid", False),
+        ("stdlib_inventory", "root_gid", 0.0),
+        ("stdlib_inventory", "root_uid", False),
+        ("stdlib_inventory", "root_uid", 0.0),
+        ("stdlib_inventory", "symlink_count", 3.0),
+    ],
+)
+def test_full_policy_validation_rejects_python_numeric_type_confusion(
+    section: str | None,
+    field: str,
+    value: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = copy.deepcopy(toolchain.load_json(ENGINE_POLICY))
+    target = engine["python"] if section is None else engine["python"][section]
+    target[field] = value
+    monkeypatch.setattr(
+        toolchain, "_verify_command_router_policy", lambda *_args: None
+    )
+
+    with pytest.raises(toolchain.VerificationError, match="reviewed CPython"):
+        toolchain._verify_policies(
+            engine,
+            toolchain.load_json(INPUT_POLICY),
+            toolchain.load_json(WHEEL_POLICY),
+            toolchain.load_json(CARGO_POLICY),
+        )
+
+
+def test_native_snapshot_schema_rejects_boolean_integer_substitution() -> None:
+    native = copy.deepcopy(
+        toolchain.load_json(ENGINE_POLICY)["native_build_authority"]
+    )
+    native["snapshot"]["schema_version"] = True
+
+    with pytest.raises(toolchain.VerificationError, match="snapshot"):
+        toolchain._verify_native_build_authority(native)
+
+
+@pytest.mark.parametrize(
     "destination",
     [
         "/usr/bin/python3.12",
