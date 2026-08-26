@@ -4,7 +4,7 @@ import ast
 import base64
 import csv
 import errno
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import fields, replace
 import gzip
 import hashlib
@@ -12,10 +12,12 @@ import json
 import os
 import io
 from pathlib import Path, PurePosixPath
+import shutil
 import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 
 import pytest
@@ -36,6 +38,21 @@ ENGINE_POLICY = ROOT / "engines/nautilus/candidates/v1.231/engine-build-policy.j
 WHEEL_FILENAME = "nautilus_trader-1.231.0-cp312-cp312-manylinux_2_39_x86_64.whl"
 HOST_AUTHORITY_RUNNER = ROOT / "scripts/verify_p1_u04_host_authority.py"
 U04_TEST_ROOT = ROOT / "tests/nautilus_upgrade"
+
+
+@pytest.fixture
+def x4_posix_tmp_path() -> Iterator[Path]:
+    path = Path(tempfile.mkdtemp(prefix="p1-u04-x4-test-", dir="/tmp"))
+    try:
+        yield path
+    finally:
+        for current, directories, files in os.walk(path, topdown=False):
+            for name in files:
+                (Path(current) / name).chmod(0o600)
+            for name in directories:
+                (Path(current) / name).chmod(0o700)
+        path.chmod(0o700)
+        shutil.rmtree(path)
 
 
 def _portable_u04_test_modules() -> tuple[Path, ...]:
@@ -635,6 +652,525 @@ def _empty_candidate_preflight() -> dict[str, int]:
     }
 
 
+def _write_x4_authority_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mutation: str | None = None,
+) -> tuple[Path, str, dict[str, object], dict[str, object], dict[str, Path]]:
+    build_root = tmp_path / "build-root"
+    build_root.mkdir(mode=0o700)
+    roots = {
+        "candidate_build_root": build_root,
+        "candidate_forensic_root": tmp_path / "forensic",
+        "candidate_runtime_root": tmp_path / "runtime",
+    }
+    inputs = {
+        "native_build_environment": {"construction": "EMPTY_THEN_SET_EXACT_VALUES"},
+        "policy_hashes": {
+            "cargo_registry_policy_sha256": "1" * 64,
+            "engine_build_policy_sha256": "2" * 64,
+            "input_cache_policy_sha256": "3" * 64,
+            "release_provenance_policy_sha256": "4" * 64,
+            "wheel_cache_policy_sha256": "5" * 64,
+        },
+    }
+    engine = {
+        "external_cache_isolation": {
+            "external_roots": {name: str(path) for name, path in roots.items()}
+        }
+    }
+    complete = tmp_path / "task-4-receipt.json"
+    complete.write_bytes(b"{}\n")
+    complete.chmod(0o400)
+    receipt_document: dict[str, object] = {
+        "build_a_authorized": True,
+        "candidate": {"head": "a" * 40, "tree": "b" * 40},
+        "complete_authority_receipt": {
+            "path": "task-4-receipt.json",
+            "sha256": hashlib.sha256(b"{}\n").hexdigest(),
+            "size": 3,
+        },
+        "identities": {
+            "bubblewrap": {"version": "bubblewrap 0.9.0"},
+            "cargo": {"version": "cargo 1.97.1"},
+            "cpython": {"version": "CPython 3.12.3"},
+            "llvm": {"version": "clang 22.1.3"},
+            "rustc": {"version": "rustc 1.97.1"},
+        },
+        "policy_sha256": {
+            "cargo_registry": "1" * 64,
+            "engine_build": "2" * 64,
+            "input_cache": "3" * 64,
+            "release_provenance": "4" * 64,
+            "toolchain_inputs": "6" * 64,
+            "wheel_cache": "5" * 64,
+        },
+        "recorded_at_utc": "2026-08-25T21:55:08Z",
+        "review_round": 2,
+        "schema": "p1-u04-x4-authority-preflight-v1",
+        "verdict": "X4_READY_FOR_BUILD_A",
+    }
+    expected_digest = "0" * 64 if mutation == "digest" else None
+    if mutation == "schema":
+        receipt_document["schema"] = "foreign"
+    elif mutation == "verdict":
+        receipt_document["verdict"] = "DEFERRED"
+    elif mutation == "head":
+        receipt_document["candidate"]["head"] = "c" * 40  # type: ignore[index]
+    elif mutation == "tree":
+        receipt_document["candidate"]["tree"] = "d" * 40  # type: ignore[index]
+    receipt = tmp_path / "x4-receipt.json"
+    raw = (json.dumps(receipt_document, sort_keys=True, indent=2) + "\n").encode(
+        "ascii"
+    )
+    receipt.write_bytes(raw)
+    receipt.chmod(0o400)
+    if mutation == "mode":
+        receipt.chmod(0o600)
+    elif mutation == "link":
+        link = tmp_path / "x4-receipt-link.json"
+        os.link(receipt, link)
+    monkeypatch.setattr(builder, "_X4_COMPLETE_AUTHORITY_RECEIPT", complete, raising=False)
+    monkeypatch.setattr(
+        builder, "_X4_COMPLETE_AUTHORITY_RECEIPT_PATH", "task-4-receipt.json", raising=False
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_git_identity",
+        lambda: {"head": "a" * 40, "tree": "b" * 40},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_external_identities",
+        lambda *_args: receipt_document["identities"],
+        raising=False,
+    )
+    monkeypatch.setattr(builder, "_verify_candidate_authority", lambda: (engine, inputs))
+    real_sha256 = builder._sha256
+    monkeypatch.setattr(
+        builder,
+        "_sha256",
+        lambda path: "6" * 64
+        if path == builder._CANDIDATE_TOOLCHAIN_INPUTS
+        else real_sha256(path),
+    )
+    return receipt, expected_digest or hashlib.sha256(raw).hexdigest(), engine, inputs, roots
+
+
+def test_candidate_build_a_runs_one_build_and_never_publishes_final_artifacts(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmp_path = x4_posix_tmp_path
+    receipt, receipt_sha256, engine, inputs, roots = _write_x4_authority_receipt(
+        tmp_path, monkeypatch
+    )
+    descriptor = os.open(tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_calls: list[str] = []
+
+    def fake_build(*_args):
+        build_calls.append("A")
+        return (
+            b"wheel-a",
+            _empty_candidate_preflight(),
+            {"wheel": {"filename": WHEEL_FILENAME, "sha256": hashlib.sha256(b"wheel-a").hexdigest(), "size": 7}},
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+            descriptor,
+        )
+
+    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: roots)
+    monkeypatch.setattr(builder, "_build_candidate_once", fake_build)
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+        raising=False,
+    )
+
+    result = builder.build_candidate_a(
+        authority_receipt=receipt,
+        authority_receipt_sha256=receipt_sha256,
+    )
+
+    assert build_calls == ["A"]
+    assert result["kind"] == "P1_U04_BUILD_A"
+    assert (roots["candidate_build_root"] / "build-a").is_dir()
+    assert not (roots["candidate_build_root"] / "build-b").exists()
+    assert not (roots["candidate_build_root"] / "artifacts").exists()
+
+
+def test_candidate_build_b_requires_a_different_process_and_same_x4_receipt(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmp_path = x4_posix_tmp_path
+    receipt, receipt_sha256, _engine, inputs, roots = _write_x4_authority_receipt(
+        tmp_path, monkeypatch
+    )
+    process_identity = {
+        "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "pid": 100,
+        "start_time_ticks": 200,
+    }
+    builder._publish_candidate_build_result(
+        roots,
+        label="A",
+        wheel_payload=b"wheel-a",
+        artifact_core={"wheel": {"filename": WHEEL_FILENAME, "sha256": hashlib.sha256(b"wheel-a").hexdigest(), "size": 7}},
+        source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+        process_identity=process_identity,
+        x4_receipt_sha256=receipt_sha256,
+    )
+    monkeypatch.setattr(
+        builder, "_materialize_candidate_inputs", lambda *_args, **_kwargs: roots
+    )
+    monkeypatch.setattr(builder, "_candidate_process_identity", lambda: process_identity)
+
+    with pytest.raises(builder.VerificationError, match="distinct process"):
+        builder.build_candidate_b(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        )
+
+
+def test_candidate_build_b_rejects_modified_build_a_and_leaves_final_absent(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmp_path = x4_posix_tmp_path
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        tmp_path, monkeypatch
+    )
+    builder._publish_candidate_build_result(
+        roots,
+        label="A",
+        wheel_payload=b"wheel-a",
+        artifact_core={
+            "wheel": {
+                "filename": WHEEL_FILENAME,
+                "sha256": hashlib.sha256(b"wheel-a").hexdigest(),
+                "size": 7,
+            }
+        },
+        source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+        process_identity={
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+        x4_receipt_sha256=receipt_sha256,
+    )
+    wheel = roots["candidate_build_root"] / "build-a" / WHEEL_FILENAME
+    wheel.chmod(0o600)
+    wheel.write_bytes(b"modified")
+    wheel.chmod(0o400)
+    monkeypatch.setattr(
+        builder, "_materialize_candidate_inputs", lambda *_args, **_kwargs: roots
+    )
+
+    with pytest.raises(builder.VerificationError, match="Build A"):
+        builder.build_candidate_b(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        )
+
+    assert not (roots["candidate_build_root"] / "artifacts").exists()
+
+
+def test_candidate_build_b_runs_one_build_and_publishes_build_a_final_artifact(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmp_path = x4_posix_tmp_path
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        tmp_path, monkeypatch
+    )
+    payload = b"wheel-a"
+    core = {
+        "wheel": {
+            "filename": WHEEL_FILENAME,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "size": len(payload),
+        }
+    }
+    builder._publish_candidate_build_result(
+        roots,
+        label="A",
+        wheel_payload=payload,
+        artifact_core=core,
+        source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+        process_identity={
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+        x4_receipt_sha256=receipt_sha256,
+    )
+    descriptor = os.open(tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_calls: list[str] = []
+    monkeypatch.setattr(
+        builder, "_materialize_candidate_inputs", lambda *_args, **_kwargs: roots
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 101,
+            "start_time_ticks": 201,
+        },
+    )
+
+    def fake_build(*_args):
+        build_calls.append("B")
+        return (
+            payload,
+            _empty_candidate_preflight(),
+            core,
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
+            descriptor,
+        )
+
+    monkeypatch.setattr(builder, "_build_candidate_once", fake_build)
+
+    manifest = builder.build_candidate_b(
+        authority_receipt=receipt,
+        authority_receipt_sha256=receipt_sha256,
+    )
+
+    assert build_calls == ["B"]
+    assert manifest["reproducible_build"] == {
+        "authoritative_manifest_equality": True,
+        "build_count": 2,
+        "fresh_physical_stages": True,
+        "logical_stages_absent_after_build": True,
+        "native_inventory_equality": True,
+        "process_identities": [
+            {
+                "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "pid": 100,
+                "start_time_ticks": 200,
+            },
+            {
+                "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "pid": 101,
+                "start_time_ticks": 201,
+            },
+        ],
+        "raw_wheel_equality": True,
+        "source_fd_identities": [
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
+        ],
+        "wheel_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    assert (roots["candidate_build_root"] / "artifacts" / WHEEL_FILENAME).read_bytes() == payload
+
+
+@pytest.mark.parametrize(
+    "mutation", ("digest", "schema", "verdict", "head", "tree", "mode", "link")
+)
+def test_candidate_actions_reject_untrusted_x4_receipt(
+    x4_posix_tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    tmp_path = x4_posix_tmp_path
+    receipt, expected_sha256, _engine, _inputs, _roots = _write_x4_authority_receipt(
+        tmp_path, monkeypatch, mutation=mutation
+    )
+    monkeypatch.setattr(
+        builder,
+        "_build_candidate_once",
+        lambda *_args: pytest.fail("untrusted X4 receipt reached native build"),
+    )
+
+    with pytest.raises(builder.VerificationError, match="X4 authority receipt"):
+        builder.build_candidate_a(
+            authority_receipt=receipt,
+            authority_receipt_sha256=expected_sha256,
+        )
+
+
+def test_candidate_split_cli_rejects_combined_missing_and_legacy_authority_before_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(builder, "build_candidate_a", lambda **_kwargs: calls.append("A"), raising=False)
+    monkeypatch.setattr(builder, "build_candidate_b", lambda **_kwargs: calls.append("B"), raising=False)
+
+    with pytest.raises(SystemExit):
+        builder.main(["--build-candidate-a", "--build-candidate-b", "--offline"])
+    assert builder.main(["--build-candidate-a", "--offline"]) == 2
+    assert builder.main([
+        "--build-candidate-a", "--offline", "--authority-receipt", "/tmp/r",
+        "--authority-receipt-sha256", "0" * 64, "--policy", "/tmp/foreign",
+    ]) == 2
+    assert builder.main([
+        "--build-candidate-a", "--authority-receipt", "/tmp/r",
+        "--authority-receipt-sha256", "0" * 64,
+    ]) == 2
+    assert builder.main([
+        "--build-candidate-a", "--offline", "--authority-receipt", "/tmp/r",
+        "--authority-receipt-sha256", "0" * 64, "--sandbox", "/tmp/foreign",
+    ]) == 2
+    assert builder.main([
+        "--build-candidate-a", "--offline", "--authority-receipt", "/tmp/r",
+        "--authority-receipt-sha256", "0" * 64, "--retain-raw-wheel-pair",
+    ]) == 2
+    assert calls == []
+
+
+@pytest.mark.parametrize("publication_failure", (False, True))
+def test_candidate_build_closes_source_descriptor_before_intermediate_publication(
+    x4_posix_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    publication_failure: bool,
+) -> None:
+    tmp_path = x4_posix_tmp_path
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        tmp_path, monkeypatch
+    )
+    descriptor = os.open(tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+
+    def fake_build(*_args):
+        return (
+            b"wheel-a",
+            _empty_candidate_preflight(),
+            {
+                "wheel": {
+                    "filename": WHEEL_FILENAME,
+                    "sha256": hashlib.sha256(b"wheel-a").hexdigest(),
+                    "size": 7,
+                }
+            },
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+            descriptor,
+        )
+
+    def fake_publish(*_args, **_kwargs):
+        with pytest.raises(OSError) as captured:
+            os.fstat(descriptor)
+        assert captured.value.errno == errno.EBADF
+        if publication_failure:
+            raise builder.VerificationError("publication failed")
+        return {"kind": "P1_U04_BUILD_A"}
+
+    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: roots)
+    monkeypatch.setattr(builder, "_build_candidate_once", fake_build)
+    monkeypatch.setattr(builder, "_publish_candidate_build_result", fake_publish)
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 100,
+            "start_time_ticks": 200,
+        },
+    )
+
+    if publication_failure:
+        with pytest.raises(builder.VerificationError, match="publication failed"):
+            builder.build_candidate_a(
+                authority_receipt=receipt,
+                authority_receipt_sha256=receipt_sha256,
+            )
+    else:
+        assert builder.build_candidate_a(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+        ) == {"kind": "P1_U04_BUILD_A"}
+
+
+@pytest.mark.parametrize("raw_wheel_equality", (False, True))
+def test_candidate_forensic_split_build_retains_sealed_pair_and_never_final(
+    x4_posix_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_wheel_equality: bool,
+) -> None:
+    tmp_path = x4_posix_tmp_path
+    receipt, receipt_sha256, _engine, _inputs, roots = _write_x4_authority_receipt(
+        tmp_path, monkeypatch
+    )
+    first_payload = _diagnostic_wheel(
+        [("nautilus_trader/module.py", b"first")]
+    )
+    second_payload = (
+        first_payload
+        if raw_wheel_equality
+        else _diagnostic_wheel([("nautilus_trader/module.py", b"second")])
+    )
+    first_core = {
+        "wheel": {
+            "filename": WHEEL_FILENAME,
+            "sha256": hashlib.sha256(first_payload).hexdigest(),
+            "size": len(first_payload),
+        }
+    }
+    first_process = {
+        "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "pid": 100,
+        "start_time_ticks": 200,
+    }
+    builder._publish_candidate_build_result(
+        roots,
+        label="A",
+        wheel_payload=first_payload,
+        artifact_core=first_core,
+        source_identity={"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
+        process_identity=first_process,
+        x4_receipt_sha256=receipt_sha256,
+    )
+    descriptor = os.open(tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    second_core = {
+        "wheel": {
+            "filename": WHEEL_FILENAME,
+            "sha256": hashlib.sha256(second_payload).hexdigest(),
+            "size": len(second_payload),
+        }
+    }
+    monkeypatch.setattr(
+        builder, "_materialize_candidate_inputs", lambda *_args, **_kwargs: roots
+    )
+    monkeypatch.setattr(
+        builder,
+        "_candidate_process_identity",
+        lambda: {
+            "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "pid": 101,
+            "start_time_ticks": 201,
+        },
+    )
+    monkeypatch.setattr(
+        builder,
+        "_build_candidate_once",
+        lambda *_args: (
+            second_payload,
+            _candidate_structural_preflight_for_test(second_payload),
+            second_core,
+            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
+            descriptor,
+        ),
+    )
+
+    with pytest.raises(builder.VerificationError):
+        builder.build_candidate_b(
+            authority_receipt=receipt,
+            authority_receipt_sha256=receipt_sha256,
+            retain_raw_wheel_pair=True,
+        )
+
+    forensic_root = roots["candidate_forensic_root"]
+    assert {path.name for path in forensic_root.iterdir()} == {
+        f"first-{WHEEL_FILENAME}",
+        f"second-{WHEEL_FILENAME}",
+        "forensic-manifest.json",
+    }
+    assert (roots["candidate_build_root"] / "build-a").is_dir()
+    assert (roots["candidate_build_root"] / "build-b").is_dir()
+    assert not (roots["candidate_build_root"] / "artifacts").exists()
+
+
 def _wheel_with_declared_eocd_count(payload: bytes, count: int) -> bytes:
     mutated = bytearray(payload)
     eocd = payload.rfind(b"PK\x05\x06")
@@ -919,6 +1455,18 @@ def _write_candidate_artifact(
         "native_inventory_equality": True,
         "authoritative_manifest_equality": True,
         "wheel_sha256": document["wheel"]["sha256"],
+        "process_identities": [
+            {
+                "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "pid": 100,
+                "start_time_ticks": 200,
+            },
+            {
+                "boot_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "pid": 101,
+                "start_time_ticks": 300,
+            },
+        ],
         "source_fd_identities": [
             {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
             {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "3"},
@@ -2805,6 +3353,14 @@ def test_candidate_artifact_validator_recomputes_and_binds_every_authority(
             "reproducible_build"
         ]["source_fd_identities"][0].copy()
 
+    def process_identity_drift(value: dict[str, object]) -> None:
+        value["reproducible_build"]["process_identities"][0]["boot_id"] = "foreign"
+
+    def process_identity_reuse(value: dict[str, object]) -> None:
+        value["reproducible_build"]["process_identities"][1] = value[
+            "reproducible_build"
+        ]["process_identities"][0].copy()
+
     for mutate in (
         missing_top,
         extra_top,
@@ -2820,6 +3376,8 @@ def test_candidate_artifact_validator_recomputes_and_binds_every_authority(
         reproducibility_drift,
         source_fd_drift,
         source_fd_reuse,
+        process_identity_drift,
+        process_identity_reuse,
     ):
         drifted = json.loads(json.dumps(document))
         mutate(drifted)
@@ -4099,219 +4657,6 @@ def test_candidate_never_packages_after_native_failure(
     assert captured.value.errno == errno.EBADF
 
 
-def test_candidate_build_keeps_first_source_descriptor_until_distinct_second_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    first_fd = os.open(source, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
-    second_fd = os.open(source, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
-    identity = {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"}
-    calls = 0
-    published: list[bool] = []
-
-    def fake_build(*_args):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return (
-                b"wheel",
-                _empty_candidate_preflight(),
-                {"wheel": {"sha256": "0" * 64}},
-                identity,
-                first_fd,
-            )
-        os.fstat(first_fd)
-        return (
-            b"wheel",
-            _empty_candidate_preflight(),
-            {"wheel": {"sha256": "0" * 64}},
-            identity,
-            second_fd,
-        )
-
-    monkeypatch.setattr(builder, "_verify_candidate_authority", lambda: ({}, {}))
-    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: {})
-    monkeypatch.setattr(builder, "_build_candidate_once", fake_build)
-    monkeypatch.setattr(
-        builder,
-        "_publish_candidate_artifacts",
-        lambda *_args: published.append(True),
-    )
-
-    with pytest.raises(builder.VerificationError, match="distinct source identities"):
-        builder.build_candidate_engine()
-
-    assert published == []
-    for descriptor in (first_fd, second_fd):
-        with pytest.raises(OSError) as captured:
-            os.fstat(descriptor)
-        assert captured.value.errno == errno.EBADF
-
-
-@pytest.mark.parametrize("raw_wheel_equality", (False, True))
-def test_candidate_forensic_mode_retains_exact_pair_and_never_publishes_artifacts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    raw_wheel_equality: bool,
-) -> None:
-    first_payload = _diagnostic_wheel([("nautilus_trader/module.py", b"first")])
-    second_payload = (
-        first_payload
-        if raw_wheel_equality
-        else _diagnostic_wheel([("nautilus_trader/module.py", b"second")])
-    )
-    forensic_parent = tmp_path / "forensic-parent"
-    forensic_parent.mkdir(mode=0o700)
-    forensic_root = forensic_parent / "evidence"
-    roots = {
-        "candidate_build_root": tmp_path / "build-root",
-        "candidate_forensic_root": forensic_root,
-    }
-    published: list[bool] = []
-    descriptors, build_calls = _bind_raw_wheel_build(
-        tmp_path,
-        monkeypatch,
-        first_payload,
-        second_payload,
-        published,
-        roots=roots,
-    )
-    terminal_reason = (
-        "candidate forensic raw wheel pair retained without reproducing drift"
-        if raw_wheel_equality
-        else "candidate raw wheel drifted across fresh builds"
-    )
-
-    with pytest.raises(builder.VerificationError) as captured:
-        builder.build_candidate_engine(retain_raw_wheel_pair=True)
-
-    assert str(captured.value) == terminal_reason
-    assert build_calls == [0, 1]
-    assert published == []
-    first_name = f"first-{WHEEL_FILENAME}"
-    second_name = f"second-{WHEEL_FILENAME}"
-    manifest_path = forensic_root / "forensic-manifest.json"
-    assert {path.name for path in forensic_root.iterdir()} == {
-        first_name,
-        second_name,
-        manifest_path.name,
-    }
-    assert (forensic_root / first_name).read_bytes() == first_payload
-    assert (forensic_root / second_name).read_bytes() == second_payload
-    expected_manifest = {
-        "activation_status": "CANDIDATE_ONLY_NOT_ACTIVATED",
-        "build_count": 2,
-        "engine_build_policy_sha256": hashlib.sha256(
-            builder._CANDIDATE_ENGINE_POLICY.read_bytes()
-        ).hexdigest(),
-        "kind": "P1_U04_RAW_WHEEL_PAIR",
-        "raw_wheel_equality": raw_wheel_equality,
-        "raw_wheels": [
-            {
-                "filename": first_name,
-                "label": "first",
-                "sha256": hashlib.sha256(first_payload).hexdigest(),
-                "size": len(first_payload),
-            },
-            {
-                "filename": second_name,
-                "label": "second",
-                "sha256": hashlib.sha256(second_payload).hexdigest(),
-                "size": len(second_payload),
-            },
-        ],
-        "schema_version": 1,
-        "source_fd_identities": [
-            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "1"},
-            {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "2"},
-        ],
-        "toolchain_inputs_sha256": hashlib.sha256(
-            builder._CANDIDATE_TOOLCHAIN_INPUTS.read_bytes()
-        ).hexdigest(),
-    }
-    expected_manifest_raw = (
-        json.dumps(
-            expected_manifest,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("ascii")
-    assert manifest_path.read_bytes() == expected_manifest_raw
-    assert json.loads(expected_manifest_raw) == expected_manifest
-    assert forensic_root.stat().st_mode & 0o777 == 0o500
-    assert all(
-        path.stat().st_mode & 0o777 == 0o400 for path in forensic_root.iterdir()
-    )
-    assert not (roots["candidate_build_root"] / "artifacts").exists()
-    diagnostic_lines = [
-        line
-        for line in capsys.readouterr().err.splitlines()
-        if line.startswith("CANDIDATE_RAW_WHEEL_DIAGNOSTIC=")
-    ]
-    assert len(diagnostic_lines) == (0 if raw_wheel_equality else 1)
-    for descriptor in descriptors:
-        with pytest.raises(OSError) as descriptor_error:
-            os.fstat(descriptor)
-        assert descriptor_error.value.errno == errno.EBADF
-
-
-def test_candidate_forensic_destination_must_be_absent_before_builds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    forensic_parent = tmp_path / "forensic-parent"
-    forensic_parent.mkdir(mode=0o700)
-    forensic_root = forensic_parent / "evidence"
-    forensic_root.mkdir(mode=0o700)
-    marker = forensic_root / "competitor-marker"
-    marker.write_bytes(b"competitor-owned bytes")
-    before_root = forensic_root.lstat()
-    before_marker = marker.lstat()
-    roots = {
-        "candidate_build_root": tmp_path / "build-root",
-        "candidate_forensic_root": forensic_root,
-    }
-    payload = _diagnostic_wheel([("nautilus_trader/module.py", b"payload")])
-    published: list[bool] = []
-    descriptors, build_calls = _bind_raw_wheel_build(
-        tmp_path,
-        monkeypatch,
-        payload,
-        payload,
-        published,
-        roots=roots,
-    )
-
-    with pytest.raises(
-        builder.VerificationError,
-        match="candidate forensic destination is not absent",
-    ):
-        builder.build_candidate_engine(retain_raw_wheel_pair=True)
-
-    after_root = forensic_root.lstat()
-    after_marker = marker.lstat()
-    assert (after_root.st_dev, after_root.st_ino, after_root.st_mode) == (
-        before_root.st_dev,
-        before_root.st_ino,
-        before_root.st_mode,
-    )
-    assert (after_marker.st_dev, after_marker.st_ino, after_marker.st_mode) == (
-        before_marker.st_dev,
-        before_marker.st_ino,
-        before_marker.st_mode,
-    )
-    assert marker.read_bytes() == b"competitor-owned bytes"
-    assert {path.name for path in forensic_root.iterdir()} == {marker.name}
-    assert build_calls == []
-    assert published == []
-    assert not (roots["candidate_build_root"] / "artifacts").exists()
-    for descriptor in descriptors:
-        os.close(descriptor)
-
-
 def test_candidate_forensic_staging_substitution_before_identity_preserves_competitor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4384,138 +4729,6 @@ def test_candidate_forensic_staging_substitution_before_identity_preserves_compe
     assert not destination.exists()
 
 
-@pytest.mark.parametrize(
-    ("drift", "classification"),
-    (
-        ("timestamp", "ARCHIVE_METADATA_ONLY"),
-        ("order", "ARCHIVE_ORDER_ONLY"),
-        ("order-and-archive-metadata", "ARCHIVE_ORDER_AND_METADATA_ONLY"),
-        ("order-and-member-metadata", "ARCHIVE_ORDER_AND_METADATA_ONLY"),
-        ("metadata", "ARCHIVE_METADATA_ONLY"),
-        ("compression", "ARCHIVE_METADATA_ONLY"),
-        ("content", "NON_NATIVE_CONTENT_DRIFT"),
-        ("native", "NATIVE_PAYLOAD_DRIFT"),
-        ("mixed", "MIXED_NATIVE_AND_NON_NATIVE_CONTENT_DRIFT"),
-    ),
-)
-def test_candidate_raw_wheel_diagnostic_precedes_unchanged_equality_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    drift: str,
-    classification: str,
-) -> None:
-    members = [
-        ("nautilus_trader/module.py", b"module"),
-        ("nautilus_trader/core.cpython-312-x86_64-linux-gnu.so", b"native"),
-    ]
-    first_payload = _diagnostic_wheel(members)
-    if drift == "timestamp":
-        second_payload = _diagnostic_wheel(
-            members,
-            timestamp=(2026, 8, 24, 1, 2, 6),
-        )
-    elif drift == "order":
-        second_payload = _diagnostic_wheel(list(reversed(members)))
-    elif drift == "order-and-archive-metadata":
-        second_payload = _diagnostic_wheel(
-            list(reversed(members)), comment=b"changed archive metadata"
-        )
-    elif drift == "order-and-member-metadata":
-        second_payload = _diagnostic_wheel(
-            list(reversed(members)), mode=0o100600
-        )
-    elif drift == "metadata":
-        second_payload = _diagnostic_wheel(members, mode=0o100600)
-    elif drift == "compression":
-        second_payload = _diagnostic_wheel(members, compression=zipfile.ZIP_DEFLATED)
-    elif drift == "content":
-        second_payload = _diagnostic_wheel(
-            [(members[0][0], b"changed module"), members[1]]
-        )
-    elif drift == "native":
-        second_payload = _diagnostic_wheel(
-            [members[0], (members[1][0], b"changed native")]
-        )
-    else:
-        second_payload = _diagnostic_wheel(
-            [
-                (members[0][0], b"changed module"),
-                (members[1][0], b"changed native"),
-            ]
-        )
-    published: list[bool] = []
-    _bind_raw_wheel_build(
-        tmp_path,
-        monkeypatch,
-        first_payload,
-        second_payload,
-        published,
-    )
-
-    with pytest.raises(
-        builder.VerificationError,
-        match="candidate raw wheel drifted across fresh builds",
-    ):
-        builder.build_candidate_engine()
-
-    captured = capsys.readouterr()
-    prefix = "CANDIDATE_RAW_WHEEL_DIAGNOSTIC="
-    lines = [line for line in captured.err.splitlines() if line.startswith(prefix)]
-    assert len(lines) == 1
-    diagnostic = json.loads(lines[0].removeprefix(prefix))
-    assert diagnostic == _candidate_raw_wheel_diagnostic_for_test(
-        first_payload, second_payload
-    )
-    assert diagnostic["classification"] == classification
-    assert diagnostic["raw_wheels"] == {
-        "first": {
-            "sha256": hashlib.sha256(first_payload).hexdigest(),
-            "size": len(first_payload),
-        },
-        "second": {
-            "sha256": hashlib.sha256(second_payload).hexdigest(),
-            "size": len(second_payload),
-        },
-    }
-    assert str(tmp_path) not in lines[0]
-    assert published == []
-    expected_member_differences = {
-        "compression": 2,
-        "metadata": 2,
-        "order": 0,
-        "order-and-archive-metadata": 0,
-        "order-and-member-metadata": 2,
-        "timestamp": 2,
-    }.get(drift, 1)
-    if drift == "mixed":
-        expected_member_differences = 2
-    assert diagnostic["member_differences"]["total"] == expected_member_differences
-    if drift in {
-        "order",
-        "order-and-archive-metadata",
-        "order-and-member-metadata",
-    }:
-        assert not diagnostic["ordered_members"]["equal"]
-    else:
-        assert diagnostic["member_differences"]["entries"]
-        for entry in diagnostic["member_differences"]["entries"]:
-            assert "content_sha256" in entry["first"]
-            assert "content_sha256" in entry["second"]
-    if drift == "timestamp":
-        assert diagnostic["member_differences"]["entries"][0]["changed_fields"] == [
-            "zip_local_timestamp"
-        ]
-    elif drift == "metadata":
-        assert set(
-            diagnostic["member_differences"]["entries"][0]["changed_fields"]
-        ) == {"external_attributes", "mode"}
-    elif drift == "compression":
-        assert {"compressed_size", "compression", "compression_code"}.issubset(
-            diagnostic["member_differences"]["entries"][0]["changed_fields"]
-        )
-
-
 def test_candidate_raw_wheel_diagnostic_is_deterministic_and_bounded() -> None:
     count = builder._CANDIDATE_RAW_WHEEL_DIAGNOSTIC_LIMIT + 3
     first = _diagnostic_wheel(
@@ -4542,86 +4755,6 @@ def test_candidate_raw_wheel_diagnostic_is_deterministic_and_bounded() -> None:
         <= builder._CANDIDATE_RAW_WHEEL_DIAGNOSTIC_LIMIT
     )
     assert len(json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))) < 100_000
-
-
-@pytest.mark.parametrize(
-    ("constant", "limit_type"),
-    (
-        ("_CANDIDATE_RAW_WHEEL_MEMBER_LIMIT", "member_count"),
-        ("_CANDIDATE_RAW_WHEEL_COMPRESSED_SIZE_LIMIT", "compressed_size"),
-        (
-            "_CANDIDATE_RAW_WHEEL_DECLARED_SIZE_LIMIT",
-            "declared_uncompressed_size",
-        ),
-        ("_CANDIDATE_RAW_WHEEL_STREAMED_SIZE_LIMIT", "streamed_expanded_bytes"),
-        ("_CANDIDATE_RAW_WHEEL_OUTPUT_BYTE_LIMIT", "serialized_output_bytes"),
-    ),
-)
-def test_candidate_raw_wheel_diagnostic_resource_limits_fail_with_compact_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    constant: str,
-    limit_type: str,
-) -> None:
-    members = [
-        ("nautilus_trader/first.py", b"first payload"),
-        ("nautilus_trader/second.py", b"second payload"),
-    ]
-    first_payload = _diagnostic_wheel(members)
-    second_payload = _diagnostic_wheel(
-        [members[0], (members[1][0], b"changed second payload")]
-    )
-    preflights = (
-        _candidate_structural_preflight_for_test(first_payload),
-        _candidate_structural_preflight_for_test(second_payload),
-    )
-    limit = 2_048 if limit_type == "serialized_output_bytes" else 1
-    monkeypatch.setattr(builder, constant, limit)
-    published: list[bool] = []
-    _bind_raw_wheel_build(
-        tmp_path,
-        monkeypatch,
-        first_payload,
-        second_payload,
-        published,
-        preflights=preflights,
-    )
-
-    with pytest.raises(
-        builder.VerificationError,
-        match="candidate raw wheel drifted across fresh builds",
-    ):
-        builder.build_candidate_engine()
-
-    prefix = "CANDIDATE_RAW_WHEEL_DIAGNOSTIC="
-    lines = [
-        line
-        for line in capsys.readouterr().err.splitlines()
-        if line.startswith(prefix)
-    ]
-    assert len(lines) == 1
-    receipt = json.loads(lines[0].removeprefix(prefix))
-    assert receipt["classification"] == "DIAGNOSTIC_RESOURCE_LIMIT"
-    assert receipt["resource_limit"]["limit_type"] == limit_type
-    assert receipt["resource_limit"]["limit"] == limit
-    assert receipt["raw_wheels"]["first"]["sha256"] == hashlib.sha256(
-        first_payload
-    ).hexdigest()
-    assert receipt["raw_wheels"]["second"]["sha256"] == hashlib.sha256(
-        second_payload
-    ).hexdigest()
-    assert set(receipt["resources"]["observed"]) == {"first", "second"}
-    if limit_type in {
-        "compressed_size",
-        "declared_uncompressed_size",
-        "member_count",
-    }:
-        assert all(
-            values["streamed_expanded_bytes"] == 0
-            for values in receipt["resources"]["observed"].values()
-        )
-    assert published == []
 
 
 def test_candidate_raw_wheel_read_rejects_prefixed_container_before_loading(
@@ -4683,139 +4816,6 @@ def test_candidate_build_applies_raw_wheel_cap_before_artifact_verification(
     assert actions == ["bounded-read"]
 
 
-def test_candidate_build_consumers_and_publication_use_preflighted_payload_after_path_substitution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    engine = builder._candidate_json(ENGINE_POLICY)
-    inputs = builder._candidate_json(builder._CANDIDATE_TOOLCHAIN_INPUTS)
-    roots = {
-        "candidate_build_root": tmp_path / "build-root",
-        "candidate_input_root": tmp_path / "input-root",
-    }
-    roots["candidate_build_root"].mkdir(mode=0o700)
-    fixture_root = tmp_path / "fixtures"
-    fixture_root.mkdir()
-    wheel_p = fixture_root / WHEEL_FILENAME
-    native_payload = _elf64(soname="native.so")
-    _write_candidate_wheel(
-        wheel_p,
-        inputs,
-        package_member="nautilus_trader/native.so",
-        package_payload=native_payload,
-    )
-    payload_p = wheel_p.read_bytes()
-    wheel_q = fixture_root / "q" / WHEEL_FILENAME
-    wheel_q.parent.mkdir()
-    _write_candidate_wheel(
-        wheel_q,
-        inputs,
-        package_member="nautilus_trader/native.so",
-        package_payload=native_payload,
-        extra_member="nautilus_trader/substituted.py",
-    )
-    payload_q = wheel_q.read_bytes()
-    real_archive = builder._verify_candidate_wheel_archive
-    real_native = builder._candidate_native_inventory
-    native_p = real_native(wheel_p)
-    source_native = {
-        str(record["path"]): {
-            key: record[key] for key in ("mode", "size", "sha256")
-        }
-        for record in native_p
-    }
-    staged_wheels: list[Path] = []
-    substitutions: list[str] = []
-    archive_inputs: list[bytes] = []
-    native_inputs: list[bytes] = []
-    published: list[
-        tuple[bytes, dict[str, object], dict[str, object]]
-    ] = []
-
-    def fake_extract(_archive, destination, _record):
-        destination.mkdir(mode=0o700)
-        return "0" * 64
-
-    def fake_run(*, physical_stage, action, **_kwargs):
-        if action == "package":
-            staged_wheel = physical_stage / "dist" / WHEEL_FILENAME
-            staged_wheel.write_bytes(payload_p)
-            staged_wheels.append(staged_wheel)
-        return {"P1_U04_SOURCE_ST_DEV": "1", "P1_U04_SOURCE_ST_INO": "1"}
-
-    real_preflight = builder._candidate_wheel_structural_preflight
-
-    def preflight_then_substitute(payload: bytes) -> dict[str, int]:
-        assert payload == payload_p
-        result = real_preflight(payload)
-        staged_wheels[-1].write_bytes(payload_q)
-        substitutions.append(
-            hashlib.sha256(staged_wheels[-1].read_bytes()).hexdigest()
-        )
-        return result
-
-    def observed_payload(source: Path | bytes) -> bytes:
-        return source if isinstance(source, bytes) else source.read_bytes()
-
-    def observe_archive(source: Path | bytes) -> None:
-        archive_inputs.append(observed_payload(source))
-        real_archive(source)
-
-    def observe_native(source: Path | bytes) -> list[dict[str, object]]:
-        native_inputs.append(observed_payload(source))
-        return real_native(source)
-
-    def capture_publication(
-        _roots: dict[str, Path],
-        payload: bytes,
-        core: dict[str, object],
-        receipt: dict[str, object],
-    ) -> Path:
-        published.append((payload, core, receipt))
-        return roots["candidate_build_root"] / "artifacts"
-
-    monkeypatch.setattr(builder, "_verify_candidate_authority", lambda: (engine, inputs))
-    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: roots)
-    monkeypatch.setattr(builder, "_extract_candidate_source", fake_extract)
-    monkeypatch.setattr(builder, "_verify_candidate_source_contract", lambda *_args: None)
-    monkeypatch.setattr(builder, "_candidate_sandbox_run", fake_run)
-    monkeypatch.setattr(builder, "_verify_candidate_native_outputs", lambda _source: source_native)
-    monkeypatch.setattr(builder, "_candidate_wheel_structural_preflight", preflight_then_substitute)
-    monkeypatch.setattr(builder, "_verify_candidate_wheel_archive", observe_archive)
-    monkeypatch.setattr(builder, "_candidate_native_inventory", observe_native)
-    monkeypatch.setattr(builder, "_publish_candidate_artifacts", capture_publication)
-
-    manifest = builder.build_candidate_engine()
-
-    expected_wheel = {
-        "filename": WHEEL_FILENAME,
-        "size": len(payload_p),
-        "sha256": hashlib.sha256(payload_p).hexdigest(),
-    }
-    substituted_wheel = {
-        "filename": WHEEL_FILENAME,
-        "size": len(payload_q),
-        "sha256": hashlib.sha256(payload_q).hexdigest(),
-    }
-    assert substituted_wheel != expected_wheel
-    assert substitutions == [hashlib.sha256(payload_q).hexdigest()] * 2
-    assert archive_inputs == [payload_p, payload_p]
-    assert native_inputs == [payload_p, payload_p]
-    assert len(published) == 1
-    assert published[0][0] == payload_p
-    assert manifest["wheel"] == expected_wheel
-    assert published[0][1]["wheel"] == expected_wheel
-    assert manifest["native_libraries"] == native_p
-    assert published[0][1]["native_libraries"] == native_p
-    assert payload_q not in archive_inputs + native_inputs
-    receipt = manifest["reproducible_build"]
-    assert receipt["raw_wheel_equality"] is True
-    assert receipt["native_inventory_equality"] is True
-    assert receipt["authoritative_manifest_equality"] is True
-    assert published[0][2] == receipt
-    assert not (roots["candidate_build_root"] / "artifacts").exists()
-
-
 def test_candidate_build_structural_preflight_precedes_every_zipfile_consumer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4866,63 +4866,6 @@ def test_candidate_build_structural_preflight_precedes_every_zipfile_consumer(
 
     assert artifact_calls == []
     assert zipfile_calls == []
-
-
-def test_candidate_raw_wheel_diagnostic_reuses_build_structural_preflights(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    first_payload = _diagnostic_wheel(
-        [("nautilus_trader/module.py", b"first")]
-    )
-    second_payload = _diagnostic_wheel(
-        [("nautilus_trader/module.py", b"second")]
-    )
-    first_preflight = _candidate_structural_preflight_for_test(first_payload)
-    second_preflight = _candidate_structural_preflight_for_test(second_payload)
-    published: list[bool] = []
-    _bind_raw_wheel_build(
-        tmp_path,
-        monkeypatch,
-        first_payload,
-        second_payload,
-        published,
-        preflights=(first_preflight, second_preflight),
-    )
-    monkeypatch.setattr(
-        builder,
-        "_candidate_wheel_structural_preflight",
-        lambda _payload: pytest.fail(
-            "diagnostic rescanned an admitted build wheel"
-        ),
-        raising=False,
-    )
-
-    with pytest.raises(builder.VerificationError) as captured:
-        builder.build_candidate_engine()
-
-    assert str(captured.value) == "candidate raw wheel drifted across fresh builds"
-    prefix = "CANDIDATE_RAW_WHEEL_DIAGNOSTIC="
-    lines = [
-        line
-        for line in capsys.readouterr().err.splitlines()
-        if line.startswith(prefix)
-    ]
-    assert len(lines) == 1
-    diagnostic = json.loads(lines[0].removeprefix(prefix))
-    assert diagnostic["classification"] == "NON_NATIVE_CONTENT_DRIFT"
-    assert diagnostic["raw_wheels"] == {
-        "first": {
-            "sha256": hashlib.sha256(first_payload).hexdigest(),
-            "size": len(first_payload),
-        },
-        "second": {
-            "sha256": hashlib.sha256(second_payload).hexdigest(),
-            "size": len(second_payload),
-        },
-    }
-    assert published == []
 
 
 def test_candidate_wheel_structural_preflight_rejects_eocd_count_before_zipfile(
@@ -5274,160 +5217,6 @@ def test_candidate_raw_wheel_diagnostic_truncates_serialized_names_and_tracks_du
         serialized_name = json.dumps(entry["name"], ensure_ascii=True).encode("ascii")
         assert len(serialized_name) <= builder._CANDIDATE_RAW_WHEEL_NAME_BYTE_LIMIT
         assert len(entry["name_utf8_sha256"]) == 64
-
-
-@pytest.mark.parametrize("failure", ("serialization", "write", "flush", "closed"))
-def test_candidate_raw_wheel_diagnostic_io_failures_never_replace_raw_equality_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure: str,
-) -> None:
-    first_payload = _diagnostic_wheel([("nautilus_trader/module.py", b"first")])
-    second_payload = _diagnostic_wheel([("nautilus_trader/module.py", b"second")])
-    published: list[bool] = []
-    _bind_raw_wheel_build(
-        tmp_path,
-        monkeypatch,
-        first_payload,
-        second_payload,
-        published,
-    )
-
-    class BrokenStderr:
-        def write(self, value: str) -> int:
-            if failure == "closed":
-                raise ValueError("I/O operation on closed file")
-            if failure == "write":
-                raise OSError("injected write failure")
-            return len(value)
-
-        def flush(self) -> None:
-            if failure == "flush":
-                raise OSError("injected flush failure")
-
-    if failure == "serialization":
-        monkeypatch.setattr(
-            builder,
-            "_candidate_serialize_diagnostic",
-            lambda _value: (_ for _ in ()).throw(TypeError("injected serialization failure")),
-        )
-    else:
-        monkeypatch.setattr(builder.sys, "stderr", BrokenStderr())
-
-    with pytest.raises(builder.VerificationError) as captured:
-        builder.build_candidate_engine()
-
-    assert str(captured.value) == "candidate raw wheel drifted across fresh builds"
-    assert published == []
-
-
-@pytest.mark.parametrize("failure", ("none", "second-build", "publication"))
-def test_candidate_build_closes_retained_source_descriptors_on_every_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
-) -> None:
-    descriptors: list[int] = []
-    calls = 0
-
-    def fake_build(*_args):
-        nonlocal calls
-        calls += 1
-        if failure == "second-build" and calls == 2:
-            raise builder.VerificationError("second build failed")
-        source = tmp_path / f"source-{calls}"
-        source.mkdir()
-        descriptor = os.open(
-            source, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
-        )
-        descriptors.append(descriptor)
-        identity = {
-            "P1_U04_SOURCE_ST_DEV": "1",
-            "P1_U04_SOURCE_ST_INO": str(calls),
-        }
-        return (
-            b"wheel",
-            _empty_candidate_preflight(),
-            {"wheel": {"sha256": "0" * 64}},
-            identity,
-            descriptor,
-        )
-
-    def fake_publish(*_args):
-        for descriptor in descriptors:
-            with pytest.raises(OSError) as captured:
-                os.fstat(descriptor)
-            assert captured.value.errno == errno.EBADF
-        if failure == "publication":
-            raise builder.VerificationError("publication failed")
-
-    monkeypatch.setattr(builder, "_verify_candidate_authority", lambda: ({}, {}))
-    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: {})
-    monkeypatch.setattr(builder, "_build_candidate_once", fake_build)
-    monkeypatch.setattr(builder, "_publish_candidate_artifacts", fake_publish)
-
-    if failure == "none":
-        assert builder.build_candidate_engine()["reproducible_build"]["build_count"] == 2
-    else:
-        with pytest.raises(builder.VerificationError, match="failed"):
-            builder.build_candidate_engine()
-
-    assert descriptors
-    for descriptor in descriptors:
-        with pytest.raises(OSError) as captured:
-            os.fstat(descriptor)
-        assert captured.value.errno == errno.EBADF
-
-
-def test_candidate_build_attempts_every_descriptor_close_after_one_close_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    descriptors = [
-        os.open(tmp_path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
-        for _index in range(2)
-    ]
-    calls = 0
-    published: list[bool] = []
-
-    def fake_build(*_args):
-        nonlocal calls
-        descriptor = descriptors[calls]
-        calls += 1
-        identity = {
-            "P1_U04_SOURCE_ST_DEV": "1",
-            "P1_U04_SOURCE_ST_INO": str(calls),
-        }
-        return (
-            b"wheel",
-            _empty_candidate_preflight(),
-            {"wheel": {"sha256": "0" * 64}},
-            identity,
-            descriptor,
-        )
-
-    real_close = os.close
-
-    def flaky_close(descriptor: int) -> None:
-        real_close(descriptor)
-        if descriptor == descriptors[1]:
-            raise OSError(errno.EIO, "injected close failure")
-
-    monkeypatch.setattr(builder, "_verify_candidate_authority", lambda: ({}, {}))
-    monkeypatch.setattr(builder, "_materialize_candidate_inputs", lambda *_args: {})
-    monkeypatch.setattr(builder, "_build_candidate_once", fake_build)
-    monkeypatch.setattr(
-        builder,
-        "_publish_candidate_artifacts",
-        lambda *_args: published.append(True),
-    )
-    monkeypatch.setattr(builder.os, "close", flaky_close)
-
-    with pytest.raises(builder.VerificationError, match="source descriptor close failed"):
-        builder.build_candidate_engine()
-
-    assert published == []
-    for descriptor in descriptors:
-        with pytest.raises(OSError) as captured:
-            os.fstat(descriptor)
-        assert captured.value.errno == errno.EBADF
 
 
 def test_candidate_attestor_routes_engine_identity_only_to_the_engine_wheel(
@@ -5789,8 +5578,15 @@ def test_candidate_attestation_cli_is_exclusive_and_accepts_no_paths(
     (
         (
             "scripts.build_nautilus_engine",
-            "build_candidate_engine",
-            ["--build-candidate", "--offline"],
+            "build_candidate_a",
+            [
+                "--build-candidate-a",
+                "--offline",
+                "--authority-receipt",
+                "/tmp/x4-receipt.json",
+                "--authority-receipt-sha256",
+                "0" * 64,
+            ],
             "{}",
         ),
         (
@@ -5818,7 +5614,7 @@ import sys
 tool = importlib.import_module({module_name!r})
 marker = Path({str(marker)!r})
 
-def publish():
+def publish(**_kwargs):
     marker.write_text('published', encoding='ascii')
     sys.stdout.close()
     return {result_expression}

@@ -244,6 +244,7 @@ _CANDIDATE_REPRODUCIBILITY_FIELDS = {
     "logical_stages_absent_after_build",
     "native_inventory_equality",
     "raw_wheel_equality",
+    "process_identities",
     "source_fd_identities",
     "wheel_sha256",
 }
@@ -251,6 +252,7 @@ _CANDIDATE_SOURCE_FD_FIELDS = {
     "P1_U04_SOURCE_ST_DEV",
     "P1_U04_SOURCE_ST_INO",
 }
+_CANDIDATE_PROCESS_IDENTITY_FIELDS = {"boot_id", "pid", "start_time_ticks"}
 _CANDIDATE_CLOSURE_FIELDS = {
     "activation_status",
     "artifact_manifest_sha256",
@@ -1627,6 +1629,9 @@ def _validate_candidate_artifact(
         )
     receipt = document.get("reproducible_build")
     identities = receipt.get("source_fd_identities") if isinstance(receipt, dict) else None
+    process_identities = (
+        receipt.get("process_identities") if isinstance(receipt, dict) else None
+    )
     required_true = (
         "fresh_physical_stages",
         "logical_stages_absent_after_build",
@@ -1654,6 +1659,26 @@ def _validate_candidate_artifact(
                 for value in identity.values()
             )
             for identity in identities
+        )
+        or not isinstance(process_identities, list)
+        or len(process_identities) != 2
+        or process_identities[0] == process_identities[1]
+        or any(
+            not isinstance(identity, dict)
+            or set(identity) != _CANDIDATE_PROCESS_IDENTITY_FIELDS
+            or not isinstance(identity.get("boot_id"), str)
+            or re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                identity["boot_id"],
+            )
+            is None
+            or any(
+                not isinstance(identity.get(field), int)
+                or isinstance(identity[field], bool)
+                or identity[field] <= 0
+                for field in ("pid", "start_time_ticks")
+            )
+            for identity in process_identities
         )
     ):
         raise RuntimeClosureMaterializationError(
