@@ -6,6 +6,7 @@ import copy
 import csv
 import errno
 from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from dataclasses import fields, replace
 import gzip
 import hashlib
@@ -20,6 +21,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -354,6 +356,14 @@ def _logical_stage() -> Path:
     engine = builder._candidate_json(ENGINE_POLICY)
     build_root = builder._candidate_roots(engine)["candidate_build_root"]
     return build_root / "stage-0123456789abcdef"
+
+
+def _mock_candidate_native_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        builder,
+        "_verified_candidate_native_snapshot",
+        lambda _engine: nullcontext(SimpleNamespace(root_fd=-1, mounts=())),
+    )
 
 
 def _write_candidate_wheel(
@@ -2986,6 +2996,7 @@ def test_candidate_bwrap_handoff_binds_only_the_verified_physical_stage_fd(
 
     monkeypatch.setattr(builder.subprocess, "run", fake_run)
     monkeypatch.setattr(builder, "_validate_sandbox", lambda _sandbox: "bubblewrap fixture")
+    _mock_candidate_native_snapshot(monkeypatch)
 
     source_identity = builder._candidate_sandbox_run(
         physical_stage=physical_stage,
@@ -3371,6 +3382,7 @@ def test_candidate_sandbox_rejects_source_replacement_between_actions(
 
     monkeypatch.setattr(builder.subprocess, "run", successful_action)
     monkeypatch.setattr(builder, "_validate_sandbox", lambda _sandbox: "bubblewrap fixture")
+    _mock_candidate_native_snapshot(monkeypatch)
 
     builder._candidate_sandbox_run(
         physical_stage=physical_stage,
@@ -3407,6 +3419,7 @@ def test_candidate_sandbox_rechecks_source_identity_after_every_action(
 
     monkeypatch.setattr(builder.subprocess, "run", replace_source)
     monkeypatch.setattr(builder, "_validate_sandbox", lambda _sandbox: "bubblewrap fixture")
+    _mock_candidate_native_snapshot(monkeypatch)
 
     with pytest.raises(builder.VerificationError, match="source directory identity drifted"):
         builder._candidate_sandbox_run(
@@ -3852,6 +3865,7 @@ def test_candidate_native_enters_upstream_build_with_initial_environment(
 
     monkeypatch.setattr(builder.subprocess, "run", fake_run)
     monkeypatch.setattr(builder, "_validate_sandbox", lambda _sandbox: "bubblewrap fixture")
+    _mock_candidate_native_snapshot(monkeypatch)
 
     builder._candidate_sandbox_run(
         physical_stage=physical_stage,
@@ -3923,6 +3937,7 @@ def test_candidate_non_native_actions_use_the_reviewed_u03_environment(
 
     monkeypatch.setattr(builder.subprocess, "run", fake_run)
     monkeypatch.setattr(builder, "_validate_sandbox", lambda _sandbox: "bubblewrap fixture")
+    _mock_candidate_native_snapshot(monkeypatch)
     builder._candidate_sandbox_run(
         physical_stage=physical_stage,
         logical_stage=_logical_stage(),

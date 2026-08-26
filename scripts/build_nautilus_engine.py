@@ -120,6 +120,9 @@ _CANDIDATE_INPUT_GENERATOR = _ROOT / "scripts/write_nautilus_toolchain_inputs.py
 _CANDIDATE_RUNTIME_CLOSURE_TOOL = (
     _ROOT / "scripts/materialize_nautilus_runtime_closure.py"
 )
+_CANDIDATE_NATIVE_SNAPSHOT_TOOL = (
+    _ROOT / "scripts/materialize_nautilus_native_authority.py"
+)
 _CANDIDATE_SANDBOX = Path("/usr/bin/bwrap")
 _CANDIDATE_COMMIT = "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
 _CANDIDATE_EXT_SUFFIX = ".cpython-312-x86_64-linux-gnu.so"
@@ -829,20 +832,6 @@ def _candidate_environment(
 def _candidate_mounts(engine: dict[str, object]) -> tuple[Path, ...]:
     roots = _candidate_roots(engine)
     admitted = (
-        Path("/usr/bin/python3.12"),
-        Path("/usr/lib/python3.12"),
-        Path("/usr/lib/x86_64-linux-gnu"),
-        Path("/usr/lib/gcc/x86_64-linux-gnu/13"),
-        Path("/usr/libexec/gcc/x86_64-linux-gnu/13"),
-        Path("/usr/include"),
-        Path("/usr/local/include"),
-        Path("/usr/bin/ar"),
-        Path("/usr/bin/ld"),
-        Path("/usr/bin/strip"),
-        Path("/usr/bin/x86_64-linux-gnu-ar"),
-        Path("/usr/bin/x86_64-linux-gnu-ld"),
-        Path("/usr/bin/x86_64-linux-gnu-ld.bfd"),
-        Path("/usr/bin/x86_64-linux-gnu-strip"),
         roots["candidate_input_root"] / "wheels",
         roots["candidate_cargo_home_root"],
         roots["candidate_vendor_root"],
@@ -854,6 +843,29 @@ def _candidate_mounts(engine: dict[str, object]) -> tuple[Path, ...]:
     if any(path == rollback or rollback in path.parents for path in admitted):
         raise VerificationError("rollback root cannot be mounted into the candidate sandbox")
     return admitted
+
+
+def _load_candidate_native_snapshot_tool():
+    spec = importlib.util.spec_from_file_location(
+        "materialize_nautilus_native_authority_for_candidate_build",
+        _CANDIDATE_NATIVE_SNAPSHOT_TOOL,
+    )
+    if spec is None or spec.loader is None:
+        raise VerificationError("candidate native snapshot verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
+
+
+def _verified_candidate_native_snapshot(engine: dict[str, object]):
+    authority = engine.get("native_build_authority")
+    policy = authority.get("snapshot") if isinstance(authority, dict) else None
+    return _load_candidate_native_snapshot_tool().verify_and_open(policy)
 
 
 def _candidate_command(
@@ -957,19 +969,46 @@ def _candidate_command(
         if environment is None:
             raise VerificationError("candidate policy probe environment is missing")
         probe = (
-            "import os,sys,sysconfig; "
-            f"expected={environment!r}; "
-            "assert dict(os.environ)==expected; "
-            "s=os.stat('.'); "
-            "assert (str(s.st_dev),str(s.st_ino))==(os.environ['P1_U04_SOURCE_ST_DEV'],os.environ['P1_U04_SOURCE_ST_INO']); "
-            "assert not os.path.exists('/usr/bin/gcc'); "
-            "assert not os.path.exists('/usr/bin/git'); "
-            "assert not os.path.exists('/home/thenam176/.cache/trading-agent/nautilus'); "
-            "assert os.listdir('/lib64')==['ld-linux-x86-64.so.2']; "
-            "assert os.path.samefile('/lib64/ld-linux-x86-64.so.2',"
-            "'/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2'); "
-            "assert sys.path==['/usr/lib/python312.zip','/usr/lib/python3.12','/usr/lib/python3.12/lib-dynload']; "
-            f"assert sysconfig.get_config_var('EXT_SUFFIX')=={_CANDIDATE_EXT_SUFFIX!r}"
+            "import errno,os,sys,sysconfig\n"
+            f"expected={environment!r}\n"
+            "assert dict(os.environ)==expected\n"
+            "s=os.stat('.')\n"
+            "assert (str(s.st_dev),str(s.st_ino))==(os.environ['P1_U04_SOURCE_ST_DEV'],os.environ['P1_U04_SOURCE_ST_INO'])\n"
+            "assert not os.path.exists('/usr/bin/gcc')\n"
+            "assert not os.path.exists('/usr/bin/git')\n"
+            "assert not os.path.exists('/home/thenam176/.cache/trading-agent/nautilus')\n"
+            "assert os.listdir('/etc/python3.12')==[]\n"
+            "assert os.listdir('/etc/alternatives')==[]\n"
+            "dead_links=(\n"
+            "('/usr/lib/python3.12/sitecustomize.py','/etc/python3.12/sitecustomize.py'),\n"
+            "('/usr/lib/x86_64-linux-gnu/libblas.so.3','/etc/alternatives/libblas.so.3-x86_64-linux-gnu'),\n"
+            "('/usr/lib/x86_64-linux-gnu/liblapack.so.3','/etc/alternatives/liblapack.so.3-x86_64-linux-gnu'),\n"
+            ")\n"
+            "for path,target in dead_links:\n"
+            "    assert os.path.islink(path)\n"
+            "    assert os.readlink(path)==target\n"
+            "    os.makedirs(os.path.dirname(target),exist_ok=True)\n"
+            "    try:\n"
+            "        descriptor=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\n"
+            "    except OSError as exc:\n"
+            "        if exc.errno!=errno.EROFS:\n"
+            "            raise\n"
+            "    else:\n"
+            "        os.close(descriptor)\n"
+            "        os.unlink(target)\n"
+            "        raise RuntimeError('candidate could reanimate external link')\n"
+            "stage_probe='.p1-u04-stage-write-probe'\n"
+            "descriptor=os.open(stage_probe,os.O_RDWR|os.O_CREAT|os.O_EXCL,0o600)\n"
+            "try:\n"
+            "    assert os.write(descriptor,b'stage-writable')==14\n"
+            "    assert os.pread(descriptor,14,0)==b'stage-writable'\n"
+            "finally:\n"
+            "    os.close(descriptor)\n"
+            "    os.unlink(stage_probe)\n"
+            "assert os.listdir('/lib64')==['ld-linux-x86-64.so.2']\n"
+            "assert os.path.samefile('/lib64/ld-linux-x86-64.so.2','/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2')\n"
+            "assert sys.path==['/usr/lib/python312.zip','/usr/lib/python3.12','/usr/lib/python3.12/lib-dynload']\n"
+            f"assert sysconfig.get_config_var('EXT_SUFFIX')=={_CANDIDATE_EXT_SUFFIX!r}\n"
         )
         return (python, "-I", "-S", "-c", probe)
     raise VerificationError("candidate sandbox action is not exact")
@@ -1015,55 +1054,77 @@ def _candidate_sandbox_run(
         )
         mounts = _candidate_mounts(engine)
         command = _candidate_command(action, logical_stage, inputs, environment)
-        invocation = [
-            str(_CANDIDATE_SANDBOX),
-            "--die-with-parent",
-            "--unshare-all",
-            "--new-session",
-            "--tmpfs",
-            "/",
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "--symlink",
-            "usr/lib",
-            "/lib",
-        ]
-        directories: set[Path] = {Path("/"), Path("/lib64")}
-        for destination in (*mounts, logical_stage):
-            parent = destination.parent
-            while parent != Path("/"):
-                directories.add(parent)
-                parent = parent.parent
-        for directory in sorted(directories, key=lambda item: (len(item.parts), str(item))):
-            if directory != Path("/") and directory != Path("/lib"):
-                invocation.extend(("--dir", str(directory)))
-        invocation.extend(
-            (
-                "--symlink",
-                "../usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-                "/lib64/ld-linux-x86-64.so.2",
-            )
-        )
-        for mount in mounts:
-            invocation.extend(("--ro-bind", str(mount), str(mount)))
-        invocation.extend(("--bind-fd", str(stage_fd), str(logical_stage)))
-        invocation.extend(("--chdir", str(logical_stage / "source"), "--clearenv"))
-        for key, value in sorted(environment.items()):
-            if key != "PWD":
-                invocation.extend(("--setenv", key, value))
-        invocation.extend(("--", *command))
         command_error: BaseException | None = None
         try:
-            subprocess.run(
-                invocation,
-                check=True,
-                timeout=timeout,
-                env={},
-                pass_fds=(stage_fd,),
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
+            with _verified_candidate_native_snapshot(engine) as verified_snapshot:
+                invocation = [
+                    str(_CANDIDATE_SANDBOX),
+                    "--die-with-parent",
+                    "--unshare-all",
+                    "--new-session",
+                    "--tmpfs",
+                    "/",
+                    "--dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                    "--symlink",
+                    "usr/lib",
+                    "/lib",
+                ]
+                destinations = tuple(
+                    Path(mount.destination) for mount in verified_snapshot.mounts
+                )
+                directories: set[Path] = {
+                    Path("/"),
+                    Path("/etc"),
+                    Path("/etc/alternatives"),
+                    Path("/etc/python3.12"),
+                    Path("/lib64"),
+                }
+                for destination in (*mounts, *destinations, logical_stage):
+                    parent = destination.parent
+                    while parent != Path("/"):
+                        directories.add(parent)
+                        parent = parent.parent
+                for directory in sorted(
+                    directories, key=lambda item: (len(item.parts), str(item))
+                ):
+                    if directory != Path("/") and directory != Path("/lib"):
+                        invocation.extend(("--dir", str(directory)))
+                invocation.extend(
+                    (
+                        "--symlink",
+                        "../usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+                        "/lib64/ld-linux-x86-64.so.2",
+                    )
+                )
+                for mount in mounts:
+                    invocation.extend(("--ro-bind", str(mount), str(mount)))
+                for mount in verified_snapshot.mounts:
+                    invocation.extend(
+                        ("--ro-bind-fd", str(mount.fd), mount.destination)
+                    )
+                invocation.extend(("--bind-fd", str(stage_fd), str(logical_stage)))
+                invocation.extend(("--remount-ro", "/"))
+                invocation.extend(
+                    ("--chdir", str(logical_stage / "source"), "--clearenv")
+                )
+                for key, value in sorted(environment.items()):
+                    if key != "PWD":
+                        invocation.extend(("--setenv", key, value))
+                invocation.extend(("--", *command))
+                subprocess.run(
+                    invocation,
+                    check=True,
+                    timeout=timeout,
+                    env={},
+                    pass_fds=(
+                        stage_fd,
+                        *(mount.fd for mount in verified_snapshot.mounts),
+                    ),
+                )
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             command_error = exc
         try:
             final_descriptor_identity = _candidate_source_identity_from_stat(
