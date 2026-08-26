@@ -1,6 +1,7 @@
 # P1-U04 immutable native-authority snapshot implementation plan
 
-Packet limit: two implementation/review rounds.
+Packet limit: two implementation/review rounds. Round 1 stopped on the omitted
+BLAS/LAPACK alternatives links; the following is the final round 2/2 plan.
 
 1. Freeze RED evidence: production phase-B replay fails on the exact live
    `/usr/lib/x86_64-linux-gnu` inventory after libcurl 10.13 replacement.
@@ -16,8 +17,9 @@ Packet limit: two implementation/review rounds.
 4. Change candidate mount construction from same-path mounts to exact
    source/destination pairs and hand the verified open snapshot root to
    Bubblewrap by inherited FD; use it for CPython, stdlib, headers, libraries,
-   GCC support, and admitted binutils. Preserve only the reviewed dead
-   `sitecustomize.py` link and prove `/etc` stays absent.
+   GCC support, and admitted binutils. Preserve exactly the three reviewed dead
+   links (`sitecustomize.py`, `libblas.so.3`, and `liblapack.so.3`) and prove all
+   their `/etc` targets stay absent. Reject any fourth external link.
 5. Materialize the real-host snapshot offline and seal it. Keep the canonical
    receipt outside the payload digest, then bind receipt SHA-256, payload-tree
    digest, fixed root, and mappings into candidate engine policy and generated

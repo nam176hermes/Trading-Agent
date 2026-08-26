@@ -1,6 +1,6 @@
 # P1-U04 immutable native-authority snapshot design
 
-Status: integration-lead design for bounded repair round 1/2.
+Status: integration-lead revised design for bounded repair round 2/2.
 
 ## Problem
 
@@ -55,12 +55,17 @@ only and never authority.
   are single-link. The source receipt separately preserves root-UID and
   policy-bound source GID/modes, including legitimate nonzero source GIDs.
   No special or writable nonsymlink entry is accepted.
-- Symlinks are preserved and must resolve within the admitted namespace mapping
-  except exactly `/usr/lib/python3.12/sitecustomize.py` pointing to
-  `/etc/python3.12/sitecustomize.py`. That reviewed link is preserved as a dead
-  link and the verifier proves `/etc` and its target remain unavailable inside
-  Bubblewrap. Every other escape, loop, broken link, or unapproved cross-map
-  target is rejected.
+- A complete real-host scan of all 14 mappings finds exactly three external
+  symlinks. They are preserved as reviewed dead links:
+  `/usr/lib/python3.12/sitecustomize.py` to
+  `/etc/python3.12/sitecustomize.py`,
+  `/usr/lib/x86_64-linux-gnu/libblas.so.3` to
+  `/etc/alternatives/libblas.so.3-x86_64-linux-gnu`, and
+  `/usr/lib/x86_64-linux-gnu/liblapack.so.3` to
+  `/etc/alternatives/liblapack.so.3-x86_64-linux-gnu`. Bubblewrap mounts no
+  `/etc`; a host/native policy probe must prove all three paths are symlinks but
+  all three targets remain unavailable in the empty-root namespace. Every other
+  escape, loop, broken link, or unapproved cross-map target is rejected.
 - Publication requires canonical three-way equality over every mapped entry:
   `source_before == destination-projected snapshot == source_after`. Equality
   covers path, type, mode class, symlink target, regular-file size and SHA-256;
@@ -97,8 +102,10 @@ plus security/replay reviews. Only accepted X3 bytes may enter host preflight.
 Fresh host-authority reviews must PASS before the stale Build A is removed
 recoverably and X4 is re-preflighted.
 
-Round 2 is reserved only for a concrete binding, TOCTOU, or mount-isolation
-finding against round 1. It may tighten validation but may not change package
-versions, fetch bytes, weaken equality, or fall back to live `/usr`.
+Round 1 stopped before real materialization when host discovery found the two
+BLAS/LAPACK alternatives links omitted by the original exact-dead-link rule.
+Round 2 is limited to the complete three-link exception set and sandbox probes
+above. It may not add another exception, change package versions, fetch bytes,
+weaken equality, or fall back to live `/usr`.
 
 If round 2 fails, stop with `P1_U04_ARCHITECTURE_ESCALATION_REQUIRED`.
