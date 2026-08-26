@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 import scripts.build_nautilus_engine as builder
+import scripts.write_nautilus_toolchain_inputs as toolchain
 
 
 MODULE = "scripts.materialize_nautilus_native_authority"
@@ -105,6 +106,25 @@ def test_native_snapshot_uses_the_exact_fixed_fourteen_mappings() -> None:
         ("/usr/bin/x86_64-linux-gnu-ld.bfd", "/usr/bin/x86_64-linux-gnu-ld.bfd"),
         ("/usr/bin/x86_64-linux-gnu-strip", "/usr/bin/x86_64-linux-gnu-strip"),
     )
+
+
+def test_committed_native_authority_is_only_the_exact_snapshot_binding() -> None:
+    snapshot = _snapshot_module()
+    engine = toolchain.load_json(toolchain.ENGINE_POLICY)
+    authority = engine["native_build_authority"]
+
+    assert set(authority) == {"authority", "llvm_authority", "snapshot", "usage"}
+    assert authority["authority"] == "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1"
+    assert authority["llvm_authority"] == "IMMUTABLE_LLVM_POLICY_REFERENCE"
+    assert authority["usage"] == "U04_OFFLINE_BUILD_ONLY"
+    binding = authority["snapshot"]
+    assert binding["root"] == str(snapshot.SNAPSHOT_ROOT)
+    assert binding["receipt_path"] == str(snapshot.RECEIPT_PATH)
+    assert binding["mappings"] == [
+        {"destination": destination, "source": source}
+        for source, destination in snapshot.SOURCE_DESTINATION_MAPPINGS
+    ]
+    toolchain._verify_native_build_authority(authority)
 
 
 def test_materializer_publishes_canonical_sealed_payload_and_one_way_receipt(
@@ -230,10 +250,6 @@ def test_verifier_rejects_extra_missing_special_writable_and_multiply_linked_ent
 
 def test_symlink_policy_allows_exact_three_dead_etc_targets_and_no_fourth() -> None:
     snapshot = _snapshot_module()
-    mappings = (
-        ("/source/python", "/usr/lib/python3.12"),
-        ("/source/native", "/usr/lib/x86_64-linux-gnu"),
-    )
     valid = [
         {
             "path": "/usr/lib/python3.12/sitecustomize.py",
@@ -251,10 +267,17 @@ def test_symlink_policy_allows_exact_three_dead_etc_targets_and_no_fourth() -> N
             "type": "symlink",
         },
     ]
-    snapshot._validate_symlinks(valid, mappings)
+    snapshot._validate_symlinks(valid, snapshot.SOURCE_DESTINATION_MAPPINGS)
+
+    for missing in range(len(valid)):
+        with pytest.raises(snapshot.SnapshotError, match="exact external symlink set"):
+            snapshot._validate_symlinks(
+                valid[:missing] + valid[missing + 1 :],
+                snapshot.SOURCE_DESTINATION_MAPPINGS,
+            )
 
     for target in ("/etc/passwd", "../../../../etc/passwd", "missing.so"):
-        invalid = [
+        invalid = valid + [
             {
                 "path": "/usr/lib/x86_64-linux-gnu/libfourth.so",
                 "target": target,
@@ -262,7 +285,9 @@ def test_symlink_policy_allows_exact_three_dead_etc_targets_and_no_fourth() -> N
             }
         ]
         with pytest.raises(snapshot.SnapshotError, match="symlink"):
-            snapshot._validate_symlinks(invalid, mappings)
+            snapshot._validate_symlinks(
+                invalid, snapshot.SOURCE_DESTINATION_MAPPINGS
+            )
 
 
 @pytest.mark.parametrize(

@@ -84,33 +84,6 @@ def _sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _install_synthetic_native_tree_inventory(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    native: dict[str, Any],
-) -> None:
-    root = tmp_path / "synthetic-native-host"
-    root.mkdir()
-    root.chmod(0o755)
-    root_stat = root.stat()
-    for inventory in native["directory_inventories"]:
-        inventory.update(
-            {
-                "directory_count": 0,
-                "file_count": 0,
-                "record_count": 0,
-                "root_gid": root_stat.st_gid,
-                "root_mode": "0755",
-                "root_uid": root_stat.st_uid,
-                "symlink_count": 0,
-                "tree_sha256": _sha256(b"[]"),
-            }
-        )
-    monkeypatch.setattr(
-        toolchain, "_tree_inventory", lambda _root, _label: ([], root_stat)
-    )
-
-
 def _assert_reviewed_candidate_path_identities(
     engine: dict[str, Any], cargo: dict[str, Any]
 ) -> None:
@@ -234,13 +207,11 @@ def test_candidate_policy_is_exact_source_derived_and_isolated() -> None:
         "injection": "EXPLICIT_SYS_PATH_PREPEND_BEFORE_IMPORT",
         "root": str(Path(roots["candidate_input_root"]) / "wheels"),
     }
-    assert engine["native_build_authority"]["authority"] == (
-        "EXACT_REVIEWED_SYSTEM_HEADERS_LINKER_AND_RUNTIME_INPUTS"
-    )
-    assert "/usr/include/python3.12" in engine["native_build_authority"][
-        "required_paths"
-    ]
-    assert "/usr/bin/strip" in engine["native_build_authority"]["required_paths"]
+    native = engine["native_build_authority"]
+    assert native["authority"] == "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1"
+    destinations = [item["destination"] for item in native["snapshot"]["mappings"]]
+    assert "/usr/include" in destinations
+    assert "/usr/bin/strip" in destinations
     build_environment = engine["native_build_environment"]
     assert build_environment["route"] == "AWS_LC_SOURCE_DIRECT_CC"
     assert build_environment["construction"] == "EMPTY_THEN_SET_EXACT_VALUES"
@@ -432,63 +403,37 @@ def test_python_startup_or_external_symlink_authority_drift_fails_closed() -> No
         toolchain._verify_system_python(python)
 
 
-def test_native_build_inventory_or_tool_drift_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("root", "/tmp/foreign"),
+        ("receipt_path", "/tmp/foreign-receipt.json"),
+        ("receipt_sha256", "0" * 64),
+        ("payload_tree_sha256", "0" * 64),
+        ("mappings", []),
+        ("threat_model", "HOSTILE_HOST"),
+    ),
+)
+def test_native_snapshot_policy_binding_drift_fails_closed(
+    field: str, value: object
 ) -> None:
     native = copy.deepcopy(
         toolchain.load_json(ENGINE_POLICY)["native_build_authority"]
     )
-    _install_synthetic_native_tree_inventory(monkeypatch, tmp_path, native)
-    toolchain._verify_tree_inventory(
-        native["directory_inventories"][0], "native build /usr/include"
-    )
-    native["directory_inventories"][0]["tree_sha256"] = "0" * 64
-    with pytest.raises(toolchain.VerificationError, match="inventory drifted"):
+    native["snapshot"][field] = value
+    with pytest.raises(toolchain.VerificationError, match="snapshot"):
         toolchain._verify_native_build_authority(native)
-
-    synthetic_tool = tmp_path / "synthetic-tool"
-    synthetic_tool.write_bytes(b"synthetic tool")
-    synthetic_tool.chmod(0o755)
-    tool_stat = synthetic_tool.stat()
-    tool_record = {
-        "gid": tool_stat.st_gid,
-        "mode": "0755",
-        "path": str(synthetic_tool),
-        "sha256": _sha256(synthetic_tool.read_bytes()),
-        "size": tool_stat.st_size,
-        "type": "file",
-        "uid": tool_stat.st_uid,
-    }
-    toolchain._verify_path_record(tool_record, "native build synthetic tool")
-    tool_record["sha256"] = "0" * 64
-    with pytest.raises(toolchain.VerificationError, match="identity drifted"):
-        toolchain._verify_path_record(tool_record, "native build synthetic tool")
 
 
 def test_direct_cc_archiver_route_is_exact_and_has_no_unneeded_companion() -> None:
     engine = toolchain.load_json(ENGINE_POLICY)
     native = engine["native_build_authority"]
-    tools = {item["path"]: item for item in native["system_tools"]}
-    assert tools["/usr/bin/ar"] == {
-        "gid": 0,
-        "mode": "0777",
-        "path": "/usr/bin/ar",
-        "size": 19,
-        "target": "x86_64-linux-gnu-ar",
-        "type": "symlink",
-        "uid": 0,
+    destinations = {
+        item["destination"] for item in native["snapshot"]["mappings"]
     }
-    assert tools["/usr/bin/x86_64-linux-gnu-ar"] == {
-        "gid": 0,
-        "mode": "0755",
-        "path": "/usr/bin/x86_64-linux-gnu-ar",
-        "sha256": "6452af2eea333b8c65e1adb92964fc8f97863ab003fa13f9d12bff5345cd7dbe",
-        "size": 55792,
-        "type": "file",
-        "uid": 0,
-    }
-    assert not any("ranlib" in path for path in tools)
+    assert "/usr/bin/ar" in destinations
+    assert "/usr/bin/x86_64-linux-gnu-ar" in destinations
+    assert not any("ranlib" in path for path in destinations)
     route = engine["native_build_environment"]["sealed_source_trace"]
     assert route["aws-lc-sys"]["version"] == "0.43.0"
     assert route["aws-lc-sys"]["sha256"] == (
@@ -506,7 +451,7 @@ def test_direct_cc_archiver_route_is_exact_and_has_no_unneeded_companion() -> No
     (
         ("missing", "build environment"),
         ("drift", "build environment"),
-        ("archiver", "system tool set"),
+        ("archiver", "snapshot"),
     ),
 )
 def test_direct_cc_environment_omission_or_archiver_drift_fails_closed(
@@ -523,57 +468,35 @@ def test_direct_cc_environment_omission_or_archiver_drift_fails_closed(
             "AWS_LC_SYS_CMAKE_BUILDER"
         ] = "1"
     else:
-        engine["native_build_authority"]["system_tools"] = [
+        snapshot = engine["native_build_authority"]["snapshot"]
+        snapshot["mappings"] = [
             record
-            for record in engine["native_build_authority"]["system_tools"]
-            if record["path"] != "/usr/bin/ar"
+            for record in snapshot["mappings"]
+            if record["destination"] != "/usr/bin/ar"
         ]
     with pytest.raises(toolchain.VerificationError, match=message):
         if mutation == "archiver":
-            native = engine["native_build_authority"]
-            _install_synthetic_native_tree_inventory(
-                monkeypatch, tmp_path, native
+            toolchain._verify_native_build_authority(
+                engine["native_build_authority"]
             )
-            toolchain._verify_native_build_authority(native)
         else:
             toolchain._verify_build_environment_policy(
                 engine["native_build_environment"]
             )
 
 
-def test_full_policy_preflight_rejects_include_drift_before_tool_identity(
+def test_native_snapshot_policy_validation_does_not_read_mutable_live_usr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = toolchain.load_json(ENGINE_POLICY)
-    observed_inventories: list[str] = []
-    observed_tools: list[str] = []
 
-    def reject_include(inventory: dict[str, Any], _label: str) -> None:
-        observed_inventories.append(inventory["path"])
-        raise toolchain.VerificationError(
-            "native build /usr/include inventory drifted"
-        )
+    def reject_live_read(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("mutable live native authority was read")
 
-    def observe_tool(record: dict[str, Any], _label: str) -> None:
-        observed_tools.append(record["path"])
+    monkeypatch.setattr(toolchain, "_verify_tree_inventory", reject_live_read)
+    monkeypatch.setattr(toolchain, "_verify_path_record", reject_live_read)
 
-    monkeypatch.setattr(toolchain, "_verify_system_python", lambda _policy: None)
-    monkeypatch.setattr(toolchain, "_verify_tree_inventory", reject_include)
-    monkeypatch.setattr(toolchain, "_verify_path_record", observe_tool)
-
-    with pytest.raises(
-        toolchain.VerificationError,
-        match="native build /usr/include inventory drifted",
-    ):
-        toolchain._verify_policies(
-            engine,
-            toolchain.load_json(INPUT_POLICY),
-            toolchain.load_json(WHEEL_POLICY),
-            toolchain.load_json(CARGO_POLICY),
-        )
-
-    assert observed_inventories == ["/usr/include"]
-    assert observed_tools == []
+    toolchain._verify_native_build_authority(engine["native_build_authority"])
 
 
 @pytest.mark.parametrize(

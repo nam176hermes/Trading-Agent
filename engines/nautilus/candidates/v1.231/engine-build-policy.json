@@ -270,158 +270,75 @@
     "version": "22.1.3"
   },
   "native_build_authority": {
-    "authority": "EXACT_REVIEWED_SYSTEM_HEADERS_LINKER_AND_RUNTIME_INPUTS",
-    "directory_inventories": [
-      {
-        "directory_count": 717,
-        "file_count": 5256,
-        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
-        "path": "/usr/include",
-        "record_count": 5973,
-        "root_gid": 0,
-        "root_mode": "0755",
-        "root_uid": 0,
-        "symlink_count": 0,
-        "tree_sha256": "268ef63660c38d450f2c6e12270c1d8fb3ab616c561e60cb17f5f8515538b01a"
-      },
-      {
-        "directory_count": 3,
-        "file_count": 172,
-        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
-        "path": "/usr/lib/gcc/x86_64-linux-gnu/13",
-        "record_count": 192,
-        "root_gid": 0,
-        "root_mode": "0755",
-        "root_uid": 0,
-        "symlink_count": 17,
-        "tree_sha256": "a50ba0879474aed59ee44f8874c02464082e5d1d03f013d51a3af01c5c0fabde"
-      },
-      {
-        "directory_count": 331,
-        "file_count": 2380,
-        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
-        "path": "/usr/lib/x86_64-linux-gnu",
-        "record_count": 3239,
-        "root_gid": 0,
-        "root_mode": "0755",
-        "root_uid": 0,
-        "symlink_count": 528,
-        "tree_sha256": "0ae47028eb1b5818d5c1054c8a75ee40d8851634f77196308d157f3366387b11"
-      },
-      {
-        "directory_count": 0,
-        "file_count": 7,
-        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
-        "path": "/usr/libexec/gcc/x86_64-linux-gnu/13",
-        "record_count": 7,
-        "root_gid": 0,
-        "root_mode": "0755",
-        "root_uid": 0,
-        "symlink_count": 0,
-        "tree_sha256": "36b7d0196933e2219a97371e8406a1106f4ba465445829bd2938f18edc0c7742"
-      },
-      {
-        "directory_count": 0,
-        "file_count": 0,
-        "inventory_algorithm": "canonical-relative-lstat-sha256-v1",
-        "path": "/usr/local/include",
-        "record_count": 0,
-        "root_gid": 0,
-        "root_mode": "0755",
-        "root_uid": 0,
-        "symlink_count": 0,
-        "tree_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-      }
-    ],
-    "external_symlink_targets": {
-      "admitted_target_roots": [
-        "/usr/lib/python3.12",
-        "/usr/lib/x86_64-linux-gnu",
-        "/usr/libexec/gcc/x86_64-linux-gnu/13"
-      ],
-      "authority": "BOUND_BY_EXACT_DIRECTORY_INVENTORIES",
-      "source_roots": [
-        "/usr/lib/gcc/x86_64-linux-gnu/13",
-        "/usr/lib/x86_64-linux-gnu"
-      ]
-    },
+    "authority": "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1",
     "llvm_authority": "IMMUTABLE_LLVM_POLICY_REFERENCE",
-    "required_paths": [
-      "/usr/bin/ar",
-      "/usr/bin/ld",
-      "/usr/bin/strip",
-      "/usr/bin/x86_64-linux-gnu-ar",
-      "/usr/include/python3.12",
-      "/usr/lib/gcc/x86_64-linux-gnu/13",
-      "/usr/lib/x86_64-linux-gnu",
-      "/usr/libexec/gcc/x86_64-linux-gnu/13",
-      "/usr/local/include"
-    ],
-    "system_tools": [
-      {
-        "gid": 0,
-        "mode": "0777",
-        "path": "/usr/bin/ar",
-        "size": 19,
-        "target": "x86_64-linux-gnu-ar",
-        "type": "symlink",
-        "uid": 0
-      },
-      {
-        "gid": 0,
-        "mode": "0777",
-        "path": "/usr/bin/ld",
-        "size": 19,
-        "target": "x86_64-linux-gnu-ld",
-        "type": "symlink",
-        "uid": 0
-      },
-      {
-        "gid": 0,
-        "mode": "0777",
-        "path": "/usr/bin/strip",
-        "size": 22,
-        "target": "x86_64-linux-gnu-strip",
-        "type": "symlink",
-        "uid": 0
-      },
-      {
-        "gid": 0,
-        "mode": "0755",
-        "path": "/usr/bin/x86_64-linux-gnu-ar",
-        "sha256": "6452af2eea333b8c65e1adb92964fc8f97863ab003fa13f9d12bff5345cd7dbe",
-        "size": 55792,
-        "type": "file",
-        "uid": 0
-      },
-      {
-        "gid": 0,
-        "mode": "0777",
-        "path": "/usr/bin/x86_64-linux-gnu-ld",
-        "size": 23,
-        "target": "x86_64-linux-gnu-ld.bfd",
-        "type": "symlink",
-        "uid": 0
-      },
-      {
-        "gid": 0,
-        "mode": "0755",
-        "path": "/usr/bin/x86_64-linux-gnu-ld.bfd",
-        "sha256": "e9ceb054c12207970f2726dfc07e9a66b411602748628baf27399f02a9bbb31b",
-        "size": 1359128,
-        "type": "file",
-        "uid": 0
-      },
-      {
-        "gid": 0,
-        "mode": "0755",
-        "path": "/usr/bin/x86_64-linux-gnu-strip",
-        "sha256": "0d980587ada7ab12193f39271f060d5663aa2f289b0e80d2a0274ce7306e4e42",
-        "size": 166568,
-        "type": "file",
-        "uid": 0
-      }
-    ],
+    "snapshot": {
+      "authority": "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1",
+      "mappings": [
+        {
+          "destination": "/usr/bin/python3.12",
+          "source": "/usr/bin/python3.12"
+        },
+        {
+          "destination": "/usr/lib/python3.12",
+          "source": "/usr/lib/python3.12"
+        },
+        {
+          "destination": "/usr/lib/x86_64-linux-gnu",
+          "source": "/usr/lib/x86_64-linux-gnu"
+        },
+        {
+          "destination": "/usr/lib/gcc/x86_64-linux-gnu/13",
+          "source": "/usr/lib/gcc/x86_64-linux-gnu/13"
+        },
+        {
+          "destination": "/usr/libexec/gcc/x86_64-linux-gnu/13",
+          "source": "/usr/libexec/gcc/x86_64-linux-gnu/13"
+        },
+        {
+          "destination": "/usr/include",
+          "source": "/usr/include"
+        },
+        {
+          "destination": "/usr/local/include",
+          "source": "/usr/local/include"
+        },
+        {
+          "destination": "/usr/bin/ar",
+          "source": "/usr/bin/ar"
+        },
+        {
+          "destination": "/usr/bin/ld",
+          "source": "/usr/bin/ld"
+        },
+        {
+          "destination": "/usr/bin/strip",
+          "source": "/usr/bin/strip"
+        },
+        {
+          "destination": "/usr/bin/x86_64-linux-gnu-ar",
+          "source": "/usr/bin/x86_64-linux-gnu-ar"
+        },
+        {
+          "destination": "/usr/bin/x86_64-linux-gnu-ld",
+          "source": "/usr/bin/x86_64-linux-gnu-ld"
+        },
+        {
+          "destination": "/usr/bin/x86_64-linux-gnu-ld.bfd",
+          "source": "/usr/bin/x86_64-linux-gnu-ld.bfd"
+        },
+        {
+          "destination": "/usr/bin/x86_64-linux-gnu-strip",
+          "source": "/usr/bin/x86_64-linux-gnu-strip"
+        }
+      ],
+      "payload_tree_sha256": "dca405a50542615a751b22e16b39f52fcfb637a4acb85f4ec945f96c0c0bcd57",
+      "receipt_path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-native-authority-3ceeb7a55c5d-receipt.json",
+      "receipt_sha256": "3e9aad0b2a3b467ac1ab2b50ea58ab59ec0474d68e31f31f80023ee58d90f728",
+      "root": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-native-authority-3ceeb7a55c5d",
+      "schema_version": 1,
+      "threat_model": "COOPERATIVE_HOST"
+    },
     "usage": "U04_OFFLINE_BUILD_ONLY"
   },
   "native_build_environment": {

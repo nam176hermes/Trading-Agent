@@ -79,7 +79,12 @@ def _missing_host_authority(policy: dict[str, object]) -> bool:
         "candidate_vendor_root",
     )
     required = [Path(str(roots[name])) for name in required_roots]
-    required.extend(Path(str(path)) for path in native["required_paths"])
+    snapshot = native.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    required.extend(
+        (Path(str(snapshot.get("root"))), Path(str(snapshot.get("receipt_path"))))
+    )
     required.extend(
         (
             Path(str(python["executable"])),
@@ -109,6 +114,11 @@ def main(argv: list[str] | None = None) -> int:
         builder._validate_sandbox(builder._CANDIDATE_SANDBOX)
     except (OSError, RuntimeError, ValueError):
         return _emit("FAIL", "BUBBLEWRAP_AUTHORITY_INVALID")
+    try:
+        with builder._verified_candidate_native_snapshot(policy):
+            pass
+    except (OSError, RuntimeError, ValueError):
+        return _emit("FAIL", "HOST_AUTHORITY_INVALID")
 
     os.environ["P1_U03_TOOLCHAIN_CACHE"] = str(expected_cache)
     stdout = io.StringIO()

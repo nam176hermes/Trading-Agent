@@ -374,12 +374,14 @@ def _validate_symlinks(
     mappings: Sequence[tuple[str, str]],
 ) -> None:
     records = {str(entry["path"]): entry for entry in entries}
+    observed_external_links: set[tuple[str, str]] = set()
     for entry in entries:
         if entry.get("type") != "symlink":
             continue
         path = str(entry["path"])
         target = str(entry.get("target"))
         if (path, target) in _DEAD_EXTERNAL_LINKS:
+            observed_external_links.add((path, target))
             continue
         current = _lexical_target(path, target)
         seen = {path}
@@ -395,6 +397,11 @@ def _validate_symlinks(
             current = _lexical_target(current, str(target_record.get("target")))
         else:
             raise SnapshotError(f"native snapshot symlink loop: {path}")
+    if (
+        tuple(mappings) == SOURCE_DESTINATION_MAPPINGS
+        and observed_external_links != _DEAD_EXTERNAL_LINKS
+    ):
+        raise SnapshotError("native snapshot exact external symlink set drifted")
 
 
 def _ensure_directory(parent_fd: int, name: str) -> int:

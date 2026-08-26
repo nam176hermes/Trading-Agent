@@ -25,6 +25,8 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 CANDIDATE = ROOT / "engines/nautilus/candidates/v1.231"
 ENGINE_POLICY = CANDIDATE / "engine-build-policy.json"
 INPUT_POLICY = CANDIDATE / "input-cache-policy.json"
@@ -38,6 +40,12 @@ _REQUIREMENT = re.compile(
 )
 _MAX_ARCHIVE_MEMBERS = 20_000
 _MAX_MEMBER_BYTES = 512 * 1024 * 1024
+_NATIVE_SNAPSHOT_PAYLOAD_SHA256 = (
+    "dca405a50542615a751b22e16b39f52fcfb637a4acb85f4ec945f96c0c0bcd57"
+)
+_NATIVE_SNAPSHOT_RECEIPT_SHA256 = (
+    "3e9aad0b2a3b467ac1ab2b50ea58ab59ec0474d68e31f31f80023ee58d90f728"
+)
 _MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 _CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 _TARGET = "x86_64-unknown-linux-gnu"
@@ -806,95 +814,60 @@ def _verify_system_python(policy: dict[str, Any]) -> None:
 
 
 def _verify_native_build_authority(policy: dict[str, Any]) -> None:
+    from scripts import materialize_nautilus_native_authority as snapshot_authority
+
     _require_keys(
         policy,
         {
             "authority",
-            "directory_inventories",
-            "external_symlink_targets",
             "llvm_authority",
-            "required_paths",
-            "system_tools",
+            "snapshot",
             "usage",
         },
         "native build authority",
     )
     if (
         policy["authority"]
-        != "EXACT_REVIEWED_SYSTEM_HEADERS_LINKER_AND_RUNTIME_INPUTS"
+        != "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1"
         or policy["usage"] != "U04_OFFLINE_BUILD_ONLY"
         or policy["llvm_authority"] != "IMMUTABLE_LLVM_POLICY_REFERENCE"
     ):
         raise VerificationError("native build authority is ambiguous")
-    inventories = policy["directory_inventories"]
-    expected_directories = sorted(
-        [
-            "/usr/include",
-            "/usr/lib/gcc/x86_64-linux-gnu/13",
-            "/usr/lib/x86_64-linux-gnu",
-            "/usr/libexec/gcc/x86_64-linux-gnu/13",
-            "/usr/local/include",
-        ]
+    binding = policy["snapshot"]
+    if not isinstance(binding, dict):
+        raise VerificationError("native snapshot policy binding is invalid")
+    _require_keys(
+        binding,
+        {
+            "authority",
+            "mappings",
+            "payload_tree_sha256",
+            "receipt_path",
+            "receipt_sha256",
+            "root",
+            "schema_version",
+            "threat_model",
+        },
+        "native snapshot policy",
     )
-    if [item["path"] for item in inventories] != expected_directories:
-        raise VerificationError("native build directory set is not exact")
-    for inventory in inventories:
-        _verify_tree_inventory(inventory, f"native build {inventory['path']}")
-    tools = policy["system_tools"]
-    if [item["path"] for item in tools] != [
-        "/usr/bin/ar",
-        "/usr/bin/ld",
-        "/usr/bin/strip",
-        "/usr/bin/x86_64-linux-gnu-ar",
-        "/usr/bin/x86_64-linux-gnu-ld",
-        "/usr/bin/x86_64-linux-gnu-ld.bfd",
-        "/usr/bin/x86_64-linux-gnu-strip",
-    ]:
-        raise VerificationError("native build system tool set is not exact")
-    for record in tools:
-        _verify_path_record(record, f"native build tool {record['path']}")
-    if policy["required_paths"] != [
-        "/usr/bin/ar",
-        "/usr/bin/ld",
-        "/usr/bin/strip",
-        "/usr/bin/x86_64-linux-gnu-ar",
-        "/usr/include/python3.12",
-        "/usr/lib/gcc/x86_64-linux-gnu/13",
-        "/usr/lib/x86_64-linux-gnu",
-        "/usr/libexec/gcc/x86_64-linux-gnu/13",
-        "/usr/local/include",
-    ] or any(not Path(value).exists() for value in policy["required_paths"]):
-        raise VerificationError("native build required path set drifted")
-    symlink_policy = policy["external_symlink_targets"]
-    expected_symlink_policy = {
-        "admitted_target_roots": [
-            "/usr/lib/python3.12",
-            "/usr/lib/x86_64-linux-gnu",
-            "/usr/libexec/gcc/x86_64-linux-gnu/13",
-        ],
-        "authority": "BOUND_BY_EXACT_DIRECTORY_INVENTORIES",
-        "source_roots": [
-            "/usr/lib/gcc/x86_64-linux-gnu/13",
-            "/usr/lib/x86_64-linux-gnu",
-        ],
-    }
-    if symlink_policy != expected_symlink_policy:
-        raise VerificationError("native build external symlink authority drifted")
-    admitted = [
-        Path(value)
-        for value in (
-            symlink_policy["admitted_target_roots"]
-            + symlink_policy["source_roots"]
-        )
+    expected_mappings = [
+        {"destination": destination, "source": source}
+        for source, destination in snapshot_authority.SOURCE_DESTINATION_MAPPINGS
     ]
-    for source_value in symlink_policy["source_roots"]:
-        source_root = Path(source_value)
-        for path in source_root.rglob("*"):
-            if not path.is_symlink():
-                continue
-            resolved = path.resolve(strict=True)
-            if not any(resolved == root or resolved.is_relative_to(root) for root in admitted):
-                raise VerificationError(f"native build symlink target is unbound: {path}")
+    if (
+        binding["authority"]
+        != "P1_U04_IMMUTABLE_NATIVE_AUTHORITY_SNAPSHOT_V1"
+        or binding["schema_version"] != 1
+        or binding["threat_model"] != "COOPERATIVE_HOST"
+        or binding["root"] != str(snapshot_authority.SNAPSHOT_ROOT)
+        or binding["receipt_path"] != str(snapshot_authority.RECEIPT_PATH)
+        or binding["mappings"] != expected_mappings
+        or binding["payload_tree_sha256"] != _NATIVE_SNAPSHOT_PAYLOAD_SHA256
+        or binding["receipt_sha256"] != _NATIVE_SNAPSHOT_RECEIPT_SHA256
+    ):
+        raise VerificationError("native snapshot policy binding drifted")
+    _require_sha256(binding["payload_tree_sha256"], "native snapshot payload tree")
+    _require_sha256(binding["receipt_sha256"], "native snapshot receipt")
 
 
 def _list_prefix(value: ast.AST) -> list[str]:
