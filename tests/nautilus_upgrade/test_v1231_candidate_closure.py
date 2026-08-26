@@ -263,7 +263,12 @@ def _elf64(
     strsz: int | None = None,
     terminate_interpreter: bool = True,
     gnu_relro: bool = True,
+    gnu_relro_size: int | None = None,
+    gnu_relro_vaddr: int | None = None,
     gnu_stack_flags: int | None = 6,
+    bind_now: bool = True,
+    dynamic_flags: int | None = None,
+    dynamic_flags_1: int | None = None,
 ) -> bytes:
     strings = bytearray(b"\0")
 
@@ -287,6 +292,12 @@ def _elf64(
         entries.append((14, soname_offset))
         if duplicate_soname:
             entries.append((14, soname_offset))
+    if bind_now:
+        entries.append((24, 0))
+    if dynamic_flags is not None:
+        entries.append((30, dynamic_flags))
+    if dynamic_flags_1 is not None:
+        entries.append((0x6FFFFFFB, dynamic_flags_1))
     string_offset_in_file = dynamic_offset + (
         len(entries) + 2 + int(terminate_dynamic)
     ) * 16
@@ -343,8 +354,29 @@ def _elf64(
             )
         )
     if gnu_relro:
+        relro_size = (
+            len(dynamic_bytes) if gnu_relro_size is None else gnu_relro_size
+        )
         program_headers.append(
-            struct.pack("<IIQQQQQQ", 0x6474E552, 4, 0, 0, 0, 0, 0, 1)
+            struct.pack(
+                "<IIQQQQQQ",
+                0x6474E552,
+                4,
+                dynamic_offset,
+                (
+                    0x400000 + dynamic_offset
+                    if gnu_relro_vaddr is None
+                    else gnu_relro_vaddr
+                ),
+                (
+                    0x400000 + dynamic_offset
+                    if gnu_relro_vaddr is None
+                    else gnu_relro_vaddr
+                ),
+                relro_size,
+                relro_size,
+                1,
+            )
         )
     if gnu_stack_flags is not None:
         program_headers.append(
@@ -6529,6 +6561,13 @@ def _write_native_inventory_fixture(
         (_elf64(elf_type=1), "type"),
         (_elf64(dynamic=False), "dynamic"),
         (_elf64(gnu_relro=False), "GNU_RELRO"),
+        (_elf64(gnu_relro_size=0), "GNU_RELRO"),
+        (_elf64(gnu_relro_vaddr=0x800000), "GNU_RELRO"),
+        (_elf64(bind_now=False), "BIND_NOW"),
+        (
+            _elf64(bind_now=False, dynamic_flags=0x4, dynamic_flags_1=0x2),
+            "BIND_NOW",
+        ),
         (_elf64(gnu_stack_flags=None), "GNU_STACK"),
         (_elf64(gnu_stack_flags=7), "executable GNU_STACK"),
         (_elf64(needed=("libdep.so",), strsz=1), "string"),
@@ -6563,6 +6602,20 @@ def test_candidate_elf_parser_preserves_dt_needed_order_and_validates_soname() -
 
     with pytest.raises(builder.VerificationError, match="SONAME"):
         builder._elf_metadata(_elf64(soname="../foreign.so"), "foreign.so")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        _elf64(),
+        _elf64(bind_now=False, dynamic_flags=0x8),
+        _elf64(bind_now=False, dynamic_flags_1=0x1),
+    ),
+)
+def test_candidate_elf_parser_accepts_each_immediate_binding_form(
+    payload: bytes,
+) -> None:
+    assert builder._elf_metadata(payload, "fixture.so")["gnu_relro"] is True
 
 
 @pytest.mark.parametrize("identical", (False, True))

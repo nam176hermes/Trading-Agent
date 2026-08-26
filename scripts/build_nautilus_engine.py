@@ -2948,10 +2948,10 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
         or phoff + phentsize * phnum > len(data)
     ):
         raise VerificationError(f"candidate native library ABI drifted: {label}")
-    loads: list[tuple[int, int, int]] = []
+    loads: list[tuple[int, int, int, int]] = []
     dynamics: list[tuple[int, int]] = []
     interpreters: list[str] = []
-    gnu_relro_segments = 0
+    gnu_relro_segments: list[tuple[int, int, int, int]] = []
     gnu_stack_flags: list[int] = []
     interpreter: str | None = None
     for index in range(phnum):
@@ -2967,7 +2967,7 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
         if filesz > memsz or offset + filesz > len(data):
             raise VerificationError(f"candidate ELF segment exceeds file: {label}")
         if kind == 1:
-            loads.append((vaddr, offset, filesz))
+            loads.append((vaddr, offset, filesz, memsz))
         elif kind == 2:
             dynamics.append((offset, filesz))
         elif kind == 3:
@@ -2981,13 +2981,26 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
         elif kind == 0x6474E551:
             gnu_stack_flags.append(flags)
         elif kind == 0x6474E552:
-            gnu_relro_segments += 1
+            gnu_relro_segments.append((vaddr, offset, filesz, memsz))
     if not loads or len(dynamics) != 1:
         raise VerificationError(f"candidate ELF dynamic structure is not exact: {label}")
     if len(interpreters) > 1:
         raise VerificationError(f"candidate ELF interpreter structure is not exact: {label}")
-    if gnu_relro_segments != 1:
+    if len(gnu_relro_segments) != 1:
         raise VerificationError(f"candidate ELF GNU_RELRO structure is not exact: {label}")
+    relro_vaddr, relro_offset, relro_filesz, relro_memsz = gnu_relro_segments[0]
+    if (
+        relro_filesz == 0
+        or relro_memsz == 0
+        or not any(
+            load_vaddr <= relro_vaddr
+            and relro_vaddr + relro_memsz <= load_vaddr + load_memsz
+            and load_offset <= relro_offset
+            and relro_offset + relro_filesz <= load_offset + load_filesz
+            for load_vaddr, load_offset, load_filesz, load_memsz in loads
+        )
+    ):
+        raise VerificationError(f"candidate ELF GNU_RELRO range is invalid: {label}")
     if len(gnu_stack_flags) != 1:
         raise VerificationError(f"candidate ELF GNU_STACK structure is not exact: {label}")
     if gnu_stack_flags[0] & 1:
@@ -3002,7 +3015,7 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
     if not any(
         load_offset <= offset
         and offset + size <= load_offset + load_size
-        for _load_vaddr, load_offset, load_size in loads
+        for _load_vaddr, load_offset, load_size, _load_memsz in loads
     ):
         raise VerificationError(f"candidate ELF dynamic table is outside PT_LOAD: {label}")
     found_null = False
@@ -3013,12 +3026,18 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
             break
         if tag == 1:
             needed_indexes.append(value)
-        elif tag in {5, 10, 14, 15, 29}:
+        elif tag in {5, 10, 14, 15, 24, 29, 30, 0x6FFFFFFB}:
             if tag in singleton:
                 raise VerificationError(f"candidate ELF dynamic singleton tag is duplicated: {label}")
             singleton[tag] = value
     if not found_null:
         raise VerificationError(f"candidate ELF dynamic table has no DT_NULL: {label}")
+    if not (
+        24 in singleton
+        or singleton.get(30, 0) & 0x8
+        or singleton.get(0x6FFFFFFB, 0) & 0x1
+    ):
+        raise VerificationError(f"candidate ELF BIND_NOW authority is absent: {label}")
     string_address = singleton.get(5)
     string_size = singleton.get(10)
     indexed = [*needed_indexes, *(singleton[tag] for tag in (14, 15, 29) if tag in singleton)]
@@ -3028,7 +3047,7 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
     if string_address is not None and string_size is not None:
         if string_size == 0:
             raise VerificationError(f"candidate ELF DT_STRSZ is invalid: {label}")
-        for vaddr, offset, filesz in loads:
+        for vaddr, offset, filesz, _memsz in loads:
             if vaddr <= string_address and string_address + string_size <= vaddr + filesz:
                 strings_offset = offset + string_address - vaddr
                 break
