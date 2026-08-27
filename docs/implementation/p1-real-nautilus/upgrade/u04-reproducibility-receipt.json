@@ -1,0 +1,88 @@
+{
+  "schema": "p1-u04-reproducibility-receipt-v1",
+  "recorded_at": "2026-08-27",
+  "source": {
+    "base_commit": "17d892a547f43aec35952d4ffa1fea0ab3d16f9a",
+    "base_tree": "edca2285e4f4309d05e73e0932740a18e7b28fa8",
+    "head": "7aa1e69a40f1160174f9ef32c1d3ef056720e4b0",
+    "tree": "42ece253bcf6356a522d9fc5fd2582645eddc56c",
+    "u04_implementation": "ce3185a68631c7a2c179770304e236602215e978"
+  },
+  "policy_sha256": {
+    "u02_release_provenance": "f921b50ab5af8a9e518fd599ebcb2425cd7d2f8130263875d46dd34c3e40af8a",
+    "u02_deterministic_source_archive": "a141c913d9c00ef18ac78a416bddfeef85fa06ebd172d98fdd752ad2c5957441",
+    "u03_toolchain_inputs": "22418d3ecda1ae15044c99350a0bcb26d942b0602c408170e7c2b7ae9523f519",
+    "candidate_engine_build": "a53f15d872b2c04757909fd4d800a0259eb34f3f142dab3680dd2effa0a5521b",
+    "candidate_input_cache": "f8b073c177c24d4a95df916610e4be5bf20e66fc50bd9fa138897f51bce862fa",
+    "candidate_wheel_cache": "099e4957b821df51f89f822e4500d9decfadb3163b6e5a213a58011746ad4f40",
+    "candidate_cargo_registry": "ba2332d0a134a557aae7b8959e02ade94fd5d31ca70ce23fe8f48f839367b8ad"
+  },
+  "x4_authority": {
+    "complete_receipt_sha256": "b5c2a690a24066f8719f76ead7bf73fcc4692a3d378a5b17d9004a5eda40a870",
+    "canonical_receipt_sha256": "fcca4a496208c454a7eb6ef122a7f867c2e8cd5497cfd0c374f28a637ff61010",
+    "verdict": "PASS"
+  },
+  "build_a": {
+    "receipt_sha256": "de627e81e7837ada16c2eb223e75cea88315c698392d82dcbc232d700cfe82a6",
+    "wheel_sha256": "ecc461d0f634c25db17e0fb79136c3bf0d513edd323d4f9adaaf84346e68b2fb",
+    "wheel_size": 183626605,
+    "artifact_core_sha256": "42e5aeeed9489ea7ad01e03c8e4257a732ee321c23a912433eca3e7cbafaaac4",
+    "result": "PASS"
+  },
+  "build_b": {
+    "receipt_sha256": "8f7e8f24a0476f65a1e0f3253cfacd83b0af6ccad4bfa68e2c689cc1011077ed",
+    "wheel_sha256": "ecc461d0f634c25db17e0fb79136c3bf0d513edd323d4f9adaaf84346e68b2fb",
+    "wheel_size": 183626605,
+    "artifact_core_sha256": "42e5aeeed9489ea7ad01e03c8e4257a732ee321c23a912433eca3e7cbafaaac4",
+    "result": "PASS"
+  },
+  "reproducibility": {
+    "final_artifact_manifest_sha256": "24f1439ad5fc4f74dd950f892d39470c8d37f1e052add2dfb52ff20904fc50d3",
+    "build_count": 2,
+    "separate_process_identities": true,
+    "separate_source_descriptor_identities": true,
+    "raw_wheel_equality": true,
+    "semantic_member_equality": true,
+    "native_inventory_equality": true,
+    "authoritative_manifest_equality": true,
+    "unexplained_differences": 0,
+    "verdict": "PASS"
+  },
+  "candidate_closure": {
+    "schema_version": 7,
+    "activation_status": "CANDIDATE_ONLY_NOT_ACTIVATED",
+    "closure_manifest_sha256": "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255",
+    "candidate_attestation_sha256": "11cd9d08092f2d133eaf820220b9bf2540edb747f2257b0e70c401605981ad10",
+    "file_inventory_sha256": "48c6e3e6c4c7dda92c76501e63f80be0b98dfceb9a2e2609a41439fa7c69ef50",
+    "native_dependency_inventory_sha256": "82eb559376246753ce9d939bc5a818a42f2cb26580f98b425d427f3c35e35fd7",
+    "sealed_import_script_sha256": "f4cdbe7eb2b7515ddbd14aec3ba95e070bcd05bf021322c7d542e3eed14ae5c8",
+    "sealed_import_engine_version": "1.231.0",
+    "sealed_import_result": "PASS"
+  },
+  "portable_ci": {
+    "execution_kind": "LOCAL_STANDALONE_REPLAY",
+    "attempt": 28,
+    "source_head": "7aa1e69a40f1160174f9ef32c1d3ef056720e4b0",
+    "topology_passed": 8059,
+    "governance_passed": 8854,
+    "governance_failed": 0,
+    "artifact_manifest_sha256": "cf25537d84d076e11b9263c7ca3c8bddc30c761c62f6cb11212c93b9ff6059fe",
+    "artifact_sha256s_sha256": "cc6889356c887d9faa71416a247d34648ea0ea298edbc486d2da61840362609b",
+    "source_archive_sha256": "47095dc1b8c250088c0e74e081940298da4829518b2b0247f0c0d4b5aa815205",
+    "result": "PASS"
+  },
+  "reviews": {
+    "x5_spec": "PASS_C0_I0_M0",
+    "x5_security": "PASS_C0_I0_M0",
+    "x6_spec": "PASS_C0_I0_M0",
+    "x6_security": "PASS_C0_I0_M0",
+    "x7_spec": "PASS_C0_I0_M0",
+    "x7_security": "PASS_C0_I0_M0"
+  },
+  "known_limitations": [
+    "Native isolation assumes the documented cooperative-host threat model.",
+    "This receipt is candidate evidence and grants no activation or promotion authority."
+  ],
+  "deferred_items": [],
+  "verdict": "PASS"
+}

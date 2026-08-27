@@ -1,0 +1,82 @@
+{
+  "schema": "p1-u04-rollback-isolation-receipt-v1",
+  "recorded_at": "2026-08-27",
+  "source": {
+    "head": "7aa1e69a40f1160174f9ef32c1d3ef056720e4b0",
+    "tree": "42ece253bcf6356a522d9fc5fd2582645eddc56c"
+  },
+  "rollback_authority": {
+    "engine_version": "1.227.0",
+    "schema_version": 6,
+    "generation": "runtime-closure-v12-r12-simulation",
+    "artifact_generation": "nautilus-1.227.0-cp312-rust-bound-input-ff2e7753974c",
+    "closure_sha256": "14d4fd990dccfdbb8b6dfe964a04ae9e80fefb30914cf433de1bc503b8ad03fa",
+    "closure_manifest_sha256": "b143564cf3ad63b4ca01afb9a27e7496c9b1c6ff1f3c46cf10b6c4a047545d20",
+    "artifact_manifest_sha256": "105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2"
+  },
+  "sealed_import_before_candidate_qualification": {
+    "candidate_runtime_state": "ABSENT",
+    "receipt_sha256": "8a18580bc116317018ed2546a6f7879ceebac62db6323e1337feb202a3fc3da4",
+    "canonical_receipt_sha256": "fc509a06d8bf9462506e77db69f7e771eabe7095925e29893280b1e135699e56",
+    "profile": "execution-simulation",
+    "manifest_schema_version": 6,
+    "modules": {
+      "nautilus_trader": "1.227.0",
+      "numpy": "2.4.4",
+      "pandas": "2.3.3"
+    },
+    "result": "PASS"
+  },
+  "candidate_requalification": {
+    "materializer": "scripts/materialize_nautilus_runtime_closure.py --materialize-candidate",
+    "exit_code": 0,
+    "closure_schema_version": 7,
+    "closure_manifest_sha256": "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255",
+    "candidate_attestation_sha256": "11cd9d08092f2d133eaf820220b9bf2540edb747f2257b0e70c401605981ad10",
+    "activation_status": "CANDIDATE_ONLY_NOT_ACTIVATED",
+    "result": "PASS"
+  },
+  "sealed_import_after_candidate_qualification": {
+    "candidate_runtime_state": "PRESENT_SEALED_CANDIDATE_ONLY",
+    "receipt_sha256": "8a18580bc116317018ed2546a6f7879ceebac62db6323e1337feb202a3fc3da4",
+    "canonical_receipt_sha256": "fc509a06d8bf9462506e77db69f7e771eabe7095925e29893280b1e135699e56",
+    "profile": "execution-simulation",
+    "manifest_schema_version": 6,
+    "modules": {
+      "nautilus_trader": "1.227.0",
+      "numpy": "2.4.4",
+      "pandas": "2.3.3"
+    },
+    "result": "PASS"
+  },
+  "active_authority": {
+    "job_worker_expected_engine_version": "1.227.0",
+    "execution_policy_engine_version": "1.227.0",
+    "execution_policy_schema_version": 6,
+    "paper_policy_engine_version": "1.227.0",
+    "paper_policy_schema_version": 6,
+    "active_policy_changes": 0,
+    "candidate_activation": false
+  },
+  "isolation": {
+    "roots_pairwise_disjoint": true,
+    "shared_regular_file_inodes": 0,
+    "shared_writable_state": 0,
+    "candidate_writable_regular_files": 0,
+    "candidate_multiply_linked_regular_files": 0,
+    "candidate_foreign_owned_entries": 0,
+    "candidate_symlinks": 0,
+    "mixed_runtime_process_references": 0,
+    "forensic_root_present": false,
+    "network": "DISABLED_BY_BUBBLEWRAP_UNSHARE_ALL"
+  },
+  "reviews": {
+    "x8_spec": "PASS_C0_I0_M0",
+    "x8_security": "PASS_C0_I0_M0"
+  },
+  "known_limitations": [
+    "The isolation proof uses the documented cooperative-host threat model."
+  ],
+  "deferred_items": [],
+  "verdict": "PASS_NO_MIXED_STATE"
+}

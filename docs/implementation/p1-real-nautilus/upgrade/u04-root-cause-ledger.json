@@ -63,7 +63,7 @@
       "subsystem": "candidate wheel fixture",
       "first_seen_round": "R61_CI",
       "reproduced_on_HEAD": true,
-      "evidence": "test_candidate_attestor_routes_engine_identity_only_to_the_engine_wheel reads click-8.4.2 from /home/thenam176/.cache",
+      "evidence": "test_candidate_attestor_routes_engine_identity_only_to_the_engine_wheel reads click-8.4.2 from <operator-cache>",
       "invariant": "portable source tests do not dereference operator wheel caches",
       "owner": "X1",
       "status": "OPEN_FROZEN",
@@ -89,7 +89,7 @@
       "subsystem": "poetry-core fixture",
       "first_seen_round": "R61_CI",
       "reproduced_on_HEAD": true,
-      "evidence": "test_candidate_package_preamble_accepts_poetry_vendored_import_path reads poetry_core-2.3.1 from /home/thenam176/.cache",
+      "evidence": "test_candidate_package_preamble_accepts_poetry_vendored_import_path reads poetry_core-2.3.1 from <operator-cache>",
       "invariant": "portable package-preamble tests materialize exact fixture bytes under tmp_path",
       "owner": "X1",
       "status": "OPEN_FROZEN",
@@ -115,7 +115,7 @@
       "subsystem": "real candidate Bubblewrap fixture",
       "first_seen_round": "R61_CI",
       "reproduced_on_HEAD": true,
-      "evidence": "test_real_candidate_bwrap_clang_default_host_link_uses_sealed_ld_alias requires /home/thenam176 before its real-sandbox exercise",
+      "evidence": "test_real_candidate_bwrap_clang_default_host_link_uses_sealed_ld_alias requires <operator-root> before its real-sandbox exercise",
       "invariant": "operator-rooted real-sandbox tests are excluded from portable collection and owned by the host-authority lane",
       "owner": "X1",
       "status": "OPEN_FROZEN",
@@ -446,19 +446,19 @@
     },
     "portable_ci": {
       "execution_kind": "LOCAL_STANDALONE_REPLAY",
-      "receipt_id": "LOCAL-STANDALONE-5FD2E4EC-2026082704-25",
+      "receipt_id": "LOCAL-STANDALONE-7AA1E69-2026082705-28",
       "command": "make ci-portable NONINTERACTIVE=1",
-      "source_commit": "5fd2e4ec406fa54967c47fbac0876e925754ec0a",
-      "source_tree": "594f098353c18a894ee078a6b081b166ca83d63a",
-      "artifact_manifest_sha256": "08f3424746d13b4246c17636da1bce6138cf169f0708b1ed0a32176b9dc20067",
-      "artifact_sha256s_sha256": "0bf9e086a3df20d5180facc04b04ae3aaed3b837f1bc241ee62cbab3fb809014",
-      "artifact_source_tree_sha256": "4717d9a3ac7053fdf1b56dc4daac52408331f4271b78201257b8eddaef428829",
+      "source_commit": "7aa1e69a40f1160174f9ef32c1d3ef056720e4b0",
+      "source_tree": "42ece253bcf6356a522d9fc5fd2582645eddc56c",
+      "artifact_manifest_sha256": "cf25537d84d076e11b9263c7ca3c8bddc30c761c62f6cb11212c93b9ff6059fe",
+      "artifact_sha256s_sha256": "cc6889356c887d9faa71416a247d34648ea0ea298edbc486d2da61840362609b",
+      "artifact_source_tree_sha256": "47095dc1b8c250088c0e74e081940298da4829518b2b0247f0c0d4b5aa815205",
       "artifact_firewall_validate": "PASS",
       "wrapper_exit_code": 0,
       "hosted_workflow_run_claim": "NONE",
       "local_artifact_namespace_inputs": {
-        "GITHUB_RUN_ID": "2026082704",
-        "GITHUB_RUN_ATTEMPT": "25",
+        "GITHUB_RUN_ID": "2026082705",
+        "GITHUB_RUN_ATTEMPT": "28",
         "authority": "LOCAL_MAKE_NAMESPACE_ONLY_NOT_HOSTED_RUN_AUTHORITY"
       },
       "status": "PASS_LOCAL_REPLAY",
@@ -488,19 +488,70 @@
       "artifact_publication": "PASS"
     },
     "external_native_authority": {
-      "r1_r61_external_build_a_b_closure_claims": "NOT_PROVIDED",
-      "host_native_authority": "SUPPLIED_AND_READ_ONLY_PROBE_PASS_NOT_YET_X4_RECEIPTED",
+      "r1_r61_external_build_a_b_closure_claims": "SUPERSEDED_BY_FRESH_X4_X8_EVIDENCE",
+      "host_native_authority": "SUPPLIED_VALID_AND_X4_RECEIPTED",
+      "build_a": "PASS",
+      "build_b": "PASS",
+      "schema_7_candidate_closure": "PASS",
+      "rollback_isolation": "PASS",
       "promotion_or_activation": "NOT_AUTHORIZED",
-      "u05_or_x4": "NOT_STARTED"
+      "u05": "NOT_STARTED"
     },
-    "review_status": "X3_EVIDENCE_RECONCILED_RE_REVIEW_REQUIRED",
-    "verdict": "P1_U04_BLOCKED_PENDING_X3_EVIDENCE_REVIEW"
+    "review_status": "X3_X8_FRESH_REVIEWS_PASS",
+    "verdict": "X8_COMPLETE_X9_FINAL_GATES_PENDING"
+  },
+  "x4_x8_completion": {
+    "source_binding": {
+      "head": "7aa1e69a40f1160174f9ef32c1d3ef056720e4b0",
+      "tree": "42ece253bcf6356a522d9fc5fd2582645eddc56c"
+    },
+    "x4": {
+      "complete_receipt_sha256": "b5c2a690a24066f8719f76ead7bf73fcc4692a3d378a5b17d9004a5eda40a870",
+      "canonical_receipt_sha256": "fcca4a496208c454a7eb6ef122a7f867c2e8cd5497cfd0c374f28a637ff61010",
+      "reviews": "PASS_C0_I0_M0",
+      "verdict": "PASS"
+    },
+    "x5_x6": {
+      "build_a_receipt_sha256": "de627e81e7837ada16c2eb223e75cea88315c698392d82dcbc232d700cfe82a6",
+      "build_b_receipt_sha256": "8f7e8f24a0476f65a1e0f3253cfacd83b0af6ccad4bfa68e2c689cc1011077ed",
+      "wheel_sha256": "ecc461d0f634c25db17e0fb79136c3bf0d513edd323d4f9adaaf84346e68b2fb",
+      "wheel_size": 183626605,
+      "artifact_core_sha256": "42e5aeeed9489ea7ad01e03c8e4257a732ee321c23a912433eca3e7cbafaaac4",
+      "artifact_manifest_sha256": "24f1439ad5fc4f74dd950f892d39470c8d37f1e052add2dfb52ff20904fc50d3",
+      "raw_and_semantic_reproducibility": "PASS",
+      "reviews": "PASS_C0_I0_M0"
+    },
+    "x7": {
+      "schema_version": 7,
+      "activation_status": "CANDIDATE_ONLY_NOT_ACTIVATED",
+      "closure_manifest_sha256": "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255",
+      "candidate_attestation_sha256": "11cd9d08092f2d133eaf820220b9bf2540edb747f2257b0e70c401605981ad10",
+      "file_inventory_sha256": "48c6e3e6c4c7dda92c76501e63f80be0b98dfceb9a2e2609a41439fa7c69ef50",
+      "native_inventory_sha256": "82eb559376246753ce9d939bc5a818a42f2cb26580f98b425d427f3c35e35fd7",
+      "sealed_import_script_sha256": "f4cdbe7eb2b7515ddbd14aec3ba95e070bcd05bf021322c7d542e3eed14ae5c8",
+      "reviews": "PASS_C0_I0_M0"
+    },
+    "x8": {
+      "rollback_schema_version": 6,
+      "rollback_closure_sha256": "14d4fd990dccfdbb8b6dfe964a04ae9e80fefb30914cf433de1bc503b8ad03fa",
+      "rollback_manifest_sha256": "b143564cf3ad63b4ca01afb9a27e7496c9b1c6ff1f3c46cf10b6c4a047545d20",
+      "rollback_artifact_manifest_sha256": "105579383ea3c5e44104bbe162ab78380f7abb5654e15ac3b600beee54ed93d2",
+      "sealed_import_before_receipt_sha256": "8a18580bc116317018ed2546a6f7879ceebac62db6323e1337feb202a3fc3da4",
+      "sealed_import_after_receipt_sha256": "8a18580bc116317018ed2546a6f7879ceebac62db6323e1337feb202a3fc3da4",
+      "shared_writable_state": 0,
+      "shared_regular_file_inodes": 0,
+      "mixed_runtime_processes": 0,
+      "active_policy_changes": 0,
+      "candidate_activation": false,
+      "reviews": "PASS_C0_I0_M0"
+    },
+    "verdict": "PASS"
   },
   "task_status": {
     "P1-U01": "IMPLEMENTED_UNACCEPTED",
     "P1-U02": "IMPLEMENTED_UNACCEPTED",
     "P1-U03": "IMPLEMENTED_UNACCEPTED",
-    "P1-U04": "X3_EVIDENCE_RECONCILED_RE_REVIEW_REQUIRED",
+    "P1-U04": "X8_COMPLETE_X9_FINAL_GATES_PENDING",
     "P1-U05": "NOT_STARTED",
     "P1-U06": "NOT_STARTED",
     "P1-U07": "NOT_STARTED",
