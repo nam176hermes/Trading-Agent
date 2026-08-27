@@ -162,6 +162,7 @@ _GOVERNED_MODULE_HASHES = {
             "7e9ccaac6d0c52cbc958242524a093ba614fa9d746053c9b21a6825075ef50df",
             "2ec3a73f40d21d32e190b9be7ac36d5d99457803a17c02000f8a3ee96b06fa1e",
             "74e4ef873aff1fdde088736bfef4b6017b5ae7c53ab0337f6b80b6231b743702",
+            "1f19da20f06fb4b61152c99d6455a60de6d9346acd54cd197f565a4b1ee694b0",
         }
     ),
     "services/job_worker/nautilus_closure.py": (
