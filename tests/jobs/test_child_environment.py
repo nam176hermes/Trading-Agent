@@ -265,7 +265,7 @@ def test_child_environment_rejects_tmp_root_and_accepts_supplied_safe_root(monke
     safe_root = Path(
         tempfile.mkdtemp(
             prefix="task7-environment-safe-",
-            dir=Path(__file__).resolve().parents[2].parent,
+            dir=Path(tempfile.gettempdir()),
         )
     )
     try:

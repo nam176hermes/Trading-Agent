@@ -20,6 +20,11 @@ Generation writes:
 - `generated/json-schema/*.json` — selected JSON Schema 2020-12 documents.
 - `generated/dashboard/api-types.ts` — static TypeScript types.
 - `generated/dashboard/api-schemas.ts` — Zod schemas/client metadata.
+- `generated/job-api/openapi/openapi.json` — internal Job API OpenAPI 3.1.
+- `generated/job-api/json-schema/*.json` — selected Job API models.
+- `generated/job-api/dashboard/api-types.ts` — static Job API dashboard types.
+- `apps/dashboard/src/generated/job-api-types.ts` — generator-managed consumer
+  copy used by isolated dashboard builds.
 
 `scripts/generate_contracts.py --check` renders into a temporary directory and
 byte-compares the repository-owned outputs. It exits non-zero for any drift and
@@ -35,4 +40,10 @@ excluded from ESLint because the upstream generator emits types outside local
 style rules; they remain covered by TypeScript compilation and runtime parsing
 tests.
 
-The Zod generator currently emits broader TypeScript types around nullable OpenAPI unions than `openapi-typescript`. The dashboard therefore uses `openapi-typescript` types for static typing and the generated Zod object for network validation. The client returns data only after `safeParse` succeeds.
+The Control API dashboard client uses the generated `openapi-typescript` types
+for static typing and the generated Zod object for network validation. The Job
+API dashboard client imports its generated static aliases from
+`generated/job-api/dashboard/api-types.ts`, then applies the stricter manual
+parsers in `job-api-contract.ts`. Those parsers preserve exact-key checks,
+bounded arrays, payload/job-type coherence, and canonical engine time ordering;
+generated OpenAPI types do not replace these runtime fail-closed checks.

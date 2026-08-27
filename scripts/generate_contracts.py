@@ -335,8 +335,9 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         authority=isolated_job_contract_authority(),
     )
     job_namespace = destination / "generated/job-api"
+    job_openapi_path = job_namespace / "openapi/openapi.json"
     write_json(
-        job_namespace / "openapi/openapi.json",
+        job_openapi_path,
         job_openapi_contract(job_app),
     )
     for model in JOB_SCHEMA_MODELS:
@@ -372,6 +373,20 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         check=True,
     )
     (dashboard_output / "api-types.ts").chmod(0o644)
+    job_dashboard_output = job_namespace / "dashboard"
+    job_dashboard_output.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            str(npm_bin / "openapi-typescript"),
+            str(job_openapi_path),
+            "--output",
+            str(job_dashboard_output / "api-types.ts"),
+            "--immutable",
+            "--alphabetize",
+        ],
+        check=True,
+    )
+    (job_dashboard_output / "api-types.ts").chmod(0o644)
     node_executable = shutil.which("node")
     if node_executable is None:
         raise RuntimeError("node executable is required for contract generation")
@@ -396,7 +411,12 @@ def render(destination: Path, tool_root: Path) -> dict[Path, Path]:
         check=True,
     )
     (dashboard_output / "api-schemas.ts").chmod(0o644)
-    return {destination / "generated": ROOT / "generated"}
+    return {
+        destination / "generated": ROOT / "generated",
+        job_dashboard_output / "api-types.ts": (
+            ROOT / "apps/dashboard/src/generated/job-api-types.ts"
+        ),
+    }
 
 
 def same_file(source: Path, target: Path) -> bool:

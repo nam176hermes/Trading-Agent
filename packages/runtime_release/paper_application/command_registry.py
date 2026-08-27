@@ -529,7 +529,6 @@ def consume_prepared_spawn(prepared: PreparedSpawn) -> BuiltCommand:
 
 
 __all__ = [
-    "APPROVED_RELEASE_MANIFEST_PATH",
     "BuiltCommand", "COMMAND_REGISTRY", "CommandLineage", "CommandRegistryError",
     "CommandSpec", "FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS",
     "PAPER_COMMAND_ARGV_PREFIX", "PRESPAWN_FULL_REATTESTATION_COUNT", "PreparedSpawn",

@@ -131,3 +131,13 @@ def test_generated_contracts_are_present_and_current() -> None:
     ).is_file()
     assert (ROOT / "generated" / "dashboard" / "api-types.ts").is_file()
     assert (ROOT / "generated" / "dashboard" / "api-schemas.ts").is_file()
+    job_dashboard_types = (
+        ROOT / "generated" / "job-api" / "dashboard" / "api-types.ts"
+    )
+    assert job_dashboard_types.is_file()
+    assert "export interface components" in job_dashboard_types.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        ROOT / "apps" / "dashboard" / "src" / "generated" / "job-api-types.ts"
+    ).read_bytes() == job_dashboard_types.read_bytes()

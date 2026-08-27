@@ -13,6 +13,18 @@ from pathlib import Path
 # This file is a standalone, stateful diagnostic script, not a pytest module.
 collect_ignore = ["test_integration.py"]
 
+# The canonical Makefile supplies a Linux-native outer TMPDIR, but its `/tmp`
+# ancestor is intentionally too permissive for the backend's directory-custody
+# tests. Activate the repository's stricter private fallback before any test
+# module or TemporaryDirectory is created.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPOSITORY_ROOT))
+from scripts.trusted_test_tmp import prepare_trusted_test_tmp
+
+
+_TEST_TMP_SESSION = prepare_trusted_test_tmp("legacy-pytest")
+atexit.register(_TEST_TMP_SESSION.cleanup)
+
 # Resolve every module-level runtime path into an isolated directory before
 # pytest imports test modules. A fixture would run too late during collection.
 _ORIGINAL_TRADING_DATA_ROOT = os.environ.get("TRADING_DATA_ROOT")

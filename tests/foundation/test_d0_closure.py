@@ -130,6 +130,7 @@ def test_property_contract_and_closure_gates_are_collected_by_ci() -> None:
         'uv run pytest $(ROOT_PYTEST_ARGS) -q '
         '-m "not runtime_postgres and not host_coupled" tests'
     ) in makefile
+    assert 'addopts = "-s"' in pyproject
     assert "test-all-private: audit check-d0-closure check-contracts" in makefile
     assert "check-d0-closure:" in makefile
     assert "uv run pytest -q tests/foundation/test_d0_closure.py" in makefile

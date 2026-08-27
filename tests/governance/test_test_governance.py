@@ -683,7 +683,11 @@ def test_dashboard_canonical_inventory_rejects_unclassified_files(tmp_path: Path
     source = Path("apps/dashboard/tests")
     tests = tmp_path / "tests"
     tests.mkdir()
-    for name in ("run-test-inventory.mjs", "test-inventory.json"):
+    for name in (
+        "run-test-inventory.mjs",
+        "test-inventory.json",
+        "trusted-test-tmp.mjs",
+    ):
         (tests / name).write_text((source / name).read_text(encoding="utf-8"), encoding="utf-8")
     (tests / "visible.test.mjs").write_text("", encoding="utf-8")
     (tests / "visible.integration.sh").write_text("", encoding="utf-8")

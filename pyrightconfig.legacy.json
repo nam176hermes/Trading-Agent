@@ -1,0 +1,25 @@
+{
+  "include": [
+    "legacy/research-backend"
+  ],
+  "exclude": [
+    "legacy/research-backend/.venv",
+    "legacy/research-backend/tests",
+    "legacy/research-backend/**/__pycache__",
+    "legacy/research-backend/decisions",
+    "legacy/research-backend/deploy",
+    "legacy/research-backend/job_artifacts",
+    "legacy/research-backend/jobs",
+    "legacy/research-backend/memory",
+    "legacy/research-backend/models",
+    "legacy/research-backend/reports",
+    "legacy/research-backend/scratchpad",
+    "legacy/research-backend/signals"
+  ],
+  "extraPaths": [
+    "legacy/research-backend"
+  ],
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "baselineFile": ".basedpyright/legacy-baseline.json"
+}

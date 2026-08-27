@@ -5,6 +5,7 @@
   "integration_test_suffix": ".integration.sh",
   "support_files": [
     "run-test-inventory.mjs",
-    "test-inventory.json"
+    "test-inventory.json",
+    "trusted-test-tmp.mjs"
   ]
 }

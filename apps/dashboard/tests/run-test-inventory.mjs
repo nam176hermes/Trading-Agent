@@ -4,6 +4,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { createTrustedTestEnvironment } from './trusted-test-tmp.mjs';
+
 const testsRoot = path.dirname(fileURLToPath(import.meta.url));
 const dashboardRoot = path.dirname(testsRoot);
 const manifestPath = path.join(testsRoot, 'test-inventory.json');
@@ -24,7 +26,7 @@ function loadManifest() {
   assert.equal(manifest.integration_test_suffix, '.integration.sh');
   assert.deepEqual(
     [...manifest.support_files].sort(),
-    ['run-test-inventory.mjs', 'test-inventory.json'],
+    ['run-test-inventory.mjs', 'test-inventory.json', 'trusted-test-tmp.mjs'],
   );
   return manifest;
 }
@@ -72,25 +74,35 @@ if (process.argv.includes('--list-json')) {
   process.exit(0);
 }
 
-const environment = {
+const baseEnvironment = {
   ...process.env,
   LIVE_EXECUTION_ENABLED: 'false',
   LIVE_TRADING_APPROVED: 'false',
 };
-const nodeResult = spawnSync(
-  process.execPath,
-  ['--test', ...discovered.node_tests],
-  { cwd: dashboardRoot, env: environment, stdio: 'inherit' },
-);
-if (nodeResult.error) throw nodeResult.error;
-if (nodeResult.status !== 0) process.exit(nodeResult.status ?? 1);
+const tempSession = createTrustedTestEnvironment('dashboard-tests', baseEnvironment);
+let exitStatus = 0;
+try {
+  const nodeResult = spawnSync(
+    process.execPath,
+    ['--test', ...discovered.node_tests],
+    { cwd: dashboardRoot, env: tempSession.environment, stdio: 'inherit' },
+  );
+  if (nodeResult.error) throw nodeResult.error;
+  exitStatus = nodeResult.status ?? 1;
 
-for (const script of discovered.integration_tests) {
-  const result = spawnSync('bash', [script], {
-    cwd: dashboardRoot,
-    env: environment,
-    stdio: 'inherit',
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (exitStatus === 0) {
+    for (const script of discovered.integration_tests) {
+      const result = spawnSync('bash', [script], {
+        cwd: dashboardRoot,
+        env: tempSession.environment,
+        stdio: 'inherit',
+      });
+      if (result.error) throw result.error;
+      exitStatus = result.status ?? 1;
+      if (exitStatus !== 0) break;
+    }
+  }
+} finally {
+  tempSession.cleanup();
 }
+if (exitStatus !== 0) process.exit(exitStatus);

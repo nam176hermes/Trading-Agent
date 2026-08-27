@@ -1,0 +1,16 @@
+{
+  "include": [
+    "apps/control_api",
+    "apps/job_api",
+    "packages",
+    "services"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.venv",
+    "**/tests"
+  ],
+  "pythonVersion": "3.11",
+  "pythonPlatform": "Linux",
+  "baselineFile": ".basedpyright/baseline.json"
+}
