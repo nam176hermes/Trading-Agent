@@ -2924,7 +2924,12 @@ def _elf_string(data: bytes, offset: int, limit: int) -> str:
         raise VerificationError("ELF dynamic string is not ASCII") from exc
 
 
-def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
+def _elf_metadata_for_trust_boundary(
+    data: bytes,
+    label: str,
+    *,
+    require_bind_now: bool,
+) -> dict[str, object]:
     if (
         len(data) < 64
         or data[:4] != b"\x7fELF"
@@ -3032,11 +3037,12 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
             singleton[tag] = value
     if not found_null:
         raise VerificationError(f"candidate ELF dynamic table has no DT_NULL: {label}")
-    if not (
+    bind_now = bool(
         24 in singleton
         or singleton.get(30, 0) & 0x8
         or singleton.get(0x6FFFFFFB, 0) & 0x1
-    ):
+    )
+    if require_bind_now and not bind_now:
         raise VerificationError(f"candidate ELF BIND_NOW authority is absent: {label}")
     string_address = singleton.get(5)
     string_size = singleton.get(10)
@@ -3072,12 +3078,31 @@ def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
         "machine": "EM_X86_64",
         "gnu_relro": True,
         "gnu_stack_executable": False,
+        "bind_now": bind_now,
         "interpreter": interpreter,
         "needed": [lookup(index) for index in needed_indexes],
         "rpath": lookup(singleton.get(15)),
         "runpath": lookup(singleton.get(29)),
         "soname": soname,
     }
+
+
+def _elf_metadata(data: bytes, label: str) -> dict[str, object]:
+    """Parse and enforce the source-built candidate native-library boundary."""
+    return _elf_metadata_for_trust_boundary(
+        data,
+        label,
+        require_bind_now=True,
+    )
+
+
+def _dependency_elf_metadata(data: bytes, label: str) -> dict[str, object]:
+    """Parse exact-digest dependency ELF and attest its observed hardening."""
+    return _elf_metadata_for_trust_boundary(
+        data,
+        label,
+        require_bind_now=False,
+    )
 
 
 def _candidate_native_inventory(wheel: Path | bytes) -> list[dict[str, object]]:

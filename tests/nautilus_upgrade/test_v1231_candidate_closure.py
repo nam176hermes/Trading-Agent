@@ -6501,6 +6501,7 @@ def test_candidate_attestor_routes_engine_identity_only_to_the_engine_wheel(
     runtime_wheel = wheel_root / click["filename"]
     with zipfile.ZipFile(runtime_wheel, "w") as archive:
         archive.writestr("click/__init__.py", b"__version__ = 'fixture'\n")
+        archive.writestr("click/_dependency.so", _elf64(bind_now=False))
     click["size"] = runtime_wheel.stat().st_size
     click["sha256"] = hashlib.sha256(runtime_wheel.read_bytes()).hexdigest()
     engine_wheel = wheel_root / WHEEL_FILENAME
@@ -6527,7 +6528,15 @@ def test_candidate_attestor_routes_engine_identity_only_to_the_engine_wheel(
         ],
     )
 
-    assert records[0]["path"] == "/lib64/ld-linux-x86-64.so.2"
+    assert any(
+        record["path"] == "/lib64/ld-linux-x86-64.so.2" for record in records
+    )
+    dependency = next(
+        record
+        for record in records
+        if str(record["path"]).endswith("!click/_dependency.so")
+    )
+    assert dependency["elf"]["bind_now"] is False
     assert verified == [WHEEL_FILENAME]
 
 
@@ -6541,6 +6550,10 @@ def _native_metadata_builder(metadata: dict[str, dict[str, object]]):
 
         @staticmethod
         def _elf_metadata(_payload: bytes, label: str) -> dict[str, object]:
+            return metadata[label]
+
+        @staticmethod
+        def _dependency_elf_metadata(_payload: bytes, label: str) -> dict[str, object]:
             return metadata[label]
 
     return NativeMetadataBuilder()
@@ -6633,6 +6646,32 @@ def test_candidate_elf_parser_preserves_dt_needed_order_and_validates_soname() -
 
     with pytest.raises(builder.VerificationError, match="SONAME"):
         builder._elf_metadata(_elf64(soname="../foreign.so"), "foreign.so")
+
+
+def test_dependency_elf_parser_attests_missing_bind_now_without_weakening_candidate(
+) -> None:
+    payload = _elf64(bind_now=False)
+
+    metadata = builder._dependency_elf_metadata(payload, "dependency.so")
+
+    assert metadata["bind_now"] is False
+    with pytest.raises(builder.VerificationError, match="BIND_NOW"):
+        builder._elf_metadata(payload, "candidate.so")
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        (_elf64(gnu_relro=False, bind_now=False), "GNU_RELRO"),
+        (_elf64(gnu_stack_flags=7, bind_now=False), "executable GNU_STACK"),
+        (_elf64(soname="../foreign.so", bind_now=False), "SONAME"),
+    ),
+)
+def test_dependency_elf_parser_retains_structural_security_checks(
+    payload: bytes, message: str
+) -> None:
+    with pytest.raises(builder.VerificationError, match=message):
+        builder._dependency_elf_metadata(payload, "dependency.so")
 
 
 @pytest.mark.parametrize(

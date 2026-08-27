@@ -1781,8 +1781,19 @@ def _candidate_native_inventory(
             roots.append(rendered_prefix + "/".join(resolved))
         return roots
 
-    def add_record(path: str, mode: str, payload: bytes) -> None:
-        metadata = builder._elf_metadata(payload, path)
+    def add_record(
+        path: str,
+        mode: str,
+        payload: bytes,
+        *,
+        candidate_built: bool,
+    ) -> None:
+        parser = (
+            builder._elf_metadata
+            if candidate_built
+            else builder._dependency_elf_metadata
+        )
+        metadata = parser(payload, path)
         record = {
             "path": path,
             "mode": mode,
@@ -1809,6 +1820,7 @@ def _candidate_native_inventory(
                         f"{target}!{member.filename}",
                         f"{(member.external_attr >> 16) & 0o777:04o}",
                         archive.read(member),
+                        candidate_built=target == engine_target,
                     )
         except (OSError, RuntimeError, ValueError, zipfile.BadZipFile) as exc:
             raise RuntimeClosureMaterializationError("candidate runtime wheel native inventory failed") from exc
@@ -1824,6 +1836,7 @@ def _candidate_native_inventory(
             "/" + path.relative_to(files_root).as_posix(),
             f"{stat.S_IMODE(path.stat().st_mode):04o}",
             payload,
+            candidate_built=False,
         )
     by_path: dict[str, dict[str, object]] = {}
     for record in records:
