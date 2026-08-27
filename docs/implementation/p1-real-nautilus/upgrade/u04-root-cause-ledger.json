@@ -364,12 +364,10 @@
       "status": "EXACT_BLOB_REPLAY_PASS"
     },
     "final_source_candidate": {
-      "commit": "8906104e5b065b6ac9f9c52838a8fcfc584484b1",
-      "tree": "78d22275454a694783f3d476ef16947cdbbd1054",
-      "protected_makefile_fix": {
-        "commit": "8906104e5b065b6ac9f9c52838a8fcfc584484b1",
-        "blob": "e505b490174727f4da001322acb931446befb90d"
-      }
+      "commit": "5fd2e4ec406fa54967c47fbac0876e925754ec0a",
+      "tree": "594f098353c18a894ee078a6b081b166ca83d63a",
+      "scope": "REVIEWED_IMPLEMENTATION_BYTES_BEFORE_EVIDENCE_ONLY_LEDGER_RECONCILIATION",
+      "protected_inventory_blob": "fe91b838f0795784a5843cbdcf802326be644152"
     },
     "alias_implementation_replay": {
       "commit": "fe20674f2ce571e508b70464733e7f58c40dc514",
@@ -385,7 +383,11 @@
       "alias_security_minor": "IdentityAlias constructor accepts ASCII control-character paths, but the inventory engine rejects controls before extraction; no authority widening was observed",
       "round2_spec": "PASS",
       "security_replay": "APPROVED",
-      "critical_or_important_findings": 0
+      "fresh_x3_security": "PASS_0_0_0_BOUND_TO_5FD2E4EC_AND_PORTABLE_ATTEMPT_25",
+      "fresh_x3_spec": "IMPORTANT_EVIDENCE_LEDGER_STALENESS_REMEDIATED_REVIEW_REQUIRED",
+      "critical_findings": 0,
+      "open_important_findings": 0,
+      "evidence_only_re_review_required": true
     },
     "focused_validation": {
       "registry_suite": {
@@ -420,39 +422,49 @@
       "status": "PASS"
     },
     "promotion_candidate_inventory": {
-      "source_commit": "2bc6f1854dc076aae7a64c6ffe0d415d7c090960",
-      "source_tree": "e8d348aed51f4ef98c74d1a5d8bf06f2951d368e",
-      "inventory_commit": "f544c26345348b3a92a66d11c5076f256292a299",
-      "inventory_tree": "8ab84d88a6e3babe2ee1df37960b99c1ddf85382",
-      "inventory_blob": "5b68466e090115c1e87853cb58ea6ab6edec973b",
-      "inventory_sha256": "57a7b6762365c12dc76fc0066f8d8cc58e05c4a3955464a7a63a65337494f6e1",
+      "base_candidate_commit": "5fd2e4ec406fa54967c47fbac0876e925754ec0a",
+      "base_candidate_tree": "594f098353c18a894ee078a6b081b166ca83d63a",
+      "baseline_inventory_blob_retained_in_main": "fe91b838f0795784a5843cbdcf802326be644152",
+      "source_commit": "9dcf619274f542a5183991e2aa96256510d7fb23",
+      "source_tree": "9a6a2eb89cb680068964caa8ff584ac816b6696f",
+      "source_derivation": "BASE_CANDIDATE_EXACT_TREE_MINUS_ONLY_IMMUTABLE_BASELINE_PIN_INVENTORY",
+      "source_parent": "5fd2e4ec406fa54967c47fbac0876e925754ec0a",
+      "source_delta": "D docs/implementation/p1-real-nautilus/upgrade/pin-inventory.json",
+      "inventory_commit": "58102e0536ad11d6a5f4b54cbc97a674103b1a4f",
+      "inventory_parent": "9dcf619274f542a5183991e2aa96256510d7fb23",
+      "inventory_tree": "44346fe0bfefd91ba0e5aecc5584ae37a07b7387",
+      "inventory_blob": "476c20bcd8a35abf9ad068bfb09b693ff0ed8231",
+      "inventory_sha256": "4932a85d27ec22bf25c4d71adb1ebd9606dac8dfd27a9afbab9c3fb8d0762597",
+      "inventory_size": 150122,
+      "inventory_delta": "A 100644 docs/implementation/p1-real-nautilus/upgrade/pin-inventory.json",
       "entries": 174,
       "narrow_path_aliases": 6,
       "unclassified": 0,
-      "generation_scope": "DISPOSABLE_STANDALONE_S_TO_I_EVIDENCE_CLONE_ONLY",
+      "generation_scope": "DISPOSABLE_STANDALONE_BASE_TO_S_TO_I_EVIDENCE_CLONE_ONLY",
       "candidate_main_ancestry_inventory": "UNCHANGED",
       "exact_verify": "PASS"
     },
     "portable_ci": {
       "execution_kind": "LOCAL_STANDALONE_REPLAY",
-      "receipt_id": "LOCAL-STANDALONE-8906104-03F2B509",
+      "receipt_id": "LOCAL-STANDALONE-5FD2E4EC-2026082704-25",
       "command": "make ci-portable NONINTERACTIVE=1",
-      "source_commit": "8906104e5b065b6ac9f9c52838a8fcfc584484b1",
-      "source_tree": "78d22275454a694783f3d476ef16947cdbbd1054",
-      "log_sha256": "03f2b5090fa187f6cd5ec5f117ec244cd101b9bcde3eac87740c66b49fcdbd8f",
-      "log_bytes": 1214981,
+      "source_commit": "5fd2e4ec406fa54967c47fbac0876e925754ec0a",
+      "source_tree": "594f098353c18a894ee078a6b081b166ca83d63a",
+      "artifact_manifest_sha256": "08f3424746d13b4246c17636da1bce6138cf169f0708b1ed0a32176b9dc20067",
+      "artifact_sha256s_sha256": "0bf9e086a3df20d5180facc04b04ae3aaed3b837f1bc241ee62cbab3fb809014",
+      "artifact_source_tree_sha256": "4717d9a3ac7053fdf1b56dc4daac52408331f4271b78201257b8eddaef428829",
+      "artifact_firewall_validate": "PASS",
       "wrapper_exit_code": 0,
       "hosted_workflow_run_claim": "NONE",
       "local_artifact_namespace_inputs": {
-        "GITHUB_RUN_ID": "32837396803",
-        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_RUN_ID": "2026082704",
+        "GITHUB_RUN_ATTEMPT": "25",
         "authority": "LOCAL_MAKE_NAMESPACE_ONLY_NOT_HOSTED_RUN_AUTHORITY"
       },
       "status": "PASS_LOCAL_REPLAY",
       "authority_scope": "PORTABLE_SOURCE_GATE_ONLY",
       "root": {
-        "passed": 7971,
-        "seconds": 1423.05,
+        "passed": 8059,
         "failures": 0
       },
       "component_backend": {
@@ -460,24 +472,35 @@
         "existing_skips": 2,
         "recovery_skips_or_xfails": 0
       },
+      "governance": {
+        "passed": 8854,
+        "failed": 0,
+        "governed_existing_skips": 2
+      },
+      "critical_coverage": {
+        "passed": 1361,
+        "skipped": 44,
+        "deselected": 5,
+        "ratchets": "PASS"
+      },
       "topology_sublanes_passed": [49, 18, 10, 22, 8, 3, 2, 3],
-      "remaining_make_gates": "PASS",
+      "remaining_make_gates": "PASS_INCLUDING_DASHBOARD_BUILD_AND_DEPENDENCY_AUDITS",
       "artifact_publication": "PASS"
     },
     "external_native_authority": {
       "r1_r61_external_build_a_b_closure_claims": "NOT_PROVIDED",
-      "host_native_authority": "DEFERRED",
+      "host_native_authority": "SUPPLIED_AND_READ_ONLY_PROBE_PASS_NOT_YET_X4_RECEIPTED",
       "promotion_or_activation": "NOT_AUTHORIZED",
       "u05_or_x4": "NOT_STARTED"
     },
-    "review_status": "SOURCE_ACCEPTED",
-    "verdict": "P1_U04_SOURCE_READY_NATIVE_DEFERRED"
+    "review_status": "X3_EVIDENCE_RECONCILED_RE_REVIEW_REQUIRED",
+    "verdict": "P1_U04_BLOCKED_PENDING_X3_EVIDENCE_REVIEW"
   },
   "task_status": {
     "P1-U01": "IMPLEMENTED_UNACCEPTED",
     "P1-U02": "IMPLEMENTED_UNACCEPTED",
     "P1-U03": "IMPLEMENTED_UNACCEPTED",
-    "P1-U04": "U04_SOURCE_ACCEPTED",
+    "P1-U04": "X3_EVIDENCE_RECONCILED_RE_REVIEW_REQUIRED",
     "P1-U05": "NOT_STARTED",
     "P1-U06": "NOT_STARTED",
     "P1-U07": "NOT_STARTED",
