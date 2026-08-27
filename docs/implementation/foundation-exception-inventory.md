@@ -515,11 +515,11 @@ scripts/build_nautilus_engine.py|1264|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|1294|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|2538|BaseException|TOOLING_MIGRATION|RAISE
 scripts/build_nautilus_engine.py|2619|BaseException|TOOLING_MIGRATION|RAISE
-scripts/build_nautilus_engine.py|3478|BaseException|TOOLING_MIGRATION|RAISE
-scripts/build_nautilus_engine.py|3624|BaseException|TOOLING_MIGRATION|RAISE
-scripts/build_nautilus_engine.py|3804|BaseException|TOOLING_MIGRATION|RAISE
-scripts/build_nautilus_engine.py|4687|Exception|TOOLING_MIGRATION|OTHER
-scripts/build_nautilus_engine.py|4725|Exception|TOOLING_MIGRATION|RETURN
+scripts/build_nautilus_engine.py|3503|BaseException|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|3649|BaseException|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|3829|BaseException|TOOLING_MIGRATION|RAISE
+scripts/build_nautilus_engine.py|4712|Exception|TOOLING_MIGRATION|OTHER
+scripts/build_nautilus_engine.py|4750|Exception|TOOLING_MIGRATION|RETURN
 scripts/build_phase4_semantic_manifest.py|282|Exception|TOOLING_MIGRATION|RAISE
 scripts/build_phase4_semantic_manifest.py|520|Exception|TOOLING_MIGRATION|OTHER
 scripts/build_phase4_semantic_manifest.py|796|Exception|TOOLING_MIGRATION|RAISE
