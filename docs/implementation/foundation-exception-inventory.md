@@ -817,8 +817,8 @@ tests/jobs/_postgres.py|171|Exception|TESTS|RAISE
 tests/jobs/test_job_transition_restore.py|1685|Exception|TESTS|OTHER
 tests/jobs/test_repository_queries.py|340|BaseException|TESTS|OTHER
 tests/market_data/test_repository.py|85|BaseException|TESTS|RAISE
-tests/nautilus_upgrade/test_v1231_candidate_closure.py|5163|BaseException|TESTS|OTHER
-tests/nautilus_upgrade/test_v1231_candidate_closure.py|5593|BaseException|TESTS|OTHER
+tests/nautilus_upgrade/test_v1231_candidate_closure.py|5194|BaseException|TESTS|OTHER
+tests/nautilus_upgrade/test_v1231_candidate_closure.py|5624|BaseException|TESTS|OTHER
 tests/research_validation/test_producers.py|159|BaseException|TESTS|RAISE
 ```
 <!-- P9_BROAD_HANDLER_INVENTORY_END -->

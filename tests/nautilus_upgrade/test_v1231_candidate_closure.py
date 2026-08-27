@@ -3941,7 +3941,11 @@ def test_candidate_native_enters_upstream_build_with_initial_environment(
 
     assert environment["RUSTFLAGS"] + " -C link-arg=-s" == effective_rustflags
     assert environment["RUSTFLAGS"] == base_rustflags
-    assert not {"CC", "CXX", "LDSHARED", "CFLAGS", "LDFLAGS"} & environment.keys()
+    assert not {"CC", "CXX", "LDSHARED", "CFLAGS"} & environment.keys()
+    assert environment["LDFLAGS"] == (
+        "-fuse-ld=lld -Wl,--gc-sections -Wl,--as-needed "
+        "-Wl,-z,relro -Wl,-z,now"
+    )
 
 
 def test_candidate_initial_environment_transforms_to_exact_u03_cargo_boundary(
@@ -3962,7 +3966,34 @@ def test_candidate_initial_environment_transforms_to_exact_u03_cargo_boundary(
     cargo["RUSTFLAGS"] += " -C link-arg=-s"
 
     assert cargo == effective
-    assert not {"CFLAGS", "LDFLAGS"} & cargo.keys()
+    assert "CFLAGS" not in cargo
+    assert cargo["LDFLAGS"] == (
+        "-fuse-ld=lld -Wl,--gc-sections -Wl,--as-needed "
+        "-Wl,-z,relro -Wl,-z,now"
+    )
+
+
+def test_candidate_cython_linker_authority_is_exact_and_full_relro(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    source_fd = os.open(source, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        initial, effective = builder._candidate_environment(
+            builder._candidate_json(ENGINE_POLICY), _logical_stage(), source_fd
+        )
+    finally:
+        os.close(source_fd)
+
+    expected = (
+        "-fuse-ld=lld -Wl,--gc-sections -Wl,--as-needed "
+        "-Wl,-z,relro -Wl,-z,now"
+    )
+    assert initial["LDFLAGS"] == expected
+    assert effective["LDFLAGS"] == expected
+    policy = builder._candidate_json(ENGINE_POLICY)["native_build_environment"]
+    assert "LDFLAGS" not in policy["prohibited_source_environment"]
 
 
 @pytest.mark.parametrize(

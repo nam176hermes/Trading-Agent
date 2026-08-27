@@ -144,7 +144,7 @@
     ],
     "entries": [
       {
-        "contents": "#!/usr/bin/python3.12 -IS\nimport os\nimport sys\n\nBUILD_ROOT = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work'\nCARGO = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/cargo'\nSTATIC = {'ANNOTATION_MODE': '', 'AR': '/usr/bin/ar', 'AWS_LC_SYS_CMAKE_BUILDER': '0', 'AWS_LC_SYS_USE_SYSTEM': '0', 'BUILD_MODE': 'release', 'CARGO_BUILD_JOBS': '1', 'CARGO_BUILD_TARGET': 'x86_64-unknown-linux-gnu', 'CARGO_CACHE_RUSTC_INFO': '0', 'CARGO_HOME': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home', 'CARGO_INCREMENTAL': '0', 'CARGO_NET_OFFLINE': 'true', 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER': 'clang', 'CARGO_TERM_COLOR': 'never', 'COPY_TO_SOURCE': 'true', 'DRY_RUN': '', 'FORCE_STRIP': 'false', 'HIGH_PRECISION': 'true', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'PARALLEL_BUILD': 'false', 'PATH': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin', 'PIP_DISABLE_PIP_VERSION_CHECK': '1', 'PIP_FIND_LINKS': '/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels', 'PIP_NO_CACHE_DIR': '1', 'PIP_NO_INDEX': '1', 'PIP_ONLY_BINARY': ':all:', 'PROFILE_MODE': '', 'PYO3_ONLY': '', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONHASHSEED': '0', 'PYTHONNOUSERSITE': '1', 'RUSTC': 'rustc', 'RUSTFLAGS': '-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,relro -C link-arg=-Wl,-z,now -C relocation-model=pic', 'RUSTUP_TOOLCHAIN': 'stable', 'SKIP_RUST_DYLIB_COPY': '', 'SOURCE_DATE_EPOCH': '0', 'TZ': 'UTC'}\nDERIVED = {'CARGO_TARGET_DIR': '/cargo-target', 'HOME': '/home', 'P1_U04_ARTIFACTS_ROOT': '/artifacts', 'P1_U04_DIST_ROOT': '/dist', 'P1_U04_SOURCE_ROOT': '/source', 'P1_U04_STAGING_ROOT': '', 'P1_U04_VENV_ROOT': '/venv', 'PWD': '/source', 'PYO3_PYTHON': '/venv/bin/python', 'TEMP': '/tmp', 'TMP': '/tmp', 'TMPDIR': '/tmp', 'VIRTUAL_ENV': '/venv'}\nDYNAMIC = ('P1_U04_SOURCE_ST_DEV', 'P1_U04_SOURCE_ST_INO')\nOVERRIDES = {'CC': 'clang', 'CXX': 'clang++', 'LDSHARED': 'clang -shared'}\nRUSTFLAGS_APPEND = ' -C link-arg=-s'\n\nstage = os.environ.get('P1_U04_STAGING_ROOT', '')\nprefix = BUILD_ROOT + '/stage-'\ntoken = stage[len(prefix):] if stage.startswith(prefix) else ''\nif len(token) != 16 or any(c not in '0123456789abcdef' for c in token):\n    raise SystemExit('cargo wrapper environment is not exact')\nexpected = dict(STATIC)\nexpected.update({name: stage + suffix for name, suffix in DERIVED.items()})\ndynamic = {}\nfor name in DYNAMIC:\n    value = os.environ.get(name, '')\n    if not value or value[0] == '0' or not value.isascii() or not value.isdecimal():\n        raise SystemExit('cargo wrapper source identity is not exact')\n    dynamic[name] = value\nexpected.update(dynamic)\nexpected.update(OVERRIDES)\nexpected['RUSTFLAGS'] += RUSTFLAGS_APPEND\nif dict(os.environ) != expected:\n    raise SystemExit('cargo wrapper environment is not exact')\nif len(sys.argv) < 2 or sys.argv[1] != 'build':\n    raise SystemExit('cargo wrapper only permits build')\nif os.getcwd() != expected['PWD']:\n    raise SystemExit('cargo wrapper working directory is not exact')\nsource = os.stat('.')\nif (str(source.st_dev), str(source.st_ino)) != (\n    dynamic['P1_U04_SOURCE_ST_DEV'], dynamic['P1_U04_SOURCE_ST_INO']\n):\n    raise SystemExit('cargo wrapper source identity is not exact')\nos.execve(CARGO, [CARGO, 'build', '--locked', '--offline', *sys.argv[2:]], expected)\n",
+        "contents": "#!/usr/bin/python3.12 -IS\nimport os\nimport sys\n\nBUILD_ROOT = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-build-work'\nCARGO = '/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/cargo'\nSTATIC = {'ANNOTATION_MODE': '', 'AR': '/usr/bin/ar', 'AWS_LC_SYS_CMAKE_BUILDER': '0', 'AWS_LC_SYS_USE_SYSTEM': '0', 'BUILD_MODE': 'release', 'CARGO_BUILD_JOBS': '1', 'CARGO_BUILD_TARGET': 'x86_64-unknown-linux-gnu', 'CARGO_CACHE_RUSTC_INFO': '0', 'CARGO_HOME': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-cargo-home', 'CARGO_INCREMENTAL': '0', 'CARGO_NET_OFFLINE': 'true', 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER': 'clang', 'CARGO_TERM_COLOR': 'never', 'COPY_TO_SOURCE': 'true', 'DRY_RUN': '', 'FORCE_STRIP': 'false', 'HIGH_PRECISION': 'true', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'LDFLAGS': '-fuse-ld=lld -Wl,--gc-sections -Wl,--as-needed -Wl,-z,relro -Wl,-z,now', 'PARALLEL_BUILD': 'false', 'PATH': '/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin', 'PIP_DISABLE_PIP_VERSION_CHECK': '1', 'PIP_FIND_LINKS': '/home/thenam176/.cache/p1-u03-toolchain-policy-20260823/candidate-inputs/wheels', 'PIP_NO_CACHE_DIR': '1', 'PIP_NO_INDEX': '1', 'PIP_ONLY_BINARY': ':all:', 'PROFILE_MODE': '', 'PYO3_ONLY': '', 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONHASHSEED': '0', 'PYTHONNOUSERSITE': '1', 'RUSTC': 'rustc', 'RUSTFLAGS': '-Dwarnings -Aclippy::drop_non_drop -C link-arg=-fuse-ld=lld -C link-arg=-Wl,--gc-sections -C link-arg=-Wl,--as-needed -C link-arg=-Wl,-z,relro -C link-arg=-Wl,-z,now -C relocation-model=pic', 'RUSTUP_TOOLCHAIN': 'stable', 'SKIP_RUST_DYLIB_COPY': '', 'SOURCE_DATE_EPOCH': '0', 'TZ': 'UTC'}\nDERIVED = {'CARGO_TARGET_DIR': '/cargo-target', 'HOME': '/home', 'P1_U04_ARTIFACTS_ROOT': '/artifacts', 'P1_U04_DIST_ROOT': '/dist', 'P1_U04_SOURCE_ROOT': '/source', 'P1_U04_STAGING_ROOT': '', 'P1_U04_VENV_ROOT': '/venv', 'PWD': '/source', 'PYO3_PYTHON': '/venv/bin/python', 'TEMP': '/tmp', 'TMP': '/tmp', 'TMPDIR': '/tmp', 'VIRTUAL_ENV': '/venv'}\nDYNAMIC = ('P1_U04_SOURCE_ST_DEV', 'P1_U04_SOURCE_ST_INO')\nOVERRIDES = {'CC': 'clang', 'CXX': 'clang++', 'LDSHARED': 'clang -shared'}\nRUSTFLAGS_APPEND = ' -C link-arg=-s'\n\nstage = os.environ.get('P1_U04_STAGING_ROOT', '')\nprefix = BUILD_ROOT + '/stage-'\ntoken = stage[len(prefix):] if stage.startswith(prefix) else ''\nif len(token) != 16 or any(c not in '0123456789abcdef' for c in token):\n    raise SystemExit('cargo wrapper environment is not exact')\nexpected = dict(STATIC)\nexpected.update({name: stage + suffix for name, suffix in DERIVED.items()})\ndynamic = {}\nfor name in DYNAMIC:\n    value = os.environ.get(name, '')\n    if not value or value[0] == '0' or not value.isascii() or not value.isdecimal():\n        raise SystemExit('cargo wrapper source identity is not exact')\n    dynamic[name] = value\nexpected.update(dynamic)\nexpected.update(OVERRIDES)\nexpected['RUSTFLAGS'] += RUSTFLAGS_APPEND\nif dict(os.environ) != expected:\n    raise SystemExit('cargo wrapper environment is not exact')\nif len(sys.argv) < 2 or sys.argv[1] != 'build':\n    raise SystemExit('cargo wrapper only permits build')\nif os.getcwd() != expected['PWD']:\n    raise SystemExit('cargo wrapper working directory is not exact')\nsource = os.stat('.')\nif (str(source.st_dev), str(source.st_ino)) != (\n    dynamic['P1_U04_SOURCE_ST_DEV'], dynamic['P1_U04_SOURCE_ST_INO']\n):\n    raise SystemExit('cargo wrapper source identity is not exact')\nos.execve(CARGO, [CARGO, 'build', '--locked', '--offline', *sys.argv[2:]], expected)\n",
         "exec_target": {
           "mode": "0500",
           "path": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-rust-toolchain/bin/cargo",
@@ -178,8 +178,8 @@
         "mode": "0500",
         "name": "cargo",
         "path": "bin/cargo",
-        "sha256": "445a036853b80360f13faed36bb64975850e6d6a0f6f552850131d4ab48c5f78",
-        "size": 3420,
+        "sha256": "5a71a2e2992439189b5f3baf7d99080993cea77110f9ad17a2cdb5d58b054421",
+        "size": 3505,
         "source_authority": "INLINE_HASH_BOUND_STDLIB_CPYTHON_WRAPPER",
         "type": "file"
       },
@@ -490,7 +490,6 @@
     "inherited_allowlist": [],
     "prohibited_source_environment": [
       "CFLAGS",
-      "LDFLAGS",
       "LD_LIBRARY_PATH",
       "PYTHONHOME",
       "PYTHON_LIB_DIR",
@@ -716,6 +715,7 @@
       "HIGH_PRECISION": "true",
       "LANG": "C.UTF-8",
       "LC_ALL": "C.UTF-8",
+      "LDFLAGS": "-fuse-ld=lld -Wl,--gc-sections -Wl,--as-needed -Wl,-z,relro -Wl,-z,now",
       "PARALLEL_BUILD": "false",
       "PATH": "/home/thenam176/.cache/trading-agent/nautilus-v1.231-toolchain/bin",
       "PIP_DISABLE_PIP_VERSION_CHECK": "1",
@@ -752,8 +752,8 @@
   "network": "DISABLED_BY_CONSTRUCTION",
   "policy_hashes": {
     "cargo_registry_policy_sha256": "ba2332d0a134a557aae7b8959e02ade94fd5d31ca70ce23fe8f48f839367b8ad",
-    "engine_build_policy_sha256": "316a6f5cd1d214cc083a3ccfa0314fdb256c2435d85a7c4161e97199eba4b41c",
-    "generator_sha256": "b0275c479ee59064400fb0d819a00a02a49e2c765e66581a8653209dc4ee9ed3",
+    "engine_build_policy_sha256": "a53f15d872b2c04757909fd4d800a0259eb34f3f142dab3680dd2effa0a5521b",
+    "generator_sha256": "6b3ad5eb2c6d4d513e28ed8e58bed2144142fde2f19aa323005eacc0e2e46192",
     "input_cache_policy_sha256": "f8b073c177c24d4a95df916610e4be5bf20e66fc50bd9fa138897f51bce862fa",
     "llvm_toolchain_policy_sha256": "7ce6888a582343edc823780485f942c7627f60ce9b37e497c7ce03f403e8d56f",
     "llvm_toolchain_validator_sha256": "71f794bb1c5f70ec427ff33c21f27debd066fcf76567d07241170da5527a41c2",

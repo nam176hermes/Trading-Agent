@@ -84,6 +84,13 @@ _INITIAL_RUSTFLAGS = (
     "-C link-arg=-Wl,-z,now "
     "-C relocation-model=pic"
 )
+_INITIAL_LDFLAGS = (
+    "-fuse-ld=lld "
+    "-Wl,--gc-sections "
+    "-Wl,--as-needed "
+    "-Wl,-z,relro "
+    "-Wl,-z,now"
+)
 _RUSTFLAGS_RELEASE_APPEND = " -C link-arg=-s"
 _STATIC_BUILD_ENVIRONMENT = {
     "ANNOTATION_MODE": "",
@@ -105,6 +112,7 @@ _STATIC_BUILD_ENVIRONMENT = {
     "HIGH_PRECISION": "true",
     "LANG": "C.UTF-8",
     "LC_ALL": "C.UTF-8",
+    "LDFLAGS": _INITIAL_LDFLAGS,
     "PARALLEL_BUILD": "false",
     "PATH": _ROUTER_BIN,
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",
@@ -194,7 +202,6 @@ _SOURCE_EFFECTIVE_OVERRIDES = {
 }
 _PROHIBITED_SOURCE_ENVIRONMENT = [
     "CFLAGS",
-    "LDFLAGS",
     "LD_LIBRARY_PATH",
     "PYTHONHOME",
     "PYTHON_LIB_DIR",
