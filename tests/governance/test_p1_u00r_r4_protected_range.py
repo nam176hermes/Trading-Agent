@@ -11,7 +11,7 @@ FIX7_R3 = "a33c3a2dbe4432da6eeec672067db6ffe065747e"
 ACCEPTED_A = "f15b1985215ef4d018f48c712221920502379a48"
 REVIEWED_S = "8dbaa153276a0d44c2e3b0a6b0c3de4055133630"
 HISTORICAL_EXTRACTOR_BLOB = "c6fe75618e522ba924c1aa0088ff44e5e1a6bd4c"
-CURRENT_EXTRACTOR_BLOB = "a15c558c23a0c592334133fb4ebe56d6b178b280"
+CURRENT_EXTRACTOR_BLOB = "84bb733d621607b14767a48a82efc964a5b702c6"
 TASK1_REPAIR_PATHS = (
     "scripts/nautilus_pin_inventory/git_source.py",
     "tests/governance/nautilus_pin_inventory/test_git_source.py",
