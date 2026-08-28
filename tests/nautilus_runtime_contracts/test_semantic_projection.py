@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from packages.nautilus_runtime_contracts.semantic import semantic_digest
 
-from test_events import stream
+from test_p1_events import stream
 
 
 def test_semantic_digest_excludes_native_random_ids() -> None:
