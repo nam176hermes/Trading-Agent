@@ -233,7 +233,9 @@ def qualify(commit: str, tree: str, generation_id: str) -> dict[str, object]:
             attributes = validate_candidate_outcome(
                 event_document, _expected(oracle)
             )
-            event = EngineEventEnvelope.model_validate(event_document)
+            event = EngineEventEnvelope.model_validate_json(
+                canonical_json_bytes(event_document)
+            )
             result = validate_isolated_simulation_result(request, event, oracle)
         except Exception as exc:
             raise RegressionQualificationError(
