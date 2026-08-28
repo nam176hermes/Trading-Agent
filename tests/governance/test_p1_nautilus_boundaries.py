@@ -103,7 +103,22 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
             "from urllib import request\n",
             "network",
         ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "import smtplib\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "value = __import__('socket')\n",
+            "network",
+        ),
         ("services/job_worker/bad.py", "PROFILE='p1-real-backtest'\n", "profile"),
+        (
+            "services/job_worker/bad.py",
+            "PROFILE='p1-' 'real-backtest'\n",
+            "profile",
+        ),
     ),
 )
 def test_additional_seeded_boundary_violations_fail(

@@ -25,14 +25,15 @@ class P1EventModel(BaseModel):
         extra="forbid", frozen=True, strict=True, revalidate_instances="always"
     )
 
-    schema_version: Literal["nautilus-p1-event-stream-v1"] = P1_EVENT_SCHEMA
+    schema_version: Literal["nautilus-p1-event-stream-v1"]
     sequence: Sequence
     simulation_time: CanonicalUtcDateTime
 
 
 class P1RunStarted(P1EventModel):
-    event_type: Literal["RunStarted"] = "RunStarted"
-    origin: Literal["CONTROL_PLANE"] = "CONTROL_PLANE"
+    event_type: Literal["RunStarted"]
+    origin: Literal["CONTROL_PLANE"]
+    native_type: None
     runtime_family: Literal["cython-v1"]
     engine_version: Literal["1.231.0"]
     upstream_commit: SourceCommit
@@ -43,8 +44,9 @@ class P1RunStarted(P1EventModel):
 
 
 class P1TargetAccepted(P1EventModel):
-    event_type: Literal["TargetAccepted"] = "TargetAccepted"
-    origin: Literal["CONTROL_PLANE"] = "CONTROL_PLANE"
+    event_type: Literal["TargetAccepted"]
+    origin: Literal["CONTROL_PLANE"]
+    native_type: None
     target_id: Identifier
     target_weight: FiniteDecimal
 
@@ -56,8 +58,9 @@ class P1TargetAccepted(P1EventModel):
 
 
 class P1TargetQuantityPlanned(P1EventModel):
-    event_type: Literal["TargetQuantityPlanned"] = "TargetQuantityPlanned"
-    origin: Literal["CONTROL_PLANE"] = "CONTROL_PLANE"
+    event_type: Literal["TargetQuantityPlanned"]
+    origin: Literal["CONTROL_PLANE"]
+    native_type: None
     target_id: Identifier
     quantity: FiniteDecimal
 
@@ -69,8 +72,9 @@ class P1TargetQuantityPlanned(P1EventModel):
 
 
 class P1OrderSubmitted(P1EventModel):
-    event_type: Literal["OrderSubmitted"] = "OrderSubmitted"
-    origin: Literal["NAUTILUS_CALLBACK"] = "NAUTILUS_CALLBACK"
+    event_type: Literal["OrderSubmitted"]
+    origin: Literal["CONTROL_PLANE"]
+    native_type: Literal["Order"]
     client_order_id: Identifier
     native_order_id: Identifier
     side: Literal["BUY", "SELL"]
@@ -84,16 +88,10 @@ class P1OrderSubmitted(P1EventModel):
         return self
 
 
-class P1OrderAccepted(P1EventModel):
-    event_type: Literal["OrderAccepted"] = "OrderAccepted"
-    origin: Literal["NAUTILUS_CALLBACK"] = "NAUTILUS_CALLBACK"
-    client_order_id: Identifier
-    native_order_id: Identifier
-
-
 class P1Fill(P1EventModel):
-    event_type: Literal["Fill"] = "Fill"
-    origin: Literal["NAUTILUS_CALLBACK"] = "NAUTILUS_CALLBACK"
+    event_type: Literal["Fill"]
+    origin: Literal["NAUTILUS_CALLBACK"]
+    native_type: Literal["OrderFilled"]
     client_order_id: Identifier
     native_fill_id: Identifier
     side: Literal["BUY", "SELL"]
@@ -110,8 +108,9 @@ class P1Fill(P1EventModel):
 
 
 class P1PositionObserved(P1EventModel):
-    event_type: Literal["PositionObserved"] = "PositionObserved"
-    origin: Literal["NAUTILUS_CACHE_OBSERVATION"] = "NAUTILUS_CACHE_OBSERVATION"
+    event_type: Literal["PositionObserved"]
+    origin: Literal["NAUTILUS_CACHE_OBSERVATION"]
+    native_type: Literal["Position"]
     quantity: FiniteDecimal
     average_entry_price: FiniteDecimal
     realized_pnl: FiniteDecimal
@@ -125,8 +124,9 @@ class P1PositionObserved(P1EventModel):
 
 
 class P1AccountObserved(P1EventModel):
-    event_type: Literal["AccountObserved"] = "AccountObserved"
-    origin: Literal["NAUTILUS_CACHE_OBSERVATION"] = "NAUTILUS_CACHE_OBSERVATION"
+    event_type: Literal["AccountObserved"]
+    origin: Literal["NAUTILUS_CACHE_OBSERVATION"]
+    native_type: Literal["Account"]
     cash_balance: FiniteDecimal
     fees: FiniteDecimal
     realized_pnl: FiniteDecimal
@@ -140,8 +140,9 @@ class P1AccountObserved(P1EventModel):
 
 
 class P1RunCompleted(P1EventModel):
-    event_type: Literal["RunCompleted"] = "RunCompleted"
-    origin: Literal["CONTROL_PLANE"] = "CONTROL_PLANE"
+    event_type: Literal["RunCompleted"]
+    origin: Literal["CONTROL_PLANE"]
+    native_type: None
     runtime_family: Literal["cython-v1"]
     engine_version: Literal["1.231.0"]
     upstream_commit: SourceCommit
@@ -154,6 +155,7 @@ class P1RunCompleted(P1EventModel):
     fees: FiniteDecimal
     realized_pnl: FiniteDecimal
     unrealized_pnl: FiniteDecimal
+    semantic_digest: Sha256Hex
 
     @model_validator(mode="after")
     def _valid_final_account(self) -> "P1RunCompleted":
@@ -167,7 +169,6 @@ P1Event: TypeAlias = Annotated[
     | P1TargetAccepted
     | P1TargetQuantityPlanned
     | P1OrderSubmitted
-    | P1OrderAccepted
     | P1Fill
     | P1PositionObserved
     | P1AccountObserved
@@ -180,7 +181,6 @@ P1_EVENT_MODELS = (
     P1TargetAccepted,
     P1TargetQuantityPlanned,
     P1OrderSubmitted,
-    P1OrderAccepted,
     P1Fill,
     P1PositionObserved,
     P1AccountObserved,
@@ -188,10 +188,10 @@ P1_EVENT_MODELS = (
 )
 
 
-def event_message_id(engine_run_id: UUID, event: P1Event) -> UUID:
+def event_message_id(request_message_id: UUID, event: P1Event) -> UUID:
     """Return the deterministic raw-envelope identity for one event."""
 
     return uuid5(
-        engine_run_id,
+        request_message_id,
         f"{P1_EVENT_SCHEMA}:{event.sequence}:{event.event_type}",
     )

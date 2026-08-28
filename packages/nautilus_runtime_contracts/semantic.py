@@ -9,7 +9,7 @@ from packages.engine_contracts import canonical_json_bytes
 from .events import P1Event
 
 
-_CUSTODY_ONLY_FIELDS = {"native_fill_id", "native_order_id"}
+_CUSTODY_ONLY_FIELDS = {"native_fill_id", "native_order_id", "semantic_digest"}
 
 
 def semantic_projection(events: tuple[P1Event, ...]) -> tuple[dict[str, object], ...]:

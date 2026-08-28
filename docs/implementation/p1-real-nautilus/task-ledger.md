@@ -21,8 +21,8 @@ production, network-trading, or live authority.
 | P1-01 | P1-00 | ACCEPTED | Existing real BacktestEngine path and all 33 U05 API surfaces are characterized without new runtime authority. |
 | P1-02 | P1-00, P1-01 | ACCEPTED | Architecture, threat model, ownership and frozen-launcher boundaries are executable. |
 | P1-03 | P1-02 | ACCEPTED | Four P1 input artifacts are closed, immutable, byte-bounded and canonical. |
-| P1-04 | P1-02 | ACCEPTED | Closed event vocabulary, state machine, UUIDv5 identity and semantic digest are executable. |
-| P1-05 | P1-03, P1-04 | READY | Generate the stdlib-only sealed protocol and golden fixtures. |
+| P1-04 | P1-02 | IN_REVIEW | Event authority remediation is awaiting clean independent review. |
+| P1-05 | P1-03, P1-04 | BLOCKED | Await accepted P1-04 review before freezing generated grammar. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work

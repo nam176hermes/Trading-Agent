@@ -25,9 +25,9 @@ def test_semantic_digest_excludes_native_random_ids() -> None:
 def test_semantic_digest_changes_for_business_fields_and_event_order() -> None:
     events = stream()
     mutations = (
-        events[:5] + (events[5].model_copy(update={"price": events[5].price + 1}),) + events[6:],
-        events[:5] + (events[5].model_copy(update={"quantity": events[5].quantity + 1}),) + events[6:],
-        events[:5] + (events[5].model_copy(update={"fee": events[5].fee + 1}),) + events[6:],
+        events[:4] + (events[4].model_copy(update={"price": events[4].price + 1}),) + events[5:],
+        events[:4] + (events[4].model_copy(update={"quantity": events[4].quantity + 1}),) + events[5:],
+        events[:4] + (events[4].model_copy(update={"fee": events[4].fee + 1}),) + events[5:],
         events[:1] + (events[1].model_copy(update={"target_weight": events[1].target_weight / 2}),) + events[2:],
         events[:6] + (events[6].model_copy(update={"simulation_time": events[6].simulation_time + timedelta(minutes=1)}),) + events[7:],
         events[:6] + (events[7], events[6]) + events[8:],

@@ -14,19 +14,26 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 BUDGET = ROOT / "docs/implementation/p1-real-nautilus/growth-budget.json"
-_NETWORK_MODULES = {
-    "aiohttp",
-    "ccxt",
-    "ftplib",
-    "grpc",
-    "http",
-    "httpx",
-    "importlib",
-    "requests",
-    "socket",
-    "ssl",
-    "urllib",
-    "websockets",
+_RUNTIME_ALLOWED_MODULES = {
+    "__future__",
+    "argparse",
+    "collections",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "errno",
+    "hashlib",
+    "hmac",
+    "json",
+    "nautilus_trader",
+    "os",
+    "re",
+    "signal",
+    "stat",
+    "sys",
+    "time",
+    "typing",
+    "uuid",
 }
 _PROFILE_NAMES = {"p1-local-paper", "p1-real-backtest"}
 _LEGACY_NAUTILUS_IMPORTS = {
@@ -65,6 +72,17 @@ def _imports(tree: ast.AST) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             names.add(node.module.split(".")[0])
     return names
+
+
+def _uses_dynamic_import(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "import_module":
+            return True
+    return False
 
 
 def check_boundaries(root: Path, budget_path: Path) -> None:
@@ -117,8 +135,10 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
         is_legacy_reference = relative in _LEGACY_NAUTILUS_IMPORTS
         if "nautilus_trader" in imports and not (is_test or is_runtime_v1 or is_legacy_reference):
             raise BoundaryError(f"root Nautilus import is forbidden: {relative}")
-        if is_runtime_v1 and imports & _NETWORK_MODULES:
-            raise BoundaryError(f"runtime network import is forbidden: {relative}")
+        if is_runtime_v1 and (
+            imports - _RUNTIME_ALLOWED_MODULES or _uses_dynamic_import(tree)
+        ):
+            raise BoundaryError(f"runtime network/client import is forbidden: {relative}")
         is_boundary_checker = relative == "scripts/check_p1_nautilus_boundaries.py"
         if (
             "runtime_v1" in source
@@ -127,8 +147,13 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
         ):
             raise BoundaryError(f"mixed runtime families are forbidden: {relative}")
         is_profile_policy = relative == "engines/nautilus/runtime_v1/profile.py"
+        string_values = {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
         if not (is_test or is_profile_policy or is_boundary_checker) and any(
-            profile in source for profile in _PROFILE_NAMES
+            profile in source or profile in string_values for profile in _PROFILE_NAMES
         ):
             raise BoundaryError(f"profile name duplicated outside policy: {relative}")
 
