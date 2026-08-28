@@ -4,8 +4,13 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 P1_EVENT_SCHEMA = "nautilus-p1-event-stream-v1"
+ARTIFACT_SCHEMAS = {'engine_configuration': 'nautilus-p1-engine-configuration-v1', 'instrument_catalog': 'nautilus-p1-instrument-catalog-v1', 'market_data_manifest': 'nautilus-p1-market-data-manifest-v1', 'target_schedule': 'nautilus-p1-target-schedule-v1'}
+MAX_DOCUMENT_BYTES = {'engine_configuration': 4096, 'instrument_catalog': 8192, 'market_data_manifest': 8192, 'target_schedule': 1048576}
+MAX_EVENT_BYTES = max(MAX_DOCUMENT_BYTES.values())
 DECIMAL_PATTERN = r"^(?:0|-?[1-9]\d*|-?(?:0|[1-9]\d*)\.\d*[1-9])$"
 TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
@@ -38,10 +43,13 @@ def canonical_json_bytes(value: object) -> bytes:
         elif item is not None and not isinstance(item, (str, bool, int)):
             raise ProtocolValidationError("unsupported value")
     walk(value)
-    return json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    try:
+        return json.dumps(value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise ProtocolValidationError("invalid Unicode value") from exc
 
 
-def load_canonical_json(raw: bytes) -> dict[str, object]:
+def _load_canonical_json(raw: bytes) -> dict[str, object]:
     def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}
         for key, item in items:
@@ -122,7 +130,7 @@ def _validate(value: object, schema: dict[str, object], root: dict[str, object])
         if len(value) < schema.get("minLength", 0) or len(value) > schema.get("maxLength", len(value)):
             raise ProtocolValidationError("string length")
         pattern = schema.get("pattern")
-        if isinstance(pattern, str) and re.fullmatch(pattern, value) is None:
+        if isinstance(pattern, str) and re.fullmatch(pattern, value, flags=re.ASCII) is None:
             raise ProtocolValidationError("string pattern")
         if schema.get("format") == "uuid":
             try:
@@ -130,6 +138,8 @@ def _validate(value: object, schema: dict[str, object], root: dict[str, object])
                     raise ValueError
             except ValueError as exc:
                 raise ProtocolValidationError("UUID") from exc
+        if schema.get("format") == "date-time":
+            _timestamp(value)
     elif type(value) is int:
         if "minimum" in schema and value < schema["minimum"]:
             raise ProtocolValidationError("integer minimum")
@@ -139,9 +149,139 @@ def _validate(value: object, schema: dict[str, object], root: dict[str, object])
             raise ProtocolValidationError("integer exclusive minimum")
 
 
+def _object(value: object) -> dict[str, object]:
+    if type(value) is not dict:
+        raise ProtocolValidationError("object value")
+    return value
+
+
+def _array(value: object) -> list[object]:
+    if type(value) is not list:
+        raise ProtocolValidationError("array value")
+    return value
+
+
+def _text(value: object) -> str:
+    if type(value) is not str:
+        raise ProtocolValidationError("string value")
+    return value
+
+
+def _decimal(value: object) -> Decimal:
+    try:
+        return Decimal(_text(value))
+    except InvalidOperation as exc:
+        raise ProtocolValidationError("decimal value") from exc
+
+
+def _timestamp(value: object) -> datetime:
+    try:
+        return datetime.fromisoformat(_text(value).removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ProtocolValidationError("timestamp value") from exc
+
+
+def _unique(values: list[object]) -> bool:
+    return len(values) == len(set(_text(value) for value in values))
+
+
+def _validate_semantics(kind: str, value: dict[str, object]) -> None:
+    if kind == "engine_configuration":
+        if value.get("starting_balance") != "1000000" or value.get("fee_rate") != "0.001":
+            raise ProtocolValidationError("engine configuration amount")
+    elif kind == "instrument_catalog":
+        if any(
+            _decimal(value.get(name)) <= 0
+            for name in ("tick_size", "step_size", "min_quantity", "min_notional")
+        ):
+            raise ProtocolValidationError("instrument increment")
+    elif kind == "market_data_manifest":
+        if _timestamp(value.get("last_timestamp")) < _timestamp(value.get("first_timestamp")):
+            raise ProtocolValidationError("market data window")
+    elif kind == "target_schedule":
+        targets = _array(value.get("targets"))
+        target_ids: list[object] = []
+        effective_times: list[object] = []
+        for raw_target in targets:
+            target = _object(raw_target)
+            target_ids.append(target.get("target_id"))
+            effective_times.append(target.get("effective_at"))
+            signals = _array(target.get("source_signal_ids"))
+            positions = _array(target.get("positions"))
+            if not _unique(signals) or len(positions) != 1:
+                raise ProtocolValidationError("target cardinality")
+            position = _object(positions[0])
+            instrument = _object(position.get("instrument"))
+            if (
+                instrument.get("product_type") != "crypto_spot"
+                or instrument.get("symbol") != "BTCUSDT"
+                or instrument.get("venue") != "BINANCE"
+                or not Decimal(0) <= _decimal(position.get("target_weight")) <= Decimal(1)
+            ):
+                raise ProtocolValidationError("target position")
+        if (
+            not _unique(target_ids)
+            or not _unique(effective_times)
+            or [_timestamp(item) for item in effective_times]
+            != sorted(_timestamp(item) for item in effective_times)
+        ):
+            raise ProtocolValidationError("target schedule")
+    elif kind in {"TargetAccepted", "OrderSubmitted"}:
+        if not _unique(_array(value.get("source_signal_ids"))):
+            raise ProtocolValidationError("duplicate signal")
+        if kind == "TargetAccepted" and not Decimal(0) <= _decimal(value.get("target_weight")) <= Decimal(1):
+            raise ProtocolValidationError("target weight")
+        if kind == "OrderSubmitted" and _decimal(value.get("quantity")) <= 0:
+            raise ProtocolValidationError("order quantity")
+    elif kind == "TargetQuantityPlanned" and _decimal(value.get("quantity")) < 0:
+        raise ProtocolValidationError("planned quantity")
+    elif kind == "Fill" and (
+        _decimal(value.get("quantity")) <= 0
+        or _decimal(value.get("price")) <= 0
+        or _decimal(value.get("fee")) < 0
+    ):
+        raise ProtocolValidationError("fill amount")
+    elif kind == "PositionObserved" and (
+        _decimal(value.get("quantity")) < 0
+        or _decimal(value.get("average_entry_price")) < 0
+    ):
+        raise ProtocolValidationError("position amount")
+    elif kind == "AccountObserved" and (
+        _decimal(value.get("cash_balance")) < 0 or _decimal(value.get("fees")) < 0
+    ):
+        raise ProtocolValidationError("account amount")
+    elif kind == "RunCompleted" and (
+        _decimal(value.get("final_cash")) < 0
+        or _decimal(value.get("final_position")) < 0
+        or _decimal(value.get("fees")) < 0
+    ):
+        raise ProtocolValidationError("completion amount")
+
+
 def validate_document(kind: str, value: dict[str, object]) -> None:
     schema = DOCUMENT_SCHEMAS.get(kind)
     if schema is None:
         raise ProtocolValidationError("document kind")
     canonical_json_bytes(value)
     _validate(value, schema, schema)
+    _validate_semantics(kind, value)
+
+
+def load_document(kind: str, raw: bytes) -> dict[str, object]:
+    maximum = MAX_DOCUMENT_BYTES.get(kind)
+    if maximum is None or len(raw) > maximum:
+        raise ProtocolValidationError("document size")
+    value = _load_canonical_json(raw)
+    validate_document(kind, value)
+    return value
+
+
+def load_event(raw: bytes) -> dict[str, object]:
+    if len(raw) > MAX_EVENT_BYTES:
+        raise ProtocolValidationError("event size")
+    value = _load_canonical_json(raw)
+    kind = value.get("event_type")
+    if not isinstance(kind, str):
+        raise ProtocolValidationError("event type")
+    validate_document(kind, value)
+    return value
