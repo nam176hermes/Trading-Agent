@@ -235,10 +235,12 @@ def test_runtime_relative_import_is_allowed(tmp_path: Path) -> None:
     check_boundaries(root, budget)
 
 
-def test_runtime_may_import_only_root_version_metadata(tmp_path: Path) -> None:
+def test_runtime_may_read_version_metadata_without_importing_product(
+    tmp_path: Path,
+) -> None:
     root, budget = _fixture(
         tmp_path,
-        "from nautilus_trader import __version__\n",
+        "from importlib.metadata import version\n",
         relative="engines/nautilus/runtime_v1/main.py",
     )
     check_boundaries(root, budget)

@@ -27,10 +27,39 @@ def test_main_is_small_composition_with_no_stdout_or_ambient_cli() -> None:
         and node.func.id == "require_runtime_entry"
         for node in ast.walk(tree)
     )
+    main_function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    call_nodes = [
+        node
+        for node in ast.walk(main_function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    calls = [node.func.id for node in sorted(call_nodes, key=lambda item: item.lineno)]
+    assert calls.index("require_engine_version") < calls.index("load_product_lineage")
     assert any(
         isinstance(node, ast.ImportFrom)
-        and node.module == "nautilus_trader"
-        and [alias.name for alias in node.names] == ["__version__"]
+        and node.module == "importlib.metadata"
+        and [alias.name for alias in node.names] == ["version"]
+        for node in ast.walk(tree)
+    )
+    assert all(
+        not (
+            isinstance(node, (ast.Import, ast.ImportFrom))
+            and (
+                any(alias.name == "nautilus_trader" for alias in node.names)
+                if isinstance(node, ast.Import)
+                else node.module == "nautilus_trader"
+            )
+        )
+        for node in ast.walk(tree)
+    )
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_product_lineage"
         for node in ast.walk(tree)
     )
 

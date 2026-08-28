@@ -24,6 +24,7 @@ _RUNTIME_ALLOWED_MODULES = {
     "errno",
     "hashlib",
     "hmac",
+    "importlib",
     "json",
     "os",
     "re",
@@ -185,7 +186,7 @@ def _runtime_import_is_allowed(module: str) -> bool:
     top_level = module.split(".", 1)[0]
     if top_level in _RUNTIME_ALLOWED_MODULES:
         return True
-    return module in {"nautilus_trader", "nautilus_trader.__version__"} or any(
+    return module == "nautilus_trader" or any(
         module == prefix or module.startswith(prefix + ".")
         for prefix in _RUNTIME_ALLOWED_NAUTILUS_PREFIXES
     )

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import stat
 import sys
+from inspect import signature
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from runtime_v1.bootstrap import (  # noqa: E402
     EntryFacts,
     RuntimeBootstrapError,
     require_engine_version,
+    load_product_lineage,
     require_product_lineage,
     validate_entry,
 )
@@ -50,9 +53,11 @@ def _facts() -> EntryFacts:
         orig_argv=COMMAND,
         argv=COMMAND[3:],
         kernel_argv=tuple(value.encode() for value in COMMAND),
-        environment=(),
+        environment=(("LC_CTYPE", "C.UTF-8"),),
+        cwd="/",
         request_mode=stat.S_IFREG | 0o400,
         sidecar_mode=stat.S_IFREG | 0o400,
+        sidecar_bytes=b"a" * 64 + b"\n",
     )
 
 
@@ -68,7 +73,8 @@ def test_exact_isolated_entry_and_lineage_pass() -> None:
         "closure_sha256": "a" * 64,
         "runtime_inventory_sha256": "b" * 64,
     }
-    assert require_product_lineage(lineage, expected=lineage) is None
+    assert tuple(signature(require_product_lineage).parameters) == ("observed",)
+    assert require_product_lineage(lineage) is None
 
 
 @pytest.mark.parametrize(
@@ -87,9 +93,13 @@ def test_exact_isolated_entry_and_lineage_pass() -> None:
         {"orig_argv": COMMAND + ("--extra",)},
         {"argv": COMMAND[3:] + ("--extra",)},
         {"kernel_argv": tuple(value.encode() for value in COMMAND[:-1])},
+        {"cwd": "/tmp"},
+        {"environment": ()},
         {"environment": (("PYTHONPATH", "/tmp"),)},
         {"request_mode": stat.S_IFIFO | 0o400},
         {"sidecar_mode": stat.S_IFDIR | 0o500},
+        {"sidecar_bytes": b"A" * 64 + b"\n"},
+        {"sidecar_bytes": b"a" * 63 + b"\n"},
     ),
 )
 def test_entry_rejects_ambient_or_nonregular_authority(
@@ -122,4 +132,32 @@ def test_version_and_lineage_are_exact_and_closed() -> None:
         {**expected, "unknown": True},
     ):
         with pytest.raises(RuntimeBootstrapError, match="lineage"):
-            require_product_lineage(mutation, expected=expected)
+            require_product_lineage(mutation)
+
+
+def test_product_lineage_loader_is_fixed_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lineage = {
+        "profile_manifest_schema_version": 8,
+        "runtime_family": "cython-v1",
+        "engine_version": "1.231.0",
+        "profile": P1_REAL_BACKTEST_PROFILE,
+        "event_schema": "nautilus-p1-event-stream-v1",
+        "closure_sha256": "a" * 64,
+        "runtime_inventory_sha256": "b" * 64,
+    }
+    raw = (
+        json.dumps(lineage, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode()
+    monkeypatch.setattr(
+        "runtime_v1.bootstrap._read_regular",
+        lambda path, maximum: raw,
+    )
+    assert load_product_lineage() == lineage
+    monkeypatch.setattr(
+        "runtime_v1.bootstrap._read_regular",
+        lambda path, maximum: b'{}\n',
+    )
+    with pytest.raises(RuntimeBootstrapError, match="lineage"):
+        load_product_lineage()
