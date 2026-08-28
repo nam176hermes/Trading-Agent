@@ -2,7 +2,7 @@
 # P1 Real Nautilus Engine Vertical Slice — v1.231.0 Rebased Architecture Design
 
 **Repository:** `nam176hermes/Trading-Agent`  
-**Trading-Agent baseline:** `c8fb6f694b11c065d5b819614532e9a77aa8da4b`  
+**P1 source baseline:** [current-source-baseline.json](./current-source-baseline.json)
 **Current rollback engine:** NautilusTrader `1.227.0` / `280ae1762df51a492a4ce71506a40b5c8706def5`  
 **Target engine:** NautilusTrader `1.231.0` / `27a8e54e7ac3c57d6cbf8891f0283dfbaee97317`  
 **Date:** 2026-08-16  

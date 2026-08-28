@@ -758,7 +758,7 @@ Atomically switch the code-owned P1 baseline to the fully qualified candidate wh
 **Primary implementer subagent:** Integration Lead — `gpt-5.6-sol`, reasoning `xhigh`  
 **Spec-compliance reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `high`  
 **Code-quality/security reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
-**Owned files:** `docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231-engine-vertical-slice.md; docs/implementation/p1-real-nautilus/baseline.md; .gitignore only if worktree directory policy requires it`  
+**Owned files:** `docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231.md; docs/implementation/p1-real-nautilus/baseline.md; .gitignore only if worktree directory policy requires it`
 **Commit:** `docs(p1): pin real Nautilus program baseline`
 
 ### Objective
@@ -2509,7 +2509,7 @@ Any missing field prevents a completion claim.
 Save this plan in the repository as:
 
 ```text
-docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231-engine-vertical-slice.md
+docs/superpowers/plans/2026-08-16-p1-real-nautilus-v1.231.md
 ```
 
 The design companion belongs at:
