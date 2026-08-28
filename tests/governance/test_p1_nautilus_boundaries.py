@@ -123,6 +123,16 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
             "from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory\n",
             "network",
         ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "value = __builtins__['__import__']('socket')\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "from ..launcher import nautilus_backtest\n",
+            "network",
+        ),
         ("services/job_worker/bad.py", "PROFILE='p1-real-backtest'\n", "profile"),
         (
             "services/job_worker/bad.py",

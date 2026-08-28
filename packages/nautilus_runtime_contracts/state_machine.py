@@ -30,6 +30,7 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
     accepted_targets: dict[str, tuple[str, ...]] = {}
     planned_targets: set[str] = set()
     submitted_orders: set[str] = set()
+    submitted_targets: set[str] = set()
     native_order_ids: set[str] = set()
     native_fill_ids: set[str] = set()
     fill_count = 0
@@ -60,11 +61,13 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
                 or event.client_order_id in submitted_orders
                 or event.native_order_id in native_order_ids
                 or event.target_id not in planned_targets
+                or event.target_id in submitted_targets
                 or accepted_targets[event.target_id] != event.source_signal_ids
             ):
                 raise ValueError("order submission is not bound to a target plan")
             submitted_orders.add(event.client_order_id)
             native_order_ids.add(event.native_order_id)
+            submitted_targets.add(event.target_id)
             submitted_order_facts[event.client_order_id] = (
                 event.side,
                 event.quantity,

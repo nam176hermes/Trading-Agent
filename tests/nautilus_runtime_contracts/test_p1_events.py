@@ -129,6 +129,24 @@ def test_state_machine_rejects_unfinished_late_and_contradictory_native_state() 
             validate_event_stream(mutation)
 
 
+def test_state_machine_rejects_a_second_order_for_one_target() -> None:
+    events = stream()
+    second_order = events[3].model_copy(
+        update={"client_order_id": "order-2", "native_order_id": "native-random-2"}
+    )
+    second_fill = events[4].model_copy(
+        update={"client_order_id": "order-2", "native_fill_id": "fill-random-2"}
+    )
+    mutation = _resequence_and_digest(
+        events[:5]
+        + (second_order, second_fill)
+        + events[5:-1]
+        + (events[-1].model_copy(update={"order_count": 2, "fill_count": 2}),)
+    )
+    with pytest.raises(ValueError, match="target plan"):
+        validate_event_stream(mutation)
+
+
 def test_event_schema_rejects_unknown_wrong_origin_float_and_nonfinite() -> None:
     valid = stream()[4].model_dump(mode="json")
     for mutation in (

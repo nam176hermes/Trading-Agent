@@ -82,11 +82,19 @@ def _imports(tree: ast.AST) -> set[str]:
 
 def _uses_dynamic_import(tree: ast.AST) -> bool:
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id == "__import__":
+        if isinstance(node, ast.Name) and node.id in {"__builtins__", "__import__"}:
             return True
         if isinstance(node, ast.Attribute) and node.attr == "import_module":
             return True
+        if isinstance(node, ast.Constant) and node.value == "__import__":
+            return True
     return False
+
+
+def _uses_parent_relative_import(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.ImportFrom) and node.level > 1 for node in ast.walk(tree)
+    )
 
 
 def _runtime_import_is_allowed(module: str) -> bool:
@@ -156,6 +164,7 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
         if is_runtime_v1 and (
             any(not _runtime_import_is_allowed(module) for module in imports)
             or _uses_dynamic_import(tree)
+            or _uses_parent_relative_import(tree)
         ):
             raise BoundaryError(f"runtime network/client import is forbidden: {relative}")
         is_boundary_checker = relative == "scripts/check_p1_nautilus_boundaries.py"
