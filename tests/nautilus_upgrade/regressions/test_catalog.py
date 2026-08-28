@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 
@@ -16,6 +17,15 @@ CONTRACT = (
     ROOT / "docs/implementation/p1-real-nautilus/upgrade/direct-api-contract.json"
 )
 CATALOG = Path(__file__).with_name("v1.228-v1.231.json")
+RECEIPT = (
+    ROOT
+    / "docs/implementation/p1-real-nautilus/upgrade/"
+    "u06-regression-qualification-receipt.json"
+)
+MATRIX = (
+    ROOT
+    / "docs/implementation/p1-real-nautilus/upgrade/release-regression-matrix.json"
+)
 
 
 def _documents() -> tuple[dict[str, object], dict[str, object]]:
@@ -120,3 +130,58 @@ def test_oracle_projection_uses_canonical_decimal_strings() -> None:
     expected = qualification._expected(oracle)
     assert expected["fees"] == "0.2"
     assert expected["realized_pnl"] == "0"
+
+
+def test_committed_u06_receipt_is_closed_and_generation_bound() -> None:
+    raw = RECEIPT.read_bytes()
+    receipt = json.loads(raw)
+    assert raw == (
+        json.dumps(receipt, allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True)
+        + "\n"
+    ).encode("ascii")
+    assert receipt["schema"] == (
+        "trading-agent-nautilus-u06-regression-qualification/v1"
+    )
+    assert receipt["verdict"] == "PASS"
+    assert receipt["qualification_source_commit"] == (
+        "09ea4f2a7ae27bdafe070763fa460068254bebfb"
+    )
+    assert receipt["qualification_source_tree"] == (
+        "b97bda3c00aef8467b636b25464a782acf1e48bb"
+    )
+    assert receipt["candidate_generation_id"] == "NT1231-U04-G1"
+    assert receipt["candidate_generation_sha256"] == (
+        "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c"
+    )
+    assert receipt["candidate_closure_sha256"] == (
+        "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255"
+    )
+    assert set(receipt["authority_limits"].values()) == {False}
+    evidence = receipt["evidence"]
+    assert receipt["evidence_sha256"] == hashlib.sha256(
+        qualification._canonical(evidence)
+    ).hexdigest()
+    assert evidence["candidate_snapshot_before"] == evidence["candidate_snapshot_after"]
+    assert set(evidence["scenarios"]) == set(json.loads(CATALOG.read_bytes())["scenario_ids"])
+    assert set(evidence["outcomes"].values()) == {0}
+    assert evidence["catalog"] == {
+        "disposition_counts": {
+            "NOT_USED": 14,
+            "SCENARIO": 15,
+            "UPSTREAM_ONLY": 11,
+        },
+        "release_item_count": 40,
+        "sha256": hashlib.sha256(CATALOG.read_bytes()).hexdigest(),
+    }
+    matrix = json.loads(MATRIX.read_bytes())
+    assert matrix["catalog_sha256"] == evidence["catalog"]["sha256"]
+    assert receipt["input_receipt_sha256s"]["u05_qualification"] == hashlib.sha256(
+        (
+            ROOT
+            / "docs/implementation/p1-real-nautilus/upgrade/"
+            "u05-api-qualification-receipt.json"
+        ).read_bytes()
+    ).hexdigest()
+    assert evidence["source_sha256s"]["runner"] == hashlib.sha256(
+        Path(qualification.__file__).read_bytes()
+    ).hexdigest()

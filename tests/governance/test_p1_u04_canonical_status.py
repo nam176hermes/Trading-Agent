@@ -121,7 +121,8 @@ def test_canonical_u04_documents_have_one_nonpromotional_status() -> None:
     assert "| P1-U04 | P1-U03 | ACCEPTED |" in ledger
     assert "| P1-U04C | P1-U04 | ACCEPTED |" in ledger
     assert "| P1-U05 | P1-U04C | ACCEPTED |" in ledger
-    assert "| P1-U06 | P1-U05 | READY |" in ledger
+    assert "| P1-U06 | P1-U05 | ACCEPTED |" in ledger
+    assert "| P1-U07 | P1-U06 | READY |" in ledger
     assert "IMPLEMENTED_UNACCEPTED" not in ledger
     assert "X3_EVIDENCE_RECONCILED_RE_REVIEW_REQUIRED" not in ledger
     assert "CANDIDATE_CONTEXT_ONLY" not in ledger
