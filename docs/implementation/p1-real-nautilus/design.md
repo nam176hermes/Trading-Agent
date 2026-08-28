@@ -12,7 +12,7 @@
 
 P1 remains a productization program, not a greenfield Nautilus integration. The repository already has a real sealed Cython-v1 `BacktestEngine`, worker process custody, canonical event validation, durable ingestion and independent portfolio accounting.
 
-The architecture changes in one important way: before productization, P1 creates and qualifies a final-v1 `1.231.0` candidate beside the retained `1.227.0` rollback. The candidate becomes active only after provenance, hermetic build, direct API, regression and dual-run semantic gates.
+The architecture changes in one important way: before productization, P1 creates and qualifies a final-v1 `1.231.0` candidate beside the retained `1.227.0` rollback. After provenance, hermetic build, direct API, regression and dual-run gates, U08 may approve it for P1-A/B only; legacy Phase4 profiles remain on 1.227/schema 6.
 
 ## 2. Why upgrade before P1-A
 
