@@ -135,6 +135,11 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         ),
         (
             "engines/nautilus/runtime_v1/bad.py",
+            "value = eval(\"__import__('socket')\")\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
             "from ..launcher import nautilus_backtest\n",
             "network",
         ),
@@ -147,6 +152,11 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         (
             "services/job_worker/bad.py",
             "PROFILE='p1-' + 'real-backtest'\n",
+            "profile",
+        ),
+        (
+            "services/job_worker/bad.py",
+            "PROFILE='p1' + '-real-' + 'backtest'\n",
             "profile",
         ),
     ),

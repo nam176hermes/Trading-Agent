@@ -84,13 +84,30 @@ def _imports(tree: ast.AST) -> set[str]:
 
 def _uses_dynamic_import(tree: ast.AST) -> bool:
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id in {"__builtins__", "__import__"}:
+        if isinstance(node, ast.Name) and node.id in {
+            "__builtins__",
+            "__import__",
+            "compile",
+            "eval",
+            "exec",
+        }:
             return True
         if isinstance(node, ast.Attribute) and node.attr == "import_module":
             return True
         if isinstance(node, ast.Constant) and node.value == "__import__":
             return True
     return False
+
+
+def _constant_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _constant_string(node.left)
+        right = _constant_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
 
 
 def _uses_parent_relative_import(tree: ast.AST) -> bool:
@@ -178,9 +195,9 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
             raise BoundaryError(f"mixed runtime families are forbidden: {relative}")
         is_profile_policy = relative == "engines/nautilus/runtime_v1/profile.py"
         string_values = {
-            node.value
+            value
             for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            if (value := _constant_string(node)) is not None
         }
         if not (is_test or is_profile_policy or is_boundary_checker) and any(
             profile in source or profile in string_values for profile in _PROFILE_NAMES

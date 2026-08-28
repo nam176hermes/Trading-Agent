@@ -28,7 +28,7 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
         raise ValueError("P1 event stream lifecycle cardinality is invalid")
 
     accepted_targets: dict[str, tuple[str, ...]] = {}
-    planned_targets: set[str] = set()
+    planned_targets: dict[str, Decimal] = {}
     submitted_orders: set[str] = set()
     submitted_targets: set[str] = set()
     native_order_ids: set[str] = set()
@@ -54,7 +54,7 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
         elif isinstance(event, P1TargetQuantityPlanned):
             if event.target_id not in accepted_targets or event.target_id in planned_targets:
                 raise ValueError("target quantity was not planned after acceptance")
-            planned_targets.add(event.target_id)
+            planned_targets[event.target_id] = event.quantity
         elif isinstance(event, P1OrderSubmitted):
             if (
                 not planned_targets
@@ -63,6 +63,7 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
                 or event.target_id not in planned_targets
                 or event.target_id in submitted_targets
                 or accepted_targets[event.target_id] != event.source_signal_ids
+                or planned_targets[event.target_id] != event.quantity
             ):
                 raise ValueError("order submission is not bound to a target plan")
             submitted_orders.add(event.client_order_id)
@@ -94,7 +95,7 @@ def validate_event_stream(events: tuple[P1Event, ...]) -> tuple[P1Event, ...]:
             account_count += 1
             last_account = event
 
-    if set(accepted_targets) != planned_targets or not accepted_targets:
+    if set(accepted_targets) != set(planned_targets) or not accepted_targets:
         raise ValueError("every accepted target requires exactly one quantity plan")
     if position_count == 0 or account_count == 0:
         raise ValueError("completion requires position and account observations")

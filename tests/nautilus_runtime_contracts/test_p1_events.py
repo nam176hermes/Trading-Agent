@@ -147,6 +147,17 @@ def test_state_machine_rejects_a_second_order_for_one_target() -> None:
         validate_event_stream(mutation)
 
 
+def test_state_machine_rejects_order_quantity_that_exceeds_its_plan() -> None:
+    events = list(stream())
+    events[3] = events[3].model_copy(update={"quantity": Decimal("2")})
+    events[4] = events[4].model_copy(update={"quantity": Decimal("2")})
+    events[-3] = events[-3].model_copy(update={"quantity": Decimal("2")})
+    events[-1] = events[-1].model_copy(update={"final_position": Decimal("2")})
+    mutation = _resequence_and_digest(tuple(events))
+    with pytest.raises(ValueError, match="target plan"):
+        validate_event_stream(mutation)
+
+
 def test_event_schema_rejects_unknown_wrong_origin_float_and_nonfinite() -> None:
     valid = stream()[4].model_dump(mode="json")
     for mutation in (
