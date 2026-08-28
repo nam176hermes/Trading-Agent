@@ -188,6 +188,7 @@ apps/job_api/config.py|116|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/import_probe.py|158|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/import_probe.py|272|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/nautilus_backtest.py|513|BaseException|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/launcher/nautilus_v1231_probe.py|226|Exception|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/alert_manager.py|98|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/allocation_engine.py|161|Exception|PRODUCTION_CRITICAL|CONTINUE
 legacy/research-backend/allocation_engine.py|187|Exception|PRODUCTION_CRITICAL|RETURN
@@ -649,6 +650,8 @@ scripts/prepare_nautilus_input_cache.py|463|BaseException|TOOLING_MIGRATION|RAIS
 scripts/prepare_nautilus_llvm_toolchain.py|458|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_nautilus_llvm_toolchain.py|642|BaseException|TOOLING_MIGRATION|RAISE
 scripts/prepare_runtime_release_wheelhouse.py|230|Exception|TOOLING_MIGRATION|RAISE
+scripts/qualify_nautilus_v1231_regressions.py|206|Exception|TOOLING_MIGRATION|RAISE
+scripts/qualify_nautilus_v1231_regressions.py|240|Exception|TOOLING_MIGRATION|RAISE
 scripts/smoke_phase4_backend_release.py|105|Exception|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|1066|BaseException|TOOLING_MIGRATION|RAISE
 scripts/t_g03_capability_topology.py|1091|BaseException|TOOLING_MIGRATION|RAISE
