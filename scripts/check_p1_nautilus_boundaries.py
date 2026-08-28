@@ -14,8 +14,30 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 BUDGET = ROOT / "docs/implementation/p1-real-nautilus/growth-budget.json"
-_NETWORK_MODULES = {"aiohttp", "ccxt", "httpx", "requests", "socket", "websockets"}
+_NETWORK_MODULES = {
+    "aiohttp",
+    "ccxt",
+    "ftplib",
+    "grpc",
+    "http",
+    "httpx",
+    "importlib",
+    "requests",
+    "socket",
+    "ssl",
+    "urllib",
+    "websockets",
+}
 _PROFILE_NAMES = {"p1-local-paper", "p1-real-backtest"}
+_LEGACY_NAUTILUS_IMPORTS = {
+    "engines/nautilus/launcher/nautilus_backtest.py",
+    "engines/nautilus/launcher/nautilus_paper_compat.py",
+    "engines/nautilus/launcher/target_portfolio_strategy.py",
+}
+_FROZEN_FILES = {
+    "engines/nautilus/launcher/nautilus_backtest.py",
+    "engines/nautilus/launcher/target_portfolio_strategy.py",
+}
 
 
 class BoundaryError(ValueError):
@@ -24,7 +46,7 @@ class BoundaryError(ValueError):
 
 def _python_files(root: Path) -> list[Path]:
     result = subprocess.run(
-        ["git", "ls-files", "*.py"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", "*.py"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -46,10 +68,37 @@ def _imports(tree: ast.AST) -> set[str]:
 
 
 def check_boundaries(root: Path, budget_path: Path) -> None:
-    budget = json.loads(budget_path.read_bytes())
-    if budget.get("schema") != "trading-agent-p1-growth-budget/v1":
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in items:
+            if key in value:
+                raise BoundaryError(f"duplicate growth-budget key: {key}")
+            value[key] = item
+        return value
+
+    budget = json.loads(budget_path.read_bytes(), object_pairs_hook=pairs)
+    if (
+        type(budget) is not dict
+        or set(budget) != {"schema", "runtime_family", "frozen_files"}
+        or budget.get("schema") != "trading-agent-p1-growth-budget/v1"
+        or budget.get("runtime_family") != "cython-v1"
+    ):
         raise BoundaryError("P1 growth budget is invalid")
-    for relative, record in budget["frozen_files"].items():
+    frozen_files = budget.get("frozen_files")
+    if type(frozen_files) is not dict or set(frozen_files) != _FROZEN_FILES:
+        raise BoundaryError("P1 frozen file inventory is invalid")
+    for relative, record in frozen_files.items():
+        if (
+            type(relative) is not str
+            or type(record) is not dict
+            or set(record) != {"maximum_bytes", "sha256"}
+            or type(record.get("maximum_bytes")) is not int
+            or record["maximum_bytes"] <= 0
+            or type(record.get("sha256")) is not str
+            or len(record["sha256"]) != 64
+            or any(character not in "0123456789abcdef" for character in record["sha256"])
+        ):
+            raise BoundaryError(f"P1 frozen file record is invalid: {relative}")
         raw = (root / relative).read_bytes()
         if len(raw) > record["maximum_bytes"] or hashlib.sha256(raw).hexdigest() != record["sha256"]:
             raise BoundaryError(f"frozen launcher changed: {relative}")
@@ -65,7 +114,7 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
         imports = _imports(tree)
         is_test = relative.startswith("tests/") or "/tests/" in relative
         is_runtime_v1 = relative.startswith("engines/nautilus/runtime_v1/")
-        is_legacy_reference = relative.startswith("engines/nautilus/launcher/")
+        is_legacy_reference = relative in _LEGACY_NAUTILUS_IMPORTS
         if "nautilus_trader" in imports and not (is_test or is_runtime_v1 or is_legacy_reference):
             raise BoundaryError(f"root Nautilus import is forbidden: {relative}")
         if is_runtime_v1 and imports & _NETWORK_MODULES:
@@ -77,9 +126,11 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
             and not (is_test or is_boundary_checker)
         ):
             raise BoundaryError(f"mixed runtime families are forbidden: {relative}")
-        if is_runtime_v1 and relative != "engines/nautilus/runtime_v1/profile.py":
-            if any(profile in source for profile in _PROFILE_NAMES):
-                raise BoundaryError(f"profile name duplicated outside policy: {relative}")
+        is_profile_policy = relative == "engines/nautilus/runtime_v1/profile.py"
+        if not (is_test or is_profile_policy or is_boundary_checker) and any(
+            profile in source for profile in _PROFILE_NAMES
+        ):
+            raise BoundaryError(f"profile name duplicated outside policy: {relative}")
 
 
 def main() -> int:

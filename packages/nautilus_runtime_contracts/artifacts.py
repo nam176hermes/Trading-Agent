@@ -54,10 +54,10 @@ class P1EngineConfigurationV1(P1Artifact):
 
     @model_validator(mode="after")
     def _validate_amounts(self) -> "P1EngineConfigurationV1":
-        if self.starting_balance <= 0:
-            raise ValueError("starting_balance must be positive")
-        if not Decimal(0) <= self.fee_rate < Decimal(1):
-            raise ValueError("fee_rate must be between zero and one")
+        if self.starting_balance != Decimal("1000000"):
+            raise ValueError("starting_balance must match the P1 acceptance profile")
+        if self.fee_rate != Decimal("0.001"):
+            raise ValueError("fee_rate must match the P1 acceptance profile")
         return self
 
 

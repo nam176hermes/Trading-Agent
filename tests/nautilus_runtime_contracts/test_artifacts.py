@@ -150,6 +150,8 @@ def test_engine_configuration_is_closed_to_paper_safe_values() -> None:
         ("save_state", True),
         ("run_analysis", True),
         ("logging_bypass", False),
+        ("starting_balance", "1"),
+        ("fee_rate", "0.5"),
         ("fee_rate", "NaN"),
     ):
         mutation = {**document, key: value}
