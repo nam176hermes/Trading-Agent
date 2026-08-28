@@ -1,4 +1,4 @@
-.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries audit-python-source audit-dependencies-production \
+.PHONY: audit audit-release audit-portable check-p0-baseline check-p0-maintainability check-p1-nautilus-boundaries generate-p1-nautilus-contracts check-p1-nautilus-contracts audit-python-source audit-dependencies-production \
 	audit-dependencies-dev audit-dependencies generate-contracts check-contracts \
 	check-d0-closure check-broad-handler-inventory check-test-skips check-critical-coverage \
 	check-secrets test test-portable-embedded-proof test-core test-consolidation test-production \
@@ -43,6 +43,12 @@ check-p0-maintainability:
 
 check-p1-nautilus-boundaries:
 	$(PYTHON) scripts/check_p1_nautilus_boundaries.py
+
+generate-p1-nautilus-contracts:
+	$(PYTHON) scripts/generate_nautilus_p1_protocol.py
+
+check-p1-nautilus-contracts:
+	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
 
 check-p0-ci-closure:
 	$(PYTHON) scripts/check_p0_ci_closure.py \
@@ -384,7 +390,7 @@ ci-portable-private:
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install
-	$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies
+	$(MAKE) audit-portable check-d0-closure check-contracts check-p1-nautilus-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies
 
 artifact-firewall-check:
 	uv run python -m scripts.check_artifact_firewall publish \
