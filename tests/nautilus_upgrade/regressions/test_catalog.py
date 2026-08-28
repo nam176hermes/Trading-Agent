@@ -113,3 +113,10 @@ def test_u06_runner_reuses_source_scenarios_and_has_no_build_path() -> None:
             "--materialize-candidate",
         )
     )
+
+
+def test_oracle_projection_uses_canonical_decimal_strings() -> None:
+    _fixture, _request, oracle = qualification._oracle("long-accounting")
+    expected = qualification._expected(oracle)
+    assert expected["fees"] == "0.2"
+    assert expected["realized_pnl"] == "0"

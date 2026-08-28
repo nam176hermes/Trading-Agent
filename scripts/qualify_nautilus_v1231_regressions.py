@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
@@ -167,6 +168,31 @@ def _expected(outcome: object) -> dict[str, object]:
     value = dump(mode="json")
     if not isinstance(value, dict):
         raise RegressionQualificationError("reference oracle result is invalid")
+    for name in (
+        "average_entry_price",
+        "fees",
+        "filled_quantity",
+        "position_quantity",
+        "realized_pnl",
+        "remaining_quantity",
+        "unrealized_pnl",
+    ):
+        try:
+            parsed = Decimal(str(value[name]))
+        except (InvalidOperation, KeyError, ValueError) as exc:
+            raise RegressionQualificationError(
+                "reference oracle Decimal is invalid"
+            ) from exc
+        if not parsed.is_finite():
+            raise RegressionQualificationError("reference oracle Decimal is invalid")
+        rendered = format(parsed, "f")
+        value[name] = (
+            "0"
+            if parsed.is_zero()
+            else rendered.rstrip("0").rstrip(".")
+            if "." in rendered
+            else rendered
+        )
     return value
 
 
