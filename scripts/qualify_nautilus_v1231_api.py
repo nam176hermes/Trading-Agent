@@ -253,6 +253,21 @@ def validate_scenario_event(
     return attributes
 
 
+def validate_scenario_stderr(stderr: bytes) -> None:
+    warning_lines = tuple(line for line in stderr.decode("utf-8").splitlines() if line)
+    expected = (
+        "/engine/launcher/nautilus_backtest.py:2283: Pandas4Warning: "
+        "Timestamp.utcnow is deprecated and will be removed in a future version. "
+        "Use Timestamp.now('UTC') instead.",
+        "  engine.run()",
+    )
+    if warning_lines not in {(), expected}:
+        raise ApiQualificationError(
+            "candidate scenario emitted unexpected stderr: "
+            + " | ".join(warning_lines)
+        )
+
+
 def _base_sandbox(root: Path) -> list[str]:
     return [
         str(BWRAP),
@@ -438,9 +453,7 @@ def _run_scenario(root: Path, scenario_id: str) -> tuple[dict[str, object], byte
             "/inputs/request.sha256",
         ]
         stdout, stderr = _run(command, label=f"candidate scenario {scenario_id}")
-    warning_lines = tuple(line for line in stderr.decode("utf-8").splitlines() if line)
-    if any("Pandas4Warning" not in line for line in warning_lines):
-        raise ApiQualificationError("candidate scenario emitted unexpected stderr")
+    validate_scenario_stderr(stderr)
     try:
         document = json.loads(stdout)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
