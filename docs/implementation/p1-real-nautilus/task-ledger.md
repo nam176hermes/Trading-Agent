@@ -22,8 +22,9 @@ production, network-trading, or live authority.
 | P1-02 | P1-00, P1-01 | ACCEPTED | Architecture, threat model, ownership and frozen-launcher boundaries are executable. |
 | P1-03 | P1-02 | ACCEPTED | Four P1 input artifacts are closed, immutable, byte-bounded and canonical. |
 | P1-04 | P1-02 | ACCEPTED | Independent review plus remediation rereview passed; event/state/semantic authority is closed. |
-| P1-05 | P1-03, P1-04 | IN_REVIEW | Root schemas, stdlib-only sealed grammar and golden fixtures are generated deterministically. |
-| P1-06 | P1-05 | BLOCKED | Await accepted P1-05 review before scaffolding the sealed runtime. |
+| P1-05 | P1-03, P1-04 | ACCEPTED | Deterministic root schemas, stdlib-only sealed grammar and golden fixtures passed two independent reviews; Foundation run 33214806868 passed. |
+| P1-06 | P1-05 | ACCEPTED | Exact isolated CPython entry, closure-owned schema-8 lineage seam and bounded diagnostics passed independent spec/security review at 507279a. |
+| P1-07 | P1-05, P1-06 | IN_PROGRESS | Implement descriptor-safe request and artifact loading without broadening runtime authority. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
