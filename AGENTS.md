@@ -47,6 +47,54 @@ before adding a production dependency.
 - Treat legacy research and LLM output as untrusted input to deterministic risk
   and execution controls.
 
+## Default Codex workflow
+
+Use this workflow for every task unless the operator gives a narrower
+task-specific instruction. Repository rules and explicit operator decisions
+always override skills and tools.
+
+1. **Contract and route.** Record the observable outcome, component, accepted
+   baseline, invariants, prohibited actions, and evidence required for a
+   verdict. Use the applicable Superpowers process skill: brainstorming for a
+   feature, systematic debugging for a defect, writing/executing plans for an
+   approved multi-step design, and verification before any completion claim.
+2. **Baseline and isolate.** Check the real cwd, status, HEAD, tree, and diff.
+   Preserve user changes. Use an external clean worktree from the exact
+   accepted parent for non-trivial implementation; never create one below this
+   repository. Parallel agents require explicit operator direction, one owner
+   per write surface, and fresh verification of the integrated result.
+3. **Trace before editing.** Read the applicable instructions and complete
+   flow. Prefer Codebase Memory for structural discovery when available, then
+   confirm callers, consumers, configuration, and tests with `rg` and source.
+   Use current official documentation for version-sensitive APIs; for Next.js,
+   read the installed guide required by `apps/dashboard/AGENTS.md` first.
+4. **Reduce the design.** After understanding the flow, apply Ponytail full:
+   reuse repository code, then stdlib, native platform behavior, and installed
+   dependencies before writing the smallest coherent new code. Do not add
+   speculative abstractions, configuration, dependencies, or unrelated
+   cleanup. Fix defects once at the shared root cause, not at each symptom.
+5. **Approve the seam.** A bounded change needs a short design covering the
+   seam, files, behavior, and checks. An architectural change needs an approved
+   spec and implementation plan. Do not implement beyond the approved design.
+6. **Implement test-first.** Demonstrate the gap with a focused failing test or
+   deterministic reproduction, make the minimal change, prove it passes, and
+   refactor only while green. Never simplify away trust-boundary validation,
+   fixed-precision money behavior, security, recovery, or accessibility.
+7. **Verify and review.** Run focused checks before broader component gates.
+   Review correctness and engineering quality independently from a separate
+   Ponytail over-engineering pass. Use Codex Security for sensitive diffs and
+   direct Playwright browser smoke for browser-facing behavior. A tool report,
+   worker summary, or green unit suite is evidence only for what it exercised.
+8. **Qualify source.** After affected checks pass, run the safe root gates below
+   and `make ci-portable NONINTERACTIVE=1` when source qualification is in
+   scope. Use `make audit-release` only for a clean release candidate. Never
+   infer host, runtime, paper activation, or live authority from source gates.
+9. **Hand off evidence.** Report changed behavior, files, exact commands and
+   results, candidate SHA/tree, skipped checks, and residual risks. Keep source
+   verdict, official ledger status, remote branch/main state, and runtime/live
+   readiness separate. Stop before commit, push, PR, merge, deploy, service,
+   database, broker, or live mutation unless separately authorized.
+
 ## Safe validation
 
 Use the root orchestration targets. `test-all` is non-production and
