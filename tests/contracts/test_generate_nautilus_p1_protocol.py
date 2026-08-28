@@ -115,6 +115,22 @@ def test_generated_module_imports_with_isolated_stdlib_python() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_nested_target_validator_source_change_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert generator.generate(tmp_path, check=False) == 0
+    getsource = generator.inspect.getsource
+
+    def changed_source(value: object) -> str:
+        source = getsource(value)
+        if "EngineTargetPortfolio" in getattr(value, "__qualname__", ""):
+            return source + "# nested validator changed\n"
+        return source
+
+    monkeypatch.setattr(generator.inspect, "getsource", changed_source)
+    assert generator.generate(tmp_path, check=True) == 1
+
+
 def _module():
     path = ROOT / "engines/nautilus/runtime_v1/generated_protocol.py"
     spec = importlib.util.spec_from_file_location("generated_protocol", path)
@@ -160,6 +176,10 @@ def test_generated_constants_and_semantic_validation_match_root_contracts() -> N
     module = _module()
     assert module.ARTIFACT_SCHEMAS == EXPECTED_SCHEMAS
     assert module.MAX_DOCUMENT_BYTES == EXPECTED_MAX_BYTES
+    assert (
+        "packages.engine_contracts.commands.EngineTargetPortfolio"
+        in module.SEMANTIC_VALIDATOR_AUTHORITY["target_schedule"]["models"]
+    )
     golden = ROOT / "tests/fixtures/p1_nautilus/golden/positive"
 
     artifact_mutations = (

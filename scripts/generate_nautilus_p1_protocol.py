@@ -9,6 +9,9 @@ import inspect
 import json
 import sys
 from pathlib import Path
+from typing import get_args
+
+from pydantic import BaseModel
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,16 +135,43 @@ def _semantic_authority() -> dict[str, dict[str, object]]:
         )
         for model in P1_EVENT_MODELS
     )
+    def nested_models(annotation: object) -> set[type[BaseModel]]:
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return {annotation}
+        result: set[type[BaseModel]] = set()
+        for argument in get_args(annotation):
+            result.update(nested_models(argument))
+        return result
+
     authority: dict[str, dict[str, object]] = {}
     for kind, model in entries:
         names = tuple(model.__pydantic_decorators__.model_validators)
         if names != SUPPORTED_SEMANTIC_VALIDATORS[kind]:
             raise ValueError(f"unmapped semantic validator: {kind}")
-        source = "".join(inspect.getsource(model.__dict__[name]) for name in names)
-        authority[kind] = {
-            "names": names,
-            "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
-        }
+        pending = [model]
+        seen: set[type[BaseModel]] = set()
+        records: dict[str, dict[str, object]] = {}
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(
+                nested
+                for field in current.model_fields.values()
+                for nested in nested_models(field.annotation)
+            )
+            validator_names = tuple(current.__pydantic_decorators__.model_validators)
+            if not validator_names:
+                continue
+            source = "".join(
+                inspect.getsource(current.__dict__[name]) for name in validator_names
+            )
+            records[f"{current.__module__}.{current.__qualname__}"] = {
+                "names": validator_names,
+                "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+            }
+        authority[kind] = {"models": dict(sorted(records.items()))}
     return authority
 
 
