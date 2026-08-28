@@ -21,6 +21,12 @@ INPUTS = {
     "u06_qualification": UPGRADE / "u06-regression-qualification-receipt.json",
     "u07_qualification": UPGRADE / "u07-dual-runtime-qualification-receipt.json",
 }
+INPUT_SHA256S = {
+    "u04_final_acceptance": "61b10af4eff49f6f239e7ae6c6707b2697280c07c322bea34de226bcc64f2c92",
+    "u05_qualification": "558115bfba04d3096e04837f0a6bb84db8e869f6c7ceb1629827fe7a79c0fcb9",
+    "u06_qualification": "30f7eec088ef4635e29f79cf5958efd9b680d822c5c73332100353356185916f",
+    "u07_qualification": "a6d93218218e30b872077a92265e2eb4b289aa704aca63351f71f58e2f773f60",
+}
 LEGACY = {
     "job_worker_loader_sha256": (
         ROOT / "services/job_worker/nautilus_closure.py",
@@ -213,9 +219,11 @@ def _validate(receipt: dict[str, object]) -> None:
     ):
         raise ValueError("P1 baseline review source is invalid")
     input_hashes = receipt.get("input_receipt_sha256s")
-    if not isinstance(input_hashes, dict) or input_hashes != {
-        name: _sha(path) for name, path in INPUTS.items()
-    }:
+    if (
+        not isinstance(input_hashes, dict)
+        or input_hashes != INPUT_SHA256S
+        or any(_sha(INPUTS[name]) != digest for name, digest in INPUT_SHA256S.items())
+    ):
         raise ValueError("P1 baseline receipt input chain is invalid")
     for path, expected_sha in LEGACY.values():
         if _sha(path) != expected_sha:
