@@ -696,6 +696,10 @@ def _host_workflow_valid(raw: bytes) -> bool:
         if env != {
             "CI": '"true"', "LIVE_EXECUTION_ENABLED": '"false"',
             "LIVE_TRADING_APPROVED": '"false"',
+            "TEST_EVIDENCE_DIR": (
+                '"${{ runner.temp }}/trading-agent-host-authority.'
+                '${{ github.run_id }}.${{ github.run_attempt }}"'
+            ),
         }:
             return False
         expected = _approved_common_steps() + [
