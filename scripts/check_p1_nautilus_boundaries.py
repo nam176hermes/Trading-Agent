@@ -24,7 +24,6 @@ _RUNTIME_ALLOWED_MODULES = {
     "errno",
     "hashlib",
     "hmac",
-    "importlib",
     "json",
     "os",
     "re",
@@ -184,7 +183,7 @@ def _uses_parent_relative_import(tree: ast.AST) -> bool:
 
 def _runtime_import_is_allowed(module: str) -> bool:
     top_level = module.split(".", 1)[0]
-    if top_level in _RUNTIME_ALLOWED_MODULES:
+    if top_level in _RUNTIME_ALLOWED_MODULES or module == "importlib.metadata":
         return True
     return module == "nautilus_trader" or any(
         module == prefix or module.startswith(prefix + ".")

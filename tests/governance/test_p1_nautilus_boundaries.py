@@ -145,6 +145,21 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         ),
         (
             "engines/nautilus/runtime_v1/bad.py",
+            "from importlib import import_module\nvalue = import_module('socket')\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "from importlib.machinery import SourceFileLoader\nvalue = SourceFileLoader('x', '/tmp/x.py').load_module()\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "from importlib.util import spec_from_file_location\nvalue = spec_from_file_location('x', '/tmp/x.py')\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
             "value = (lambda: 0).__globals__['__built'+'ins__']['__im'+'port__']('socket')\n",
             "network",
         ),
