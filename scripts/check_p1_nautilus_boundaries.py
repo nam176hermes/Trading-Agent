@@ -70,7 +70,12 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
             raise BoundaryError(f"root Nautilus import is forbidden: {relative}")
         if is_runtime_v1 and imports & _NETWORK_MODULES:
             raise BoundaryError(f"runtime network import is forbidden: {relative}")
-        if "runtime_v1" in source and "runtime_v2" in source and not is_test:
+        is_boundary_checker = relative == "scripts/check_p1_nautilus_boundaries.py"
+        if (
+            "runtime_v1" in source
+            and "runtime_v2" in source
+            and not (is_test or is_boundary_checker)
+        ):
             raise BoundaryError(f"mixed runtime families are forbidden: {relative}")
         if is_runtime_v1 and relative != "engines/nautilus/runtime_v1/profile.py":
             if any(profile in source for profile in _PROFILE_NAMES):
