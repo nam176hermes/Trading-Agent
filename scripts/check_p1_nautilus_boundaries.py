@@ -90,6 +90,10 @@ def _uses_dynamic_import(tree: ast.AST) -> bool:
             "compile",
             "eval",
             "exec",
+            "getattr",
+            "globals",
+            "locals",
+            "vars",
         }:
             return True
         if isinstance(node, ast.Attribute) and node.attr == "import_module":
@@ -102,11 +106,38 @@ def _uses_dynamic_import(tree: ast.AST) -> bool:
 def _constant_string(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
         left = _constant_string(node.left)
-        right = _constant_string(node.right)
-        if left is not None and right is not None:
-            return left + right
+        if isinstance(node.op, ast.Add):
+            right = _constant_string(node.right)
+            if left is not None and right is not None:
+                return left + right
+        elif left is not None and isinstance(node.right, ast.Tuple):
+            values = tuple(_constant_string(item) for item in node.right.elts)
+            if all(value is not None for value in values):
+                try:
+                    return left % values
+                except (TypeError, ValueError):
+                    return None
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for item in node.values:
+            value = _constant_string(item.value) if isinstance(item, ast.FormattedValue) else _constant_string(item)
+            if value is None:
+                return None
+            parts.append(value)
+        return "".join(parts)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and len(node.args) == 1
+        and isinstance(node.args[0], (ast.List, ast.Tuple))
+    ):
+        separator = _constant_string(node.func.value)
+        values = tuple(_constant_string(item) for item in node.args[0].elts)
+        if separator is not None and all(value is not None for value in values):
+            return separator.join(value for value in values if value is not None)
     return None
 
 

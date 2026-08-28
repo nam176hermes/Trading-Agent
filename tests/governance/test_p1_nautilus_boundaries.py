@@ -140,6 +140,11 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         ),
         (
             "engines/nautilus/runtime_v1/bad.py",
+            "value = globals()['__built'+'ins__']['__im'+'port__']('socket')\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
             "from ..launcher import nautilus_backtest\n",
             "network",
         ),
@@ -157,6 +162,21 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         (
             "services/job_worker/bad.py",
             "PROFILE='p1' + '-real-' + 'backtest'\n",
+            "profile",
+        ),
+        (
+            "services/job_worker/bad.py",
+            "PROFILE=''.join(('p1', '-real-', 'backtest'))\n",
+            "profile",
+        ),
+        (
+            "services/job_worker/bad.py",
+            "PROFILE='p1%s%s' % ('-real-', 'backtest')\n",
+            "profile",
+        ),
+        (
+            "services/job_worker/bad.py",
+            "PROFILE=f\"{'p1'}{'-real-'}{'backtest'}\"\n",
             "profile",
         ),
     ),
