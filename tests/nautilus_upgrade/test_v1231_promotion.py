@@ -6,6 +6,8 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import re
+import subprocess
 
 import pytest
 
@@ -81,6 +83,8 @@ def _validate(receipt: dict[str, object]) -> None:
         "p1_product_closure_schema",
         "qualification_source_commit",
         "qualification_source_tree",
+        "review_source_commit",
+        "review_source_tree",
         "reviews",
         "schema",
         "scope",
@@ -90,6 +94,8 @@ def _validate(receipt: dict[str, object]) -> None:
     limits = receipt.get("authority_limits")
     legacy = receipt.get("legacy_phase4_authority")
     reviews = receipt.get("reviews")
+    review_commit = receipt.get("review_source_commit")
+    review_tree = receipt.get("review_source_tree")
     if (
         set(receipt) != expected_keys
         or receipt.get("schema") != "trading-agent-p1-engine-baseline-receipt/v1"
@@ -103,6 +109,10 @@ def _validate(receipt: dict[str, object]) -> None:
         or receipt.get("candidate_closure_sha256") != CLOSURE_SHA
         or receipt.get("qualification_source_commit") != QUALIFICATION_COMMIT
         or receipt.get("qualification_source_tree") != QUALIFICATION_TREE
+        or not isinstance(review_commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", review_commit) is None
+        or not isinstance(review_tree, str)
+        or re.fullmatch(r"[0-9a-f]{40}", review_tree) is None
         or receipt.get("legacy_phase4_profiles_unchanged") is not True
         or type(receipt.get("p1_product_closure_schema")) is not int
         or receipt.get("p1_product_closure_schema") != 8
@@ -158,14 +168,50 @@ def _validate(receipt: dict[str, object]) -> None:
             or type(review.get("important")) is not int
             or review.get("important") != 0
             or type(review.get("minor")) is not int
-            or review.get("source_commit") != QUALIFICATION_COMMIT
-            or review.get("source_tree") != QUALIFICATION_TREE
+            or review.get("minor", -1) < 0
+            or review.get("source_commit") != review_commit
+            or review.get("source_tree") != review_tree
             for review in reviews
         )
-        or {review["role"] for review in reviews}
-        != {"evidence", "security_integrity", "specification"}
+        or {
+            (review["reviewer_id"], review["role"])
+            for review in reviews
+        }
+        != {
+            ("u04c2_evidence_rereview", "evidence"),
+            ("u04c2_security_rereview", "security_integrity"),
+            ("u04c2_spec_rereview", "specification"),
+        }
     ):
         raise ValueError("P1 baseline receipt is invalid")
+    resolved_tree = subprocess.run(
+        ["git", "rev-parse", f"{review_commit}^{{tree}}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", review_commit, "HEAD"],
+        cwd=ROOT,
+        capture_output=True,
+        check=False,
+    )
+    receipt_parent = subprocess.run(
+        ["git", "log", "-1", "--format=%P", "--", str(RECEIPT.relative_to(ROOT))],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if (
+        resolved_tree.returncode != 0
+        or resolved_tree.stdout.strip() != review_tree
+        or ancestor.returncode != 0
+        or receipt_parent.returncode != 0
+        or receipt_parent.stdout.strip().split() != [review_commit]
+    ):
+        raise ValueError("P1 baseline review source is invalid")
     input_hashes = receipt.get("input_receipt_sha256s")
     if not isinstance(input_hashes, dict) or input_hashes != {
         name: _sha(path) for name, path in INPUTS.items()
@@ -217,6 +263,8 @@ def test_committed_p1_baseline_receipt_is_closed_p1_only_and_legacy_safe() -> No
         ("operator_decision", "HOLD_P1"),
         ("qualification_source_commit", "f" * 40),
         ("qualification_source_tree", "f" * 40),
+        ("review_source_commit", "f" * 40),
+        ("review_source_tree", "f" * 40),
     ),
 )
 def test_promotion_mutations_fail_closed(field: str, value: object) -> None:
@@ -254,3 +302,15 @@ def test_missing_or_unresolved_qualification_and_review_fail_closed() -> None:
     float_schema["p1_product_closure_schema"] = 8.0
     with pytest.raises(ValueError):
         _validate(float_schema)
+
+    duplicate_reviewer = deepcopy(receipt)
+    duplicate_reviewer["reviews"][1]["reviewer_id"] = duplicate_reviewer[
+        "reviews"
+    ][0]["reviewer_id"]
+    with pytest.raises(ValueError):
+        _validate(duplicate_reviewer)
+
+    negative_minor = deepcopy(receipt)
+    negative_minor["reviews"][0]["minor"] = -1
+    with pytest.raises(ValueError):
+        _validate(negative_minor)

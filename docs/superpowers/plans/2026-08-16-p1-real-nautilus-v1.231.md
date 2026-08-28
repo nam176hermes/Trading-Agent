@@ -68,7 +68,7 @@ The plan starts from these facts and requires P1-U00 to re-prove repository-loca
 - the repository already has real `BacktestEngine` execution, worker custody, Bubblewrap/native guard, event validation/ingestion, an engine-event ledger and an independent portfolio reducer;
 - `1.231.0` is the candidate final-v1 baseline, not a v2 migration;
 - the `1.227.0` closure remains immutable rollback until at least P1-A final certification;
-- the active baseline changes only in P1-U08 after provenance, build, API, regression and dual-run gates.
+- P1-U08 approves only the P1-A/B baseline receipt; separate schema-8 product profiles are derived later in P1-15/P1-16, while legacy Phase4 authority remains unchanged.
 
 The detailed decision evidence is in `trading-agent-nautilus-v1.227-to-v1.231-upgrade-assessment-2026-08-16.md`.
 
@@ -78,7 +78,7 @@ The detailed decision evidence is in `trading-agent-nautilus-v1.227-to-v1.231-up
 
 ### AD-0 — Upgrade before productization, but never by in-place hot swap
 
-Build a side-by-side `1.231.0` candidate, qualify it, then atomically promote code-owned policy. A failed gate produces `HOLD_1_227`, not a compatibility shim or weakened test.
+Build a side-by-side `1.231.0` candidate, qualify it, then approve an immutable P1-A/B baseline receipt. A failed gate produces `HOLD_1_227` or `HOLD_P1`, not a compatibility shim, policy switch or weakened test.
 
 ### AD-1 — Treat 1.231.0 as the final Cython-v1 bridge
 
@@ -113,7 +113,7 @@ No provider credentials, venue adapters, DNS, HTTP, WebSocket, broker/account/or
 ## 4. Global invariants
 
 1. **Paper-only authority:** live and production approvals stay false.
-2. **Promotion gate:** active v1.231 use requires accepted P1-U08 evidence on the exact closure digest.
+2. **P1 baseline gate:** any P1 v1.231 product profile requires accepted P1-U08 evidence on the exact closure digest and a later schema-8 derivation; U08 does not alter legacy active profiles.
 3. **Rollback isolation:** v1.227 remains immutable, explicit and non-default; no mixed closure or shared writable state.
 4. **Exact engine identity:** version 1.231.0, runtime family `cython-v1`, upstream commit `27a8e54e7ac3c57d6cbf8891f0283dfbaee97317`, promoted baseline schema 7, P1 product schema 8 and exact dependency policy.
 5. **No moving authority:** no `latest`, branch, version range, ambient compiler/package/cache or client-selected runtime.
@@ -509,7 +509,7 @@ Produce an externally stored, schema-7, no-network CPython 3.12 closure for v1.2
 - Build the v1.231 wheel from the approved source inside Bubblewrap with network namespace disabled, host filesystem read-only and only candidate staging writable.
 - Build twice from fresh staging. Compare wheel contents, native-library inventory, normalized metadata and closure manifest. Document any non-deterministic wheel bytes and require a stable normalized authority digest rather than ignoring the difference.
 - Materialize the exact CPython interpreter, stdlib, built wheel, runtime dependencies, launchers and native guard into an external private closure. Bind every file, target, size, mode and SHA-256.
-- Add schema-7 verification while preserving schema-6 rollback support. The active worker profile must still point to 1.227 until P1-U08.
+- Add schema-7 candidate verification while preserving schema-6 rollback support. Legacy active worker profiles remain on 1.227 through and after P1-U08; P1-15/P1-16 later derive separate schema-8 product profiles.
 - Run the official cp312 wheel only in a separate disposable oracle environment to compare imports/version/native inventory. It is not runtime authority unless the ADR explicitly changes that decision.
 
 ### TDD and verification
