@@ -125,6 +125,11 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         ),
         (
             "engines/nautilus/runtime_v1/bad.py",
+            "from nautilus_trader import adapters\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
             "value = __builtins__['__import__']('socket')\n",
             "network",
         ),

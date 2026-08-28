@@ -77,6 +77,8 @@ def _imports(tree: ast.AST) -> set[str]:
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             names.add(node.module)
+            if node.module == "nautilus_trader":
+                names.update(f"{node.module}.{alias.name}" for alias in node.names)
     return names
 
 
