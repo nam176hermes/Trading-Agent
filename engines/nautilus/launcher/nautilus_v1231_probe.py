@@ -12,6 +12,7 @@ from pathlib import Path
 import stat
 import sys
 import sysconfig
+from typing import Any, cast
 import zipfile
 
 
@@ -252,16 +253,19 @@ def _observe_candidate(
         except AttributeError as exc:
             raise ApiProbeError(f"required symbol is absent: {surface_id}") from exc
 
-    from nautilus_trader import __version__
-    from nautilus_trader.backtest.engine import BacktestEngine
-    from nautilus_trader.common.config import LoggingConfig
-    from nautilus_trader.config import BacktestEngineConfig
-    from nautilus_trader.model.currencies import USDT
-    from nautilus_trader.model.enums import AccountType, OmsType
-    from nautilus_trader.model.identifiers import Venue
-    from nautilus_trader.model.objects import Money
-    from nautilus_trader.test_kit.providers import TestInstrumentProvider
-    from nautilus_trader.trading.strategy import Strategy
+    engine_version = getattr(importlib.import_module("nautilus_trader"), "__version__", None)
+    if not isinstance(engine_version, str):
+        raise ApiProbeError("candidate engine version is unavailable")
+    BacktestEngine = cast(Any, symbols["API-BACKTEST-ENGINE"])
+    LoggingConfig = cast(Any, symbols["API-LOGGING-CONFIG"])
+    BacktestEngineConfig = cast(Any, symbols["API-BACKTEST-ENGINE-CONFIG"])
+    USDT = cast(Any, symbols["API-STATIC-CURRENCY-USDT"])
+    AccountType = cast(Any, symbols["API-ACCOUNT-TYPE"])
+    OmsType = cast(Any, symbols["API-OMS-TYPE"])
+    Venue = cast(Any, symbols["API-VENUE"])
+    Money = cast(Any, symbols["API-MONEY"])
+    TestInstrumentProvider = cast(Any, symbols["API-TEST-INSTRUMENT-PROVIDER"])
+    Strategy = cast(Any, symbols["API-STRATEGY"])
 
     engine = BacktestEngine(
         BacktestEngineConfig(
@@ -299,7 +303,7 @@ def _observe_candidate(
         symbols=symbols,
         result=result,
         strategy_type=_load_strategy(strategy_path),
-        engine_version=__version__,
+        engine_version=engine_version,
         lifecycle=lifecycle,
     )
 
