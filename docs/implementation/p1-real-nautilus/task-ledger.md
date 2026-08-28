@@ -19,7 +19,8 @@ production, network-trading, or live authority.
 | P1-U08 | P1-U07 | ACCEPTED | 1.231/G1 is approved for P1-A/B only; legacy Phase4 profiles remain byte-identical on 1.227/schema 6. |
 | P1-00 | P1-U08 | ACCEPTED | Exact P1 source parent, engine receipt, worktree topology and tool authority are pinned. |
 | P1-01 | P1-00 | ACCEPTED | Existing real BacktestEngine path and all 33 U05 API surfaces are characterized without new runtime authority. |
-| P1-02 | P1-00, P1-01 | READY | Lock architecture, threat model, ownership and growth boundaries. |
+| P1-02 | P1-00, P1-01 | ACCEPTED | Architecture, threat model, ownership and frozen-launcher boundaries are executable. |
+| P1-03 | P1-02 | READY | Define closed P1 input artifact contracts. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
