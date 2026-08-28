@@ -70,8 +70,14 @@ def _validate_closure(root: Path, manifest_path: Path, document: dict[str, objec
         for path in root.rglob("*")
         if path.is_dir()
     }
+    observed_entries = {
+        PurePosixPath(path.relative_to(root).as_posix()) for path in root.rglob("*")
+    }
     assert observed_files == expected_files
     assert observed_directories == expected_directories
+    assert observed_entries == (expected_files | expected_directories) - {
+        PurePosixPath(".")
+    }
     for relative in observed_directories:
         path = root if relative == PurePosixPath(".") else root.joinpath(*relative.parts)
         status = path.lstat()
@@ -187,7 +193,9 @@ def exact_g1_command(
     ]
 
 
-@pytest.mark.parametrize("mutation", ("content", "missing", "extra", "mode"))
+@pytest.mark.parametrize(
+    "mutation", ("content", "missing", "extra", "special", "mode")
+)
 def test_closure_snapshot_rejects_nonwheel_drift(
     tmp_path: Path, mutation: str
 ) -> None:
@@ -225,6 +233,10 @@ def test_closure_snapshot_rejects_nonwheel_drift(
         extra = payload.parent / "ambient.py"
         extra.write_bytes(b"pass")
         extra.chmod(0o400)
+        payload.parent.chmod(0o500)
+    elif mutation == "special":
+        payload.parent.chmod(0o700)
+        os.mkfifo(payload.parent / "ambient.pipe", mode=0o400)
         payload.parent.chmod(0o500)
     else:
         payload.chmod(0o600)
