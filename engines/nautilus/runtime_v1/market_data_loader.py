@@ -210,8 +210,11 @@ def load_market_data(
         or str(instrument.get_settlement_currency()) != catalog.get("quote_currency")
         or instrument.price_increment.as_decimal() != tick_size
         or instrument.size_increment.as_decimal() != step_size
+        or instrument.min_quantity is None
+        or instrument.min_notional is None
         or instrument.min_quantity.as_decimal() != min_quantity
         or instrument.min_notional.as_decimal() != min_notional
+        or str(instrument.min_notional.currency) != catalog.get("quote_currency")
     ):
         raise MarketDataError("native instrument does not match the catalog")
 

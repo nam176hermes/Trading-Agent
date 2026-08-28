@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 
-from test_instrument_factory_native import exact_g1_runtime
+from test_instrument_factory_native import exact_g1_command, exact_g1_runtime
 
 
 ROOT = Path(__file__).parents[2]
@@ -21,7 +21,7 @@ def test_exact_quote_before_bar_conversion_on_g1_host() -> None:
                 text=True,
             ).stdout
             return
-        python, site_packages = runtime
+        root, site_packages = runtime
         script = r'''
 import hashlib
 import json
@@ -29,6 +29,8 @@ from pathlib import Path
 import sys
 sys.path[:0] = [sys.argv[1], sys.argv[2]]
 import nautilus_trader
+from nautilus_trader.model.instruments import CurrencyPair
+from nautilus_trader.model.objects import Money
 from runtime_v1.input_loader import ArtifactReference, RunBacktestRequest, RuntimeInputs
 from runtime_v1.instrument_factory import build_instrument
 from runtime_v1.market_data_loader import MarketDataError, load_market_data
@@ -166,6 +168,39 @@ except MarketDataError:
 else:
     raise AssertionError("accepted catalog_instrument_mismatch")
 
+def changed_instrument(*, min_quantity=instrument.min_quantity, min_notional=instrument.min_notional):
+    return CurrencyPair(
+        instrument_id=instrument.id,
+        raw_symbol=instrument.raw_symbol,
+        base_currency=instrument.base_currency,
+        quote_currency=instrument.quote_currency,
+        price_precision=instrument.price_precision,
+        size_precision=instrument.size_precision,
+        price_increment=instrument.price_increment,
+        size_increment=instrument.size_increment,
+        ts_event=0,
+        ts_init=0,
+        min_quantity=min_quantity,
+        min_notional=min_notional,
+        maker_fee=instrument.maker_fee,
+        taker_fee=instrument.taker_fee,
+    )
+
+for label, altered in (
+    ("missing_min_quantity", changed_instrument(min_quantity=None)),
+    ("missing_min_notional", changed_instrument(min_notional=None)),
+    (
+        "wrong_min_notional_currency",
+        changed_instrument(min_notional=Money.from_str("10 BTC")),
+    ),
+):
+    try:
+        load_market_data(inputs(raw), altered)
+    except MarketDataError:
+        rejections.append(label)
+    else:
+        raise AssertionError(f"accepted {label}")
+
 for label, first, second in (
     ("pre_epoch", "1960-01-01T00:00:00Z", "1960-01-01T00:01:00Z"),
     ("timestamp_overflow", "9998-01-01T00:00:00Z", "9998-01-01T00:01:00Z"),
@@ -198,18 +233,21 @@ print(json.dumps({
 }, separators=(",", ":"), sort_keys=True))
 '''
         completed = subprocess.run(
-            [
-                python,
-                "-I",
-                "-S",
-                "-c",
-                script,
-                str(ROOT / "engines/nautilus"),
+            exact_g1_command(
+                root,
                 site_packages,
-                str(ROOT / "tests/fixtures/p1_nautilus/contracts/instrument-catalog.json"),
-                str(ROOT / "tests/fixtures/p1_nautilus/contracts/engine-configuration.json"),
-            ],
+                script,
+                (
+                    ROOT / "tests/fixtures/p1_nautilus/contracts/instrument-catalog.json",
+                    "/inputs/instrument-catalog.json",
+                ),
+                (
+                    ROOT / "tests/fixtures/p1_nautilus/contracts/engine-configuration.json",
+                    "/inputs/engine-configuration.json",
+                ),
+            ),
             cwd="/",
+            env={},
             check=False,
             capture_output=True,
             text=True,
@@ -239,6 +277,9 @@ print(json.dumps({
         "off_tick",
         "off_step",
         "catalog_instrument_mismatch",
+        "missing_min_quantity",
+        "missing_min_notional",
+        "wrong_min_notional_currency",
         "pre_epoch",
         "timestamp_overflow",
     ]

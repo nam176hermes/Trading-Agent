@@ -5,10 +5,14 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+from pathlib import PurePosixPath
+import stat
 import subprocess
 import tempfile
 from typing import Iterator
 from zipfile import ZipFile
+
+import pytest
 
 
 ROOT = Path(__file__).parents[2]
@@ -16,6 +20,8 @@ CATALOG = ROOT / "tests/fixtures/p1_nautilus/contracts/instrument-catalog.json"
 G1_CLOSURE_SHA256 = "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255"
 G1_WHEEL_SHA256 = "ecc461d0f634c25db17e0fb79136c3bf0d513edd323d4f9adaaf84346e68b2fb"
 G1_WHEEL_SIZE = 183_626_605
+BWRAP = Path("/usr/bin/bwrap")
+BWRAP_SHA256 = "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
 
 
 def _digest(path: Path) -> str:
@@ -26,8 +32,54 @@ def _digest(path: Path) -> str:
     return value.hexdigest()
 
 
+def _validate_closure(root: Path, manifest_path: Path, document: dict[str, object]) -> None:
+    if (
+        not stat.S_ISDIR(root.lstat().st_mode)
+        or stat.S_IMODE(root.lstat().st_mode) != 0o500
+        or not stat.S_ISREG(manifest_path.lstat().st_mode)
+        or stat.S_IMODE(manifest_path.lstat().st_mode) != 0o400
+        or manifest_path.lstat().st_nlink != 1
+    ):
+        raise AssertionError("G1 closure custody is mutable")
+    records = document["files"]
+    assert type(records) is list
+    expected_files = {PurePosixPath("closure-manifest.json")}
+    expected_directories = {PurePosixPath(".")}
+    for record in records:
+        assert type(record) is dict
+        relative = PurePosixPath(record["path"])
+        assert not relative.is_absolute() and ".." not in relative.parts
+        path = root.joinpath(*relative.parts)
+        status = path.lstat()
+        assert stat.S_ISREG(status.st_mode) and status.st_nlink == 1
+        assert stat.S_IMODE(status.st_mode) == int(record["mode"], 8)
+        assert status.st_size == record["size"]
+        assert _digest(path) == record["sha256"]
+        expected_files.add(relative)
+        parent = relative.parent
+        while parent != PurePosixPath("."):
+            expected_directories.add(parent)
+            parent = parent.parent
+    observed_files = {
+        PurePosixPath(path.relative_to(root).as_posix())
+        for path in root.rglob("*")
+        if path.is_file() or path.is_symlink()
+    }
+    observed_directories = {PurePosixPath(".")} | {
+        PurePosixPath(path.relative_to(root).as_posix())
+        for path in root.rglob("*")
+        if path.is_dir()
+    }
+    assert observed_files == expected_files
+    assert observed_directories == expected_directories
+    for relative in observed_directories:
+        path = root if relative == PurePosixPath(".") else root.joinpath(*relative.parts)
+        status = path.lstat()
+        assert stat.S_ISDIR(status.st_mode) and stat.S_IMODE(status.st_mode) == 0o500
+
+
 @contextmanager
-def exact_g1_runtime() -> Iterator[tuple[str, str] | None]:
+def exact_g1_runtime() -> Iterator[tuple[Path, str] | None]:
     python = os.environ.get("P1_NAUTILUS_PYTHON")
     closure_manifest = os.environ.get("P1_NAUTILUS_CLOSURE_MANIFEST")
     legacy_site = os.environ.get("P1_NAUTILUS_SITE_PACKAGES")
@@ -36,10 +88,14 @@ def exact_g1_runtime() -> Iterator[tuple[str, str] | None]:
         return
     assert python is not None and closure_manifest is not None
     assert legacy_site is None
-    manifest_path = Path(closure_manifest).resolve()
+    assert _digest(BWRAP) == BWRAP_SHA256
+    supplied_manifest = Path(closure_manifest)
+    assert not supplied_manifest.is_symlink()
+    manifest_path = supplied_manifest.resolve()
     assert _digest(manifest_path) == G1_CLOSURE_SHA256
     document = json.loads(manifest_path.read_bytes())
     root = manifest_path.parent
+    _validate_closure(root, manifest_path, document)
     python_path = (root / "files/usr/bin/python3.12").resolve()
     assert Path(python).resolve() == python_path
     assert _digest(python_path) == document["python"]["executable_sha256"]
@@ -69,7 +125,112 @@ def exact_g1_runtime() -> Iterator[tuple[str, str] | None]:
         for path in wheels.values():
             with ZipFile(path) as archive:
                 archive.extractall(directory)
-        yield str(python_path), directory
+        yield root, directory
+
+
+def exact_g1_command(
+    root: Path, site_packages: str, script: str, *inputs: tuple[Path, str]
+) -> list[str]:
+    command = [
+        str(BWRAP),
+        "--die-with-parent",
+        "--unshare-all",
+        "--new-session",
+        "--tmpfs",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--dir",
+        "/engine",
+        "--ro-bind",
+        str(root / "files/engine/wheels"),
+        "/engine/wheels",
+        "--ro-bind",
+        str(root / "files/usr"),
+        "/usr",
+        "--ro-bind",
+        str(root / "files/lib"),
+        "/lib",
+        "--ro-bind",
+        str(root / "files/lib64"),
+        "/lib64",
+        "--ro-bind",
+        str(ROOT / "engines/nautilus"),
+        "/engine/source",
+        "--ro-bind",
+        site_packages,
+        "/engine/site",
+        "--dir",
+        "/inputs",
+    ]
+    for source, target in inputs:
+        command.extend(("--ro-bind", str(source.resolve()), target))
+    return [
+        *command,
+        "--tmpfs",
+        "/tmp",
+        "--clearenv",
+        "--setenv",
+        "PYTHONDONTWRITEBYTECODE",
+        "1",
+        "--",
+        "/usr/bin/python3.12",
+        "-I",
+        "-S",
+        "-c",
+        script,
+        "/engine/source",
+        "/engine/site",
+        *(target for _, target in inputs),
+    ]
+
+
+@pytest.mark.parametrize("mutation", ("content", "missing", "extra", "mode"))
+def test_closure_snapshot_rejects_nonwheel_drift(
+    tmp_path: Path, mutation: str
+) -> None:
+    root = tmp_path / "closure"
+    payload = root / "files/usr/lib/python312.zip"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"stdlib")
+    manifest = root / "closure-manifest.json"
+    manifest.write_bytes(b"{}")
+    document: dict[str, object] = {
+        "files": [
+            {
+                "mode": "0400",
+                "path": "files/usr/lib/python312.zip",
+                "sha256": hashlib.sha256(b"stdlib").hexdigest(),
+                "size": 6,
+            }
+        ]
+    }
+    payload.chmod(0o400)
+    manifest.chmod(0o400)
+    for directory in (payload.parent, payload.parent.parent, payload.parent.parent.parent, root):
+        directory.chmod(0o500)
+
+    if mutation == "content":
+        payload.chmod(0o600)
+        payload.write_bytes(b"changed")
+        payload.chmod(0o400)
+    elif mutation == "missing":
+        payload.parent.chmod(0o700)
+        payload.unlink()
+        payload.parent.chmod(0o500)
+    elif mutation == "extra":
+        payload.parent.chmod(0o700)
+        extra = payload.parent / "ambient.py"
+        extra.write_bytes(b"pass")
+        extra.chmod(0o400)
+        payload.parent.chmod(0o500)
+    else:
+        payload.chmod(0o600)
+
+    with pytest.raises((AssertionError, FileNotFoundError)):
+        _validate_closure(root, manifest, document)
 
 
 def test_exact_g1_native_instrument_when_host_authority_is_supplied() -> None:
@@ -84,7 +245,7 @@ def test_exact_g1_native_instrument_when_host_authority_is_supplied() -> None:
                 text=True,
             ).stdout
             return
-        python, site_packages = runtime
+        root, site_packages = runtime
         script = r'''
 import json
 from pathlib import Path
@@ -161,17 +322,14 @@ print(json.dumps({
 }, separators=(",", ":"), sort_keys=True))
 '''
         completed = subprocess.run(
-            [
-                python,
-                "-I",
-                "-S",
-                "-c",
-                script,
-                str(ROOT / "engines/nautilus"),
+            exact_g1_command(
+                root,
                 site_packages,
-                str(CATALOG),
-            ],
+                script,
+                (CATALOG, "/inputs/instrument-catalog.json"),
+            ),
             cwd="/",
+            env={},
             check=False,
             capture_output=True,
             text=True,
