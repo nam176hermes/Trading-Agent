@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
+import json
+from pathlib import Path
 
 import pytest
 
 from scripts import compare_nautilus_runtime_versions as comparison
+
+
+ROOT = Path(__file__).resolve().parents[2]
+RECEIPT = (
+    ROOT
+    / "docs/implementation/p1-real-nautilus/upgrade/"
+    "u07-dual-runtime-qualification-receipt.json"
+)
 
 
 def _event() -> dict[str, object]:
@@ -114,3 +125,64 @@ def test_only_exact_approved_drift_pairs_are_accepted() -> None:
     assert comparison.classify_semantic_drift(
         left, right, [approval]
     ) == "UNEXPLAINED_BLOCKER"
+
+
+def test_committed_u07_receipt_is_closed_generation_bound_and_inactive() -> None:
+    raw = RECEIPT.read_bytes()
+    receipt = json.loads(raw)
+    assert raw == comparison._pretty(receipt)
+    assert receipt["schema"] == (
+        "trading-agent-nautilus-u07-dual-runtime-qualification/v1"
+    )
+    assert receipt["verdict"] == "PASS"
+    assert receipt["qualification_source_commit"] == (
+        "fb07bce9aede8c68dfc5b11aa12023fbde3b0918"
+    )
+    assert receipt["qualification_source_tree"] == (
+        "2a8d08d5ef0adec1113d4b9c2f2a17c81f0ddfbd"
+    )
+    assert receipt["candidate_generation_id"] == "NT1231-U04-G1"
+    assert receipt["candidate_generation_sha256"] == (
+        "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c"
+    )
+    assert receipt["candidate_closure_sha256"] == (
+        "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255"
+    )
+    assert set(receipt["authority_limits"].values()) == {False}
+    evidence = receipt["evidence"]
+    assert receipt["evidence_sha256"] == hashlib.sha256(
+        comparison._canonical(evidence)
+    ).hexdigest()
+    assert evidence["attempts_per_runtime"] == 3
+    assert evidence["isolated_process_count"] == 48
+    assert evidence["internal_semantic_digest_counts"] == {
+        "candidate_1_231": 1,
+        "rollback_1_227": 1,
+    }
+    assert evidence["drift_counts"] == {
+        "APPROVED_CONTRACT_CHANGE": 0,
+        "EXPECTED_UPSTREAM_FIX": 0,
+        "NONE": 8,
+        "UNEXPLAINED_BLOCKER": 0,
+    }
+    assert evidence["isolation"]["shared_writable_state"] == 0
+    assert evidence["isolation"]["candidate_snapshot_before"] == (
+        evidence["isolation"]["candidate_snapshot_after"]
+    )
+    assert evidence["isolation"]["rollback_snapshot_before"] == (
+        evidence["isolation"]["rollback_snapshot_after"]
+    )
+
+
+def test_u07_runner_reuses_existing_scenarios_without_build_paths() -> None:
+    source = Path(comparison.__file__).read_text(encoding="utf-8")
+    assert "SCENARIO_IDS" in source
+    assert "_run_scenario" in source
+    assert all(
+        term not in source
+        for term in (
+            "build_nautilus_engine",
+            "materialize_candidate_runtime_closure",
+            "--materialize-candidate",
+        )
+    )
