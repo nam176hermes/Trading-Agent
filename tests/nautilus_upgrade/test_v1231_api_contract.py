@@ -17,6 +17,10 @@ CONTRACT = (
     ROOT / "docs/implementation/p1-real-nautilus/upgrade/direct-api-contract.json"
 )
 GOLDEN = ROOT / "tests/fixtures/nautilus_upgrade/v1.231-api-probe.json"
+RECEIPT = (
+    ROOT
+    / "docs/implementation/p1-real-nautilus/upgrade/u05-api-qualification-receipt.json"
+)
 
 
 def _canonical(value: object) -> bytes:
@@ -160,3 +164,74 @@ def test_only_the_exact_candidate_pandas_warning_is_accepted() -> None:
         qualification.validate_scenario_stderr(b"unexpected warning\n")
     with pytest.raises(qualification.ApiQualificationError, match="unexpected stderr"):
         qualification.validate_scenario_stderr(warning * 3)
+
+
+def test_committed_u05_receipt_is_closed_and_generation_bound() -> None:
+    raw = RECEIPT.read_bytes()
+    receipt = json.loads(raw)
+    assert raw == (
+        json.dumps(receipt, allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True)
+        + "\n"
+    ).encode("ascii")
+    assert set(receipt) == {
+        "authority_limits",
+        "candidate_closure_sha256",
+        "candidate_generation_id",
+        "candidate_generation_sha256",
+        "evidence",
+        "evidence_sha256",
+        "input_receipt_sha256s",
+        "qualification_source_commit",
+        "qualification_source_tree",
+        "schema",
+        "verdict",
+    }
+    assert receipt["schema"] == "trading-agent-nautilus-u05-qualification/v1"
+    assert receipt["verdict"] == "PASS"
+    assert receipt["qualification_source_commit"] == (
+        "17c8c50807eab5aa0907abdb0663795ca2e0f90d"
+    )
+    assert receipt["qualification_source_tree"] == (
+        "a53f10ef7bfd2275866ca764da0f838745065373"
+    )
+    assert receipt["candidate_generation_id"] == "NT1231-U04-G1"
+    assert receipt["candidate_generation_sha256"] == (
+        "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c"
+    )
+    assert receipt["candidate_closure_sha256"] == (
+        "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255"
+    )
+    assert set(receipt["authority_limits"].values()) == {False}
+    evidence = receipt["evidence"]
+    assert receipt["evidence_sha256"] == hashlib.sha256(
+        _canonical(evidence)
+    ).hexdigest()
+    assert evidence["candidate_snapshot_before"] == evidence["candidate_snapshot_after"]
+    assert evidence["api_probe"]["api_surface_count"] == 33
+    assert evidence["api_probe"]["local_invocation_count"] == 153
+    assert evidence["callbacks_observed"] == [
+        "on_bar",
+        "on_order_filled",
+        "on_start",
+    ]
+    assert evidence["callbacks_unobserved"] == ["on_order_rejected"]
+    assert receipt["input_receipt_sha256s"] == {
+        "direct_api_contract": hashlib.sha256(CONTRACT.read_bytes()).hexdigest(),
+        "u04_final_acceptance": hashlib.sha256(
+            (
+                ROOT
+                / "docs/implementation/p1-real-nautilus/upgrade/"
+                "u04-final-acceptance-receipt.json"
+            ).read_bytes()
+        ).hexdigest(),
+    }
+    source_sha256s = evidence["source_sha256s"]
+    assert source_sha256s["golden"] == hashlib.sha256(GOLDEN.read_bytes()).hexdigest()
+    assert source_sha256s["probe"] == hashlib.sha256(
+        (
+            ROOT / "engines/nautilus/launcher/nautilus_v1231_probe.py"
+        ).read_bytes()
+    ).hexdigest()
+    assert source_sha256s["runner"] == hashlib.sha256(
+        Path(qualification.__file__).read_bytes()
+    ).hexdigest()
