@@ -160,6 +160,11 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
         ),
         (
             "engines/nautilus/runtime_v1/bad.py",
+            "from importlib.metadata import EntryPoint\nvalue = EntryPoint(name='x', value='socket:socket', group='x').load()\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
             "value = (lambda: 0).__globals__['__built'+'ins__']['__im'+'port__']('socket')\n",
             "network",
         ),
@@ -255,7 +260,7 @@ def test_runtime_may_read_version_metadata_without_importing_product(
 ) -> None:
     root, budget = _fixture(
         tmp_path,
-        "from importlib.metadata import version\n",
+        "from importlib.metadata import version as package_version\n",
         relative="engines/nautilus/runtime_v1/main.py",
     )
     check_boundaries(root, budget)

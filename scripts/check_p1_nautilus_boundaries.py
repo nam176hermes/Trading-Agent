@@ -181,6 +181,23 @@ def _uses_parent_relative_import(tree: ast.AST) -> bool:
     )
 
 
+def _uses_forbidden_metadata_import(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name == "importlib.metadata" for alias in node.names
+        ):
+            return True
+        if isinstance(node, ast.ImportFrom) and node.module == "importlib.metadata":
+            if (
+                node.level != 0
+                or len(node.names) != 1
+                or node.names[0].name != "version"
+                or node.names[0].asname != "package_version"
+            ):
+                return True
+    return False
+
+
 def _runtime_import_is_allowed(module: str) -> bool:
     top_level = module.split(".", 1)[0]
     if top_level in _RUNTIME_ALLOWED_MODULES or module == "importlib.metadata":
@@ -249,6 +266,7 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
             any(not _runtime_import_is_allowed(module) for module in imports)
             or _uses_dynamic_import(tree)
             or _uses_parent_relative_import(tree)
+            or _uses_forbidden_metadata_import(tree)
         ):
             raise BoundaryError(f"runtime network/client import is forbidden: {relative}")
         is_boundary_checker = relative == "scripts/check_p1_nautilus_boundaries.py"
