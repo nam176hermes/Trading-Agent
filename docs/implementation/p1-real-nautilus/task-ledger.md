@@ -24,7 +24,11 @@ production, network-trading, or live authority.
 | P1-04 | P1-02 | ACCEPTED | Independent review plus remediation rereview passed; event/state/semantic authority is closed. |
 | P1-05 | P1-03, P1-04 | ACCEPTED | Deterministic root schemas, stdlib-only sealed grammar and golden fixtures passed two independent reviews; Foundation run 33214806868 passed. |
 | P1-06 | P1-05 | ACCEPTED | Exact isolated CPython entry, closure-owned schema-8 lineage seam and bounded diagnostics passed independent spec/security review at 507279a. |
-| P1-07 | P1-05, P1-06 | IN_PROGRESS | Implement descriptor-safe request and artifact loading without broadening runtime authority. |
+| P1-07 | P1-05, P1-06 | ACCEPTED | Descriptor-safe JSON/JSONL loading and fractional-time bounds passed independent review at `3533d6b`. |
+| P1-08 | P1-04, P1-05, P1-06 | ACCEPTED | Catalog-built native instrument, exact G1 bounds, reset/re-registration and sealed closure custody passed independent review at `02b7a49`. |
+| P1-09 | P1-03, P1-05, P1-06, P1-07, P1-08 | ACCEPTED | Quote-before-bar conversion, catalog increments/projection, timestamp bounds and exact G1 Bubblewrap evidence passed independent review at `02b7a49`. |
+| P1-10 | P1-03, P1-05, P1-06, P1-08, P1-09 | ACCEPTED | Pure long/flat sizing, fee reserve, minimums and exact 16-decimal arithmetic passed independent review at `3f1f9d3`. |
+| P1-11 | P1-08, P1-09, P1-10 | IN_PROGRESS | Implement the target-driven native strategy state machine without expanding runtime authority. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
