@@ -113,10 +113,25 @@ def test_frozen_launcher_growth_fails(tmp_path: Path) -> None:
             "value = __import__('socket')\n",
             "network",
         ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "loader = __import__\nvalue = loader('socket')\n",
+            "network",
+        ),
+        (
+            "engines/nautilus/runtime_v1/bad.py",
+            "from nautilus_trader.adapters.binance import BinanceLiveDataClientFactory\n",
+            "network",
+        ),
         ("services/job_worker/bad.py", "PROFILE='p1-real-backtest'\n", "profile"),
         (
             "services/job_worker/bad.py",
             "PROFILE='p1-' 'real-backtest'\n",
+            "profile",
+        ),
+        (
+            "services/job_worker/bad.py",
+            "PROFILE='p1-' + 'real-backtest'\n",
             "profile",
         ),
     ),
@@ -144,3 +159,12 @@ def test_growth_budget_is_closed(tmp_path: Path) -> None:
     )
     with pytest.raises(BoundaryError, match="growth budget"):
         check_boundaries(root, budget)
+
+
+def test_runtime_relative_import_is_allowed(tmp_path: Path) -> None:
+    root, budget = _fixture(
+        tmp_path,
+        "from .generated_protocol import P1_EVENT_SCHEMA\n",
+        relative="engines/nautilus/runtime_v1/main.py",
+    )
+    check_boundaries(root, budget)

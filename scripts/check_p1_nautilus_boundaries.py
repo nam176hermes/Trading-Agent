@@ -25,7 +25,6 @@ _RUNTIME_ALLOWED_MODULES = {
     "hashlib",
     "hmac",
     "json",
-    "nautilus_trader",
     "os",
     "re",
     "signal",
@@ -35,6 +34,13 @@ _RUNTIME_ALLOWED_MODULES = {
     "typing",
     "uuid",
 }
+_RUNTIME_ALLOWED_NAUTILUS_PREFIXES = (
+    "nautilus_trader.backtest",
+    "nautilus_trader.common",
+    "nautilus_trader.config",
+    "nautilus_trader.model",
+    "nautilus_trader.trading",
+)
 _PROFILE_NAMES = {"p1-local-paper", "p1-real-backtest"}
 _LEGACY_NAUTILUS_IMPORTS = {
     "engines/nautilus/launcher/nautilus_backtest.py",
@@ -68,21 +74,29 @@ def _imports(tree: ast.AST) -> set[str]:
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module.split(".")[0])
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.add(node.module)
     return names
 
 
 def _uses_dynamic_import(tree: ast.AST) -> bool:
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+        if isinstance(node, ast.Name) and node.id == "__import__":
             return True
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "import_module":
+        if isinstance(node, ast.Attribute) and node.attr == "import_module":
             return True
     return False
+
+
+def _runtime_import_is_allowed(module: str) -> bool:
+    top_level = module.split(".", 1)[0]
+    if top_level in _RUNTIME_ALLOWED_MODULES:
+        return True
+    return module == "nautilus_trader" or any(
+        module == prefix or module.startswith(prefix + ".")
+        for prefix in _RUNTIME_ALLOWED_NAUTILUS_PREFIXES
+    )
 
 
 def check_boundaries(root: Path, budget_path: Path) -> None:
@@ -133,10 +147,15 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
         is_test = relative.startswith("tests/") or "/tests/" in relative
         is_runtime_v1 = relative.startswith("engines/nautilus/runtime_v1/")
         is_legacy_reference = relative in _LEGACY_NAUTILUS_IMPORTS
-        if "nautilus_trader" in imports and not (is_test or is_runtime_v1 or is_legacy_reference):
+        imports_nautilus = any(
+            module == "nautilus_trader" or module.startswith("nautilus_trader.")
+            for module in imports
+        )
+        if imports_nautilus and not (is_test or is_runtime_v1 or is_legacy_reference):
             raise BoundaryError(f"root Nautilus import is forbidden: {relative}")
         if is_runtime_v1 and (
-            imports - _RUNTIME_ALLOWED_MODULES or _uses_dynamic_import(tree)
+            any(not _runtime_import_is_allowed(module) for module in imports)
+            or _uses_dynamic_import(tree)
         ):
             raise BoundaryError(f"runtime network/client import is forbidden: {relative}")
         is_boundary_checker = relative == "scripts/check_p1_nautilus_boundaries.py"
@@ -154,6 +173,11 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
         }
         if not (is_test or is_profile_policy or is_boundary_checker) and any(
             profile in source or profile in string_values for profile in _PROFILE_NAMES
+        ):
+            raise BoundaryError(f"profile name duplicated outside policy: {relative}")
+        if not (is_test or is_profile_policy or is_boundary_checker) and (
+            ("p1-" in string_values and "real-backtest" in string_values)
+            or ("p1-" in string_values and "local-paper" in string_values)
         ):
             raise BoundaryError(f"profile name duplicated outside policy: {relative}")
 

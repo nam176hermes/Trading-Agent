@@ -48,12 +48,15 @@ class P1TargetAccepted(P1EventModel):
     origin: Literal["CONTROL_PLANE"]
     native_type: None
     target_id: Identifier
+    source_signal_ids: tuple[Identifier, ...] = Field(min_length=1, max_length=64)
     target_weight: FiniteDecimal
 
     @model_validator(mode="after")
     def _long_or_flat(self) -> "P1TargetAccepted":
         if not Decimal(0) <= self.target_weight <= Decimal(1):
             raise ValueError("target_weight must be long or flat")
+        if len(self.source_signal_ids) != len(set(self.source_signal_ids)):
+            raise ValueError("source_signal_ids contain duplicates")
         return self
 
 
@@ -77,6 +80,8 @@ class P1OrderSubmitted(P1EventModel):
     native_type: Literal["Order"]
     client_order_id: Identifier
     native_order_id: Identifier
+    target_id: Identifier
+    source_signal_ids: tuple[Identifier, ...] = Field(min_length=1, max_length=64)
     side: Literal["BUY", "SELL"]
     quantity: FiniteDecimal
     order_type: Literal["MARKET"]
@@ -85,6 +90,8 @@ class P1OrderSubmitted(P1EventModel):
     def _positive_quantity(self) -> "P1OrderSubmitted":
         if self.quantity <= 0:
             raise ValueError("order quantity must be positive")
+        if len(self.source_signal_ids) != len(set(self.source_signal_ids)):
+            raise ValueError("source_signal_ids contain duplicates")
         return self
 
 

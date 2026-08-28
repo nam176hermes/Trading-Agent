@@ -32,9 +32,9 @@ DIGEST = "a" * 64
 def stream() -> tuple:
     events = (
         P1RunStarted(schema_version="nautilus-p1-event-stream-v1", event_type="RunStarted", origin="CONTROL_PLANE", native_type=None, sequence=2, simulation_time=NOW, runtime_family="cython-v1", engine_version="1.231.0", upstream_commit="b" * 40, closure_digest=DIGEST, config_digest=DIGEST, catalog_digest=DIGEST, data_digest=DIGEST),
-        P1TargetAccepted(schema_version="nautilus-p1-event-stream-v1", event_type="TargetAccepted", origin="CONTROL_PLANE", native_type=None, sequence=3, simulation_time=NOW, target_id="target-1", target_weight=Decimal("1")),
+        P1TargetAccepted(schema_version="nautilus-p1-event-stream-v1", event_type="TargetAccepted", origin="CONTROL_PLANE", native_type=None, sequence=3, simulation_time=NOW, target_id="target-1", source_signal_ids=("signal-1",), target_weight=Decimal("1")),
         P1TargetQuantityPlanned(schema_version="nautilus-p1-event-stream-v1", event_type="TargetQuantityPlanned", origin="CONTROL_PLANE", native_type=None, sequence=4, simulation_time=NOW, target_id="target-1", quantity=Decimal("1")),
-        P1OrderSubmitted(schema_version="nautilus-p1-event-stream-v1", event_type="OrderSubmitted", origin="CONTROL_PLANE", native_type="Order", sequence=5, simulation_time=NOW, client_order_id="order-1", native_order_id="native-random-1", side="BUY", quantity=Decimal("1"), order_type="MARKET"),
+        P1OrderSubmitted(schema_version="nautilus-p1-event-stream-v1", event_type="OrderSubmitted", origin="CONTROL_PLANE", native_type="Order", sequence=5, simulation_time=NOW, client_order_id="order-1", native_order_id="native-random-1", target_id="target-1", source_signal_ids=("signal-1",), side="BUY", quantity=Decimal("1"), order_type="MARKET"),
         P1Fill(schema_version="nautilus-p1-event-stream-v1", event_type="Fill", origin="NAUTILUS_CALLBACK", native_type="OrderFilled", sequence=6, simulation_time=NOW, client_order_id="order-1", native_fill_id="fill-random-1", side="BUY", quantity=Decimal("1"), price=Decimal("100"), fee=Decimal("0.1"), fee_currency="USDT"),
         P1PositionObserved(schema_version="nautilus-p1-event-stream-v1", event_type="PositionObserved", origin="NAUTILUS_CACHE_OBSERVATION", native_type="Position", sequence=7, simulation_time=NOW, quantity=Decimal("1"), average_entry_price=Decimal("100"), realized_pnl=Decimal("0"), unrealized_pnl=Decimal("1")),
         P1AccountObserved(schema_version="nautilus-p1-event-stream-v1", event_type="AccountObserved", origin="NAUTILUS_CACHE_OBSERVATION", native_type="Account", sequence=8, simulation_time=NOW, cash_balance=Decimal("999899.9"), fees=Decimal("0.1"), realized_pnl=Decimal("0"), unrealized_pnl=Decimal("1")),
@@ -85,6 +85,46 @@ def test_state_machine_binds_lineage_chronology_and_native_identities() -> None:
         events[4].model_copy(update={"sequence": 6}),
     ) + tuple(event.model_copy(update={"sequence": event.sequence + 1}) for event in events[5:])
     for mutation in (regress, lineage, duplicate_fill):
+        with pytest.raises(ValueError):
+            validate_event_stream(mutation)
+
+
+def _resequence_and_digest(events: tuple) -> tuple:
+    resequenced = tuple(
+        event.model_copy(update={"sequence": sequence})
+        for sequence, event in enumerate(events, start=2)
+    )
+    return resequenced[:-1] + (
+        resequenced[-1].model_copy(
+            update={"semantic_digest": semantic_digest(resequenced)}
+        ),
+    )
+
+
+def test_state_machine_rejects_unfinished_late_and_contradictory_native_state() -> None:
+    events = stream()
+    unfinished = _resequence_and_digest(
+        events[:4]
+        + events[5:-1]
+        + (events[-1].model_copy(update={"fill_count": 0}),)
+    )
+    second_order = events[3].model_copy(
+        update={"client_order_id": "order-2", "native_order_id": "native-random-2"}
+    )
+    second_fill = events[4].model_copy(
+        update={"client_order_id": "order-2", "native_fill_id": "fill-random-2"}
+    )
+    late_native = _resequence_and_digest(
+        events[:-1]
+        + (second_order, second_fill)
+        + (events[-1].model_copy(update={"order_count": 2, "fill_count": 2}),)
+    )
+    contradictory = list(events)
+    contradictory[-3] = contradictory[-3].model_copy(
+        update={"realized_pnl": Decimal("1")}
+    )
+    contradictory_stream = _resequence_and_digest(tuple(contradictory))
+    for mutation in (unfinished, late_native, contradictory_stream):
         with pytest.raises(ValueError):
             validate_event_stream(mutation)
 
