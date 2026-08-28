@@ -22,8 +22,8 @@ ARTIFACTS = {
     "engine_configuration": ("engine_configuration", "engine-configuration.json"),
     "instrument_catalog": ("instrument_catalog", "instrument-catalog.json"),
     "strategy_configuration": ("target_schedule", "target-schedule.json"),
-    "market_data": ("market_data_manifest", "market-data-manifest.json"),
 }
+MARKET_DATA = b'{"sequence":1}\n{"sequence":2}\n'
 
 
 def canonical(value: object) -> bytes:
@@ -43,11 +43,8 @@ def sandbox(
         name: (FIXTURES / filename).read_bytes()
         for name, (_, filename) in ARTIFACTS.items()
     }
+    artifacts["market_data"] = MARKET_DATA
     artifacts.update(artifact_overrides or {})
-    catalog_digest = hashlib.sha256(artifacts["instrument_catalog"]).hexdigest()
-    manifest = json.loads(artifacts["market_data"])
-    manifest["catalog_sha256"] = catalog_digest
-    artifacts["market_data"] = canonical(manifest) + b"\n"
 
     references: dict[str, dict[str, str]] = {}
     artifact_root = tmp_path / "artifacts"
@@ -56,19 +53,22 @@ def sandbox(
         digest = hashlib.sha256(raw).hexdigest()
         reference = {
             "artifact_id": f"{index}" * 8 + "-1111-4111-8111-111111111111",
-            "media_type": "application/json",
+            "media_type": (
+                "application/jsonl" if name == "market_data" else "application/json"
+            ),
             "sha256": digest,
         }
         references[name] = reference
-        path = artifact_root / f"{name}-{digest}.json"
+        suffix = "jsonl" if name == "market_data" else "json"
+        path = artifact_root / f"{name}-{digest}.{suffix}"
         path.write_bytes(raw)
         path.chmod(0o400)
 
     payload: dict[str, object] = {
         "command_type": "RunBacktest",
         **references,
-        "start_time": manifest["first_timestamp"],
-        "end_time": manifest["last_timestamp"],
+        "start_time": "2026-08-05T12:00:00Z",
+        "end_time": "2026-08-05T12:01:00Z",
     }
     request: dict[str, object] = {
         "causation_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -86,8 +86,8 @@ def sandbox(
         ).hexdigest(),
         "correlation_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         "engine_run_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
-        "event_time": manifest["first_timestamp"],
-        "initialization_time": manifest["first_timestamp"],
+        "event_time": "2026-08-05T12:00:00Z",
+        "initialization_time": "2026-08-05T12:00:00Z",
         "message_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "payload": payload,
         "payload_digest": hashlib.sha256(canonical(payload)).hexdigest(),
@@ -121,7 +121,8 @@ def test_loads_exact_request_and_four_immutable_artifacts(
     assert first == second
     assert first.request.message_id == request["message_id"]
     assert first.request.command_type == "RunBacktest"
-    assert first.market_data_manifest[0][0] == "catalog_sha256"
+    assert first.request.market_data.media_type == "application/jsonl"
+    assert first.market_data == MARKET_DATA
     with pytest.raises(FrozenInstanceError):
         first.request.message_id = "changed"  # type: ignore[misc]
     with pytest.raises(TypeError):
@@ -148,12 +149,12 @@ def test_rejects_nonexact_envelope(
         load_inputs()
 
 
-def test_rejects_command_window_or_catalog_binding_mismatch(
+def test_rejects_target_outside_command_window_with_fractional_seconds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, _, request = sandbox(tmp_path, monkeypatch)
     payload = dict(request["payload"])  # type: ignore[arg-type]
-    payload["end_time"] = "2026-08-05T12:02:00Z"
+    payload["start_time"] = "2026-08-05T12:00:00.100000Z"
     request["payload"] = payload
     request["payload_digest"] = hashlib.sha256(canonical(payload)).hexdigest()
     raw = canonical(request)

@@ -52,8 +52,8 @@ _ARTIFACT_KINDS = {
     "engine_configuration": "engine_configuration",
     "instrument_catalog": "instrument_catalog",
     "strategy_configuration": "target_schedule",
-    "market_data": "market_data_manifest",
 }
+_MAX_MARKET_DATA_BYTES = 8 * 1024 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _SOURCE_COMMIT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", re.ASCII)
 _PRODUCER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", re.ASCII)
@@ -102,7 +102,7 @@ class RuntimeInputs:
     engine_configuration: tuple[tuple[str, object], ...]
     instrument_catalog: tuple[tuple[str, object], ...]
     target_schedule: tuple[tuple[str, object], ...]
-    market_data_manifest: tuple[tuple[str, object], ...]
+    market_data: bytes
 
 
 def _reject_number(_value: str) -> object:
@@ -153,10 +153,12 @@ def _timestamp(value: object, label: str) -> tuple[str, datetime]:
     return value, parsed
 
 
-def _reference(value: object, label: str) -> ArtifactReference:
+def _reference(
+    value: object, label: str, expected_media_type: str
+) -> ArtifactReference:
     observed = _object(value, _REFERENCE_KEYS, f"{label} reference")
     media_type = observed["media_type"]
-    if media_type != "application/json":
+    if media_type != expected_media_type:
         raise InputLoadError(f"runtime {label} media type is invalid")
     return ArtifactReference(
         artifact_id=_uuid(observed["artifact_id"], f"{label} artifact ID"),
@@ -188,8 +190,12 @@ def _parse_request(raw: bytes) -> RunBacktestRequest:
     if payload["command_type"] != "RunBacktest":
         raise InputLoadError("runtime command type is invalid")
     references = {
-        name: _reference(payload[name], name) for name in _ARTIFACT_KINDS
+        name: _reference(payload[name], name, "application/json")
+        for name in _ARTIFACT_KINDS
     }
+    references["market_data"] = _reference(
+        payload["market_data"], "market_data", "application/jsonl"
+    )
     if len({item.artifact_id for item in references.values()}) != 4 or len(
         {item.sha256 for item in references.values()}
     ) != 4:
@@ -316,7 +322,7 @@ def _freeze(value: object) -> object:
 
 
 def load_inputs() -> RuntimeInputs:
-    """Load the exact fixed request and four content-addressed P1 documents."""
+    """Load the exact request, three documents, and raw market-data bytes."""
 
     try:
         request_raw = _read_regular(REQUEST, _MAX_REQUEST_BYTES)
@@ -335,7 +341,8 @@ def load_inputs() -> RuntimeInputs:
         "market_data": request.market_data,
     }
     filenames = {
-        f"{name}-{reference.sha256}.json" for name, reference in references.items()
+        f"{name}-{reference.sha256}.{'jsonl' if reference.media_type == 'application/jsonl' else 'json'}"
+        for name, reference in references.items()
     }
     directory = -1
     try:
@@ -359,6 +366,13 @@ def load_inputs() -> RuntimeInputs:
                 documents[kind] = load_document(kind, raw)
             except ProtocolValidationError as exc:
                 raise InputLoadError("runtime artifact grammar is invalid") from exc
+        market_reference = references["market_data"]
+        market_data = _read_artifact(
+            directory,
+            f"market_data-{market_reference.sha256}.jsonl",
+            _MAX_MARKET_DATA_BYTES,
+            market_reference.sha256,
+        )
         final = os.fstat(directory)
         if (
             (final.st_dev, final.st_ino) != (opened.st_dev, opened.st_ino)
@@ -373,18 +387,14 @@ def load_inputs() -> RuntimeInputs:
         if directory >= 0:
             os.close(directory)
 
-    manifest = documents["market_data_manifest"]
-    if manifest["catalog_sha256"] != request.instrument_catalog.sha256:
-        raise InputLoadError("runtime market-data catalog binding is invalid")
-    if (
-        manifest["first_timestamp"] != request.start_time
-        or manifest["last_timestamp"] != request.end_time
-    ):
-        raise InputLoadError("runtime command window does not match market data")
     schedule = documents["target_schedule"]
     targets = schedule["targets"]
+    _, start = _timestamp(request.start_time, "command start time")
+    _, end = _timestamp(request.end_time, "command end time")
     if type(targets) is not list or any(
-        not request.start_time <= target["effective_at"] <= request.end_time
+        not start
+        <= _timestamp(target["effective_at"], "target effective time")[1]
+        <= end
         for target in targets
         if type(target) is dict
     ):
@@ -395,7 +405,7 @@ def load_inputs() -> RuntimeInputs:
         engine_configuration=_freeze(documents["engine_configuration"]),  # type: ignore[arg-type]
         instrument_catalog=_freeze(documents["instrument_catalog"]),  # type: ignore[arg-type]
         target_schedule=_freeze(schedule),  # type: ignore[arg-type]
-        market_data_manifest=_freeze(manifest),  # type: ignore[arg-type]
+        market_data=market_data,
     )
 
 
