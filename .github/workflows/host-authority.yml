@@ -42,5 +42,8 @@ jobs:
       - name: Install Dashboard dependencies
         run: npm ci --prefix apps/dashboard
 
+      - name: Sync legacy research environment
+        run: uv sync --frozen --extra test --directory legacy/research-backend
+
       - name: Run host authority qualification
         run: make ci-host-authority NONINTERACTIVE=1

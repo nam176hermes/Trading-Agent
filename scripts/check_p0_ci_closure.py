@@ -700,6 +700,16 @@ def _host_workflow_valid(raw: bytes) -> bool:
             return False
         expected = _approved_common_steps() + [
             (
+                {
+                    "name": "Sync legacy research environment",
+                    "run": (
+                        "uv sync --frozen --extra test --directory "
+                        "legacy/research-backend"
+                    ),
+                },
+                {},
+            ),
+            (
                 {"name": "Run host authority qualification", "run": "make ci-host-authority NONINTERACTIVE=1"},
                 {},
             ),
