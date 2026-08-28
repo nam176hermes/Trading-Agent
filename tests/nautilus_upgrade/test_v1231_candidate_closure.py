@@ -60,7 +60,7 @@ def x4_posix_tmp_path() -> Iterator[Path]:
 
 
 def _portable_u04_test_modules() -> tuple[Path, ...]:
-    return tuple(sorted(U04_TEST_ROOT.glob("test_*.py")))
+    return tuple(sorted(U04_TEST_ROOT.rglob("test_*.py")))
 
 
 def _collect_u04_nodes(path: Path) -> subprocess.CompletedProcess[str]:

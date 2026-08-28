@@ -25,4 +25,4 @@ def test_p1_product_baseline_binds_u08_without_legacy_or_live_promotion() -> Non
     assert all(value is False for value in receipt["authority_limits"].values())
     assert "242f5f1be3a28cbb4241caacb03f82abed073bea" in baseline
     assert "9f8ba02822d54d1b4d6ba605a41a9e3d903f1c48" in baseline
-    assert "| P1-01 | P1-00 | READY |" in (P1 / "task-ledger.md").read_text()
+    assert "| P1-01 | P1-00 | ACCEPTED |" in (P1 / "task-ledger.md").read_text()

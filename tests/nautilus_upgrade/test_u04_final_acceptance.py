@@ -6,6 +6,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -16,6 +17,7 @@ RECEIPT = UPGRADE / "u04-final-review-receipt.json"
 GENERATION = UPGRADE / "candidate-generations/NT1231-U04-G1.json"
 SOURCE_COMMIT = "3f62908385be289999ccd14eed2e4007efdbf9e2"
 SOURCE_TREE = "8b3e147d5c8b27fba989183fb0a8822ec40b97a1"
+REVIEW_COMMIT = "a606dbc9862744f5db9ca8325fcc3e18b60d8df1"
 GENERATION_SHA256 = "2ea31eaca9cf19715fe2a73abc8c3d11c7731466e6e84e50e65db4979be46f8c"
 CLOSURE_SHA256 = "24f12b58cb0aba145e6d56146a71be874c5d9b214e7426eead9711131eaf1255"
 
@@ -52,6 +54,17 @@ def _load_closed(path: Path) -> dict[str, object]:
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _review_sha(path: Path) -> str:
+    relative = path.relative_to(ROOT).as_posix()
+    result = subprocess.run(
+        ["git", "show", f"{REVIEW_COMMIT}:{relative}"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    )
+    return hashlib.sha256(result.stdout).hexdigest()
 
 
 def _p1_host_command() -> str:
@@ -280,17 +293,23 @@ def _assert_valid(document: dict[str, object]) -> None:
         },
     )
     assert source_sha256s == {
-        "acceptance_test": _sha(Path(__file__)),
-        "generic_host_makefile": _sha(ROOT / "Makefile"),
-        "generic_host_workflow": _sha(ROOT / ".github/workflows/host-authority.yml"),
-        "p1_host_runner": _sha(ROOT / "scripts/verify_p1_u04_host_authority.py"),
-        "p1_host_tests": _sha(
+        "acceptance_test": _review_sha(Path(__file__)),
+        "generic_host_makefile": _review_sha(ROOT / "Makefile"),
+        "generic_host_workflow": _review_sha(
+            ROOT / ".github/workflows/host-authority.yml"
+        ),
+        "p1_host_runner": _review_sha(
+            ROOT / "scripts/verify_p1_u04_host_authority.py"
+        ),
+        "p1_host_tests": _review_sha(
             ROOT / "tests/nautilus_upgrade/host_authority/p1_u04_host_authority.py"
         ),
-        "p1_topology_test": _sha(
+        "p1_topology_test": _review_sha(
             ROOT / "tests/governance/test_p1_u04_host_topology.py"
         ),
-        "runtime_release_xattr_test": _sha(ROOT / "tests/runtime_release/test_v2.py"),
+        "runtime_release_xattr_test": _review_sha(
+            ROOT / "tests/runtime_release/test_v2.py"
+        ),
     }
 
     reviews = evidence["reviews"]
