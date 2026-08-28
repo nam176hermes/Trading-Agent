@@ -28,7 +28,11 @@ def test_factory_uses_only_accepted_v1231_surfaces_without_test_provider() -> No
         ("nautilus_trader.model.objects", "Price"),
         ("nautilus_trader.model.objects", "Quantity"),
     }
-    assert "test_kit" not in source
+    runtime_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(FACTORY.parent.glob("*.py"))
+    )
+    assert "test_kit" not in runtime_source
     assert "importlib" not in source
     assert "inspect" not in source
     assert "getattr" not in source

@@ -103,10 +103,13 @@ def _native_decimal(
 
 def _nanoseconds(value: datetime) -> int:
     delta = value - _EPOCH
-    return (
+    result = (
         (delta.days * 86_400 + delta.seconds) * 1_000_000_000
         + delta.microseconds * 1_000
     )
+    if not 0 <= result <= 2**64 - 1:
+        raise MarketDataError("timestamp is outside the native range")
+    return result
 
 
 def _rows(raw: bytes) -> list[dict[str, object]]:
@@ -174,6 +177,43 @@ def load_market_data(
         or instrument.size_precision != size_precision
     ):
         raise MarketDataError("market-data catalog or execution profile is invalid")
+    tick_size = _native_decimal(
+        catalog.get("tick_size"),
+        label="catalog tick size",
+        precision=price_precision,
+        maximum=_PRICE_MAX,
+        allow_zero=False,
+    )[0]
+    step_size = _native_decimal(
+        catalog.get("step_size"),
+        label="catalog step size",
+        precision=size_precision,
+        maximum=_QUANTITY_MAX,
+        allow_zero=False,
+    )[0]
+    min_quantity = _native_decimal(
+        catalog.get("min_quantity"),
+        label="catalog minimum quantity",
+        precision=size_precision,
+        maximum=_QUANTITY_MAX,
+        allow_zero=False,
+    )[0]
+    try:
+        min_notional = Decimal(str(catalog.get("min_notional")))
+    except InvalidOperation as exc:
+        raise MarketDataError("catalog minimum notional is invalid") from exc
+    if (
+        str(instrument.id.venue) != catalog.get("venue")
+        or str(instrument.raw_symbol) != catalog.get("symbol")
+        or str(instrument.base_currency) != catalog.get("base_currency")
+        or str(instrument.quote_currency) != catalog.get("quote_currency")
+        or str(instrument.get_settlement_currency()) != catalog.get("quote_currency")
+        or instrument.price_increment.as_decimal() != tick_size
+        or instrument.size_increment.as_decimal() != step_size
+        or instrument.min_quantity.as_decimal() != min_quantity
+        or instrument.min_notional.as_decimal() != min_notional
+    ):
+        raise MarketDataError("native instrument does not match the catalog")
 
     start = _timestamp(request.start_time, "command start time")
     end = _timestamp(request.end_time, "command end time")
@@ -219,6 +259,8 @@ def load_market_data(
             maximum=_QUANTITY_MAX,
             allow_zero=True,
         )
+        if any(value[0] % tick_size for value in values.values()) or volume[0] % step_size:
+            raise MarketDataError("market-data value is off the catalog increment")
         bid, ask = values["bid"][0], values["ask"][0]
         open_price, high, low, close = (
             values["open"][0],

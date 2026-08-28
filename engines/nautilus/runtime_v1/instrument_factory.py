@@ -32,8 +32,8 @@ _CURRENCY_METADATA = {
     "BTC": (8, 0, "Bitcoin", 1),
     "USDT": (8, 0, "Tether", 1),
 }
-_PRICE_MAX = Decimal("9223372036")
-_QUANTITY_MAX = Decimal("18446744073")
+_PRICE_MAX = Decimal("17014118346046")
+_QUANTITY_MAX = Decimal("34028236692093")
 
 
 class InstrumentFactoryError(ValueError):
@@ -149,6 +149,7 @@ def build_instrument(catalog: tuple[tuple[str, object], ...]) -> CurrencyPair:
     )
     if (
         str(instrument.id) != values["instrument_id"]
+        or str(instrument.id.venue) != values["venue"]
         or str(instrument.raw_symbol) != values["symbol"]
         or str(instrument.base_currency) != values["base_currency"]
         or str(instrument.quote_currency) != values["quote_currency"]
