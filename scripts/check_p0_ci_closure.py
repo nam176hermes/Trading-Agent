@@ -713,7 +713,7 @@ def _host_workflow_valid(raw: bytes) -> bool:
                 {
                     "name": "Run host authority qualification",
                     "run": (
-                        'TEST_EVIDENCE_DIR="$RUNNER_TEMP/trading-agent-host-authority.'
+                        'TEST_EVIDENCE_DIR="/tmp/trading-agent-host-authority.'
                         '${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" '
                         "make ci-host-authority NONINTERACTIVE=1"
                     ),
