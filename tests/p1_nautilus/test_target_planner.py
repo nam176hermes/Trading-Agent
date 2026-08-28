@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
-from decimal import Decimal
+from decimal import Context, Decimal, localcontext
 from pathlib import Path
 import sys
 
@@ -76,6 +76,10 @@ def plan(**updates: object):
             (None, "0", "0", "0", "BELOW_MIN_NOTIONAL"),
         ),
         (
+            {"account_equity": D("0.5"), "min_quantity": D("0.01"), "target_weight": D("1")},
+            (None, "0", "0", "0", "BELOW_MIN_QUANTITY"),
+        ),
+        (
             {"account_equity": D("100"), "ask_price": D("30"), "target_weight": D("1")},
             ("BUY", "3.333", "3.333", "99.99", "ORDER"),
         ),
@@ -113,6 +117,7 @@ def test_long_flat_planning_table(
         ({"leverage": D("0")}, "UNSUPPORTED_LEVERAGE"),
         ({"leverage": D("-1")}, "UNSUPPORTED_LEVERAGE"),
         ({"leverage": D("2")}, "UNSUPPORTED_LEVERAGE"),
+        ({"leverage": D("sNaN")}, "UNSUPPORTED_LEVERAGE"),
         ({"target_instrument_id": "ETHUSDT.BINANCE"}, "CROSS_INSTRUMENT"),
         ({"ask_price": D("0")}, "INVALID_PRICE"),
         ({"fee_rate": D("1")}, "INVALID_FEE_RATE"),
@@ -150,6 +155,27 @@ def test_buy_never_exceeds_target_notional_or_available_cash(
 
     assert target_quantity * ask <= D(equity) * target_weight
     assert D(result.delta) * ask * D("1.001") <= D(cash)
+
+
+def test_max_precision_output_is_exact_and_ambient_context_independent() -> None:
+    value = D("123456789012.1234567890123456")
+    updates = {
+        "ask_price": value,
+        "current_quantity": value,
+        "min_notional": D("0.0000000000000001"),
+        "min_quantity": D("0.0000000000000001"),
+        "step_size": D("0.0000000000000001"),
+        "target_weight": D("0"),
+    }
+
+    with localcontext(Context(prec=10)):
+        low = plan(**updates)
+    with localcontext(Context(prec=80)):
+        high = plan(**updates)
+
+    assert low == high
+    assert low.delta == "-123456789012.1234567890123456"
+    assert low.notional == "15241578753183967093650.40754278360633321726870921383936"
 
 
 def test_source_has_no_native_runtime_or_ambient_state_dependency() -> None:

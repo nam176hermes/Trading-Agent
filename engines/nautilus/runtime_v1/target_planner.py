@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from decimal import Context, Decimal, DecimalException, ROUND_FLOOR, localcontext
 
 
-_CONTEXT = Context(prec=50)
+_CONTEXT = Context(prec=96)
 _PRICE_MAX = Decimal("17014118346046")
 _QUANTITY_MAX = Decimal("34028236692093")
 _MAX_PRECISION = 16
@@ -109,7 +109,11 @@ def plan_target(
         maximum=Decimal(1),
         negative_code="TARGET_WEIGHT_OUT_OF_RANGE",
     )
-    if leverage != Decimal(1) or type(leverage) is not Decimal:
+    if (
+        type(leverage) is not Decimal
+        or not leverage.is_finite()
+        or leverage != Decimal(1)
+    ):
         raise TargetPlanError("UNSUPPORTED_LEVERAGE")
     equity = _number(
         account_equity,
@@ -157,11 +161,10 @@ def plan_target(
         negative_code="INVALID_MINIMUM",
         zero_code="INVALID_MINIMUM",
     )
-    if current % step:
-        raise TargetPlanError("CURRENT_QUANTITY_OFF_STEP")
-
     try:
         with localcontext(_CONTEXT):
+            if current % step:
+                raise TargetPlanError("CURRENT_QUANTITY_OFF_STEP")
             desired = _floor_step(equity * weight / price, step)
             if desired > _QUANTITY_MAX:
                 raise TargetPlanError("DECIMAL_RANGE")
@@ -226,20 +229,24 @@ def _plan(
     price: Decimal,
     reason: str,
 ) -> TargetPlan:
-    delta = target - current
-    return TargetPlan(
-        target_id=target_id,
-        source_signal_ids=source_signal_ids,
-        effective_at=effective_at,
-        instrument_id=instrument_id,
-        current_quantity=_text(current),
-        target_quantity=_text(target),
-        delta=_text(delta),
-        side="BUY" if delta > 0 else "SELL" if delta < 0 else None,
-        price_basis=_text(price),
-        notional=_text(abs(delta) * price),
-        reason=reason,
-    )
+    try:
+        with localcontext(_CONTEXT):
+            delta = target - current
+            return TargetPlan(
+                target_id=target_id,
+                source_signal_ids=source_signal_ids,
+                effective_at=effective_at,
+                instrument_id=instrument_id,
+                current_quantity=_text(current),
+                target_quantity=_text(target),
+                delta=_text(delta),
+                side="BUY" if delta > 0 else "SELL" if delta < 0 else None,
+                price_basis=_text(price),
+                notional=_text(abs(delta) * price),
+                reason=reason,
+            )
+    except DecimalException as exc:
+        raise TargetPlanError("DECIMAL_RANGE") from exc
 
 
 __all__ = ["TargetPlan", "TargetPlanError", "plan_target"]
