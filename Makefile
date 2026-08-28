@@ -390,7 +390,7 @@ ci-portable-private:
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install
-	$(MAKE) audit-portable check-d0-closure check-contracts check-p1-nautilus-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies
+	$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies check-p1-nautilus-contracts
 
 artifact-firewall-check:
 	uv run python -m scripts.check_artifact_firewall publish \
