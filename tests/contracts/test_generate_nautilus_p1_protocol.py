@@ -9,12 +9,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 from scripts import generate_nautilus_p1_protocol as generator
+from packages.engine_contracts import canonical_json_bytes
 
 from packages.nautilus_runtime_contracts import (
     P1EngineConfigurationV1,
     P1InstrumentCatalogV1,
     P1MarketDataManifestV1,
     P1TargetScheduleV1,
+    parse_canonical_artifact,
 )
 from packages.nautilus_runtime_contracts.events import P1_EVENT_ADAPTER
 from packages.nautilus_runtime_contracts.versions import (
@@ -84,6 +86,16 @@ def test_generation_is_repeatable_and_check_detects_stale_output(
         "nautilus-p1-engine-configuration-v999",
     )
     assert generator.generate(tmp_path, check=True) == 1
+    monkeypatch.setitem(
+        generator.ARTIFACT_SCHEMAS,
+        "engine_configuration",
+        P1_ENGINE_CONFIGURATION_SCHEMA,
+    )
+    getsource = generator.inspect.getsource
+    monkeypatch.setattr(
+        generator.inspect, "getsource", lambda value: getsource(value) + "# changed\n"
+    )
+    assert generator.generate(tmp_path, check=True) == 1
 
 
 def test_generated_module_imports_with_isolated_stdlib_python() -> None:
@@ -112,18 +124,22 @@ def _module():
     return module
 
 
+def _root_artifact(model, value: dict[str, object]):
+    return parse_canonical_artifact(model, canonical_json_bytes(value) + b"\n")
+
+
 def test_golden_fixtures_agree_on_stable_protocol_error_class() -> None:
     module = _module()
     golden = ROOT / "tests/fixtures/p1_nautilus/golden"
     for kind, model in MODELS.items():
         positive = (golden / "positive" / f"{kind}.json").read_bytes()
         value = module.load_document(kind, positive)
-        model.model_validate_json(positive)
+        parse_canonical_artifact(model, positive)
 
         negative = (golden / "negative" / f"{kind}.json").read_bytes()
         invalid = json.loads(negative)
-        with pytest.raises(ValidationError):
-            model.model_validate(invalid)
+        with pytest.raises(ValueError):
+            _root_artifact(model, invalid)
         with pytest.raises(module.ProtocolValidationError) as error:
             module.validate_document(kind, invalid)
         assert error.value.code == "E_PROTOCOL"
@@ -134,8 +150,8 @@ def test_golden_fixtures_agree_on_stable_protocol_error_class() -> None:
         value = module.load_event(raw + b"\n")
         P1_EVENT_ADAPTER.validate_json(raw)
     invalid_event = json.loads(negative_events)
-    with pytest.raises(ValidationError):
-        P1_EVENT_ADAPTER.validate_python(invalid_event)
+    with pytest.raises(ValueError):
+        P1_EVENT_ADAPTER.validate_json(canonical_json_bytes(invalid_event))
     with pytest.raises(module.ProtocolValidationError):
         module.validate_document(invalid_event["event_type"], invalid_event)
 
@@ -158,14 +174,29 @@ def test_generated_constants_and_semantic_validation_match_root_contracts() -> N
             "market_data_manifest",
             {"first_timestamp": "2026-02-30T12:00:00Z"},
         ),
+        (
+            "market_data_manifest",
+            {"first_timestamp": "2026-08-05T12:00:00.1Z"},
+        ),
+        (
+            "market_data_manifest",
+            {"first_timestamp": "2026-08-05T12:00:00.000000Z"},
+        ),
     )
     for kind, updates in artifact_mutations:
         value = json.loads((golden / f"{kind}.json").read_bytes())
         value.update(updates)
-        with pytest.raises(ValidationError):
-            MODELS[kind].model_validate(value)
+        with pytest.raises(ValueError):
+            _root_artifact(MODELS[kind], value)
         with pytest.raises(module.ProtocolValidationError):
             module.validate_document(kind, value)
+
+    canonical_fraction = json.loads(
+        (golden / "market_data_manifest.json").read_bytes()
+    )
+    canonical_fraction["first_timestamp"] = "2026-08-05T12:00:00.100000Z"
+    _root_artifact(P1MarketDataManifestV1, canonical_fraction)
+    module.validate_document("market_data_manifest", canonical_fraction)
 
     with pytest.raises(module.ProtocolValidationError, match="size"):
         module.load_document(
@@ -173,14 +204,21 @@ def test_generated_constants_and_semantic_validation_match_root_contracts() -> N
         )
     with pytest.raises(module.ProtocolValidationError):
         module.load_event(b'{"event_type":"RunStarted","x":"\\ud800"}\n')
+    with pytest.raises(module.ProtocolValidationError) as huge_integer:
+        module.load_event(b'{"event_type":' + (b"1" * 4_301) + b"}\n")
+    assert huge_integer.value.code == "E_PROTOCOL"
+    with pytest.raises(module.ProtocolValidationError) as deeply_nested:
+        module.load_event(b'{"event_type":' + (b"[" * 2_000) + b"0" + (b"]" * 2_000) + b"}\n")
+    assert deeply_nested.value.code == "E_PROTOCOL"
     unicode_decimal = json.loads((golden / "instrument_catalog.json").read_bytes())
     unicode_decimal["tick_size"] = "١"
-    with pytest.raises(ValidationError):
-        P1InstrumentCatalogV1.model_validate(unicode_decimal)
+    with pytest.raises(ValueError):
+        _root_artifact(P1InstrumentCatalogV1, unicode_decimal)
     with pytest.raises(module.ProtocolValidationError):
         module.validate_document("instrument_catalog", unicode_decimal)
 
     schedule = json.loads((golden / "target_schedule.json").read_bytes())
+    _root_artifact(P1TargetScheduleV1, schedule)
     schedule_mutations = []
     duplicate_target = json.loads(json.dumps(schedule))
     duplicate_target["targets"][1]["target_id"] = duplicate_target["targets"][0]["target_id"]
@@ -204,8 +242,8 @@ def test_generated_constants_and_semantic_validation_match_root_contracts() -> N
     negative_weight["targets"][0]["positions"][0]["target_weight"] = "-1"
     schedule_mutations.append(negative_weight)
     for value in schedule_mutations:
-        with pytest.raises(ValidationError):
-            P1TargetScheduleV1.model_validate(value)
+        with pytest.raises(ValueError):
+            _root_artifact(P1TargetScheduleV1, value)
         with pytest.raises(module.ProtocolValidationError):
             module.validate_document("target_schedule", value)
 
@@ -228,8 +266,8 @@ def test_generated_constants_and_semantic_validation_match_root_contracts() -> N
     )
     for index, updates in event_mutations:
         value = {**events[index], **updates}
-        with pytest.raises(ValidationError):
-            P1_EVENT_ADAPTER.validate_python(value)
+        with pytest.raises(ValueError):
+            P1_EVENT_ADAPTER.validate_json(canonical_json_bytes(value))
         with pytest.raises(module.ProtocolValidationError):
             module.validate_document(value["event_type"], value)
 

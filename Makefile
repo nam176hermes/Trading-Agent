@@ -95,6 +95,7 @@ generate-contracts:
 
 check-contracts:
 	uv run python scripts/generate_contracts.py --check
+	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
 
 check-d0-closure:
 	uv run pytest -q tests/foundation/test_d0_closure.py
@@ -390,7 +391,7 @@ ci-portable-private:
 
 ci-common-private:
 	$(MAKE) prepare-root-test-install
-	$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies check-p1-nautilus-contracts
+	$(MAKE) audit-portable check-d0-closure check-contracts check-secrets test-backend test-dashboard typecheck-dashboard lint-dashboard build-dashboard audit-python-source audit-dependencies
 
 artifact-firewall-check:
 	uv run python -m scripts.check_artifact_firewall publish \
