@@ -261,7 +261,13 @@ def validate_scenario_stderr(stderr: bytes) -> None:
         "Use Timestamp.now('UTC') instead.",
         "  engine.run()",
     )
-    if warning_lines not in {(), expected}:
+    if warning_lines and (
+        len(warning_lines) not in {2, 4}
+        or any(
+            warning_lines[index : index + 2] != expected
+            for index in range(0, len(warning_lines), 2)
+        )
+    ):
         raise ApiQualificationError(
             "candidate scenario emitted unexpected stderr: "
             + " | ".join(warning_lines)

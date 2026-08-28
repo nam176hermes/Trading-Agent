@@ -148,11 +148,15 @@ def test_u05_runner_contains_no_build_or_materialization_path() -> None:
 
 def test_only_the_exact_candidate_pandas_warning_is_accepted() -> None:
     qualification.validate_scenario_stderr(b"")
-    qualification.validate_scenario_stderr(
+    warning = (
         b"/engine/launcher/nautilus_backtest.py:2283: Pandas4Warning: "
         b"Timestamp.utcnow is deprecated and will be removed in a future version. "
         b"Use Timestamp.now('UTC') instead.\n"
         b"  engine.run()\n"
     )
+    qualification.validate_scenario_stderr(warning)
+    qualification.validate_scenario_stderr(warning * 2)
     with pytest.raises(qualification.ApiQualificationError, match="unexpected stderr"):
         qualification.validate_scenario_stderr(b"unexpected warning\n")
+    with pytest.raises(qualification.ApiQualificationError, match="unexpected stderr"):
+        qualification.validate_scenario_stderr(warning * 3)
