@@ -98,6 +98,13 @@ def _uses_dynamic_import(tree: ast.AST) -> bool:
             return True
         if isinstance(node, ast.Attribute) and node.attr == "import_module":
             return True
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr.startswith("__")
+            and node.attr.endswith("__")
+            and node.attr != "__name__"
+        ):
+            return True
         if isinstance(node, ast.Constant) and node.value == "__import__":
             return True
     return False
@@ -112,11 +119,13 @@ def _constant_string(node: ast.AST) -> str | None:
             right = _constant_string(node.right)
             if left is not None and right is not None:
                 return left + right
-        elif left is not None and isinstance(node.right, ast.Tuple):
-            values = tuple(_constant_string(item) for item in node.right.elts)
+        elif left is not None:
+            right_nodes = node.right.elts if isinstance(node.right, ast.Tuple) else (node.right,)
+            values = tuple(_constant_string(item) for item in right_nodes)
             if all(value is not None for value in values):
                 try:
-                    return left % values
+                    operand: object = values if isinstance(node.right, ast.Tuple) else values[0]
+                    return left % operand
                 except (TypeError, ValueError):
                     return None
     if isinstance(node, ast.JoinedStr):
@@ -138,7 +147,32 @@ def _constant_string(node: ast.AST) -> str | None:
         values = tuple(_constant_string(item) for item in node.args[0].elts)
         if separator is not None and all(value is not None for value in values):
             return separator.join(value for value in values if value is not None)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "format"
+        and not node.keywords
+    ):
+        template = _constant_string(node.func.value)
+        values = tuple(_constant_string(item) for item in node.args)
+        if template is not None and all(value is not None for value in values):
+            try:
+                return template.format(*values)
+            except (IndexError, KeyError, ValueError):
+                return None
     return None
+
+
+def _literal_stream(tree: ast.AST) -> str:
+    literals = sorted(
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        ),
+        key=lambda node: (node.lineno, node.col_offset),
+    )
+    return "".join(node.value for node in literals)
 
 
 def _uses_parent_relative_import(tree: ast.AST) -> bool:
@@ -231,7 +265,10 @@ def check_boundaries(root: Path, budget_path: Path) -> None:
             if (value := _constant_string(node)) is not None
         }
         if not (is_test or is_profile_policy or is_boundary_checker) and any(
-            profile in source or profile in string_values for profile in _PROFILE_NAMES
+            profile in source
+            or profile in string_values
+            or profile in _literal_stream(tree)
+            for profile in _PROFILE_NAMES
         ):
             raise BoundaryError(f"profile name duplicated outside policy: {relative}")
         if not (is_test or is_profile_policy or is_boundary_checker) and (
