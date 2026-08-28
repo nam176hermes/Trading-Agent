@@ -7,6 +7,7 @@ import uvicorn
 
 from packages.runtime_release import validate_job_plane_authority
 from services.job_store import JobRepository, JobStoreSettings
+from services.sentry import configure_sentry
 
 from .app import create_app
 from .config import JobApiSettings
@@ -14,6 +15,7 @@ from .config import JobApiSettings
 
 def run(*, env: Mapping[str, str] | None = None) -> None:
     environment = os.environ if env is None else env
+    configure_sentry(environment)
     authority = JobApiSettings(
         authority_factory=validate_job_plane_authority
     ).load_authority()
