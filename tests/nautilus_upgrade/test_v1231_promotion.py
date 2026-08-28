@@ -132,7 +132,7 @@ def _validate(receipt: dict[str, object]) -> None:
             "network_trading_authorized",
             "production_authorized",
         }
-        or set(limits.values()) != {False}
+        or any(value is not False for value in limits.values())
         or not isinstance(legacy, dict)
         or set(legacy)
         != {
@@ -289,6 +289,10 @@ def test_live_or_legacy_authority_mutations_fail_closed() -> None:
         mutated["authority_limits"][field] = True
         with pytest.raises(ValueError):
             _validate(mutated)
+        non_boolean = deepcopy(receipt)
+        non_boolean["authority_limits"][field] = 0
+        with pytest.raises(ValueError):
+            _validate(non_boolean)
     mutated = deepcopy(receipt)
     mutated["legacy_phase4_authority"]["engine_version"] = "1.231.0"
     with pytest.raises(ValueError):
