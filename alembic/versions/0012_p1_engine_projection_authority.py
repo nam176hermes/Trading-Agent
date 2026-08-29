@@ -1504,7 +1504,8 @@ def upgrade() -> None:
         GRANT EXECUTE ON FUNCTION
           job_plane.ingest_engine_job_result_v2(text, text, text, text, text)
           TO trading_job_worker;
-        """
+        """,
+        execution_options={"no_parameters": True},
     )
 
 

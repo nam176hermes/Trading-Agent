@@ -25,7 +25,13 @@ def test_upgrade_sends_0012_block_directly_to_driver_without_bind_compilation(
     statements: list[str] = []
 
     class Bind:
-        def exec_driver_sql(self, statement: str) -> None:
+        def exec_driver_sql(
+            self,
+            statement: str,
+            *,
+            execution_options: dict[str, bool],
+        ) -> None:
+            assert execution_options == {"no_parameters": True}
             statements.append(statement)
 
     class Operations:
