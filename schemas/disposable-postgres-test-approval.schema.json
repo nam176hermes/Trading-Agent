@@ -81,8 +81,8 @@
     },
     "source_bindings": {
       "type": "array",
-      "minItems": 13,
-      "maxItems": 13,
+      "minItems": 15,
+      "maxItems": 15,
       "prefixItems": [
         {"$ref": "#/$defs/sourceBinding0001"},
         {"$ref": "#/$defs/sourceBinding0002"},
@@ -95,6 +95,8 @@
         {"$ref": "#/$defs/sourceBinding0009"},
         {"$ref": "#/$defs/sourceBinding0010"},
         {"$ref": "#/$defs/sourceBinding0011"},
+        {"$ref": "#/$defs/sourceBinding0012"},
+        {"$ref": "#/$defs/sourceBinding0013"},
         {"$ref": "#/$defs/sourceBindingJobRoles"},
         {"$ref": "#/$defs/sourceBindingRoles"}
       ],
@@ -260,6 +262,18 @@
       "allOf": [
         {"$ref": "#/$defs/sourceBindingBase"},
         {"properties": {"path": {"const": "alembic/versions/0011_engine_backtest_worker_authority.py"}}}
+      ]
+    },
+    "sourceBinding0012": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0012_p1_engine_projection_authority.py"}}}
+      ]
+    },
+    "sourceBinding0013": {
+      "allOf": [
+        {"$ref": "#/$defs/sourceBindingBase"},
+        {"properties": {"path": {"const": "alembic/versions/0013_engine_backtest_enqueue_authority.py"}}}
       ]
     },
     "sourceBindingJobRoles": {

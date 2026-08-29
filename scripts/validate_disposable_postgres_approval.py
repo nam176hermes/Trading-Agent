@@ -38,6 +38,8 @@ APPROVAL_SOURCE_BINDING_PATHS = (
     "alembic/versions/0009_canonical_market_data.py",
     "alembic/versions/0010_engine_event_ledger.py",
     "alembic/versions/0011_engine_backtest_worker_authority.py",
+    "alembic/versions/0012_p1_engine_projection_authority.py",
+    "alembic/versions/0013_engine_backtest_enqueue_authority.py",
     "ops/postgres/provision-job-roles.sql",
     "ops/postgres/provision-roles.sql",
 )

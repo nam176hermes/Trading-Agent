@@ -59,7 +59,7 @@ EXPECTED_TABLES = {
     "engine_run_projections",
     "engine_job_results",
 }
-EXACT_HEAD = "0012_p1_engine_projection_authority"
+EXACT_HEAD = "0013_engine_backtest_enqueue_authority"
 
 
 def alembic_config() -> Config:

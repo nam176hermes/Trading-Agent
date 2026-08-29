@@ -559,7 +559,7 @@ def create_app(
     )
     def create_job(request: Request, command: EnqueueJobBody) -> JSONResponse:
         authenticated_command = EnqueueJobRequest.model_validate(
-            {**command.model_dump(mode="python"), "actor": request.state.principal}
+            {**command.model_dump(mode="json"), "actor": request.state.principal}
         )
         _require_mutation_authority(
             authority, repository, settings.expected_revision

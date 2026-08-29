@@ -18,6 +18,7 @@ from packages.job_contracts import (
     EnqueueJobRequest,
     JobState,
     JobType,
+    SnapshotPayload,
     canonical_payload_json,
     parse_payload,
     payload_fingerprint,
@@ -106,22 +107,41 @@ class JobRepository:
         trace_id: str,
     ) -> EnqueueResult:
         job_type = JobType(request.job_type)
-        if job_type is not JobType.SNAPSHOT:
-            raise ValueError("Job API is authorized only for SNAPSHOT jobs")
         if request.actor.actor_type is not ActorType.OPERATOR:
             raise ValueError("Job API actor authority is invalid")
         payload = parse_payload(job_type, request.payload.model_dump(mode="json"))
+        if job_type is JobType.SNAPSHOT and type(payload) is SnapshotPayload:
+            statement = """
+                SELECT job_id, outcome
+                FROM job_plane.api_enqueue_snapshot(
+                    %s, %s::jsonb, %s, %s, %s, %s, %s, %s
+                )
+                """
+        elif job_type is JobType.BACKTEST:
+            from packages.job_contracts import EngineBacktestPayload
+
+            if type(payload) is EngineBacktestPayload:
+                statement = """
+                    SELECT job_id, outcome
+                    FROM job_plane.api_enqueue_engine_backtest(
+                        %s, %s::jsonb, %s, %s, %s, %s, %s, %s
+                    )
+                    """
+            else:
+                raise ValueError(
+                    "Job API is authorized only for SNAPSHOT or exact engine "
+                    "BACKTEST jobs"
+                )
+        else:
+            raise ValueError(
+                "Job API is authorized only for SNAPSHOT or exact engine BACKTEST jobs"
+            )
         canonical_json = canonical_payload_json(payload)
         fingerprint = payload_fingerprint(payload)
         job_id = self._new_id("job")
         try:
             result = connection.execute(
-                """
-                SELECT job_id, outcome
-                FROM job_plane.api_enqueue_snapshot(
-                    %s, %s::jsonb, %s, %s, %s, %s, %s, %s
-                )
-                """,
+                statement,
                 (
                     job_id,
                     canonical_json,
