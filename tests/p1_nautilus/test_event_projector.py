@@ -197,6 +197,7 @@ def _inputs(
     event_time: str = "2026-08-05T12:00:00Z",
     market_data: bytes | None = None,
     second_weight: str = "0",
+    target_count: int = 2,
 ) -> RuntimeInputs:
     market_data = _market_data() if market_data is None else market_data
     reference = lambda identity, digest, media: ArtifactReference(
@@ -233,43 +234,47 @@ def _inputs(
         start_time="2026-08-05T12:00:00Z",
         end_time="2026-08-05T12:01:00Z",
     )
+    schedule_document = {
+        "schema_version": "nautilus-p1-target-schedule-v1",
+        "targets": [
+            {
+                "effective_at": "2026-08-05T12:00:00Z",
+                "positions": [
+                    {
+                        "instrument": {
+                            "product_type": "crypto_spot",
+                            "symbol": "BTCUSDT",
+                            "venue": "BINANCE",
+                        },
+                        "target_weight": "1",
+                    }
+                ],
+                "schema_version": "1.0.0",
+                "source_signal_ids": ["22222222-2222-4222-8222-222222222222"],
+                "target_id": "11111111-1111-4111-8111-111111111111",
+            },
+            {
+                "effective_at": "2026-08-05T12:01:00Z",
+                "positions": [
+                    {
+                        "instrument": {
+                            "product_type": "crypto_spot",
+                            "symbol": "BTCUSDT",
+                            "venue": "BINANCE",
+                        },
+                        "target_weight": second_weight,
+                    }
+                ],
+                "schema_version": "1.0.0",
+                "source_signal_ids": ["33333333-3333-4333-8333-333333333333"],
+                "target_id": "44444444-4444-4444-8444-444444444444",
+            },
+        ],
+    }
     schedule = _freeze(
         {
-            "schema_version": "nautilus-p1-target-schedule-v1",
-            "targets": [
-                {
-                    "effective_at": "2026-08-05T12:00:00Z",
-                    "positions": [
-                        {
-                            "instrument": {
-                                "product_type": "crypto_spot",
-                                "symbol": "BTCUSDT",
-                                "venue": "BINANCE",
-                            },
-                            "target_weight": "1",
-                        }
-                    ],
-                    "schema_version": "1.0.0",
-                    "source_signal_ids": ["22222222-2222-4222-8222-222222222222"],
-                    "target_id": "11111111-1111-4111-8111-111111111111",
-                },
-                {
-                    "effective_at": "2026-08-05T12:01:00Z",
-                    "positions": [
-                        {
-                            "instrument": {
-                                "product_type": "crypto_spot",
-                                "symbol": "BTCUSDT",
-                                "venue": "BINANCE",
-                            },
-                            "target_weight": second_weight,
-                        }
-                    ],
-                    "schema_version": "1.0.0",
-                    "source_signal_ids": ["33333333-3333-4333-8333-333333333333"],
-                    "target_id": "44444444-4444-4444-8444-444444444444",
-                },
-            ],
+            **schedule_document,
+            "targets": schedule_document["targets"][:target_count],
         }
     )
     configuration = (
@@ -701,7 +706,9 @@ def test_native_quote_and_plan_facts_are_hash_bound(
         _project(run=_run(facts=tuple(facts)))
 
 
-def test_quote_without_a_target_before_stopped_is_still_hash_bound() -> None:
+def _terminal_long_case() -> tuple[
+    tuple[Fact, ...], SimpleNamespace, CompletionAuthority
+]:
     facts = _facts()
     terminal_long_facts = facts[:5] + (facts[5], facts[-1])
     run = _run(
@@ -731,8 +738,14 @@ def test_quote_without_a_target_before_stopped_is_still_hash_bound() -> None:
         unrealized_pnl="19980.01998",
     )
 
+    return terminal_long_facts, run, authority
+
+
+def test_quote_without_a_target_before_stopped_is_still_hash_bound() -> None:
+    terminal_long_facts, run, authority = _terminal_long_case()
+    inputs = _inputs(target_count=1)
     stream = project_event_stream(
-        _inputs(),
+        inputs,
         run,
         authority,
         closure_digest="a" * 64,
@@ -750,6 +763,18 @@ def test_quote_without_a_target_before_stopped_is_still_hash_bound() -> None:
     )
     run.native_facts = terminal_long_facts[:-2] + (mutated, terminal_long_facts[-1])
     with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            inputs,
+            run,
+            authority,
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
+
+
+def test_rejects_result_from_a_different_target_schedule() -> None:
+    _, run, authority = _terminal_long_case()
+    with pytest.raises(ValueError, match="schedule"):
         project_event_stream(
             _inputs(),
             run,

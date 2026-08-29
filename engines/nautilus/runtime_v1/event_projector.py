@@ -779,6 +779,15 @@ def project_event_stream(
     ]
     schedule = _schedule(inputs)
     quotes, executions = collect_executions(run)
+    schedule_target_ids = tuple(schedule)
+    execution_target_ids = tuple(
+        str(_values(execution.plan)["target_id"]) for execution in executions
+    )
+    if (
+        execution_target_ids != schedule_target_ids
+        or run.processed_target_ids != schedule_target_ids
+    ):
+        raise ValueError("P1 native targets do not match schedule authority")
     _validate_business_facts(inputs, quotes, executions, schedule)
     for execution in executions:
         events.extend(_target_events(execution, schedule, len(events) + 2))
