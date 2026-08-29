@@ -159,7 +159,12 @@ def _freeze(value: object) -> object:
     return value
 
 
-def _market_data(first_bid: str = "99") -> bytes:
+def _market_data(
+    first_bid: str = "99",
+    *,
+    first_volume: str = "1000000",
+    second_volume: str = "1000000",
+) -> bytes:
     rows = (
         {
             "ask": "100",
@@ -171,7 +176,7 @@ def _market_data(first_bid: str = "99") -> bytes:
             "open": "99",
             "quote_time": "2026-08-05T12:00:00Z",
             "sequence": 1,
-            "volume": "1000000",
+            "volume": first_volume,
         },
         {
             "ask": "102",
@@ -183,7 +188,7 @@ def _market_data(first_bid: str = "99") -> bytes:
             "open": "101",
             "quote_time": "2026-08-05T12:01:00Z",
             "sequence": 2,
-            "volume": "1000000",
+            "volume": second_volume,
         },
     )
     return b"".join(
@@ -331,21 +336,66 @@ def _run(
 
 def _partial_fill_run() -> SimpleNamespace:
     facts = list(_facts())
+    for index, volume in zip(
+        (index for index, fact in enumerate(facts) if fact.kind == "quote"),
+        ("2", "3"),
+        strict=True,
+    ):
+        quote = facts[index]
+        facts[index] = replace(
+            quote,
+            attributes=tuple(
+                (
+                    name,
+                    volume if name in {"bid_size", "ask_size"} else value,
+                )
+                for name, value in quote.attributes
+            ),
+        )
     first = facts[4]
     first_values = dict(first.attributes)
     first_values.update(trade_id="T-1a", quantity="2", commission="0.2")
     second_values = dict(first.attributes)
     second_values.update(
-        trade_id="T-1b", quantity="9987.011088", commission="998.701109"
+        trade_id="T-1b",
+        quantity="9987.011088",
+        price="100.01",
+        commission="998.800979",
     )
     facts[4] = replace(first, attributes=tuple(first_values.items()))
     facts.insert(5, replace(first, attributes=tuple(second_values.items())))
-    run = _run(facts=tuple(facts))
+    sell_index = next(
+        index
+        for index, fact in enumerate(facts)
+        if fact.kind == "order_filled" and dict(fact.attributes)["side"] == "SELL"
+    )
+    sell = facts[sell_index]
+    sell_values = dict(sell.attributes)
+    sell_values.update(trade_id="T-2a", quantity="3", commission="0.303")
+    remainder_values = dict(sell.attributes)
+    remainder_values.update(
+        trade_id="T-2b",
+        quantity="9986.011088",
+        price="100.99",
+        commission="1008.48726",
+    )
+    facts[sell_index] = replace(sell, attributes=tuple(sell_values.items()))
+    facts.insert(
+        sell_index + 1, replace(sell, attributes=tuple(remainder_values.items()))
+    )
+    run = _run(
+        facts=tuple(facts),
+        balance_facts=(
+            ("BTC", "0", "0", "0"),
+            ("USDT", "1007781.489627", "0", "1007781.489627"),
+        ),
+        commission_facts=(("USDT", "2007.791239"),),
+    )
     return SimpleNamespace(
         **{
             **vars(run),
-            "native_fill_ids": ("T-1a", "T-1b", "T-2"),
-            "fill_count": 3,
+            "native_fill_ids": ("T-1a", "T-1b", "T-2a", "T-2b"),
+            "fill_count": 4,
         }
     )
 
@@ -360,6 +410,19 @@ AUTHORITY = CompletionAuthority(
     realized_pnl="9989.011088",
     unrealized_pnl="0",
 )
+
+LOW_VOLUME_AUTHORITY = replace(
+    AUTHORITY,
+    fill_count=4,
+    final_cash="1007781.489627",
+    fees="2007.791239",
+)
+
+
+def _low_volume_inputs() -> RuntimeInputs:
+    return _inputs(
+        market_data=_market_data(first_volume="2", second_volume="3")
+    )
 
 
 def _project(inputs: RuntimeInputs | None = None, run: object | None = None):
@@ -395,11 +458,10 @@ def test_partial_fills_are_projected_once_in_observed_order() -> None:
         "T-1a",
         "T-1b",
     ]
-    completion = replace(AUTHORITY, fill_count=3)
     stream = project_event_stream(
-        _inputs(),
+        _low_volume_inputs(),
         run,
-        completion,
+        LOW_VOLUME_AUTHORITY,
         closure_digest="a" * 64,
         upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
     )
@@ -408,7 +470,139 @@ def test_partial_fills_are_projected_once_in_observed_order() -> None:
         event["native_fill_id"]
         for event in stream.events
         if event["event_type"] == "Fill"
-    ] == ["T-1a", "T-1b", "T-2"]
+    ] == ["T-1a", "T-1b", "T-2a", "T-2b"]
+
+
+@pytest.mark.parametrize(
+    ("inputs", "run", "completion", "expected_fills"),
+    (
+        (
+            _inputs(),
+            _run(),
+            AUTHORITY,
+            (
+                ("9989.011088", "100", "998.901109"),
+                ("9989.011088", "101", "1008.89012"),
+            ),
+        ),
+        (
+            _low_volume_inputs(),
+            _partial_fill_run(),
+            LOW_VOLUME_AUTHORITY,
+            (
+                ("2", "100", "0.2"),
+                ("9987.011088", "100.01", "998.800979"),
+                ("3", "101", "0.303"),
+                ("9986.011088", "100.99", "1008.48726"),
+            ),
+        ),
+    ),
+)
+def test_fixed_l1_fill_oracle_accepts_high_and_low_volume_fills(
+    inputs: RuntimeInputs,
+    run: SimpleNamespace,
+    completion: CompletionAuthority,
+    expected_fills: tuple[tuple[str, str, str], ...],
+) -> None:
+    stream = project_event_stream(
+        inputs,
+        run,
+        completion,
+        closure_digest="a" * 64,
+        upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    )
+
+    assert tuple(
+        (str(event["quantity"]), str(event["price"]), str(event["fee"]))
+        for event in stream.events
+        if event["event_type"] == "Fill"
+    ) == expected_fills
+
+
+def test_rejects_coordinated_fill_price_shift_with_unchanged_terminal_state() -> None:
+    facts = list(_facts())
+    shifted_prices = iter(("100.01", "101.01"))
+    for index, fact in enumerate(facts):
+        if fact.kind != "order_filled":
+            continue
+        shifted_price = next(shifted_prices)
+        facts[index] = replace(
+            fact,
+            attributes=tuple(
+                (name, shifted_price if name == "price" else value)
+                for name, value in fact.attributes
+            ),
+        )
+
+    with pytest.raises(ValueError, match="business facts"):
+        _project(run=_run(facts=tuple(facts)))
+
+
+def test_rejects_coordinated_partial_fill_quantity_reallocation() -> None:
+    run = _partial_fill_run()
+    facts = list(run.native_facts)
+    fill_indexes = [
+        index for index, fact in enumerate(facts) if fact.kind == "order_filled"
+    ][:2]
+    for index, quantity in zip(
+        fill_indexes, ("1", "9988.011088"), strict=True
+    ):
+        fact = facts[index]
+        facts[index] = replace(
+            fact,
+            attributes=tuple(
+                (name, quantity if name == "quantity" else value)
+                for name, value in fact.attributes
+            ),
+        )
+    forged_cash = "1007781.479627"
+    forged_run = SimpleNamespace(
+        **{
+            **vars(run),
+            "native_facts": tuple(facts),
+            "balance_facts": (
+                ("BTC", "0", "0", "0"),
+                ("USDT", forged_cash, "0", forged_cash),
+            ),
+        }
+    )
+
+    with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            _low_volume_inputs(),
+            forged_run,
+            replace(LOW_VOLUME_AUTHORITY, final_cash=forged_cash),
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
+
+
+def test_rejects_coordinated_partial_fill_commission_reallocation() -> None:
+    run = _partial_fill_run()
+    facts = list(run.native_facts)
+    fill_indexes = [
+        index for index, fact in enumerate(facts) if fact.kind == "order_filled"
+    ][:2]
+    for index, commission in zip(
+        fill_indexes, ("0.3", "998.700979"), strict=True
+    ):
+        fact = facts[index]
+        facts[index] = replace(
+            fact,
+            attributes=tuple(
+                (name, commission if name == "commission" else value)
+                for name, value in fact.attributes
+            ),
+        )
+
+    with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            _low_volume_inputs(),
+            SimpleNamespace(**{**vars(run), "native_facts": tuple(facts)}),
+            LOW_VOLUME_AUTHORITY,
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
 
 
 def test_rejects_coordinated_terminal_cash_forgery_against_fill_replay() -> None:
@@ -459,9 +653,9 @@ def test_rejects_partial_fill_fee_that_contradicts_precision_or_completion(
 
     with pytest.raises(ValueError, match=error):
         project_event_stream(
-            _inputs(),
+            _low_volume_inputs(),
             forged_run,
-            replace(AUTHORITY, fill_count=3),
+            LOW_VOLUME_AUTHORITY,
             closure_digest="a" * 64,
             upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
         )
@@ -665,7 +859,7 @@ def test_projects_complete_request_bound_stream_without_native_objects() -> None
     assert _attributes(stream.envelopes[-3])["origin"] == "NAUTILUS_CACHE_OBSERVATION"
 
 
-def test_raw_custody_changes_but_semantics_change_only_for_business_facts() -> None:
+def test_raw_custody_is_semantically_neutral_and_business_facts_are_bound() -> None:
     first = _project()
     changed_custody = _project(_inputs(suffix="b", event_time="2026-08-05T12:02:00Z"))
     third_custody = _project(_inputs(suffix="c", event_time="2026-08-05T12:03:00Z"))
@@ -696,21 +890,21 @@ def test_raw_custody_changes_but_semantics_change_only_for_business_facts() -> N
     changed_fee = replace(
         AUTHORITY, final_cash="1008979.120968", fees="1009.89012"
     )
-    fee_stream = project_event_stream(
-        _inputs(),
-        _run(
-            facts=tuple(fee_facts),
-            balance_facts=(
-                ("BTC", "0", "0", "0"),
-                ("USDT", "1008979.120968", "0", "1008979.120968"),
+    with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            _inputs(),
+            _run(
+                facts=tuple(fee_facts),
+                balance_facts=(
+                    ("BTC", "0", "0", "0"),
+                    ("USDT", "1008979.120968", "0", "1008979.120968"),
+                ),
+                commission_facts=(("USDT", "1009.89012"),),
             ),
-            commission_facts=(("USDT", "1009.89012"),),
-        ),
-        changed_fee,
-        closure_digest="a" * 64,
-        upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
-    )
-    assert first.semantic_sha256 != fee_stream.semantic_sha256
+            changed_fee,
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
 
     typed = _typed_events(first)
     target_index = next(

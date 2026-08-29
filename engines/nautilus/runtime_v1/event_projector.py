@@ -496,13 +496,46 @@ def _validate_business_facts(
                 ):
                     raise ValueError
 
-                for fill_fact in execution.fills:
+                expected_fills: list[tuple[str, Decimal, Decimal]] = []
+                if execution.order is not None:
+                    order = _values(execution.order)
+                    order_quantity = Decimal(str(order["quantity"]))
+                    available_quantity = Decimal(row["volume"])
+                    side = order["side"]
+                    if side == "BUY":
+                        first_price = Decimal(row["ask"])
+                        remainder_price = first_price + tick_size
+                    elif side == "SELL":
+                        first_price = Decimal(row["bid"])
+                        remainder_price = first_price - tick_size
+                    else:
+                        raise ValueError
+                    first_quantity = min(order_quantity, available_quantity)
+                    if first_quantity > 0:
+                        expected_fills.append((side, first_quantity, first_price))
+                    remainder_quantity = order_quantity - first_quantity
+                    if remainder_quantity > 0:
+                        if remainder_price <= 0:
+                            raise ValueError
+                        expected_fills.append(
+                            (side, remainder_quantity, remainder_price)
+                        )
+                if len(execution.fills) != len(expected_fills):
+                    raise ValueError
+
+                for fill_fact, expected_fill in zip(
+                    execution.fills, expected_fills, strict=True
+                ):
                     fill = _values(fill_fact)
                     quantity = Decimal(str(fill["quantity"]))
                     price_text = fill["price"]
                     price = Decimal(str(price_text))
                     commission = Decimal(str(fill["commission"]))
                     commission_currency = fill["commission_currency"]
+                    expected_side, expected_quantity, expected_price = expected_fill
+                    expected_commission = (
+                        expected_quantity * expected_price * fee_rate
+                    ).quantize(quote_quantum)
                     if (
                         type(price_text) is not str
                         or _decimal(price) != price_text
@@ -510,6 +543,10 @@ def _validate_business_facts(
                         or price <= 0
                         or price % tick_size != 0
                         or commission < 0
+                        or fill["side"] != expected_side
+                        or quantity != expected_quantity
+                        or price != expected_price
+                        or commission != expected_commission
                     ):
                         raise ValueError
                     commissions[commission_currency] = (
