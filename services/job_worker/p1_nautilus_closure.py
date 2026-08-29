@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import stat
 from pathlib import Path, PurePosixPath
 from typing import NoReturn
+
+from packages.nautilus_upgrade_authority import (
+    CandidateGenerationError,
+    load_candidate_generation,
+)
 
 from . import nautilus_closure as _legacy
 from .engine_profiles import P1_REAL_BACKTEST_POLICY
@@ -174,6 +180,69 @@ def _canonical_json(value: object) -> bytes:
     ).encode("ascii")
 
 
+def _manifest_snapshot(
+    path: Path,
+) -> tuple[dict[str, object], ReadOnlyClosureMount]:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+        )
+        before = os.fstat(descriptor)
+        mode = stat.S_IMODE(before.st_mode)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or mode != 0o400
+        ):
+            _blocked("P1 closure manifest is not an immutable regular file")
+        chunks: list[bytes] = []
+        offset = 0
+        while offset < before.st_size:
+            chunk = os.pread(
+                descriptor, min(1024 * 1024, before.st_size - offset), offset
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+        if (
+            len(raw) != before.st_size
+            or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+            or after.st_size != before.st_size
+            or after.st_ctime_ns != before.st_ctime_ns
+            or after.st_mtime_ns != before.st_mtime_ns
+            or stat.S_IMODE(after.st_mode) != mode
+        ):
+            _blocked("P1 closure manifest changed while being read")
+        digest = hashlib.sha256(raw).hexdigest()
+        return _json_object(raw, "P1 closure manifest"), ReadOnlyClosureMount(
+            source=path,
+            target=_MANIFEST_TARGET,
+            identity=(before.st_dev, before.st_ino),
+            size=before.st_size,
+            mode=mode,
+            sha256=digest,
+        )
+    except EngineSpawnError:
+        raise
+    except OSError as exc:
+        raise EngineSpawnError(
+            "ENGINE_CLOSURE_UNAVAILABLE",
+            "P1 closure manifest cannot be snapshotted",
+        ) from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _load_policy() -> dict[str, object]:
     policy = _json_object(_POLICY_PATH.read_bytes(), "P1 closure policy")
     profile = P1_REAL_BACKTEST_POLICY
@@ -219,6 +288,22 @@ def _load_policy() -> dict[str, object]:
         }
     ):
         _blocked("P1 closure policy is invalid")
+    try:
+        generation = load_candidate_generation(
+            _ROOT
+            / "docs/implementation/p1-real-nautilus/upgrade/candidate-generations/NT1231-U04-G1.json"
+        )
+    except CandidateGenerationError as exc:
+        raise EngineSpawnError(
+            "ENGINE_CLOSURE_INVALID", "accepted G1 authority is invalid"
+        ) from exc
+    if (
+        generation.generation_id != policy["candidate_generation_id"]
+        or generation.record_sha256 != policy["candidate_generation_sha256"]
+        or generation.artifact.artifact_manifest_sha256
+        != policy["artifact_manifest_sha256"]
+    ):
+        _blocked("P1 artifact manifest policy is invalid")
     wheel = policy.get("engine_wheel")
     if (
         type(wheel) is not dict
@@ -465,7 +550,7 @@ def attest_p1_nautilus_closure(
         config.artifact_directory, "P1 artifact directory"
     )
     manifest_path = config.runtime_root / _MANIFEST_NAME
-    manifest = _json_object(manifest_path.read_bytes(), "P1 closure manifest")
+    manifest, closure_manifest = _manifest_snapshot(manifest_path)
     profile = P1_REAL_BACKTEST_POLICY
     policy_bound_fields = {
         "argv_prefix": list(profile.argv_prefix),
@@ -550,7 +635,6 @@ def attest_p1_nautilus_closure(
         closure_sha256, profile.runtime_inventory_sha256
     )
     product_lineage = _lineage_mount(config.runtime_root, lineage)
-    closure_manifest = _legacy._closure_manifest_sidecar(manifest_path)
     return CompleteEngineClosureAttestation(
         manifest_schema_version=profile.manifest_schema_version,
         profile=profile.profile,

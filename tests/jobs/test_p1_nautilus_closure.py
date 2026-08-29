@@ -347,3 +347,43 @@ def test_schema8_manifest_duplicate_key_is_rejected_before_sandbox_probe(
     _seal(config.runtime_root)
     with pytest.raises(EngineSpawnError, match="duplicate"):
         attest_p1_nautilus_closure(config)
+
+
+def test_schema8_attestor_pins_one_manifest_snapshot_across_a_path_replacement(
+    p1_closure: tuple[Path, NautilusClosureConfig, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base, config, manifest = p1_closure
+    replacement_manifest = {
+        **manifest,
+        "source_commit": "fedcba9876543210fedcba9876543210fedcba98",
+    }
+    original_manifest_files = closure_module._legacy._manifest_files
+
+    def swap_after_inventory(
+        runtime_root: Path, value: object
+    ) -> tuple[ReadOnlyClosureMount, ...]:
+        mounts = original_manifest_files(runtime_root, value)
+        replacement = runtime_root / "closure-manifest.next"
+        runtime_root.chmod(0o700)
+        replacement.write_bytes(_canonical(replacement_manifest))
+        replacement.chmod(0o400)
+        os.replace(replacement, runtime_root / "closure-manifest.json")
+        runtime_root.chmod(0o500)
+        return mounts
+
+    monkeypatch.setattr(
+        closure_module._legacy, "_manifest_files", swap_after_inventory
+    )
+    attestation = attest_p1_nautilus_closure(config)
+    assert attestation.source_commit == manifest["source_commit"]
+    assert attestation.closure_manifest is not None
+    assert attestation.closure_manifest.sha256 == hashlib.sha256(
+        _canonical(manifest)
+    ).hexdigest()
+    assert attestation.closure_manifest.sha256 != hashlib.sha256(
+        (config.runtime_root / "closure-manifest.json").read_bytes()
+    ).hexdigest()
+    replaced = (config.runtime_root / "closure-manifest.json").stat()
+    replacement_identity = (replaced.st_dev, replaced.st_ino)
+    assert attestation.closure_manifest.identity != replacement_identity

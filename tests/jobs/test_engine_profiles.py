@@ -4,10 +4,14 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
+import services.job_worker.p1_nautilus_closure as closure_module
 from engines.nautilus.runtime_v1.profile import P1_REAL_BACKTEST_PROFILE
 from packages.engine_contracts import RunBacktest
 from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
 from services.job_worker.p1_nautilus_closure import _load_policy
+from services.job_worker.engine_spawn_interface import EngineSpawnError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,3 +108,16 @@ def test_p1_policy_binds_the_complete_runtime_inventory_and_legacy_bytes() -> No
     assert hashlib.sha256(
         (ROOT / "engines/nautilus/native_entry_guard/src/main.rs").read_bytes()
     ).hexdigest() == "a25053355abcfece9b7d5c524f4a3d3c06ce727aec8224012ef9b683240fd880"
+
+
+def test_p1_policy_rejects_artifact_manifest_substitution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = json.loads(POLICY_PATH.read_bytes())
+    document["artifact_manifest_sha256"] = "0" * 64
+    changed_policy = tmp_path / "p1-runtime-closure-policy.json"
+    changed_policy.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(closure_module, "_POLICY_PATH", changed_policy)
+
+    with pytest.raises(EngineSpawnError, match="artifact manifest|policy"):
+        _load_policy()
