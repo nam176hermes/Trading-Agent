@@ -211,9 +211,14 @@ def _observed_usdt(run: object) -> tuple[str, str]:
             raise ValueError("P1 completion authority is not observation-bound")
         commission_values[currency] = amount
     try:
-        return balance_values["USDT"], commission_values["USDT"]
+        final_cash = balance_values["USDT"]
     except KeyError as exc:
         raise ValueError("P1 completion authority is not observation-bound") from exc
+    if not commission_values and run.order_count == 0 and run.fill_count == 0:
+        return final_cash, "0"
+    if set(commission_values) != {"USDT"}:
+        raise ValueError("P1 completion authority is not observation-bound")
+    return final_cash, commission_values["USDT"]
 
 
 def _validate_completion(run: object, completion: CompletionAuthority) -> None:

@@ -195,6 +195,7 @@ def _inputs(
     *,
     suffix: str = "a",
     event_time: str = "2026-08-05T12:00:00Z",
+    first_weight: str = "1",
     market_data: bytes | None = None,
     second_weight: str = "0",
     target_count: int = 2,
@@ -246,7 +247,7 @@ def _inputs(
                             "symbol": "BTCUSDT",
                             "venue": "BINANCE",
                         },
-                        "target_weight": "1",
+                        "target_weight": first_weight,
                     }
                 ],
                 "schema_version": "1.0.0",
@@ -838,6 +839,10 @@ def test_completion_authority_must_match_the_run_snapshot(
             (("USDT", "1007972.02797202", "0", "1007972.02797202"),),
             (("USDT", "2017.98201798"), ("USDT", "2017.98201798")),
         ),
+        (
+            (("USDT", "1007972.02797202", "0", "1007972.02797202"),),
+            (("USDT", "2017.98201798"), ("BTC", "1")),
+        ),
     ),
 )
 def test_completion_rejects_malformed_missing_or_duplicate_usdt_observations(
@@ -846,3 +851,59 @@ def test_completion_rejects_malformed_missing_or_duplicate_usdt_observations(
 ) -> None:
     with pytest.raises(ValueError, match="completion authority"):
         _project(run=_run(balance_facts=balances, commission_facts=commissions))
+
+
+def test_zero_order_completion_accepts_empty_commission_observation() -> None:
+    target_id = "11111111-1111-4111-8111-111111111111"
+    signal_id = "22222222-2222-4222-8222-222222222222"
+    facts = (
+        _facts()[0],
+        Fact(
+            "target_planned",
+            (
+                ("target_id", target_id),
+                *_signals(signal_id),
+                ("effective_at", "2026-08-05T12:00:00Z"),
+                ("instrument_id", "BTCUSDT.BINANCE"),
+                ("current_quantity", "0"),
+                ("target_quantity", "0"),
+                ("delta", "0"),
+                ("side", None),
+                ("price_basis", "100"),
+                ("notional", "0"),
+                ("reason", "ALREADY_AT_TARGET"),
+            ),
+        ),
+        Fact("target_quantity_planned", (("quantity", "0"),)),
+        Fact("stopped", (("state", "COMPLETED"),)),
+    )
+    run = SimpleNamespace(
+        **{
+            **vars(_run(facts=facts)),
+            "processed_target_ids": (target_id,),
+            "native_order_ids": (),
+            "native_fill_ids": (),
+            "order_count": 0,
+            "fill_count": 0,
+            "balance_facts": (("USDT", "1000000", "0", "1000000"),),
+            "commission_facts": (),
+            "position_realized_pnl": "0",
+            "last_market_timestamp": 1785931200000000000,
+        }
+    )
+    completion = CompletionAuthority(1, 0, 0, "1000000", "0", "0", "0", "0")
+
+    stream = project_event_stream(
+        _inputs(
+            first_weight="0",
+            market_data=_market_data().splitlines(keepends=True)[0],
+            target_count=1,
+        ),
+        run,
+        completion,
+        closure_digest="a" * 64,
+        upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    )
+
+    assert stream.events[-1]["event_type"] == "RunCompleted"
+    assert stream.events[-1]["fees"] == "0"

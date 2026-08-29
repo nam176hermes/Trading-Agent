@@ -184,6 +184,17 @@ def _validate(
     row_count, final_price, final_timestamp = _market_facts(inputs)
     summary = _mapping(run.result_summary)
     quotes, executions = collect_executions(run)
+    expected_order_facts = tuple(
+        (
+            str(dict(execution.order)["client_order_id"]),
+            str(dict(execution.order)["side"]),
+            str(dict(execution.order)["quantity"]),
+            str(dict(execution.fill)["quantity"]),
+            "FILLED",
+        )
+        for execution in executions
+        if execution.order is not None and execution.fill is not None
+    )
     base_currency = catalog.get("base_currency")
     quote_currency = catalog.get("quote_currency")
     starting_currency = configuration.get("starting_currency")
@@ -221,7 +232,7 @@ def _validate(
         or run.instrument_ids != (instrument_id,)
         or run.iterations != row_count * 2
         or run.iterations != _integer(summary, "iterations")
-        or run.total_events < 0
+        or run.total_events != 2 * run.order_count
         or run.total_events != _integer(summary, "total_events")
         or run.total_orders != run.order_count
         or run.total_orders != _integer(summary, "orders.total")
@@ -229,6 +240,7 @@ def _validate(
         or run.total_positions != _integer(summary, "positions.total_with_snapshots")
         or run.order_count != run.fill_count
         or run.order_count != len(run.order_facts)
+        or run.order_facts != expected_order_facts
         or run.order_count != len(run.native_order_ids)
         or run.fill_count != len(run.native_fill_ids)
         or _integer(summary, "orders.open") != 0
@@ -242,6 +254,7 @@ def _validate(
         or _integer(summary, "venues.total") != 1
         or summary.get("account.BINANCE.type") != "CASH"
         or summary.get("account.BINANCE.base_currency") != "None"
+        or run.account_event_count != 1 + run.fill_count
         or run.account_event_count != _integer(summary, "account.BINANCE.event_count")
         or tuple(balances) != run.balance_currencies
         or set(balances) - {base_currency, quote_currency}
@@ -257,17 +270,6 @@ def _validate(
         or len(quotes) != row_count
     ):
         raise FinalStateError("runtime final state is inconsistent")
-    for order in run.order_facts:
-        if (
-            type(order) is not tuple
-            or len(order) != 5
-            or order[0] not in run.native_order_ids
-            or order[1] not in {"BUY", "SELL"}
-            or _decimal(order[2]) <= 0
-            or order[2] != order[3]
-            or order[4] != "FILLED"
-        ):
-            raise FinalStateError("runtime final state is inconsistent")
     unrealized = (final_price - average) * position
     if _decimal(run.position_unrealized_pnl) != unrealized:
         raise FinalStateError("runtime final state is inconsistent")

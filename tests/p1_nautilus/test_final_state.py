@@ -73,12 +73,12 @@ def _run(**changes: object) -> SimpleNamespace:
     values: dict[str, object] = {
         "engine_version": "1.231.0",
         "iterations": 2,
-        "total_events": 3,
+        "total_events": 2,
         "total_orders": 1,
         "total_positions": 1,
         "result_summary": (
             ("account.BINANCE.base_currency", "None"),
-            ("account.BINANCE.event_count", "3"),
+            ("account.BINANCE.event_count", "2"),
             ("account.BINANCE.type", "CASH"),
             ("iterations", "2"),
             ("orders.closed", "1"),
@@ -91,11 +91,11 @@ def _run(**changes: object) -> SimpleNamespace:
             ("positions.snapshots", "0"),
             ("positions.total", "1"),
             ("positions.total_with_snapshots", "1"),
-            ("total_events", "3"),
+            ("total_events", "2"),
             ("venues.total", "1"),
         ),
         "account_count": 1,
-        "account_event_count": 3,
+        "account_event_count": 2,
         "instrument_ids": ("BTCUSDT.BINANCE",),
         "strategy_state": "COMPLETED",
         "processed_target_ids": ("target-1",),
@@ -276,6 +276,45 @@ def test_final_state_rejects_empty_market_rows_as_stable_error() -> None:
 
 
 @pytest.mark.parametrize(
+    "order_facts",
+    (
+        (("target-1", "SELL", "1", "1", "FILLED"),),
+        (("target-1", "BUY", "2", "2", "FILLED"),),
+        (
+            ("target-1", "BUY", "1", "1", "FILLED"),
+            ("target-1", "BUY", "1", "1", "FILLED"),
+        ),
+    ),
+)
+def test_final_state_rejects_order_cache_not_bound_to_native_execution(
+    order_facts: tuple[tuple[str, str, str, str, str], ...],
+) -> None:
+    with pytest.raises(FinalStateError, match="final state"):
+        validate_final_state(_inputs(), _lineage(), _run(order_facts=order_facts))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "summary_name"),
+    (
+        ("total_events", 8, "total_events"),
+        ("account_event_count", 8, "account.BINANCE.event_count"),
+    ),
+)
+def test_final_state_rejects_forged_counters_even_when_summary_matches(
+    field: str, value: int, summary_name: str
+) -> None:
+    summary = tuple(
+        (name, str(value) if name == summary_name else item)
+        for name, item in _run().result_summary
+    )
+
+    with pytest.raises(FinalStateError, match="final state"):
+        validate_final_state(
+            _inputs(), _lineage(), _run(**{field: value}, result_summary=summary)
+        )
+
+
+@pytest.mark.parametrize(
     "changes",
     (
         {"total_events": -1},
@@ -342,7 +381,7 @@ warnings.filterwarnings("ignore", message="Timestamp.utcnow is deprecated.*")
 sys.path[:0] = [sys.argv[1], sys.argv[2]]
 import nautilus_trader
 from runtime_v1.backtest_runner import run_backtest
-from runtime_v1.event_projector import CompletionAuthority
+from runtime_v1.event_projector import CompletionAuthority, project_event_stream
 from runtime_v1.final_state import FinalStateError, validate_final_state
 from runtime_v1.input_loader import ArtifactReference, RunBacktestRequest, RuntimeInputs
 
@@ -405,6 +444,56 @@ completion = validate_final_state(inputs, lineage, run)
 assert type(completion) is CompletionAuthority
 assert completion.final_position == run.position_quantity == "0"
 assert completion.order_count == completion.fill_count == 2
+for invalid_order_facts in (
+    (run.order_facts[0], run.order_facts[0]),
+    (
+        (
+            run.order_facts[0][0],
+            "SELL" if run.order_facts[0][1] == "BUY" else "BUY",
+            run.order_facts[0][2],
+            run.order_facts[0][3],
+            run.order_facts[0][4],
+        ),
+        run.order_facts[1],
+    ),
+    (
+        (
+            run.order_facts[0][0],
+            run.order_facts[0][1],
+            "1",
+            "1",
+            run.order_facts[0][4],
+        ),
+        run.order_facts[1],
+    ),
+):
+    try:
+        validate_final_state(inputs, lineage, replace(run, order_facts=invalid_order_facts))
+    except FinalStateError:
+        pass
+    else:
+        raise AssertionError("forged native order cache was accepted")
+
+def forged_summary(name, value):
+    return tuple(
+        (key, str(value) if key == name else item)
+        for key, item in run.result_summary
+    )
+
+for field, name in (
+    ("total_events", "total_events"),
+    ("account_event_count", "account.BINANCE.event_count"),
+):
+    try:
+        validate_final_state(
+            inputs,
+            lineage,
+            replace(run, **{field: 99}, result_summary=forged_summary(name, 99)),
+        )
+    except FinalStateError:
+        pass
+    else:
+        raise AssertionError("forged native counter was accepted")
 zero_targets = []
 for target in schedule_document["targets"]:
     zero_targets.append({
@@ -427,6 +516,27 @@ assert zero_run.total_events == 0
 assert zero_completion.final_position == "0"
 assert zero_completion.order_count == zero_completion.fill_count == 0
 assert zero_completion.fees == "0"
+zero_stream = project_event_stream(
+    zero_inputs,
+    zero_run,
+    zero_completion,
+    closure_digest="a" * 64,
+    upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+)
+assert zero_stream.events[-1]["event_type"] == "RunCompleted"
+assert zero_stream.events[-1]["fees"] == "0"
+try:
+    project_event_stream(
+        inputs,
+        replace(run, commission_facts=()),
+        completion,
+        closure_digest="a" * 64,
+        upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    )
+except ValueError:
+    pass
+else:
+    raise AssertionError("missing commission facts on an executed run were accepted")
 for invalid_events in (-1, 1):
     try:
         validate_final_state(
