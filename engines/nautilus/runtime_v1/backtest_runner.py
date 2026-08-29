@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from importlib.metadata import version as package_version
 
+from nautilus_trader.model.events import OrderFilled
+
 from .input_loader import RuntimeInputs
 from .instrument_factory import build_instrument
 from .market_data_loader import load_market_data
@@ -51,7 +53,7 @@ class BacktestRun:
     order_facts: tuple[tuple[str, str, str, str, str], ...]
     position_quantity: str
     balance_currencies: tuple[str, ...]
-    balance_facts: tuple[tuple[str, str], ...]
+    balance_facts: tuple[tuple[str, str, str, str], ...]
     commission_facts: tuple[tuple[str, str], ...]
     native_facts: tuple[NativeFact, ...]
     position_average_entry: str
@@ -177,6 +179,32 @@ def _fill_position(
         return _text(position), _text(average), _text(realized)
 
 
+def _callback_fill(value: FilledOrderFact) -> tuple[str, ...]:
+    return (
+        value.client_order_id,
+        value.trade_id,
+        value.side,
+        value.quantity,
+        value.price,
+        value.commission,
+        value.commission_currency,
+        str(value.ts_event),
+    )
+
+
+def _cached_fill(value: OrderFilled) -> tuple[str, ...]:
+    return (
+        str(value.client_order_id),
+        str(value.trade_id),
+        value.order_side.name,
+        _text(value.last_qty.as_decimal()),
+        _text(value.last_px.as_decimal()),
+        _text(value.commission.as_decimal()),
+        str(value.commission.currency),
+        str(value.ts_event),
+    )
+
+
 def _snapshot(engine, strategy, batch) -> BacktestRun:
     result = engine.get_result()
     accounts = tuple(engine.cache.accounts())
@@ -190,6 +218,23 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         for kind, value in records
         if kind == "order_filled" and type(value) is FilledOrderFact
     )
+    cached_fills = tuple(
+        event
+        for order in orders
+        for event in order.events
+        if type(event) is OrderFilled
+    )
+    callback_fill_records = tuple(_callback_fill(value) for value in fill_facts)
+    cached_fill_records = tuple(_cached_fill(value) for value in cached_fills)
+    if (
+        len(callback_fill_records) != len(cached_fill_records)
+        or len({record[:2] for record in callback_fill_records})
+        != len(callback_fill_records)
+        or len({record[:2] for record in cached_fill_records})
+        != len(cached_fill_records)
+        or set(callback_fill_records) != set(cached_fill_records)
+    ):
+        raise BacktestRunError("native fill callback/cache proof is inconsistent")
     rejected = tuple(
         value.client_order_id
         for kind, value in records
@@ -198,6 +243,7 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
     pending = tuple(str(order.client_order_id) for order in engine.cache.orders_open())
     expected_targets = tuple(item[0] for item in strategy.config.target_schedule)
     order_ids = tuple(str(order.client_order_id) for order in orders)
+    fill_ids = tuple(fact.trade_id for fact in fill_facts)
     contradictions = tuple(
         label
         for label, invalid in (
@@ -225,6 +271,11 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
                 "fill_orders",
                 {fact.client_order_id for fact in fill_facts} != set(order_ids),
             ),
+            (
+                "fill_ids",
+                any(not trade_id for trade_id in fill_ids)
+                or len(set(fill_ids)) != len(fill_ids),
+            ),
             ("result_orders", int(result.total_orders) != len(orders)),
             ("result_positions", int(result.total_positions) != len(positions)),
             ("iterations", int(result.iterations) != len(batch.data)),
@@ -239,11 +290,33 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
     position_quantity, position_average, position_realized = _fill_position(
         fill_facts
     )
-    cached_position_quantity = (
-        "0" if not positions else _text(positions[0].quantity.as_decimal())
+    final_market_price = batch.data[-1].close.as_decimal()
+    expected_unrealized = (final_market_price - Decimal(position_average)) * Decimal(
+        position_quantity
     )
-    if position_quantity != "0" or cached_position_quantity != position_quantity:
-        raise BacktestRunError("native terminal position is not flat")
+    if positions:
+        position = positions[0]
+        cached_quantity = position.quantity.as_decimal()
+        if position.side.name == "SHORT":
+            cached_quantity = -cached_quantity
+        elif position.side.name == "FLAT":
+            cached_quantity = Decimal(0)
+        cached_average = (
+            Decimal(0)
+            if cached_quantity == 0
+            else Decimal(str(position.avg_px_open))
+        )
+        native_unrealized = position.unrealized_pnl(
+            batch.data[-1].close
+        ).as_decimal()
+    else:
+        cached_quantity = cached_average = native_unrealized = Decimal(0)
+    if (
+        _text(cached_quantity) != position_quantity
+        or _text(cached_average) != position_average
+        or native_unrealized != expected_unrealized
+    ):
+        raise BacktestRunError("native terminal position proof is inconsistent")
     account = accounts[0]
     balances = account.balances_total()
     commissions = account.commissions()
@@ -333,7 +406,7 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         pending_order_ids=pending,
         rejected_order_ids=rejected,
         native_order_ids=order_ids,
-        native_fill_ids=tuple(fact.trade_id for fact in fill_facts),
+        native_fill_ids=fill_ids,
         order_count=len(orders),
         fill_count=len(fill_facts),
         order_facts=tuple(
@@ -353,8 +426,8 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         native_facts=native_facts,
         position_average_entry=position_average,
         position_realized_pnl=position_realized,
-        position_unrealized_pnl="0",
-        final_market_price=_text(batch.data[-1].close.as_decimal()),
+        position_unrealized_pnl=_text(expected_unrealized),
+        final_market_price=_text(final_market_price),
         last_market_timestamp=max(int(item.ts_event) for item in batch.data),
     )
 

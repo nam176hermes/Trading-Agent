@@ -60,6 +60,7 @@ def test_exact_g1_runner_is_deterministic_scalar_only_and_disposes() -> None:
         script = r'''
 import hashlib
 import json
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 import sys
@@ -88,7 +89,8 @@ def freeze(value):
 catalog_raw = open(sys.argv[3], "rb").read()
 catalog = tuple(sorted(json.loads(catalog_raw).items()))
 configuration = tuple(sorted(json.loads(open(sys.argv[4], "rb").read()).items()))
-schedule = freeze(json.loads(open(sys.argv[5], "rb").read()))
+schedule_document = json.loads(open(sys.argv[5], "rb").read())
+schedule = freeze(schedule_document)
 rows = [
     {"ask":"100","bid":"99","close":"100","event_time":"2026-08-05T12:00:00Z","high":"101","low":"98","open":"99","quote_time":"2026-08-05T12:00:00Z","sequence":1,"volume":"1000000"},
     {"ask":"102","bid":"101","close":"102","event_time":"2026-08-05T12:01:00Z","high":"103","low":"100","open":"101","quote_time":"2026-08-05T12:01:00Z","sequence":2,"volume":"1000000"},
@@ -118,6 +120,14 @@ request = RunBacktestRequest(
 inputs = RuntimeInputs(request, configuration, catalog, schedule, raw)
 first = run_backtest(inputs)
 second = run_backtest(inputs)
+long_inputs = RuntimeInputs(
+    request,
+    configuration,
+    catalog,
+    freeze({**schedule_document, "targets": schedule_document["targets"][:1]}),
+    raw,
+)
+long_run = run_backtest(long_inputs)
 assert type(first) is BacktestRun and first == second
 assert first.strategy_state == "COMPLETED"
 assert first.processed_target_ids == (
@@ -132,6 +142,13 @@ assert first.position_average_entry == "0"
 assert first.position_realized_pnl == "9990.00999"
 assert first.position_unrealized_pnl == "0"
 assert first.final_market_price == "102"
+assert long_run.strategy_state == "COMPLETED"
+assert long_run.processed_target_ids == ("11111111-1111-4111-8111-111111111111",)
+assert long_run.position_quantity == "9990.00999"
+assert long_run.position_average_entry == "100"
+assert long_run.position_realized_pnl == "0"
+assert long_run.position_unrealized_pnl == "19980.01998"
+assert long_run.final_market_price == "102"
 assert first.account_count == 1
 assert first.balance_currencies == ("BTC", "USDT")
 assert len(first.native_order_ids) == len(set(first.native_order_ids)) == 2
@@ -227,6 +244,48 @@ except BacktestRunError as error:
     assert "strategy" in str(error)
 else:
     raise AssertionError("strategy rejection was accepted")
+
+class InvalidFillSession:
+    def __init__(self, actual, changes):
+        self.engine = actual.engine
+        self.strategy = actual.strategy
+        self.batch = actual.batch
+        self.changes = changes
+    def run(self):
+        self.engine.run()
+        records = list(self.strategy.collector._records)
+        indexes = [index for index, (kind, _) in enumerate(records) if kind == "order_filled"]
+        first_fill = records[indexes[0]][1]
+        second_fill = records[indexes[1]][1]
+        changes = dict(self.changes)
+        if changes.get("trade_id") == "__first__":
+            changes["trade_id"] = first_fill.trade_id
+        if changes.get("client_order_id") == "__first__":
+            changes["client_order_id"] = first_fill.client_order_id
+        records[indexes[1]] = ("order_filled", replace(second_fill, **changes))
+        self.strategy.collector._records[:] = records
+    def dispose(self, primary=None):
+        dispose_session(self.engine, primary)
+
+for changes, expected_error in (
+    ({"trade_id": "__first__"}, "fill"),
+    ({"trade_id": ""}, "fill"),
+    ({"price": "102"}, "callback/cache"),
+    ({"side": "BUY"}, "callback/cache"),
+    ({"quantity": "1"}, "callback/cache"),
+    ({"client_order_id": "__first__"}, "callback/cache"),
+):
+    try:
+        run_backtest(
+            inputs,
+            lambda *args, changes=changes: InvalidFillSession(
+                create_session(*args), changes
+            ),
+        )
+    except BacktestRunError as error:
+        assert expected_error in str(error)
+    else:
+        raise AssertionError("invalid fill identity was accepted")
 
 class FakeEngine:
     def __init__(self, failure=None):
