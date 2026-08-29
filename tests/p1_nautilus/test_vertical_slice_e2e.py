@@ -36,6 +36,12 @@ _RUNTIME_POSTGRES_ENV = (
     "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE",
     "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN",
 )
+_PACKAGE6_CHILD_ENV = (
+    "TRADING_PACKAGE6_APPROVAL_SHA256",
+    "TRADING_PACKAGE6_STAGING_ACTIVATION_PATH",
+    "TRADING_PACKAGE6_STAGING_AUTHORITY_PATH",
+    "TRADING_PACKAGE6_STAGING_SCOPE",
+)
 
 
 def _initialize_git_repository(path: Path, marker: str) -> tuple[str, str]:
@@ -153,7 +159,13 @@ def _package6_vertical_slice_command(
 ) -> list[str]:
     application_python = getattr(material, "application_python")
     assert isinstance(application_python, Path)
-    return [str(application_python), str(SCRIPT), *arguments]
+    return [str(application_python), "-I", "-B", str(SCRIPT), *arguments]
+
+
+def _package6_vertical_slice_environment(
+    source: dict[str, str],
+) -> dict[str, str]:
+    return {name: source[name] for name in _PACKAGE6_CHILD_ENV}
 
 
 def test_required_runtime_command_uses_validated_package6_python() -> None:
@@ -163,7 +175,34 @@ def test_required_runtime_command_uses_validated_package6_python() -> None:
         SimpleNamespace(application_python=application_python), ["--execute"]
     )
 
-    assert command == [str(application_python), str(SCRIPT), "--execute"]
+    assert command == [
+        str(application_python),
+        "-I",
+        "-B",
+        str(SCRIPT),
+        "--execute",
+    ]
+
+
+def test_required_runtime_environment_strips_ambient_loader_controls() -> None:
+    source = {
+        name: f"accepted-{index}"
+        for index, name in enumerate(_PACKAGE6_CHILD_ENV)
+    }
+    source.update(
+        {
+            "LD_AUDIT": "/poison/audit.so",
+            "LD_LIBRARY_PATH": "/poison/library",
+            "LD_PRELOAD": "/poison/preload.so",
+            "PYTHONHOME": "/poison/python-home",
+            "PYTHONPATH": "/poison/python-path",
+            "UNRELATED_AMBIENT": "poison",
+        }
+    )
+
+    child = _package6_vertical_slice_environment(source)
+
+    assert child == {name: source[name] for name in _PACKAGE6_CHILD_ENV}
 
 
 def test_absent_external_authority_is_canonical_deferred_without_job_mutation() -> None:
@@ -662,18 +701,22 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
             ],
         ]
         command = _package6_vertical_slice_command(material, arguments)
-        assert command[0] == str(material.application_python)
+        assert command[:4] == [
+            str(material.application_python),
+            "-I",
+            "-B",
+            str(SCRIPT),
+        ]
         result = subprocess.run(
             command,
             cwd=ROOT,
-            env=runtime_environment,
+            env=_package6_vertical_slice_environment(runtime_environment),
             check=False,
             capture_output=True,
             text=True,
         )
 
-    assert result.returncode == 0, result.stderr
-    assert result.stderr == ""
+    assert result.returncode == 0, "validated Package6 vertical slice failed"
     receipt_lines = result.stdout.splitlines()
     assert len(receipt_lines) == 1
     receipt = json.loads(receipt_lines[0])
