@@ -520,6 +520,28 @@ class WorkerRepository:
         if outcome is not None:
             result_metadata["command_capability_fingerprint"] = outcome.capability_fingerprint
             result_metadata["lineage"] = outcome.lineage.as_metadata()
+        if result is not None:
+            from packages.engine_event_ledger import EngineEventBatchReceipt
+            from packages.engine_portfolio_projection.parity import (
+                P1PortfolioParityReceipt,
+            )
+            from packages.nautilus_runtime_contracts.result import P1ValidatedResult
+
+            validation_metadata = getattr(result, "validation_metadata", None)
+            if (
+                type(getattr(result, "profile_result", None)) is P1ValidatedResult
+                and type(validation_metadata) is dict
+            ):
+                engine_receipt = EngineEventBatchReceipt.model_validate_json(
+                    json.dumps(validation_metadata.get("engine_event_receipt"))
+                )
+                parity_receipt = P1PortfolioParityReceipt.model_validate_json(
+                    json.dumps(validation_metadata.get("p1_portfolio_parity"))
+                )
+                result_metadata.update(
+                    engine_event_receipt=engine_receipt.model_dump(mode="json"),
+                    p1_portfolio_parity=parity_receipt.model_dump(mode="json"),
+                )
         return self.finalize(
             claimed.job_id, claimed.attempt_id, claimed.worker_id,
             claimed.lease_token, expected_state=expected_state,

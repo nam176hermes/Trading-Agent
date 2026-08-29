@@ -17,7 +17,12 @@ from .process_runner import ProcessRunner
 from .recovery import ProcProcessInspector
 from .results import ResultValidator
 from .safety_state import AuthorityBoundSafetyPreflight, SafetyStateClient
-from .worker import JobWorker, WORKER_LEASE_SECONDS
+from .worker import (
+    JobWorker,
+    P1PortfolioParityVerifier,
+    P1ProjectionAuthorityFactory,
+    WORKER_LEASE_SECONDS,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,6 +50,8 @@ def build_worker(
     engine_spawn_provider: object | None = None,
     engine_result_validator: object | None = None,
     engine_event_ingestor: object | None = None,
+    p1_projection_authority_factory: P1ProjectionAuthorityFactory | None = None,
+    p1_portfolio_parity_verifier: P1PortfolioParityVerifier | None = None,
 ) -> JobWorker:
     values = os.environ if source is None else source
     if _FORBIDDEN_AUTHORITY_KEYS.intersection(values):
@@ -57,6 +64,16 @@ def build_worker(
         )
     if engine_result_validator is not None and engine_spawn_provider is None:
         raise ValueError("engine result validation requires complete engine authority")
+    if (p1_projection_authority_factory is None) != (
+        p1_portfolio_parity_verifier is None
+    ):
+        raise ValueError("complete P1 portfolio parity authority is required")
+    if p1_projection_authority_factory is not None and (
+        engine_spawn_provider is None
+        or engine_result_validator is None
+        or engine_event_ingestor is None
+    ):
+        raise ValueError("P1 portfolio parity requires complete engine authority")
     selected_authority = authority or attest_worker_runtime_authority()
     runtime_authority = selected_authority.runtime_authority
     safety_authority = getattr(runtime_authority, "safety", None)
@@ -78,26 +95,23 @@ def build_worker(
     safety_preflight()
     worker_id = values.get("TRADING_WORKER_ID") or f"worker-{socket.gethostname()}"
     code_commit = selected_authority.application_revision
-    engine_dependencies: dict[str, object] = {}
+    engine_authority_factory = None
+    selected_engine_result_validator = None
     if engine_spawn_provider is not None:
         # Resolve engine-only types solely for an explicitly injected complete
         # engine composition. The paper projection never enters this branch.
         from .engine_authority import BacktestEngineAuthorityFactory
         from .engine_results import EngineResultValidator
 
-        engine_dependencies = {
-            "engine_authority_factory": BacktestEngineAuthorityFactory(
-                code_commit=code_commit,
-                clock=lambda: datetime.now(UTC),
-            ),
-            "engine_spawn_provider": engine_spawn_provider,
-            "engine_result_validator": (
-                engine_result_validator
-                if engine_result_validator is not None
-                else EngineResultValidator(runtime_paths.artifact_root)
-            ),
-            "engine_event_ingestor": engine_event_ingestor,
-        }
+        engine_authority_factory = BacktestEngineAuthorityFactory(
+            code_commit=code_commit,
+            clock=lambda: datetime.now(UTC),
+        )
+        selected_engine_result_validator = (
+            engine_result_validator
+            if engine_result_validator is not None
+            else EngineResultValidator(runtime_paths.artifact_root)
+        )
     return JobWorker(
         repository,
         ProcessRunner(ArtifactWriter(runtime_paths.artifact_root)),
@@ -110,8 +124,13 @@ def build_worker(
         code_commit=code_commit,
         environment=environment,
         safety_preflight=safety_preflight,
+        engine_authority_factory=engine_authority_factory,
+        engine_spawn_provider=engine_spawn_provider,
+        engine_result_validator=selected_engine_result_validator,
+        engine_event_ingestor=engine_event_ingestor,
+        p1_projection_authority_factory=p1_projection_authority_factory,
+        p1_portfolio_parity_verifier=p1_portfolio_parity_verifier,
         lease_seconds=WORKER_LEASE_SECONDS,
-        **engine_dependencies,
     )
 
 
@@ -122,6 +141,7 @@ def build_p1_worker(
     closure_config: NautilusClosureConfig,
     transport_root: Path,
     artifact_bindings: tuple[EngineArtifactBinding, ...],
+    p1_projection_authority_factory: P1ProjectionAuthorityFactory,
     authority: WorkerRuntimeAuthority | None = None,
 ) -> JobWorker:
     """Compose the fixed P1 lane from deployment-owned authority inputs."""
@@ -131,6 +151,10 @@ def build_p1_worker(
     from .engine_results import EngineResultValidator
     from .p1_engine_spawn import P1EngineSpawnProvider
     from .p1_nautilus_closure import attest_p1_nautilus_closure
+    from packages.engine_portfolio_projection.parity import verify_p1_portfolio_parity
+
+    if p1_projection_authority_factory is None:
+        raise ValueError("P1 portfolio projection authority factory is required")
 
     selected_authority = authority or attest_worker_runtime_authority()
     profile = P1_REAL_BACKTEST_POLICY
@@ -152,6 +176,8 @@ def build_p1_worker(
             p1_product_closure_sha256=profile.closure_sha256,
         ),
         engine_event_ingestor=repository.engine_event_ingestor(),
+        p1_projection_authority_factory=p1_projection_authority_factory,
+        p1_portfolio_parity_verifier=verify_p1_portfolio_parity,
     )
 
 

@@ -6,8 +6,8 @@ import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Callable
-from uuid import uuid4
+from typing import TYPE_CHECKING, Callable, Protocol, cast
+from uuid import UUID, uuid4
 
 from packages.job_contracts import (
     JobState,
@@ -31,7 +31,33 @@ from .results import ResultValidationError, ResultValidator
 from .safety_state import SafetyEvidence
 
 if TYPE_CHECKING:
+    from packages.engine_contracts import EngineCommandEnvelope
+    from packages.engine_event_ledger import EngineRunProjection, StoredEngineEvent
+    from packages.engine_portfolio_projection.models import ProjectionAuthority
+    from packages.engine_portfolio_projection.parity import P1PortfolioParityReceipt
+    from packages.nautilus_runtime_contracts.events import P1Event
     from .engine_results import ValidatedEngineEventBatch
+
+
+class P1ProjectionAuthorityFactory(Protocol):
+    def from_request(self, request: EngineCommandEnvelope) -> ProjectionAuthority: ...
+
+
+class P1PortfolioParityVerifier(Protocol):
+    def __call__(
+        self,
+        events: tuple[P1Event, ...],
+        authority: ProjectionAuthority,
+        engine_run_projection: EngineRunProjection,
+        *,
+        batch_sha256: str,
+    ) -> P1PortfolioParityReceipt: ...
+
+
+class P1DurableEventReader(Protocol):
+    def load_events(self, engine_run_id: UUID) -> tuple[StoredEngineEvent, ...]: ...
+
+    def load_projection(self, engine_run_id: UUID) -> EngineRunProjection | None: ...
 
 
 class WorkerControl(StrEnum):
@@ -87,6 +113,8 @@ class JobWorker:
         engine_spawn_provider: object | None = None,
         engine_result_validator: object | None = None,
         engine_event_ingestor: object | None = None,
+        p1_projection_authority_factory: P1ProjectionAuthorityFactory | None = None,
+        p1_portfolio_parity_verifier: P1PortfolioParityVerifier | None = None,
         lease_seconds: int = WORKER_LEASE_SECONDS,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -105,6 +133,12 @@ class JobWorker:
         self._engine_spawn_provider = engine_spawn_provider
         self._engine_result_validator = engine_result_validator
         self._engine_event_ingestor = engine_event_ingestor
+        self._p1_projection_authority_factory = p1_projection_authority_factory
+        self._p1_portfolio_parity_verifier = p1_portfolio_parity_verifier
+        if (p1_projection_authority_factory is None) != (
+            p1_portfolio_parity_verifier is None
+        ):
+            raise ValueError("complete P1 portfolio parity authority is required")
         engine_components = (
             engine_authority_factory,
             engine_spawn_provider,
@@ -465,13 +499,20 @@ class JobWorker:
                             "ENGINE_EVENT_RECONCILIATION_REQUIRED",
                             "durable engine-event ingestion failed without a receipt",
                         ) from ingest_error
-                self._validation_progress(claimed, safety_preflight)
+                if result.profile_result is None:
+                    self._validation_progress(claimed, safety_preflight)
                 if result.validation_metadata != sealed_validation_metadata:
                     raise _EngineEventIngestionBlocked(
                         "ENGINE_EVENT_BATCH_INVALID",
                         "validated engine-event authority changed during ingestion",
                     )
                 result = self._with_engine_event_receipt(result, receipt)
+                if result.profile_result is not None:
+                    result = self._with_p1_portfolio_parity(
+                        result,
+                        receipt,
+                        engine_request,
+                    )
             else:
                 result = self._validator.validate(
                     outcome.result_validator_id, claimed,
@@ -632,6 +673,140 @@ class JobWorker:
             validation_metadata={
                 **result.validation_metadata,
                 "engine_event_receipt": receipt.model_dump(mode="json"),
+            },
+        )
+
+    def _with_p1_portfolio_parity(
+        self,
+        result: ValidatedEngineEventBatch,
+        receipt: object,
+        request: object,
+    ) -> ValidatedEngineEventBatch:
+        from packages.engine_contracts import EngineCommandEnvelope
+        from packages.engine_event_ledger import (
+            EngineEventBatchReceipt,
+            EngineRunProjection,
+            StoredEngineEvent,
+        )
+        from packages.engine_portfolio_projection.models import ProjectionAuthority
+        from packages.engine_portfolio_projection.parity import (
+            P1PortfolioParityError,
+            P1PortfolioParityReceipt,
+        )
+        from packages.nautilus_runtime_contracts.result import P1ValidatedResult
+        from .engine_results import ValidatedEngineEventBatch
+
+        profile = result.profile_result
+        if (
+            type(result) is not ValidatedEngineEventBatch
+            or type(profile) is not P1ValidatedResult
+            or type(receipt) is not EngineEventBatchReceipt
+            or type(request) is not EngineCommandEnvelope
+            or self._p1_projection_authority_factory is None
+            or self._p1_portfolio_parity_verifier is None
+        ):
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_UNAVAILABLE",
+                "complete P1 portfolio parity authority is unavailable",
+            )
+        try:
+            expected_events = tuple(
+                StoredEngineEvent.from_envelope(
+                    event, batch_sha256=receipt.batch_sha256
+                )
+                for event in result.events
+            )
+            durable_reader = cast(P1DurableEventReader, self._engine_event_ingestor)
+            durable_events = durable_reader.load_events(
+                receipt.engine_run_id
+            )
+            durable_projection = durable_reader.load_projection(
+                receipt.engine_run_id
+            )
+        except Exception as exc:
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_UNAVAILABLE",
+                "durable P1 portfolio authority could not be reloaded",
+            ) from exc
+        if (
+            durable_events != expected_events
+            or type(durable_projection) is not EngineRunProjection
+            or durable_projection.engine_run_id != receipt.engine_run_id
+            or durable_projection.batch_sha256 != receipt.batch_sha256
+            or durable_projection.semantic_digest != profile.semantic_sha256
+            or durable_projection.request_message_id != request.message_id
+            or durable_projection.event_count != receipt.event_count
+            or durable_projection.last_sequence != receipt.last_sequence
+            or durable_projection.last_digest != receipt.last_digest
+            or profile.batch_sha256 != receipt.batch_sha256
+        ):
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_UNAVAILABLE",
+                "durable P1 portfolio authority differs from the validated batch",
+            )
+        try:
+            authority = self._p1_projection_authority_factory.from_request(request)
+        except Exception as exc:
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_UNAVAILABLE",
+                "P1 portfolio projection authority could not be constructed",
+            ) from exc
+        if (
+            type(authority) is not ProjectionAuthority
+            or authority.request_message_id != durable_projection.request_message_id
+        ):
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_UNAVAILABLE",
+                "P1 portfolio projection authority is inconsistent",
+            )
+        try:
+            parity = self._p1_portfolio_parity_verifier(
+                profile.events,
+                authority,
+                durable_projection,
+                batch_sha256=receipt.batch_sha256,
+            )
+        except P1PortfolioParityError as exc:
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_MISMATCH",
+                "P1 engine and reducer portfolio state do not match",
+            ) from exc
+        except Exception as exc:
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_UNAVAILABLE",
+                "P1 portfolio parity verification is unavailable",
+            ) from exc
+        try:
+            closed_parity = P1PortfolioParityReceipt.model_validate(
+                {
+                    name: getattr(parity, name)
+                    for name in P1PortfolioParityReceipt.model_fields
+                }
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_MISMATCH",
+                "P1 portfolio parity receipt is invalid",
+            ) from exc
+        if (
+            type(parity) is not P1PortfolioParityReceipt
+            or closed_parity.engine_run_id != durable_projection.engine_run_id
+            or closed_parity.batch_sha256 != receipt.batch_sha256
+            or closed_parity.semantic_digest != durable_projection.semantic_digest
+            or closed_parity.request_message_id != durable_projection.request_message_id
+            or closed_parity.engine_event_count != durable_projection.event_count
+            or closed_parity.engine_last_sequence != durable_projection.last_sequence
+            or closed_parity.engine_last_digest != durable_projection.last_digest
+        ):
+            raise _EngineEventIngestionBlocked(
+                "P1_PORTFOLIO_PARITY_MISMATCH",
+                "P1 portfolio parity receipt differs from durable authority",
+            )
+        return replace(
+            result,
+            validation_metadata={
+                **result.validation_metadata,
+                "p1_portfolio_parity": closed_parity.model_dump(mode="json"),
             },
         )
 

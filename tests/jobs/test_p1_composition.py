@@ -47,6 +47,7 @@ def test_p1_worker_composes_exact_code_owned_execution_authority(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from services.job_worker import main
+    from packages.engine_portfolio_projection.parity import verify_p1_portfolio_parity
 
     ingestor = object()
     repository = SimpleNamespace(engine_event_ingestor=lambda: ingestor)
@@ -54,6 +55,7 @@ def test_p1_worker_composes_exact_code_owned_execution_authority(
         runtime_paths=SimpleNamespace(artifact_root=tmp_path / "job-artifacts")
     )
     captured: dict[str, object] = {}
+    projection_authority_factory = object()
 
     def capture(repository_arg: object, source: object, **kwargs: object) -> str:
         captured.update(repository=repository_arg, source=source, **kwargs)
@@ -72,6 +74,7 @@ def test_p1_worker_composes_exact_code_owned_execution_authority(
         ),
         transport_root=tmp_path / "transport",
         artifact_bindings=_bindings(tmp_path / "inputs"),
+        p1_projection_authority_factory=projection_authority_factory,
     )
 
     provider = captured["engine_spawn_provider"]
@@ -80,11 +83,24 @@ def test_p1_worker_composes_exact_code_owned_execution_authority(
     assert captured["repository"] is repository
     assert captured["authority"] is authority
     assert captured["engine_event_ingestor"] is ingestor
+    assert captured["p1_projection_authority_factory"] is projection_authority_factory
+    assert captured["p1_portfolio_parity_verifier"] is verify_p1_portfolio_parity
     assert type(provider) is P1EngineSpawnProvider
     assert type(provider._provider._attest_inputs) is HashBoundArtifactResolver
     assert type(validator) is EngineResultValidator
     assert validator._p1_product_closure_sha256 == P1_CLOSURE_SHA256
     assert P1_REAL_BACKTEST_POLICY.closure_sha256 == P1_CLOSURE_SHA256
+
+
+def test_p1_parity_composition_cannot_be_partially_injected() -> None:
+    from services.job_worker import main
+
+    with pytest.raises(ValueError, match="P1 portfolio parity authority"):
+        main.build_worker(
+            object(),
+            {},
+            p1_projection_authority_factory=object(),
+        )
 
 
 def test_p1_validator_cannot_be_injected_without_complete_engine_authority() -> None:
