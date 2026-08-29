@@ -1016,7 +1016,12 @@ def main(
             authority={"native": "INVALID", "postgres": "INVALID"},
         )
     try:
-        evidence, worker_authority = _validate_complete(arguments, worker_authority)
+        if worker_authority is None:
+            evidence, worker_authority = _validate_complete(arguments)
+        else:
+            evidence, worker_authority = _validate_complete(
+                arguments, worker_authority
+            )
     except Exception:
         return _emit(
             "BLOCKED",
