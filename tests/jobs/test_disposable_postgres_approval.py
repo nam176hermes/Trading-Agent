@@ -49,6 +49,7 @@ SOURCE_BINDING_PATHS = (
     "alembic/versions/0013_engine_backtest_enqueue_authority.py",
     "alembic/versions/0014_p1_product_closure_rotation.py",
     "alembic/versions/0015_p1_accounting_closure_rotation.py",
+    "alembic/versions/0016_p1_result_authority_repair.py",
     "ops/postgres/provision-job-roles.sql",
     "ops/postgres/provision-roles.sql",
 )

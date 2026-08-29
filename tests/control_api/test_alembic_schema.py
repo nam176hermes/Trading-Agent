@@ -61,7 +61,7 @@ EXPECTED_TABLES = {
     "engine_run_projections",
     "engine_job_results",
 }
-EXACT_HEAD = "0015_p1_accounting_closure_rotation"
+EXACT_HEAD = "0016_p1_result_authority_repair"
 P1_PROJECTION_REVISION = "0013_engine_backtest_enqueue_authority"
 P1_OLD_CLOSURE_SHA256 = (
     "75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069"
