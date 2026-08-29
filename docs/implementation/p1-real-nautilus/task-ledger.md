@@ -31,7 +31,8 @@ production, network-trading, or live authority.
 | P1-11 | P1-08, P1-09, P1-10 | ACCEPTED | Real serial market orders/fills, zero-delta suppression, shutdown safety and scalar callback evidence passed independent spec/security review at `a2baafa`. |
 | P1-12 | P1-07, P1-08, P1-09, P1-10, P1-11 | ACCEPTED | Exact G1 session, scalar callback/cache identity, long/flat accounting and disposal passed independent spec/security review at `b6b1143`. |
 | P1-13 | P1-04, P1-05, P1-11, P1-12 | ACCEPTED | Canonical bounded EngineEvent JSONL, exact schedule/command authority and raw/semantic custody passed independent spec/security review at `2d8f1be`. |
-| P1-14 | P1-06, P1-07, P1-12, P1-13 | IN_PROGRESS | Prove final native state and fail closed before exposing a completed event stream. |
+| P1-14 | P1-06, P1-07, P1-12, P1-13 | ACCEPTED | Exact G1 final-state/accounting proof, zero-order completion and stable fail-closed diagnostics passed independent spec/security review at `f03d089`. |
+| P1-15 | P1-02, P1-06, P1-14 | IN_PROGRESS | Add one code-owned schema-8 P1 engine profile without changing legacy schema-6/7 authorities. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
