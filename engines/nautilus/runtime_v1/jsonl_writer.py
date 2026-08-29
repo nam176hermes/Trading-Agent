@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Callable, Iterable
 
@@ -25,13 +26,27 @@ def write_jsonl(
     events = stream.events
     envelopes = stream.envelopes
     raw = stream.jsonl
+    raw_sha256 = stream.raw_sha256
+    semantic_sha256 = stream.semantic_sha256
     if (
         type(events) is not tuple
         or type(envelopes) is not tuple
         or type(raw) is not bytes
+        or type(raw_sha256) is not str
+        or type(semantic_sha256) is not str
     ):
         raise ValueError("P1 event stream is not write-ready")
-    validate_projected_stream(events, envelopes)
+    validate_projected_stream(
+        events,
+        envelopes,
+        stream.request_message_id,
+        stream.request_authority,
+    )
+    if (
+        hashlib.sha256(raw).hexdigest() != raw_sha256
+        or events[-1].get("semantic_digest") != semantic_sha256
+    ):
+        raise ValueError("P1 event stream digest is invalid")
     if encode_jsonl(envelopes) != raw:
         raise ValueError("P1 event stream is not write-ready")
     offset = 0

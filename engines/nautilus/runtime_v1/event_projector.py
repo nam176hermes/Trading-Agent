@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 import hashlib
+import hmac
+import json
 from uuid import UUID, uuid5
 
 from .event_collector import CollectedExecution, collect_executions
@@ -15,6 +17,7 @@ from .generated_protocol import (
     canonical_json_bytes,
     validate_document,
 )
+from .target_planner import plan_target
 
 
 _UPSTREAM = "27a8e54e7ac3c57d6cbf8891f0283dfbaee97317"
@@ -29,6 +32,29 @@ _FAMILY = {
     "RunCompleted": "ENGINE_LIFECYCLE",
 }
 _CUSTODY_ONLY = {"native_fill_id", "native_order_id", "semantic_digest"}
+_AUTHORITY_FIELDS = (
+    "correlation_id",
+    "causation_id",
+    "engine_run_id",
+    "event_time",
+    "initialization_time",
+    "schema_version",
+    "producer_identity",
+    "source_commit",
+    "config_digest",
+)
+_MARKET_ROW_FIELDS = {
+    "ask",
+    "bid",
+    "close",
+    "event_time",
+    "high",
+    "low",
+    "open",
+    "quote_time",
+    "sequence",
+    "volume",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +76,8 @@ class ProjectedEventStream:
     jsonl: bytes
     raw_sha256: str
     semantic_sha256: str
+    request_message_id: str
+    request_authority: tuple[tuple[str, object], ...]
 
 
 def _instant(value: str) -> datetime:
@@ -95,6 +123,32 @@ def _decimal(value: object) -> str:
     if "." in rendered:
         rendered = rendered.rstrip("0").rstrip(".")
     return "0" if rendered in {"", "-0"} else rendered
+
+
+def _request_authority(request: object) -> tuple[tuple[str, object], ...]:
+    return (
+        ("correlation_id", request.correlation_id),
+        ("causation_id", request.causation_id),
+        ("engine_run_id", request.engine_run_id),
+        ("event_time", _time(request.event_time)),
+        ("initialization_time", _time(request.initialization_time)),
+        ("schema_version", request.schema_version),
+        ("producer_identity", request.producer_identity),
+        ("source_commit", request.source_commit),
+        ("config_digest", request.config_digest),
+    )
+
+
+def _expected_message_id(
+    request_message_id: str, sequence: object, event_type: object
+) -> str:
+    try:
+        namespace = UUID(request_message_id)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("P1 event envelope authority is invalid") from exc
+    if str(namespace) != request_message_id:
+        raise ValueError("P1 event envelope authority is invalid")
+    return str(uuid5(namespace, f"{P1_EVENT_SCHEMA}:{sequence}:{event_type}"))
 
 
 def _observed_usdt(run: object) -> tuple[str, str]:
@@ -207,12 +261,14 @@ def _signals(values: dict[str, object]) -> tuple[str, ...]:
     return tuple(str(values[f"source_signal_id_{index}"]) for index in range(count))
 
 
-def _schedule(inputs: object) -> dict[str, tuple[tuple[str, ...], str, str]]:
+def _schedule(
+    inputs: object,
+) -> dict[str, tuple[tuple[str, ...], str, str, str]]:
     schedule = dict(inputs.target_schedule)
     targets = schedule.get("targets")
     if type(targets) is not tuple:
         raise ValueError("P1 target schedule is invalid")
-    result: dict[str, tuple[tuple[str, ...], str, str]] = {}
+    result: dict[str, tuple[tuple[str, ...], str, str, str]] = {}
     for frozen in targets:
         target = dict(frozen)
         positions = target.get("positions")
@@ -225,20 +281,211 @@ def _schedule(inputs: object) -> dict[str, tuple[tuple[str, ...], str, str]]:
             raise ValueError("P1 target schedule is invalid")
         target_id = target.get("target_id")
         effective_at = target.get("effective_at")
-        weight = dict(positions[0]).get("target_weight")
+        position = dict(positions[0])
+        weight = position.get("target_weight")
+        frozen_instrument = position.get("instrument")
+        if type(frozen_instrument) is not tuple:
+            raise ValueError("P1 target schedule is invalid")
+        instrument = dict(frozen_instrument)
+        symbol = instrument.get("symbol")
+        venue = instrument.get("venue")
         if not all(
-            type(item) is str and item for item in (target_id, effective_at, weight)
+            type(item) is str and item
+            for item in (target_id, effective_at, weight, symbol, venue)
         ):
             raise ValueError("P1 target schedule is invalid")
-        if target_id in result or any(type(item) is not str for item in signals):
+        if (
+            target_id in result
+            or any(type(item) is not str for item in signals)
+            or instrument.get("product_type") != "crypto_spot"
+        ):
             raise ValueError("P1 target schedule is invalid")
-        result[target_id] = (signals, effective_at, weight)
+        result[target_id] = (signals, effective_at, weight, f"{symbol}.{venue}")
     return result
+
+
+def _market_rows(inputs: object) -> dict[str, dict[str, object]]:
+    def reject_number(_value: str) -> object:
+        raise ValueError("P1 native business facts are not input-bound")
+
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        document: dict[str, object] = {}
+        for name, value in items:
+            if name in document:
+                raise ValueError("P1 native business facts are not input-bound")
+            document[name] = value
+        return document
+
+    raw = inputs.market_data
+    reference = inputs.request.market_data
+    if (
+        type(raw) is not bytes
+        or not raw
+        or not raw.endswith(b"\n")
+        or raw.endswith(b"\n\n")
+        or reference.media_type != "application/jsonl"
+        or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), reference.sha256)
+    ):
+        raise ValueError("P1 native business facts are not input-bound")
+    rows: dict[str, dict[str, object]] = {}
+    for line in raw.splitlines(keepends=True):
+        try:
+            row = json.loads(
+                line,
+                object_pairs_hook=pairs,
+                parse_float=reject_number,
+                parse_constant=reject_number,
+            )
+            if (
+                type(row) is not dict
+                or set(row) != _MARKET_ROW_FIELDS
+                or canonical_json_bytes(row) + b"\n" != line
+            ):
+                raise ValueError
+            quote_time = _time(row["quote_time"])
+            values = (row["bid"], row["ask"], row["volume"])
+            if (
+                quote_time in rows
+                or any(
+                    type(value) is not str or _decimal(value) != value
+                    for value in values
+                )
+                or Decimal(row["bid"]) <= 0
+                or Decimal(row["ask"]) <= 0
+                or Decimal(row["volume"]) < 0
+            ):
+                raise ValueError
+        except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("P1 native business facts are not input-bound") from exc
+        rows[quote_time] = row
+    return rows
+
+
+def _validate_business_facts(
+    inputs: object,
+    executions: tuple[CollectedExecution, ...],
+    schedule: dict[str, tuple[tuple[str, ...], str, str, str]],
+) -> None:
+    try:
+        configuration = dict(inputs.engine_configuration)
+        catalog = dict(inputs.instrument_catalog)
+        rows = _market_rows(inputs)
+        instrument_id = catalog["instrument_id"]
+        if (
+            type(instrument_id) is not str
+            or configuration.get("starting_currency") != "USDT"
+            or len(rows) != len(executions)
+        ):
+            raise ValueError
+        starting_balance = Decimal(configuration["starting_balance"])
+        fee_rate = Decimal(configuration["fee_rate"])
+        step_size = Decimal(catalog["step_size"])
+        min_quantity = Decimal(catalog["min_quantity"])
+        min_notional = Decimal(catalog["min_notional"])
+        canonical_numbers = (
+            (configuration["starting_balance"], starting_balance),
+            (configuration["fee_rate"], fee_rate),
+            (catalog["step_size"], step_size),
+            (catalog["min_quantity"], min_quantity),
+            (catalog["min_notional"], min_notional),
+        )
+        if any(
+            type(text) is not str or _decimal(number) != text
+            for text, number in canonical_numbers
+        ):
+            raise ValueError
+
+        cash = starting_balance
+        position = Decimal(0)
+        used_quote_times: set[str] = set()
+        with localcontext() as context:
+            context.prec = 96
+            for execution in executions:
+                quote = _values(execution.quote)
+                quote_time = _native_time(quote["ts_event"])
+                row = rows.get(quote_time)
+                expected_quote = {
+                    "instrument_id": instrument_id,
+                    "bid": row["bid"] if row is not None else None,
+                    "ask": row["ask"] if row is not None else None,
+                    "bid_size": row["volume"] if row is not None else None,
+                    "ask_size": row["volume"] if row is not None else None,
+                }
+                if (
+                    row is None
+                    or quote_time in used_quote_times
+                    or any(
+                        quote.get(name) != value
+                        for name, value in expected_quote.items()
+                    )
+                ):
+                    raise ValueError
+                used_quote_times.add(quote_time)
+
+                plan = _values(execution.plan)
+                target_id = plan.get("target_id")
+                scheduled = schedule.get(str(target_id))
+                if scheduled is None:
+                    raise ValueError
+                signals, effective_at, weight, target_instrument_id = scheduled
+                expected = plan_target(
+                    target_id=str(target_id),
+                    source_signal_ids=signals,
+                    effective_at=effective_at,
+                    target_instrument_id=target_instrument_id,
+                    instrument_id=instrument_id,
+                    target_weight=Decimal(weight),
+                    account_equity=cash + position * Decimal(row["bid"]),
+                    available_cash=cash,
+                    current_quantity=position,
+                    ask_price=Decimal(row["ask"]),
+                    fee_rate=fee_rate,
+                    step_size=step_size,
+                    min_quantity=min_quantity,
+                    min_notional=min_notional,
+                    leverage=Decimal(1),
+                )
+                expected_plan: dict[str, object] = {
+                    "target_id": expected.target_id,
+                    "effective_at": expected.effective_at,
+                    "instrument_id": expected.instrument_id,
+                    "current_quantity": expected.current_quantity,
+                    "target_quantity": expected.target_quantity,
+                    "delta": expected.delta,
+                    "side": expected.side,
+                    "price_basis": expected.price_basis,
+                    "notional": expected.notional,
+                    "reason": expected.reason,
+                }
+                if _signals(plan) != expected.source_signal_ids or any(
+                    plan.get(name) != value for name, value in expected_plan.items()
+                ):
+                    raise ValueError
+
+                if execution.fill is not None:
+                    fill = _values(execution.fill)
+                    quantity = Decimal(str(fill["quantity"]))
+                    price = Decimal(str(fill["price"]))
+                    commission = Decimal(str(fill["commission"]))
+                    if fill["side"] == "BUY":
+                        position += quantity
+                        cash -= quantity * price + commission
+                    elif fill["side"] == "SELL":
+                        position -= quantity
+                        cash += quantity * price - commission
+                    else:
+                        raise ValueError
+                    if cash < 0 or position < 0:
+                        raise ValueError
+        if used_quote_times != set(rows):
+            raise ValueError
+    except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError("P1 native business facts are not input-bound") from exc
 
 
 def _target_events(
     execution: CollectedExecution,
-    schedule: dict[str, tuple[tuple[str, ...], str, str]],
+    schedule: dict[str, tuple[tuple[str, ...], str, str, str]],
     sequence: int,
 ) -> tuple[dict[str, object], ...]:
     plan = _values(execution.plan)
@@ -341,11 +588,7 @@ def _envelope(request: object, event: dict[str, object]) -> dict[str, object]:
     sequence = event["sequence"]
     event_type = event["event_type"]
     return {
-        "message_id": str(
-            uuid5(
-                UUID(request.message_id), f"{P1_EVENT_SCHEMA}:{sequence}:{event_type}"
-            )
-        ),
+        "message_id": _expected_message_id(request.message_id, sequence, event_type),
         "correlation_id": request.correlation_id,
         "causation_id": request.causation_id,
         "engine_run_id": request.engine_run_id,
@@ -362,7 +605,10 @@ def _envelope(request: object, event: dict[str, object]) -> dict[str, object]:
 
 
 def validate_projected_stream(
-    events: tuple[dict[str, object], ...], envelopes: tuple[dict[str, object], ...]
+    events: tuple[dict[str, object], ...],
+    envelopes: tuple[dict[str, object], ...],
+    request_message_id: str,
+    request_authority: tuple[tuple[str, object], ...],
 ) -> None:
     """Fail closed on an incomplete or internally inconsistent stream."""
 
@@ -378,19 +624,13 @@ def validate_projected_stream(
     native_orders: set[str] = set()
     fills: set[str] = set()
     filled_orders: set[str] = set()
-    message_ids: set[object] = set()
     previous_time = ""
-    authority_fields = (
-        "correlation_id",
-        "causation_id",
-        "engine_run_id",
-        "event_time",
-        "initialization_time",
-        "schema_version",
-        "producer_identity",
-        "source_commit",
-        "config_digest",
-    )
+    if (
+        type(request_authority) is not tuple
+        or tuple(name for name, _ in request_authority) != _AUTHORITY_FIELDS
+    ):
+        raise ValueError("P1 event envelope authority is invalid")
+    expected_authority = dict(request_authority)
     for sequence, (event, envelope) in enumerate(
         zip(events, envelopes, strict=True), start=2
     ):
@@ -408,13 +648,13 @@ def validate_projected_stream(
             or envelope.get("payload_digest")
             != hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
             or any(
-                envelope.get(name) != envelopes[0].get(name)
-                for name in authority_fields
+                envelope.get(name) != expected_authority[name]
+                for name in _AUTHORITY_FIELDS
             )
-            or envelope.get("message_id") in message_ids
+            or envelope.get("message_id")
+            != _expected_message_id(request_message_id, sequence, event["event_type"])
         ):
             raise ValueError("P1 event envelope authority is invalid")
-        message_ids.add(envelope.get("message_id"))
         kind = event["event_type"]
         if kind == "TargetAccepted":
             target_id = str(event["target_id"])
@@ -493,6 +733,7 @@ def project_event_stream(
         raise ValueError("P1 completion or engine authority is invalid")
     _validate_completion(run, completion)
     request = inputs.request
+    request_authority = _request_authority(request)
     events = [
         _event(
             "RunStarted",
@@ -510,7 +751,9 @@ def project_event_stream(
         )
     ]
     schedule = _schedule(inputs)
-    for execution in collect_executions(run):
+    executions = collect_executions(run)
+    _validate_business_facts(inputs, executions, schedule)
+    for execution in executions:
         events.extend(_target_events(execution, schedule, len(events) + 2))
     final_time = _native_time(run.last_market_timestamp)
     events.extend(
@@ -563,14 +806,18 @@ def project_event_stream(
     completion_event["semantic_digest"] = _semantic_digest(complete)
     validate_document("RunCompleted", completion_event)
     envelopes = tuple(_envelope(request, event) for event in complete)
-    validate_projected_stream(complete, envelopes)
+    validate_projected_stream(
+        complete, envelopes, request.message_id, request_authority
+    )
     raw = b"".join(canonical_json_bytes(envelope) + b"\n" for envelope in envelopes)
     return ProjectedEventStream(
-        complete,
-        envelopes,
-        raw,
-        hashlib.sha256(raw).hexdigest(),
-        str(completion_event["semantic_digest"]),
+        events=complete,
+        envelopes=envelopes,
+        jsonl=raw,
+        raw_sha256=hashlib.sha256(raw).hexdigest(),
+        semantic_sha256=str(completion_event["semantic_digest"]),
+        request_message_id=request.message_id,
+        request_authority=request_authority,
     )
 
 

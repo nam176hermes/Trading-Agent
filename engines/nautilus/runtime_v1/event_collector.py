@@ -35,6 +35,7 @@ _FILL = (
 
 @dataclass(frozen=True, slots=True)
 class CollectedExecution:
+    quote: tuple[tuple[str, str | int | None], ...]
     plan: tuple[tuple[str, str | int | None], ...]
     planned_quantity: str
     order: tuple[tuple[str, str | int | None], ...] | None
@@ -90,6 +91,16 @@ def _text(values: tuple[tuple[str, str | int | None], ...], name: str) -> str:
     return value
 
 
+def _signals(
+    values: tuple[tuple[str, str | int | None], ...],
+) -> tuple[str, ...]:
+    document = dict(values)
+    count = document["source_signal_count"]
+    if type(count) is not int:
+        raise ValueError("native fact stream is invalid")
+    return tuple(_text(values, f"source_signal_id_{index}") for index in range(count))
+
+
 def _decimal_text(value: Decimal) -> str:
     rendered = format(value, "f")
     if "." in rendered:
@@ -119,7 +130,7 @@ def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
     native_fill_ids: list[str] = []
     index = 0
     while index < len(facts) - 1:
-        _document(facts[index], "quote", _QUOTE)
+        quote = _document(facts[index], "quote", _QUOTE)
         plan = _document(facts[index + 1], "target_planned", _PLAN, signals=True)
         quantity_fact = _document(
             facts[index + 2], "target_quantity_planned", ("quantity",)
@@ -144,6 +155,7 @@ def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
             fill = _document(facts[index + 1], "order_filled", _FILL)
             if (
                 _text(order, "target_id") != target_id
+                or _signals(order) != _signals(plan)
                 or _text(order, "quantity") != planned_quantity
                 or _text(order, "side") != _text(plan, "side")
                 or _text(order, "order_type") != "MARKET"
@@ -158,7 +170,9 @@ def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
             index += 2
         elif planned_quantity != "0" or dict(plan)["side"] is not None:
             raise ValueError("native fact stream is invalid")
-        executions.append(CollectedExecution(plan, planned_quantity, order, fill))
+        executions.append(
+            CollectedExecution(quote, plan, planned_quantity, order, fill)
+        )
 
     stopped = _document(facts[-1], "stopped", ("state",))
     if dict(stopped)["state"] != "COMPLETED" or index != len(facts) - 1:

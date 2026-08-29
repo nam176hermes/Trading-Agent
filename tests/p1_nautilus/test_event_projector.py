@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +35,7 @@ def _signals(value: str) -> tuple[tuple[str, str | int], ...]:
     return (("source_signal_count", 1), ("source_signal_id_0", value))
 
 
-def _facts() -> tuple[Fact, ...]:
+def _facts(first_bid: str = "99") -> tuple[Fact, ...]:
     first_target = "11111111-1111-4111-8111-111111111111"
     second_target = "44444444-4444-4444-8444-444444444444"
     first_signal = "22222222-2222-4222-8222-222222222222"
@@ -43,7 +45,7 @@ def _facts() -> tuple[Fact, ...]:
             "quote",
             (
                 ("instrument_id", "BTCUSDT.BINANCE"),
-                ("bid", "99"),
+                ("bid", first_bid),
                 ("ask", "100"),
                 ("bid_size", "1000000"),
                 ("ask_size", "1000000"),
@@ -155,13 +157,47 @@ def _freeze(value: object) -> object:
     return value
 
 
+def _market_data(first_bid: str = "99") -> bytes:
+    rows = (
+        {
+            "ask": "100",
+            "bid": first_bid,
+            "close": "100",
+            "event_time": "2026-08-05T12:00:00Z",
+            "high": "101",
+            "low": "98",
+            "open": "99",
+            "quote_time": "2026-08-05T12:00:00Z",
+            "sequence": 1,
+            "volume": "1000000",
+        },
+        {
+            "ask": "102",
+            "bid": "101",
+            "close": "102",
+            "event_time": "2026-08-05T12:01:00Z",
+            "high": "103",
+            "low": "100",
+            "open": "101",
+            "quote_time": "2026-08-05T12:01:00Z",
+            "sequence": 2,
+            "volume": "1000000",
+        },
+    )
+    return b"".join(
+        json.dumps(row, separators=(",", ":"), sort_keys=True).encode() + b"\n"
+        for row in rows
+    )
+
+
 def _inputs(
     *,
     suffix: str = "a",
     event_time: str = "2026-08-05T12:00:00Z",
-    market_data: bytes = b"market-data",
+    market_data: bytes | None = None,
     second_weight: str = "0",
 ) -> RuntimeInputs:
+    market_data = _market_data() if market_data is None else market_data
     reference = lambda identity, digest, media: ArtifactReference(
         identity, digest, media
     )
@@ -235,7 +271,18 @@ def _inputs(
             ],
         }
     )
-    return RuntimeInputs(request, (), (), schedule, market_data)
+    configuration = (
+        ("fee_rate", "0.001"),
+        ("starting_balance", "1000000"),
+        ("starting_currency", "USDT"),
+    )
+    catalog = (
+        ("instrument_id", "BTCUSDT.BINANCE"),
+        ("min_notional", "10"),
+        ("min_quantity", "0.000001"),
+        ("step_size", "0.000001"),
+    )
+    return RuntimeInputs(request, configuration, catalog, schedule, market_data)
 
 
 def _run(
@@ -360,14 +407,10 @@ def test_raw_custody_changes_but_semantics_change_only_for_business_facts() -> N
         == third_custody.semantic_sha256
     )
 
-    changed_quote_raw = b"market-data-with-one-changed-quote"
-    assert (
-        first.semantic_sha256
-        != _project(_inputs(market_data=changed_quote_raw)).semantic_sha256
+    changed_quote = _project(
+        _inputs(market_data=_market_data("98")), _run(facts=_facts("98"))
     )
-    assert (
-        first.semantic_sha256 != _project(_inputs(second_weight="0.1")).semantic_sha256
-    )
+    assert first.semantic_sha256 != changed_quote.semantic_sha256
 
     fee_facts = list(_facts())
     fill = fee_facts[4]
@@ -392,6 +435,17 @@ def test_raw_custody_changes_but_semantics_change_only_for_business_facts() -> N
     assert first.semantic_sha256 != fee_stream.semantic_sha256
 
     typed = _typed_events(first)
+    target_index = next(
+        index
+        for index, event in enumerate(typed)
+        if event.event_type == "TargetAccepted"
+    )
+    changed_target = (
+        typed[:target_index]
+        + (typed[target_index].model_copy(update={"target_weight": Decimal("0.1")}),)
+        + typed[target_index + 1 :]
+    )
+    assert semantic_digest(changed_target) != first.semantic_sha256
     fill_index = next(
         index for index, event in enumerate(typed) if event.event_type == "Fill"
     )
@@ -443,6 +497,42 @@ def test_writer_never_exposes_completion_after_partial_failure() -> None:
     assert output.getvalue() == stream.jsonl
 
 
+@pytest.mark.parametrize(
+    ("scope", "field", "value"),
+    (
+        ("first", "message_id", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+        ("all", "causation_id", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+    ),
+)
+def test_writer_rejects_mutated_expected_request_authority(
+    scope: str, field: str, value: str
+) -> None:
+    stream = _project()
+    envelopes = tuple(
+        {**envelope, field: value} if scope == "all" or index == 0 else envelope
+        for index, envelope in enumerate(stream.envelopes)
+    )
+    raw = b"".join(canonical_json_bytes(envelope) + b"\n" for envelope in envelopes)
+    mutated = replace(
+        stream,
+        envelopes=envelopes,
+        jsonl=raw,
+        raw_sha256=sha256(raw).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="authority"):
+        write_jsonl(mutated, writer=lambda _fd, data: len(data))
+
+
+@pytest.mark.parametrize("field", ("raw_sha256", "semantic_sha256"))
+def test_writer_rejects_forged_stream_digests(field: str) -> None:
+    stream = _project()
+    with pytest.raises(ValueError, match="digest"):
+        write_jsonl(
+            replace(stream, **{field: "f" * 64}),
+            writer=lambda _fd, data: len(data),
+        )
+
+
 def test_rejects_unknown_or_misordered_native_facts() -> None:
     with pytest.raises(ValueError, match="fact stream"):
         _project(run=_run(facts=_facts()[1:]))
@@ -456,6 +546,47 @@ def test_rejects_unknown_or_misordered_native_facts() -> None:
     )
     with pytest.raises(ValueError, match="fact stream"):
         _project(run=_run(facts=tuple(non_scalar)))
+
+
+def test_native_order_source_signals_must_match_the_plan() -> None:
+    facts = list(_facts())
+    order = facts[3]
+    facts[3] = replace(
+        order,
+        attributes=tuple(
+            (
+                name,
+                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+                if name == "source_signal_id_0"
+                else value,
+            )
+            for name, value in order.attributes
+        ),
+    )
+    with pytest.raises(ValueError, match="fact stream"):
+        _project(run=_run(facts=tuple(facts)))
+
+
+@pytest.mark.parametrize(
+    ("fact_index", "field", "value"),
+    (
+        (0, "bid", "98"),
+        (1, "target_quantity", "1"),
+    ),
+)
+def test_native_quote_and_plan_facts_are_hash_bound(
+    fact_index: int, field: str, value: str
+) -> None:
+    facts = list(_facts())
+    fact = facts[fact_index]
+    facts[fact_index] = replace(
+        fact,
+        attributes=tuple(
+            (name, value if name == field else item) for name, item in fact.attributes
+        ),
+    )
+    with pytest.raises(ValueError, match="business facts"):
+        _project(run=_run(facts=tuple(facts)))
 
 
 @pytest.mark.parametrize(
