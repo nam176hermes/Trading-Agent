@@ -34,6 +34,8 @@ production, network-trading, or live authority.
 | P1-14 | P1-06, P1-07, P1-12, P1-13 | ACCEPTED | Exact G1 final-state/accounting proof, zero-order completion and stable fail-closed diagnostics passed independent spec/security review at `f03d089`. |
 | P1-15 | P1-02, P1-06, P1-14 | ACCEPTED | Exact code-owned schema-8 profile, G1/U08/manifest authority, descriptor-safe closure custody and unchanged legacy schema-6 authority passed independent spec/security review at `8f527b8`. |
 | P1-16 | P1-15 | ACCEPTED | Exact-source schema-8 closure `75467781…` at `a596169`, native qualification and immutable custody passed independent spec/security review; G1 stayed unchanged and inactive. |
+| P1-17 | P1-04, P1-14, P1-15 | ACCEPTED | Dedicated bounded multi-event result validation, semantic custody and durable metadata seam passed independent spec/security review at source tree `d116945…`. |
+| P1-18 | P1-03, P1-15, P1-16, P1-17 | ACCEPTED | Code-owned closure `75467781…`, artifact resolver, result validator and inactive worker composition passed independent spec/security review at `5c4518f`; P1 ledger acceptance remains fail-closed for P1-19. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
