@@ -52,6 +52,9 @@ def test_p1_profile_is_one_code_owned_closed_policy() -> None:
     assert policy.sandbox_profile_sha256 == (
         "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"
     )
+    assert policy.runtime_inventory_sha256 == (
+        "039e9c40c15270c816382870165ade5721edb11bcb1b4b8cb2f6af11b194a8f1"
+    )
     assert "profile" not in RunBacktest.model_fields
 
 
@@ -123,4 +126,25 @@ def test_p1_policy_rejects_artifact_manifest_substitution(
     monkeypatch.setattr(closure_module, "_POLICY_PATH", changed_policy)
 
     with pytest.raises(EngineSpawnError, match="artifact manifest|policy"):
+        _load_policy()
+
+
+@pytest.mark.parametrize("mutation", ("stale-source", "missing", "digest"))
+def test_p1_policy_rejects_runtime_inventory_mutation(
+    mutation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = json.loads(POLICY_PATH.read_bytes())
+    inventory = document["runtime_inventory"]
+    assert isinstance(inventory, list)
+    if mutation == "stale-source":
+        inventory[0]["sha256"] = "0" * 64
+    elif mutation == "missing":
+        inventory.pop()
+    else:
+        document["runtime_inventory_sha256"] = "0" * 64
+    changed_policy = tmp_path / "p1-runtime-closure-policy.json"
+    changed_policy.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(closure_module, "_POLICY_PATH", changed_policy)
+
+    with pytest.raises(EngineSpawnError, match="runtime inventory|closure policy"):
         _load_policy()

@@ -79,7 +79,7 @@
     },
     {
       "mode": "0400",
-      "sha256": "67d70e9107b99f365dc6dd4b4cf63d0287525a260efc15dbfb89d3ad7a79cc51",
+      "sha256": "aaa0fa4feb941f25535ed2805c700fc6ad94aad965a28ceb1103dda23c0af04c",
       "source": "engines/nautilus/runtime_v1/backtest_runner.py",
       "target": "/engine/runtime_v1/backtest_runner.py"
     },
@@ -88,6 +88,12 @@
       "sha256": "11be142a57862b61187c031f8cc9efc6b8275b97f54e3e8134e7ec7364bfcfd3",
       "source": "engines/nautilus/runtime_v1/bootstrap.py",
       "target": "/engine/runtime_v1/bootstrap.py"
+    },
+    {
+      "mode": "0400",
+      "sha256": "07f570e116ca45c7c6f25f695099b3425eb5fb1f9e27895b8a1eb5cc0f409810",
+      "source": "engines/nautilus/runtime_v1/currency_metadata.py",
+      "target": "/engine/runtime_v1/currency_metadata.py"
     },
     {
       "mode": "0400",
@@ -109,19 +115,19 @@
     },
     {
       "mode": "0400",
-      "sha256": "2c79e3fba6e3e9ed88d06e8c0f8731e3412537f9255588728ab58ab116d5482f",
+      "sha256": "607545a2b6983131ab2526c4f2b450365dc6fe11ac2a051eb61074619aff505e",
       "source": "engines/nautilus/runtime_v1/event_collector.py",
       "target": "/engine/runtime_v1/event_collector.py"
     },
     {
       "mode": "0400",
-      "sha256": "c751d312a1ef6268a304ca4dab18276fe02a1312f46b5ebaef1d493ab5bd59ae",
+      "sha256": "989dff09fbe6b0fb22d23780c1b553bff17921bbe59eb4a8e9c587dcddb08ecd",
       "source": "engines/nautilus/runtime_v1/event_projector.py",
       "target": "/engine/runtime_v1/event_projector.py"
     },
     {
       "mode": "0400",
-      "sha256": "7bd2dea14f916557390150400500673965c7bcb6abe335f11ffb237d85a2254d",
+      "sha256": "a4c6c8a7fa266859ff1fe97af8b1324de2b4d67359a1ccafc8fbce38c125bc8e",
       "source": "engines/nautilus/runtime_v1/final_state.py",
       "target": "/engine/runtime_v1/final_state.py"
     },
@@ -139,7 +145,7 @@
     },
     {
       "mode": "0400",
-      "sha256": "934ce36a5aca24be87f8af36127da26225d8dd92b2f9f6088789529a280a3aa2",
+      "sha256": "5863522456b12a0396804690f3410b7ba49f67c1de777b876fb71e0a64f915e2",
       "source": "engines/nautilus/runtime_v1/instrument_factory.py",
       "target": "/engine/runtime_v1/instrument_factory.py"
     },
@@ -181,12 +187,12 @@
     },
     {
       "mode": "0400",
-      "sha256": "c3a38c76bfe2264f146ef90c2ed80b63d32e752a83bec946346c349c87d35861",
+      "sha256": "cd4d6224486452a79ef2ea818e245fcf7ad7431f009a91dde4d5238b60eea9f8",
       "source": "engines/nautilus/runtime_v1/target_strategy.py",
       "target": "/engine/runtime_v1/target_strategy.py"
     }
   ],
-  "runtime_inventory_sha256": "f1a7a2e05dffdebfbce14a92754e33dfd9490de2c8f7f539a381c6206b0f3523",
+  "runtime_inventory_sha256": "039e9c40c15270c816382870165ade5721edb11bcb1b4b8cb2f6af11b194a8f1",
   "sandbox_profile_sha256": "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e",
   "schema": "trading-agent-p1-runtime-closure-policy/v1",
   "semantic_profile": "nautilus-p1-real-backtest-v1",
