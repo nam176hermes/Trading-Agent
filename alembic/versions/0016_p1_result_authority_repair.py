@@ -31,22 +31,30 @@ def upgrade() -> None:
           v_prior_search_path pg_catalog.text;
           v_old constant pg_catalog.text := '88889999aaaabbbb';
           v_new constant pg_catalog.text := '89ab89ab89ab89ab';
+          v_old_canonical constant pg_catalog.text :=
+            E'          v_legacy_document := public.canonical_domain_json_string(\n' ||
+            E'            (v_document - ''validation_metadata'' - ''validator_id'')::text\n' ||
+            E'          );';
+          v_new_canonical constant pg_catalog.text :=
+            E'          v_legacy_document := public.canonical_domain_json(\n' ||
+            E'            v_document - ''validation_metadata'' - ''validator_id''\n' ||
+            E'          );';
           v_prior_source_sha256 constant pg_catalog.text :=
             '6e8cae1e8f9f120fbf79fc0a9eb444ce0c1163b708e35ec71ec813561c20f445';
           v_repaired_source_sha256 constant pg_catalog.text :=
-            '69704d5c3ac1516339095865238eb650da4b2bda0f95a3b5a675b50f00a389b5';
+            'f7e70b8bc22d44600da7357657c8a7016035e5d2e6d71caaf5ea87351e33c230';
           v_prior_definition_sha256 constant pg_catalog.text :=
             'aea1129235f91d7645741c04912590a31cc3e667df43867c8b3a7cecfec9b743';
           v_repaired_definition_sha256 constant pg_catalog.text :=
-            '6d76e0cadddd6f204cb445f38e7bc7462ac92342be3cca5fa639071bf182db2a';
+            'ec8e58681820e129ca4febf16ea3ab20751856d9d9cb710604fb2c80d5a9569f';
           v_prior_p1_source_sha256 constant pg_catalog.text :=
             '8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089';
           v_repaired_p1_source_sha256 constant pg_catalog.text :=
-            '54d6e1445973fbe7902709d7a118c65b152cb7d6e6a2e2cd1b257e83ede5f96e';
+            '4a04f41c0ac9dcb45ae09aa02b245cd07f4ea5f287c6956011d1c63d7c8c5eb4';
           v_prior_p1_definition_sha256 constant pg_catalog.text :=
             '04ec80653561e0c40cd57d1920642dd6e1e878d0e11f4729cd4b97273e06dd5b';
           v_repaired_p1_definition_sha256 constant pg_catalog.text :=
-            'bd787ebf4a5e3f1526667346b47e9474716061c7be75271ed8cfc8a9f270177f';
+            'd2bd044da6afcb5647160e32fffbfa49619fabcfdc8a85dba78beaf3e30c330e';
           v_helper_source_sha256 constant pg_catalog.text :=
             '342200fa9e9feefd84031d758232273aef8aa00c05880b5ee16f42fa5b967253';
           v_helper_definition_sha256 constant pg_catalog.text :=
@@ -57,6 +65,8 @@ def upgrade() -> None:
             '42daedaeeb38b9d9f18f8c030ea5d28e3b38c25a5ec592d94b18d6be697b0c3c';
           v_old_count pg_catalog.int4;
           v_new_count pg_catalog.int4;
+          v_old_canonical_count pg_catalog.int4;
+          v_new_canonical_count pg_catalog.int4;
         BEGIN
           v_prior_search_path := pg_catalog.current_setting('search_path', false);
           PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
@@ -130,7 +140,25 @@ def upgrade() -> None:
             RAISE EXCEPTION 'P1 result-authority UUID variant count is invalid'
               USING ERRCODE = 'P2D08';
           END IF;
-          v_repaired_definition := pg_catalog.replace(v_definition, v_old, v_new);
+          v_old_canonical_count := (
+            pg_catalog.length(v_definition) - pg_catalog.length(
+              pg_catalog.replace(v_definition, v_old_canonical, '')
+            )
+          ) / pg_catalog.length(v_old_canonical);
+          v_new_canonical_count := (
+            pg_catalog.length(v_definition) - pg_catalog.length(
+              pg_catalog.replace(v_definition, v_new_canonical, '')
+            )
+          ) / pg_catalog.length(v_new_canonical);
+          IF v_old_canonical_count <> 1 OR v_new_canonical_count <> 0 THEN
+            RAISE EXCEPTION 'P1 result-authority canonical projection is invalid'
+              USING ERRCODE = 'P2D08';
+          END IF;
+          v_repaired_definition := pg_catalog.replace(
+            pg_catalog.replace(v_definition, v_old, v_new),
+            v_old_canonical,
+            v_new_canonical
+          );
           EXECUTE v_repaired_definition;
 
           SELECT
@@ -214,7 +242,25 @@ def upgrade() -> None:
             RAISE EXCEPTION 'P1 event authority UUID variant count is invalid'
               USING ERRCODE = 'P2D08';
           END IF;
-          v_repaired_definition := pg_catalog.replace(v_definition, v_old, v_new);
+          v_old_canonical_count := (
+            pg_catalog.length(v_definition) - pg_catalog.length(
+              pg_catalog.replace(v_definition, v_old_canonical, '')
+            )
+          ) / pg_catalog.length(v_old_canonical);
+          v_new_canonical_count := (
+            pg_catalog.length(v_definition) - pg_catalog.length(
+              pg_catalog.replace(v_definition, v_new_canonical, '')
+            )
+          ) / pg_catalog.length(v_new_canonical);
+          IF v_old_canonical_count <> 1 OR v_new_canonical_count <> 0 THEN
+            RAISE EXCEPTION 'P1 event-authority canonical projection is invalid'
+              USING ERRCODE = 'P2D08';
+          END IF;
+          v_repaired_definition := pg_catalog.replace(
+            pg_catalog.replace(v_definition, v_old, v_new),
+            v_old_canonical,
+            v_new_canonical
+          );
           EXECUTE v_repaired_definition;
           SELECT
             pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(

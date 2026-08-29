@@ -735,7 +735,7 @@ def test_worker_lifecycle_calls_fail_closed_when_the_lease_fence_is_stale() -> N
 
 
 def test_worker_finalize_retry_binds_retry_fence_and_sanitized_metadata() -> None:
-    connection = _Connection({"finalized": True}, None)
+    connection = _Connection(None, {"finalized": True})
     repository = _worker(connection)
     generated = iter(("event_terminal", "event_retry", "artifact_retry"))
     repository._new_id = lambda prefix: next(generated)
@@ -786,7 +786,8 @@ def test_worker_finalize_retry_binds_retry_fence_and_sanitized_metadata() -> Non
         retry=True,
     )
 
-    finalize_sql, parameters = connection.calls[0]
+    assert "INSERT INTO job_artifacts" in connection.calls[0][0]
+    finalize_sql, parameters = connection.calls[1]
     assert "job_plane.worker_finalize_paper" in finalize_sql
     assert parameters[:13] == (
         "job",
@@ -823,7 +824,7 @@ def test_worker_finalize_retry_binds_retry_fence_and_sanitized_metadata() -> Non
             },
         },
     }
-    artifact_sql, artifact_parameters = connection.calls[1]
+    artifact_sql, artifact_parameters = connection.calls[0]
     assert "INSERT INTO job_artifacts" in artifact_sql
     assert artifact_parameters == (
         "artifact_retry",
@@ -869,7 +870,7 @@ def test_worker_finalize_rejects_invalid_hash_and_attempt_fence_before_database(
 
 
 def test_worker_finalize_keeps_artifact_and_transition_in_one_transaction() -> None:
-    connection = _Connection({"finalized": True}, None)
+    connection = _Connection(None, {"finalized": True})
     repository = _worker(connection)
     generated = iter(("event_terminal", "artifact_1"))
     repository._new_id = lambda prefix: next(generated)
@@ -900,7 +901,8 @@ def test_worker_finalize_keeps_artifact_and_transition_in_one_transaction() -> N
         artifacts=(artifact,),
     )
 
-    finalize_sql, parameters = connection.calls[0]
+    assert "INSERT INTO job_artifacts" in connection.calls[0][0]
+    finalize_sql, parameters = connection.calls[1]
     assert "job_plane.worker_finalize_paper" in finalize_sql
     assert len(parameters) == 19
     assert parameters[:10] == (
@@ -915,7 +917,6 @@ def test_worker_finalize_keeps_artifact_and_transition_in_one_transaction() -> N
         "trace-finalize",
         "event_terminal",
     )
-    assert "INSERT INTO job_artifacts" in connection.calls[1][0]
 
 
 def test_worker_recovery_passes_the_complete_observed_fence() -> None:

@@ -416,37 +416,8 @@ class WorkerRepository:
         )
         with self._pool.connection() as connection:
             with connection.transaction():
-                authority = connection.execute(
-                    """
-                    SELECT job_plane.worker_finalize_paper(
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
-                    ) AS finalized
-                    """,
-                    (
-                        job_id,
-                        attempt_id,
-                        worker_id,
-                        lease_token,
-                        source.value,
-                        attempt_outcome,
-                        target.value,
-                        reason_code,
-                        trace_id,
-                        self._new_id("event"),
-                        exit_code,
-                        termination_reason,
-                        result_hash,
-                        metadata_json,
-                        error_code,
-                        error_message,
-                        retry,
-                        self._new_id("event") if retry else None,
-                        event_metadata_json,
-                    ),
-                ).fetchone()
-                if authority is None or not authority["finalized"]:
-                    raise _FinalizeFenceLost
+                terminal_event_id = self._new_id("event")
+                retry_event_id = self._new_id("event") if retry else None
                 for artifact in artifacts:
                     validation_metadata = json.dumps(
                         getattr(artifact, "validation_metadata", {}),
@@ -468,6 +439,37 @@ class WorkerRepository:
                             validation_metadata,
                         ),
                     )
+                authority = connection.execute(
+                    """
+                    SELECT job_plane.worker_finalize_paper(
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
+                    ) AS finalized
+                    """,
+                    (
+                        job_id,
+                        attempt_id,
+                        worker_id,
+                        lease_token,
+                        source.value,
+                        attempt_outcome,
+                        target.value,
+                        reason_code,
+                        trace_id,
+                        terminal_event_id,
+                        exit_code,
+                        termination_reason,
+                        result_hash,
+                        metadata_json,
+                        error_code,
+                        error_message,
+                        retry,
+                        retry_event_id,
+                        event_metadata_json,
+                    ),
+                ).fetchone()
+                if authority is None or not authority["finalized"]:
+                    raise _FinalizeFenceLost
                 return True
 
     @staticmethod
