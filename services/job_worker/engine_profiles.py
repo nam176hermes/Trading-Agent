@@ -13,6 +13,7 @@ from engines.nautilus.runtime_v1.profile import (
 @dataclass(frozen=True, slots=True)
 class EngineProfilePolicy:
     profile: str
+    closure_sha256: str
     semantic_profile: str
     command_type: str
     manifest_schema_version: int
@@ -36,6 +37,9 @@ class EngineProfilePolicy:
 
 P1_REAL_BACKTEST_POLICY = EngineProfilePolicy(
     profile=P1_REAL_BACKTEST_PROFILE,
+    closure_sha256=(
+        "75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069"
+    ),
     semantic_profile=P1_REAL_BACKTEST_SEMANTIC_PROFILE,
     command_type="RunBacktest",
     manifest_schema_version=8,

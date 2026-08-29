@@ -20,7 +20,11 @@ from .safety_state import AuthorityBoundSafetyPreflight, SafetyStateClient
 from .worker import JobWorker, WORKER_LEASE_SECONDS
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .command_registry import WorkerRuntimeAuthority
+    from .engine_artifacts import EngineArtifactBinding
+    from .nautilus_closure import NautilusClosureConfig
 
 EXPECTED_DATABASE_REVISION = CANONICAL_DATABASE_REVISION
 _FORBIDDEN_AUTHORITY_KEYS = frozenset({
@@ -39,6 +43,7 @@ def build_worker(
     *,
     authority: WorkerRuntimeAuthority | None = None,
     engine_spawn_provider: object | None = None,
+    engine_result_validator: object | None = None,
     engine_event_ingestor: object | None = None,
 ) -> JobWorker:
     values = os.environ if source is None else source
@@ -50,6 +55,8 @@ def build_worker(
         raise ValueError(
             "engine spawn and durable-ingestion authority must be injected together"
         )
+    if engine_result_validator is not None and engine_spawn_provider is None:
+        raise ValueError("engine result validation requires complete engine authority")
     selected_authority = authority or attest_worker_runtime_authority()
     runtime_authority = selected_authority.runtime_authority
     safety_authority = getattr(runtime_authority, "safety", None)
@@ -84,8 +91,10 @@ def build_worker(
                 clock=lambda: datetime.now(UTC),
             ),
             "engine_spawn_provider": engine_spawn_provider,
-            "engine_result_validator": EngineResultValidator(
-                runtime_paths.artifact_root
+            "engine_result_validator": (
+                engine_result_validator
+                if engine_result_validator is not None
+                else EngineResultValidator(runtime_paths.artifact_root)
             ),
             "engine_event_ingestor": engine_event_ingestor,
         }
@@ -103,6 +112,46 @@ def build_worker(
         safety_preflight=safety_preflight,
         lease_seconds=WORKER_LEASE_SECONDS,
         **engine_dependencies,
+    )
+
+
+def build_p1_worker(
+    repository: WorkerRepository,
+    source: Mapping[str, str] | None = None,
+    *,
+    closure_config: NautilusClosureConfig,
+    transport_root: Path,
+    artifact_bindings: tuple[EngineArtifactBinding, ...],
+    authority: WorkerRuntimeAuthority | None = None,
+) -> JobWorker:
+    """Compose the fixed P1 lane from deployment-owned authority inputs."""
+
+    from .engine_artifacts import HashBoundArtifactResolver
+    from .engine_profiles import P1_REAL_BACKTEST_POLICY
+    from .engine_results import EngineResultValidator
+    from .p1_engine_spawn import P1EngineSpawnProvider
+    from .p1_nautilus_closure import attest_p1_nautilus_closure
+
+    selected_authority = authority or attest_worker_runtime_authority()
+    profile = P1_REAL_BACKTEST_POLICY
+    provider = P1EngineSpawnProvider(
+        transport_root=transport_root,
+        attest_closure=lambda: attest_p1_nautilus_closure(closure_config),
+        expected_manifest_schema_version=profile.manifest_schema_version,
+        profile_policy=profile,
+        attest_inputs=HashBoundArtifactResolver(artifact_bindings),
+        monotonic_ns=time.monotonic_ns,
+    )
+    return build_worker(
+        repository,
+        source,
+        authority=selected_authority,
+        engine_spawn_provider=provider,
+        engine_result_validator=EngineResultValidator(
+            selected_authority.runtime_paths.artifact_root,
+            p1_product_closure_sha256=profile.closure_sha256,
+        ),
+        engine_event_ingestor=repository.engine_event_ingestor(),
     )
 
 

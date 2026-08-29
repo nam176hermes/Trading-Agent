@@ -124,6 +124,7 @@ def _adapt_p1_closure(value: object) -> _legacy.CompleteEngineClosureAttestation
     if (
         attestation.manifest_schema_version != profile.manifest_schema_version
         or attestation.profile != profile.profile
+        or attestation.closure_sha256 != profile.closure_sha256
         or attestation.semantic_profile != profile.semantic_profile
         or attestation.entrypoint != PurePosixPath(profile.entrypoint)
         or attestation.argv_prefix != profile.argv_prefix

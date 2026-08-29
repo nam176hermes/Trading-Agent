@@ -346,7 +346,7 @@ def _p1_closure(tmp_path: Path) -> P1EngineClosureAttestation:
         (
             json.dumps(
                 {
-                    "closure_sha256": closure.closure_sha256,
+                    "closure_sha256": P1_REAL_BACKTEST_POLICY.closure_sha256,
                     "engine_version": P1_REAL_BACKTEST_POLICY.engine_version,
                     "event_schema": P1_REAL_BACKTEST_POLICY.event_schema,
                     "profile": P1_REAL_BACKTEST_POLICY.profile,
@@ -367,7 +367,7 @@ def _p1_closure(tmp_path: Path) -> P1EngineClosureAttestation:
         manifest_schema_version=8,
         profile=P1_REAL_BACKTEST_POLICY.profile,
         source_commit=closure.source_commit,
-        closure_sha256=closure.closure_sha256,
+        closure_sha256=P1_REAL_BACKTEST_POLICY.closure_sha256,
         mounts=closure.mounts,
         entrypoint=closure.entrypoint,
         semantic_profile=P1_REAL_BACKTEST_POLICY.semantic_profile,
@@ -536,6 +536,7 @@ def test_p1_provider_uses_only_the_code_owned_schema8_profile(
         {"argv_prefix": P1_REAL_BACKTEST_POLICY.argv_prefix + ("--extra",)},
         {"result_validator_id": "nautilus-backtest-result-v1"},
         {"runtime_family": "cython-v2"},
+        {"closure_sha256": "0" * 64},
     ),
 )
 def test_p1_provider_rejects_generation_profile_or_protocol_substitution(
