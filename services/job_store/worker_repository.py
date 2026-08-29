@@ -19,7 +19,11 @@ from psycopg_pool import ConnectionPool
 from packages.job_contracts import JobPayload, JobState, JobType, parse_payload, validate_transition
 from services.job_worker.recovery import ProcessIdentity, ProcessInspector
 
-from .config import CANONICAL_DATABASE_REVISION, JobStoreSettings
+from .config import (
+    CANONICAL_DATABASE_REVISION,
+    P1_DISPOSABLE_DATABASE_REVISION,
+    JobStoreSettings,
+)
 from .errors import InvalidTraceId
 
 
@@ -120,6 +124,18 @@ class WorkerRepository:
             raise ValueError("worker database role authority is invalid")
         if expected_revision != CANONICAL_DATABASE_REVISION:
             raise ValueError("worker database revision authority is invalid")
+        self._assert_database_identity(expected_user, expected_revision)
+
+    def assert_p1_disposable_runtime_identity(self) -> None:
+        """Require the code-owned disposable P1 worker role and 0013 head."""
+
+        self._assert_database_identity(
+            "trading_job_worker", P1_DISPOSABLE_DATABASE_REVISION
+        )
+
+    def _assert_database_identity(
+        self, expected_user: str, expected_revision: str
+    ) -> None:
         try:
             with self._pool.connection() as connection:
                 row = connection.execute(

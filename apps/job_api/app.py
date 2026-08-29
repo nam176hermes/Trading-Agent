@@ -42,6 +42,7 @@ from services.job_store import (
     JobStoreError,
     StaleTransition,
 )
+from services.job_store.config import P1_DISPOSABLE_DATABASE_REVISION
 
 from .auth import BearerAuthenticator
 from .config import JobApiSettings
@@ -440,10 +441,12 @@ def _authority_ready(authority: ValidatedJobPlaneAuthority) -> bool:
         return False
 
 
-def create_app(
+def _create_app(
     settings: JobApiSettings,
     repository: Any,
     authority: ValidatedJobPlaneAuthority,
+    *,
+    expected_revision: str,
 ) -> FastAPI:
     if not isinstance(authority, ValidatedJobPlaneAuthority):
         raise ProtectedAuthorityError("JOB_PLANE_AUTHORITY_INVALID") from None
@@ -525,7 +528,7 @@ def create_app(
     )
     def health_ready(request: Request) -> JSONResponse:
         database_ready, revision_ready = _probe_repository(
-            repository, settings.expected_revision
+            repository, expected_revision
         )
         ready = (
             settings.bearer_token is not None
@@ -562,7 +565,7 @@ def create_app(
             {**command.model_dump(mode="json"), "actor": request.state.principal}
         )
         _require_mutation_authority(
-            authority, repository, settings.expected_revision
+            authority, repository, expected_revision
         )
         result = _call_repository(
             lambda: repository.enqueue(
@@ -656,7 +659,7 @@ def create_app(
         request: Request, job_id: str, command: CancelJobBody
     ) -> JobEnvelope:
         _require_mutation_authority(
-            authority, repository, settings.expected_revision
+            authority, repository, expected_revision
         )
         job = _call_repository(
             lambda: repository.request_cancel(
@@ -666,3 +669,33 @@ def create_app(
         return _contract_envelope(JobEnvelope, request, _job_metadata(job))
 
     return app
+
+
+def create_app(
+    settings: JobApiSettings,
+    repository: Any,
+    authority: ValidatedJobPlaneAuthority,
+) -> FastAPI:
+    """Build the generic settings-owned 0011 Job API."""
+
+    return _create_app(
+        settings,
+        repository,
+        authority,
+        expected_revision=settings.expected_revision,
+    )
+
+
+def create_p1_disposable_app(
+    settings: JobApiSettings,
+    repository: Any,
+    authority: ValidatedJobPlaneAuthority,
+) -> FastAPI:
+    """Build the bounded disposable P1 Job API without an external selector."""
+
+    return _create_app(
+        settings,
+        repository,
+        authority,
+        expected_revision=P1_DISPOSABLE_DATABASE_REVISION,
+    )
