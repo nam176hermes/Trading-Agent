@@ -12,6 +12,8 @@ from tests.nautilus_runtime_contracts.test_result import (
     _batch,
     _p1_claim,
     _p1_request,
+    _raw,
+    _with_attribute,
 )
 
 
@@ -138,6 +140,32 @@ def test_p1_validator_rejects_the_old_aggregate_completion(tmp_path: Path) -> No
             "nautilus-p1-event-stream-v1",
             _p1_claim(),
             request=request,
+            stdout=_stdout(tmp_path, raw),
+            exit_code=0,
+        )
+
+
+def test_worker_contains_deep_source_signal_parser_failure(tmp_path: Path) -> None:
+    from services.job_worker.engine_results import (
+        EngineResultValidationError,
+        EngineResultValidator,
+    )
+
+    _original, original = _batch()
+    events = list(original)
+    events[1] = _with_attribute(
+        events[1], "source_signal_ids", "[" * 2_000 + '"signal"' + "]" * 2_000
+    )
+    batch = tuple(events)
+    raw = _raw(batch)
+
+    with pytest.raises(EngineResultValidationError, match="P1 Nautilus"):
+        EngineResultValidator(
+            tmp_path, p1_product_closure_sha256="a" * 64
+        ).validate(
+            "nautilus-p1-event-stream-v1",
+            _p1_claim(),
+            request=_p1_request(),
             stdout=_stdout(tmp_path, raw),
             exit_code=0,
         )

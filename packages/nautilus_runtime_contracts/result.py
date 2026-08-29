@@ -7,6 +7,7 @@ from decimal import Decimal
 import hashlib
 import json
 import re
+from typing import get_args
 
 from packages.engine_contracts import (
     EngineCommandEnvelope,
@@ -17,7 +18,14 @@ from packages.engine_contracts import (
     payload_digest,
 )
 
-from .events import P1Event, P1RunCompleted, P1RunStarted, P1_EVENT_ADAPTER, event_message_id
+from .events import (
+    P1Event,
+    P1RunCompleted,
+    P1RunStarted,
+    P1_EVENT_ADAPTER,
+    P1_EVENT_MODELS,
+    event_message_id,
+)
 from .state_machine import validate_event_stream
 
 
@@ -35,11 +43,13 @@ P1_EVENT_FAMILIES = {
     "AccountObserved": EventFamily.ACCOUNT_STATE,
     "RunCompleted": EventFamily.ENGINE_LIFECYCLE,
 }
-_NULL_NATIVE_TYPE = {
-    "RunStarted",
-    "TargetAccepted",
-    "TargetQuantityPlanned",
-    "RunCompleted",
+_EXPECTED_ATTRIBUTES = {
+    str(get_args(model.model_fields["event_type"].annotation)[0]): frozenset(
+        name
+        for name, field in model.model_fields.items()
+        if name != "event_type" and field.annotation is not type(None)
+    )
+    for model in P1_EVENT_MODELS
 }
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 
@@ -69,29 +79,38 @@ def _decode_event(envelope: EngineEventEnvelope) -> P1Event:
         raise ValueError("P1 event type is not allowlisted") from exc
     if envelope.payload.family is not expected_family:
         raise ValueError("P1 event family is invalid")
+    expected_attributes = _EXPECTED_ATTRIBUTES[event_type]
+    attribute_names = tuple(
+        attribute.name for attribute in envelope.payload.attributes
+    )
+    if (
+        len(attribute_names) != len(set(attribute_names))
+        or frozenset(attribute_names) != expected_attributes
+    ):
+        raise ValueError("P1 event attribute set is invalid")
     document: dict[str, object] = {"event_type": event_type}
-    if event_type in _NULL_NATIVE_TYPE:
+    if "native_type" not in expected_attributes:
         document["native_type"] = None
-    names: set[str] = set()
     for attribute in envelope.payload.attributes:
-        if attribute.name in names:
-            raise ValueError("P1 event contains a duplicate attribute")
-        names.add(attribute.name)
         value: object = attribute.value
         if attribute.name == "source_signal_ids":
             if type(value) is not str:
                 raise ValueError("P1 source signal IDs are invalid")
             try:
                 value = json.loads(value)
-            except (TypeError, ValueError) as exc:
+            except (RecursionError, TypeError, ValueError) as exc:
                 raise ValueError("P1 source signal IDs are invalid") from exc
-            if type(value) is not list or canonical_json_bytes(value).decode() != attribute.value:
+            if (
+                type(value) is not list
+                or any(type(item) is not str for item in value)
+                or canonical_json_bytes(value).decode() != attribute.value
+            ):
                 raise ValueError("P1 source signal IDs are invalid")
         document[attribute.name] = value
     return P1_EVENT_ADAPTER.validate_json(canonical_json_bytes(document))
 
 
-def validate_p1_result(
+def _validate_p1_result(
     request: EngineCommandEnvelope,
     envelopes: tuple[EngineEventEnvelope, ...],
     *,
@@ -172,6 +191,26 @@ def validate_p1_result(
         unrealized_pnl=completion.unrealized_pnl,
         events=validated,
     )
+
+
+def validate_p1_result(
+    request: EngineCommandEnvelope,
+    envelopes: tuple[EngineEventEnvelope, ...],
+    *,
+    raw: bytes,
+    expected_closure_digest: str,
+) -> P1ValidatedResult:
+    """Contain parser recursion/type failures at the P1 trust boundary."""
+
+    try:
+        return _validate_p1_result(
+            request,
+            envelopes,
+            raw=raw,
+            expected_closure_digest=expected_closure_digest,
+        )
+    except (RecursionError, TypeError) as exc:
+        raise ValueError("P1 result parser input is invalid") from exc
 
 
 __all__ = [

@@ -296,3 +296,53 @@ def test_rejects_duplicate_event_attribute_names_even_when_values_match() -> Non
             raw=_raw(batch),
             expected_closure_digest="a" * 64,
         )
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (("event_type", "RunStarted"), ("native_type", "Order")),
+)
+def test_rejects_attribute_collision_with_code_owned_fields(
+    name: str, value: str
+) -> None:
+    from packages.nautilus_runtime_contracts.result import validate_p1_result
+
+    _original, original = _batch()
+    first = original[0]
+    payload = first.payload.model_copy(
+        update={
+            "attributes": first.payload.attributes
+            + (EventAttribute(name=name, value=value),)
+        }
+    )
+    changed = first.model_copy(
+        update={"payload": payload, "payload_digest": payload_digest(payload)}
+    )
+    batch = (changed, *original[1:])
+
+    with pytest.raises(ValueError, match="attribute"):
+        validate_p1_result(
+            _p1_request(),
+            batch,
+            raw=_raw(batch),
+            expected_closure_digest="a" * 64,
+        )
+
+
+def test_normalizes_deep_source_signal_nesting_to_value_error() -> None:
+    from packages.nautilus_runtime_contracts.result import validate_p1_result
+
+    _original, original = _batch()
+    events = list(original)
+    events[1] = _with_attribute(
+        events[1], "source_signal_ids", "[" * 2_000 + '"signal"' + "]" * 2_000
+    )
+    batch = tuple(events)
+
+    with pytest.raises(ValueError):
+        validate_p1_result(
+            _p1_request(),
+            batch,
+            raw=_raw(batch),
+            expected_closure_digest="a" * 64,
+        )
