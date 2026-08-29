@@ -20,6 +20,18 @@ EXPECTED_FIXTURES = {
     "market_data_sha256": "d390750a1d51b6f333efc7092cd99f2c6752ca6ab51daeaa800171ea92005c9c",
     "strategy_configuration_sha256": "c4002efb2f0f2b14c94699db59ef8c5733602e41c3bfe60999670fb7c0671470",
 }
+_RUNTIME_NATIVE_ENV = (
+    "P1_NAUTILUS_BASE_RUNTIME",
+    "P1_NAUTILUS_ARTIFACT_DIRECTORY",
+    "P1_NAUTILUS_SANDBOX",
+    "P1_NAUTILUS_TRANSPORT_ROOT",
+)
+_RUNTIME_POSTGRES_ENV = (
+    "TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES",
+    "TRADING_TEST_DISPOSABLE_APPROVAL_RECORD",
+    "TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE",
+    "TRADING_TEST_DISPOSABLE_FIXTURE_PLAN",
+)
 
 
 def _initialize_git_repository(path: Path, marker: str) -> tuple[str, str]:
@@ -108,7 +120,12 @@ def _patch_complete_native_preflight(
     monkeypatch.setattr(
         vertical,
         "attest_worker_runtime_authority",
-        lambda: SimpleNamespace(authority_document_sha256="3" * 64),
+        lambda: SimpleNamespace(
+            application_revision="1" * 40,
+            authority_document_sha256="3" * 64,
+            backend_revision="1" * 40,
+            runtime_authority=SimpleNamespace(source_tree="2" * 40),
+        ),
     )
     monkeypatch.setattr(
         vertical,
@@ -498,3 +515,134 @@ def test_ambient_database_setting_is_blocked_before_downstream_authority(
     assert len(observed_names) == 1
     assert "TRADING_DATABASE_URL" in observed_names[0]
     assert downstream_calls == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("application_revision", "backend_revision", "source_tree"),
+)
+def test_worker_runtime_authority_must_bind_exact_checkout_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mutation: str,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+
+    _patch_complete_native_preflight(
+        monkeypatch,
+        vertical,
+        closure_sha256=P1_REAL_BACKTEST_POLICY.closure_sha256,
+    )
+    authority = {
+        "application_revision": "1" * 40,
+        "authority_document_sha256": "3" * 64,
+        "backend_revision": "1" * 40,
+        "runtime_authority": SimpleNamespace(source_tree="2" * 40),
+    }
+    if mutation == "source_tree":
+        authority["runtime_authority"] = SimpleNamespace(source_tree="9" * 40)
+    else:
+        authority[mutation] = "9" * 40
+    monkeypatch.setattr(
+        vertical,
+        "attest_worker_runtime_authority",
+        lambda: SimpleNamespace(**authority),
+    )
+
+    result = vertical.main(_complete_arguments(tmp_path))
+
+    assert result == 2
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["reason"] == "EXTERNAL_AUTHORITY_PARTIAL_OR_INVALID"
+    assert receipt["job_mutated"] is False
+
+
+def test_required_runtime_vertical_slice_reaches_exact_durable_success(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from tests.jobs._postgres import disposable_database, upgrade_to_head
+
+    supplied = {
+        name: os.environ.get(name, "")
+        for name in (*_RUNTIME_NATIVE_ENV, *_RUNTIME_POSTGRES_ENV)
+    }
+    if not any(supplied.values()):
+        pytest.skip("exact external P1 native/PostgreSQL authority is absent")
+    assert all(supplied.values()), "external P1 runtime authority is partial"
+    assert supplied["TRADING_TEST_ALLOW_DISPOSABLE_POSTGRES"] == "YES"
+    assert supplied["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"] == (
+        "DISPOSABLE_PG_GREEN"
+    )
+
+    fixture_root = tmp_path / "vertical-slice-inputs"
+    fixture_root.mkdir(mode=0o700)
+    external_fixtures: dict[str, Path] = {}
+    for name, source in vertical.CANONICAL_FIXTURES.items():
+        destination = fixture_root / source.name
+        destination.write_bytes(source.read_bytes())
+        destination.chmod(0o400)
+        external_fixtures[name] = destination
+
+    operation_id = "p1-vertical-slice-v1"
+    with disposable_database(operation_id=operation_id, planned=True) as owner:
+        upgrade_to_head(owner)
+        plan = json.loads(
+            Path(supplied["TRADING_TEST_DISPOSABLE_FIXTURE_PLAN"]).read_bytes()
+        )
+        slots = [
+            slot
+            for slot in plan["slots"]
+            if slot["test_path"] == "tests/p1_nautilus/test_vertical_slice_e2e.py"
+            and slot["operation_id"] == operation_id
+            and slot["port"] == owner.port
+        ]
+        assert len(slots) == 1
+        slot = slots[0]
+        result = vertical.main(
+            [
+                "--execute",
+                "--p1-closure-root",
+                supplied["P1_NAUTILUS_BASE_RUNTIME"],
+                "--p1-closure-artifacts",
+                supplied["P1_NAUTILUS_ARTIFACT_DIRECTORY"],
+                "--bubblewrap",
+                supplied["P1_NAUTILUS_SANDBOX"],
+                "--transport-root",
+                supplied["P1_NAUTILUS_TRANSPORT_ROOT"],
+                "--postgres-approval",
+                supplied["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"],
+                "--postgres-scope",
+                supplied["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"],
+                "--pgdata",
+                slot["pgdata"],
+                "--pg-port",
+                str(owner.port),
+                *[
+                    value
+                    for name, path in external_fixtures.items()
+                    for value in (f"--{name.replace('_', '-')}", str(path))
+                ],
+            ]
+        )
+
+    assert result == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "PASS"
+    assert receipt["reason"] == "P1_VERTICAL_SLICE_COMPLETED"
+    assert receipt["job_mutated"] is True
+    assert receipt["authority_limits"] == {
+        "live_authorized": False,
+        "network_trading_authorized": False,
+        "production_authorized": False,
+    }
+    evidence = receipt["evidence"]
+    assert evidence["worker_run_count"] == 1
+    assert evidence["result_sha256"] == evidence["batch_sha256"]
+    assert len(evidence["engine_event_receipt_sha256"]) == 64
+    assert len(evidence["p1_portfolio_parity_sha256"]) == 64
+    assert len(evidence["final_portfolio_state_hash"]) == 64
