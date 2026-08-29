@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal, localcontext
 from hashlib import sha256
 from io import BytesIO
 import json
@@ -551,6 +551,57 @@ def test_fixed_l1_fill_oracle_accepts_high_and_low_volume_fills(
         for event in stream.events
         if event["event_type"] == "Fill"
     ) == expected_fills
+
+
+def test_fill_fee_oracle_is_independent_of_ambient_decimal_rounding() -> None:
+    run = _partial_fill_run()
+    with localcontext() as context:
+        context.rounding = ROUND_DOWN
+        project_event_stream(
+            _low_volume_inputs(),
+            run,
+            LOW_VOLUME_AUTHORITY,
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
+
+        facts = list(run.native_facts)
+        forged_commissions = iter(("0.2", "998.800978", "0.303", "1008.487259"))
+        for index, fact in enumerate(facts):
+            if fact.kind == "order_filled":
+                commission = next(forged_commissions)
+                facts[index] = replace(
+                    fact,
+                    attributes=tuple(
+                        (name, commission if name == "commission" else value)
+                        for name, value in fact.attributes
+                    ),
+                )
+        forged_cash = "1007781.489629"
+        forged_fees = "2007.791237"
+        forged_run = SimpleNamespace(
+            **{
+                **vars(run),
+                "native_facts": tuple(facts),
+                "balance_facts": (
+                    ("BTC", "0", "0", "0"),
+                    ("USDT", forged_cash, "0", forged_cash),
+                ),
+                "commission_facts": (("USDT", forged_fees),),
+            }
+        )
+        with pytest.raises(ValueError, match="business facts"):
+            project_event_stream(
+                _low_volume_inputs(),
+                forged_run,
+                replace(
+                    LOW_VOLUME_AUTHORITY,
+                    final_cash=forged_cash,
+                    fees=forged_fees,
+                ),
+                closure_digest="a" * 64,
+                upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+            )
 
 
 def test_rejects_fill_timestamp_that_differs_from_execution_quote() -> None:

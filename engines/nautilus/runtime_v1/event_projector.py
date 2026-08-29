@@ -538,7 +538,7 @@ def _validate_business_facts(
                     expected_side, expected_quantity, expected_price = expected_fill
                     expected_commission = (
                         expected_quantity * expected_price * fee_rate
-                    ).quantize(quote_quantum)
+                    ).quantize(quote_quantum, rounding=ROUND_HALF_EVEN)
                     if (
                         type(price_text) is not str
                         or _decimal(price) != price_text
