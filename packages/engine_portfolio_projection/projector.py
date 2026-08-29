@@ -33,11 +33,13 @@ from packages.nautilus_runtime_contracts.events import (
     P1OrderSubmitted,
     P1PositionObserved,
     P1RunCompleted,
+    P1RunStarted,
     event_message_id,
 )
 
 from .models import (
     PortfolioEntry,
+    PortfolioAccountObservationEntry,
     PortfolioProjection,
     ProjectedAccounting,
     ProjectedPortfolioEntry,
@@ -45,6 +47,7 @@ from .models import (
 )
 from .validation import (
     ProjectionError,
+    catalog_digest,
     canonical_authority,
     canonical_events,
     exact_fraction,
@@ -64,6 +67,8 @@ class _OrderProjectionState:
 
 
 def _decimal(value: Fraction, *, field: str) -> Decimal:
+    if value.numerator.bit_length() > 512 or value.denominator.bit_length() > 512:
+        raise ProjectionError(f"{field} exceeds Decimal bounds")
     denominator = value.denominator
     twos = fives = 0
     while denominator % 2 == 0:
@@ -75,8 +80,13 @@ def _decimal(value: Fraction, *, field: str) -> Decimal:
     if denominator != 1:
         raise ProjectionError(f"{field} cannot be represented exactly as Decimal")
     scale = max(twos, fives)
+    if scale > 18:
+        raise ProjectionError(f"{field} exceeds Decimal bounds")
     numerator = value.numerator * (2 ** (scale - twos)) * (5 ** (scale - fives))
-    digits = tuple(int(character) for character in str(abs(numerator))) or (0,)
+    raw_digits = str(abs(numerator))
+    if len(raw_digits) > 128:
+        raise ProjectionError(f"{field} exceeds Decimal bounds")
+    digits = tuple(int(character) for character in raw_digits) or (0,)
     return Decimal((1 if numerator < 0 else 0, digits, -scale))
 
 
@@ -106,6 +116,7 @@ def _identity(
         raise ProjectionError("P1 completion is missing")
     document = {
         "event_semantic_digest": completion.semantic_digest,
+        "catalog_digest": catalog_digest(authority.catalog),
         "instrument": _INSTRUMENT_ADAPTER.dump_python(
             authority.instrument, mode="json"
         ),
@@ -125,9 +136,15 @@ def project_portfolio(
     source = canonical_events(events)
     exact = canonical_authority(authority)
     completion = source[-1]
+    start = source[0]
     if not isinstance(completion, P1RunCompleted):
         raise ProjectionError("P1 completion is missing")
-    stream_digest = completion.semantic_digest
+    if (
+        not isinstance(start, P1RunStarted)
+        or start.catalog_digest != catalog_digest(exact.catalog)
+    ):
+        raise ProjectionError("catalog digest does not match P1 run authority")
+    projection_identity = _identity(source, exact)
     constraints = InstrumentConstraints(exact.instrument)
     precision = exact.instrument.size_increment.precision
     settlement = exact.instrument.settlement_currency
@@ -155,7 +172,9 @@ def project_portfolio(
 
     for event in source[1:-1]:
         if isinstance(event, P1OrderSubmitted):
-            order_id = _business_id(stream_digest, "order", event.client_order_id)
+            order_id = _business_id(
+                projection_identity, "order", event.client_order_id
+            )
             source_id = event_message_id(exact.request_message_id, event)
             order_events.append(
                 OrderEvent.create(
@@ -199,7 +218,7 @@ def project_portfolio(
             source_id = event_message_id(exact.request_message_id, event)
             fill_count = state.fill_count + 1
             execution_id = _business_id(
-                stream_digest,
+                projection_identity,
                 "execution",
                 f"{event.client_order_id}:{fill_count}:{event.sequence}",
             )
@@ -318,7 +337,9 @@ def project_portfolio(
                 except ValueError as exc:
                     raise ProjectionError("position mark is outside catalog authority") from exc
                 provenance = str(
-                    _business_id(stream_digest, "position-observation", event.sequence)
+                    _business_id(
+                        projection_identity, "position-observation", event.sequence
+                    )
                 )
                 mark = PositionMark(
                     price=mark_price,
@@ -355,6 +376,21 @@ def project_portfolio(
                 != unrealized
             ):
                 raise ProjectionError("account observation is not explained by fills")
+            if event is source[-2]:
+                try:
+                    account = PortfolioAccountObservationEntry(
+                        account_id=exact.opening.account_id,
+                        currency=settlement,
+                        cash_balance=Money(event.cash_balance, settlement),
+                        fees=Money(event.fees, settlement),
+                        realized_pnl=Money(event.realized_pnl, settlement),
+                        unrealized_pnl=Money(event.unrealized_pnl, settlement),
+                        effective_at=event.simulation_time,
+                        schema_version="portfolio-entry-v1",
+                    )
+                except ValueError as exc:
+                    raise ProjectionError(str(exc)) from exc
+                entries.append(_projected_entry(exact, event, account))
 
     accounting = ProjectedAccounting(
         cash_balance=_decimal(cash, field="final cash"),
@@ -367,5 +403,5 @@ def project_portfolio(
         order_events=tuple(order_events),
         entries=tuple(entries),
         accounting=accounting,
-        canonical_identity=_identity(source, exact),
+        canonical_identity=projection_identity,
     )

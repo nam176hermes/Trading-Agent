@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import UUID
+from hashlib import sha256
+from uuid import UUID, uuid5
 
 import pytest
 
@@ -35,13 +36,17 @@ from packages.nautilus_runtime_contracts.events import (
     P1RunStarted,
     P1TargetAccepted,
     P1TargetQuantityPlanned,
+    event_message_id,
 )
+from packages.nautilus_runtime_contracts.artifacts import P1InstrumentCatalogV1
 from packages.nautilus_runtime_contracts.semantic import semantic_digest
+from packages.engine_contracts import canonical_json_bytes
 
 
 NOW = datetime(2026, 8, 5, 12, tzinfo=UTC)
 LATER = datetime(2026, 8, 5, 12, 1, tzinfo=UTC)
 DIGEST = "a" * 64
+CATALOG_PROVENANCE = "c" * 64
 REQUEST_A = UUID("10000000-0000-4000-8000-000000000001")
 REQUEST_B = UUID("10000000-0000-4000-8000-000000000002")
 
@@ -50,7 +55,11 @@ def _money(value: str) -> Money:
     return Money(Decimal(value), Currency.USDT)
 
 
-def _instrument(*, settlement: Currency = Currency.USDT) -> InstrumentDefinition:
+def _instrument(
+    *,
+    settlement: Currency = Currency.USDT,
+    multiplier: Decimal = Decimal("1"),
+) -> InstrumentDefinition:
     return InstrumentDefinition(
         instrument_id=InstrumentId("BTCUSDT", ProductType.CRYPTO_SPOT, "BINANCE"),
         raw_symbol="BTCUSDT",
@@ -64,11 +73,34 @@ def _instrument(*, settlement: Currency = Currency.USDT) -> InstrumentDefinition
         maximum_quantity=OrderQuantity(Decimal("1000000"), 6),
         minimum_notional=Money(Decimal("0.01"), settlement),
         maximum_notional=Money(Decimal("100000000"), settlement),
-        multiplier=Decimal("1"),
+        multiplier=multiplier,
         margin=None,
         session_calendar="24X7",
         provenance=InstrumentProvenance("P1CATALOG", "R1", NOW),
     )
+
+
+def _catalog() -> P1InstrumentCatalogV1:
+    return P1InstrumentCatalogV1(
+        schema_version="nautilus-p1-instrument-catalog-v1",
+        instrument_id="BTCUSDT.BINANCE",
+        product_type="crypto_spot",
+        symbol="BTCUSDT",
+        base_currency="BTC",
+        quote_currency="USDT",
+        venue="BINANCE",
+        price_precision=2,
+        size_precision=6,
+        tick_size=Decimal("0.01"),
+        step_size=Decimal("0.000001"),
+        min_quantity=Decimal("0.000001"),
+        min_notional=Decimal("0.01"),
+        provenance_sha256=CATALOG_PROVENANCE,
+    )
+
+
+def _catalog_digest(catalog: P1InstrumentCatalogV1 | None = None) -> str:
+    return sha256(canonical_json_bytes(catalog or _catalog())).hexdigest()
 
 
 def _balance() -> AccountBalanceSnapshot:
@@ -104,6 +136,7 @@ def _stream(
     *,
     first_native_order: str = "native-order-a",
     first_native_fill: str = "native-fill-a",
+    catalog: P1InstrumentCatalogV1 | None = None,
 ) -> tuple[object, ...]:
     events: tuple[object, ...] = (
         P1RunStarted(
@@ -118,7 +151,7 @@ def _stream(
             upstream_commit="b" * 40,
             closure_digest=DIGEST,
             config_digest=DIGEST,
-            catalog_digest=DIGEST,
+            catalog_digest=_catalog_digest(catalog),
             data_digest=DIGEST,
         ),
         P1TargetAccepted(
@@ -299,7 +332,14 @@ def _stream(
     )
 
 
-def _project(events: tuple[object, ...] | None = None, *, request_id: UUID = REQUEST_A):
+def _project(
+    events: tuple[object, ...] | None = None,
+    *,
+    request_id: UUID = REQUEST_A,
+    catalog: P1InstrumentCatalogV1 | None = None,
+    instrument: InstrumentDefinition | None = None,
+    strategy_id: str = "strategy-1",
+):
     try:
         from packages.engine_portfolio_projection import (
             ProjectionAuthority,
@@ -311,9 +351,10 @@ def _project(events: tuple[object, ...] | None = None, *, request_id: UUID = REQ
         events or _stream(),
         ProjectionAuthority(
             request_message_id=request_id,
-            instrument=_instrument(),
+            catalog=catalog or _catalog(),
+            instrument=instrument or _instrument(),
             opening=_opening(),
-            strategy_id="strategy-1",
+            strategy_id=strategy_id,
             liquidity_side=LiquiditySide.TAKER,
             reconciliation_source=ReconciliationSource.VENUE,
         ),
@@ -327,6 +368,8 @@ def _redigest(events: tuple[object, ...]) -> tuple[object, ...]:
 
 
 def test_zero_long_flat_projects_exact_opening_fills_mark_and_accounting() -> None:
+    from packages.engine_portfolio_projection import PortfolioAccountObservationEntry
+
     projection = _project()
 
     assert tuple(event.target_status for event in projection.order_events) == (
@@ -340,6 +383,7 @@ def test_zero_long_flat_projects_exact_opening_fills_mark_and_accounting() -> No
         PortfolioFillEntry,
         PortfolioMarkEntry,
         PortfolioFillEntry,
+        PortfolioAccountObservationEntry,
     )
     first_fill = projection.entries[1].entry.fill
     assert first_fill.status is FillReportStatus.FILLED
@@ -353,6 +397,15 @@ def test_zero_long_flat_projects_exact_opening_fills_mark_and_accounting() -> No
     assert projection.accounting.fees == Decimal("0.2")
     assert projection.accounting.realized_pnl == Decimal("2")
     assert projection.accounting.unrealized_pnl == Decimal("0")
+    final_account = projection.entries[-1]
+    expected_source = event_message_id(REQUEST_A, _stream()[-2])
+    assert final_account.source_sequence == 14
+    assert final_account.source_message_id == expected_source
+    assert final_account.event_id == uuid5(
+        expected_source, "portfolio:PortfolioAccountObservationEntry"
+    )
+    assert final_account.entry.cash_balance == _money("1001.8")
+    assert final_account.entry.fees == _money("0.2")
 
 
 def test_source_ids_follow_custody_but_business_identity_is_stable() -> None:
@@ -422,6 +475,7 @@ def test_projection_rejects_wrong_catalog_currency_and_order_fill_linkage() -> N
 
     authority = ProjectionAuthority(
         request_message_id=REQUEST_A,
+        catalog=_catalog(),
         instrument=_instrument(settlement=Currency.USD),
         opening=_opening(),
         strategy_id="strategy-1",
@@ -436,3 +490,109 @@ def test_projection_rejects_wrong_catalog_currency_and_order_fill_linkage() -> N
     mutated = _redigest(tuple(events))
     with pytest.raises(ValueError, match="fill occurred before order submission"):
         _project(mutated)
+
+
+def test_projection_binds_exact_catalog_digest_authority() -> None:
+    from packages.engine_portfolio_projection import ProjectionAuthority, project_portfolio
+
+    authority = ProjectionAuthority(
+        request_message_id=REQUEST_A,
+        catalog=_catalog(),
+        instrument=_instrument(),
+        opening=_opening(),
+        strategy_id="strategy-1",
+        liquidity_side=LiquiditySide.TAKER,
+        reconciliation_source=ReconciliationSource.VENUE,
+    )
+
+    events = list(_stream())
+    events[0] = events[0].model_copy(update={"catalog_digest": "d" * 64})
+    with pytest.raises(ValueError, match="catalog digest"):
+        project_portfolio(_redigest(tuple(events)), authority)
+
+
+def test_six_decimal_usdt_fee_is_preserved_without_rounding() -> None:
+    events = list(_stream())
+    events[4] = events[4].model_copy(update={"fee": Decimal("0.123456")})
+    events[6] = events[6].model_copy(
+        update={
+            "cash_balance": Decimal("899.876544"),
+            "fees": Decimal("0.123456"),
+        }
+    )
+    events[-2] = events[-2].model_copy(
+        update={
+            "cash_balance": Decimal("1001.776544"),
+            "fees": Decimal("0.223456"),
+        }
+    )
+    events[-1] = events[-1].model_copy(
+        update={
+            "final_cash": Decimal("1001.776544"),
+            "fees": Decimal("0.223456"),
+        }
+    )
+
+    projection = _project(_redigest(tuple(events)))
+
+    assert projection.entries[1].entry.fill.commission.amount == Decimal("0.123456")
+    assert projection.entries[-1].entry.cash_balance.amount == Decimal("1001.776544")
+
+
+def test_business_ids_are_bound_to_full_projection_authority() -> None:
+    first = _project(strategy_id="strategy-1")
+    second = _project(strategy_id="strategy-2")
+
+    assert first.canonical_identity != second.canonical_identity
+    assert first.entries[1].entry.fill.order_id != second.entries[1].entry.fill.order_id
+    assert (
+        first.entries[1].entry.fill.execution_id
+        != second.entries[1].entry.fill.execution_id
+    )
+
+
+def test_projection_rejects_non_unit_p1_spot_multiplier() -> None:
+    events = list(_stream())
+    events[5] = events[5].model_copy(
+        update={"realized_pnl": Decimal("0"), "unrealized_pnl": Decimal("2")}
+    )
+    events[6] = events[6].model_copy(
+        update={"cash_balance": Decimal("799.9"), "unrealized_pnl": Decimal("2")}
+    )
+    events[11] = events[11].model_copy(update={"realized_pnl": Decimal("4")})
+    events[12] = events[12].model_copy(
+        update={"cash_balance": Decimal("1003.8"), "realized_pnl": Decimal("4")}
+    )
+    events[13] = events[13].model_copy(
+        update={"final_cash": Decimal("1003.8"), "realized_pnl": Decimal("4")}
+    )
+
+    with pytest.raises(ValueError, match="multiplier"):
+        _project(
+            _redigest(tuple(events)),
+            instrument=_instrument(multiplier=Decimal("2")),
+        )
+
+
+def test_projection_rejects_catalog_price_precision_drift() -> None:
+    catalog = _catalog().model_copy(update={"price_precision": 3})
+
+    with pytest.raises(ValueError, match="exact P1 catalog"):
+        _project(_stream(catalog=catalog), catalog=catalog)
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    (
+        Decimal((0, (1,), -1_000_000)),
+        Decimal((0, (1,) * 129, -129)),
+    ),
+)
+def test_projection_rejects_unbounded_decimal_shape_before_digesting(
+    hostile: Decimal,
+) -> None:
+    events = list(_stream())
+    events[1] = events[1].model_copy(update={"target_weight": hostile})
+
+    with pytest.raises(ValueError, match="Decimal bounds"):
+        _project(tuple(events))

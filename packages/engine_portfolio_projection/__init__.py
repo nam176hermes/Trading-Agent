@@ -1,6 +1,7 @@
 """Pure P1 engine-event to canonical portfolio projection."""
 
 from .models import (
+    PortfolioAccountObservationEntry,
     PortfolioProjection,
     ProjectedAccounting,
     ProjectedPortfolioEntry,
@@ -11,6 +12,7 @@ from .validation import ProjectionError
 
 __all__ = [
     "PortfolioProjection",
+    "PortfolioAccountObservationEntry",
     "ProjectedAccounting",
     "ProjectedPortfolioEntry",
     "ProjectionAuthority",
