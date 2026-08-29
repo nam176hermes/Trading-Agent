@@ -33,7 +33,7 @@ production, network-trading, or live authority.
 | P1-13 | P1-04, P1-05, P1-11, P1-12 | ACCEPTED | Canonical bounded EngineEvent JSONL, exact schedule/command authority and raw/semantic custody passed independent spec/security review at `2d8f1be`. |
 | P1-14 | P1-06, P1-07, P1-12, P1-13 | ACCEPTED | Exact G1 final-state/accounting proof, zero-order completion and stable fail-closed diagnostics passed independent spec/security review at `f03d089`. |
 | P1-15 | P1-02, P1-06, P1-14 | ACCEPTED | Exact code-owned schema-8 profile, G1/U08/manifest authority, descriptor-safe closure custody and unchanged legacy schema-6 authority passed independent spec/security review at `8f527b8`. |
-| P1-16 | P1-15 | IN_PROGRESS | Materialize and qualify one immutable external P1 schema-8 runtime from exact G1 without rebuilding or activating it. |
+| P1-16 | P1-15 | ACCEPTED | Exact-source schema-8 closure `75467781…` at `a596169`, native qualification and immutable custody passed independent spec/security review; G1 stayed unchanged and inactive. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
