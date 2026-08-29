@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from packages.job_contracts import JobType, ReplayPayload, SnapshotPayload
-from services.job_worker.results import ResultValidationError, ResultValidator
+from services.job_worker.results import (
+    ResultValidationError,
+    ResultValidator,
+    parse_datetime,
+)
 from tests.jobs.backend_contract_fixtures import (
     ATTEMPT_ID,
     BACKEND_COMMIT,
@@ -21,6 +27,58 @@ from tests.jobs.backend_contract_fixtures import (
 
 
 START = datetime(2026, 7, 12, 12, 0, tzinfo=UTC)
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_worker_results_imports_without_control_api() -> None:
+    probe = """
+import builtins
+import importlib
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path.cwd()))
+original_import = builtins.__import__
+
+def guarded_import(name, *args, **kwargs):
+    if name == "control_api" or name.startswith("control_api."):
+        raise AssertionError("worker results crossed the Control API boundary")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+importlib.import_module("services.job_worker.results")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", probe],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-07-12T12:00:00Z", datetime(2026, 7, 12, 12, 0, tzinfo=UTC)),
+        (" 2026-07-12T08:00:00-04:00 ", datetime(2026, 7, 12, 12, 0, tzinfo=UTC)),
+        ("2026-07-12T12:00:00", datetime(2026, 7, 12, 12, 0, tzinfo=UTC)),
+    ],
+)
+def test_worker_result_timestamp_normalization_is_unchanged(
+    value: str,
+    expected: datetime,
+) -> None:
+    assert parse_datetime(value) == expected
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_worker_result_timestamp_rejects_missing_values(value: object) -> None:
+    with pytest.raises(ValueError, match="non-empty string"):
+        parse_datetime(value)
 
 
 class Job:

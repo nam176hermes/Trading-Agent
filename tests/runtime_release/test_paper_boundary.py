@@ -268,6 +268,7 @@ def test_projected_result_validator_matches_canonical_report_path() -> None:
             "_seal",
             "_valid_report_assets",
             "_validate_report",
+            "parse_datetime",
         }
         return {
             node.name: ast.dump(node, include_attributes=False)
