@@ -2347,6 +2347,7 @@ def _attest_candidate_closure(
     inputs: dict[str, object],
     base_runtime: Path,
     base_policy: dict[str, object],
+    accepted_manifest_sha256: str | None = None,
 ) -> dict[str, object]:
     _sealed_directory(root, label="candidate runtime closure")
     raw = _read_file(root / _CLOSURE_MANIFEST, label="candidate closure manifest", sealed=True)
@@ -2363,44 +2364,66 @@ def _attest_candidate_closure(
     input_python = inputs.get("python")
     input_source = inputs.get("source")
     source_artifact = input_source.get("artifact") if isinstance(input_source, dict) else None
-    runtime_wheels = inputs.get("runtime_wheels")
+    runtime_wheels = (
+        manifest.get("runtime_wheels")
+        if accepted_manifest_sha256 is not None
+        else inputs.get("runtime_wheels")
+    )
     artifact_source = artifact.get("source")
     artifact_python = artifact.get("python")
+    if accepted_manifest_sha256 is not None and (
+        _SHA256.fullmatch(accepted_manifest_sha256) is None
+        or _sha256_bytes(raw) != accepted_manifest_sha256
+    ):
+        raise RuntimeClosureMaterializationError(
+            "candidate closure does not match the accepted generation"
+        )
     if (
         set(manifest) != _CANDIDATE_CLOSURE_FIELDS
         or manifest.get("schema_version") != 7
         or manifest.get("manifest_kind") != "NAUTILUS_V1_231_CANDIDATE_RUNTIME_CLOSURE"
         or manifest.get("activation_status") != "CANDIDATE_ONLY_NOT_ACTIVATED"
-        or manifest.get("engine") != artifact.get("engine")
-        or manifest.get("source") != artifact_source
-        or manifest.get("python") != artifact_python
-        or manifest.get("policy_hashes") != artifact.get("policy_hashes")
-        or manifest.get("toolchain") != artifact.get("toolchain")
-        or manifest.get("network") != artifact.get("network")
-        or manifest.get("runtime_wheels") != artifact.get("runtime_wheels")
-        or manifest.get("artifact_manifest_sha256") != artifact_sha256
-        or manifest.get("base_runtime")
-        != _candidate_base_binding(
-            base_runtime, base_policy, base_manifest, base_records
+        or (
+            accepted_manifest_sha256 is None
+            and (
+                manifest.get("engine") != artifact.get("engine")
+                or manifest.get("source") != artifact_source
+                or manifest.get("python") != artifact_python
+                or manifest.get("policy_hashes") != artifact.get("policy_hashes")
+                or manifest.get("toolchain") != artifact.get("toolchain")
+                or manifest.get("network") != artifact.get("network")
+                or manifest.get("runtime_wheels") != artifact.get("runtime_wheels")
+                or manifest.get("artifact_manifest_sha256") != artifact_sha256
+                or manifest.get("base_runtime")
+                != _candidate_base_binding(
+                    base_runtime, base_policy, base_manifest, base_records
+                )
+                or manifest.get("qualification")
+                != {
+                    "argv": ["/usr/bin/python3.12", "-I", "-S"],
+                    "script_sha256": _sha256_bytes(
+                        _CANDIDATE_IMPORT_SCRIPT.encode("ascii")
+                    ),
+                    "status": "PASS",
+                }
+                or artifact.get("policy_hashes") != inputs.get("policy_hashes")
+                or not isinstance(input_python, dict)
+                or not isinstance(artifact_python, dict)
+                or artifact_python.get("identity") != input_python.get("identity")
+                or artifact_python.get("abi") != input_python.get("abi")
+                or artifact_python.get("executable_sha256")
+                != input_python.get("executable_sha256")
+                or not isinstance(input_python.get("stdlib_inventory"), dict)
+                or artifact_python.get("stdlib_tree_sha256")
+                != input_python["stdlib_inventory"].get("tree_sha256")
+                or not isinstance(source_artifact, dict)
+                or not isinstance(artifact_source, dict)
+                or {
+                    key: artifact_source.get(key) for key in source_artifact
+                }
+                != source_artifact
+            )
         )
-        or manifest.get("qualification")
-        != {
-            "argv": ["/usr/bin/python3.12", "-I", "-S"],
-            "script_sha256": _sha256_bytes(_CANDIDATE_IMPORT_SCRIPT.encode("ascii")),
-            "status": "PASS",
-        }
-        or artifact.get("policy_hashes") != inputs.get("policy_hashes")
-        or not isinstance(input_python, dict)
-        or not isinstance(artifact_python, dict)
-        or artifact_python.get("identity") != input_python.get("identity")
-        or artifact_python.get("abi") != input_python.get("abi")
-        or artifact_python.get("executable_sha256") != input_python.get("executable_sha256")
-        or not isinstance(input_python.get("stdlib_inventory"), dict)
-        or artifact_python.get("stdlib_tree_sha256")
-        != input_python["stdlib_inventory"].get("tree_sha256")
-        or not isinstance(source_artifact, dict)
-        or not isinstance(artifact_source, dict)
-        or {key: artifact_source.get(key) for key in source_artifact} != source_artifact
         or not isinstance(runtime_wheels, list)
         or not all(isinstance(record, dict) for record in runtime_wheels)
     ):
@@ -2814,6 +2837,7 @@ def materialize_p1_runtime_closure(
         revalidate_build_results=False,
     )
     base_policy = _load_policy(_CANDIDATE_BASE_POLICY)
+    policy = _p1._load_policy()
     candidate = _attest_candidate_closure(
         base_runtime,
         artifact=artifact,
@@ -2821,8 +2845,8 @@ def materialize_p1_runtime_closure(
         inputs=inputs,
         base_runtime=roots["rollback_root"] / "runtime-closure-v3",
         base_policy=base_policy,
+        accepted_manifest_sha256=str(policy["candidate_closure_sha256"]),
     )
-    policy = _p1._load_policy()
     candidate_raw = _read_file(
         base_runtime / _CLOSURE_MANIFEST,
         label="G1 closure manifest",

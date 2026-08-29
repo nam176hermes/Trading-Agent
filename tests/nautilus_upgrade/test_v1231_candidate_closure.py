@@ -4812,6 +4812,41 @@ def test_candidate_closure_attestation_cross_binds_exact_authorities(
             )
 
 
+def test_p1_derivation_attests_exact_generation_not_ambient_source_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, base_runtime, base_policy, artifact, inputs, artifact_sha256 = (
+        _write_candidate_closure_fixture(tmp_path, monkeypatch)
+    )
+    inputs["policy_hashes"] = {"ambient": "0" * 64}
+
+    with pytest.raises(
+        materializer.RuntimeClosureMaterializationError,
+        match="candidate closure authority",
+    ):
+        materializer._attest_candidate_closure(
+            root,
+            artifact=artifact,
+            artifact_sha256=artifact_sha256,
+            inputs=inputs,
+            base_runtime=base_runtime,
+            base_policy=base_policy,
+        )
+
+    raw = (root / "closure-manifest.json").read_bytes()
+    observed = materializer._attest_candidate_closure(
+        root,
+        artifact=artifact,
+        artifact_sha256=artifact_sha256,
+        inputs=inputs,
+        base_runtime=base_runtime,
+        base_policy=base_policy,
+        accepted_manifest_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+    assert observed["activation_status"] == "CANDIDATE_ONLY_NOT_ACTIVATED"
+
+
 def test_candidate_base_binding_requires_physical_selected_schema6_attestation() -> None:
     resolver = getattr(materializer, "_selected_base_authority", None)
     assert callable(resolver), "selected schema-6 authority resolver is missing"
