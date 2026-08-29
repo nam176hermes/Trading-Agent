@@ -47,7 +47,7 @@ def test_p1_profile_is_one_code_owned_closed_policy() -> None:
     assert policy.result_validator_id == "nautilus-p1-event-stream-v1"
     assert policy.timeout_seconds == 120
     assert policy.closure_sha256 == (
-        "74b4e8864d8c9a2cc8ba9e5944340f013739e496933fa2f5dc9817bfcb7bced1"
+        "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
     )
     assert policy.sandbox_profile_sha256 == (
         "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"

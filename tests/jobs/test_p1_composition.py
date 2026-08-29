@@ -20,7 +20,7 @@ from services.job_worker.p1_engine_spawn import P1EngineSpawnProvider
 
 
 P1_CLOSURE_SHA256 = (
-    "74b4e8864d8c9a2cc8ba9e5944340f013739e496933fa2f5dc9817bfcb7bced1"
+    "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
 )
 
 

@@ -61,13 +61,13 @@ EXPECTED_TABLES = {
     "engine_run_projections",
     "engine_job_results",
 }
-EXACT_HEAD = "0014_p1_product_closure_rotation"
+EXACT_HEAD = "0015_p1_accounting_closure_rotation"
 P1_PROJECTION_REVISION = "0013_engine_backtest_enqueue_authority"
 P1_OLD_CLOSURE_SHA256 = (
     "75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069"
 )
 P1_NEW_CLOSURE_SHA256 = (
-    "74b4e8864d8c9a2cc8ba9e5944340f013739e496933fa2f5dc9817bfcb7bced1"
+    "b3bbb22552b896612ef93f78a61087d95fb1c061afb6102753e9f4d614b3963b"
 )
 P1_INGEST_REGPROCEDURE = (
     "job_plane.ingest_p1_engine_event_batch_v2("
@@ -227,7 +227,7 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256
             )
             assert after[1] == (
-                "e6617353fe79c6e6ec0f6d1ecd824c4f28c2c52278dc1fbaf6e6d259426e2599"
+                "8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089"
             )
             assert after[2:] == before[2:]
             command.upgrade(config, "head")
