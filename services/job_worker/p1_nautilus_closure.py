@@ -103,6 +103,8 @@ _MANIFEST_FIELDS = {
     "timeout_seconds",
 }
 _GUARD_POLICY_FIELDS = {
+    "binary_sha256",
+    "binary_size",
     "build_environment",
     "cargo_identity",
     "cargo_lock",
@@ -507,6 +509,8 @@ def _native_guard(
         or _DIGEST.fullmatch(binary_sha256) is None
         or type(binary_size) is not int
         or binary_size <= 0
+        or binary_sha256 != expected.get("binary_sha256")
+        or binary_size != expected.get("binary_size")
     ):
         _blocked("P1 native guard binary identity is invalid")
     matching_guard = [mount for mount in mounts if mount.target == _GUARD_TARGET]

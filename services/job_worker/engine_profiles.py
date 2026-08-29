@@ -63,7 +63,7 @@ P1_REAL_BACKTEST_POLICY = EngineProfilePolicy(
     event_schema="nautilus-p1-event-stream-v1",
     dependency_import_policy="native-guarded-stdlib-first-sealed-wheel-path-v1",
     runtime_inventory_sha256=(
-        "a76c51713a74107d75b6383d43f6d7fa2e9d68df2650c70de100bc15fc87bcf3"
+        "0b0b59a6fbcb681d1e4823e432e49fdae6fb1c61ec390aa2a1ccc1431ae9ccb0"
     ),
     sandbox_profile_sha256=(
         "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e"

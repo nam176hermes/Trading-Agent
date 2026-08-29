@@ -139,6 +139,10 @@ def p1_closure(
     artifact_manifest.write_bytes(b'{"fixture":"p1-artifact"}\n')
     artifact_manifest.chmod(0o400)
     policy = json.loads(json.dumps(POLICY))
+    policy["native_entry_guard"]["binary_sha256"] = hashlib.sha256(
+        GUARD_BYTES
+    ).hexdigest()
+    policy["native_entry_guard"]["binary_size"] = len(GUARD_BYTES)
     policy["artifact_manifest_sha256"] = hashlib.sha256(
         artifact_manifest.read_bytes()
     ).hexdigest()

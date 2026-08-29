@@ -30,7 +30,7 @@ _DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _DECIMAL = re.compile(r"(?:0|-?[1-9]\d*|-?(?:0|[1-9]\d*)\.\d*[1-9])", re.ASCII)
 _CURRENCY_METADATA = {
     "BTC": (8, 0, "Bitcoin", 1),
-    "USDT": (8, 0, "Tether", 1),
+    "USDT": (6, 0, "Tether", 1),
 }
 _PRICE_MAX = Decimal("17014118346046")
 _QUANTITY_MAX = Decimal("34028236692093")

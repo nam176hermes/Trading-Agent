@@ -360,7 +360,7 @@ print(json.dumps({
         "price_increment": "0.01",
         "price_precision": 2,
         "quote_currency": "USDT",
-        "quote_precision": 8,
+        "quote_precision": 6,
         "raw_symbol": "BTCUSDT",
         "registration_ids": ["BTCUSDT.BINANCE"],
         "rejections": [

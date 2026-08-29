@@ -30,6 +30,8 @@
   "entrypoint": "/engine/bin/nautilus-entry-guard",
   "event_schema": "nautilus-p1-event-stream-v1",
   "native_entry_guard": {
+    "binary_sha256": "04fd8e95be82740f997f781be6b9ad8f8f5377c6949fa8574b00352cf092a2e0",
+    "binary_size": 289384,
     "build_environment": {
       "NAUTILUS_GUARD_ENTRYPOINT": "/engine/bin/nautilus-entry-guard",
       "NAUTILUS_GUARD_LAUNCHER": "/engine/runtime_v1/main.py",
@@ -89,6 +91,12 @@
     },
     {
       "mode": "0400",
+      "sha256": "82833980dcac58c9a7713679e73d18816c74baf0a83b111ff61ec5f5d58a65eb",
+      "source": "engines/nautilus/runtime_v1/dependency_scope.py",
+      "target": "/engine/runtime_v1/dependency_scope.py"
+    },
+    {
+      "mode": "0400",
       "sha256": "c92e196e26bd265f4c7d6c75afe25957aa9b684d30d017eb521adea12b26fdca",
       "source": "engines/nautilus/runtime_v1/diagnostics.py",
       "target": "/engine/runtime_v1/diagnostics.py"
@@ -131,7 +139,7 @@
     },
     {
       "mode": "0400",
-      "sha256": "cf9f82c15cb263593444a442b799be524a940c0d8bb4ad576ab5f573641cca53",
+      "sha256": "934ce36a5aca24be87f8af36127da26225d8dd92b2f9f6088789529a280a3aa2",
       "source": "engines/nautilus/runtime_v1/instrument_factory.py",
       "target": "/engine/runtime_v1/instrument_factory.py"
     },
@@ -143,7 +151,7 @@
     },
     {
       "mode": "0400",
-      "sha256": "f863b8f8f9b9ceeff9abf37f7aa6c9375d07d71b03e61ec2daddf35dbfd4563e",
+      "sha256": "acd55815fb3a146c76dd05bdc3d98e0c9853115b8f28199ad80c10f2c07a2cd3",
       "source": "engines/nautilus/runtime_v1/main.py",
       "target": "/engine/runtime_v1/main.py"
     },
@@ -178,7 +186,7 @@
       "target": "/engine/runtime_v1/target_strategy.py"
     }
   ],
-  "runtime_inventory_sha256": "a76c51713a74107d75b6383d43f6d7fa2e9d68df2650c70de100bc15fc87bcf3",
+  "runtime_inventory_sha256": "0b0b59a6fbcb681d1e4823e432e49fdae6fb1c61ec390aa2a1ccc1431ae9ccb0",
   "sandbox_profile_sha256": "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e",
   "schema": "trading-agent-p1-runtime-closure-policy/v1",
   "semantic_profile": "nautilus-p1-real-backtest-v1",

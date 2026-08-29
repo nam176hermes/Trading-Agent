@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import nullcontext
 import sys
 
 import pytest
@@ -75,6 +76,7 @@ def _configure_main(
     monkeypatch.setattr(
         runtime_main, "require_runtime_entry", stage("entry", None)
     )
+    monkeypatch.setattr(runtime_main, "sealed_wheel_imports", nullcontext)
     monkeypatch.setattr(runtime_main, "package_version", stage("version", "1.231.0"))
     monkeypatch.setattr(
         runtime_main, "require_engine_version", stage("profile", None)

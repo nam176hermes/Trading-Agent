@@ -6,6 +6,7 @@
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
+	build-p1-nautilus-runtime qualify-p1-nautilus-runtime \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
@@ -26,6 +27,14 @@ NAUTILUS_IMPORT_BASE_RUNTIME ?=
 NAUTILUS_IMPORT_ARTIFACT_DIRECTORY ?=
 NAUTILUS_IMPORT_SANDBOX ?= $(NAUTILUS_ENGINE_SANDBOX)
 NAUTILUS_IMPORT_RECEIPT ?=
+P1_NAUTILUS_BASE_RUNTIME ?=
+P1_NAUTILUS_ARTIFACT_DIRECTORY ?=
+P1_NAUTILUS_RUNTIME_DESTINATION ?=
+P1_NAUTILUS_SANDBOX ?=
+P1_NAUTILUS_CARGO ?=
+P1_NAUTILUS_LLVM_TOOLCHAIN ?=
+P1_NAUTILUS_SOURCE_COMMIT ?=
+P1_NAUTILUS_QUALIFICATION_RECEIPT ?=
 
 audit:
 	uv run python scripts/audit_canonical_repo.py --root "$(CURDIR)"
@@ -273,6 +282,38 @@ qualify-nautilus-sealed-imports:
 			--artifact-directory "$(NAUTILUS_IMPORT_ARTIFACT_DIRECTORY)" \
 			--sandbox "$(NAUTILUS_IMPORT_SANDBOX)" \
 			--receipt "$(NAUTILUS_IMPORT_RECEIPT)"
+
+build-p1-nautilus-runtime:
+	@set -eu; \
+		test -n "$(P1_NAUTILUS_BASE_RUNTIME)"; \
+		test -n "$(P1_NAUTILUS_ARTIFACT_DIRECTORY)"; \
+		test -n "$(P1_NAUTILUS_RUNTIME_DESTINATION)"; \
+		test -n "$(P1_NAUTILUS_SANDBOX)"; \
+		test -n "$(P1_NAUTILUS_CARGO)"; \
+		test -n "$(P1_NAUTILUS_LLVM_TOOLCHAIN)"; \
+		test -n "$(P1_NAUTILUS_SOURCE_COMMIT)"; \
+		$(PYTHON) scripts/materialize_nautilus_runtime_closure.py \
+			--materialize-p1 \
+			--base-runtime "$(P1_NAUTILUS_BASE_RUNTIME)" \
+			--artifact-directory "$(P1_NAUTILUS_ARTIFACT_DIRECTORY)" \
+			--destination "$(P1_NAUTILUS_RUNTIME_DESTINATION)" \
+			--sandbox "$(P1_NAUTILUS_SANDBOX)" \
+			--cargo "$(P1_NAUTILUS_CARGO)" \
+			--llvm-toolchain "$(P1_NAUTILUS_LLVM_TOOLCHAIN)" \
+			--source-commit "$(P1_NAUTILUS_SOURCE_COMMIT)"
+
+qualify-p1-nautilus-runtime:
+	@set -eu; \
+		if test -z "$(P1_NAUTILUS_BASE_RUNTIME)$(P1_NAUTILUS_ARTIFACT_DIRECTORY)$(P1_NAUTILUS_SANDBOX)$(P1_NAUTILUS_QUALIFICATION_RECEIPT)"; then \
+			$(PYTHON) scripts/qualify_nautilus_sealed_imports.py --p1; \
+		else \
+			$(PYTHON) scripts/qualify_nautilus_sealed_imports.py \
+				--p1 \
+				--base-runtime "$(P1_NAUTILUS_BASE_RUNTIME)" \
+				--artifact-directory "$(P1_NAUTILUS_ARTIFACT_DIRECTORY)" \
+				--sandbox "$(P1_NAUTILUS_SANDBOX)" \
+				--receipt "$(P1_NAUTILUS_QUALIFICATION_RECEIPT)"; \
+		fi
 
 test-event-ledger-runtime-postgres:
 	uv run python scripts/run_required_runtime_pytest.py \
