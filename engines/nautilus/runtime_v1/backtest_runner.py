@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from decimal import Decimal, DecimalException, localcontext
 from importlib.metadata import version as package_version
 
 from nautilus_trader.model.events import OrderFilled
@@ -205,6 +205,29 @@ def _cached_fill(value: OrderFilled) -> tuple[str, ...]:
     )
 
 
+def _validate_native_unrealized(
+    expected: Decimal, observed: Decimal, quote_precision: int
+) -> None:
+    if (
+        type(expected) is not Decimal
+        or type(observed) is not Decimal
+        or type(quote_precision) is not int
+        or not 0 <= quote_precision <= 16
+        or not expected.is_finite()
+        or not observed.is_finite()
+    ):
+        raise BacktestRunError("native unrealized PnL proof is invalid")
+    try:
+        with localcontext() as context:
+            context.prec = 96
+            quantum = Decimal(1).scaleb(-quote_precision)
+            expected_native = expected.quantize(quantum)
+    except DecimalException as exc:
+        raise BacktestRunError("native unrealized PnL proof is invalid") from exc
+    if observed != expected_native:
+        raise BacktestRunError("native unrealized PnL proof is inconsistent")
+
+
 def _snapshot(engine, strategy, batch) -> BacktestRun:
     result = engine.get_result()
     accounts = tuple(engine.cache.accounts())
@@ -306,21 +329,14 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         native_unrealized = position.unrealized_pnl(
             batch.data[-1].close
         ).as_decimal()
-        with localcontext() as context:
-            context.prec = 96
-            native_quantum = Decimal(1).scaleb(
-                native_unrealized.as_tuple().exponent
-            )
-            expected_native_unrealized = expected_unrealized.quantize(
-                native_quantum
-            )
     else:
-        cached_quantity = native_unrealized = expected_native_unrealized = Decimal(0)
-    if (
-        _text(cached_quantity) != position_quantity
-        or not native_unrealized.is_finite()
-        or native_unrealized != expected_native_unrealized
-    ):
+        cached_quantity = native_unrealized = Decimal(0)
+    _validate_native_unrealized(
+        expected_unrealized,
+        native_unrealized,
+        instruments[0].quote_currency.precision,
+    )
+    if _text(cached_quantity) != position_quantity:
         raise BacktestRunError("native terminal position proof is inconsistent")
     account = accounts[0]
     balances = account.balances_total()

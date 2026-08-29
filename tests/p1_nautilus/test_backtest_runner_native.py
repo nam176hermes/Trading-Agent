@@ -68,7 +68,7 @@ import warnings
 warnings.filterwarnings("ignore", message="Timestamp.utcnow is deprecated.*")
 sys.path[:0] = [sys.argv[1], sys.argv[2]]
 import nautilus_trader
-from runtime_v1.backtest_runner import BacktestRun, BacktestRunError, run_backtest
+from runtime_v1.backtest_runner import BacktestRun, BacktestRunError, _validate_native_unrealized, run_backtest
 from runtime_v1.input_loader import ArtifactReference, RunBacktestRequest, RuntimeInputs
 from runtime_v1.session import BacktestEngine, BacktestEngineSession, create_session, dispose_session
 
@@ -178,6 +178,15 @@ assert Decimal(larger_run.position_average_entry) == larger_average
 assert larger_run.position_realized_pnl == "0"
 assert Decimal(larger_run.position_unrealized_pnl) == larger_unrealized
 assert larger_run.final_market_price == "102"
+_validate_native_unrealized(
+    Decimal("19980.01998"), Decimal("19980.01998000"), 8
+)
+try:
+    _validate_native_unrealized(Decimal("19980.01998"), Decimal("19980"), 8)
+except BacktestRunError as error:
+    assert "unrealized" in str(error)
+else:
+    raise AssertionError("coarse native unrealized value was accepted")
 assert first.account_count == 1
 assert first.balance_currencies == ("BTC", "USDT")
 assert len(first.native_order_ids) == len(set(first.native_order_ids)) == 2
