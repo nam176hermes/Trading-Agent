@@ -123,13 +123,21 @@ _COMMIT = re.compile(r"^[0-9a-f]{40}$", re.ASCII)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _MAX_ASGI_RESPONSE_BYTES = 1024 * 1024
 _ExecutionFailureStage = Literal[
-    "COMPOSITION",
+    "JOB_AUTHORITY",
+    "DATABASE",
+    "WORKER_IDENTITY",
+    "WORKER_COMPOSITION",
+    "APP_COMPOSITION",
     "ENQUEUE",
     "WORKER",
     "DURABLE_RESULT",
 ]
 _EXECUTION_FAILURE_STAGES = (
-    "COMPOSITION",
+    "JOB_AUTHORITY",
+    "DATABASE",
+    "WORKER_IDENTITY",
+    "WORKER_COMPOSITION",
+    "APP_COMPOSITION",
     "ENQUEUE",
     "WORKER",
     "DURABLE_RESULT",
@@ -940,7 +948,7 @@ def _run_p1_disposable_once(
     """Enqueue through the dedicated app, then run exactly one P1 worker claim."""
 
     job_mutated = False
-    failure_stage: _ExecutionFailureStage = "COMPOSITION"
+    failure_stage: _ExecutionFailureStage = "JOB_AUTHORITY"
     try:
         api_settings = JobApiSettings(
             bearer_token=_API_TOKEN,
@@ -948,6 +956,7 @@ def _run_p1_disposable_once(
             authority_factory=validate_job_plane_authority,
         )
         api_authority = api_settings.load_authority()
+        failure_stage = "DATABASE"
         api_store = _store_settings(
             arguments, user="trading_job_api", password=_API_PASSWORD
         )
@@ -957,7 +966,9 @@ def _run_p1_disposable_once(
         with JobRepository(api_store) as api_repository, WorkerRepository(
             worker_store
         ) as worker_repository:
+            failure_stage = "WORKER_IDENTITY"
             worker_repository.assert_p1_disposable_runtime_identity()
+            failure_stage = "WORKER_COMPOSITION"
             worker = build_p1_worker(
                 worker_repository,
                 {},
@@ -973,6 +984,7 @@ def _run_p1_disposable_once(
                     arguments
                 ),
             )
+            failure_stage = "APP_COMPOSITION"
             app = create_p1_disposable_app(
                 api_settings, api_repository, api_authority
             )

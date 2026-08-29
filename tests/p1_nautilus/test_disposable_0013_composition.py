@@ -529,7 +529,11 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
 @pytest.mark.parametrize(
     ("failure_at", "expected_stage", "job_mutated"),
     (
-        ("composition", "COMPOSITION", False),
+        ("job_authority", "JOB_AUTHORITY", False),
+        ("database", "DATABASE", False),
+        ("worker_identity", "WORKER_IDENTITY", False),
+        ("worker_composition", "WORKER_COMPOSITION", False),
+        ("app_composition", "APP_COMPOSITION", False),
         ("enqueue", "ENQUEUE", True),
         ("worker", "WORKER", True),
         ("durable", "DURABLE_RESULT", True),
@@ -553,7 +557,7 @@ def test_vertical_execution_failure_stage_is_closed_at_each_trust_seam(
 
     class _Settings:
         def __init__(self, **_kwargs: object) -> None:
-            fail_if("composition")
+            fail_if("job_authority")
 
         @staticmethod
         def load_authority() -> object:
@@ -564,6 +568,7 @@ def test_vertical_execution_failure_stage_is_closed_at_each_trust_seam(
             pass
 
         def __enter__(self) -> _Repository:
+            fail_if("database")
             return self
 
         def __exit__(self, *_args: object) -> None:
@@ -571,7 +576,7 @@ def test_vertical_execution_failure_stage_is_closed_at_each_trust_seam(
 
         @staticmethod
         def assert_p1_disposable_runtime_identity() -> None:
-            pass
+            fail_if("worker_identity")
 
         @staticmethod
         def get_job(_job_id: str) -> JobDetailRecord:
@@ -587,8 +592,16 @@ def test_vertical_execution_failure_stage_is_closed_at_each_trust_seam(
     monkeypatch.setattr(vertical, "JobApiSettings", _Settings)
     monkeypatch.setattr(vertical, "JobRepository", _Repository)
     monkeypatch.setattr(vertical, "WorkerRepository", _Repository)
-    monkeypatch.setattr(vertical, "build_p1_worker", lambda *_args, **_kwargs: _Worker())
-    monkeypatch.setattr(vertical, "create_p1_disposable_app", lambda *_args: object())
+    def build(*_args: object, **_kwargs: object) -> _Worker:
+        fail_if("worker_composition")
+        return _Worker()
+
+    def create_app(*_args: object) -> object:
+        fail_if("app_composition")
+        return object()
+
+    monkeypatch.setattr(vertical, "build_p1_worker", build)
+    monkeypatch.setattr(vertical, "create_p1_disposable_app", create_app)
 
     def post(*_args: object, **_kwargs: object) -> tuple[int, dict[str, object]]:
         fail_if("enqueue")
