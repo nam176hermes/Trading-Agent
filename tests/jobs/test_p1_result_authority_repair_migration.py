@@ -43,11 +43,19 @@ def test_p1_result_authority_repair_is_exact_forward_only_driver_sql() -> None:
     assert "4a04f41c0ac9dcb45ae09aa02b245cd07f4ea5f287c6956011d1c63d7c8c5eb4" in statement
     assert "04ec80653561e0c40cd57d1920642dd6e1e878d0e11f4729cd4b97273e06dd5b" in statement
     assert "d2bd044da6afcb5647160e32fffbfa49619fabcfdc8a85dba78beaf3e30c330e" in statement
+    assert "10e24e84094478e5b4994dab8ffdb22dec021ca235cfe51a05e94ae49e62fd34" in statement
+    assert "1bac6ed97eec8dcd1dbd3ff1de27ec111fc8fbeff291d135bd423391441ded0e" in statement
+    assert "5fcb5c4542ef72c38639922535d2d1065fb6198da28bcdce9634f66aa59b69e0" in statement
+    assert "67cf705a214d242e2a197327c53117c4508c16f289b31dbb4fe7be6653219372" in statement
+    assert "e4ffec60fa1e4f02b56b7484b6b84423c1d0349c3d5781062c4ad600a7090416" in statement
+    assert "f9d54384bb1dae2a0cda166118cc0ceb016e8590c58579820384284ea8e42e9b" in statement
     assert "4f9c03425a69edf9844a1ae9188660ac7ea4285e5a1ecd87e8e6ecc31be6ec78" in statement
-    assert "42daedaeeb38b9d9f18f8c030ea5d28e3b38c25a5ec592d94b18d6be697b0c3c" in statement
-    assert "job_plane.paper_worker_job_allowed(" in statement
+    assert "002fd4c9ccc597c2016b7ae1ec32be78138d0e05448ca24a1d6051a0a84b6141" in statement
     assert "v_legacy_document := public.canonical_domain_json(" in statement
-    assert "GRANT EXECUTE ON FUNCTION job_plane.paper_worker_job_allowed(" in statement
+    assert "ON CONFLICT ON CONSTRAINT engine_job_results_pkey DO NOTHING" in statement
+    assert "job_plane.paper_worker_job_id_allowed(" in statement
+    assert "job_artifacts.job_id" in statement
+    assert "GRANT EXECUTE ON FUNCTION job_plane.paper_worker_job_allowed(" not in statement
     assert "DROP POLICY job_plane_worker_artifacts_insert" in statement
     assert statement.count("pg_catalog.set_config(") == 2
     assert observed["execution_options"] == {"no_parameters": True}
