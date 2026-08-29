@@ -40,7 +40,7 @@ production, network-trading, or live authority.
 | P1-20 | P1-04 | ACCEPTED | Pure engine-to-portfolio projection, exact six-decimal accounting, full instrument authority and monotonic observations passed independent spec/security review; raw canonical catalog-artifact digest semantics were requalified at source tree `dd140a4…`. |
 | P1-21 | P1-19, P1-20 | ACCEPTED | Exact Decimal parity, deterministic trusted-prefix replay, durable authority binding and the post-ingest/pre-success receipt seam passed independent spec/security review; raw canonical catalog-artifact digest semantics were requalified at source tree `dd140a4…`; PostgreSQL runtime authority remains deferred. |
 | P1-22A | P1-21 | ACCEPTED | Authenticated exact engine BACKTEST enqueue source authority, forward-only head 0013, unchanged runtime DB pin 0011 and raw catalog-digest seam passed independent spec/security review at source tree `dd140a4…`; PostgreSQL runtime authority remains deferred. |
-| P1-22 | P1-16, P1-17, P1-18, P1-19, P1-20, P1-21, P1-22A | BLOCKED | Build the BTCUSDT vertical slice only after P1-22A source review and exact disposable PostgreSQL/native authority are available. |
+| P1-22 | P1-16, P1-17, P1-18, P1-19, P1-20, P1-21, P1-22A | IN_PROGRESS | Build the dry-validation/default-DEFERRED source seam first, then execute only from an exact committed source under disposable PostgreSQL and P1-native authority. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
