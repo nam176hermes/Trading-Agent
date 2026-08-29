@@ -192,9 +192,28 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "CREATE FUNCTION " + hostile_signature
                 + " RETURNS integer LANGUAGE sql AS $$SELECT 1$$"
             )
+            connection.exec_driver_sql(
+                "CREATE FUNCTION public.hostile_text_equal("
+                "pg_catalog.text, pg_catalog.text) RETURNS boolean "
+                "LANGUAGE plpgsql AS $$BEGIN "
+                "RAISE EXCEPTION 'hostile equality operator executed'; "
+                "END$$"
+            )
+            connection.exec_driver_sql(
+                "CREATE OPERATOR public.= ("
+                "LEFTARG = pg_catalog.text, RIGHTARG = pg_catalog.text, "
+                "FUNCTION = public.hostile_text_equal)"
+            )
             connection.exec_driver_sql("SET search_path = public, pg_catalog")
             connection.commit()
             command.upgrade(config, "head")
+            connection.exec_driver_sql(
+                "DROP OPERATOR public.= (pg_catalog.text, pg_catalog.text)"
+            )
+            connection.exec_driver_sql(
+                "DROP FUNCTION public.hostile_text_equal("
+                "pg_catalog.text, pg_catalog.text)"
+            )
             connection.exec_driver_sql("DROP FUNCTION " + hostile_signature)
             connection.exec_driver_sql(
                 "DROP FUNCTION public.length(pg_catalog.text)"

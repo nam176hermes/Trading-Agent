@@ -193,8 +193,10 @@ def upgrade() -> None:
           PERFORM pg_catalog.set_config(
             'search_path', v_prior_search_path, true
           );
-          IF pg_catalog.current_setting('search_path', false)
-               IS DISTINCT FROM v_prior_search_path THEN
+          IF NOT (
+            pg_catalog.current_setting('search_path', false)
+              OPERATOR(pg_catalog.=) v_prior_search_path
+          ) THEN
             RAISE EXCEPTION 'P1 closure rotation search path restore failed'
               USING ERRCODE = 'P2D08';
           END IF;

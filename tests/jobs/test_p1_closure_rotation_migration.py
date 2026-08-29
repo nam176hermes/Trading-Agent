@@ -154,6 +154,9 @@ def test_p1_closure_rotation_is_exact_forward_only_driver_sql() -> None:
         < statement.index("P1 closure rotation result authority is invalid")
         < statement.index(restore_search_path)
     )
+    restored_tail = statement[statement.index(restore_search_path):]
+    assert "OPERATOR(pg_catalog.=)" in restored_tail
+    assert "IS DISTINCT FROM" not in restored_tail
     assert "pg_catalog.coalesce(" not in statement
     assert statement.count("COALESCE(") == 2
     assert "v_function pg_catalog.regprocedure;" in statement
