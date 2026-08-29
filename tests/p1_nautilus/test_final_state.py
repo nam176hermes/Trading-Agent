@@ -439,6 +439,7 @@ rows = [
     {"ask":"102","bid":"101","close":"102","event_time":"2026-08-05T12:01:00Z","high":"103","low":"100","open":"101","quote_time":"2026-08-05T12:01:00Z","sequence":2,"volume":"1000000"},
 ]
 raw = b"".join(canonical(row) + b"\n" for row in rows)
+low_volume_raw = open(sys.argv[6], "rb").read()
 request = RunBacktestRequest(
     message_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     correlation_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -475,6 +476,51 @@ completion = validate_final_state(inputs, lineage, run)
 assert type(completion) is CompletionAuthority
 assert completion.final_position == run.position_quantity == "0"
 assert completion.order_count == completion.fill_count == 2
+low_volume_inputs = RuntimeInputs(
+    replace(
+        request,
+        market_data=ArtifactReference(
+            request.market_data.artifact_id,
+            hashlib.sha256(low_volume_raw).hexdigest(),
+            request.market_data.media_type,
+        ),
+    ),
+    configuration,
+    catalog,
+    schedule,
+    low_volume_raw,
+)
+low_volume_run = run_backtest(low_volume_inputs)
+low_volume_completion = validate_final_state(low_volume_inputs, lineage, low_volume_run)
+assert low_volume_completion.order_count == 2
+assert low_volume_completion.fill_count == 4
+assert low_volume_completion.final_cash == "1007781.489627"
+assert low_volume_completion.fees == "2007.791239"
+low_volume_stream = project_event_stream(
+    low_volume_inputs,
+    low_volume_run,
+    low_volume_completion,
+    closure_digest="a" * 64,
+    upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+)
+assert sum(event["event_type"] == "Fill" for event in low_volume_stream.events) == 4
+mutated_balances = tuple(
+    (currency, "1007781.4896271", locked, "1007781.4896271")
+    if currency == "USDT"
+    else fact
+    for fact in low_volume_run.balance_facts
+    for currency, _, locked, _ in (fact,)
+)
+try:
+    validate_final_state(
+        low_volume_inputs,
+        lineage,
+        replace(low_volume_run, balance_facts=mutated_balances),
+    )
+except FinalStateError:
+    pass
+else:
+    raise AssertionError("sub-quantum native balance mutation was accepted")
 for invalid_order_facts in (
     (run.order_facts[0], run.order_facts[0]),
     (
@@ -608,6 +654,10 @@ print(json.dumps({
                 (
                     ROOT / "tests/fixtures/p1_nautilus/contracts/target-schedule.json",
                     "/inputs/target-schedule.json",
+                ),
+                (
+                    ROOT / "tests/fixtures/p1_nautilus/e2e/btcusdt-1m.jsonl",
+                    "/inputs/btcusdt-1m.jsonl",
                 ),
             ),
             cwd="/",

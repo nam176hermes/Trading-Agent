@@ -11,6 +11,7 @@ import json
 from uuid import UUID, uuid5
 
 from .event_collector import CollectedExecution, collect_executions
+from .currency_metadata import currency_quanta
 from .generated_protocol import (
     DOCUMENT_FIELDS,
     P1_EVENT_SCHEMA,
@@ -404,6 +405,9 @@ def _validate_business_facts(
         step_size = Decimal(catalog["step_size"])
         min_quantity = Decimal(catalog["min_quantity"])
         min_notional = Decimal(catalog["min_notional"])
+        base_quantum, quote_quantum = currency_quanta(
+            catalog.get("base_currency"), catalog.get("quote_currency")
+        )
         canonical_numbers = (
             (configuration["starting_balance"], starting_balance),
             (configuration["fee_rate"], fee_rate),
@@ -496,11 +500,15 @@ def _validate_business_facts(
                     price = Decimal(str(fill["price"]))
                     commission = Decimal(str(fill["commission"]))
                     if fill["side"] == "BUY":
-                        position += quantity
-                        cash -= quantity * price + commission
+                        position = (position + quantity).quantize(base_quantum)
+                        cash = (cash - quantity * price - commission).quantize(
+                            quote_quantum
+                        )
                     elif fill["side"] == "SELL":
-                        position -= quantity
-                        cash += quantity * price - commission
+                        position = (position - quantity).quantize(base_quantum)
+                        cash = (cash + quantity * price - commission).quantize(
+                            quote_quantum
+                        )
                     else:
                         raise ValueError
                     if cash < 0 or position < 0:

@@ -285,9 +285,11 @@ def _inputs(
         ("starting_currency", "USDT"),
     )
     catalog = (
+        ("base_currency", "BTC"),
         ("instrument_id", "BTCUSDT.BINANCE"),
         ("min_notional", "10"),
         ("min_quantity", "0.000001"),
+        ("quote_currency", "USDT"),
         ("step_size", "0.000001"),
         ("tick_size", "0.01"),
     )

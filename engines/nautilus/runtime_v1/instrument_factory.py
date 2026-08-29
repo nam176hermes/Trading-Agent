@@ -9,6 +9,8 @@ from nautilus_trader.model.identifiers import InstrumentId
 from nautilus_trader.model.instruments import CurrencyPair
 from nautilus_trader.model.objects import Currency, Money, Price, Quantity
 
+from .currency_metadata import CURRENCY_METADATA
+
 
 _CATALOG_KEYS = {
     "schema_version",
@@ -28,10 +30,6 @@ _CATALOG_KEYS = {
 }
 _DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _DECIMAL = re.compile(r"(?:0|-?[1-9]\d*|-?(?:0|[1-9]\d*)\.\d*[1-9])", re.ASCII)
-_CURRENCY_METADATA = {
-    "BTC": (8, 0, "Bitcoin", 1),
-    "USDT": (6, 0, "Tether", 1),
-}
 _PRICE_MAX = Decimal("17014118346046")
 _QUANTITY_MAX = Decimal("34028236692093")
 
@@ -57,9 +55,9 @@ def _positive_decimal(
 
 
 def _currency(code: object) -> Currency:
-    if type(code) is not str or code not in _CURRENCY_METADATA:
+    if type(code) is not str or code not in CURRENCY_METADATA:
         raise InstrumentFactoryError("catalog currency is unsupported")
-    precision, iso4217, name, currency_type = _CURRENCY_METADATA[code]
+    precision, iso4217, name, currency_type = CURRENCY_METADATA[code]
     currency = Currency(code, precision, iso4217, name, currency_type)
     if (
         currency.code != code

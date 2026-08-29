@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation, localcontext
 import json
 
 from .bootstrap import RuntimeBootstrapError, require_product_lineage
+from .currency_metadata import currency_quanta
 from .event_collector import collect_executions
 from .event_projector import CompletionAuthority
 
@@ -129,7 +130,11 @@ def _money_facts(run: object) -> tuple[dict[str, Decimal], dict[str, Decimal]]:
 
 
 def _ledger(
-    executions: object, starting_cash: Decimal, quote_currency: str
+    executions: object,
+    starting_cash: Decimal,
+    quote_currency: str,
+    base_quantum: Decimal,
+    quote_quantum: Decimal,
 ) -> tuple[Decimal, Decimal, Decimal, Decimal, dict[str, Decimal]]:
     cash = starting_cash
     position = average = realized = Decimal(0)
@@ -153,14 +158,14 @@ def _ledger(
                     raise FinalStateError("runtime final state is inconsistent")
                 commissions[currency] = commissions.get(currency, Decimal(0)) + fee
                 if fill["side"] == "BUY":
-                    new_position = position + quantity
+                    new_position = (position + quantity).quantize(base_quantum)
                     average = (position * average + quantity * price) / new_position
                     position = new_position
-                    cash -= quantity * price + fee
+                    cash = (cash - quantity * price - fee).quantize(quote_quantum)
                 elif fill["side"] == "SELL" and quantity <= position:
                     realized += (price - average) * quantity
-                    position -= quantity
-                    cash += quantity * price - fee
+                    position = (position - quantity).quantize(base_quantum)
+                    cash = (cash + quantity * price - fee).quantize(quote_quantum)
                     if position == 0:
                         average = Decimal(0)
                 else:
@@ -205,8 +210,16 @@ def _validate(
         raise FinalStateError("runtime final state is inconsistent")
     starting_cash = _decimal(configuration.get("starting_balance"))
     balances, observed_commissions = _money_facts(run)
+    try:
+        base_quantum, quote_quantum = currency_quanta(base_currency, quote_currency)
+    except ValueError as exc:
+        raise FinalStateError("runtime final state is inconsistent") from exc
     cash, position, average, realized, expected_commissions = _ledger(
-        executions, starting_cash, quote_currency
+        executions,
+        starting_cash,
+        quote_currency,
+        base_quantum,
+        quote_quantum,
     )
     expected_positions = 1 if run.order_count else 0
     expected_open = 1 if position else 0
