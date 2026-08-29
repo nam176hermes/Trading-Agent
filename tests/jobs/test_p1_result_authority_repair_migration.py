@@ -56,6 +56,12 @@ def test_p1_result_authority_repair_is_exact_forward_only_driver_sql() -> None:
     assert "job_plane.paper_worker_job_id_allowed(" in statement
     assert "job_artifacts.job_id" in statement
     assert "GRANT EXECUTE ON FUNCTION job_plane.paper_worker_job_allowed(" not in statement
+    assert "GRANT SELECT (\n            message_id, engine_run_id" in statement
+    assert "GRANT SELECT (\n            engine_run_id, event_count" in statement
+    assert "ON TABLE public.engine_events TO trading_job_worker" in statement
+    assert "ON TABLE public.engine_run_projections TO trading_job_worker" in statement
+    assert "GRANT SELECT ON TABLE public.engine_events" not in statement
+    assert "GRANT SELECT ON TABLE public.engine_run_projections" not in statement
     assert "DROP POLICY job_plane_worker_artifacts_insert" in statement
     assert statement.count("pg_catalog.set_config(") == 2
     assert observed["execution_options"] == {"no_parameters": True}

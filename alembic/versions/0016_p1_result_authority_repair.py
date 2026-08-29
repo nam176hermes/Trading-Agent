@@ -441,6 +441,61 @@ def upgrade() -> None:
               USING ERRCODE = 'P2D08';
           END IF;
 
+          IF pg_catalog.has_any_column_privilege(
+               'trading_job_worker', 'public.engine_events', 'SELECT'
+             )
+             OR pg_catalog.has_any_column_privilege(
+               'trading_job_worker', 'public.engine_run_projections', 'SELECT'
+             ) THEN
+            RAISE EXCEPTION 'P1 durable parity prior read authority is invalid'
+              USING ERRCODE = 'P2D08';
+          END IF;
+          GRANT SELECT (
+            message_id, engine_run_id, stream_sequence, event_type,
+            event_family, canonical_json_text, digest, batch_sha256
+          ) ON TABLE public.engine_events TO trading_job_worker;
+          GRANT SELECT (
+            engine_run_id, event_count, event_type_counts, last_sequence,
+            last_digest, batch_sha256, semantic_digest, request_message_id
+          ) ON TABLE public.engine_run_projections TO trading_job_worker;
+          IF (
+            SELECT pg_catalog.array_agg(
+                     attribute.attname::pg_catalog.text ORDER BY attribute.attnum
+                   )
+            FROM pg_catalog.pg_attribute AS attribute
+            WHERE attribute.attrelid = 'public.engine_events'::pg_catalog.regclass
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND pg_catalog.has_column_privilege(
+                    'trading_job_worker', attribute.attrelid,
+                    attribute.attnum, 'SELECT'
+                  )
+          ) IS DISTINCT FROM ARRAY[
+            'message_id', 'engine_run_id', 'stream_sequence', 'event_type',
+            'event_family', 'canonical_json_text', 'digest', 'batch_sha256'
+          ]::pg_catalog.text[]
+          OR (
+            SELECT pg_catalog.array_agg(
+                     attribute.attname::pg_catalog.text ORDER BY attribute.attnum
+                   )
+            FROM pg_catalog.pg_attribute AS attribute
+            WHERE attribute.attrelid =
+                  'public.engine_run_projections'::pg_catalog.regclass
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+              AND pg_catalog.has_column_privilege(
+                    'trading_job_worker', attribute.attrelid,
+                    attribute.attnum, 'SELECT'
+                  )
+          ) IS DISTINCT FROM ARRAY[
+            'engine_run_id', 'event_count', 'event_type_counts',
+            'last_sequence', 'last_digest', 'batch_sha256',
+            'semantic_digest', 'request_message_id'
+          ]::pg_catalog.text[] THEN
+            RAISE EXCEPTION 'P1 durable parity read authority is invalid'
+              USING ERRCODE = 'P2D08';
+          END IF;
+
           DROP POLICY job_plane_worker_artifacts_insert
             ON public.job_artifacts;
           CREATE POLICY job_plane_worker_artifacts_insert
