@@ -48,6 +48,18 @@ from services.job_worker.nautilus_closure import (
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _SOURCE_COMMIT = re.compile(r"^[0-9a-f]{40}$", re.ASCII)
+_SYSTEM_GIT = Path("/usr/bin/git")
+_SYSTEM_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "HOME": "/nonexistent",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "PATH": "/usr/bin:/bin",
+}
 _INPUT_CACHE_TOOL = _ROOT / "scripts/prepare_nautilus_input_cache.py"
 _RUST_TOOLCHAIN_TOOL = _ROOT / "scripts/prepare_nautilus_toolchain.py"
 _RUST_TOOLCHAIN_POLICY = _ROOT / "engines/nautilus/toolchain-inputs.json"
@@ -308,7 +320,9 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
+def _read_file_with_mode(
+    path: Path, *, label: str, sealed: bool
+) -> tuple[bytes, int]:
     descriptor = -1
     try:
         descriptor = os.open(
@@ -331,7 +345,7 @@ def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
         chunks: list[bytes] = []
         while block := os.read(descriptor, 1024 * 1024):
             chunks.append(block)
-        return b"".join(chunks)
+        return b"".join(chunks), mode
     except RuntimeClosureMaterializationError:
         raise
     except OSError as exc:
@@ -339,6 +353,10 @@ def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _read_file(path: Path, *, label: str, sealed: bool) -> bytes:
+    return _read_file_with_mode(path, label=label, sealed=sealed)[0]
 
 
 def _read_private_build_output(path: Path) -> bytes:
@@ -1079,6 +1097,50 @@ def _copy_file(source: Path, destination: Path, *, mode: int) -> dict[str, objec
     destination.write_bytes(raw)
     destination.chmod(mode)
     return {"sha256": _sha256_bytes(raw), "size": len(raw), "mode": f"{mode:04o}"}
+
+
+def _copy_p1_inherited_file(
+    base_runtime: Path,
+    staging: Path,
+    record: dict[str, object],
+) -> dict[str, object]:
+    if set(record) != _FILE_FIELDS:
+        raise RuntimeClosureMaterializationError("G1 runtime file record is invalid")
+    relative = _safe_relative(record["path"], label="G1 runtime file")
+    target = _safe_target(record["target"], label="G1 runtime target").as_posix()
+    expected = {**record, "path": relative.as_posix(), "target": target}
+    raw, opened_mode = _read_file_with_mode(
+        base_runtime.joinpath(*relative.parts),
+        label="G1 runtime file",
+        sealed=True,
+    )
+    observed = {
+        "mode": f"{opened_mode:04o}",
+        "path": relative.as_posix(),
+        "sha256": _sha256_bytes(raw),
+        "size": len(raw),
+        "target": target,
+    }
+    if observed != expected:
+        raise RuntimeClosureMaterializationError(
+            "G1 runtime file authority drifted during copy"
+        )
+
+    destination = staging.joinpath(*relative.parts)
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    destination.write_bytes(raw)
+    destination.chmod(opened_mode)
+    copied_raw, copied_mode = _read_file_with_mode(
+        destination,
+        label="copied G1 runtime file",
+        sealed=True,
+    )
+    copied = {**observed, "mode": f"{copied_mode:04o}"}
+    if copied != expected or copied_raw != raw:
+        raise RuntimeClosureMaterializationError(
+            "G1 runtime file authority drifted during copy"
+        )
+    return copied
 
 
 def _seal_tree(root: Path) -> None:
@@ -2748,19 +2810,30 @@ def _p1_source_bytes(source_commit: str, source: str) -> bytes:
     if _SOURCE_COMMIT.fullmatch(source_commit) is None:
         raise RuntimeClosureMaterializationError("P1 source commit is invalid")
     try:
+        observed = _SYSTEM_GIT.lstat()
+    except OSError as exc:
+        raise RuntimeClosureMaterializationError(
+            "trusted system Git executable is invalid"
+        ) from exc
+    if (
+        not stat.S_ISREG(observed.st_mode)
+        or observed.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(observed.st_mode) & 0o022
+        or not observed.st_mode & 0o111
+    ):
+        raise RuntimeClosureMaterializationError(
+            "trusted system Git executable is invalid"
+        )
+    try:
         result = subprocess.run(
-            ("git", "--no-replace-objects", "show", f"{source_commit}:{source}"),
+            (
+                os.fspath(_SYSTEM_GIT),
+                "--no-replace-objects",
+                "show",
+                f"{source_commit}:{source}",
+            ),
             cwd=_ROOT,
-            env={
-                "PATH": os.environ.get("PATH", ""),
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_GLOBAL": "/dev/null",
-                "GIT_NO_REPLACE_OBJECTS": "1",
-                "GIT_NO_LAZY_FETCH": "1",
-                "GIT_OPTIONAL_LOCKS": "0",
-                "LANG": "C.UTF-8",
-                "LC_ALL": "C.UTF-8",
-            },
+            env=dict(_SYSTEM_GIT_ENV),
             check=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -2871,13 +2944,7 @@ def materialize_p1_runtime_closure(
         records: list[dict[str, object]] = []
         for record in candidate["files"]:
             assert isinstance(record, dict)
-            relative = _safe_relative(record["path"], label="G1 runtime file")
-            copied = _copy_file(
-                base_runtime.joinpath(*relative.parts),
-                staging.joinpath(*relative.parts),
-                mode=int(str(record["mode"]), 8),
-            )
-            records.append({"path": relative.as_posix(), "target": record["target"], **copied})
+            records.append(_copy_p1_inherited_file(base_runtime, staging, record))
 
         inventory = policy["runtime_inventory"]
         assert isinstance(inventory, list)
