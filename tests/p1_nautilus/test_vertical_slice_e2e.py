@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,61 @@ EXPECTED_FIXTURES = {
     "market_data_sha256": "d390750a1d51b6f333efc7092cd99f2c6752ca6ab51daeaa800171ea92005c9c",
     "strategy_configuration_sha256": "c4002efb2f0f2b14c94699db59ef8c5733602e41c3bfe60999670fb7c0671470",
 }
+
+
+def _complete_arguments(tmp_path: Path) -> list[str]:
+    return [
+        "--p1-closure-root",
+        str(tmp_path / "closure"),
+        "--p1-closure-artifacts",
+        str(tmp_path / "artifacts"),
+        "--bubblewrap",
+        str(tmp_path / "bwrap"),
+        "--transport-root",
+        str(tmp_path / "transport"),
+        "--runtime-authority",
+        "/etc/trading-agent-v2/release-authority-v2.json",
+        "--postgres-approval",
+        str(tmp_path / "approval.json"),
+        "--postgres-scope",
+        "DISPOSABLE_PG_GREEN",
+        "--pgdata",
+        str(tmp_path / "pgdata"),
+        "--pg-port",
+        "49152",
+        "--engine-configuration",
+        str(tmp_path / "engine-configuration.json"),
+        "--instrument-catalog",
+        str(tmp_path / "instrument-catalog.json"),
+        "--strategy-configuration",
+        str(tmp_path / "strategy-configuration.json"),
+        "--market-data",
+        str(tmp_path / "market-data.jsonl"),
+    ]
+
+
+def _patch_complete_native_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    vertical: object,
+    *,
+    closure_sha256: str,
+) -> None:
+    monkeypatch.setattr(
+        vertical,
+        "_source_identity",
+        lambda: ("1" * 40, "2" * 40),
+    )
+    monkeypatch.setattr(vertical, "_validate_external_fixtures", lambda _args: None)
+    monkeypatch.setattr(
+        vertical,
+        "attest_worker_runtime_authority",
+        lambda: SimpleNamespace(authority_document_sha256="3" * 64),
+    )
+    monkeypatch.setattr(
+        vertical,
+        "attest_p1_nautilus_closure",
+        lambda _config: SimpleNamespace(closure_sha256=closure_sha256),
+    )
 
 
 def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -137,3 +193,86 @@ def test_transport_authority_rejects_checkout_and_symlink_paths(
         vertical._validate_transport_root(link)
     with pytest.raises(vertical.VerticalSliceError):
         vertical._validate_transport_root(ROOT / "tests")
+
+
+def test_schema_valid_wrong_closure_digest_is_blocked_before_downstream_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    _patch_complete_native_preflight(
+        monkeypatch,
+        vertical,
+        closure_sha256="a" * 64,
+    )
+    downstream_calls: list[str] = []
+
+    def record_downstream(_value: object) -> None:
+        downstream_calls.append("called")
+
+    monkeypatch.setattr(vertical, "_validate_transport_root", record_downstream)
+
+    result = vertical.main(_complete_arguments(tmp_path))
+
+    assert result == 2
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["job_mutated"] is False
+    assert downstream_calls == []
+
+
+def test_ambient_database_setting_is_blocked_before_downstream_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
+
+    _patch_complete_native_preflight(
+        monkeypatch,
+        vertical,
+        closure_sha256=P1_REAL_BACKTEST_POLICY.closure_sha256,
+    )
+    monkeypatch.setattr(vertical, "_validate_transport_root", lambda _path: None)
+    monkeypatch.setattr(vertical, "load_protected_approval_record", lambda _path: {})
+    monkeypatch.setenv("TRADING_DATABASE_URL", "postgresql://ambient/not-authorized")
+    observed_names: list[frozenset[str]] = []
+    downstream_calls: list[str] = []
+
+    def reject_ambient(
+        _record: object,
+        **kwargs: object,
+    ) -> None:
+        names = kwargs["runtime_setting_names"]
+        assert isinstance(names, frozenset)
+        observed_names.append(names)
+        raise vertical.VerticalSliceError("ambient database authority is forbidden")
+
+    monkeypatch.setattr(
+        vertical,
+        "validate_disposable_postgres_approval_record",
+        reject_ambient,
+    )
+    monkeypatch.setattr(
+        vertical,
+        "validate_disposable_postgres_approval",
+        lambda *_args: downstream_calls.append("specific-context"),
+    )
+    monkeypatch.setattr(
+        vertical,
+        "validate_source_binding_files",
+        lambda *_args: downstream_calls.append("source-bindings"),
+    )
+
+    result = vertical.main(_complete_arguments(tmp_path))
+
+    assert result == 2
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == "BLOCKED"
+    assert receipt["job_mutated"] is False
+    assert len(observed_names) == 1
+    assert "TRADING_DATABASE_URL" in observed_names[0]
+    assert downstream_calls == []

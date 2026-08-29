@@ -30,13 +30,16 @@ from scripts.validate_disposable_postgres_approval import (
     CLUSTER_NAME,
     DISPOSABLE_DATABASE_NAME,
     DisposablePostgresApprovalContext,
+    _runtime_setting_names,
     canonical_record_sha256,
     load_protected_approval_record,
     validate_disposable_postgres_approval,
+    validate_disposable_postgres_approval_record,
     validate_source_binding_files,
 )
 from services.job_store.config import CANONICAL_DATABASE_REVISION
 from services.job_worker.command_registry import attest_worker_runtime_authority
+from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
 from services.job_worker.nautilus_closure import NautilusClosureConfig
 from services.job_worker.p1_nautilus_closure import attest_p1_nautilus_closure
 
@@ -289,8 +292,21 @@ def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
             arguments.bubblewrap,
         )
     )
+    if closure.closure_sha256 != P1_REAL_BACKTEST_POLICY.closure_sha256:
+        raise VerticalSliceError("P1 closure does not match the accepted policy")
     _validate_transport_root(arguments.transport_root)
     approval = load_protected_approval_record(arguments.postgres_approval)
+    validation_now = datetime.now(UTC)
+    runtime_setting_names = _runtime_setting_names()
+    validate_disposable_postgres_approval_record(
+        approval,
+        expected_scope=arguments.postgres_scope,
+        expected_commit=commit,
+        expected_tree=tree,
+        expected_sql_sha256=None,
+        runtime_setting_names=runtime_setting_names,
+        now=validation_now,
+    )
     context = DisposablePostgresApprovalContext(
         scope=arguments.postgres_scope,
         source_commit=commit,
@@ -302,8 +318,8 @@ def _validate_complete(arguments: argparse.Namespace) -> dict[str, object]:
         port=pg_port,
         cluster_name=CLUSTER_NAME,
         database_name=DISPOSABLE_DATABASE_NAME,
-        runtime_setting_names=frozenset(),
-        now=datetime.now(UTC),
+        runtime_setting_names=runtime_setting_names,
+        now=validation_now,
     )
     validate_disposable_postgres_approval(approval, context)
     validate_source_binding_files(approval, ROOT)
