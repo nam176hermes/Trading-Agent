@@ -12,6 +12,7 @@ import pytest
 
 ROOT = Path(__file__).parents[2]
 SCRIPT = ROOT / "scripts/run_p1_nautilus_vertical_slice.py"
+HOST_AUTHORITY_BUILDER = ROOT / "scripts/build_p1_package6_host_authority.py"
 MARKET = ROOT / "tests/fixtures/p1_nautilus/e2e/btcusdt-1m.jsonl"
 
 EXPECTED_FIXTURES = {
@@ -159,7 +160,15 @@ def _package6_vertical_slice_command(
 ) -> list[str]:
     application_python = getattr(material, "application_python")
     assert isinstance(application_python, Path)
-    return [str(application_python), "-I", "-B", str(SCRIPT), *arguments]
+    return [
+        str(application_python),
+        "-I",
+        "-B",
+        str(HOST_AUTHORITY_BUILDER),
+        "activate-and-exec",
+        "--",
+        *arguments,
+    ]
 
 
 def _package6_vertical_slice_environment(
@@ -179,7 +188,9 @@ def test_required_runtime_command_uses_validated_package6_python() -> None:
         str(application_python),
         "-I",
         "-B",
-        str(SCRIPT),
+        str(HOST_AUTHORITY_BUILDER),
+        "activate-and-exec",
+        "--",
         "--execute",
     ]
 
@@ -727,11 +738,14 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
             ],
         ]
         command = _package6_vertical_slice_command(material, arguments)
-        assert command[:4] == [
+        assert command[:7] == [
             str(material.application_python),
             "-I",
             "-B",
-            str(SCRIPT),
+            str(HOST_AUTHORITY_BUILDER),
+            "activate-and-exec",
+            "--",
+            "--execute",
         ]
         result = subprocess.run(
             command,
