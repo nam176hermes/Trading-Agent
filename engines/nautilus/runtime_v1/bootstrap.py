@@ -44,7 +44,7 @@ _ANONYMOUS_MOUNTS = {REQUEST, SIDECAR, LINEAGE}
 def _expected_link_count(path: str) -> int:
     return 0 if path in _ANONYMOUS_MOUNTS else 1
 _SIDECAR_DIGEST = re.compile(rb"[0-9a-f]{64}\n", re.ASCII)
-_EXPECTED_ENVIRONMENT = (("LC_CTYPE", "C.UTF-8"),)
+_EXPECTED_ENVIRONMENT: tuple[tuple[str, str], ...] = ()
 
 
 class RuntimeBootstrapError(ValueError):

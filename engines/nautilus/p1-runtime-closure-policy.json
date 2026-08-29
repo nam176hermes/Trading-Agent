@@ -85,7 +85,7 @@
     },
     {
       "mode": "0400",
-      "sha256": "841a17a1127cc14caead7e7109e695ea1f7686d0c32232287d83ca32bcbb922c",
+      "sha256": "11be142a57862b61187c031f8cc9efc6b8275b97f54e3e8134e7ec7364bfcfd3",
       "source": "engines/nautilus/runtime_v1/bootstrap.py",
       "target": "/engine/runtime_v1/bootstrap.py"
     },
@@ -186,7 +186,7 @@
       "target": "/engine/runtime_v1/target_strategy.py"
     }
   ],
-  "runtime_inventory_sha256": "28fdd85c467fe9edc73a939c58068bfb56bf58c5845cf16c3333a0166759cc8e",
+  "runtime_inventory_sha256": "f1a7a2e05dffdebfbce14a92754e33dfd9490de2c8f7f539a381c6206b0f3523",
   "sandbox_profile_sha256": "742d3d2cf313a0dc5832fd88d277da1d00e07c6e4abcc4ca51bf0ebcd7c3936e",
   "schema": "trading-agent-p1-runtime-closure-policy/v1",
   "semantic_profile": "nautilus-p1-real-backtest-v1",
