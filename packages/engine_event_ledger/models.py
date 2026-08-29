@@ -79,10 +79,18 @@ class EngineRunProjection(EngineEventLedgerModel):
     semantic_digest: Sha256Hex | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    request_message_id: UUID | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _complete_result_authority(self) -> "EngineRunProjection":
-        if (self.batch_sha256 is None) != (self.semantic_digest is None):
+        present = (
+            self.batch_sha256 is not None,
+            self.semantic_digest is not None,
+            self.request_message_id is not None,
+        )
+        if any(present) and not all(present):
             raise ValueError("engine run result authority must be complete")
         return self
 

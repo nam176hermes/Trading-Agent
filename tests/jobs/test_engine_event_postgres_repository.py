@@ -269,6 +269,11 @@ def test_postgres_reads_strict_receipt_events_and_projection_rows() -> None:
     projection_row["event_type_counts"] = [
         count.model_dump(mode="python") for count in projection.event_type_counts
     ]
+    projection_row.update(
+        batch_sha256=None,
+        semantic_digest=None,
+        request_message_id=None,
+    )
     connection = Connection(
         [[_receipt_row(receipt)], event_rows, [projection_row], [projection_row]]
     )
@@ -292,6 +297,9 @@ def test_projection_recovery_rolls_back_if_rows_are_not_strict_and_unique() -> N
         ],
         "last_sequence": 2,
         "last_digest": "a" * 64,
+        "batch_sha256": None,
+        "semantic_digest": None,
+        "request_message_id": None,
     }
     connection = Connection([[projection_row, projection_row]])
 
@@ -300,6 +308,31 @@ def test_projection_recovery_rolls_back_if_rows_are_not_strict_and_unique() -> N
 
     assert connection.commit_count == 0
     assert connection.rollback_count == 1
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ("batch_sha256", "semantic_digest", "request_message_id"),
+)
+def test_projection_read_rejects_absent_authority_columns(missing: str) -> None:
+    projection_row = {
+        "engine_run_id": RUN_ID,
+        "event_count": 1,
+        "event_type_counts": [
+            {"event_type": "BacktestStarted", "count": 1}
+        ],
+        "last_sequence": 2,
+        "last_digest": "a" * 64,
+        "batch_sha256": None,
+        "semantic_digest": None,
+        "request_message_id": None,
+    }
+    del projection_row[missing]
+
+    with pytest.raises(EngineEventConflictError, match="invalid engine-run"):
+        PostgresEngineEventLedger(Pool(Connection([[projection_row]]))).load_projection(
+            RUN_ID
+        )
 
 
 def test_postgres_replay_is_derived_from_immutable_event_rows() -> None:

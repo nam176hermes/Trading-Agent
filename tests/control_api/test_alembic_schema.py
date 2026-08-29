@@ -59,7 +59,7 @@ EXPECTED_TABLES = {
     "engine_run_projections",
     "engine_job_results",
 }
-EXACT_HEAD = "0011_engine_backtest_worker_authority"
+EXACT_HEAD = "0012_p1_engine_projection_authority"
 
 
 def alembic_config() -> Config:
@@ -143,6 +143,14 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             assert cost_columns["symbols_provenance_quality"]["nullable"] is False
             assert cost_columns["symbols_evidence_state"]["nullable"] is False
 
+            engine_projection_columns = {
+                item["name"]: item
+                for item in inspector.get_columns("engine_run_projections")
+            }
+            assert engine_projection_columns["batch_sha256"]["nullable"] is True
+            assert engine_projection_columns["semantic_digest"]["nullable"] is True
+            assert engine_projection_columns["request_message_id"]["nullable"] is True
+
             foreign_keys = sum(
                 (inspector.get_foreign_keys(table) for table in EXPECTED_TABLES),
                 start=[],
@@ -163,7 +171,77 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "ck_cost_sessions_symbols_state",
                 "ck_phase3b_backfill_runs_status",
                 "ck_phase3b_backfill_events_reason",
+                "engine_run_projection_result_authority_complete",
             }
+
+            projection_foreign_keys = {
+                item["name"]
+                for item in inspector.get_foreign_keys("engine_run_projections")
+            }
+            assert "engine_run_projection_batch_fkey" in projection_foreign_keys
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'job_plane.ingest_p1_engine_event_batch_v2("
+                "text,uuid,uuid,uuid,uuid,text,text,text,text,text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'job_plane.ingest_engine_job_result_v2(text,text,text,text,text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'job_plane.paper_worker_job_id_allowed(text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
+                "'public.engine_run_completion_append_guard()')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT count(*) FROM pg_catalog.pg_policies "
+                "WHERE schemaname = 'public' "
+                "AND tablename = 'worker_heartbeats' "
+                "AND policyname IN ("
+                "'job_plane_worker_heartbeats_insert', "
+                "'job_plane_worker_heartbeats_update') "
+                "AND roles = ARRAY['trading_job_worker']::name[] "
+                "AND with_check LIKE "
+                "'%paper_worker_job_id_allowed(current_job_id)%'"
+            ).scalar_one() == 2
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_p1_engine_event_batch_v2("
+                "text,uuid,uuid,uuid,uuid,text,text,text,text,text)', "
+                "'EXECUTE')"
+            ).scalar_one() is False
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_engine_job_result_v2("
+                "text,text,text,text,text)', 'EXECUTE')"
+            ).scalar_one() is True
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.paper_worker_job_id_allowed(text)', 'EXECUTE')"
+            ).scalar_one() is True
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.paper_worker_job_allowed(text,jsonb)', 'EXECUTE')"
+            ).scalar_one() is False
+            for role in (
+                "trading_jobs",
+                "trading_migrator",
+                "trading_reader",
+                "trading_job_api",
+                "trading_job_scheduler",
+            ):
+                assert connection.exec_driver_sql(
+                    "SELECT has_function_privilege("
+                    f"'{role}', "
+                    "'job_plane.paper_worker_job_id_allowed(text)', 'EXECUTE')"
+                ).scalar_one() is False
 
             assert {
                 "uq_decision_field_lineage_identity",

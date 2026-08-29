@@ -455,13 +455,15 @@ class JobWorker:
                             "durable engine-event reconciliation conflicted",
                         ) from exc
                     except Exception:
-                        raise ResultValidationError(
+                        raise _EngineEventIngestionBlocked(
+                            "ENGINE_EVENT_RECONCILIATION_REQUIRED",
                             "durable engine-event ingestion failed and could not "
-                            "be reconciled"
+                            "be reconciled",
                         ) from ingest_error
                     if receipt is None:
-                        raise ResultValidationError(
-                            "durable engine-event ingestion failed without a receipt"
+                        raise _EngineEventIngestionBlocked(
+                            "ENGINE_EVENT_RECONCILIATION_REQUIRED",
+                            "durable engine-event ingestion failed without a receipt",
                         ) from ingest_error
                 self._validation_progress(claimed, safety_preflight)
                 if result.validation_metadata != sealed_validation_metadata:
