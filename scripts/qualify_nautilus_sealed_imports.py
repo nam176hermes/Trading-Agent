@@ -40,11 +40,9 @@ from services.job_worker.engine_artifacts import (
     HashBoundArtifactResolver,
 )
 from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
-from services.job_worker.engine_spawn import (
-    EngineSpawnProvider,
-    consume_prepared_engine_spawn,
-)
+from services.job_worker.engine_spawn import consume_prepared_engine_spawn
 from services.job_worker.nautilus_closure import NautilusClosureConfig
+from services.job_worker.p1_engine_spawn import P1EngineSpawnProvider
 from services.job_worker.p1_nautilus_closure import attest_p1_nautilus_closure
 
 
@@ -1002,7 +1000,7 @@ def qualify_p1_runtime(
                 payload_digest=payload_digest(command),
                 payload=command,
             )
-            provider = EngineSpawnProvider(
+            provider = P1EngineSpawnProvider(
                 transport_root=transport_root,
                 attest_closure=lambda: closure,
                 expected_manifest_schema_version=8,

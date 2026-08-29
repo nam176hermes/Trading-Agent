@@ -11,7 +11,6 @@ import ctypes
 import fcntl
 import hashlib
 import hmac
-import json
 import os
 import platform
 import re
@@ -22,7 +21,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import NoReturn
 
 from packages.engine_contracts import (
     ArtifactReference,
@@ -32,7 +30,6 @@ from packages.engine_contracts import (
     ValidatePaperCompatibility,
     canonical_json_bytes,
 )
-from .engine_profiles import EngineProfilePolicy, P1_REAL_BACKTEST_POLICY
 from .engine_spawn_interface import EnginePreparedSpawnMarker, EngineSpawnError
 
 
@@ -47,7 +44,6 @@ _PREPARED_TTL_NS = 5 * 60 * 1_000_000_000
 _INPUT_TARGET = PurePosixPath("/inputs/request.json")
 _SIDECAR_TARGET = PurePosixPath("/inputs/request.sha256")
 _CLOSURE_MANIFEST_TARGET = PurePosixPath("/engine/closure-manifest.json")
-_PRODUCT_LINEAGE_TARGET = PurePosixPath("/engine/p1-product-lineage.json")
 _NATIVE_GUARD_TARGET = PurePosixPath("/engine/bin/nautilus-entry-guard")
 _NATIVE_GUARDED_EXECUTABLE = PurePosixPath("/usr/bin/python3.12")
 _NATIVE_GUARDED_ARGV_PREFIXES = {
@@ -124,7 +120,7 @@ _MEMFD_CREATE_SYSCALLS = {
 }
 
 
-def _blocked(reason: str, message: str) -> NoReturn:
+def _blocked(reason: str, message: str) -> None:
     raise EngineSpawnError(reason, message)
 
 
@@ -202,12 +198,6 @@ class CompleteEngineClosureAttestation:
     closure_manifest: ReadOnlyClosureMount | None = None
     native_entry_guard: NativeEntryGuardAttestation | None = None
     dependency_import_policy: str | None = None
-    runtime_family: str | None = None
-    engine_version: str | None = None
-    engine_upstream_commit: str | None = None
-    event_schema: str | None = None
-    runtime_inventory_sha256: str | None = None
-    product_lineage: ReadOnlyClosureMount | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,7 +545,6 @@ def _validate_entrypoint(attestation: CompleteEngineClosureAttestation) -> None:
 
 def _validate_native_entry_guard(
     attestation: CompleteEngineClosureAttestation,
-    profile_policy: EngineProfilePolicy | None,
 ) -> None:
     guard = attestation.native_entry_guard
     schema_version = attestation.manifest_schema_version
@@ -576,7 +565,7 @@ def _validate_native_entry_guard(
     if attestation.closure_manifest is None or guard is None:
         _blocked(
             "ENGINE_CLOSURE_INVALID",
-            "guarded closure requires its manifest and native guard",
+            "schema-v5/v6 closure requires its manifest and native guard",
         )
     if type(guard) is not NativeEntryGuardAttestation:
         _blocked("ENGINE_CLOSURE_INVALID", "native entry guard contract is invalid")
@@ -588,17 +577,13 @@ def _validate_native_entry_guard(
         guard.rust_toolchain_policy_sha256,
         guard.llvm_toolchain_policy_sha256,
     )
-    expected_argv = (
-        profile_policy.argv_prefix
-        if profile_policy is not None
-        else _NATIVE_GUARDED_ARGV_PREFIXES.get(attestation.profile)
-    )
     if (
         guard.target != _NATIVE_GUARD_TARGET
-        or expected_argv is None
+        or attestation.profile not in _NATIVE_GUARDED_ARGV_PREFIXES
         or guard.guarded_executable != _NATIVE_GUARDED_EXECUTABLE
         or attestation.entrypoint != guard.target
-        or attestation.argv_prefix != expected_argv
+        or attestation.argv_prefix
+        != _NATIVE_GUARDED_ARGV_PREFIXES[attestation.profile]
         or attestation.closure_manifest is None
         or guard.mode != 0o500
         or guard.source != _NATIVE_GUARD_SOURCE
@@ -660,7 +645,6 @@ def _validate_closure(
     value: object,
     *,
     expected_manifest_schema_version: int,
-    profile_policy: EngineProfilePolicy | None,
 ) -> CompleteEngineClosureAttestation:
     if type(value) is not CompleteEngineClosureAttestation:
         _blocked(
@@ -670,17 +654,31 @@ def _validate_closure(
     attestation = value
     if (
         type(attestation.manifest_schema_version) is not int
-        or attestation.manifest_schema_version not in {1, 2, 3, 4, 5, 6, 8}
+        or attestation.manifest_schema_version not in {1, 2, 3, 4, 5, 6}
         or attestation.manifest_schema_version
         != expected_manifest_schema_version
         or (
-            attestation.manifest_schema_version in {6, 8}
+            attestation.manifest_schema_version == 6
             and attestation.dependency_import_policy
             != _DEPENDENCY_IMPORT_POLICY
         )
         or (
-            attestation.manifest_schema_version not in {6, 8}
+            attestation.manifest_schema_version != 6
             and attestation.dependency_import_policy is not None
+        )
+        or attestation.profile
+        not in {"zero-order", "execution-simulation", "paper-compatibility"}
+        or (
+            attestation.semantic_profile not in {None, *_SEMANTIC_PROFILES.values()}
+        )
+        or (
+            attestation.profile in _SEMANTIC_PROFILES
+            and attestation.semantic_profile
+            != _SEMANTIC_PROFILES[attestation.profile]
+        )
+        or (
+            attestation.profile == "zero-order"
+            and attestation.semantic_profile is not None
         )
         or not isinstance(attestation.source_commit, str)
         or _SOURCE_COMMIT.fullmatch(attestation.source_commit) is None
@@ -699,55 +697,6 @@ def _validate_closure(
         or ".." in attestation.entrypoint.parts
     ):
         _blocked("ENGINE_CLOSURE_INVALID", "complete engine closure shape is invalid")
-    if profile_policy is None:
-        if (
-            attestation.manifest_schema_version == 8
-            or attestation.profile
-            not in {"zero-order", "execution-simulation", "paper-compatibility"}
-            or attestation.semantic_profile
-            not in {None, *_SEMANTIC_PROFILES.values()}
-            or (
-                attestation.profile in _SEMANTIC_PROFILES
-                and attestation.semantic_profile
-                != _SEMANTIC_PROFILES[attestation.profile]
-            )
-            or (
-                attestation.profile == "zero-order"
-                and attestation.semantic_profile is not None
-            )
-            or any(
-                value is not None
-                for value in (
-                    attestation.runtime_family,
-                    attestation.engine_version,
-                    attestation.engine_upstream_commit,
-                    attestation.event_schema,
-                    attestation.runtime_inventory_sha256,
-                    attestation.product_lineage,
-                )
-            )
-        ):
-            _blocked("ENGINE_CLOSURE_INVALID", "complete engine closure profile is invalid")
-    elif (
-        profile_policy is not P1_REAL_BACKTEST_POLICY
-        or attestation.manifest_schema_version
-        != profile_policy.manifest_schema_version
-        or attestation.profile != profile_policy.profile
-        or attestation.semantic_profile != profile_policy.semantic_profile
-        or attestation.entrypoint != PurePosixPath(profile_policy.entrypoint)
-        or attestation.argv_prefix != profile_policy.argv_prefix
-        or attestation.timeout_seconds != profile_policy.timeout_seconds
-        or attestation.result_validator_id != profile_policy.result_validator_id
-        or attestation.runtime_family != profile_policy.runtime_family
-        or attestation.engine_version != profile_policy.engine_version
-        or attestation.engine_upstream_commit
-        != profile_policy.engine_upstream_commit
-        or attestation.event_schema != profile_policy.event_schema
-        or attestation.runtime_inventory_sha256
-        != profile_policy.runtime_inventory_sha256
-        or type(attestation.product_lineage) is not ReadOnlyClosureMount
-    ):
-        _blocked("ENGINE_CLOSURE_INVALID", "complete engine closure profile is invalid")
     if any(
         not isinstance(argument, str) or not argument or "\x00" in argument
         for argument in attestation.argv_prefix
@@ -806,17 +755,8 @@ def _validate_closure(
             "ENGINE_CLOSURE_INVALID",
             "separate closure manifest attestation is invalid",
         )
-    product_lineage = attestation.product_lineage
-    if product_lineage is not None and (
-        product_lineage.target != _PRODUCT_LINEAGE_TARGET
-        or product_lineage.mode != 0o400
-        or any(mount.target == _PRODUCT_LINEAGE_TARGET for mount in attestation.mounts)
-    ):
-        _blocked("ENGINE_CLOSURE_INVALID", "product lineage attestation is invalid")
-    validated_mounts = (
-        attestation.mounts
-        + ((closure_manifest,) if closure_manifest is not None else ())
-        + ((product_lineage,) if product_lineage is not None else ())
+    validated_mounts = attestation.mounts + (
+        (closure_manifest,) if closure_manifest is not None else ()
     )
     targets: set[PurePosixPath] = set()
     for mount in validated_mounts:
@@ -864,28 +804,7 @@ def _validate_closure(
             _blocked("ENGINE_CLOSURE_STALE", "closure file identity changed")
         _verified_closure_file(mount)
         targets.add(mount.target)
-    if product_lineage is not None:
-        expected_lineage = (
-            json.dumps(
-                {
-                    "closure_sha256": attestation.closure_sha256,
-                    "engine_version": attestation.engine_version,
-                    "event_schema": attestation.event_schema,
-                    "profile": attestation.profile,
-                    "profile_manifest_schema_version": attestation.manifest_schema_version,
-                    "runtime_family": attestation.runtime_family,
-                    "runtime_inventory_sha256": attestation.runtime_inventory_sha256,
-                },
-                allow_nan=False,
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode("ascii")
-        if _verified_closure_file(product_lineage) != expected_lineage:
-            _blocked("ENGINE_CLOSURE_INVALID", "product lineage authority is invalid")
-    _validate_native_entry_guard(attestation, profile_policy)
+    _validate_native_entry_guard(attestation)
     _validate_entrypoint(attestation)
     return attestation
 
@@ -979,7 +898,6 @@ class EngineSpawnProvider:
         transport_root: Path,
         attest_closure: Callable[[], CompleteEngineClosureAttestation],
         expected_manifest_schema_version: int,
-        profile_policy: EngineProfilePolicy | None = None,
         attest_inputs: Callable[
             [RunBacktest | RunBacktestSimulation | ValidatePaperCompatibility],
             tuple[HashBoundEngineInput, ...],
@@ -993,8 +911,7 @@ class EngineSpawnProvider:
             raise TypeError("complete engine closure attestor is required")
         if (
             type(expected_manifest_schema_version) is not int
-            or expected_manifest_schema_version
-            not in ({8} if profile_policy is P1_REAL_BACKTEST_POLICY else {1, 2, 3, 4, 5, 6})
+            or expected_manifest_schema_version not in {1, 2, 3, 4, 5, 6}
         ):
             raise ValueError(
                 "one exact supported closure manifest schema is required"
@@ -1006,9 +923,6 @@ class EngineSpawnProvider:
         self._transport_root = transport_root
         self._attest_closure = attest_closure
         self._expected_manifest_schema_version = expected_manifest_schema_version
-        if profile_policy is not None and profile_policy is not P1_REAL_BACKTEST_POLICY:
-            raise ValueError("exact code-owned engine profile policy is required")
-        self._profile_policy = profile_policy
         self._attest_inputs = attest_inputs
         self._monotonic_ns = monotonic_ns
         self._issued: weakref.WeakSet[PreparedEngineSpawn] = weakref.WeakSet()
@@ -1043,7 +957,6 @@ class EngineSpawnProvider:
         return _validate_closure(
             value,
             expected_manifest_schema_version=self._expected_manifest_schema_version,
-            profile_policy=self._profile_policy,
         )
 
     def _current_inputs(
@@ -1166,21 +1079,13 @@ class EngineSpawnProvider:
         else:
             _blocked("ENGINE_REQUEST_INVALID", "exact supported engine request is required")
         closure = self._current_closure()
-        if self._profile_policy is not None:
-            if type(request_model) is not RunBacktest:
-                _blocked(
-                    "ENGINE_REQUEST_INVALID",
-                    "engine command does not match the code-owned profile",
-                )
-            expected_profile = self._profile_policy.profile
-        else:
-            expected_profile = (
-                "zero-order"
-                if type(request_model) is RunBacktest
-                else "execution-simulation"
-                if type(request_model) is RunBacktestSimulation
-                else "paper-compatibility"
-            )
+        expected_profile = (
+            "zero-order"
+            if type(request_model) is RunBacktest
+            else "execution-simulation"
+            if type(request_model) is RunBacktestSimulation
+            else "paper-compatibility"
+        )
         if closure.profile != expected_profile:
             _blocked(
                 "ENGINE_CLOSURE_PROFILE_MISMATCH",
@@ -1373,18 +1278,10 @@ class EngineSpawnProvider:
                 launch_fds.append(descriptor)
             sandbox_snapshot_fd = _sealed_sandbox_snapshot(closure.sandbox)
             launch_fds.append(sandbox_snapshot_fd)
-            validated_mounts = (
-                closure.mounts
-                + (
-                    (closure.closure_manifest,)
-                    if closure.closure_manifest is not None
-                    else ()
-                )
-                + (
-                    (closure.product_lineage,)
-                    if closure.product_lineage is not None
-                    else ()
-                )
+            validated_mounts = closure.mounts + (
+                (closure.closure_manifest,)
+                if closure.closure_manifest is not None
+                else ()
             )
             closure_snapshot_fds: list[int] = []
             for mount in validated_mounts:

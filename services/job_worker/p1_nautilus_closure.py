@@ -18,12 +18,12 @@ from packages.nautilus_upgrade_authority import (
 from . import nautilus_closure as _legacy
 from .engine_profiles import P1_REAL_BACKTEST_POLICY
 from .engine_spawn import (
-    CompleteEngineClosureAttestation,
     NativeEntryGuardAttestation,
     ReadOnlyClosureMount,
 )
 from .engine_spawn_interface import EngineSpawnError
 from .nautilus_closure import NautilusClosureConfig
+from .p1_engine_spawn import P1EngineClosureAttestation
 
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -546,7 +546,7 @@ def _native_guard(
 
 def attest_p1_nautilus_closure(
     config: NautilusClosureConfig,
-) -> CompleteEngineClosureAttestation:
+) -> P1EngineClosureAttestation:
     """Attest one exact schema-8 P1 product closure and derived lineage."""
 
     if type(config) is not NautilusClosureConfig:
@@ -642,7 +642,7 @@ def attest_p1_nautilus_closure(
         closure_sha256, profile.runtime_inventory_sha256
     )
     product_lineage = _lineage_mount(config.runtime_root, lineage)
-    return CompleteEngineClosureAttestation(
+    return P1EngineClosureAttestation(
         manifest_schema_version=profile.manifest_schema_version,
         profile=profile.profile,
         source_commit=str(manifest["source_commit"]),
