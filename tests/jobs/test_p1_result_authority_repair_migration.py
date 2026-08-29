@@ -39,9 +39,14 @@ def test_p1_result_authority_repair_is_exact_forward_only_driver_sql() -> None:
     assert "69704d5c3ac1516339095865238eb650da4b2bda0f95a3b5a675b50f00a389b5" in statement
     assert "aea1129235f91d7645741c04912590a31cc3e667df43867c8b3a7cecfec9b743" in statement
     assert "6d76e0cadddd6f204cb445f38e7bc7462ac92342be3cca5fa639071bf182db2a" in statement
+    assert "8972d3cf715cfd761e86d88446161c6c4a36e8b4fb61f76d02ed41bd227ee089" in statement
+    assert "54d6e1445973fbe7902709d7a118c65b152cb7d6e6a2e2cd1b257e83ede5f96e" in statement
+    assert "04ec80653561e0c40cd57d1920642dd6e1e878d0e11f4729cd4b97273e06dd5b" in statement
+    assert "bd787ebf4a5e3f1526667346b47e9474716061c7be75271ed8cfc8a9f270177f" in statement
     assert "4f9c03425a69edf9844a1ae9188660ac7ea4285e5a1ecd87e8e6ecc31be6ec78" in statement
     assert "42daedaeeb38b9d9f18f8c030ea5d28e3b38c25a5ec592d94b18d6be697b0c3c" in statement
     assert "job_plane.paper_worker_job_allowed(" in statement
+    assert "GRANT EXECUTE ON FUNCTION job_plane.paper_worker_job_allowed(" in statement
     assert "DROP POLICY job_plane_worker_artifacts_insert" in statement
     assert statement.count("pg_catalog.set_config(") == 2
     assert observed["execution_options"] == {"no_parameters": True}
