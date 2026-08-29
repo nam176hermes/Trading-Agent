@@ -92,7 +92,7 @@ def upgrade() -> None:
                   AND acl.privilege_type = 'EXECUTE'
                   AND NOT acl.is_grantable
                 )
-              FROM pg_catalog.aclexplode(pg_catalog.coalesce(
+              FROM pg_catalog.aclexplode(COALESCE(
                 function_row.proacl,
                 pg_catalog.acldefault('f', function_row.proowner)
               )) AS acl
@@ -173,7 +173,7 @@ def upgrade() -> None:
                   AND acl.privilege_type = 'EXECUTE'
                   AND NOT acl.is_grantable
                 )
-              FROM pg_catalog.aclexplode(pg_catalog.coalesce(
+              FROM pg_catalog.aclexplode(COALESCE(
                 function_row.proacl,
                 pg_catalog.acldefault('f', function_row.proowner)
               )) AS acl

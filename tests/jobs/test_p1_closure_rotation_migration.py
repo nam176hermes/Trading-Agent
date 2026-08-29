@@ -138,6 +138,8 @@ def test_p1_closure_rotation_is_exact_forward_only_driver_sql() -> None:
     assert "FROM pg_catalog.pg_proc" in statement
     assert "pg_catalog.set_config(" in statement
     assert "pg_catalog.current_setting(" in statement
+    assert "pg_catalog.coalesce(" not in statement
+    assert statement.count("COALESCE(") == 2
     assert "v_function pg_catalog.regprocedure;" in statement
     assert "v_function pg_catalog.regprocedure :=" not in statement
     exact_lookup = (
@@ -154,7 +156,6 @@ def test_p1_closure_rotation_is_exact_forward_only_driver_sql() -> None:
         "acldefault",
         "aclexplode",
         "bool_and",
-        "coalesce",
         "convert_to",
         "count",
         "encode",
