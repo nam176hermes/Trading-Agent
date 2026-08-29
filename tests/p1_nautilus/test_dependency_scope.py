@@ -12,6 +12,7 @@ import pytest
 import engines.nautilus.runtime_v1.dependency_scope as scope_module
 from engines.nautilus.runtime_v1.dependency_scope import (
     RuntimeDependencyError,
+    _expected_link_count,
     sealed_wheel_imports,
 )
 
@@ -21,6 +22,11 @@ def _wheel(path: Path, members: dict[str, bytes]) -> None:
         for name, value in members.items():
             archive.writestr(name, value)
     path.chmod(0o400)
+
+
+def test_fixed_sandbox_wheels_require_anonymous_sealed_mounts() -> None:
+    assert _expected_link_count(Path("/engine/wheels")) == 0
+    assert _expected_link_count(Path("/tmp/unit-wheels")) == 1
 
 
 def test_sealed_wheel_imports_is_scoped_and_rejects_traversal(

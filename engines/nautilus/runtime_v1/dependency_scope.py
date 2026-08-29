@@ -73,6 +73,10 @@ def _validate_archive(archive: zipfile.ZipFile) -> None:
         raise RuntimeDependencyError("sealed wheel extraction exceeds the fixed limit")
 
 
+def _expected_link_count(wheels_root: Path) -> int:
+    return 0 if wheels_root == Path("/engine/wheels") else 1
+
+
 @contextmanager
 def sealed_wheel_imports(
     wheels_root: Path = Path("/engine/wheels"),
@@ -85,6 +89,7 @@ def sealed_wheel_imports(
     if not wheels:
         raise RuntimeDependencyError("sealed wheel inventory is empty")
     original = tuple(sys.path)
+    expected_links = _expected_link_count(wheels_root)
     with tempfile.TemporaryDirectory(prefix="p1-wheel-scope-", dir=temporary_root) as raw:
         scope = Path(raw)
         scope.chmod(0o700)
@@ -97,7 +102,7 @@ def sealed_wheel_imports(
                     if (
                         not stat.S_ISREG(opened.st_mode)
                         or stat.S_IMODE(opened.st_mode) != 0o400
-                        or opened.st_nlink != 1
+                        or opened.st_nlink != expected_links
                     ):
                         raise RuntimeDependencyError("sealed wheel identity is invalid")
                     destination = scope / f"{len(roots):04d}"
