@@ -94,10 +94,9 @@ def test_p1_validator_cannot_be_injected_without_complete_engine_authority() -> 
         main.build_worker(object(), {}, engine_result_validator=object())
 
 
-def test_p1_ledger_acceptance_remains_deferred_and_fail_closed(
+def test_p1_ledger_accepts_only_the_closed_validated_result(
     tmp_path: Path,
 ) -> None:
-    from packages.engine_event_ledger import InvalidEngineEventBatchError
     from services.job_store.engine_event_repository import InMemoryEngineEventLedger
     from tests.jobs.test_engine_result_validation import _stdout
     from tests.nautilus_runtime_contracts.test_result import (
@@ -117,8 +116,14 @@ def test_p1_ledger_acceptance_remains_deferred_and_fail_closed(
         exit_code=0,
     )
 
-    with pytest.raises(InvalidEngineEventBatchError):
-        InMemoryEngineEventLedger().ingest(validated)
+    repository = InMemoryEngineEventLedger()
+    receipt = repository.ingest(validated)
+    projection = repository.load_projection(receipt.engine_run_id)
+
+    assert receipt.batch_sha256 == validated.sha256
+    assert projection is not None
+    assert projection.batch_sha256 == validated.sha256
+    assert projection.semantic_digest == validated.profile_result.semantic_sha256
 
 
 @pytest.mark.parametrize(

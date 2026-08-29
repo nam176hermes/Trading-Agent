@@ -18,6 +18,9 @@ from .models import (
 
 def project_engine_run(
     events: tuple[StoredEngineEvent, ...],
+    *,
+    batch_sha256: str | None = None,
+    semantic_digest: str | None = None,
 ) -> EngineRunProjection:
     if not events:
         raise ValueError("engine run projection requires at least one event")
@@ -65,4 +68,6 @@ def project_engine_run(
         ),
         last_sequence=ordered[-1].stream_sequence,
         last_digest=ordered[-1].digest,
+        batch_sha256=batch_sha256,
+        semantic_digest=semantic_digest,
     )
