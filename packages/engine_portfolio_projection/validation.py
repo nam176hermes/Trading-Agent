@@ -80,7 +80,7 @@ def exact_fraction(value: Decimal, *, field: str) -> Fraction:
 
 
 def catalog_digest(value: P1InstrumentCatalogV1) -> str:
-    return sha256(canonical_json_bytes(value)).hexdigest()
+    return sha256(canonical_json_bytes(value) + b"\n").hexdigest()
 
 
 def _canonical_catalog(value: object) -> P1InstrumentCatalogV1:

@@ -112,7 +112,7 @@ def _catalog() -> P1InstrumentCatalogV1:
 
 
 def _catalog_digest(catalog: P1InstrumentCatalogV1 | None = None) -> str:
-    return sha256(canonical_json_bytes(catalog or _catalog())).hexdigest()
+    return sha256(canonical_json_bytes(catalog or _catalog()) + b"\n").hexdigest()
 
 
 def _balance() -> AccountBalanceSnapshot:
@@ -575,6 +575,13 @@ def test_projection_binds_exact_catalog_digest_authority() -> None:
 
     events = list(_stream())
     events[0] = events[0].model_copy(update={"catalog_digest": "d" * 64})
+    with pytest.raises(ValueError, match="catalog digest"):
+        project_portfolio(_redigest(tuple(events)), authority)
+
+    events = list(_stream())
+    events[0] = events[0].model_copy(
+        update={"catalog_digest": sha256(canonical_json_bytes(_catalog())).hexdigest()}
+    )
     with pytest.raises(ValueError, match="catalog digest"):
         project_portfolio(_redigest(tuple(events)), authority)
 

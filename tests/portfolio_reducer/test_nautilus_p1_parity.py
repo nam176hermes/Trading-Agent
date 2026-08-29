@@ -167,7 +167,7 @@ def _stream(name: str) -> tuple[object, ...]:
             upstream_commit="e" * 40,
             closure_digest=CLOSURE_SHA256,
             config_digest="f" * 64,
-            catalog_digest=sha256(canonical_json_bytes(_catalog())).hexdigest(),
+            catalog_digest=sha256(canonical_json_bytes(_catalog()) + b"\n").hexdigest(),
             data_digest="1" * 64,
         )
     ]
