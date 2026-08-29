@@ -76,7 +76,10 @@ from services.job_store.config import JobStoreSettings
 from services.job_store.records import JobDetailRecord
 from services.job_store.repository import JobRepository
 from services.job_store.worker_repository import WorkerRepository
-from services.job_worker.command_registry import attest_worker_runtime_authority
+from services.job_worker.command_registry import (
+    WorkerRuntimeAuthority,
+    attest_worker_runtime_authority,
+)
 from services.job_worker.engine_artifacts import EngineArtifactBinding
 from services.job_worker.engine_profiles import P1_REAL_BACKTEST_POLICY
 from services.job_worker.main import build_p1_worker
@@ -727,7 +730,27 @@ def _durable_success_evidence(
     }
 
 
-def _run_p1_disposable_once(arguments: argparse.Namespace) -> dict[str, object]:
+def _validate_execution_worker_authority(
+    authority: WorkerRuntimeAuthority,
+    preflight_evidence: Mapping[str, object],
+) -> None:
+    """Reject any authority rotation between preflight and job mutation."""
+
+    if (
+        authority.application_revision != preflight_evidence.get("source_commit")
+        or authority.backend_revision != preflight_evidence.get("source_commit")
+        or authority.runtime_authority.source_tree
+        != preflight_evidence.get("source_tree")
+        or authority.authority_document_sha256
+        != preflight_evidence.get("runtime_authority_sha256")
+    ):
+        raise VerticalSliceExecutionError(job_mutated=False)
+
+
+def _run_p1_disposable_once(
+    arguments: argparse.Namespace,
+    preflight_evidence: Mapping[str, object],
+) -> dict[str, object]:
     """Enqueue through the dedicated app, then run exactly one P1 worker claim."""
 
     job_mutated = False
@@ -749,6 +772,9 @@ def _run_p1_disposable_once(arguments: argparse.Namespace) -> dict[str, object]:
         ) as worker_repository:
             worker_repository.assert_p1_disposable_runtime_identity()
             worker_authority = attest_worker_runtime_authority()
+            _validate_execution_worker_authority(
+                worker_authority, preflight_evidence
+            )
             worker = build_p1_worker(
                 worker_repository,
                 {},
@@ -827,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if arguments.execute:
         try:
-            execution = _run_p1_disposable_once(arguments)
+            execution = _run_p1_disposable_once(arguments, evidence)
         except VerticalSliceExecutionError as error:
             return _emit(
                 "BLOCKED",
