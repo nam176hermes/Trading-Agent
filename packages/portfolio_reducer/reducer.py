@@ -1210,6 +1210,8 @@ def apply_portfolio_event(state: PortfolioReplayState, event: object) -> Portfol
             raise PortfolioReplayError(
                 "account observation does not match reduced portfolio state"
             )
+        if payload.effective_at < state.snapshot.observed_at:
+            raise PortfolioReplayError("account observation time cannot regress")
         snapshot = state.snapshot.model_copy(
             update={"observed_at": payload.effective_at}
         )

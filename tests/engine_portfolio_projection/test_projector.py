@@ -32,7 +32,11 @@ from packages.domain import (
 )
 from packages.engine_portfolio_projection import PortfolioProjection
 from packages.event_ledger.replay import deserialize_event, serialize_event
-from packages.portfolio_reducer import reduce_portfolio_events
+from packages.portfolio_reducer import (
+    PortfolioReplayError,
+    apply_portfolio_event,
+    reduce_portfolio_events,
+)
 from packages.nautilus_runtime_contracts.events import (
     P1AccountObserved,
     P1Fill,
@@ -699,6 +703,30 @@ def test_zero_order_account_observation_advances_reducer_observed_time() -> None
 
     assert state.cursor[0].sequence == 2
     assert state.snapshot.observed_at == LATER
+
+
+def test_stale_account_observation_is_rejected_without_state_change() -> None:
+    envelopes = _portfolio_envelopes(_project(_hold_stream()))
+    state = reduce_portfolio_events(envelopes[:1])
+    stale_time = NOW - timedelta(minutes=1)
+    account = envelopes[-1]
+    stale = EventEnvelope[object](
+        **{
+            name: getattr(account, name)
+            for name in EventEnvelope.model_fields
+            if name not in {"effective_at", "payload"}
+        },
+        effective_at=stale_time,
+        payload=account.payload.model_copy(update={"effective_at": stale_time}),
+    )
+    before = state.model_dump_json()
+
+    with pytest.raises(PortfolioReplayError, match="time cannot regress"):
+        apply_portfolio_event(state, stale)
+
+    assert state.model_dump_json() == before
+    assert state.cursor[0].sequence == 1
+    assert len(state.applied_events) == 1
 
 
 @pytest.mark.parametrize(
