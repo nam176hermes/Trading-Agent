@@ -59,6 +59,26 @@ def test_sealed_wheel_imports_is_scoped_and_rejects_traversal(
     assert not (tmp_path / "escape").exists()
 
 
+def test_sealed_wheel_imports_accepts_only_the_fixed_script_boot_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wheels = tmp_path / "wheels"
+    temporary = tmp_path / "temporary"
+    wheels.mkdir()
+    temporary.mkdir()
+    _wheel(wheels / "fixture.whl", {"package/__init__.py": b""})
+    _stdlib_path(monkeypatch)
+    sys.path[:0] = ["/engine", "/engine/runtime_v1"]
+
+    with sealed_wheel_imports(wheels, temporary):
+        assert sys.path[:2] == ["/engine", "/engine/runtime_v1"]
+
+    sys.path[1] = "/engine/foreign"
+    with pytest.raises(RuntimeDependencyError, match="stdlib-only"):
+        with sealed_wheel_imports(wheels, temporary):
+            pass
+
+
 def _stdlib_path(monkeypatch: pytest.MonkeyPatch) -> None:
     values = tuple(
         dict.fromkeys(

@@ -26,6 +26,7 @@ def _require_stdlib_only_path() -> None:
     platstdlib = Path(sysconfig.get_path("platstdlib")).resolve(strict=True)
     allowed = {
         Path("/engine"),
+        Path("/engine/runtime_v1"),
         stdlib,
         platstdlib,
         stdlib.parent / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
