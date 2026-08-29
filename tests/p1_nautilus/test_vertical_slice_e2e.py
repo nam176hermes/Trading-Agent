@@ -205,6 +205,32 @@ def test_required_runtime_environment_strips_ambient_loader_controls() -> None:
     assert child == {name: source[name] for name in _PACKAGE6_CHILD_ENV}
 
 
+def test_internal_authority_injection_is_not_a_cli_selector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    injected = object()
+    observed: list[object] = []
+    monkeypatch.setattr(
+        vertical,
+        "_validate_complete",
+        lambda _arguments, authority=None: (
+            observed.append(authority)
+            or ({"source_commit": "1" * 40}, authority)
+        ),
+    )
+
+    result = vertical.main(_complete_arguments(tmp_path), worker_authority=injected)  # type: ignore[arg-type]
+
+    assert result == 0
+    assert observed == [injected]
+    assert "worker-authority" not in vertical._parser().format_help()
+    assert json.loads(capsys.readouterr().out)["status"] == "READY"
+
+
 def test_absent_external_authority_is_canonical_deferred_without_job_mutation() -> None:
     result = _run()
 

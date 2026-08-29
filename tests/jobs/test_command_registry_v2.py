@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -112,3 +113,92 @@ def test_v2_command_manifest_must_be_exact(monkeypatch: pytest.MonkeyPatch) -> N
         module.attest_worker_runtime_authority()
 
     assert raised.value.reason_code == "COMMAND_MANIFEST_MISMATCH"
+
+
+def _worker_authority(authority: RuntimeAuthorityV2) -> module.WorkerRuntimeAuthority:
+    return module.WorkerRuntimeAuthority(
+        application_revision=authority.source_commit,
+        backend_revision=authority.source_commit,
+        safety_snapshot_path=authority.safety.snapshot_path,
+        safety_exporter_commit=authority.safety.exporter_commit,
+        safety_source_fingerprint=authority.safety.source_fingerprint,
+        semantic_evidence=authority.semantic_evidence,
+        authority_identity=(11, 13),
+        authority_document_sha256="7" * 64,
+        authority_pin=authority._authority_pin,
+        runtime_paths=authority.runtime_paths,
+        runtime_authority=authority,
+    )
+
+
+def test_staging_dynamic_refresh_reuses_exact_static_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    refreshed = replace(
+        original,
+        safety_evidence="e" * 64,
+        _dynamic_evidence_pin=("e" * 64, "1" * 64, "2" * 64),
+    )
+    calls: list[RuntimeAuthorityV2] = []
+    monkeypatch.setattr(
+        module,
+        "_refresh_runtime_authority_v2",
+        lambda selected: calls.append(selected) or refreshed,
+    )
+    monkeypatch.setattr(module, "_runtime_python_path", lambda: original.application_python)
+    monkeypatch.setattr(
+        module,
+        "_attest_application_release_v2",
+        lambda _selected: (_ for _ in ()).throw(AssertionError("stage rewalk")),
+    )
+
+    result = module.refresh_staging_worker_runtime_authority(
+        _worker_authority(original)
+    )
+
+    assert calls == [original, refreshed]
+    assert result.runtime_authority is refreshed
+    assert result.authority_pin == original._authority_pin
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_tree", "9" * 40),
+        ("application_python", Path("/tmp/other-python")),
+        ("backend_artifact_sha256", "9" * 64),
+        ("package6_approval_sha256", "9" * 64),
+        ("_authority_pin", ((99, 99), "9" * 64)),
+    ],
+)
+def test_staging_dynamic_refresh_rejects_static_authority_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    original = replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    changed = replace(original, **{field: value})
+    monkeypatch.setattr(module, "_refresh_runtime_authority_v2", lambda _old: changed)
+    monkeypatch.setattr(module, "_runtime_python_path", lambda: original.application_python)
+
+    with pytest.raises(CommandRegistryError) as raised:
+        module.refresh_staging_worker_runtime_authority(_worker_authority(original))
+
+    assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
+
+
+def test_staging_dynamic_refresh_rejects_rotating_evidence_during_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    first = replace(original, _dynamic_evidence_pin=("1" * 64, "2" * 64, "3" * 64))
+    second = replace(original, _dynamic_evidence_pin=("4" * 64, "5" * 64, "6" * 64))
+    values = iter((first, second))
+    monkeypatch.setattr(module, "_refresh_runtime_authority_v2", lambda _old: next(values))
+    monkeypatch.setattr(module, "_runtime_python_path", lambda: original.application_python)
+
+    with pytest.raises(CommandRegistryError) as raised:
+        module.refresh_staging_worker_runtime_authority(_worker_authority(original))
+
+    assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
