@@ -15,6 +15,7 @@ sys.path.insert(0, str(RUNTIME_PARENT))
 from runtime_v1.bootstrap import (  # noqa: E402
     EntryFacts,
     RuntimeBootstrapError,
+    _expected_link_count,
     require_engine_version,
     load_product_lineage,
     require_product_lineage,
@@ -36,6 +37,12 @@ COMMAND = (
     REQUEST,
     SIDECAR,
 )
+
+
+def test_fixed_runtime_files_require_anonymous_sealed_mounts() -> None:
+    assert _expected_link_count(REQUEST) == 0
+    assert _expected_link_count(SIDECAR) == 0
+    assert _expected_link_count("/tmp/unit-lineage.json") == 1
 
 
 def _facts() -> EntryFacts:

@@ -26,6 +26,14 @@ ARTIFACTS = {
 MARKET_DATA = b'{"sequence":1}\n{"sequence":2}\n'
 
 
+def test_fixed_artifacts_require_anonymous_sealed_mounts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert input_loader._expected_artifact_link_count() == 0
+    monkeypatch.setattr(input_loader, "ARTIFACT_ROOT", "/tmp/unit-artifacts")
+    assert input_loader._expected_artifact_link_count() == 1
+
+
 def canonical(value: object) -> bytes:
     return json.dumps(
         value, allow_nan=False, ensure_ascii=False, separators=(",", ":"), sort_keys=True

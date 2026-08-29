@@ -47,6 +47,12 @@ _PAYLOAD_KEYS = {
     "start_time",
     "end_time",
 }
+
+
+def _expected_artifact_link_count() -> int:
+    return 0 if ARTIFACT_ROOT == "/inputs/artifacts" else 1
+
+
 _REFERENCE_KEYS = {"artifact_id", "sha256", "media_type"}
 _ARTIFACT_KINDS = {
     "engine_configuration": "engine_configuration",
@@ -273,9 +279,10 @@ def _read_artifact(directory: int, name: str, maximum: int, digest: str) -> byte
             dir_fd=directory,
         )
         opened = os.fstat(descriptor)
+        expected_links = _expected_artifact_link_count()
         if (
             not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
+            or opened.st_nlink != expected_links
             or stat.S_IMODE(opened.st_mode) != 0o400
             or opened.st_size <= 0
             or opened.st_size > maximum
@@ -295,8 +302,8 @@ def _read_artifact(directory: int, name: str, maximum: int, digest: str) -> byte
             not stat.S_ISREG(named.st_mode)
             or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
             or (final.st_dev, final.st_ino) != (opened.st_dev, opened.st_ino)
-            or named.st_nlink != 1
-            or final.st_nlink != 1
+            or named.st_nlink != expected_links
+            or final.st_nlink != expected_links
             or named.st_size != opened.st_size
             or final.st_size != opened.st_size
             or len(raw) != opened.st_size

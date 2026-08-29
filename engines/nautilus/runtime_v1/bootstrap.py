@@ -38,6 +38,11 @@ _LINEAGE_KEYS = {
     "runtime_inventory_sha256",
 }
 _DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
+_ANONYMOUS_MOUNTS = {REQUEST, SIDECAR, LINEAGE}
+
+
+def _expected_link_count(path: str) -> int:
+    return 0 if path in _ANONYMOUS_MOUNTS else 1
 _SIDECAR_DIGEST = re.compile(rb"[0-9a-f]{64}\n", re.ASCII)
 _EXPECTED_ENVIRONMENT = (("LC_CTYPE", "C.UTF-8"),)
 
@@ -100,9 +105,10 @@ def _read_regular(path: str, maximum: int) -> bytes:
             path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
         )
         opened = os.fstat(descriptor)
+        expected_links = _expected_link_count(path)
         if (
             not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
+            or opened.st_nlink != expected_links
             or opened.st_size <= 0
             or opened.st_size > maximum
         ):
@@ -115,11 +121,14 @@ def _read_regular(path: str, maximum: int) -> bytes:
                 raise RuntimeBootstrapError("runtime fixed file is oversized")
             chunks.append(block)
         named = os.stat(path, follow_symlinks=False)
+        final = os.fstat(descriptor)
         if (
             not stat.S_ISREG(named.st_mode)
             or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+            or named.st_nlink != expected_links
             or named.st_size != opened.st_size
-            or os.fstat(descriptor).st_size != opened.st_size
+            or final.st_nlink != expected_links
+            or final.st_size != opened.st_size
         ):
             raise RuntimeBootstrapError("runtime fixed file identity changed")
         return b"".join(chunks)
