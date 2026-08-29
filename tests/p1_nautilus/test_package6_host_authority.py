@@ -125,7 +125,7 @@ def test_prepare_static_rejects_postgres_approval_before_any_build(
         operator_identity="operator.example",
         reviewer_identity="reviewer.example",
         disposable_root=root,
-        pgdata=root / "disposable/pgdata",
+        pgdata=Path("/tmp/phase4-postgres-p1-host-authority/data"),
         pg_port=18432,
         python_runtime_archive=tmp_path,
         python_runtime_archive_sha256="3" * 64,
@@ -139,6 +139,84 @@ def test_prepare_static_rejects_postgres_approval_before_any_build(
         builder._prepare_static(arguments)
 
     assert calls == []
+
+
+def test_prepare_static_accepts_exact_planned_postgres_slot_before_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = Path("/tmp/p1-host-authority-test")
+    pgdata = Path("/tmp/phase4-postgres-p1-vertical-slice/data")
+    calls: list[object] = []
+    monkeypatch.setattr(builder, "_source_identity", lambda _source: ("1" * 40, "2" * 40))
+    monkeypatch.setattr(builder, "_private_root", lambda _path: root)
+    monkeypatch.setattr(builder, "_require_digest", lambda *_args: None)
+    monkeypatch.setattr(builder, "load_protected_approval_record", lambda _path: {})
+    monkeypatch.setattr(builder, "_runtime_setting_names", lambda: frozenset())
+    monkeypatch.setattr(
+        builder,
+        "validate_disposable_postgres_approval_record",
+        lambda *_args, **_kwargs: calls.append("record"),
+    )
+    monkeypatch.setattr(
+        builder,
+        "validate_disposable_postgres_approval",
+        lambda _record, context: calls.append(("context", context.pgdata)),
+    )
+    monkeypatch.setattr(
+        builder,
+        "validate_postgres_source_binding_files",
+        lambda *_args: calls.append("bindings"),
+    )
+
+    def stop_at_build(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("later build seam reached")
+
+    monkeypatch.setattr(builder, "verify_offline_wheelhouse", stop_at_build)
+    monkeypatch.setattr(builder.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+    arguments = Namespace(
+        source_root=tmp_path,
+        source_commit="1" * 40,
+        source_tree="2" * 40,
+        operator_identity="operator.example",
+        reviewer_identity="reviewer.example",
+        disposable_root=root,
+        pgdata=pgdata,
+        pg_port=18432,
+        python_runtime_archive=tmp_path,
+        python_runtime_archive_sha256="3" * 64,
+        uv=tmp_path,
+        uv_sha256="4" * 64,
+        postgres_approval=tmp_path,
+        postgres_approval_sha256="5" * 64,
+        prior_release_sha256="6" * 64,
+        wheelhouse=tmp_path,
+        wheelhouse_sha256="7" * 64,
+    )
+
+    with pytest.raises(RuntimeError, match="later build seam reached"):
+        builder._prepare_static(arguments)
+
+    assert calls == [
+        "record",
+        ("context", "/tmp/phase4-postgres-p1-vertical-slice/data"),
+        "bindings",
+    ]
+
+
+@pytest.mark.parametrize(
+    "pgdata",
+    [
+        Path("/tmp/p1-host-authority-test/disposable/pgdata"),
+        Path("/tmp/phase4-postgres-p1-vertical-slice/pgdata"),
+        Path("/tmp/phase4-postgres-p1-vertical-slice/nested/data"),
+        Path("/tmp/not-phase4-postgres-p1-vertical-slice/data"),
+        Path("relative/phase4-postgres-p1-vertical-slice/data"),
+    ],
+)
+def test_planned_postgres_slot_rejects_noncanonical_paths(pgdata: Path) -> None:
+    with pytest.raises(builder.HostAuthorityError, match="planned slot"):
+        builder._planned_postgres_slot_root(pgdata)
 
 
 def test_activate_refreshes_safety_then_injects_exact_authority(

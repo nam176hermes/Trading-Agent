@@ -71,6 +71,7 @@ from services.safety_state_exporter.exporter import SafetyStateExporter
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _GIT = re.compile(r"[0-9a-f]{40}\Z")
 _IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{2,127}\Z")
+_POSTGRES_SLOT = re.compile(r"phase4-postgres-[A-Za-z0-9._-]+\Z")
 _CHILD_ENV = frozenset({
     STAGING_SCOPE_ENV,
     STAGING_AUTHORITY_PATH_ENV,
@@ -124,6 +125,19 @@ def _digest_file(path: Path) -> str:
 def _require_digest(path: Path, expected: str) -> None:
     if _SHA256.fullmatch(expected) is None or _digest_file(path) != expected:
         raise HostAuthorityError("authority input digest does not match")
+
+
+def _planned_postgres_slot_root(pgdata: Path) -> Path:
+    slot = pgdata.parent
+    if (
+        not pgdata.is_absolute()
+        or ".." in pgdata.parts
+        or pgdata.name != "data"
+        or slot.parent != Path("/tmp")
+        or _POSTGRES_SLOT.fullmatch(slot.name) is None
+    ):
+        raise HostAuthorityError("PostgreSQL data root is not an exact planned slot")
+    return slot
 
 
 def _canonical_write(path: Path, value: object, mode: int) -> str:
@@ -332,8 +346,7 @@ def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
     ):
         raise HostAuthorityError("independent operator and reviewer identities are required")
     root = _private_root(arguments.disposable_root)
-    if arguments.pgdata != root / "disposable/pgdata":
-        raise HostAuthorityError("PostgreSQL data root does not match disposable authority")
+    postgres_slot_root = _planned_postgres_slot_root(arguments.pgdata)
     for path, expected in (
         (arguments.python_runtime_archive, arguments.python_runtime_archive_sha256),
         (arguments.uv, arguments.uv_sha256),
@@ -419,8 +432,7 @@ def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
     safety_source_root = root / "safety-sources"
     for path in (authority_root, runtime_root, semantic_root, safety_source_root):
         path.mkdir(mode=0o700)
-    for path in (root / "disposable", root / "evidence"):
-        path.mkdir(mode=0o700)
+    (root / "evidence").mkdir(mode=0o700)
     (safety_source_root / ".mode").write_text("PAPER\n", encoding="ascii")
     (safety_source_root / ".mode").chmod(0o600)
     for name in ("artifacts", "reports", "scratch", "signals"):
@@ -522,7 +534,7 @@ def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
             "mode": "PAPER", "live_execution_approved": False, "live_trading_approved": False,
         },
         "constraints": {
-            "disposable_root": str(root / "disposable"), "evidence_root": str(root / "evidence"),
+            "disposable_root": str(postgres_slot_root), "evidence_root": str(root / "evidence"),
             "max_processes": "2", "startup_timeout_seconds": "10", "operation_timeout_seconds": "30",
             "cleanup_timeout_seconds": "10", "max_output_bytes": "65536",
             "live_execution_approved": False, "live_trading_approved": False,
