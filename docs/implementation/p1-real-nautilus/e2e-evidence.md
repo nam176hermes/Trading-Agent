@@ -15,6 +15,17 @@ attestation. Complete preflight also binds the sandbox executable to the exact
 approval, and its source bindings must validate before worker or closure
 attestation can execute the reviewed sandbox capability probe.
 
+The Package6 host lane uses `scripts/build_p1_package6_host_authority.py`.
+`prepare-static` builds a sealed stage and disposable native/approval material
+from an exact clean source identity through the existing offline Release v2
+builder. `activate-and-exec` performs one complete static stage attestation,
+publishes a fresh six-second PAPER safety snapshot, refreshes only the rotating
+activation evidence, and injects that exact in-memory authority into the P1
+operator. Generic Job API and worker startup keep their normal full
+attestations. The builder is not selectable through their CLI, environment, or
+API surfaces. Static, semantic, custodian, source, approval, interpreter, or
+safety freshness drift is `BLOCKED` before authenticated enqueue.
+
 ## Fixture authority
 
 | Input | SHA-256 |

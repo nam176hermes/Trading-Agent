@@ -265,6 +265,7 @@ PACKAGE6_SOURCE_BINDING_PATHS = (
     "packages/runtime_release/v2.py",
     "packages/safety_evidence.py",
     "schemas/package6-paper-runtime-approval.schema.json",
+    "scripts/build_p1_package6_host_authority.py",
     "scripts/run_required_runtime_pytest.py",
     "scripts/validate_package6_runtime_approval.py",
     "services/__init__.py",
