@@ -21,11 +21,14 @@ SOURCE_PATHS = (
     "engines/nautilus/launcher/nautilus_backtest.py",
     "engines/nautilus/launcher/nautilus_paper_compat.py",
     "engines/nautilus/launcher/target_portfolio_strategy.py",
+    "engines/nautilus/runtime_v1/instrument_factory.py",
+    "engines/nautilus/runtime_v1/market_data_loader.py",
+    "engines/nautilus/runtime_v1/target_strategy.py",
 )
-EXPECTED_IMPORT_COUNT = 42
-EXPECTED_INVOCATION_COUNT = 153
+EXPECTED_IMPORT_COUNT = 63
+EXPECTED_INVOCATION_COUNT = 175
 EXPECTED_INVOCATIONS_SHA256 = (
-    "fca451e8a434486022e4b62e787aaf53cf9ad1d3ac85700df6c470521f68cf52"
+    "cb888fe05c7f0199ad626e2ff5ac87f9829eedf50a71d9c2faea3ebebe0bb5f4"
 )
 EXPECTED_RELEASE_BULLET_COUNT = 992
 EXPECTED_RELEASE_MANIFEST_SHA256 = (

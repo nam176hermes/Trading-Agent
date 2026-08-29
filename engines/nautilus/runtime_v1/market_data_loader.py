@@ -51,6 +51,10 @@ class MarketDataBatch:
     semantic_sha256: str
 
 
+def _is_exact_type(value: object, expected: type[object]) -> bool:
+    return type(value) is expected
+
+
 def _reject_number(_value: str) -> object:
     raise MarketDataError("market-data numbers must use canonical strings")
 
@@ -144,7 +148,9 @@ def load_market_data(
 ) -> MarketDataBatch:
     """Validate one bounded fixed-profile feed and build quote/bar pairs."""
 
-    if type(inputs) is not RuntimeInputs or type(instrument) is not CurrencyPair:
+    if type(inputs) is not RuntimeInputs or not _is_exact_type(
+        instrument, CurrencyPair
+    ):
         raise MarketDataError("exact runtime inputs and native instrument are required")
     request = inputs.request
     raw_sha256 = hashlib.sha256(inputs.market_data).hexdigest()
