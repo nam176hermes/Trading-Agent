@@ -4521,6 +4521,28 @@ def test_candidate_artifact_validator_rejects_minimal_build_receipt(
         materializer._validate_candidate_artifact(builder, engine, inputs, roots)
 
 
+def test_p1_derivation_uses_accepted_manifest_not_mutable_build_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, inputs, roots, document = _write_candidate_artifact(
+        tmp_path, monkeypatch
+    )
+
+    def unexpected_build_replay(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("P1 derivation replayed mutable build workspace")
+
+    monkeypatch.setattr(builder, "_load_candidate_build_result", unexpected_build_replay)
+    _wheel, observed, _raw = materializer._validate_candidate_artifact(
+        builder,
+        engine,
+        inputs,
+        roots,
+        revalidate_build_results=False,
+    )
+
+    assert observed == document
+
+
 def test_candidate_artifact_validator_rejects_shared_forged_authority_identities(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

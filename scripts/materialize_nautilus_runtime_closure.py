@@ -1512,6 +1512,8 @@ def _validate_candidate_artifact(
     engine: dict[str, object],
     inputs: dict[str, object],
     roots: dict[str, Path],
+    *,
+    revalidate_build_results: bool = True,
 ) -> tuple[Path, dict[str, object], bytes]:
     directory = roots["candidate_build_root"] / "artifacts"
     manifest_path = directory / _ARTIFACT_MANIFEST
@@ -1696,44 +1698,47 @@ def _validate_candidate_artifact(
         raise RuntimeClosureMaterializationError(
             "candidate artifact reproducibility authority drifted"
         )
-    try:
-        authority_identities = builder._candidate_external_identities(engine, inputs)
-        build_a = builder._load_candidate_build_result(roots, label="A")
-        build_b = builder._load_candidate_build_result(roots, label="B")
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise RuntimeClosureMaterializationError(
-            "candidate artifact reproducibility authority drifted"
-        ) from exc
-    a_payload, a_core, a_receipt, a_digest = build_a
-    b_payload, b_core, b_receipt, b_digest = build_b
-    final_core = {
-        key: value for key, value in document.items() if key != "reproducible_build"
-    }
-    if not (
-        a_digest == receipt["build_a_receipt_sha256"]
-        and b_digest == receipt["build_b_receipt_sha256"]
-        and a_receipt["x4_authority_receipt_sha256"]
-        == receipt["x4_authority_receipt_sha256"]
-        and b_receipt["x4_authority_receipt_sha256"]
-        == receipt["x4_authority_receipt_sha256"]
-        and a_payload == b_payload == wheel.read_bytes()
-        and a_core == b_core
-        and a_receipt["process_identity"] == process_identities[0]
-        and b_receipt["process_identity"] == process_identities[1]
-        and a_receipt["source_identity"] == identities[0]
-        and b_receipt["source_identity"] == identities[1]
-        and a_receipt["candidate"] == b_receipt["candidate"]
-        and a_receipt["policy_sha256"] == b_receipt["policy_sha256"]
-        and a_receipt["authority_identities"]
-        == b_receipt["authority_identities"]
-        == authority_identities
-        and a_receipt["sanitized_environment_sha256"]
-        == b_receipt["sanitized_environment_sha256"]
-        and a_core == b_core == final_core
-    ):
-        raise RuntimeClosureMaterializationError(
-            "candidate artifact reproducibility authority drifted"
-        )
+    if revalidate_build_results:
+        try:
+            authority_identities = builder._candidate_external_identities(engine, inputs)
+            build_a = builder._load_candidate_build_result(roots, label="A")
+            build_b = builder._load_candidate_build_result(roots, label="B")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeClosureMaterializationError(
+                "candidate artifact reproducibility authority drifted"
+            ) from exc
+        a_payload, a_core, a_receipt, a_digest = build_a
+        b_payload, b_core, b_receipt, b_digest = build_b
+        final_core = {
+            key: value
+            for key, value in document.items()
+            if key != "reproducible_build"
+        }
+        if not (
+            a_digest == receipt["build_a_receipt_sha256"]
+            and b_digest == receipt["build_b_receipt_sha256"]
+            and a_receipt["x4_authority_receipt_sha256"]
+            == receipt["x4_authority_receipt_sha256"]
+            and b_receipt["x4_authority_receipt_sha256"]
+            == receipt["x4_authority_receipt_sha256"]
+            and a_payload == b_payload == wheel.read_bytes()
+            and a_core == b_core
+            and a_receipt["process_identity"] == process_identities[0]
+            and b_receipt["process_identity"] == process_identities[1]
+            and a_receipt["source_identity"] == identities[0]
+            and b_receipt["source_identity"] == identities[1]
+            and a_receipt["candidate"] == b_receipt["candidate"]
+            and a_receipt["policy_sha256"] == b_receipt["policy_sha256"]
+            and a_receipt["authority_identities"]
+            == b_receipt["authority_identities"]
+            == authority_identities
+            and a_receipt["sanitized_environment_sha256"]
+            == b_receipt["sanitized_environment_sha256"]
+            and a_core == b_core == final_core
+        ):
+            raise RuntimeClosureMaterializationError(
+                "candidate artifact reproducibility authority drifted"
+            )
     return wheel, document, raw
 
 
@@ -2802,7 +2807,11 @@ def materialize_p1_runtime_closure(
     if base_runtime != expected_runtime or artifact_directory != expected_artifacts:
         raise RuntimeClosureMaterializationError("P1 materialization requires exact G1 authority paths")
     _wheel, artifact, artifact_raw = _validate_candidate_artifact(
-        builder, engine, inputs, roots
+        builder,
+        engine,
+        inputs,
+        roots,
+        revalidate_build_results=False,
     )
     base_policy = _load_policy(_CANDIDATE_BASE_POLICY)
     candidate = _attest_candidate_closure(
