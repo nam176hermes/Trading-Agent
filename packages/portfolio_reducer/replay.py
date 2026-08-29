@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from packages.domain.events import EventEnvelope
 from packages.domain.orders import FillReportStatus
 from packages.domain.portfolio_events import (
+    PortfolioAccountObservationEntry,
     PortfolioConversionEntry,
     PortfolioFillEntry,
     PortfolioFundingEntry,
@@ -46,6 +47,7 @@ from .reducer import (
 
 _PORTFOLIO_PAYLOAD_TYPES = (
     PortfolioOpeningEntry,
+    PortfolioAccountObservationEntry,
     PortfolioFillEntry,
     PortfolioMarkEntry,
     PortfolioFundingEntry,

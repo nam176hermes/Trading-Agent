@@ -8,43 +8,16 @@ from typing import TypeAlias
 from uuid import UUID
 
 from packages.domain import (
-    Currency,
     InstrumentDefinition,
     LiquiditySide,
-    Money,
     OrderEvent,
+    PortfolioAccountObservationEntry,
     PortfolioFillEntry,
     PortfolioMarkEntry,
     PortfolioOpeningEntry,
     ReconciliationSource,
 )
-from packages.domain.portfolio_events import PortfolioLedgerEntry
 from packages.nautilus_runtime_contracts.artifacts import P1InstrumentCatalogV1
-from pydantic import model_validator
-
-
-class PortfolioAccountObservationEntry(PortfolioLedgerEntry):
-    """Exact final account facts emitted by the validated P1 stream."""
-
-    currency: Currency
-    cash_balance: Money
-    fees: Money
-    realized_pnl: Money
-    unrealized_pnl: Money
-
-    @model_validator(mode="after")
-    def _one_currency(self) -> "PortfolioAccountObservationEntry":
-        if any(
-            value.currency is not self.currency
-            for value in (
-                self.cash_balance,
-                self.fees,
-                self.realized_pnl,
-                self.unrealized_pnl,
-            )
-        ):
-            raise ValueError("account observation money must use one currency")
-        return self
 
 
 PortfolioEntry: TypeAlias = (

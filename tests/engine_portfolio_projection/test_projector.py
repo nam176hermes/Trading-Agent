@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from uuid import UUID, uuid5
@@ -11,11 +12,13 @@ from packages.domain import (
     AccountBalanceSnapshot,
     AssetClass,
     Currency,
+    EventEnvelope,
     FillReportStatus,
     InstrumentDefinition,
     InstrumentId,
     InstrumentProvenance,
     LiquiditySide,
+    MarginRequirements,
     Money,
     OrderQuantity,
     OrderSide,
@@ -27,6 +30,8 @@ from packages.domain import (
     ProductType,
     ReconciliationSource,
 )
+from packages.event_ledger.replay import deserialize_event, serialize_event
+from packages.portfolio_reducer import reduce_portfolio_events
 from packages.nautilus_runtime_contracts.events import (
     P1AccountObserved,
     P1Fill,
@@ -76,7 +81,9 @@ def _instrument(
         multiplier=multiplier,
         margin=None,
         session_calendar="24X7",
-        provenance=InstrumentProvenance("P1CATALOG", "R1", NOW),
+        provenance=InstrumentProvenance(
+            "P1CATALOG", CATALOG_PROVENANCE[:32], NOW
+        ),
     )
 
 
@@ -579,6 +586,73 @@ def test_projection_rejects_catalog_price_precision_drift() -> None:
 
     with pytest.raises(ValueError, match="exact P1 catalog"):
         _project(_stream(catalog=catalog), catalog=catalog)
+
+
+@pytest.mark.parametrize(
+    "instrument",
+    (
+        replace(
+            _instrument(),
+            provenance=InstrumentProvenance("CALLER", "R2", LATER),
+        ),
+        replace(
+            _instrument(),
+            maximum_quantity=OrderQuantity(Decimal("2000000"), 6),
+        ),
+        replace(
+            _instrument(),
+            maximum_notional=_money("200000000"),
+        ),
+        replace(_instrument(), session_calendar="XNYS"),
+        replace(
+            _instrument(),
+            margin=MarginRequirements(Decimal("0.1"), Decimal("0.05")),
+        ),
+    ),
+)
+def test_projection_rejects_caller_selected_domain_only_instrument_semantics(
+    instrument: InstrumentDefinition,
+) -> None:
+    with pytest.raises(ValueError, match="exact P1 catalog"):
+        _project(instrument=instrument)
+
+
+def test_projected_account_observation_round_trips_and_replays() -> None:
+    from packages.engine_portfolio_projection import PortfolioAccountObservationEntry
+
+    projection = _project()
+    stream_id = UUID("20000000-0000-4000-8000-000000000001")
+    envelopes = tuple(
+        EventEnvelope[object](
+            event_id=item.event_id,
+            event_type=type(item.entry).__name__,
+            schema_version="event-envelope-v1",
+            source="p1-portfolio-projection",
+            stream_id=stream_id,
+            sequence=sequence,
+            observed_at=item.entry.effective_at,
+            ingested_at=item.entry.effective_at,
+            produced_at=item.entry.effective_at,
+            effective_at=item.entry.effective_at,
+            expires_at=item.entry.effective_at + timedelta(days=1),
+            correlation_id=REQUEST_A,
+            causation_id=item.source_message_id,
+            trace_id=REQUEST_A,
+            payload=item.entry,
+        )
+        for sequence, item in enumerate(projection.entries, start=1)
+    )
+
+    restored = tuple(deserialize_event(serialize_event(event)) for event in envelopes)
+    state = reduce_portfolio_events(restored)
+
+    assert type(restored[-1].payload) is PortfolioAccountObservationEntry
+    assert state.cursor[0].sequence == len(restored)
+    balance = state.snapshot.balances[0]
+    assert balance.cash == restored[-1].payload.cash_balance
+    assert balance.fees == restored[-1].payload.fees
+    assert balance.realized_pnl == restored[-1].payload.realized_pnl
+    assert balance.unrealized_pnl == restored[-1].payload.unrealized_pnl
 
 
 @pytest.mark.parametrize(

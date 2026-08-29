@@ -23,6 +23,7 @@ from packages.domain.portfolio import (
     VenueExposureSnapshot,
 )
 from packages.domain.portfolio_events import (
+    PortfolioAccountObservationEntry,
     PortfolioConversionEntry,
     PortfolioFillEntry,
     PortfolioFundingEntry,
@@ -210,6 +211,7 @@ def _validate_event(event: object) -> PortfolioEvent:
         raise PortfolioReplayError("event must be an EventEnvelope")
     if type(event.payload) not in (
         PortfolioOpeningEntry,
+        PortfolioAccountObservationEntry,
         PortfolioFillEntry,
         PortfolioMarkEntry,
         PortfolioFundingEntry,
@@ -1190,6 +1192,25 @@ def apply_portfolio_event(state: PortfolioReplayState, event: object) -> Portfol
         return _apply_valuation_rate(state, canonical, payload)
     if type(payload) is PortfolioReconciliationEntry:
         return _apply_reconciliation(state, canonical, payload)
+    if type(payload) is PortfolioAccountObservationEntry:
+        balance = next(
+            (
+                item
+                for item in state.snapshot.balances
+                if item.currency is payload.currency
+            ),
+            None,
+        )
+        if balance is None or (
+            balance.cash != payload.cash_balance
+            or balance.fees != payload.fees
+            or balance.realized_pnl != payload.realized_pnl
+            or balance.unrealized_pnl != payload.unrealized_pnl
+        ):
+            raise PortfolioReplayError(
+                "account observation does not match reduced portfolio state"
+            )
+        return _next_state(state, event=canonical)
     assert type(payload) is PortfolioFillEntry
     fill = payload.fill
     if fill.status in (FillReportStatus.PARTIALLY_FILLED, FillReportStatus.FILLED):
