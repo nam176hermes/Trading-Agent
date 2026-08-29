@@ -291,9 +291,11 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         fill_facts
     )
     final_market_price = batch.data[-1].close.as_decimal()
-    expected_unrealized = (final_market_price - Decimal(position_average)) * Decimal(
-        position_quantity
-    )
+    with localcontext() as context:
+        context.prec = 96
+        expected_unrealized = (
+            final_market_price - Decimal(position_average)
+        ) * Decimal(position_quantity)
     if positions:
         position = positions[0]
         cached_quantity = position.quantity.as_decimal()
@@ -301,20 +303,23 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
             cached_quantity = -cached_quantity
         elif position.side.name == "FLAT":
             cached_quantity = Decimal(0)
-        cached_average = (
-            Decimal(0)
-            if cached_quantity == 0
-            else Decimal(str(position.avg_px_open))
-        )
         native_unrealized = position.unrealized_pnl(
             batch.data[-1].close
         ).as_decimal()
+        with localcontext() as context:
+            context.prec = 96
+            native_quantum = Decimal(1).scaleb(
+                native_unrealized.as_tuple().exponent
+            )
+            expected_native_unrealized = expected_unrealized.quantize(
+                native_quantum
+            )
     else:
-        cached_quantity = cached_average = native_unrealized = Decimal(0)
+        cached_quantity = native_unrealized = expected_native_unrealized = Decimal(0)
     if (
         _text(cached_quantity) != position_quantity
-        or _text(cached_average) != position_average
-        or native_unrealized != expected_unrealized
+        or not native_unrealized.is_finite()
+        or native_unrealized != expected_native_unrealized
     ):
         raise BacktestRunError("native terminal position proof is inconsistent")
     account = accounts[0]

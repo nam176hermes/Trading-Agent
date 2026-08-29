@@ -61,7 +61,7 @@ def test_exact_g1_runner_is_deterministic_scalar_only_and_disposes() -> None:
 import hashlib
 import json
 from dataclasses import replace
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 import sys
 import warnings
@@ -128,6 +128,19 @@ long_inputs = RuntimeInputs(
     raw,
 )
 long_run = run_backtest(long_inputs)
+larger_targets = []
+for target, weight in zip(schedule_document["targets"], ("0.5", "1"), strict=True):
+    position = {**target["positions"][0], "target_weight": weight}
+    larger_targets.append({**target, "positions": [position]})
+larger_run = run_backtest(
+    RuntimeInputs(
+        request,
+        configuration,
+        catalog,
+        freeze({**schedule_document, "targets": larger_targets}),
+        raw,
+    )
+)
 assert type(first) is BacktestRun and first == second
 assert first.strategy_state == "COMPLETED"
 assert first.processed_target_ids == (
@@ -149,6 +162,22 @@ assert long_run.position_average_entry == "100"
 assert long_run.position_realized_pnl == "0"
 assert long_run.position_unrealized_pnl == "19980.01998"
 assert long_run.final_market_price == "102"
+assert larger_run.strategy_state == "COMPLETED"
+assert larger_run.processed_target_ids == first.processed_target_ids
+assert larger_run.total_orders == larger_run.fill_count == 2
+with localcontext() as context:
+    context.prec = 96
+    larger_quantity = Decimal("5000") + Decimal("4848.039215")
+    larger_average = (
+        Decimal("5000") * Decimal("100")
+        + Decimal("4848.039215") * Decimal("102")
+    ) / larger_quantity
+    larger_unrealized = (Decimal("102") - larger_average) * larger_quantity
+assert Decimal(larger_run.position_quantity) == larger_quantity
+assert Decimal(larger_run.position_average_entry) == larger_average
+assert larger_run.position_realized_pnl == "0"
+assert Decimal(larger_run.position_unrealized_pnl) == larger_unrealized
+assert larger_run.final_market_price == "102"
 assert first.account_count == 1
 assert first.balance_currencies == ("BTC", "USDT")
 assert len(first.native_order_ids) == len(set(first.native_order_ids)) == 2
