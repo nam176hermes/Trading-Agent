@@ -189,7 +189,10 @@ engines/nautilus/launcher/import_probe.py|158|Exception|PRODUCTION_CRITICAL|RAIS
 engines/nautilus/launcher/import_probe.py|272|Exception|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/nautilus_backtest.py|513|BaseException|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/launcher/nautilus_v1231_probe.py|226|Exception|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/runtime_v1/backtest_runner.py|468|BaseException|PRODUCTION_CRITICAL|RAISE
 engines/nautilus/runtime_v1/main.py|28|Exception|PRODUCTION_CRITICAL|RETURN
+engines/nautilus/runtime_v1/session.py|105|BaseException|PRODUCTION_CRITICAL|RAISE
+engines/nautilus/runtime_v1/session.py|236|BaseException|PRODUCTION_CRITICAL|RAISE
 legacy/research-backend/alert_manager.py|98|Exception|PRODUCTION_CRITICAL|OTHER
 legacy/research-backend/allocation_engine.py|161|Exception|PRODUCTION_CRITICAL|CONTINUE
 legacy/research-backend/allocation_engine.py|187|Exception|PRODUCTION_CRITICAL|RETURN
