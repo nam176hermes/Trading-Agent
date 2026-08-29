@@ -1210,7 +1210,10 @@ def apply_portfolio_event(state: PortfolioReplayState, event: object) -> Portfol
             raise PortfolioReplayError(
                 "account observation does not match reduced portfolio state"
             )
-        return _next_state(state, event=canonical)
+        snapshot = state.snapshot.model_copy(
+            update={"observed_at": payload.effective_at}
+        )
+        return _next_state(state, snapshot=snapshot, event=canonical)
     assert type(payload) is PortfolioFillEntry
     fill = payload.fill
     if fill.status in (FillReportStatus.PARTIALLY_FILLED, FillReportStatus.FILLED):

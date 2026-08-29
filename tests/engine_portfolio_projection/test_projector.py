@@ -30,6 +30,7 @@ from packages.domain import (
     ProductType,
     ReconciliationSource,
 )
+from packages.engine_portfolio_projection import PortfolioProjection
 from packages.event_ledger.replay import deserialize_event, serialize_event
 from packages.portfolio_reducer import reduce_portfolio_events
 from packages.nautilus_runtime_contracts.events import (
@@ -339,6 +340,36 @@ def _stream(
     )
 
 
+def _hold_stream() -> tuple[object, ...]:
+    full = _stream()
+    events = (
+        full[0],
+        full[7].model_copy(update={"sequence": 3}),
+        full[8].model_copy(update={"sequence": 4, "quantity": Decimal("0")}),
+        full[11].model_copy(update={"sequence": 5, "realized_pnl": Decimal("0")}),
+        full[12].model_copy(
+            update={
+                "sequence": 6,
+                "cash_balance": Decimal("1000"),
+                "fees": Decimal("0"),
+                "realized_pnl": Decimal("0"),
+            }
+        ),
+        full[13].model_copy(
+            update={
+                "sequence": 7,
+                "target_count": 1,
+                "order_count": 0,
+                "fill_count": 0,
+                "final_cash": Decimal("1000"),
+                "fees": Decimal("0"),
+                "realized_pnl": Decimal("0"),
+            }
+        ),
+    )
+    return _redigest(events)
+
+
 def _project(
     events: tuple[object, ...] | None = None,
     *,
@@ -371,6 +402,32 @@ def _project(
 def _redigest(events: tuple[object, ...]) -> tuple[object, ...]:
     return events[:-1] + (
         events[-1].model_copy(update={"semantic_digest": semantic_digest(events)}),
+    )
+
+
+def _portfolio_envelopes(
+    projection: PortfolioProjection,
+) -> tuple[EventEnvelope[object], ...]:
+    stream_id = UUID("20000000-0000-4000-8000-000000000001")
+    return tuple(
+        EventEnvelope[object](
+            event_id=item.event_id,
+            event_type=type(item.entry).__name__,
+            schema_version="event-envelope-v1",
+            source="p1-portfolio-projection",
+            stream_id=stream_id,
+            sequence=sequence,
+            observed_at=item.entry.effective_at,
+            ingested_at=item.entry.effective_at,
+            produced_at=item.entry.effective_at,
+            effective_at=item.entry.effective_at,
+            expires_at=item.entry.effective_at + timedelta(days=1),
+            correlation_id=REQUEST_A,
+            causation_id=item.source_message_id,
+            trace_id=REQUEST_A,
+            payload=item.entry,
+        )
+        for sequence, item in enumerate(projection.entries, start=1)
     )
 
 
@@ -621,27 +678,7 @@ def test_projected_account_observation_round_trips_and_replays() -> None:
     from packages.engine_portfolio_projection import PortfolioAccountObservationEntry
 
     projection = _project()
-    stream_id = UUID("20000000-0000-4000-8000-000000000001")
-    envelopes = tuple(
-        EventEnvelope[object](
-            event_id=item.event_id,
-            event_type=type(item.entry).__name__,
-            schema_version="event-envelope-v1",
-            source="p1-portfolio-projection",
-            stream_id=stream_id,
-            sequence=sequence,
-            observed_at=item.entry.effective_at,
-            ingested_at=item.entry.effective_at,
-            produced_at=item.entry.effective_at,
-            effective_at=item.entry.effective_at,
-            expires_at=item.entry.effective_at + timedelta(days=1),
-            correlation_id=REQUEST_A,
-            causation_id=item.source_message_id,
-            trace_id=REQUEST_A,
-            payload=item.entry,
-        )
-        for sequence, item in enumerate(projection.entries, start=1)
-    )
+    envelopes = _portfolio_envelopes(projection)
 
     restored = tuple(deserialize_event(serialize_event(event)) for event in envelopes)
     state = reduce_portfolio_events(restored)
@@ -653,6 +690,15 @@ def test_projected_account_observation_round_trips_and_replays() -> None:
     assert balance.fees == restored[-1].payload.fees
     assert balance.realized_pnl == restored[-1].payload.realized_pnl
     assert balance.unrealized_pnl == restored[-1].payload.unrealized_pnl
+
+
+def test_zero_order_account_observation_advances_reducer_observed_time() -> None:
+    projection = _project(_hold_stream())
+
+    state = reduce_portfolio_events(_portfolio_envelopes(projection))
+
+    assert state.cursor[0].sequence == 2
+    assert state.snapshot.observed_at == LATER
 
 
 @pytest.mark.parametrize(
