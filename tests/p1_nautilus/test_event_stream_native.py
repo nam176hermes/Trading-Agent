@@ -60,7 +60,8 @@ def freeze(value):
 catalog_raw = open(sys.argv[3], "rb").read()
 catalog = tuple(sorted(json.loads(catalog_raw).items()))
 configuration = tuple(sorted(json.loads(open(sys.argv[4], "rb").read()).items()))
-schedule = freeze(json.loads(open(sys.argv[5], "rb").read()))
+schedule_document = json.loads(open(sys.argv[5], "rb").read())
+schedule = freeze(schedule_document)
 rows = [
     {"ask":"100","bid":"99","close":"100","event_time":"2026-08-05T12:00:00Z","high":"101","low":"98","open":"99","quote_time":"2026-08-05T12:00:00Z","sequence":1,"volume":"1000000"},
     {"ask":"102","bid":"101","close":"102","event_time":"2026-08-05T12:01:00Z","high":"103","low":"100","open":"101","quote_time":"2026-08-05T12:01:00Z","sequence":2,"volume":"1000000"},
@@ -87,24 +88,26 @@ request = RunBacktestRequest(
     start_time="2026-08-05T12:00:00Z",
     end_time="2026-08-05T12:01:00Z",
 )
+def authority(run):
+    balances = {currency: total for currency, total, _, _ in run.balance_facts}
+    commissions = dict(run.commission_facts)
+    return CompletionAuthority(
+        target_count=len(run.processed_target_ids),
+        order_count=run.order_count,
+        fill_count=run.fill_count,
+        final_cash=balances["USDT"],
+        final_position=run.position_quantity,
+        fees=commissions["USDT"],
+        realized_pnl=run.position_realized_pnl,
+        unrealized_pnl=run.position_unrealized_pnl,
+    )
+
 inputs = RuntimeInputs(request, configuration, catalog, schedule, raw)
 run = run_backtest(inputs)
-balances = {currency: total for currency, total, _, _ in run.balance_facts}
-commissions = dict(run.commission_facts)
-authority = CompletionAuthority(
-    target_count=len(run.processed_target_ids),
-    order_count=run.order_count,
-    fill_count=run.fill_count,
-    final_cash=balances["USDT"],
-    final_position=run.position_quantity,
-    fees=commissions["USDT"],
-    realized_pnl=run.position_realized_pnl,
-    unrealized_pnl=run.position_unrealized_pnl,
-)
 stream = project_event_stream(
     inputs,
     run,
-    authority,
+    authority(run),
     closure_digest="a" * 64,
     upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
 )
@@ -120,11 +123,31 @@ assert stream.events[-3]["origin"] == stream.events[-2]["origin"] == "NAUTILUS_C
 assert stream.events[-1]["event_type"] == "RunCompleted"
 assert stream.raw_sha256 != stream.semantic_sha256
 assert len(stream.envelopes) == len(stream.events) == 12
+
+long_inputs = RuntimeInputs(
+    request,
+    configuration,
+    catalog,
+    freeze({**schedule_document, "targets": schedule_document["targets"][:1]}),
+    raw,
+)
+long_run = run_backtest(long_inputs)
+long_stream = project_event_stream(
+    long_inputs,
+    long_run,
+    authority(long_run),
+    closure_digest="a" * 64,
+    upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+)
+assert long_run.position_quantity == "9990.00999"
+assert tuple(event["event_type"] for event in long_stream.events).count("TargetAccepted") == 1
+assert long_stream.events[-1]["final_position"] == long_run.position_quantity
 print(json.dumps({
     "fill_ids": [event["native_fill_id"] for event in fills],
     "order_ids": [event["native_order_id"] for event in orders],
     "raw_sha256": stream.raw_sha256,
     "semantic_sha256": stream.semantic_sha256,
+    "terminal_long_semantic_sha256": long_stream.semantic_sha256,
 }, separators=(",", ":"), sort_keys=True))
 """
         completed = subprocess.run(

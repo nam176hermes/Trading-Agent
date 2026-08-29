@@ -6,6 +6,7 @@ from hashlib import sha256
 from io import BytesIO
 import json
 from types import SimpleNamespace
+from uuid import UUID, uuid5
 
 import pytest
 
@@ -355,6 +356,72 @@ def _attributes(envelope: dict[str, object]) -> dict[str, object]:
     return {str(item["name"]): item["value"] for item in attributes}
 
 
+def _rebuild_stream(
+    stream: object,
+    events: tuple[dict[str, object], ...],
+    source_envelopes: tuple[dict[str, object], ...] | None = None,
+) -> object:
+    rebuilt_events = tuple(
+        {**event, "sequence": sequence}
+        for sequence, event in enumerate(events, start=2)
+    )
+    semantic = sha256(
+        canonical_json_bytes(
+            tuple(
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key
+                    not in {"native_fill_id", "native_order_id", "semantic_digest"}
+                }
+                for event in rebuilt_events
+            )
+        )
+    ).hexdigest()
+    rebuilt_events = rebuilt_events[:-1] + (
+        {**rebuilt_events[-1], "semantic_digest": semantic},
+    )
+    sources = source_envelopes or stream.envelopes
+    envelopes = []
+    for event, source in zip(rebuilt_events, sources, strict=True):
+        source_payload = source["payload"]
+        assert type(source_payload) is dict
+        source_attributes = source_payload["attributes"]
+        assert type(source_attributes) is list
+        attributes = []
+        for attribute in source_attributes:
+            name = str(attribute["name"])
+            value = event[name]
+            if type(value) is list:
+                value = canonical_json_bytes(value).decode()
+            attributes.append({"name": name, "value": value})
+        payload = {**source_payload, "attributes": attributes}
+        sequence = event["sequence"]
+        envelopes.append(
+            {
+                **source,
+                "message_id": str(
+                    uuid5(
+                        UUID(stream.request_message_id),
+                        f"nautilus-p1-event-stream-v1:{sequence}:{event['event_type']}",
+                    )
+                ),
+                "stream_sequence": sequence,
+                "payload_digest": sha256(canonical_json_bytes(payload)).hexdigest(),
+                "payload": payload,
+            }
+        )
+    raw = b"".join(canonical_json_bytes(envelope) + b"\n" for envelope in envelopes)
+    return replace(
+        stream,
+        events=rebuilt_events,
+        envelopes=tuple(envelopes),
+        jsonl=raw,
+        raw_sha256=sha256(raw).hexdigest(),
+        semantic_sha256=semantic,
+    )
+
+
 def test_projects_complete_request_bound_stream_without_native_objects() -> None:
     stream = _project()
     typed = _typed_events(stream)
@@ -533,6 +600,51 @@ def test_writer_rejects_forged_stream_digests(field: str) -> None:
         )
 
 
+def test_writer_rejects_rehashed_duplicate_run_start() -> None:
+    stream = _project()
+    events = (stream.events[0], stream.events[0], *stream.events[1:])
+    sources = (stream.envelopes[0], stream.envelopes[0], *stream.envelopes[1:])
+    with pytest.raises(ValueError, match="lifecycle"):
+        write_jsonl(
+            _rebuild_stream(stream, events, sources),
+            writer=lambda _fd, data: len(data),
+        )
+
+
+def test_writer_rejects_second_order_for_the_same_target() -> None:
+    stream = _project()
+    events = tuple(dict(event) for event in stream.events)
+    orders = [
+        index
+        for index, event in enumerate(events)
+        if event["event_type"] == "OrderSubmitted"
+    ]
+    first = events[orders[0]]
+    events[orders[1]]["target_id"] = first["target_id"]
+    events[orders[1]]["source_signal_ids"] = first["source_signal_ids"]
+    with pytest.raises(ValueError, match="target"):
+        write_jsonl(
+            _rebuild_stream(stream, events),
+            writer=lambda _fd, data: len(data),
+        )
+
+
+def test_writer_rejects_unknown_envelope_field() -> None:
+    stream = _project()
+    envelopes = ({**stream.envelopes[0], "unexpected": "value"}, *stream.envelopes[1:])
+    raw = b"".join(canonical_json_bytes(envelope) + b"\n" for envelope in envelopes)
+    with pytest.raises(ValueError, match="envelope"):
+        write_jsonl(
+            replace(
+                stream,
+                envelopes=envelopes,
+                jsonl=raw,
+                raw_sha256=sha256(raw).hexdigest(),
+            ),
+            writer=lambda _fd, data: len(data),
+        )
+
+
 def test_rejects_unknown_or_misordered_native_facts() -> None:
     with pytest.raises(ValueError, match="fact stream"):
         _project(run=_run(facts=_facts()[1:]))
@@ -587,6 +699,64 @@ def test_native_quote_and_plan_facts_are_hash_bound(
     )
     with pytest.raises(ValueError, match="business facts"):
         _project(run=_run(facts=tuple(facts)))
+
+
+def test_quote_without_a_target_before_stopped_is_still_hash_bound() -> None:
+    facts = _facts()
+    terminal_long_facts = facts[:5] + (facts[5], facts[-1])
+    run = _run(
+        facts=terminal_long_facts,
+        balance_facts=(
+            ("BTC", "9990.00999", "0", "9990.00999"),
+            ("USDT", "0.000001", "0", "0.000001"),
+        ),
+        commission_facts=(("USDT", "999.000999"),),
+    )
+    run.processed_target_ids = ("11111111-1111-4111-8111-111111111111",)
+    run.native_order_ids = ("O-1",)
+    run.native_fill_ids = ("T-1",)
+    run.order_count = run.fill_count = 1
+    run.position_quantity = "9990.00999"
+    run.position_average_entry = "100"
+    run.position_realized_pnl = "0"
+    run.position_unrealized_pnl = "19980.01998"
+    authority = CompletionAuthority(
+        target_count=1,
+        order_count=1,
+        fill_count=1,
+        final_cash="0.000001",
+        final_position="9990.00999",
+        fees="999.000999",
+        realized_pnl="0",
+        unrealized_pnl="19980.01998",
+    )
+
+    stream = project_event_stream(
+        _inputs(),
+        run,
+        authority,
+        closure_digest="a" * 64,
+        upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+    )
+    assert [event["event_type"] for event in stream.events].count("TargetAccepted") == 1
+
+    terminal_quote = terminal_long_facts[-2]
+    mutated = replace(
+        terminal_quote,
+        attributes=tuple(
+            (name, "100" if name == "bid" else value)
+            for name, value in terminal_quote.attributes
+        ),
+    )
+    run.native_facts = terminal_long_facts[:-2] + (mutated, terminal_long_facts[-1])
+    with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            _inputs(),
+            run,
+            authority,
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
 
 
 @pytest.mark.parametrize(

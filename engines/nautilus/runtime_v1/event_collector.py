@@ -108,8 +108,13 @@ def _decimal_text(value: Decimal) -> str:
     return "0" if rendered in {"", "-0"} else rendered
 
 
-def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
-    """Return validated immutable executions; never retain native objects."""
+def collect_executions(
+    run: object,
+) -> tuple[
+    tuple[tuple[tuple[str, str | int | None], ...], ...],
+    tuple[CollectedExecution, ...],
+]:
+    """Return every scalar quote and its validated target executions."""
 
     facts = run.native_facts
     if (
@@ -124,6 +129,7 @@ def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
     ):
         raise ValueError("native fact stream is invalid")
 
+    quotes: list[tuple[tuple[str, str | int | None], ...]] = []
     executions: list[CollectedExecution] = []
     target_ids: list[str] = []
     native_order_ids: list[str] = []
@@ -131,9 +137,15 @@ def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
     index = 0
     while index < len(facts) - 1:
         quote = _document(facts[index], "quote", _QUOTE)
-        plan = _document(facts[index + 1], "target_planned", _PLAN, signals=True)
+        quotes.append(quote)
+        index += 1
+        if index == len(facts) - 1 or facts[index].kind == "quote":
+            continue
+        if index + 1 >= len(facts) - 1:
+            raise ValueError("native fact stream is invalid")
+        plan = _document(facts[index], "target_planned", _PLAN, signals=True)
         quantity_fact = _document(
-            facts[index + 2], "target_quantity_planned", ("quantity",)
+            facts[index + 1], "target_quantity_planned", ("quantity",)
         )
         target_id = _text(plan, "target_id")
         planned_quantity = _text(quantity_fact, "quantity")
@@ -148,7 +160,7 @@ def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
         ):
             raise ValueError("native fact stream is invalid")
         target_ids.append(target_id)
-        index += 3
+        index += 2
         order = fill = None
         if index < len(facts) - 1 and facts[index].kind == "order_submitted":
             order = _document(facts[index], "order_submitted", _ORDER, signals=True)
@@ -187,7 +199,7 @@ def collect_executions(run: object) -> tuple[CollectedExecution, ...]:
         or len(set(native_fill_ids)) != len(native_fill_ids)
     ):
         raise ValueError("native fact stream is invalid")
-    return tuple(executions)
+    return tuple(quotes), tuple(executions)
 
 
 __all__ = ["CollectedExecution", "collect_executions"]

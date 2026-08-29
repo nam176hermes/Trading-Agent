@@ -43,6 +43,21 @@ _AUTHORITY_FIELDS = (
     "source_commit",
     "config_digest",
 )
+_ENVELOPE_FIELDS = {
+    "message_id",
+    "correlation_id",
+    "causation_id",
+    "engine_run_id",
+    "stream_sequence",
+    "event_time",
+    "initialization_time",
+    "schema_version",
+    "producer_identity",
+    "source_commit",
+    "config_digest",
+    "payload_digest",
+    "payload",
+}
 _MARKET_ROW_FIELDS = {
     "ask",
     "bid",
@@ -363,6 +378,7 @@ def _market_rows(inputs: object) -> dict[str, dict[str, object]]:
 
 def _validate_business_facts(
     inputs: object,
+    quotes: tuple[tuple[tuple[str, str | int | None], ...], ...],
     executions: tuple[CollectedExecution, ...],
     schedule: dict[str, tuple[tuple[str, ...], str, str, str]],
 ) -> None:
@@ -374,7 +390,7 @@ def _validate_business_facts(
         if (
             type(instrument_id) is not str
             or configuration.get("starting_currency") != "USDT"
-            or len(rows) != len(executions)
+            or len(rows) != len(quotes)
         ):
             raise ValueError
         starting_balance = Decimal(configuration["starting_balance"])
@@ -400,8 +416,8 @@ def _validate_business_facts(
         used_quote_times: set[str] = set()
         with localcontext() as context:
             context.prec = 96
-            for execution in executions:
-                quote = _values(execution.quote)
+            for scalar_quote in quotes:
+                quote = _values(scalar_quote)
                 quote_time = _native_time(quote["ts_event"])
                 row = rows.get(quote_time)
                 expected_quote = {
@@ -421,7 +437,12 @@ def _validate_business_facts(
                 ):
                     raise ValueError
                 used_quote_times.add(quote_time)
+            if used_quote_times != set(rows):
+                raise ValueError
 
+            for execution in executions:
+                quote = _values(execution.quote)
+                row = rows[_native_time(quote["ts_event"])]
                 plan = _values(execution.plan)
                 target_id = plan.get("target_id")
                 scheduled = schedule.get(str(target_id))
@@ -477,8 +498,6 @@ def _validate_business_facts(
                         raise ValueError
                     if cash < 0 or position < 0:
                         raise ValueError
-        if used_quote_times != set(rows):
-            raise ValueError
     except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("P1 native business facts are not input-bound") from exc
 
@@ -616,11 +635,14 @@ def validate_projected_stream(
         not 5 <= len(events) == len(envelopes) <= 4096
         or events[0]["event_type"] != "RunStarted"
         or events[-1]["event_type"] != "RunCompleted"
+        or sum(event.get("event_type") == "RunStarted" for event in events) != 1
+        or sum(event.get("event_type") == "RunCompleted" for event in events) != 1
     ):
         raise ValueError("P1 event stream lifecycle is invalid")
     targets: dict[str, dict[str, object]] = {}
     plans: dict[str, dict[str, object]] = {}
     orders: dict[str, dict[str, object]] = {}
+    submitted_targets: set[str] = set()
     native_orders: set[str] = set()
     fills: set[str] = set()
     filled_orders: set[str] = set()
@@ -635,6 +657,8 @@ def validate_projected_stream(
         zip(events, envelopes, strict=True), start=2
     ):
         validate_document(str(event.get("event_type")), event)
+        if type(envelope) is not dict or set(envelope) != _ENVELOPE_FIELDS:
+            raise ValueError("P1 event envelope authority is invalid")
         if event["sequence"] != sequence or envelope["stream_sequence"] != sequence:
             raise ValueError("P1 event sequence is invalid")
         time = str(event["simulation_time"])
@@ -676,11 +700,14 @@ def validate_projected_stream(
                 or target_id not in plans
                 or target["source_signal_ids"] != event["source_signal_ids"]
                 or plans[target_id]["quantity"] != event["quantity"]
+                or client_order_id != target_id
+                or target_id in submitted_targets
                 or client_order_id in orders
                 or native_order_id in native_orders
             ):
                 raise ValueError("P1 order is not target-bound")
             orders[client_order_id] = event
+            submitted_targets.add(target_id)
             native_orders.add(native_order_id)
         elif kind == "Fill":
             client_order_id = str(event["client_order_id"])
@@ -751,8 +778,8 @@ def project_event_stream(
         )
     ]
     schedule = _schedule(inputs)
-    executions = collect_executions(run)
-    _validate_business_facts(inputs, executions, schedule)
+    quotes, executions = collect_executions(run)
+    _validate_business_facts(inputs, quotes, executions, schedule)
     for execution in executions:
         events.extend(_target_events(execution, schedule, len(events) + 2))
     final_time = _native_time(run.last_market_timestamp)
