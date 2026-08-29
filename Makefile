@@ -6,7 +6,7 @@
 	test-event-ledger-runtime-postgres test-market-data-runtime-postgres test-package6-paper-runtime \
 	build-package6-custodian test-package6-custodian-native \
 	build-nautilus-engine verify-nautilus-engine qualify-nautilus-sealed-imports \
-	build-p1-nautilus-runtime qualify-p1-nautilus-runtime \
+	build-p1-nautilus-runtime qualify-p1-nautilus-runtime qualify-p1-nautilus-vertical-slice \
 	test-runtime-dual-read test-security \
 	test-backend test-dashboard typecheck-dashboard lint-dashboard \
 	build-dashboard prepare-root-test-install test-all-private test-all-portable-private \
@@ -58,6 +58,9 @@ generate-p1-nautilus-contracts:
 
 check-p1-nautilus-contracts:
 	$(PYTHON) scripts/generate_nautilus_p1_protocol.py --check
+
+qualify-p1-nautilus-vertical-slice:
+	$(PYTHON) scripts/run_p1_nautilus_vertical_slice.py
 
 check-p0-ci-closure:
 	$(PYTHON) scripts/check_p0_ci_closure.py \
