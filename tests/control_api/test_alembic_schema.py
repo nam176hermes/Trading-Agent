@@ -190,6 +190,11 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
             ).scalar_one() is not None
             assert connection.exec_driver_sql(
                 "SELECT to_regprocedure("
+                "'job_plane.ingest_legacy_engine_job_result_v2("
+                "text,text,text,text,text)')"
+            ).scalar_one() is not None
+            assert connection.exec_driver_sql(
+                "SELECT to_regprocedure("
                 "'job_plane.paper_worker_job_id_allowed(text)')"
             ).scalar_one() is not None
             assert connection.exec_driver_sql(
@@ -220,6 +225,18 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
                 "'job_plane.ingest_engine_job_result_v2("
                 "text,text,text,text,text)', 'EXECUTE')"
             ).scalar_one() is True
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_legacy_engine_job_result_v2("
+                "text,text,text,text,text)', 'EXECUTE')"
+            ).scalar_one() is True
+            assert connection.exec_driver_sql(
+                "SELECT has_function_privilege("
+                "'trading_job_worker', "
+                "'job_plane.ingest_engine_job_result("
+                "text,text,text,text,text)', 'EXECUTE')"
+            ).scalar_one() is False
             assert connection.exec_driver_sql(
                 "SELECT has_function_privilege("
                 "'trading_job_worker', "

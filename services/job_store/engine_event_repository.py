@@ -852,6 +852,12 @@ FROM job_plane.ingest_engine_job_result_v2(
   %(job_id)s, %(attempt_id)s, %(worker_id)s, %(lease_token)s,
   %(batch_document)s
 );"""
+    INGEST_LEGACY_JOB_RESULT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
+       engine_run_id, event_count, first_sequence, last_sequence, last_digest
+FROM job_plane.ingest_legacy_engine_job_result_v2(
+  %(job_id)s, %(attempt_id)s, %(worker_id)s, %(lease_token)s,
+  %(batch_document)s
+);"""
     LOAD_RECEIPT = """SELECT batch_sha256, ingestion_digest, job_id, attempt_id,
        engine_run_id, event_count, first_sequence, last_sequence, last_digest
 FROM public.engine_event_batch_receipts
@@ -1100,9 +1106,20 @@ class PostgresEngineEventLedger:
             raise EngineEventConflictError(
                 "engine job result differs from the current claim"
             )
+        if batch.validator_id == _P1_VALIDATOR:
+            statement = PostgresEngineEventLedgerSql.INGEST_JOB_RESULT
+        elif batch.validator_id in {
+            _GENERIC_ENGINE_EVENT_VALIDATOR,
+            _NAUTILUS_BACKTEST_VALIDATOR,
+        }:
+            statement = PostgresEngineEventLedgerSql.INGEST_LEGACY_JOB_RESULT
+        else:
+            raise InvalidEngineEventBatchError(
+                "engine job result validator is not authorized"
+            )
         return self._ingest_with_statement(
             batch,
-            PostgresEngineEventLedgerSql.INGEST_JOB_RESULT,
+            statement,
             extra_params={
                 "job_id": claimed.job_id,
                 "attempt_id": claimed.attempt_id,

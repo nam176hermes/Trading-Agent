@@ -1125,6 +1125,97 @@ def upgrade() -> None:
         END;
         $ingest_p1_engine_event_batch_v2$;
 
+        CREATE FUNCTION job_plane.ingest_legacy_engine_job_result_v2(
+          p_job_id text,
+          p_attempt_id text,
+          p_worker_id text,
+          p_lease_token text,
+          p_batch_document text
+        )
+        RETURNS TABLE (
+          batch_sha256 char(64),
+          ingestion_digest char(64),
+          job_id varchar(36),
+          attempt_id varchar(40),
+          engine_run_id uuid,
+          event_count bigint,
+          first_sequence bigint,
+          last_sequence bigint,
+          last_digest char(64)
+        )
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        VOLATILE
+        PARALLEL UNSAFE
+        SET search_path = pg_catalog
+        AS $ingest_legacy_engine_job_result_v2$
+        DECLARE
+          v_document jsonb;
+          v_event jsonb;
+          v_envelope jsonb;
+          v_attribute jsonb;
+          accepted record;
+        BEGIN
+          IF session_user <> 'trading_job_worker' THEN
+            RAISE EXCEPTION 'legacy engine job result authority rejected'
+              USING ERRCODE = '42501';
+          END IF;
+          IF p_batch_document IS NULL
+             OR octet_length(p_batch_document) > 67108864 THEN
+            RAISE EXCEPTION 'legacy engine job result document exceeds the bound'
+              USING ERRCODE = 'P2D04';
+          END IF;
+          BEGIN
+            v_document := p_batch_document::jsonb;
+          EXCEPTION WHEN invalid_text_representation THEN
+            RAISE EXCEPTION 'legacy engine job result document is invalid'
+              USING ERRCODE = 'P2D04';
+          END;
+          IF jsonb_typeof(v_document -> 'events') = 'array' THEN
+            FOR v_event IN
+              SELECT event_row.value
+              FROM jsonb_array_elements(v_document -> 'events') AS event_row
+            LOOP
+              IF jsonb_typeof(v_event -> 'canonical_json') = 'string' THEN
+                BEGIN
+                  v_envelope := (v_event ->> 'canonical_json')::jsonb;
+                EXCEPTION WHEN invalid_text_representation THEN
+                  RAISE EXCEPTION 'legacy engine event envelope is invalid'
+                    USING ERRCODE = 'P2D04';
+                END;
+                IF jsonb_typeof(v_envelope #> '{payload,attributes}') = 'array' THEN
+                  FOR v_attribute IN
+                    SELECT attribute_row.value
+                    FROM jsonb_array_elements(
+                      v_envelope #> '{payload,attributes}'
+                    ) AS attribute_row
+                  LOOP
+                    IF jsonb_typeof(v_attribute) = 'object'
+                       AND v_attribute ->> 'name' = 'schema_version'
+                       AND v_attribute ->> 'value'
+                             = 'nautilus-p1-event-stream-v1' THEN
+                      RAISE EXCEPTION
+                        'legacy engine job result contains P1 authority'
+                        USING ERRCODE = 'P2D04';
+                    END IF;
+                  END LOOP;
+                END IF;
+              END IF;
+            END LOOP;
+          END IF;
+          SELECT * INTO accepted
+          FROM job_plane.ingest_engine_job_result(
+            p_job_id, p_attempt_id, p_worker_id, p_lease_token,
+            p_batch_document
+          );
+          RETURN QUERY SELECT
+            accepted.batch_sha256, accepted.ingestion_digest,
+            accepted.job_id, accepted.attempt_id, accepted.engine_run_id,
+            accepted.event_count, accepted.first_sequence,
+            accepted.last_sequence, accepted.last_digest;
+        END;
+        $ingest_legacy_engine_job_result_v2$;
+
         CREATE FUNCTION job_plane.ingest_engine_job_result_v2(
           p_job_id text,
           p_attempt_id text,
@@ -1393,9 +1484,23 @@ def upgrade() -> None:
           FROM PUBLIC, trading_jobs, trading_migrator, trading_reader,
                trading_job_api, trading_job_worker, trading_job_scheduler;
         REVOKE ALL PRIVILEGES ON FUNCTION
+          job_plane.ingest_legacy_engine_job_result_v2(
+            text, text, text, text, text
+          )
+          FROM PUBLIC, trading_jobs, trading_migrator, trading_reader,
+               trading_job_api, trading_job_worker, trading_job_scheduler;
+        REVOKE EXECUTE ON FUNCTION
+          job_plane.ingest_engine_job_result(text, text, text, text, text)
+          FROM trading_job_worker;
+        REVOKE ALL PRIVILEGES ON FUNCTION
           job_plane.ingest_engine_job_result_v2(text, text, text, text, text)
           FROM PUBLIC, trading_jobs, trading_migrator, trading_reader,
                trading_job_api, trading_job_worker, trading_job_scheduler;
+        GRANT EXECUTE ON FUNCTION
+          job_plane.ingest_legacy_engine_job_result_v2(
+            text, text, text, text, text
+          )
+          TO trading_job_worker;
         GRANT EXECUTE ON FUNCTION
           job_plane.ingest_engine_job_result_v2(text, text, text, text, text)
           TO trading_job_worker;

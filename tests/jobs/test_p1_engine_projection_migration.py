@@ -22,6 +22,7 @@ def test_p1_projection_migration_is_minimal_forward_authority() -> None:
         "request_message_id IS NOT NULL",
         "FOREIGN KEY (batch_sha256)",
         "CREATE FUNCTION job_plane.ingest_p1_engine_event_batch_v2",
+        "CREATE FUNCTION job_plane.ingest_legacy_engine_job_result_v2",
         "CREATE FUNCTION job_plane.ingest_engine_job_result_v2",
         "CREATE FUNCTION public.engine_run_completion_append_guard",
         "CREATE TRIGGER engine_events_reject_after_p1_completion",
@@ -79,6 +80,36 @@ def test_v2_keeps_v1_ingest_and_job_binding_as_atomic_authority() -> None:
     assert "job_plane.ingest_p1_engine_event_batch_v2(" in job_body
     assert "job_plane.ingest_engine_job_result(" in job_body
     assert "IS DISTINCT FROM accepted.batch_sha256" in job_body
+
+
+def test_legacy_job_wrapper_rejects_p1_marker_before_v1_binding() -> None:
+    source = MIGRATION.read_text()
+    body = source.split(
+        "AS $ingest_legacy_engine_job_result_v2$", 1
+    )[1].split("$ingest_legacy_engine_job_result_v2$;", 1)[0]
+
+    for expected in (
+        "session_user <> 'trading_job_worker'",
+        "octet_length(p_batch_document) > 67108864",
+        "nautilus-p1-event-stream-v1",
+        "job_plane.ingest_engine_job_result(",
+        "legacy engine job result contains P1 authority",
+    ):
+        assert expected in body
+    wrapper = source.split(
+        "CREATE FUNCTION job_plane.ingest_legacy_engine_job_result_v2", 1
+    )[1].split("$ingest_legacy_engine_job_result_v2$;", 1)[0]
+    assert "SECURITY DEFINER" in wrapper
+    assert "SET search_path = pg_catalog" in wrapper
+    assert body.index("session_user <> 'trading_job_worker'") < body.index(
+        "p_batch_document::jsonb"
+    )
+    assert body.index("octet_length(p_batch_document) > 67108864") < body.index(
+        "p_batch_document::jsonb"
+    )
+    assert body.index("nautilus-p1-event-stream-v1") < body.index(
+        "job_plane.ingest_engine_job_result("
+    )
 
 
 def test_p1_wrapper_closes_every_event_and_deterministic_message_identity() -> None:
@@ -200,6 +231,17 @@ def test_v2_grants_only_the_existing_worker_result_role() -> None:
 
     assert (
         "job_plane.ingest_engine_job_result_v2(text, text, text, text, text)\n"
+        "          TO trading_job_worker"
+    ) in source
+    assert (
+        "REVOKE EXECUTE ON FUNCTION\n"
+        "          job_plane.ingest_engine_job_result(text, text, text, text, text)\n"
+        "          FROM trading_job_worker"
+    ) in source
+    assert (
+        "job_plane.ingest_legacy_engine_job_result_v2(\n"
+        "            text, text, text, text, text\n"
+        "          )\n"
         "          TO trading_job_worker"
     ) in source
     assert "GRANT EXECUTE ON FUNCTION\n          job_plane.ingest_p1_engine_event_batch_v2" not in source

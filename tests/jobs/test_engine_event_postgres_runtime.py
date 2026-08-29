@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+import json
 from threading import Barrier
 from uuid import UUID
 
@@ -66,6 +68,52 @@ def _semantic_receipt_bytes(receipt: dict[str, object]) -> bytes:
     )
 
 
+def _seed_running_job(owner, claim, *, idempotency_key: str) -> None:
+    owner.execute(
+        """
+        INSERT INTO public.jobs (
+          job_id, job_type, state, payload, payload_fingerprint,
+          idempotency_key, actor_type, actor_id, priority,
+          attempt_count, max_attempts, lease_owner, lease_token,
+          lease_expires_at, reason_code
+        ) VALUES (
+          %s, 'BACKTEST', 'RUNNING', %s::jsonb, %s,
+          %s, 'SYSTEM', %s, 0,
+          1, %s, %s, %s, now() + interval '10 minutes', 'STARTED'
+        )
+        """,
+        (
+            claim.job_id,
+            canonical_payload_json(claim.payload),
+            payload_fingerprint(claim.payload),
+            idempotency_key,
+            idempotency_key,
+            claim.max_attempts,
+            claim.worker_id,
+            claim.lease_token,
+        ),
+    )
+    owner.execute(
+        """
+        INSERT INTO public.job_attempts (
+          attempt_id, job_id, attempt_number, worker_id, outcome,
+          lease_token, lease_expires_at, claimed_at, started_at,
+          heartbeat_at
+        ) VALUES (
+          %s, %s, %s, %s, 'RUNNING', %s,
+          now() + interval '10 minutes', now(), now(), now()
+        )
+        """,
+        (
+            claim.attempt_id,
+            claim.job_id,
+            claim.attempt_number,
+            claim.worker_id,
+            claim.lease_token,
+        ),
+    )
+
+
 def test_concurrent_identical_engine_batch_is_idempotent_and_serialized(
     engine_event_database,
 ) -> None:
@@ -114,6 +162,93 @@ def test_concurrent_identical_engine_batch_is_idempotent_and_serialized(
         ).fetchone() == (1,)
 
 
+def test_worker_legacy_job_wrapper_preserves_generic_and_nautilus_v1(
+    engine_event_database,
+) -> None:
+    base_claim = _p1_claim()
+    generic_claim = replace(
+        base_claim,
+        job_id="job_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        attempt_id="attempt_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        lease_token="legacy-generic_0123456789abcdefghijklmnopqrstuvwxyz",
+    )
+    nautilus_claim = replace(
+        base_claim,
+        job_id="job_cccccccccccccccccccccccccccccccc",
+        attempt_id="attempt_dddddddddddddddddddddddddddddddd",
+        lease_token="legacy-nautilus_0123456789abcdefghijklmnopqrstuvwxyz",
+    )
+    generic_batch = _batch(
+        _event(
+            2,
+            "BacktestStarted",
+            engine_run_id=UUID("50000000-0000-4000-8000-000000000001"),
+        ),
+        job_id=generic_claim.job_id,
+        attempt_id=generic_claim.attempt_id,
+    )
+    nautilus_batch = _batch(
+        _event(
+            2,
+            "NautilusBacktestCompleted",
+            engine_run_id=UUID("60000000-0000-4000-8000-000000000001"),
+        ),
+        job_id=nautilus_claim.job_id,
+        attempt_id=nautilus_claim.attempt_id,
+        validator_id="nautilus-backtest-result-v1",
+    )
+    with psycopg.connect(engine_event_database.conninfo()) as owner:
+        _seed_running_job(owner, generic_claim, idempotency_key="legacy-generic")
+        _seed_running_job(owner, nautilus_claim, idempotency_key="legacy-nautilus")
+
+    worker_database = disposable_role_settings(
+        engine_event_database, "trading_job_worker"
+    )
+    worker_settings = JobStoreSettings(
+        host=worker_database.host,
+        port=worker_database.port,
+        database=worker_database.database,
+        user=worker_database.user,
+        password=worker_database.password,
+        pool_max=2,
+    )
+    with WorkerRepository(worker_settings) as worker_repository:
+        repository = worker_repository.engine_event_ingestor()
+        for claim, batch in (
+            (generic_claim, generic_batch),
+            (nautilus_claim, nautilus_batch),
+        ):
+            worker_repository.worker_heartbeat(
+                claim.worker_id,
+                CODE_COMMIT,
+                "BUSY",
+                current_job_id=claim.job_id,
+                current_attempt_id=claim.attempt_id,
+            )
+            receipt = repository.ingest_for_job(batch, claimed=claim)
+            assert repository.ingest_for_job(batch, claimed=claim) == receipt
+
+    records, ingestion_digest, _projection = _validated_records(generic_batch)
+    legacy_document = PostgresEngineEventLedger._batch_document(
+        generic_batch, records, ingestion_digest
+    )
+    with psycopg.connect(
+        worker_database.conninfo(), autocommit=True
+    ) as worker_connection:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            worker_connection.execute(
+                "SELECT * FROM job_plane.ingest_engine_job_result("
+                "%s, %s, %s, %s, %s)",
+                (
+                    generic_claim.job_id,
+                    generic_claim.attempt_id,
+                    generic_claim.worker_id,
+                    generic_claim.lease_token,
+                    legacy_document,
+                ),
+            )
+
+
 def test_p1_v2_ingestion_is_idempotent_conflict_safe_and_restart_recoverable(
     engine_event_database,
     tmp_path,
@@ -126,47 +261,7 @@ def test_p1_v2_ingestion_is_idempotent_conflict_safe_and_restart_recoverable(
     assert batch.profile_result is not None
     run_id = batch.events[0].engine_run_id
     with psycopg.connect(engine_event_database.conninfo()) as owner:
-        owner.execute(
-            """
-            INSERT INTO public.jobs (
-              job_id, job_type, state, payload, payload_fingerprint,
-              idempotency_key, actor_type, actor_id, priority,
-              attempt_count, max_attempts, lease_owner, lease_token,
-              lease_expires_at, reason_code
-            ) VALUES (
-              %s, 'BACKTEST', 'RUNNING', %s::jsonb, %s,
-              'p1-runtime-projection', 'SYSTEM', 'p1-runtime-projection', 0,
-              1, %s, %s, %s, now() + interval '10 minutes', 'STARTED'
-            )
-            """,
-            (
-                claim.job_id,
-                canonical_payload_json(claim.payload),
-                payload_fingerprint(claim.payload),
-                claim.max_attempts,
-                claim.worker_id,
-                claim.lease_token,
-            ),
-        )
-        owner.execute(
-            """
-            INSERT INTO public.job_attempts (
-              attempt_id, job_id, attempt_number, worker_id, outcome,
-              lease_token, lease_expires_at, claimed_at, started_at,
-              heartbeat_at
-            ) VALUES (
-              %s, %s, %s, %s, 'RUNNING', %s,
-              now() + interval '10 minutes', now(), now(), now()
-            )
-            """,
-            (
-                claim.attempt_id,
-                claim.job_id,
-                claim.attempt_number,
-                claim.worker_id,
-                claim.lease_token,
-            ),
-        )
+        _seed_running_job(owner, claim, idempotency_key="p1-runtime-projection")
 
     def open_repository(database):
         pool = ConnectionPool(
@@ -205,6 +300,32 @@ def test_p1_v2_ingestion_is_idempotent_conflict_safe_and_restart_recoverable(
             current_job_id=claim.job_id,
             current_attempt_id=claim.attempt_id,
         )
+        records, ingestion_digest, _projection = _validated_records(batch)
+        p1_document = PostgresEngineEventLedger._batch_document(
+            batch, records, ingestion_digest
+        )
+        stripped = json.loads(p1_document)
+        stripped.pop("validation_metadata")
+        stripped.pop("validator_id")
+        stripped_document = json.dumps(
+            stripped, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+        with psycopg.connect(
+            worker_database.conninfo(), autocommit=True
+        ) as worker_connection:
+            with pytest.raises(psycopg.Error) as rejected:
+                worker_connection.execute(
+                    "SELECT * FROM job_plane.ingest_legacy_engine_job_result_v2("
+                    "%s, %s, %s, %s, %s)",
+                    (
+                        claim.job_id,
+                        claim.attempt_id,
+                        claim.worker_id,
+                        claim.lease_token,
+                        stripped_document,
+                    ),
+                )
+            assert rejected.value.sqlstate == "P2D04"
         repository = worker_repository.engine_event_ingestor()
         receipt = repository.ingest_for_job(batch, claimed=claim)
         assert repository.ingest_for_job(batch, claimed=claim) == receipt
