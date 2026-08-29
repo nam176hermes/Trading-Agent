@@ -506,6 +506,8 @@ class JobWorker:
                         "ENGINE_EVENT_BATCH_INVALID",
                         "validated engine-event authority changed during ingestion",
                     )
+                # Receipt attachment is in-memory only; exact P1 result metadata is
+                # persisted by finalization after durable reload and parity below.
                 result = self._with_engine_event_receipt(result, receipt)
                 if result.profile_result is not None:
                     result = self._with_p1_portfolio_parity(

@@ -520,7 +520,8 @@ class WorkerRepository:
         if outcome is not None:
             result_metadata["command_capability_fingerprint"] = outcome.capability_fingerprint
             result_metadata["lineage"] = outcome.lineage.as_metadata()
-        if result is not None:
+        profile_result = getattr(result, "profile_result", None)
+        if profile_result is not None:
             from packages.engine_event_ledger import EngineEventBatchReceipt
             from packages.engine_portfolio_projection.parity import (
                 P1PortfolioParityReceipt,
@@ -529,7 +530,7 @@ class WorkerRepository:
 
             validation_metadata = getattr(result, "validation_metadata", None)
             if (
-                type(getattr(result, "profile_result", None)) is P1ValidatedResult
+                type(profile_result) is P1ValidatedResult
                 and type(validation_metadata) is dict
             ):
                 engine_receipt = EngineEventBatchReceipt.model_validate_json(
