@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation, localcontext
 
+from .currency_metadata import currency_quanta
+
 
 _SCALAR = {str, int, type(None)}
 _QUOTE = ("instrument_id", "bid", "ask", "bid_size", "ask_size", "ts_event")
@@ -134,6 +136,7 @@ def collect_executions(
     target_ids: list[str] = []
     native_order_ids: list[str] = []
     native_fill_ids: list[str] = []
+    base_quantum, quote_quantum = currency_quanta("BTC", "USDT")
     index = 0
     while index < len(facts) - 1:
         quote = _document(facts[index], "quote", _QUOTE)
@@ -181,13 +184,28 @@ def collect_executions(
                 while index < len(facts) - 1 and facts[index].kind == "order_filled":
                     fill = _document(facts[index], "order_filled", _FILL)
                     try:
-                        quantity = Decimal(_text(fill, "quantity"))
+                        quantity_text = _text(fill, "quantity")
+                        commission_text = _text(fill, "commission")
+                        quantity = Decimal(quantity_text)
+                        commission = Decimal(commission_text)
+                        quantity_is_quantized = (
+                            quantity.quantize(base_quantum) == quantity
+                        )
+                        commission_is_quantized = (
+                            commission.quantize(quote_quantum) == commission
+                        )
                     except InvalidOperation as exc:
                         raise ValueError("native fact stream is invalid") from exc
                     trade_id = _text(fill, "trade_id")
                     if (
                         not quantity.is_finite()
+                        or not commission.is_finite()
                         or quantity <= 0
+                        or commission < 0
+                        or _decimal_text(quantity) != quantity_text
+                        or _decimal_text(commission) != commission_text
+                        or not quantity_is_quantized
+                        or not commission_is_quantized
                         or _text(fill, "client_order_id")
                         != _text(order, "client_order_id")
                         or _text(fill, "side") != _text(order, "side")

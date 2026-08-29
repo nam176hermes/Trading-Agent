@@ -411,6 +411,136 @@ def test_partial_fills_are_projected_once_in_observed_order() -> None:
     ] == ["T-1a", "T-1b", "T-2"]
 
 
+def test_rejects_coordinated_terminal_cash_forgery_against_fill_replay() -> None:
+    forged_cash = "1007981.2198591"
+    run = _run(
+        balance_facts=(
+            ("BTC", "0", "0", "0"),
+            ("USDT", forged_cash, "0", forged_cash),
+        )
+    )
+
+    with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            _inputs(),
+            run,
+            replace(AUTHORITY, final_cash=forged_cash),
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
+
+
+@pytest.mark.parametrize(
+    ("forged_commission", "error"),
+    (("0.2000001", "native fact stream"), ("0.200001", "business facts")),
+)
+def test_rejects_partial_fill_fee_that_contradicts_precision_or_completion(
+    forged_commission: str, error: str
+) -> None:
+    run = _partial_fill_run()
+    facts = list(run.native_facts)
+    first_fill_index = next(
+        index for index, fact in enumerate(facts) if fact.kind == "order_filled"
+    )
+    first_fill = facts[first_fill_index]
+    facts[first_fill_index] = replace(
+        first_fill,
+        attributes=tuple(
+            (name, forged_commission if name == "commission" else value)
+            for name, value in first_fill.attributes
+        ),
+    )
+    forged_run = SimpleNamespace(
+        **{
+            **vars(run),
+            "native_facts": tuple(facts),
+        }
+    )
+
+    with pytest.raises(ValueError, match=error):
+        project_event_stream(
+            _inputs(),
+            forged_run,
+            replace(AUTHORITY, fill_count=3),
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
+
+
+@pytest.mark.parametrize("field", ("quantity", "commission"))
+def test_collect_executions_rejects_canceling_subquantum_fill_values(
+    field: str,
+) -> None:
+    run = _partial_fill_run()
+    facts = list(run.native_facts)
+    fill_indexes = [
+        index for index, fact in enumerate(facts) if fact.kind == "order_filled"
+    ][:2]
+    replacements = (
+        ("0.400000001", "0.599999999")
+        if field == "quantity"
+        else ("0.0400001", "0.0599999")
+    )
+    if field == "quantity":
+        for fact_index in (1, 2, 3):
+            fact = facts[fact_index]
+            facts[fact_index] = replace(
+                fact,
+                attributes=tuple(
+                    (
+                        name,
+                        "1"
+                        if name in {"delta", "target_quantity", "quantity"}
+                        else value,
+                    )
+                    for name, value in fact.attributes
+                ),
+            )
+    for fact_index, replacement in zip(fill_indexes, replacements, strict=True):
+        fact = facts[fact_index]
+        facts[fact_index] = replace(
+            fact,
+            attributes=tuple(
+                (name, replacement if name == field else value)
+                for name, value in fact.attributes
+            ),
+        )
+
+    with pytest.raises(ValueError, match="native fact stream"):
+        collect_executions(
+            SimpleNamespace(**{**vars(run), "native_facts": tuple(facts)})
+        )
+
+
+def test_rejects_coordinated_subtick_fill_price_against_catalog() -> None:
+    facts = list(_facts())
+    first_fill = facts[4]
+    facts[4] = replace(
+        first_fill,
+        attributes=tuple(
+            (name, "100.001" if name == "price" else value)
+            for name, value in first_fill.attributes
+        ),
+    )
+    forged_cash = "1007971.230848"
+    run = _run(
+        facts=tuple(facts),
+        balance_facts=(
+            ("BTC", "0", "0", "0"),
+            ("USDT", forged_cash, "0", forged_cash),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="business facts"):
+        project_event_stream(
+            _inputs(),
+            run,
+            replace(AUTHORITY, final_cash=forged_cash),
+            closure_digest="a" * 64,
+            upstream_commit="27a8e54e7ac3c57d6cbf8891f0283dfbaee97317",
+        )
+
+
 @pytest.mark.parametrize("mutation", ("dropped", "duplicated", "under", "over"))
 def test_partial_fill_sum_and_identity_mutations_fail_closed(mutation: str) -> None:
     run = _partial_fill_run()
@@ -563,12 +693,18 @@ def test_raw_custody_changes_but_semantics_change_only_for_business_facts() -> N
             for name, value in fill.attributes
         ),
     )
-    changed_fee = replace(AUTHORITY, fees="1019.98101898")
+    changed_fee = replace(
+        AUTHORITY, final_cash="1008979.120968", fees="1009.89012"
+    )
     fee_stream = project_event_stream(
         _inputs(),
         _run(
             facts=tuple(fee_facts),
-            commission_facts=(("USDT", "1019.98101898"),),
+            balance_facts=(
+                ("BTC", "0", "0", "0"),
+                ("USDT", "1008979.120968", "0", "1008979.120968"),
+            ),
+            commission_facts=(("USDT", "1009.89012"),),
         ),
         changed_fee,
         closure_digest="a" * 64,
@@ -784,28 +920,28 @@ def _terminal_long_case() -> tuple[
     run = _run(
         facts=terminal_long_facts,
         balance_facts=(
-            ("BTC", "9990.00999", "0", "9990.00999"),
-            ("USDT", "0.000001", "0", "0.000001"),
+            ("BTC", "9989.011088", "0", "9989.011088"),
+            ("USDT", "99.990091", "0", "99.990091"),
         ),
-        commission_facts=(("USDT", "999.000999"),),
+        commission_facts=(("USDT", "998.901109"),),
     )
     run.processed_target_ids = ("11111111-1111-4111-8111-111111111111",)
     run.native_order_ids = ("O-1",)
     run.native_fill_ids = ("T-1",)
     run.order_count = run.fill_count = 1
-    run.position_quantity = "9990.00999"
+    run.position_quantity = "9989.011088"
     run.position_average_entry = "100"
     run.position_realized_pnl = "0"
-    run.position_unrealized_pnl = "19980.01998"
+    run.position_unrealized_pnl = "19978.022176"
     authority = CompletionAuthority(
         target_count=1,
         order_count=1,
         fill_count=1,
-        final_cash="0.000001",
-        final_position="9990.00999",
-        fees="999.000999",
+        final_cash="99.990091",
+        final_position="9989.011088",
+        fees="998.901109",
         realized_pnl="0",
-        unrealized_pnl="19980.01998",
+        unrealized_pnl="19978.022176",
     )
 
     return terminal_long_facts, run, authority

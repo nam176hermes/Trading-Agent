@@ -387,6 +387,7 @@ def _validate_business_facts(
     quotes: tuple[tuple[tuple[str, str | int | None], ...], ...],
     executions: tuple[CollectedExecution, ...],
     schedule: dict[str, tuple[tuple[str, ...], str, str, str]],
+    completion: CompletionAuthority,
 ) -> None:
     try:
         configuration = dict(inputs.engine_configuration)
@@ -424,6 +425,7 @@ def _validate_business_facts(
 
         cash = starting_balance
         position = Decimal(0)
+        commissions: dict[str, Decimal] = {}
         used_quote_times: set[str] = set()
         with localcontext() as context:
             context.prec = 96
@@ -497,8 +499,22 @@ def _validate_business_facts(
                 for fill_fact in execution.fills:
                     fill = _values(fill_fact)
                     quantity = Decimal(str(fill["quantity"]))
-                    price = Decimal(str(fill["price"]))
+                    price_text = fill["price"]
+                    price = Decimal(str(price_text))
                     commission = Decimal(str(fill["commission"]))
+                    commission_currency = fill["commission_currency"]
+                    if (
+                        type(price_text) is not str
+                        or _decimal(price) != price_text
+                        or type(commission_currency) is not str
+                        or price <= 0
+                        or price % tick_size != 0
+                        or commission < 0
+                    ):
+                        raise ValueError
+                    commissions[commission_currency] = (
+                        commissions.get(commission_currency, Decimal(0)) + commission
+                    )
                     if fill["side"] == "BUY":
                         position = (position + quantity).quantize(base_quantum)
                         cash = (cash - quantity * price - commission).quantize(
@@ -513,6 +529,15 @@ def _validate_business_facts(
                         raise ValueError
                     if cash < 0 or position < 0:
                         raise ValueError
+            quote_currency = catalog["quote_currency"]
+            if (
+                cash != Decimal(completion.final_cash)
+                or position != Decimal(completion.final_position)
+                or set(commissions) - {quote_currency}
+                or commissions.get(quote_currency, Decimal(0))
+                != Decimal(completion.fees)
+            ):
+                raise ValueError
     except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
         raise ValueError("P1 native business facts are not input-bound") from exc
 
@@ -813,7 +838,7 @@ def project_event_stream(
         or run.processed_target_ids != schedule_target_ids
     ):
         raise ValueError("P1 native targets do not match schedule authority")
-    _validate_business_facts(inputs, quotes, executions, schedule)
+    _validate_business_facts(inputs, quotes, executions, schedule, completion)
     for execution in executions:
         events.extend(_target_events(execution, schedule, len(events) + 2))
     final_time = _native_time(run.last_market_timestamp)
