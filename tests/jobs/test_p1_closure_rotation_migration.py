@@ -138,6 +138,22 @@ def test_p1_closure_rotation_is_exact_forward_only_driver_sql() -> None:
     assert "FROM pg_catalog.pg_proc" in statement
     assert "pg_catalog.set_config(" in statement
     assert "pg_catalog.current_setting(" in statement
+    assert "v_prior_search_path pg_catalog.text;" in statement
+    capture_search_path = "v_prior_search_path :=\n            pg_catalog.current_setting("
+    pin_search_path = "'search_path', 'pg_catalog', true"
+    restore_search_path = "'search_path', v_prior_search_path, true"
+    assert capture_search_path in statement
+    assert pin_search_path in statement
+    assert restore_search_path in statement
+    assert statement.count("pg_catalog.set_config(") == 2
+    assert (
+        statement.index(capture_search_path)
+        < statement.index(pin_search_path)
+        < statement.index("v_function :=")
+        < statement.index("EXECUTE v_rotated_definition")
+        < statement.index("P1 closure rotation result authority is invalid")
+        < statement.index(restore_search_path)
+    )
     assert "pg_catalog.coalesce(" not in statement
     assert statement.count("COALESCE(") == 2
     assert "v_function pg_catalog.regprocedure;" in statement

@@ -27,6 +27,7 @@ def upgrade() -> None:
           v_rotated_definition pg_catalog.text;
           v_source_sha256 pg_catalog.text;
           v_definition_sha256 pg_catalog.text;
+          v_prior_search_path pg_catalog.text;
           v_old constant pg_catalog.text :=
             '75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069';
           v_new constant pg_catalog.text :=
@@ -42,6 +43,8 @@ def upgrade() -> None:
           v_old_count pg_catalog.int4;
           v_new_count pg_catalog.int4;
         BEGIN
+          v_prior_search_path :=
+            pg_catalog.current_setting('search_path', false);
           PERFORM pg_catalog.set_config(
             'search_path', 'pg_catalog', true
           );
@@ -185,6 +188,14 @@ def upgrade() -> None:
              OR v_old_count <> 0
              OR v_new_count <> 2 THEN
             RAISE EXCEPTION 'P1 closure rotation result authority is invalid'
+              USING ERRCODE = 'P2D08';
+          END IF;
+          PERFORM pg_catalog.set_config(
+            'search_path', v_prior_search_path, true
+          );
+          IF pg_catalog.current_setting('search_path', false)
+               IS DISTINCT FROM v_prior_search_path THEN
+            RAISE EXCEPTION 'P1 closure rotation search path restore failed'
               USING ERRCODE = 'P2D08';
           END IF;
         END;
