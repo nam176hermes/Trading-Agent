@@ -37,6 +37,14 @@ from packages.safety_evidence import (
     CANONICAL_SAFETY_SOURCE_ROOT,
     safety_source_fingerprint,
 )
+from scripts.validate_disposable_postgres_approval import (
+    DisposablePostgresApprovalContext,
+    _runtime_setting_names,
+    load_protected_approval_record,
+    validate_disposable_postgres_approval,
+    validate_disposable_postgres_approval_record,
+    validate_source_binding_files as validate_postgres_source_binding_files,
+)
 from scripts.validate_package6_runtime_approval import (
     PACKAGE6_CUSTODIAN_OPERATIONS,
     PACKAGE6_CUSTODIAN_SOURCE_PATHS,
@@ -227,6 +235,36 @@ def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
         (arguments.postgres_approval, arguments.postgres_approval_sha256),
     ):
         _require_digest(path.resolve(strict=True), expected)
+    approval = load_protected_approval_record(arguments.postgres_approval)
+    approval_now = datetime.now(UTC)
+    runtime_setting_names = _runtime_setting_names()
+    validate_disposable_postgres_approval_record(
+        approval,
+        expected_scope="DISPOSABLE_PG_GREEN",
+        expected_commit=commit,
+        expected_tree=tree,
+        expected_sql_sha256=None,
+        runtime_setting_names=runtime_setting_names,
+        now=approval_now,
+    )
+    validate_disposable_postgres_approval(
+        approval,
+        DisposablePostgresApprovalContext(
+            scope="DISPOSABLE_PG_GREEN",
+            source_commit=commit,
+            source_tree=tree,
+            test_path="tests/p1_nautilus/test_vertical_slice_e2e.py",
+            operation_id="p1-vertical-slice-v1",
+            pgdata=str(arguments.pgdata),
+            bind_host="127.0.0.1",
+            port=arguments.pg_port,
+            cluster_name="trading-agent-disposable-tests",
+            database_name="trading_agent_disposable_test",
+            runtime_setting_names=runtime_setting_names,
+            now=approval_now,
+        ),
+    )
+    validate_postgres_source_binding_files(approval, source)
     if (
         _SHA256.fullmatch(arguments.prior_release_sha256) is None
         or verify_offline_wheelhouse(
