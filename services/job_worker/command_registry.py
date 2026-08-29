@@ -18,7 +18,7 @@ import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from packages.job_contracts import JobType, SnapshotPayload, parse_payload
 from packages.runtime_release import (
@@ -476,6 +476,8 @@ def attest_worker_runtime_authority() -> WorkerRuntimeAuthority:
 
 def refresh_staging_worker_runtime_authority(
     authority: WorkerRuntimeAuthority,
+    *,
+    refresh_dynamic_evidence: Callable[[], None],
 ) -> WorkerRuntimeAuthority:
     """Refresh dynamic Package 6 evidence after one complete static attestation."""
 
@@ -483,6 +485,9 @@ def refresh_staging_worker_runtime_authority(
         if not isinstance(authority, WorkerRuntimeAuthority):
             raise ValueError
         previous = authority.runtime_authority
+        if _attest_application_release_v2(previous) is not True:
+            raise ValueError
+        refresh_dynamic_evidence()
         current = _refresh_runtime_authority_v2(previous)
         stable = _refresh_runtime_authority_v2(current)
         static_values = (

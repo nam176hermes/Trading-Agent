@@ -153,11 +153,17 @@ def test_staging_dynamic_refresh_reuses_exact_static_attestation(
         lambda _selected: (_ for _ in ()).throw(AssertionError("stage rewalk")),
     )
 
+    monkeypatch.setattr(
+        module,
+        "_attest_application_release_v2",
+        lambda selected: calls.append(selected) or True,
+    )
     result = module.refresh_staging_worker_runtime_authority(
-        _worker_authority(original)
+        _worker_authority(original),
+        refresh_dynamic_evidence=lambda: calls.append("rotate"),
     )
 
-    assert calls == [original, refreshed]
+    assert calls == [original, "rotate", original, refreshed]
     assert result.runtime_authority is refreshed
     assert result.authority_pin == original._authority_pin
 
@@ -180,10 +186,13 @@ def test_staging_dynamic_refresh_rejects_static_authority_drift(
     original = replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
     changed = replace(original, **{field: value})
     monkeypatch.setattr(module, "_refresh_runtime_authority_v2", lambda _old: changed)
+    monkeypatch.setattr(module, "_attest_application_release_v2", lambda _old: True)
     monkeypatch.setattr(module, "_runtime_python_path", lambda: original.application_python)
 
     with pytest.raises(CommandRegistryError) as raised:
-        module.refresh_staging_worker_runtime_authority(_worker_authority(original))
+        module.refresh_staging_worker_runtime_authority(
+            _worker_authority(original), refresh_dynamic_evidence=lambda: None
+        )
 
     assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
 
@@ -196,10 +205,13 @@ def test_staging_dynamic_refresh_rejects_rotating_evidence_during_validation(
     second = replace(original, _dynamic_evidence_pin=("4" * 64, "5" * 64, "6" * 64))
     values = iter((first, second))
     monkeypatch.setattr(module, "_refresh_runtime_authority_v2", lambda _old: next(values))
+    monkeypatch.setattr(module, "_attest_application_release_v2", lambda _old: True)
     monkeypatch.setattr(module, "_runtime_python_path", lambda: original.application_python)
 
     with pytest.raises(CommandRegistryError) as raised:
-        module.refresh_staging_worker_runtime_authority(_worker_authority(original))
+        module.refresh_staging_worker_runtime_authority(
+            _worker_authority(original), refresh_dynamic_evidence=lambda: None
+        )
 
     assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
 
@@ -229,9 +241,36 @@ def test_staging_dynamic_refresh_rejects_semantic_or_safety_identity_drift(
         )
     )
     monkeypatch.setattr(module, "_refresh_runtime_authority_v2", lambda _old: changed)
+    monkeypatch.setattr(module, "_attest_application_release_v2", lambda _old: True)
     monkeypatch.setattr(module, "_runtime_python_path", lambda: original.application_python)
 
     with pytest.raises(CommandRegistryError) as raised:
-        module.refresh_staging_worker_runtime_authority(_worker_authority(original))
+        module.refresh_staging_worker_runtime_authority(
+            _worker_authority(original), refresh_dynamic_evidence=lambda: None
+        )
 
     assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
+
+
+def test_staging_dynamic_refresh_rejects_changed_stage_before_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        module, "_attest_application_release_v2", lambda _old: False
+    )
+    monkeypatch.setattr(
+        module,
+        "_refresh_runtime_authority_v2",
+        lambda _old: calls.append("dynamic") or original,
+    )
+
+    with pytest.raises(CommandRegistryError) as raised:
+        module.refresh_staging_worker_runtime_authority(
+            _worker_authority(original),
+            refresh_dynamic_evidence=lambda: calls.append("rotate"),
+        )
+
+    assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
+    assert calls == []

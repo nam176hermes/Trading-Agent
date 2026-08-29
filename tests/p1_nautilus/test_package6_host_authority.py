@@ -53,6 +53,41 @@ def test_offline_stage_build_argv_is_fixed_to_production_builder() -> None:
     ]
 
 
+def test_p1_semantic_operation_is_exact_backtest_0013(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digests = iter(("3" * 64, "4" * 64))
+    monkeypatch.setattr(builder, "_digest_file", lambda _path: next(digests))
+
+    document = builder._p1_semantic_document(
+        Path("/tmp/source"),
+        Path("/tmp/stage/application/.venv/bin/python3.11"),
+        "1" * 40,
+        "2" * 40,
+    )
+
+    operation = document["p1_operation"]
+    assert isinstance(operation, dict)
+    assert operation["job_type"] == "BACKTEST"
+    assert operation["database_revision"] == "0013_engine_backtest_enqueue_authority"
+    assert operation["operation_id"] == "p1-vertical-slice.execute-once"
+    assert operation["execution_steps"] == [
+        "AUTHENTICATED_JOB_API_ENQUEUE",
+        "EXACTLY_ONE_WORKER_RUN_ONCE",
+        "DURABLE_SUCCESS_AND_PARITY",
+    ]
+    assert "SNAPSHOT" not in str(document)
+    assert "0011_engine_backtest_worker_authority" not in str(document)
+
+    first = builder._p1_semantic_policy_digest(
+        "1" * 40, Path("/tmp/semantic/active.json"), Path("/tmp/semantic/input"), "5" * 64
+    )
+    changed = builder._p1_semantic_policy_digest(
+        "1" * 40, Path("/tmp/semantic/active.json"), Path("/tmp/semantic/input"), "6" * 64
+    )
+    assert first != changed
+
+
 def test_prepare_static_rejects_dirty_source_before_any_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -120,6 +155,7 @@ def test_activate_refreshes_safety_then_injects_exact_authority(
     )
     initial = SimpleNamespace(runtime_authority=runtime)
     refreshed = object()
+    operation = object()
     calls: list[object] = []
     monkeypatch.setattr(builder.os, "environ", {
         "TRADING_PACKAGE6_STAGING_SCOPE": "PACKAGE6_STAGING_ONLY",
@@ -128,9 +164,23 @@ def test_activate_refreshes_safety_then_injects_exact_authority(
         "TRADING_PACKAGE6_APPROVAL_SHA256": "3" * 64,
     })
     monkeypatch.setattr(builder, "attest_worker_runtime_authority", lambda: calls.append("attest") or initial)
+    monkeypatch.setattr(
+        builder,
+        "_validate_execution_capability",
+        lambda selected, arguments: calls.append(
+            ("approve", selected, tuple(arguments))
+        )
+        or operation,
+    )
     monkeypatch.setattr(builder, "_digest_file", lambda _path: "4" * 64)
     monkeypatch.setattr(builder, "_replace_activation", lambda selected, digest: calls.append(("activation", selected, digest)))
-    monkeypatch.setattr(builder, "refresh_staging_worker_runtime_authority", lambda selected: calls.append(("refresh", selected)) or refreshed)
+    def refresh(selected: object, *, refresh_dynamic_evidence: object) -> object:
+        calls.append(("refresh", selected))
+        assert callable(refresh_dynamic_evidence)
+        refresh_dynamic_evidence()
+        return refreshed
+
+    monkeypatch.setattr(builder, "refresh_staging_worker_runtime_authority", refresh)
 
     class Exporter:
         def __init__(self, **_kwargs: object) -> None:
@@ -140,17 +190,24 @@ def test_activate_refreshes_safety_then_injects_exact_authority(
             calls.append("export")
 
     monkeypatch.setattr(builder, "SafetyStateExporter", Exporter)
-    import scripts.run_p1_nautilus_vertical_slice as vertical
-    monkeypatch.setattr(vertical, "main", lambda argv, worker_authority=None: calls.append(("vertical", argv, worker_authority)) or 0)
+    monkeypatch.setattr(
+        builder,
+        "_consume_p1_operation",
+        lambda selected, authority, arguments: calls.append(
+            ("consume", selected, authority, tuple(arguments))
+        )
+        or 0,
+    )
 
     assert builder._activate_and_exec(["--execute"]) == 0
     assert calls == [
         "attest",
+        ("approve", runtime, ("--execute",)),
+        ("refresh", initial),
         "exporter",
         "export",
         ("activation", runtime, "4" * 64),
-        ("refresh", initial),
-        ("vertical", ["--execute"], refreshed),
+        ("consume", operation, refreshed, ("--execute",)),
     ]
 
 
@@ -165,6 +222,95 @@ def test_activate_rejects_ambient_loader_control_before_attestation(
         builder._activate_and_exec([])
 
     assert calls == []
+
+
+@pytest.mark.parametrize("mutation", ("arguments", "static", "semantic"))
+def test_p1_operation_capability_must_equal_performed_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    issued = object()
+    operation = builder._ValidatedP1Operation(
+        package6_capability=issued,  # type: ignore[arg-type]
+        authority_pin=("static",),
+        semantic_sha256="1" * 64,
+        arguments=("--execute",),
+    )
+    authority = SimpleNamespace(
+        authority_pin=("other",) if mutation == "static" else ("static",),
+        semantic_evidence=SimpleNamespace(
+            active_authority_sha256=(
+                "2" * 64 if mutation == "semantic" else "1" * 64
+            )
+        ),
+    )
+    arguments = ("--dry-run",) if mutation == "arguments" else ("--execute",)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        builder, "is_issued_capability", lambda selected: selected is issued
+    )
+    builder._ISSUED_P1_OPERATIONS.add(operation)
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    monkeypatch.setattr(
+        vertical,
+        "main",
+        lambda *_args, **_kwargs: calls.append("vertical") or 0,
+    )
+
+    with pytest.raises(builder.HostAuthorityError, match="capability changed"):
+        builder._consume_p1_operation(
+            operation, authority, arguments  # type: ignore[arg-type]
+        )
+
+    assert calls == []
+
+
+def test_p1_operation_capability_requires_execute_before_authority_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads: list[Path] = []
+    monkeypatch.setattr(
+        builder,
+        "_read_canonical",
+        lambda path, **_kwargs: reads.append(path),
+    )
+
+    with pytest.raises(builder.HostAuthorityError, match="not exact"):
+        builder._validate_execution_capability(  # type: ignore[arg-type]
+            SimpleNamespace(), ["--dry-run"]
+        )
+
+    assert reads == []
+
+
+def test_p1_operation_capability_is_consumed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issued = object()
+    operation = builder._ValidatedP1Operation(
+        package6_capability=issued,  # type: ignore[arg-type]
+        authority_pin=("static",),
+        semantic_sha256="1" * 64,
+        arguments=("--execute",),
+    )
+    authority = SimpleNamespace(
+        authority_pin=("static",),
+        semantic_evidence=SimpleNamespace(active_authority_sha256="1" * 64),
+    )
+    builder._ISSUED_P1_OPERATIONS.add(operation)
+    monkeypatch.setattr(
+        builder, "is_issued_capability", lambda selected: selected is issued
+    )
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    monkeypatch.setattr(vertical, "main", lambda *_args, **_kwargs: 0)
+
+    assert builder._consume_p1_operation(  # type: ignore[arg-type]
+        operation, authority, ["--execute"]
+    ) == 0
+    with pytest.raises(builder.HostAuthorityError, match="capability changed"):
+        builder._consume_p1_operation(  # type: ignore[arg-type]
+            operation, authority, ["--execute"]
+        )
 
 
 def test_host_authority_is_not_selectable_by_vertical_cli() -> None:

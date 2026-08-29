@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -14,6 +15,7 @@ import stat
 import subprocess
 import sys
 from typing import Mapping, Sequence, cast
+from weakref import WeakSet
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -52,9 +54,12 @@ from scripts.validate_package6_runtime_approval import (
     PACKAGE6_SOURCE_BINDING_PATHS,
     PACKAGE6_WORKER_ENVIRONMENT_KEYS,
     Package6ApprovalContext,
+    ValidatedPackage6Capability,
     canonical_record_sha256,
+    is_issued_capability,
     validate_package6_runtime_approval,
 )
+from services.job_store.config import P1_DISPOSABLE_DATABASE_REVISION
 from services.job_worker.command_registry import (
     WorkerRuntimeAuthority,
     attest_worker_runtime_authority,
@@ -86,6 +91,17 @@ _GIT_ENV = {
 
 class HostAuthorityError(RuntimeError):
     """Sanitized operational failure."""
+
+
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
+class _ValidatedP1Operation:
+    package6_capability: ValidatedPackage6Capability
+    authority_pin: tuple[object, ...]
+    semantic_sha256: str
+    arguments: tuple[str, ...]
+
+
+_ISSUED_P1_OPERATIONS: WeakSet[_ValidatedP1Operation] = WeakSet()
 
 
 def _digest_file(path: Path) -> str:
@@ -131,6 +147,41 @@ def _canonical_write(path: Path, value: object, mode: int) -> str:
     os.chmod(temporary, mode)
     os.replace(temporary, path)
     return hashlib.sha256(raw).hexdigest()
+
+
+def _read_canonical(path: Path, *, maximum: int = 1024 * 1024) -> tuple[dict[str, object], bytes]:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o444
+            or info.st_size > maximum
+        ):
+            raise HostAuthorityError("bound authority record is unsafe")
+        chunks: list[bytes] = []
+        observed = 0
+        while chunk := os.read(descriptor, min(65536, maximum + 1 - observed)):
+            chunks.append(chunk)
+            observed += len(chunk)
+            if observed > maximum:
+                raise HostAuthorityError("bound authority record is invalid")
+        raw = b"".join(chunks)
+        if len(raw) != info.st_size:
+            raise HostAuthorityError("bound authority record changed")
+    finally:
+        os.close(descriptor)
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HostAuthorityError("bound authority record is invalid") from exc
+    if not isinstance(document, dict):
+        raise HostAuthorityError("bound authority record is invalid")
+    return document, raw
 
 
 def _git(source: Path, *arguments: str) -> str:
@@ -213,6 +264,60 @@ def _offline_build_argv(arguments: argparse.Namespace, clone: Path, stage: Path)
         "--uv", str(arguments.uv),
         "--wheelhouse", str(arguments.wheelhouse),
     ]
+
+
+def _p1_semantic_document(
+    source_root: Path,
+    application_python: Path,
+    source_commit: str,
+    source_tree: str,
+) -> dict[str, object]:
+    return {
+        "classification": "PACKAGE6_PROVIDER_FREE_SEMANTIC",
+        "p1_operation": {
+            "application_python": str(application_python),
+            "builder_sha256": _digest_file(
+                source_root / "scripts/build_p1_package6_host_authority.py"
+            ),
+            "constraints": {
+                "live_authorized": False,
+                "network_trading_authorized": False,
+                "production_authorized": False,
+            },
+            "database_revision": P1_DISPOSABLE_DATABASE_REVISION,
+            "execution_steps": [
+                "AUTHENTICATED_JOB_API_ENQUEUE",
+                "EXACTLY_ONE_WORKER_RUN_ONCE",
+                "DURABLE_SUCCESS_AND_PARITY",
+            ],
+            "job_type": "BACKTEST",
+            "operation_id": "p1-vertical-slice.execute-once",
+            "source_commit": source_commit,
+            "source_tree": source_tree,
+            "vertical_runner_sha256": _digest_file(
+                source_root / "scripts/run_p1_nautilus_vertical_slice.py"
+            ),
+        },
+        "schema_version": 2,
+        "source_commit": source_commit,
+    }
+
+
+def _p1_semantic_policy_digest(
+    source_commit: str,
+    active_path: Path,
+    input_root: Path,
+    active_sha256: str,
+) -> str:
+    return canonical_digest(
+        {
+            "base_policy_sha256": semantic_policy_digest_v2(
+                source_commit, active_path, input_root=input_root
+            ),
+            "p1_operation_sha256": active_sha256,
+            "schema_version": "p1-package6-semantic-policy/v1",
+        }
+    )
 
 
 def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
@@ -334,12 +439,18 @@ def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
     ).export_once()
     safety_sha256 = _digest_file(safety_path)
     semantic_path = semantic_root / "active.json"
+    application_python = stage / "application/.venv/bin/python3.11"
     semantic_sha256 = _canonical_write(
         semantic_path,
-        {"classification": "PACKAGE6_PROVIDER_FREE_SEMANTIC", "schema_version": 1, "source_commit": commit},
+        _p1_semantic_document(clone, application_python, commit, tree),
         0o444,
     )
-    semantic_policy = semantic_policy_digest_v2(commit, semantic_path, input_root=semantic_root / "input")
+    semantic_policy = _p1_semantic_policy_digest(
+        commit,
+        semantic_path,
+        semantic_root / "input",
+        semantic_sha256,
+    )
     production_authority_sha256 = _digest_file(Path(str(stage) + ".authority.json"))
     runtime_paths = {
         "artifact_root": runtime_root / "artifacts",
@@ -377,7 +488,6 @@ def _prepare_static(arguments: argparse.Namespace) -> dict[str, object]:
     stage_document = cast(Mapping[str, str], static["stage"])
     native_sources = _bindings(clone, PACKAGE6_CUSTODIAN_SOURCE_PATHS)
     custodian_sha256 = _digest_file(native_root / "package6-custodian")
-    application_python = stage / "application/.venv/bin/python3.11"
     application_python_sha256 = _digest_file(application_python)
     fixture_authority_path = authority_root / "fixture-authority.json"
     operations = [
@@ -505,6 +615,114 @@ def _replace_activation(authority: RuntimeAuthorityV2, safety_sha256: str) -> No
     _canonical_write(material.activation_path, activation, 0o444)
 
 
+def _validate_execution_capability(
+    authority: RuntimeAuthorityV2,
+    arguments: Sequence[str],
+) -> _ValidatedP1Operation:
+    if tuple(arguments).count("--execute") != 1:
+        raise HostAuthorityError("P1 execution operation is not exact")
+    material = authority._material
+    if material is None:
+        raise HostAuthorityError("staging material is unavailable")
+    approval_path = material.activation_path.parent / "package6-approval.json"
+    approval, approval_raw = _read_canonical(approval_path)
+    if hashlib.sha256(approval_raw).hexdigest() != authority.package6_approval_sha256:
+        raise HostAuthorityError("Package 6 approval binding changed")
+    postgres = cast(Mapping[str, object], approval.get("postgres_authority"))
+    custodian = cast(Mapping[str, object], approval.get("custodian_authority"))
+    try:
+        package6_capability = validate_package6_runtime_approval(
+            approval,
+            Package6ApprovalContext(
+                source_commit=authority.source_commit,
+                source_tree=authority.source_tree,
+                operation_ids=(
+                    "job-api.start",
+                    "job-api.stop",
+                    "worker.start",
+                    "worker.stop",
+                ),
+                disposable_postgres_approval_sha256=cast(
+                    str, postgres["approval_sha256"]
+                ),
+                postgres_bind_host="127.0.0.1",
+                postgres_port=int(cast(str, postgres["port"])),
+                postgres_database_name="trading_agent_disposable_test",
+                postgres_pgdata=cast(str, postgres["pgdata"]),
+                postgres_cluster_name="trading-agent-disposable-tests",
+                postgres_service_roles=(
+                    "trading_job_api",
+                    "trading_job_worker",
+                ),
+                now=datetime.now(UTC),
+                source_root=ROOT,
+                staging_scope=STAGING_SCOPE,
+                staging_authority_path=material.authority_path,
+                staging_activation_path=material.activation_path,
+                custodian_helper_binary_sha256=cast(
+                    str, custodian["helper_binary_sha256"]
+                ),
+            ),
+            approval_bytes=approval_raw,
+        )
+    except Exception as exc:
+        raise HostAuthorityError("Package 6 approval is not current") from exc
+    if not is_issued_capability(package6_capability):
+        raise HostAuthorityError("Package 6 capability was not issued")
+    semantic, semantic_raw = _read_canonical(
+        authority.runtime_paths.semantic_authority
+    )
+    semantic_sha256 = hashlib.sha256(semantic_raw).hexdigest()
+    expected_semantic = _p1_semantic_document(
+        ROOT,
+        authority.application_python,
+        authority.source_commit,
+        authority.source_tree,
+    )
+    if (
+        semantic != expected_semantic
+        or semantic_sha256
+        != authority.semantic_evidence.active_authority_sha256
+        or authority.semantic_evidence.policy_sha256
+        != _p1_semantic_policy_digest(
+            authority.source_commit,
+            authority.runtime_paths.semantic_authority,
+            authority.runtime_paths.semantic_input_root,
+            semantic_sha256,
+        )
+    ):
+        raise HostAuthorityError("P1 execution operation is not approved")
+    operation = _ValidatedP1Operation(
+        package6_capability=package6_capability,
+        authority_pin=authority._authority_pin,
+        semantic_sha256=semantic_sha256,
+        arguments=tuple(arguments),
+    )
+    _ISSUED_P1_OPERATIONS.add(operation)
+    return operation
+
+
+def _consume_p1_operation(
+    operation: _ValidatedP1Operation,
+    authority: WorkerRuntimeAuthority,
+    arguments: Sequence[str],
+) -> int:
+    if (
+        type(operation) is not _ValidatedP1Operation
+        or operation not in _ISSUED_P1_OPERATIONS
+        or not is_issued_capability(operation.package6_capability)
+        or operation.authority_pin != authority.authority_pin
+        or operation.semantic_sha256
+        != authority.semantic_evidence.active_authority_sha256
+        or operation.arguments != tuple(arguments)
+    ):
+        raise HostAuthorityError("P1 execution capability changed")
+    _ISSUED_P1_OPERATIONS.discard(operation)
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    return vertical.main(list(arguments), worker_authority=authority)
+
+
 def _activate_and_exec(arguments: Sequence[str]) -> int:
     if set(os.environ) - _CHILD_ENV:
         raise HostAuthorityError("ambient execution environment is not allowlisted")
@@ -512,19 +730,24 @@ def _activate_and_exec(arguments: Sequence[str]) -> int:
     authority = initial.runtime_authority
     if authority.scope != STAGING_SCOPE or Path(sys.executable) != authority.application_python:
         raise HostAuthorityError("staged application interpreter is not exact")
-    mounted = authority.installation_root.parent / "safety-sources"
-    SafetyStateExporter(
-        canonical_source_root=CANONICAL_SAFETY_SOURCE_ROOT,
-        mounted_source_root=mounted,
-        output_path=authority.runtime_paths.safety_snapshot,
-        exporter_commit=authority.source_commit,
-        gate_source={"LIVE_EXECUTION_ENABLED": "false", "LIVE_TRADING_APPROVED": "false"},
-    ).export_once()
-    _replace_activation(authority, _digest_file(authority.runtime_paths.safety_snapshot))
-    refreshed = refresh_staging_worker_runtime_authority(initial)
-    import scripts.run_p1_nautilus_vertical_slice as vertical
+    operation = _validate_execution_capability(authority, arguments)
+    def rotate_dynamic_evidence() -> None:
+        mounted = authority.installation_root.parent / "safety-sources"
+        SafetyStateExporter(
+            canonical_source_root=CANONICAL_SAFETY_SOURCE_ROOT,
+            mounted_source_root=mounted,
+            output_path=authority.runtime_paths.safety_snapshot,
+            exporter_commit=authority.source_commit,
+            gate_source={"LIVE_EXECUTION_ENABLED": "false", "LIVE_TRADING_APPROVED": "false"},
+        ).export_once()
+        _replace_activation(
+            authority, _digest_file(authority.runtime_paths.safety_snapshot)
+        )
 
-    return vertical.main(list(arguments), worker_authority=refreshed)
+    refreshed = refresh_staging_worker_runtime_authority(
+        initial, refresh_dynamic_evidence=rotate_dynamic_evidence
+    )
+    return _consume_p1_operation(operation, refreshed, arguments)
 
 
 def _parser() -> argparse.ArgumentParser:

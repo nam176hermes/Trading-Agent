@@ -25,6 +25,13 @@ operator. Generic Job API and worker startup keep their normal full
 attestations. The builder is not selectable through their CLI, environment, or
 API surfaces. Static, semantic, custodian, source, approval, interpreter, or
 safety freshness drift is `BLOCKED` before authenticated enqueue.
+The generic Package6 SNAPSHOT/0011 capability is validated only as platform
+authority and is never treated as P1 execution approval. The same reviewed
+record binds a closed semantic policy containing the exact
+`p1-vertical-slice.execute-once` BACKTEST/0013 operation. `activate-and-exec`
+consumes that exact operation capability, with the same static authority,
+semantic digest, and arguments, immediately after the final stage recheck and
+six-second safety refresh.
 
 ## Fixture authority
 
