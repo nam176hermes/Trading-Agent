@@ -16,7 +16,7 @@ import re
 import stat
 import subprocess
 import sys
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID
 
 
@@ -122,6 +122,18 @@ _PRINCIPAL = ActorIdentity(
 _COMMIT = re.compile(r"^[0-9a-f]{40}$", re.ASCII)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$", re.ASCII)
 _MAX_ASGI_RESPONSE_BYTES = 1024 * 1024
+_ExecutionFailureStage = Literal[
+    "COMPOSITION",
+    "ENQUEUE",
+    "WORKER",
+    "DURABLE_RESULT",
+]
+_EXECUTION_FAILURE_STAGES = (
+    "COMPOSITION",
+    "ENQUEUE",
+    "WORKER",
+    "DURABLE_RESULT",
+)
 _GIT_ENVIRONMENT = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_NOSYSTEM": "1",
@@ -147,9 +159,17 @@ class VerticalSliceError(ValueError):
 class VerticalSliceExecutionError(RuntimeError):
     """The bounded execution failed, with exact mutation state retained."""
 
-    def __init__(self, *, job_mutated: bool) -> None:
+    def __init__(
+        self,
+        *,
+        job_mutated: bool,
+        failure_stage: _ExecutionFailureStage = "DURABLE_RESULT",
+    ) -> None:
+        if failure_stage not in _EXECUTION_FAILURE_STAGES:
+            raise ValueError("P1 execution failure stage is invalid")
         super().__init__("P1 disposable execution failed")
         self.job_mutated = job_mutated
+        self.failure_stage = failure_stage
 
 
 def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -920,6 +940,7 @@ def _run_p1_disposable_once(
     """Enqueue through the dedicated app, then run exactly one P1 worker claim."""
 
     job_mutated = False
+    failure_stage: _ExecutionFailureStage = "COMPOSITION"
     try:
         api_settings = JobApiSettings(
             bearer_token=_API_TOKEN,
@@ -955,6 +976,7 @@ def _run_p1_disposable_once(
             app = create_p1_disposable_app(
                 api_settings, api_repository, api_authority
             )
+            failure_stage = "ENQUEUE"
             job_mutated = True
             status_code, response_body = _asgi_json_post(
                 app,
@@ -963,25 +985,38 @@ def _run_p1_disposable_once(
                 bearer_token=_API_TOKEN,
             )
             if status_code != 201:
-                raise VerticalSliceExecutionError(job_mutated=True)
+                raise VerticalSliceExecutionError(
+                    job_mutated=True, failure_stage=failure_stage
+                )
             try:
                 job_id = response_body["data"]["job"]["job_id"]
             except (KeyError, TypeError, ValueError) as exc:
-                raise VerticalSliceExecutionError(job_mutated=True) from exc
+                raise VerticalSliceExecutionError(
+                    job_mutated=True, failure_stage=failure_stage
+                ) from exc
             if not isinstance(job_id, str) or re.fullmatch(
                 r"job_[0-9a-f]{32}", job_id, re.ASCII
             ) is None:
-                raise VerticalSliceExecutionError(job_mutated=True)
+                raise VerticalSliceExecutionError(
+                    job_mutated=True, failure_stage=failure_stage
+                )
+            failure_stage = "WORKER"
             if worker.run_once() is not True:
-                raise VerticalSliceExecutionError(job_mutated=True)
+                raise VerticalSliceExecutionError(
+                    job_mutated=True, failure_stage=failure_stage
+                )
+            failure_stage = "DURABLE_RESULT"
             evidence = _durable_success_evidence(
                 api_repository.get_job(job_id), expected_job_id=job_id
             )
         return {**evidence, "worker_run_count": 1}
-    except VerticalSliceExecutionError:
-        raise
     except Exception as exc:
-        raise VerticalSliceExecutionError(job_mutated=job_mutated) from exc
+        if isinstance(exc, VerticalSliceExecutionError):
+            job_mutated = job_mutated or exc.job_mutated
+        raise VerticalSliceExecutionError(
+            job_mutated=job_mutated,
+            failure_stage=failure_stage,
+        ) from exc
 
 
 def main(
@@ -1036,7 +1071,7 @@ def main(
                 "BLOCKED",
                 "P1_EXECUTION_FAILED",
                 authority={"native": "VALID", "postgres": "VALID"},
-                evidence=evidence,
+                evidence={**evidence, "failure_stage": error.failure_stage},
                 job_mutated=error.job_mutated,
             )
         return _emit(

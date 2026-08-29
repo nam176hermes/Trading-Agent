@@ -527,6 +527,92 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
 
 
 @pytest.mark.parametrize(
+    ("failure_at", "expected_stage", "job_mutated"),
+    (
+        ("composition", "COMPOSITION", False),
+        ("enqueue", "ENQUEUE", True),
+        ("worker", "WORKER", True),
+        ("durable", "DURABLE_RESULT", True),
+    ),
+)
+def test_vertical_execution_failure_stage_is_closed_at_each_trust_seam(
+    failure_at: str,
+    expected_stage: str,
+    job_mutated: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from tests.p1_nautilus.test_vertical_slice_e2e import _complete_arguments
+
+    arguments = vertical._parser().parse_args(_complete_arguments(tmp_path))
+
+    def fail_if(stage: str) -> None:
+        if failure_at == stage:
+            raise RuntimeError("sensitive arbitrary diagnostic text")
+
+    class _Settings:
+        def __init__(self, **_kwargs: object) -> None:
+            fail_if("composition")
+
+        @staticmethod
+        def load_authority() -> object:
+            return object()
+
+    class _Repository:
+        def __init__(self, _settings: object) -> None:
+            pass
+
+        def __enter__(self) -> _Repository:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        @staticmethod
+        def assert_p1_disposable_runtime_identity() -> None:
+            pass
+
+        @staticmethod
+        def get_job(_job_id: str) -> JobDetailRecord:
+            fail_if("durable")
+            return _successful_detail()
+
+    class _Worker:
+        @staticmethod
+        def run_once() -> bool:
+            fail_if("worker")
+            return True
+
+    monkeypatch.setattr(vertical, "JobApiSettings", _Settings)
+    monkeypatch.setattr(vertical, "JobRepository", _Repository)
+    monkeypatch.setattr(vertical, "WorkerRepository", _Repository)
+    monkeypatch.setattr(vertical, "build_p1_worker", lambda *_args, **_kwargs: _Worker())
+    monkeypatch.setattr(vertical, "create_p1_disposable_app", lambda *_args: object())
+
+    def post(*_args: object, **_kwargs: object) -> tuple[int, dict[str, object]]:
+        fail_if("enqueue")
+        return 201, {"data": {"job": {"job_id": JOB_ID}}}
+
+    monkeypatch.setattr(vertical, "_asgi_json_post", post)
+
+    with pytest.raises(vertical.VerticalSliceExecutionError) as captured:
+        vertical._run_p1_disposable_once(arguments, object())
+
+    assert captured.value.failure_stage == expected_stage
+    assert captured.value.job_mutated is job_mutated
+    assert "sensitive arbitrary diagnostic text" not in str(captured.value)
+
+
+def test_vertical_execution_failure_stage_rejects_arbitrary_codes() -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    error_type = getattr(vertical, "VerticalSliceExecutionError")
+    with pytest.raises(ValueError, match="failure stage is invalid"):
+        error_type(job_mutated=False, failure_stage="ARBITRARY")
+
+
+@pytest.mark.parametrize(
     "detail",
     (
         replace(
@@ -619,3 +705,49 @@ def test_execute_receipt_is_pass_only_after_full_preflight_and_one_worker(
         "job_id": "job_" + "1" * 32,
         "worker_run_count": 1,
     }
+
+
+def test_execution_blocked_receipt_exposes_only_closed_failure_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from tests.p1_nautilus.test_vertical_slice_e2e import _complete_arguments
+
+    evidence = {
+        "closure_sha256": "7" * 64,
+        "postgres_approval_sha256": "8" * 64,
+        "runtime_authority_sha256": "9" * 64,
+        "source_commit": "1" * 40,
+        "source_tree": "2" * 40,
+    }
+    monkeypatch.setattr(
+        vertical,
+        "_validate_complete",
+        lambda _arguments: (evidence, object()),
+    )
+
+    def fail(_arguments: object, _authority: object) -> dict[str, object]:
+        try:
+            raise RuntimeError("sensitive arbitrary diagnostic text")
+        except RuntimeError as cause:
+            raise vertical.VerticalSliceExecutionError(
+                job_mutated=True,
+                failure_stage="WORKER",
+            ) from cause
+
+    monkeypatch.setattr(vertical, "_run_p1_disposable_once", fail)
+
+    result = vertical.main([*_complete_arguments(tmp_path), "--execute"])
+
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert result == 2
+    assert receipt["reason"] == "P1_EXECUTION_FAILED"
+    assert receipt["external_authority"] == {
+        "native": "VALID",
+        "postgres": "VALID",
+    }
+    assert receipt["evidence"] == {**evidence, "failure_stage": "WORKER"}
+    assert "sensitive arbitrary diagnostic text" not in output
