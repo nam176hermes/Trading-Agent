@@ -1,9 +1,53 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import ModuleType
+
+import pytest
 
 
 MIGRATION = Path("alembic/versions/0012_p1_engine_projection_authority.py")
+
+
+def _load_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location("migration_0012_under_test", MIGRATION)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_upgrade_sends_0012_block_directly_to_driver_without_bind_compilation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statements: list[str] = []
+
+    class Bind:
+        def exec_driver_sql(self, statement: str) -> None:
+            statements.append(statement)
+
+    class Operations:
+        @staticmethod
+        def get_bind() -> Bind:
+            return Bind()
+
+        @staticmethod
+        def execute(_statement: object) -> None:
+            raise AssertionError("SQLAlchemy bind compilation seam used")
+
+    migration = _load_migration()
+    monkeypatch.setattr(migration, "op", Operations())
+
+    migration.upgrade()
+
+    assert len(statements) == 1
+    assert "CREATE FUNCTION job_plane.ingest_p1_engine_event_batch_v2" in statements[0]
+    assert (
+        "^(?:0|-?[1-9][0-9]*|-?(?:0|[1-9][0-9]*)\\.[0-9]*[1-9])$"
+        in statements[0]
+    )
 
 
 def test_p1_projection_migration_is_minimal_forward_authority() -> None:

@@ -17,7 +17,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute(
+    op.get_bind().exec_driver_sql(
         r"""
         ALTER TABLE public.engine_run_projections
           ADD COLUMN batch_sha256 char(64),
