@@ -30,7 +30,8 @@ production, network-trading, or live authority.
 | P1-10 | P1-03, P1-05, P1-06, P1-08, P1-09 | ACCEPTED | Pure long/flat sizing, fee reserve, minimums and exact 16-decimal arithmetic passed independent review at `3f1f9d3`. |
 | P1-11 | P1-08, P1-09, P1-10 | ACCEPTED | Real serial market orders/fills, zero-delta suppression, shutdown safety and scalar callback evidence passed independent spec/security review at `a2baafa`. |
 | P1-12 | P1-07, P1-08, P1-09, P1-10, P1-11 | ACCEPTED | Exact G1 session, scalar callback/cache identity, long/flat accounting and disposal passed independent spec/security review at `b6b1143`. |
-| P1-13 | P1-04, P1-05, P1-11, P1-12 | IN_PROGRESS | Project exact native callback facts and observations into canonical bounded EngineEvent JSONL. |
+| P1-13 | P1-04, P1-05, P1-11, P1-12 | ACCEPTED | Canonical bounded EngineEvent JSONL, exact schedule/command authority and raw/semantic custody passed independent spec/security review at `2d8f1be`. |
+| P1-14 | P1-06, P1-07, P1-12, P1-13 | IN_PROGRESS | Prove final native state and fail closed before exposing a completed event stream. |
 
 P1-U tasks advance only in dependency order. `NT1231-U04-G1` is the accepted
 qualification generation and the candidate remains inactive. P1 product work
