@@ -9,6 +9,8 @@ from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect
+from sqlalchemy.engine import Connection
+from sqlalchemy.exc import DBAPIError
 
 from tests.jobs._postgres import (
     _upgrade_to_revision,
@@ -59,7 +61,32 @@ EXPECTED_TABLES = {
     "engine_run_projections",
     "engine_job_results",
 }
-EXACT_HEAD = "0013_engine_backtest_enqueue_authority"
+EXACT_HEAD = "0014_p1_product_closure_rotation"
+P1_PROJECTION_REVISION = "0013_engine_backtest_enqueue_authority"
+P1_OLD_CLOSURE_SHA256 = (
+    "75467781b920e7172917a96d162fb6e2a3e8f9afee9eff065ef0ed220f623069"
+)
+P1_NEW_CLOSURE_SHA256 = (
+    "74b4e8864d8c9a2cc8ba9e5944340f013739e496933fa2f5dc9817bfcb7bced1"
+)
+P1_INGEST_REGPROCEDURE = (
+    "job_plane.ingest_p1_engine_event_batch_v2("
+    "text,uuid,uuid,uuid,uuid,text,text,text,text,text)"
+)
+
+
+def _p1_ingest_authority(connection: Connection) -> tuple[object, ...]:
+    return tuple(
+        connection.exec_driver_sql(
+            "SELECT pg_get_functiondef(function_row.oid), "
+            "function_row.proowner, function_row.proacl::text, "
+            "function_row.prosecdef, function_row.provolatile, "
+            "function_row.proparallel, function_row.proconfig "
+            "FROM pg_catalog.pg_proc AS function_row "
+            "WHERE function_row.oid = to_regprocedure(%s)",
+            (P1_INGEST_REGPROCEDURE,),
+        ).one()
+    )
 
 
 def alembic_config() -> Config:
@@ -76,7 +103,37 @@ def test_empty_database_upgrades_to_deterministic_head() -> None:
         with engine.connect() as connection:
             config = alembic_config()
             config.attributes["connection"] = connection
+            command.upgrade(config, P1_PROJECTION_REVISION)
+            before = _p1_ingest_authority(connection)
+            before_definition = before[0]
+            assert isinstance(before_definition, str)
+            assert before_definition.count(P1_OLD_CLOSURE_SHA256) == 2
+            assert P1_NEW_CLOSURE_SHA256 not in before_definition
+
+            wrong_prior = before_definition.replace(
+                P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256, 1
+            )
+            connection.exec_driver_sql(
+                wrong_prior,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+            with pytest.raises(DBAPIError) as rejected:
+                command.upgrade(config, "head")
+            assert getattr(rejected.value.orig, "sqlstate", None) == "P2D08"
+            connection.rollback()
+            connection.exec_driver_sql(
+                before_definition,
+                execution_options={"no_parameters": True},
+            )
+            connection.commit()
+
             command.upgrade(config, "head")
+            after = _p1_ingest_authority(connection)
+            assert after[0] == before_definition.replace(
+                P1_OLD_CLOSURE_SHA256, P1_NEW_CLOSURE_SHA256
+            )
+            assert after[1:] == before[1:]
             command.upgrade(config, "head")
             inspector = inspect(connection)
             assert set(inspector.get_table_names()) == EXPECTED_TABLES

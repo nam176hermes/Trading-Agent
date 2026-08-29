@@ -28,7 +28,7 @@ safety freshness drift is `BLOCKED` before authenticated enqueue.
 The generic Package6 SNAPSHOT/0011 capability is validated only as platform
 authority and is never treated as P1 execution approval. The same reviewed
 record binds a closed semantic policy containing the exact
-`p1-vertical-slice.execute-once` BACKTEST/0013 operation. `activate-and-exec`
+`p1-vertical-slice.execute-once` BACKTEST/0014 operation. `activate-and-exec`
 consumes that exact operation capability, with the same static authority,
 semantic digest, and arguments, immediately after the final stage recheck and
 six-second safety refresh.
@@ -52,7 +52,7 @@ The fixed window is `2026-08-05T12:00:00Z` through
 The generic Job API, worker service, systemd composition, and accepted runtime
 database pin remain `0011_engine_backtest_worker_authority`. P1-22 has one
 dedicated code-owned disposable composition at
-`0013_engine_backtest_enqueue_authority`; it has no environment, CLI, client,
+`0014_p1_product_closure_rotation`; it has no environment, CLI, client,
 service, or production selector.
 
 After complete preflight, `--execute` constructs the existing P1 worker and
