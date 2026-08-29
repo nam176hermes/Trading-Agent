@@ -369,27 +369,139 @@ def test_exact_parity_for_p1_accounting_scenarios(scenario: str) -> None:
     assert _verify(events) == receipt
 
 
-@pytest.mark.parametrize("mutation", ("quantity", "fee", "price", "side", "sequence"))
-def test_event_fact_mutation_fails_closed(mutation: str) -> None:
-    events = list(_stream("flatten"))
-    fill_index = next(index for index, event in enumerate(events) if isinstance(event, P1Fill))
+def _rebind_terminal(
+    events: list[object],
+    *,
+    position: str,
+    average: str,
+    cash: str,
+    fees: str,
+    realized: str,
+    unrealized: str,
+) -> tuple[object, ...]:
+    events[-3] = events[-3].model_copy(
+        update={
+            "quantity": Decimal(position),
+            "average_entry_price": Decimal(average),
+            "realized_pnl": Decimal(realized),
+            "unrealized_pnl": Decimal(unrealized),
+        }
+    )
+    events[-2] = events[-2].model_copy(
+        update={
+            "cash_balance": Decimal(cash),
+            "fees": Decimal(fees),
+            "realized_pnl": Decimal(realized),
+            "unrealized_pnl": Decimal(unrealized),
+        }
+    )
+    events[-1] = events[-1].model_copy(
+        update={
+            "final_cash": Decimal(cash),
+            "final_position": Decimal(position),
+            "fees": Decimal(fees),
+            "realized_pnl": Decimal(realized),
+            "unrealized_pnl": Decimal(unrealized),
+        }
+    )
+    rebound = tuple(events)
+    return rebound[:-1] + (
+        rebound[-1].model_copy(update={"semantic_digest": semantic_digest(rebound)}),
+    )
+
+
+@pytest.mark.parametrize("mutation", ("quantity", "fee", "price", "side"))
+def test_rebound_economic_mutation_fails_durable_parity(mutation: str) -> None:
+    scenario = "flatten" if mutation == "side" else "long_entry"
+    original = _stream(scenario)
+    events = list(original)
+    fill_indexes = [
+        index for index, event in enumerate(events) if isinstance(event, P1Fill)
+    ]
+    fill_index = fill_indexes[-1] if mutation == "side" else fill_indexes[0]
     fill = events[fill_index]
-    updates = {
-        "quantity": {"quantity": Decimal("0.5")},
-        "fee": {"fee": Decimal("0.2")},
-        "price": {"price": Decimal("101")},
-        "side": {"side": "SELL"},
-        "sequence": {"sequence": fill.sequence + 1},
-    }
-    events[fill_index] = fill.model_copy(update=updates[mutation])
-    mutated = tuple(events)
-    if mutation != "sequence":
-        mutated = mutated[:-1] + (
-            mutated[-1].model_copy(update={"semantic_digest": semantic_digest(mutated)}),
+    if mutation == "quantity":
+        order_index = next(
+            index for index, event in enumerate(events) if isinstance(event, P1OrderSubmitted)
+        )
+        plan_index = next(
+            index
+            for index, event in enumerate(events)
+            if isinstance(event, P1TargetQuantityPlanned)
+        )
+        events[plan_index] = events[plan_index].model_copy(
+            update={"quantity": Decimal("0.5")}
+        )
+        events[order_index] = events[order_index].model_copy(
+            update={"quantity": Decimal("0.5")}
+        )
+        events[fill_index] = fill.model_copy(update={"quantity": Decimal("0.5")})
+        mutated = _rebind_terminal(
+            events,
+            position="0.5",
+            average="100",
+            cash="949.9",
+            fees="0.1",
+            realized="0",
+            unrealized="0.5",
+        )
+    elif mutation == "fee":
+        events[fill_index] = fill.model_copy(update={"fee": Decimal("0.2")})
+        mutated = _rebind_terminal(
+            events,
+            position="1",
+            average="100",
+            cash="899.8",
+            fees="0.2",
+            realized="0",
+            unrealized="1",
+        )
+    elif mutation == "price":
+        events[fill_index] = fill.model_copy(update={"price": Decimal("101")})
+        mutated = _rebind_terminal(
+            events,
+            position="1",
+            average="101",
+            cash="898.9",
+            fees="0.1",
+            realized="0",
+            unrealized="1",
+        )
+    else:
+        second_order_index = [
+            index
+            for index, event in enumerate(events)
+            if isinstance(event, P1OrderSubmitted)
+        ][-1]
+        events[second_order_index] = events[second_order_index].model_copy(
+            update={"side": "BUY"}
+        )
+        events[fill_index] = fill.model_copy(update={"side": "BUY"})
+        mutated = _rebind_terminal(
+            events,
+            position="2",
+            average="101",
+            cash="797.8",
+            fees="0.2",
+            realized="0",
+            unrealized="2",
         )
 
+    with pytest.raises(P1PortfolioParityError, match="durable P1 authority"):
+        _verify(mutated, projection=_run_projection(original))
+
+
+def test_sequence_mutation_fails_closed_at_ordering_boundary() -> None:
+    events = list(_stream("flatten"))
+    fill_index = next(
+        index for index, event in enumerate(events) if isinstance(event, P1Fill)
+    )
+    events[fill_index] = events[fill_index].model_copy(
+        update={"sequence": events[fill_index].sequence + 1}
+    )
+
     with pytest.raises(P1PortfolioParityError):
-        _verify(mutated, projection=_run_projection(mutated))
+        _verify(tuple(events), projection=_run_projection(_stream("flatten")))
 
 
 def test_opening_balance_mutation_fails_closed() -> None:
