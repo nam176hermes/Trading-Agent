@@ -383,10 +383,21 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
         "create_p1_disposable_app",
         lambda *_args: calls.append("app:create") or "p1-app",
     )
+    preflight_evidence = {
+        "runtime_authority_sha256": "3" * 64,
+        "source_commit": "1" * 40,
+        "source_tree": "2" * 40,
+    }
+    worker_authority = SimpleNamespace(
+        application_revision="1" * 40,
+        authority_document_sha256="3" * 64,
+        backend_revision="1" * 40,
+        runtime_authority=SimpleNamespace(source_tree="2" * 40),
+    )
     monkeypatch.setattr(
         vertical,
         "attest_worker_runtime_authority",
-        lambda: calls.append("worker:attest") or object(),
+        lambda: calls.append("worker:attest") or worker_authority,
     )
     captured: dict[str, object] = {}
 
@@ -397,7 +408,7 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
 
     monkeypatch.setattr(vertical, "build_p1_worker", build)
 
-    evidence = vertical._run_p1_disposable_once(arguments)
+    evidence = vertical._run_p1_disposable_once(arguments, preflight_evidence)
 
     assert evidence["job_id"] == JOB_ID
     assert evidence["attempt_id"] == ATTEMPT_ID
@@ -421,6 +432,46 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
         "api:exit",
     ]
     assert captured["source"] == {}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "application_revision",
+        "authority_document_sha256",
+        "backend_revision",
+        "source_tree",
+    ),
+)
+def test_execution_reattestation_must_match_preflight_authority(
+    mutation: str,
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    preflight_evidence = {
+        "runtime_authority_sha256": "3" * 64,
+        "source_commit": "1" * 40,
+        "source_tree": "2" * 40,
+    }
+    authority = {
+        "application_revision": "1" * 40,
+        "authority_document_sha256": "3" * 64,
+        "backend_revision": "1" * 40,
+        "runtime_authority": SimpleNamespace(source_tree="2" * 40),
+    }
+    if mutation == "source_tree":
+        authority["runtime_authority"] = SimpleNamespace(source_tree="9" * 40)
+    elif mutation == "authority_document_sha256":
+        authority[mutation] = "9" * 64
+    else:
+        authority[mutation] = "9" * 40
+
+    with pytest.raises(vertical.VerticalSliceExecutionError) as caught:
+        vertical._validate_execution_worker_authority(
+            SimpleNamespace(**authority), preflight_evidence
+        )
+
+    assert caught.value.job_mutated is False
 
 
 @pytest.mark.parametrize(
@@ -492,7 +543,10 @@ def test_execute_receipt_is_pass_only_after_full_preflight_and_one_worker(
     monkeypatch.setattr(
         vertical,
         "_run_p1_disposable_once",
-        lambda _args: calls.append("execute")
+        lambda _args, execution_evidence: calls.append("execute")
+        or calls.append(
+            "evidence-bound" if execution_evidence is validation else "evidence-mixed"
+        )
         or {"job_id": "job_" + "1" * 32, "worker_run_count": 1},
     )
 
@@ -500,7 +554,7 @@ def test_execute_receipt_is_pass_only_after_full_preflight_and_one_worker(
 
     assert result == 0
     receipt = json.loads(capsys.readouterr().out)
-    assert calls == ["validate", "execute"]
+    assert calls == ["validate", "execute", "evidence-bound"]
     assert receipt["status"] == "PASS"
     assert receipt["reason"] == "P1_VERTICAL_SLICE_COMPLETED"
     assert receipt["job_mutated"] is True

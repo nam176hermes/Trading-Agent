@@ -144,6 +144,24 @@ def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _package6_vertical_slice_command(
+    material: object, arguments: list[str]
+) -> list[str]:
+    application_python = getattr(material, "application_python")
+    assert isinstance(application_python, Path)
+    return [str(application_python), str(SCRIPT), *arguments]
+
+
+def test_required_runtime_command_uses_validated_package6_python() -> None:
+    application_python = Path("/validated/package6/application/.venv/bin/python3.11")
+
+    command = _package6_vertical_slice_command(
+        SimpleNamespace(application_python=application_python), ["--execute"]
+    )
+
+    assert command == [str(application_python), str(SCRIPT), "--execute"]
+
+
 def test_absent_external_authority_is_canonical_deferred_without_job_mutation() -> None:
     result = _run()
 
@@ -562,9 +580,9 @@ def test_worker_runtime_authority_must_bind_exact_checkout_source(
 
 def test_required_runtime_vertical_slice_reaches_exact_durable_success(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     import scripts.run_p1_nautilus_vertical_slice as vertical
+    from packages.runtime_release.staging_v2 import load_staging_authority_material
     from tests.jobs._postgres import (
         POSTGRES_BIN,
         POSTGRES_EXECUTABLES,
@@ -588,6 +606,8 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
     assert approval_path.is_file() and fixture_plan_path.is_file()
     assert json.loads(approval_path.read_bytes())["scope"] == "DISPOSABLE_PG_GREEN"
     assert all((POSTGRES_BIN / name).is_file() for name in POSTGRES_EXECUTABLES)
+    runtime_environment = dict(os.environ)
+    material = load_staging_authority_material(runtime_environment)
 
     fixture_root = tmp_path / "vertical-slice-inputs"
     fixture_root.mkdir(mode=0o700)
@@ -613,35 +633,46 @@ def test_required_runtime_vertical_slice_reaches_exact_durable_success(
         ]
         assert len(slots) == 1
         slot = slots[0]
-        result = vertical.main(
-            [
-                "--execute",
-                "--p1-closure-root",
-                supplied["P1_NAUTILUS_BASE_RUNTIME"],
-                "--p1-closure-artifacts",
-                supplied["P1_NAUTILUS_ARTIFACT_DIRECTORY"],
-                "--bubblewrap",
-                supplied["P1_NAUTILUS_SANDBOX"],
-                "--transport-root",
-                supplied["P1_NAUTILUS_TRANSPORT_ROOT"],
-                "--postgres-approval",
-                supplied["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"],
-                "--postgres-scope",
-                supplied["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"],
-                "--pgdata",
-                slot["pgdata"],
-                "--pg-port",
-                str(owner.port),
-                *[
-                    value
-                    for name, path in external_fixtures.items()
-                    for value in (f"--{name.replace('_', '-')}", str(path))
-                ],
-            ]
+        arguments = [
+            "--execute",
+            "--p1-closure-root",
+            supplied["P1_NAUTILUS_BASE_RUNTIME"],
+            "--p1-closure-artifacts",
+            supplied["P1_NAUTILUS_ARTIFACT_DIRECTORY"],
+            "--bubblewrap",
+            supplied["P1_NAUTILUS_SANDBOX"],
+            "--transport-root",
+            supplied["P1_NAUTILUS_TRANSPORT_ROOT"],
+            "--postgres-approval",
+            supplied["TRADING_TEST_DISPOSABLE_APPROVAL_RECORD"],
+            "--postgres-scope",
+            supplied["TRADING_TEST_DISPOSABLE_APPROVAL_SCOPE"],
+            "--pgdata",
+            slot["pgdata"],
+            "--pg-port",
+            str(owner.port),
+            *[
+                value
+                for name, path in external_fixtures.items()
+                for value in (f"--{name.replace('_', '-')}", str(path))
+            ],
+        ]
+        command = _package6_vertical_slice_command(material, arguments)
+        assert command[0] == str(material.application_python)
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=runtime_environment,
+            check=False,
+            capture_output=True,
+            text=True,
         )
 
-    assert result == 0
-    receipt = json.loads(capsys.readouterr().out)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    receipt_lines = result.stdout.splitlines()
+    assert len(receipt_lines) == 1
+    receipt = json.loads(receipt_lines[0])
     assert receipt["status"] == "PASS"
     assert receipt["reason"] == "P1_VERTICAL_SLICE_COMPLETED"
     assert receipt["job_mutated"] is True
