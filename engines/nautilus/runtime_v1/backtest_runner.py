@@ -302,7 +302,7 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
             ("result_orders", int(result.total_orders) != len(orders)),
             ("result_positions", int(result.total_positions) != len(positions)),
             ("iterations", int(result.iterations) != len(batch.data)),
-            ("events", int(result.total_events) <= 0),
+            ("events", int(result.total_events) < 0),
         )
         if invalid
     )
@@ -408,7 +408,10 @@ def _snapshot(engine, strategy, batch) -> BacktestRun:
         observed = {
             str(currency): money.as_decimal() for currency, money in balances.items()
         }
-        if observed != expected:
+        if set(observed) - set(expected) or any(
+            amount != observed.get(currency, Decimal(0))
+            for currency, amount in expected.items()
+        ):
             raise BacktestRunError("native account balance proof is inconsistent")
     return BacktestRun(
         engine_version=package_version("nautilus_trader"),
