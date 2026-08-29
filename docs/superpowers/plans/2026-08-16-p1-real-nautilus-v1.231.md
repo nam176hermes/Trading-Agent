@@ -1340,7 +1340,7 @@ Translate an upstream risk-approved target weight into an exact executable quant
 **Primary implementer subagent:** Nautilus Strategy Engineer — `gpt-5.6-sol`, reasoning `xhigh`  
 **Spec-compliance reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
 **Code-quality/security reviewer:** fresh subagent — `gpt-5.6-sol`, reasoning `xhigh`  
-**Owned files:** `engines/nautilus/runtime_v1/target_strategy.py; tests/p1_nautilus/test_target_strategy_source.py; tests/p1_nautilus/test_target_strategy_native.py`  
+**Owned files:** `engines/nautilus/runtime_v1/target_strategy.py; tests/p1_nautilus/test_p1_target_strategy_source.py; tests/p1_nautilus/test_target_strategy_native.py`
 **Commit:** `feat(p1): execute canonical targets in Nautilus`
 
 ### Objective
