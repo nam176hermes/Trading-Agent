@@ -24,6 +24,7 @@ from .staging_v2 import (
     StagingAuthorityMaterial,
     attest_staging_material,
     load_staging_authority_material,
+    refresh_staging_dynamic_material,
 )
 
 
@@ -167,16 +168,12 @@ class RuntimeAuthorityV2:
         return "RuntimeAuthorityV2(validated=True)"
 
 
-def load_runtime_authority_v2() -> RuntimeAuthorityV2:
-    """Load an explicit Package 6 staging activation, never production."""
+def _authority_v2_from_material(
+    material: StagingAuthorityMaterial,
+) -> RuntimeAuthorityV2:
+    from .semantic import SemanticEvidence
 
-    if STAGING_SCOPE_ENV not in os.environ:
-        raise ProtectedAuthorityError("RUNTIME_AUTHORITY_V2_UNAVAILABLE")
-    try:
-        from .semantic import SemanticEvidence
-
-        material = load_staging_authority_material()
-        semantic_evidence = SemanticEvidence(
+    semantic_evidence = SemanticEvidence(
             policy_sha256=material.semantic_policy_sha256,
             active_authority_sha256=material.semantic_active_authority_sha256,
             version_manifest_sha256=material.semantic_version_manifest_sha256,
@@ -185,7 +182,7 @@ def load_runtime_authority_v2() -> RuntimeAuthorityV2:
             generated_at=material.semantic_generated_at,
             expires_at=material.semantic_expires_at,
         )
-        authority = RuntimeAuthorityV2(
+    authority = RuntimeAuthorityV2(
             source_commit=material.source_commit,
             source_tree=material.source_tree,
             installation_root=material.installation_root,
@@ -231,8 +228,32 @@ def load_runtime_authority_v2() -> RuntimeAuthorityV2:
             backend_python_sha256=material.backend_python_sha256,
             command_authority_sha256=material.command_authority_sha256,
             _material=material,
+    )
+    return authority
+
+
+def load_runtime_authority_v2() -> RuntimeAuthorityV2:
+    """Load an explicit Package 6 staging activation, never production."""
+
+    if STAGING_SCOPE_ENV not in os.environ:
+        raise ProtectedAuthorityError("RUNTIME_AUTHORITY_V2_UNAVAILABLE")
+    try:
+        return _authority_v2_from_material(load_staging_authority_material())
+    except Exception:
+        raise ProtectedAuthorityError("RUNTIME_AUTHORITY_V2_UNAVAILABLE") from None
+
+
+def refresh_runtime_authority_v2(
+    authority: RuntimeAuthorityV2,
+) -> RuntimeAuthorityV2:
+    """Refresh rotating evidence without rewalking an attested sealed stage."""
+
+    try:
+        if not isinstance(authority, RuntimeAuthorityV2) or authority._material is None:
+            raise ValueError
+        return _authority_v2_from_material(
+            refresh_staging_dynamic_material(authority._material)
         )
-        return authority
     except Exception:
         raise ProtectedAuthorityError("RUNTIME_AUTHORITY_V2_UNAVAILABLE") from None
 
@@ -505,4 +526,5 @@ __all__ = [
     "RUNTIME_AUTHORITY_V2_PATH", "RuntimeAuthorityV2",
     "RuntimePathsV2",
     "attest_application_release_v2", "load_runtime_authority_v2",
+    "refresh_runtime_authority_v2",
 ]

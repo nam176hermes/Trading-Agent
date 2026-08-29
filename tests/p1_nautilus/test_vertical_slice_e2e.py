@@ -223,7 +223,7 @@ def test_internal_authority_injection_is_not_a_cli_selector(
 ) -> None:
     import scripts.run_p1_nautilus_vertical_slice as vertical
 
-    injected = object()
+    injected = object.__new__(vertical.WorkerRuntimeAuthority)
     observed: list[object] = []
     monkeypatch.setattr(
         vertical,
@@ -240,6 +240,27 @@ def test_internal_authority_injection_is_not_a_cli_selector(
     assert observed == [injected]
     assert "worker-authority" not in vertical._parser().format_help()
     assert json.loads(capsys.readouterr().out)["status"] == "READY"
+
+
+def test_internal_authority_injection_requires_exact_issued_type(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        vertical,
+        "_validate_complete",
+        lambda *_args, **_kwargs: calls.append("validated"),
+    )
+
+    result = vertical.main(_complete_arguments(tmp_path), worker_authority=object())  # type: ignore[arg-type]
+
+    assert result == 2
+    assert calls == []
+    assert json.loads(capsys.readouterr().out)["status"] == "BLOCKED"
 
 
 def test_absent_external_authority_is_canonical_deferred_without_job_mutation() -> None:

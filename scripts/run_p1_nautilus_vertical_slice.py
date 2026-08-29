@@ -716,7 +716,10 @@ def _validate_sandbox_executable(path: Path) -> None:
 
 def _validate_complete(
     arguments: argparse.Namespace,
+    worker_authority: WorkerRuntimeAuthority | None = None,
 ) -> tuple[dict[str, object], WorkerRuntimeAuthority]:
+    if worker_authority is not None and type(worker_authority) is not WorkerRuntimeAuthority:
+        raise VerticalSliceError("injected worker runtime authority is invalid")
     commit, tree = _source_identity()
     if arguments.postgres_scope != "DISPOSABLE_PG_GREEN":
         raise VerticalSliceError("PostgreSQL scope is invalid")
@@ -755,7 +758,8 @@ def _validate_complete(
     )
     validate_disposable_postgres_approval(approval, context)
     validate_source_binding_files(approval, ROOT)
-    worker_authority = attest_worker_runtime_authority()
+    if worker_authority is None:
+        worker_authority = attest_worker_runtime_authority()
     if (
         worker_authority.application_revision != commit
         or worker_authority.backend_revision != commit
@@ -980,7 +984,17 @@ def _run_p1_disposable_once(
         raise VerticalSliceExecutionError(job_mutated=job_mutated) from exc
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    worker_authority: WorkerRuntimeAuthority | None = None,
+) -> int:
+    if worker_authority is not None and type(worker_authority) is not WorkerRuntimeAuthority:
+        return _emit(
+            "BLOCKED",
+            "EXTERNAL_AUTHORITY_PARTIAL_OR_INVALID",
+            authority={"native": "INVALID", "postgres": "INVALID"},
+        )
     arguments, unknown = _parser().parse_known_args(argv)
     absent = not any(_external_values(arguments)) and not arguments.execute
     if unknown:
@@ -1002,7 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
             authority={"native": "INVALID", "postgres": "INVALID"},
         )
     try:
-        evidence, worker_authority = _validate_complete(arguments)
+        evidence, worker_authority = _validate_complete(arguments, worker_authority)
     except Exception:
         return _emit(
             "BLOCKED",

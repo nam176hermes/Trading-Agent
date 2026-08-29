@@ -202,3 +202,36 @@ def test_staging_dynamic_refresh_rejects_rotating_evidence_during_validation(
         module.refresh_staging_worker_runtime_authority(_worker_authority(original))
 
     assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"
+
+
+@pytest.mark.parametrize("mutation", ("safety_source", "semantic"))
+def test_staging_dynamic_refresh_rejects_semantic_or_safety_identity_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    original = replace(_authority(), scope="PACKAGE6_STAGING_ONLY")
+    changed = (
+        replace(
+            original,
+            safety=SafetyAuthority(
+                exporter_commit=original.safety.exporter_commit,
+                snapshot_path=original.safety.snapshot_path,
+                source_fingerprint="9" * 64,
+            ),
+        )
+        if mutation == "safety_source"
+        else replace(
+            original,
+            semantic_evidence=replace(
+                original.semantic_evidence,
+                policy_sha256="9" * 64,
+            ),
+        )
+    )
+    monkeypatch.setattr(module, "_refresh_runtime_authority_v2", lambda _old: changed)
+    monkeypatch.setattr(module, "_runtime_python_path", lambda: original.application_python)
+
+    with pytest.raises(CommandRegistryError) as raised:
+        module.refresh_staging_worker_runtime_authority(_worker_authority(original))
+
+    assert raised.value.reason_code == "RUNTIME_AUTHORITY_CHANGED"

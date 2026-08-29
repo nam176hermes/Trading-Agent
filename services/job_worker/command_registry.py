@@ -31,8 +31,10 @@ from packages.runtime_release.config import (
     RuntimeAuthority,
     RuntimeAuthorityV2,
     RuntimePathsV2,
+    SafetyAuthority,
     attest_application_release_v2 as _attest_application_release_v2,
     load_runtime_authority_v2 as _load_runtime_authority_v2,
+    refresh_runtime_authority_v2 as _refresh_runtime_authority_v2,
 )
 from packages.runtime_release.semantic import SemanticEvidence, attest_current_semantic_inputs
 from packages.runtime_release.backend_policy import APPROVED_PHASE4_BACKEND_COMMIT
@@ -472,6 +474,64 @@ def attest_worker_runtime_authority() -> WorkerRuntimeAuthority:
     )
 
 
+def refresh_staging_worker_runtime_authority(
+    authority: WorkerRuntimeAuthority,
+) -> WorkerRuntimeAuthority:
+    """Refresh dynamic Package 6 evidence after one complete static attestation."""
+
+    try:
+        if not isinstance(authority, WorkerRuntimeAuthority):
+            raise ValueError
+        previous = authority.runtime_authority
+        current = _refresh_runtime_authority_v2(previous)
+        stable = _refresh_runtime_authority_v2(current)
+        static_values = (
+            "source_commit", "source_tree", "installation_root", "application_root",
+            "application_python", "backend_root", "backend_python",
+            "backend_artifact_sha256", "command_manifest", "runtime_paths", "scope",
+            "package6_approval_sha256", "production_release_authority_sha256",
+            "stage_file_set_sha256", "application_artifact_sha256",
+            "application_python_sha256", "backend_python_sha256",
+            "command_authority_sha256", "_authority_pin",
+        )
+        if any(getattr(current, name) != getattr(previous, name) for name in static_values):
+            raise ValueError
+        if (
+            stable._authority_pin != current._authority_pin
+            or stable._dynamic_evidence_pin != current._dynamic_evidence_pin
+            or _runtime_python_path() != current.application_python
+            or current.scope != "PACKAGE6_STAGING_ONLY"
+            or not isinstance(current.safety, SafetyAuthority)
+            or not isinstance(current.semantic_evidence, SemanticEvidence)
+            or not isinstance(current.runtime_paths, RuntimePathsV2)
+            or not isinstance(previous.safety, SafetyAuthority)
+            or current.safety.exporter_commit != previous.safety.exporter_commit
+            or current.safety.source_fingerprint
+            != previous.safety.source_fingerprint
+            or current.semantic_evidence != previous.semantic_evidence
+        ):
+            raise ValueError
+        identity = authority.authority_identity
+        return WorkerRuntimeAuthority(
+            current.source_commit,
+            current.source_commit,
+            current.safety.snapshot_path,
+            current.safety.exporter_commit,
+            current.safety.source_fingerprint,
+            current.semantic_evidence,
+            identity,
+            authority.authority_document_sha256,
+            current._authority_pin,
+            current.runtime_paths,
+            current,
+        )
+    except Exception:
+        raise CommandRegistryError(
+            "RUNTIME_AUTHORITY_CHANGED",
+            "protected runtime authority changed during dynamic refresh",
+        ) from None
+
+
 @dataclass(frozen=True, slots=True, init=False, eq=False, repr=False, weakref_slot=True)
 class ValidatedCommandCapability:
     _attestation: _Attestation
@@ -682,6 +742,6 @@ __all__ = [
     "CommandSpec", "FULL_REATTESTATION_ROLLOUT_LIMIT_SECONDS",
     "PAPER_COMMAND_ARGV_PREFIX", "PRESPAWN_FULL_REATTESTATION_COUNT", "PreparedSpawn",
     "ValidatedCommandCapability", "WorkerRuntimeAuthority", "attest_command_capability",
-    "attest_worker_runtime_authority", "build_command",
+    "attest_worker_runtime_authority", "refresh_staging_worker_runtime_authority", "build_command",
     "consume_prepared_spawn", "prepare_immediate_spawn",
 ]
