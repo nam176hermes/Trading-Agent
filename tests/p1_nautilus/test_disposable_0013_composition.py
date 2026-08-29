@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -259,6 +261,116 @@ def test_dedicated_app_uses_only_0013_while_generic_app_remains_0011() -> None:
     assert p1_repository.last_enqueue[0].actor == PRINCIPAL
 
 
+def test_stdlib_asgi_post_exercises_authenticated_p1_app() -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+    from apps.job_api.app import create_p1_disposable_app
+
+    settings = JobApiSettings(bearer_token="p1-test-token", principal=PRINCIPAL)
+    authority = isolated_job_plane_authority()
+    repository = Repository()
+    repository._pool = _Pool(P1_REVISION)
+    app = create_p1_disposable_app(settings, repository, authority)
+
+    rejected_status, rejected = vertical._asgi_json_post(
+        app,
+        path="/v1/jobs",
+        body=_engine_payload(),
+        bearer_token="wrong-token",
+    )
+    assert rejected_status == 401
+    assert rejected["error"]["code"] == "UNAUTHORIZED"
+    assert repository.last_enqueue is None
+
+    status, response = vertical._asgi_json_post(
+        app,
+        path="/v1/jobs",
+        body=_engine_payload(),
+        bearer_token="p1-test-token",
+    )
+    assert status == 201
+    assert response["data"]["job"]["job_id"] == repository.jobs[0].job_id
+    assert repository.last_enqueue[0].actor == PRINCIPAL
+
+
+@pytest.mark.parametrize(
+    "messages",
+    (
+        (
+            {"type": "http.response.start", "status": 201, "headers": []},
+            {"type": "http.response.start", "status": 201, "headers": []},
+            {"type": "http.response.body", "body": b'{}'},
+        ),
+        (
+            {"type": "http.response.start", "status": 201, "headers": []},
+            {"type": "http.response.body", "body": b'{}'},
+            {"type": "http.response.body", "body": b'{}'},
+        ),
+        (
+            {"type": "http.response.start", "status": 201, "headers": []},
+            {"type": "http.response.body", "body": b'{}', "more_body": True},
+        ),
+        (
+            {"type": "http.response.start", "status": 201, "headers": []},
+            {"type": "http.response.trailers", "headers": []},
+        ),
+        (
+            {"type": "http.response.start", "status": 201, "headers": []},
+            {"type": "http.response.body", "body": b'x' * (1024 * 1024 + 1)},
+        ),
+    ),
+    ids=("multi-start", "multi-body", "streaming", "unexpected", "oversized"),
+)
+def test_stdlib_asgi_post_rejects_unclosed_response_sequences(
+    messages: tuple[dict[str, object], ...],
+) -> None:
+    import scripts.run_p1_nautilus_vertical_slice as vertical
+
+    async def malformed_app(
+        _scope: dict[str, object],
+        receive: object,
+        send: object,
+    ) -> None:
+        request = await receive()  # type: ignore[operator]
+        assert request["type"] == "http.request"
+        for message in messages:
+            await send(message)  # type: ignore[operator]
+
+    with pytest.raises(vertical.VerticalSliceError):
+        vertical._asgi_json_post(
+            malformed_app,
+            path="/v1/jobs",
+            body=_engine_payload(),
+            bearer_token="p1-test-token",
+        )
+
+
+def test_vertical_slice_runtime_import_does_not_require_testclient_or_httpx() -> None:
+    source = (Path(__file__).parents[2] / "scripts/run_p1_nautilus_vertical_slice.py").read_text(
+        encoding="utf-8"
+    )
+    assert "fastapi.testclient" not in source
+    assert "httpx" not in source
+    program = """
+import builtins
+original_import = builtins.__import__
+def blocked_import(name, *args, **kwargs):
+    if name == 'fastapi.testclient' or name.startswith('httpx'):
+        raise ModuleNotFoundError(name)
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = blocked_import
+import scripts.run_p1_nautilus_vertical_slice
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        cwd=Path(__file__).parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_p1_worker_identity_is_no_arg_and_exact_0013() -> None:
     from inspect import signature
 
@@ -333,33 +445,6 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
         def __init__(self, settings: object) -> None:
             super().__init__(settings, "worker")
 
-    class _Response:
-        status_code = 201
-
-        @staticmethod
-        def json() -> dict[str, object]:
-            return {"data": {"job": {"job_id": JOB_ID}}}
-
-    class _Client:
-        def __init__(self, app: object) -> None:
-            assert app == "p1-app"
-
-        def __enter__(self):
-            calls.append("client:enter")
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            calls.append("client:exit")
-
-        def post(
-            self, path: str, *, json: dict[str, object], headers: dict[str, str]
-        ) -> _Response:
-            calls.append("client:post")
-            assert path == "/v1/jobs"
-            assert json["job_type"] == "BACKTEST"
-            assert headers["Authorization"].startswith("Bearer ")
-            return _Response()
-
     class _Worker:
         def run_once(self) -> bool:
             calls.append("worker:run_once")
@@ -377,7 +462,21 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
     monkeypatch.setattr(vertical, "JobRepository", _ApiRepository)
     monkeypatch.setattr(vertical, "WorkerRepository", _WorkerRepository)
     monkeypatch.setattr(vertical, "JobApiSettings", _Settings)
-    monkeypatch.setattr(vertical, "TestClient", _Client)
+    def post(
+        app: object,
+        *,
+        path: str,
+        body: dict[str, object],
+        bearer_token: str,
+    ) -> tuple[int, dict[str, object]]:
+        assert app == "p1-app"
+        calls.append("client:post")
+        assert path == "/v1/jobs"
+        assert body["job_type"] == "BACKTEST"
+        assert bearer_token
+        return 201, {"data": {"job": {"job_id": JOB_ID}}}
+
+    monkeypatch.setattr(vertical, "_asgi_json_post", post)
     monkeypatch.setattr(
         vertical,
         "create_p1_disposable_app",
@@ -423,9 +522,7 @@ def test_vertical_slice_runs_authenticated_enqueue_then_exactly_one_worker(
         "worker:attest",
         "worker:build",
         "app:create",
-        "client:enter",
         "client:post",
-        "client:exit",
         "worker:run_once",
         "api:get_job",
         "worker:exit",
